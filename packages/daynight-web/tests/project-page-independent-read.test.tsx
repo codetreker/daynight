@@ -64,6 +64,25 @@ it('keeps project facts and management available in both sections when the graph
   expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
 });
 
+it('lets a slow project read finish across polling intervals and focus recovery', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const pending = Promise.withResolvers<typeof project>();
+  const started = Promise.withResolvers<AbortSignal>();
+  vi.mocked(getProject).mockImplementationOnce((_id, signal) => { started.resolve(signal); return pending.promise; }).mockResolvedValue(project);
+  vi.mocked(getProjectAccess).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  render(page(scope()));
+  let deadline!: ReturnType<typeof setTimeout>;
+  const signal = await Promise.race([started.promise, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Project read did not start')), 5_000); })]).finally(() => clearTimeout(deadline));
+  await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+  fireEvent(window, new Event('focus'));
+  expect(signal.aborted).toBe(false);
+  expect(getProject).toHaveBeenCalledOnce();
+  await act(async () => { pending.resolve(project); });
+  await screen.findByRole('heading', { name: 'Independent project' });
+  expect(screen.getByText(project.repoUrl)).toBeVisible();
+});
+
 it('withdraws project facts on access revocation and rejects a late read', async () => {
   const pending = Promise.withResolvers<typeof project>();
   vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
@@ -130,18 +149,24 @@ it('withdraws project and task data after a trusted project 404 even when access
 
 it('ignores a late project 404 after a newer read succeeds', async () => {
   const old = Promise.withResolvers<typeof project>();
-  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
-  vi.mocked(getProject).mockResolvedValueOnce(project).mockReturnValueOnce(old.promise)
-    .mockResolvedValue({ ...project, name: 'Current project' });
-  render(page(scope()));
-  await screen.findByRole('heading', { name: 'Independent project' });
+  let session: ProjectAccessSession | null = null;
+  const Probe = () => {
+    session = useProjectAccessSession(projectId);
+    const result = useProjectPageRead(projectId);
+    return <><p>{result.project?.name ?? 'Loading'}</p><button onClick={result.retry}>Retry project</button></>;
+  };
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={scope()}>
+    <ProjectAccessBoundary projectId={projectId}><Probe /></ProjectAccessBoundary>
+  </TestTaskCacheBoundary></LocaleProvider>);
+  await screen.findByText('Independent project');
+  await waitFor(() => expect(session!.snapshot().refreshing).toBe(false));
+  vi.mocked(getProject).mockReset().mockReturnValueOnce(old.promise).mockResolvedValue({ ...project, name: 'Current project' });
   fireEvent(window, new Event('focus'));
-  await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
-  fireEvent(window, new Event('focus'));
-  await screen.findByRole('heading', { name: 'Current project' });
+  await waitFor(() => expect(getProject).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole('button', { name: 'Retry project' }));
+  await screen.findByText('Current project');
   await act(async () => { old.reject(new ApiError('server', 404, 'not_found')); });
-  expect(screen.getByRole('heading', { name: 'Current project' })).toBeVisible();
-  expect(screen.getByRole('link', { name: 'Manage Current project' })).toBeVisible();
+  expect(screen.getByText('Current project')).toBeVisible();
 });
 
 it('immediately rereads a project response superseded by a newer task-sync access observation', async () => {

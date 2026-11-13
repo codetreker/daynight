@@ -111,6 +111,7 @@ describe("workspace localization", () => {
     const card = screen.getByRole("heading", { name: project.name }).closest("a")!;
     await user.click(card);
     await screen.findByRole("heading", { name: project.name });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
     expect(document.title).toBe("项目任务 · Daynight");
     expect(screen.getByRole("main")).toHaveFocus();
@@ -196,6 +197,7 @@ describe("workspace localization", () => {
     const user = userEvent.setup();
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(1));
     const notice = screen.getByText(en.workspace.preferences.tab.invalid);
     await user.selectOptions(screen.getByRole("combobox", { name: /language/i }), "zh-CN");
     expect(screen.getByText(zhCN.workspace.preferences.tab.invalid)).toBe(notice);

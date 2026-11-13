@@ -11,7 +11,8 @@ export const useProjectPageRead = (projectId: string) => {
   const [state, setState] = useState<{ session: typeof session; projectId: string; project: Project | null; error: unknown }>({ session, projectId, project: null, error: null });
   const active = useRef<AbortController | null>(null);
   const sequence = useRef(0);
-  const read = useCallback(async (retried = false): Promise<void> => {
+  const read = useCallback(async (retried = false, automatic = false): Promise<void> => {
+    if (automatic && active.current !== null) return;
     active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
@@ -23,10 +24,10 @@ export const useProjectPageRead = (projectId: string) => {
     let historyTicket: ReturnType<typeof session.scope.getObservedHistoryTicket> = null;
     const current = () => !signal.aborted && generation === sequence.current && !session.scope.isInvalidated
       && revision === session.scope.getProjectRevision(projectId) && admission === session.scope.getAdmissionRevision(projectId)
-      && !session.scope.isProjectSuspended(projectId) && session.snapshot().status !== "unavailable";
+      && session.canObserveProjectRead();
     const retrySuperseded = () => {
       if (!retried && !signal.aborted && generation === sequence.current && !session.scope.isInvalidated
-        && !session.scope.isProjectSuspended(projectId) && session.snapshot().status !== "unavailable") void read(true);
+        && session.canObserveProjectRead()) void read(true);
     };
     try {
       await session.scope.ready(signal);
@@ -52,28 +53,29 @@ export const useProjectPageRead = (projectId: string) => {
   useEffect(() => {
     void session.revalidate();
     void read();
+    const unsubscribeRetry = session.subscribeProjectReadRetry(() => { void read(); });
     const unsubscribe = session.scope.subscribe(event => {
       if (event.projectId !== projectId) return;
-      if (event.accessRevoked) {
+      if (event.accessRevoked && !session.isProjectReadCleanupFailure(event)) {
         ++sequence.current; active.current?.abort();
         setState({ session, projectId, project: null, error: event.error ?? null });
       }
     });
-    const refresh = () => { if (document.visibilityState !== "hidden") void read(); };
+    const refresh = () => { if (document.visibilityState !== "hidden") void read(false, true); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     const timer = setInterval(refresh, 30_000);
     return () => {
-      ++sequence.current; active.current?.abort(); unsubscribe(); clearInterval(timer);
+      ++sequence.current; active.current?.abort(); unsubscribe(); unsubscribeRetry(); clearInterval(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [projectId, session, read]);
   useEffect(() => {
-    if (access.status === "ready") void read();
+    if (access.status === "ready") void read(false, true);
   }, [access.status, read]);
   const retry = useCallback(() => { void session.revalidate(); void read(); }, [session, read]);
   const currentState = state.session === session && state.projectId === projectId ? state : null;
-  const project = access.status === "unavailable" || session.scope.isProjectSuspended(projectId) || session.scope.isInvalidated ? null : currentState?.project ?? null;
+  const project = session.canObserveProjectRead() && !session.scope.isInvalidated ? currentState?.project ?? null : null;
   return { project, error: currentState?.error ?? (access.status === "unavailable" || access.status === "error" && project === null ? access.error : null), retry };
 };

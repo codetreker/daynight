@@ -2,6 +2,7 @@ import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { directAccessFixture, taskSyncFromGraph, taskSyncQuery, taskSyncResponse, viewerHeaders, fixtureTaskEpoch } from './helpers/taskSync';
 import { openDB } from 'idb';
+import { IDBObjectStore } from 'fake-indexeddb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { createTaskCacheScope, TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import { TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
@@ -669,7 +670,7 @@ describe("authenticated application shell", () => {
   it("clears all workspace data on a real resource401 while keeping project404 local", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     let denied = false;
-    install((url) => isTaskSync(url) && denied ? fail(404, "not_found") : defaults(url));
+    install((url) => denied && (isTaskSync(url) || url === `/api/v1/projects/${projectId}` || url === `/api/v1/projects/${projectId}/access`) ? fail(404, "not_found") : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
     denied = true;
@@ -1382,4 +1383,79 @@ it('retains cold Bot draft and receipt namespaces on an account change outside t
   expect(window.sessionStorage.getItem(key)).toBe('private draft');
   expect(window.localStorage.getItem(displayKey)).toBe('\"standard\"');
   expect(window.sessionStorage.getItem(creationKey)).toBe('20000000-0000-4000-8000-000000000001');
+});
+
+it.each(['pending', 'failed'] as const)('recovers the project header through an independent retry when the task cache is %s', async mode => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(() => mode === 'pending' ? new Promise(() => {}) : Promise.reject(new Error('cache unavailable')));
+  let denied = true;
+  install(url => url === `/api/v1/projects/${projectId}` && denied ? fail(404, 'not_found') : defaults(url));
+  render(<AuthenticatedApp />);
+  const unavailable = await screen.findByRole('heading', { name: '项目不存在或你没有访问权限' });
+  expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
+  denied = false;
+  fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目设置' })).toBeVisible();
+  expect(screen.queryByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeNull();
+});
+
+it('rejects a recovery response after a newer project withdrawal', async () => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(() => new Promise(() => {}));
+  const suspend = TaskCacheScope.prototype.suspendProject;
+  let current: TaskCacheScope | null = null;
+  vi.spyOn(TaskCacheScope.prototype, 'suspendProject').mockImplementation(function (this: TaskCacheScope, id) { current = this; return suspend.call(this, id); });
+  let denied = true; const pending = Promise.withResolvers<Response>();
+  const fetcher = install(url => url === `/api/v1/projects/${projectId}` ? denied ? fail(404, 'not_found') : pending.promise : defaults(url));
+  render(<AuthenticatedApp />);
+  const unavailable = await screen.findByRole('heading', { name: '项目不存在或你没有访问权限' });
+  denied = false;
+  fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`)).toHaveLength(2));
+  act(() => current!.suspendProject(projectId));
+  await act(async () => pending.resolve(json(project())));
+  expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
+  expect(screen.queryByRole('link', { name: '项目成员' })).toBeNull();
+  expect(screen.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
+});
+
+
+it('recovers Project after its access recheck confirms denial and cache cleanup fails', async () => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  const beginSync = TaskCacheScope.prototype.beginSync;
+  let cacheFailed = false, projectDenied = false, cleanupFailures = 0;
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(function (this: TaskCacheScope, ...args) {
+    return cacheFailed ? Promise.reject(new Error('cache unavailable')) : beginSync.apply(this, args);
+  });
+  const originalPut = IDBObjectStore.prototype.put;
+  const purge = vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (cacheFailed && this.name === 'projects' && (args[0] as { state?: string }).state === 'invalidated') { cleanupFailures++; throw new DOMException('Injected cleanup failure', 'QuotaExceededError'); }
+    return originalPut.apply(this, args);
+  });
+  const revoke = vi.spyOn(TaskCacheScope.prototype, 'revokeProject');
+  const firstAccess = Promise.withResolvers<Response>();
+  let projectAllowed = false;
+  const fetcher = install(url => {
+    if (url === `/api/v1/projects/${projectId}`) {
+      if (projectAllowed) return json(project());
+      projectDenied = true; return fail(404, 'not_found');
+    }
+    if (url === `/api/v1/projects/${projectId}/access`) {
+      if (!projectDenied) return firstAccess.promise;
+      cacheFailed = true; return fail(404, 'not_found');
+    }
+    return defaults(url);
+  });
+  render(<AuthenticatedApp />);
+  const unavailable = await screen.findByRole('heading', { name: '项目不存在或你没有访问权限' });
+  await waitFor(() => expect(revoke).toHaveBeenCalled());
+  await waitFor(() => expect(cleanupFailures).toBeGreaterThan(0));
+  projectAllowed = true;
+  fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
+  expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length).toBeGreaterThan(1);
+  purge.mockRestore();
 });
