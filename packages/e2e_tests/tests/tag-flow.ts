@@ -1,0 +1,87 @@
+import type { Page } from "@playwright/test";
+import { cli, expect, topology } from "./fixtures.ts";
+
+type Tag = { id: string; name: string; version: number };
+type Task = { id: string; title: string; parentId: string | null; tags: { id: string; name: string }[] };
+
+export const verifyTagFlow = async (page: Page, projectId: string): Promise<void> => {
+  const json = async <T>(args: string[]): Promise<T> => JSON.parse((await cli([...args, "--project", projectId, "--json"])).stdout) as T;
+  const backend = await json<Tag>(["tag", "create", "Backend"]);
+  const other = await json<Tag>(["tag", "create", "Other"]);
+  expect(backend.id).not.toBe(other.id);
+  const create = async (args: string[]): Promise<string> => {
+    const result = await cli(["task", "create", "--project", projectId, ...args]);
+    const id = result.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
+    expect(id).toBeDefined();
+    return id!;
+  };
+  const goalId = await create(["--type", "goal", "--title", "Tagged Goal", "--tag", backend.id]);
+  const taskId = await create(["--parent", goalId, "--title", "Tagged child", "--tag", other.id]);
+  const controlId = await create(["--parent", goalId, "--title", "Other child", "--tag", other.id]);
+  const read = async (id: string) => await json<Task>(["task", "show", id]);
+  expect(await read(goalId)).toMatchObject({ id: goalId, parentId: null, tags: [{ id: backend.id, name: "Backend" }] });
+  expect(await read(taskId)).toMatchObject({ id: taskId, parentId: goalId, tags: [{ id: other.id, name: "Other" }] });
+
+  await page.goto(`${topology.baseURL}/projects/${projectId}`);
+  await page.locator("#project-section-tab-tasks").click();
+  await page.locator("#project-task-tab-goals").click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await expect(card.locator(".goal-list-toggle .task-tag")).toHaveText(["Backend"]);
+  await card.locator(".goal-list-toggle").click();
+  const child = card.locator(`#chain-task-goal-${goalId}-${taskId}`);
+  const control = card.locator(`#chain-task-goal-${goalId}-${controlId}`);
+  await expect(child.locator(".task-tag")).toHaveText(["Other"]);
+  await expect(control).toBeVisible();
+  await child.click();
+  const detail = page.locator(".task-detail-dialog");
+  await expect(detail.getByRole("heading", { name: "Tagged child", exact: true })).toBeVisible();
+  await expect(detail.locator(".task-tag")).toHaveText(["Other"]);
+  await detail.getByRole("button", { name: "Edit tags" }).click();
+  const editor = detail.locator(".task-tags-editor");
+  await editor.getByRole("checkbox", { name: "Backend" }).check();
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  const edited = await read(taskId);
+  expect(edited.id).toBe(taskId);
+  expect(edited.parentId).toBe(goalId);
+  expect(edited.tags).toHaveLength(2);
+  expect(edited.tags).toEqual(expect.arrayContaining([{ id: backend.id, name: "Backend" }, { id: other.id, name: "Other" }]));
+  await detail.locator(".task-detail-close").click();
+  const filter = card.locator(".tag-filter");
+  await filter.locator("summary").click();
+  await filter.getByRole("checkbox", { name: "Backend" }).check();
+  await expect(child).toBeVisible();
+  await expect(control).toHaveCount(0);
+
+  const renamed = await json<Tag>(["tag", "rename", backend.id, "Platform", "--if-version", String(backend.version)]);
+  expect(renamed).toMatchObject({ id: backend.id, name: "Platform" });
+  await page.reload();
+  await page.locator("#project-section-tab-tasks").click();
+  await page.locator("#project-task-tab-goals").click();
+  await expect(card.locator(".goal-list-toggle .task-tag")).toHaveText(["Platform"]);
+  await card.locator(".goal-list-toggle").click();
+  await expect(child.locator(".task-tag")).toHaveCount(2);
+  await expect(child.locator(".task-tag").filter({ hasText: "Platform" })).toHaveCount(1);
+  await expect(child.locator(".task-tag").filter({ hasText: "Other" })).toHaveCount(1);
+  expect((await read(goalId)).tags).toEqual([{ id: backend.id, name: "Platform" }]);
+  expect((await read(taskId)).tags).toEqual(expect.arrayContaining([{ id: backend.id, name: "Platform" }, { id: other.id, name: "Other" }]));
+
+  const deleted = await json<{ projectId: string; tagId: string; deleted: boolean }>(["tag", "delete", backend.id, "--if-version", String(renamed.version), "--confirm"]);
+  expect(deleted).toEqual({ projectId, tagId: backend.id, deleted: true });
+  const catalog = await json<{ items: Tag[] }>(["tag", "list"]);
+  expect(catalog.items.map(tag => ({ id: tag.id, name: tag.name }))).toEqual([{ id: other.id, name: "Other" }]);
+  expect(await read(goalId)).toMatchObject({ id: goalId, tags: [] });
+  expect(await read(taskId)).toMatchObject({ id: taskId, parentId: goalId, tags: [{ id: other.id, name: "Other" }] });
+  await page.reload();
+  await page.locator("#project-section-tab-tasks").click();
+  await page.locator("#project-task-tab-goals").click();
+  await expect(card).toBeVisible();
+  await expect(card.locator(".goal-list-toggle .task-tag-empty")).toHaveText("Untagged");
+  await expect(card.locator(".goal-list-toggle .task-tag")).toHaveCount(0);
+  await card.locator(".goal-list-toggle").click();
+  await expect(child.locator(".task-tag")).toHaveText(["Other"]);
+  await filter.locator("summary").click();
+  await expect(filter.getByRole("checkbox", { name: "Other" })).toBeVisible();
+  await expect(filter.getByRole("checkbox", { name: "Platform" })).toHaveCount(0);
+  console.log(`Tag journey: project=${projectId} goal=${goalId} task=${taskId} control=${controlId} renamed/deleted=${backend.id} retained=${other.id}`);
+};

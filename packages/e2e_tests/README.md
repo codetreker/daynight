@@ -79,6 +79,12 @@ Web shows the retained history without the old current claim. These API registra
 do not start a Worker process. The same resource IDs and content cross the clients
 and persist in the real database.
 
+The tag journey creates a shared catalog and independently tagged Goal and child
+Tasks through the CLI. Web reads and edits the child's tags and filters sibling
+Tasks; CLI reads the saved set, renames and confirms deletion of a shared tag.
+Web reloads and CLI readback verify the current names, retained identities and
+association cleanup on the same Goal and Task.
+
 Add normal sequential journeys under `tests/`, using `tests/fixtures.ts` for the
 compiled CLI, isolated configuration and topology. Product scenarios use valid
 data and ordinary sizes. Boundary, denial, conflict, race, recovery and stress

@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { test, expect, topology, cli, cliEnvironment } from "./fixtures.ts";
 import { startCommand } from "../src/command.ts";
 import { verifyCompletionFlow } from "./completion-flow.ts";
+import { verifyTagFlow } from "./tag-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
@@ -177,6 +178,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await expect(page.getByRole("dialog").getByRole("button", { name: "Done", exact: true })).toBeVisible();
 
   await verifyCompletionFlow(page, projectId!, task.id);
+  await verifyTagFlow(page, projectId!);
 
   // These API registrations exercise the assembled service without starting a
   // Worker process. Resource stopping and archival are owned by their modules.
