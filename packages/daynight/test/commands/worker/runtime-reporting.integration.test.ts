@@ -414,14 +414,14 @@ describe("worker runtime configuration reporting", () => {
   });
 
   it("reconciles an imported target after a lost bootstrap receipt before capturing another report", async () => {
-    const f = await fixture(), order: string[] = [], secondEntered = deferred<void>(), releaseSecond = deferred<void>(), releaseLaterGet = deferred<void>();
+    const f = await fixture(), order: string[] = [], secondEntered = deferred<void>(), releaseSecond = deferred<void>(), thirdEntered = deferred<void>(), releaseThird = deferred<void>(), fourthEntered = deferred<void>(), releaseFourth = deferred<void>(), releaseLaterGet = deferred<void>();
     target = { ...target, revision: "2", value: { ...target.value, maxConcurrent: 4, native: { ...target.value.native, model: "cloud-after-lost-receipt" } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
     let imported = false, remoteRevision = 5;
     remote.configuration.mockImplementation(async () => {
       order.push("GET");
       if (!imported) return { desired: null, observationRevision: "0", observation: null };
-      if (report.mock.calls.length >= 3) await releaseLaterGet.promise;
+      if (report.mock.calls.length >= 4) await releaseLaterGet.promise;
       return { desired: target, observationRevision: String(remoteRevision), observation: { baseRevision: String(remoteRevision - 1), desiredRevision: "2", items: [], reportedAt: workerTelemetryTime } };
     });
     report.mockImplementation(async (_workerId, _body, configuration) => {
@@ -431,6 +431,8 @@ describe("worker runtime configuration reporting", () => {
         throw new ApiError({ operation: "worker.reportConfiguration" }, "request", { cause: new Error("Bootstrap receipt lost."), outcomeUnconfirmed: true });
       }
       if (report.mock.calls.length === 2) { secondEntered.resolve(); await releaseSecond.promise; }
+      if (report.mock.calls.length === 3) { thirdEntered.resolve(); await releaseThird.promise; }
+      if (report.mock.calls.length === 4) { fourthEntered.resolve(); await releaseFourth.promise; }
       const observationAccepted = configuration.observation?.baseRevision === String(remoteRevision);
       if (observationAccepted) remoteRevision++;
       return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(remoteRevision), observationAccepted } };
@@ -446,20 +448,36 @@ describe("worker runtime configuration reporting", () => {
     expect(report.mock.calls[1]![2].observation).toMatchObject({ baseRevision: "5", desiredRevision: "2" });
     expect(report.mock.calls[1]![2].observation!.items).toEqual(expect.arrayContaining([expect.objectContaining({ key: { kind: "maxConcurrent" }, targetRevision: "2" })]));
     expect(report.mock.calls[1]![2].observation!.items.every(item => item.targetRevision === "2")).toBe(true);
-    await eventuallyWithoutAdvancingTime(() => expect(update).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 4, readyProjectIds: [uuid(1)] })));
+    await eventuallyWithoutAdvancingTime(() => {
+      expect(update).toHaveBeenCalledWith(expect.objectContaining({ maxConcurrent: 4, readyProjectIds: [uuid(1)], globalConfiguration: expect.objectContaining({ model: "cloud-after-lost-receipt" }) }));
+      expect(configurationTransitions()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: { kind: "native" }, targetRevision: "2", state: "applied" }),
+        expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, targetRevision: "2", state: "applied" }),
+        expect.objectContaining({ key: { kind: "projectPreparation", projectId: uuid(1) }, targetRevision: "2", state: "applied" }),
+      ]));
+    });
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
-    const inventory = { observedAt: workerTelemetryTime, claims: [] };
-    options.onInventory!(inventory);
+    options.onInventory!(null);
     expect(order).toEqual(["GET", "POST", "GET", "POST"]);
     releaseSecond.resolve();
-    await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_recovered" })));
-    await eventuallyWithoutAdvancingTime(() => expect(report.mock.calls.some(([, body]) => body.taskInventory?.observedAt === inventory.observedAt && body.taskInventory.claims.length === 0)).toBe(true));
-    expect(order.slice(0, 6)).toEqual(["GET", "POST", "GET", "POST", "GET", "POST"]);
-    expect(report.mock.calls[2]![1].taskInventory).toEqual(inventory);
+    await thirdEntered.promise;
+    expect(order).toEqual(["GET", "POST", "GET", "POST", "GET", "POST"]);
+    expect(report.mock.calls[2]![1].taskInventory).toBeNull();
     expect(report.mock.calls[2]![2].observation).toMatchObject({ baseRevision: "6", desiredRevision: "2" });
+    expect(report.mock.calls[2]![2].bootstrap).toBeNull();
+    options.onInventory!(null);
+    expect(order).toEqual(["GET", "POST", "GET", "POST", "GET", "POST"]);
+    releaseThird.resolve();
+    await fourthEntered.promise;
+    expect(order).toEqual(["GET", "POST", "GET", "POST", "GET", "POST", "GET", "POST"]);
+    expect(report.mock.calls[3]![1].taskInventory).toBeNull();
+    expect(report.mock.calls[3]![2].observation).toMatchObject({ baseRevision: "7", desiredRevision: "2" });
+    expect(report.mock.calls[3]![2].bootstrap).toBeNull();
+    releaseFourth.resolve();
+    await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_recovered" })));
     await eventually(async () => {
       const cache = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));
-      expect(BigInt(cache.authority.observationRevision)).toBeGreaterThanOrEqual(7n);
+      expect(BigInt(cache.authority.observationRevision)).toBeGreaterThanOrEqual(8n);
     });
     releaseLaterGet.resolve();
     f.signal.abort(); await running;
