@@ -190,10 +190,10 @@ func statusResponse(s coregithub.Status) (api.GitHubStatus, error) {
 		}
 	}
 	if c.RepositoryID != nil {
-		if c.RepositoryFullName == nil || c.RepositoryPrivate == nil {
+		if c.RepositoryFullName == nil {
 			return out, fmt.Errorf("incomplete persisted GitHub repository")
 		}
-		out.Repository = &api.GitHubRepository{ID: decimal(*c.RepositoryID), FullName: *c.RepositoryFullName, Private: *c.RepositoryPrivate}
+		out.Repository = &api.GitHubRepository{ID: decimal(*c.RepositoryID), FullName: *c.RepositoryFullName, Private: c.RepositoryPrivate}
 	}
 	out.Initializing = c.Enabled && (c.LastFullGeneration == nil || *c.LastFullGeneration != c.Generation)
 	pollErr, err := syncError(c.PollErrorCode, c.PollErrorMessage, c.PollErrorAt)

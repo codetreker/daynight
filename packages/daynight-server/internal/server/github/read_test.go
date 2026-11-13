@@ -162,7 +162,7 @@ func TestErrorsAndProjection(t *testing.T) {
 	if err != nil || got.Initializing || got.Poll.Running || !got.Webhook.Running {
 		t.Fatalf("state %+v %v", got, err)
 	}
-	for _, broken := range []githubpr.Connection{func() githubpr.Connection { x := c; x.InstallationAccountLogin = nil; return x }(), func() githubpr.Connection { x := c; x.RepositoryPrivate = nil; return x }(), func() githubpr.Connection { x := c; x.WebhookErrorCode = pointer("x"); return x }()} {
+	for _, broken := range []githubpr.Connection{func() githubpr.Connection { x := c; x.InstallationAccountLogin = nil; return x }(), func() githubpr.Connection { x := c; x.RepositoryFullName = nil; return x }(), func() githubpr.Connection { x := c; x.WebhookErrorCode = pointer("x"); return x }()} {
 		if _, err := statusResponse(coregithub.Status{Connection: broken}); err == nil {
 			t.Fatal("accepted incomplete state")
 		}
@@ -250,5 +250,15 @@ func TestNextAttemptReflectsPersistedSchedule(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUnknownRepositoryVisibility(t *testing.T) {
+	c, _ := fixture()
+	c.RepositoryPrivate = nil
+	s := &readerStub{status: coregithub.Status{Connection: c}}
+	w := call(newMux(s), "GET", "/api/v1/projects/"+projectID+"/github")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"private":null`) {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
 }

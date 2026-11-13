@@ -19,7 +19,7 @@ type GitHubStatus struct {
 type GitHubRepository struct {
 	ID       string `json:"id"`
 	FullName string `json:"fullName"`
-	Private  bool   `json:"private"`
+	Private  *bool  `json:"private"`
 }
 type GitHubInstallation struct {
 	ID           string `json:"id"`
