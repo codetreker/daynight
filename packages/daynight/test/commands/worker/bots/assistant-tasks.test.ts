@@ -3,7 +3,7 @@ import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AssistantTaskApiError, assistantTaskClaimFingerprint, type AssistantTask, type AssistantTaskClient, type AssistantTaskClaimInput, type AssistantTaskClaimKind, type AssistantTaskClaimResult, type AssistantTaskEvent } from "../../../../src/api/assistant-task.js";
-import { withClaimStorage } from "../../../../src/commands/assistant-task/state.js";
+import { withClaimStorage, type ClaimScope } from "../../../../src/commands/assistant-task/state.js";
 import * as claimOperations from "../../../../src/commands/assistant-task/claims.js";
 import { createAssistantTaskRuntime, type AssistantApplicationContext, type AssistantTaskClock, type AssistantTaskRuntime, type AssistantTaskRuntimeOptions } from "../../../../src/commands/worker/bots/assistant-tasks.js";
 import { AssistantTaskSessionError } from "../../../../src/commands/worker/bots/assistant-task-session.js";
@@ -16,6 +16,13 @@ const token = Buffer.alloc(32, 7).toString("base64url");
 const roots: string[] = [], runtimes: AssistantTaskRuntime[] = [];
 afterEach(async () => { await Promise.all(runtimes.splice(0).map(runtime => runtime.shutdown())); vi.restoreAllMocks(); vi.useRealTimers(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const deferred = <T = void>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
+const expectClaimLocked = async (scope: ClaimScope): Promise<void> => {
+  const entered = vi.fn(async () => undefined), competing = withClaimStorage(scope, entered);
+  // Windows excludes competing handles at CreateFileW; POSIX rejects the nonblocking flock.
+  if (process.platform === "win32") await expect(competing).rejects.toMatchObject({ stage: "open", win32Code: 32 });
+  else await expect(competing).rejects.toThrow("Another process owns this operation submission. Query the original operation.");
+  expect(entered).not.toHaveBeenCalled();
+};
 class Clock implements AssistantTaskClock {
   time = start;
   pending: { due: number; resolve(): void }[] = [];
@@ -92,7 +99,7 @@ describe("assistant-task managed loops", () => {
       let trigger: Promise<void> | undefined;
       const priorReads = reads.mock.calls.length;
       try {
-        await expect(withClaimStorage(f.scope, async () => undefined)).rejects.toThrow(/Another process owns/);
+        await expectClaimLocked(f.scope);
         trigger = runtime.tick("trigger", signal()); await listedEvents.promise;
         // Drain the ready pagination/scope microtasks. The spy observes entry before the credential reader performs filesystem I/O.
         await nextTurn();
@@ -136,7 +143,7 @@ describe("assistant-task managed loops", () => {
     f.getTask.mockImplementationOnce(async () => { const observed = { ...f.task }; credentialReading.resolve(); await releaseCredential.promise; return observed; });
     const trigger = runtime.tick("trigger", signal()); await credentialReading.promise;
     try {
-      await expect(withClaimStorage(f.scope, async () => undefined)).rejects.toThrow(/Another process owns/);
+      await expectClaimLocked(f.scope);
       beginGuard.resolve(); await guardStarted.promise; await nextTurn();
       f.task.state = "paused";
     } finally { beginGuard.resolve(); releaseCredential.resolve(); }
@@ -263,6 +270,22 @@ describe("assistant-task managed loops", () => {
     if (input.kind !== "send_message") throw new Error("Wrong notification kind");
     expect(input.payload.origin).toBe("daynight"); expect(input.payload.expectedTurnId).toBeNull();
     const text = JSON.stringify(input.payload.content); for (const event of f.events) expect(text).toContain(event.id);
+  });
+
+  it("delivers takeover timestamps and gap guidance from the historical event without substituting the current claim", async () => {
+    const f = await fixture(), runtime = f.create();
+    const previousLeaseUntil = "2026-11-12T23:59:01.123456Z", createdAt = "2026-11-13T00:01:01.654321Z";
+    f.events = [{ ...f.event(51), type: "takeover", createdAt, payload: { generation: "2", previousLeaseUntil } }];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent).toHaveBeenCalledOnce(); expect(f.getTask).not.toHaveBeenCalled();
+    const input = f.send.mock.calls[0]![1];
+    if (input.kind !== "send_message") throw new Error("Wrong notification kind");
+    const text = input.payload.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+    expect(text).toContain(previousLeaseUntil); expect(text).toContain(createdAt); expect(text).not.toContain(f.task.leaseUntil!);
+    expect(text).toContain("previousLeaseUntil 早于本事件时间时，两者之间是租约空档");
+    expect(text).toContain("否则没有过期租约空档");
+    expect(text).toContain("不能证明助手实际停止工作的时间");
+    expect(text).toContain("不用当前认领时间替代历史事件时间");
   });
 
   it("only queries a durable unknown Session submission after runtime reconstruction", async () => {

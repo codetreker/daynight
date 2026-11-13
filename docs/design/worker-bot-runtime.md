@@ -78,7 +78,7 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 ## 通知与定时事件
 
-事件循环遍历目标 Bot 的 pending 分页。只有同步、在线、active、idle、没有当前回合且允许发送时，才将事件合为一条 `payload.origin=daynight` 的输入；提交前再次检查 Session fence 和空闲状态，不能 steer 正在工作的助手。通知包含事件类型、任务与事件 ID、关键事实及读取手册和记录的 CLI 指引。大 payload 使用明确标识的摘要并保留完整事件读取指引；一批文本最多 512 KiB，积压超限时保留后续事件，下一个空闲轮次继续。
+事件循环遍历目标 Bot 的 pending 分页。只有同步、在线、active、idle、没有当前回合且允许发送时，才将事件合为一条 `payload.origin=daynight` 的输入；提交前再次检查 Session fence 和空闲状态，不能 steer 正在工作的助手。通知包含事件类型、任务与事件 ID、事件时间、关键事实及读取手册和记录的 CLI 指引。接手通知要求助手说明从 `previousLeaseUntil` 到事件时间的租约空档；前者不早于后者时没有过期租约空档。历史事件时间不由当前认领时间替代，也不据租约推断助手实际停止工作的时间。大 payload 使用明确标识的摘要并保留完整事件读取指引；一批文本最多 512 KiB，积压超限时保留后续事件，下一个空闲轮次继续。
 
 每批先持久化完整 Session 命令、固定 operation ID 和事件集合，再发送一次。accepted/offered/dispatching、unknown、运输中断及重启后都只查询原操作。只有 provider_accepted/confirmed 才确认事件；确认前重读事件状态，部分 ACK 成功或响应丢失不会再次发送 Session 输入。仅当没有 providerResult，且回执为服务端派发前的 rejected/permission_or_state_changed，或没有 error 的 expired 时，才清除该批意图并在下一空闲轮重新选择事件；原生错误、failed 及其他未证明没有派发的终态保留原操作供核对。历史 generation 的结果仍沿原 Session 和操作身份读取。
 
