@@ -1,6 +1,10 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
+import Database from "better-sqlite3";
+import { createNativeInputPublication, nativeInputPublicationFailure } from "../../../src/commands/controller/media/native-publication.js";
+import { readControllerOutboxByteLength } from "../../../src/commands/controller/outbox-store.js";
 const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void } }));
 const storage = vi.hoisted(() => ({ acquire: vi.fn(), prepare: vi.fn(), release: vi.fn(), open: vi.fn(), order: [] as string[] }));
 vi.mock("../../../src/commands/controller/storage-lock.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/storage-lock.js")>(), acquireControllerStoragePermit: (file: string) => storage.acquire(file), isControllerStorageLockHeld: (error: unknown) => error instanceof Error && error.message === "fixture-lock-busy" }));
@@ -9,10 +13,10 @@ vi.mock("node:fs/promises", () => ({ mkdir: async () => {}, realpath: async (val
 vi.mock("node:net", () => ({ createServer: (handler: (socket: unknown) => void) => { fixture.serverCreate(); fixture.socketHandler = handler; const server = new EventEmitter() as EventEmitter & { listen: (path: string, callback: () => void) => void; close: () => void }; server.listen = (_path, callback) => queueMicrotask(callback); server.close = fixture.serverClose; return server; } }));
 vi.mock("../../../src/commands/controller/launch-ticket.js", () => ({ readLaunchTicket: async () => ({ provider: fixture.provider, cwd: process.cwd(), executionId: "execution", executionGeneration: "2", sessionId: "session", claimId: "claim", launchId: "launch", nativeHome: "/private/native", ipcEndpoint: "/private/ipc", configuration: { model: null, args: [] }, resumeNativeSessionId: null, ...fixture.ticketOverrides }), controllerExecutionDirectory: () => "/private/controller" }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ openControllerLifecycleStore: (...args: unknown[]) => { storage.open(...args); return fixture.journal(); } }));
-const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), coordinatorCreate: vi.fn(), coordinatorStop: vi.fn(async () => {}), pipelineCreate: vi.fn(), pipelineStop: vi.fn(async () => {}), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
+const externalRuntime = vi.hoisted(() => ({ create: vi.fn(), coordinatorCreate: vi.fn(), coordinatorStop: vi.fn(async () => {}), pipelineCreate: vi.fn(), pipelineTick: vi.fn(async () => {}), pipelineStop: vi.fn(async () => {}), close: vi.fn(async () => {}), acquire: vi.fn(async () => ({ marker: "external-generation" })), coordinatorOptions: null as null | { acquireExternalPolicy(): Promise<unknown> } }));
 vi.mock("../../../src/commands/controller/markdown/external-policy.js", () => ({ createExternalImagePolicyProducer: (options: unknown) => { externalRuntime.create(options); return { acquire: externalRuntime.acquire, close: externalRuntime.close }; } }));
 vi.mock("../../../src/commands/controller/markdown/coordinator.js", () => ({ createMarkdownCaptureCoordinator: (options: { acquireExternalPolicy(): Promise<unknown> }) => { externalRuntime.coordinatorCreate(); externalRuntime.coordinatorOptions = options; return { tick: async () => {}, stop: externalRuntime.coordinatorStop, invalidate: () => {} }; } }));
-vi.mock("../../../src/commands/controller/markdown/pipeline.js", () => ({ createMarkdownTimelinePipeline: ({ journal }: { journal: { projectTimeline(entry: unknown): void } }) => { externalRuntime.pipelineCreate(); return { accept: (entry: unknown) => journal.projectTimeline(entry), tick: async () => {}, stop: externalRuntime.pipelineStop }; } }));
+vi.mock("../../../src/commands/controller/markdown/pipeline.js", () => ({ createMarkdownTimelinePipeline: ({ journal }: { journal: { projectTimeline(entry: unknown): void } }) => { externalRuntime.pipelineCreate(); return { accept: (entry: unknown) => journal.projectTimeline(entry), tick: externalRuntime.pipelineTick, stop: externalRuntime.pipelineStop }; } }));
 vi.mock("../../../src/commands/controller/media/capture.js", async importOriginal => {
   const original = await importOriginal<typeof import("../../../src/commands/controller/media/capture.js")>();
   return { ...original, createControllerCaptureBridge: (...args: Parameters<typeof original.createControllerCaptureBridge>) => { fixture.captureCreate(); return original.createControllerCaptureBridge(...args); } };
@@ -38,6 +42,7 @@ const setup = () => {
   fixture.relayClose.mockReset(); fixture.relayClose.mockImplementation(() => { storage.order.push("relay"); });
   externalRuntime.create.mockReset(); externalRuntime.coordinatorCreate.mockReset(); externalRuntime.pipelineCreate.mockReset();
   externalRuntime.coordinatorStop.mockReset(); externalRuntime.coordinatorStop.mockImplementation(async () => { storage.order.push("captures"); });
+  externalRuntime.pipelineTick.mockReset(); externalRuntime.pipelineTick.mockResolvedValue();
   externalRuntime.pipelineStop.mockReset(); externalRuntime.pipelineStop.mockImplementation(async () => { storage.order.push("pipeline"); });
   storage.order.length = 0;
   storage.release.mockReset(); storage.release.mockImplementation(() => { storage.order.push("permit"); });
@@ -561,4 +566,122 @@ test("an outbox relay failure during provider startup preserves the original err
     expect(await result).toBe(failure);
     expect(fixture.close).toHaveBeenCalledOnce();
   } finally { opened({ nativeSessionId: "native", close: fixture.close }); process.emit("SIGTERM", "SIGTERM"); await result; log.mockRestore(); }
+});
+
+test.each(["native during startup", "native while running", "connection", "startup publication", "background failure"] as const)("%s fences outbox writes and retains the original accounting error", async source => {
+  setup(); let opened!: (value: unknown) => void;
+  const delayed = source === "native during startup";
+  fixture.open.mockImplementation(() => delayed ? new Promise(resolve => { opened = resolve; }) : Promise.resolve({ nativeSessionId: "native", close: fixture.close }));
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const cause = new Error("original accounting cause");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back", cause });
+  const journal = fixture.journal(), append = journal.appendEvent as import("vitest").Mock<(payload: unknown) => void>;
+  let disabled = false, admitted = 0;
+  journal.disableOutboxWrites.mockImplementation(() => { disabled = true; });
+  append.mockImplementation(() => { if (disabled) throw new Error("outbox writes disabled"); admitted++; });
+  externalRuntime.pipelineStop.mockImplementation(async () => {
+    expect(() => append({ kind: "late projection" })).toThrow("outbox writes disabled");
+  });
+  if (source === "startup publication") append.mockImplementationOnce(() => { throw failure; });
+  if (source === "background failure") externalRuntime.pipelineTick.mockRejectedValueOnce(failure);
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const result = running.then(() => null, error => error);
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    if (source === "native during startup" || source === "native while running") {
+      if (!delayed) await vi.waitFor(() => expect(journal.getSnapshot().startup).toMatchObject({ state: "ready" }));
+      append.mockImplementationOnce(() => { throw failure; });
+      const state = { nativeSessionId: null, activity: "idle", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: true } };
+      const native = fixture.options as { onState(state: unknown): void };
+      const before = admitted;
+      native.onState(state);
+      expect(disabled).toBe(true);
+      native.onState(state);
+      expect(admitted).toBe(before);
+    } else if (source === "connection") {
+      await vi.waitFor(() => expect(journal.getSnapshot().startup).toMatchObject({ state: "ready" }));
+      append.mockImplementationOnce(() => { throw failure; });
+      fixture.relayCallbacks!.onConnection(true);
+      expect(disabled).toBe(true);
+    }
+    if (delayed) opened({ nativeSessionId: "native", close: fixture.close });
+    expect(await result).toBe(failure);
+    expect(failure.cause).toBe(cause);
+    expect(journal.disableOutboxWrites).toHaveBeenCalled();
+    expect(externalRuntime.pipelineStop).toHaveBeenCalledOnce();
+    expect(fixture.close).toHaveBeenCalledOnce();
+  } finally { if (delayed) opened({ nativeSessionId: "native", close: fixture.close }); process.emit("SIGTERM", "SIGTERM"); await result; log.mockRestore(); }
+});
+
+test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%s preserves accounting failure without native dispatch or a false rejection", async source => {
+  setup(); fixture.ticketOverrides = { initialOperationId: "initial-operation", initialPrompt: "original" };
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back", cause: new Error("original cause") });
+  const journal = fixture.journal(), send = vi.fn(), record = vi.fn(), mark = vi.fn();
+  const operation = { operationId: "operation", kind: "send_message", state: "accepted" };
+  Object.assign(journal, {
+    prepareOperation: vi.fn(() => operation), getOperation: vi.fn(() => operation), recordOperation: record, markDispatching: mark,
+    assertInputCapacity: vi.fn(), patchNativeImagePart: vi.fn(),
+  });
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close, send });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const result = running.then(() => null, error => error);
+  try {
+    await vi.waitFor(() => expect(journal.getSnapshot().startup).toMatchObject({ state: "ready" }));
+    fixture.relayCallbacks!.onConnection(true);
+    if (source === "IPC admission") {
+      journal.prepareOperation.mockImplementation(() => { throw failure; });
+      const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, setEncoding: () => {}, destroy: () => {}, end: vi.fn() });
+      fixture.socketHandler!(socket);
+      socket.emit("data", JSON.stringify({ requestId: "request", action: { kind: "submit_initial" } }) + "\n");
+      await vi.waitFor(() => expect(socket.end).toHaveBeenCalled());
+      expect(JSON.parse(socket.end.mock.calls[0]![0])).toMatchObject({ ok: false });
+    } else if (source === "relay capacity") {
+      journal.assertInputCapacity.mockImplementation(() => { throw failure; });
+      const command = { sessionId: "session", claimId: "claim", executionGeneration: "2", operationId: "operation", kind: "send_message", payload: { content: [{ type: "text", text: "hello" }], target: null } };
+      await expect(fixture.relayCallbacks!.onCommand(command)).rejects.toBe(failure);
+    } else {
+      journal.patchNativeImagePart.mockImplementation(() => { throw failure; });
+      const native = fixture.options as { imageRuntime: { patchNativeImagePart(occurrence: unknown, part: unknown): unknown } };
+      expect(() => native.imageRuntime.patchNativeImagePart({}, {})).toThrow(failure);
+    }
+    expect(await result).toBe(failure);
+    expect(journal.disableOutboxWrites).toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled(); expect(mark).not.toHaveBeenCalled(); expect(record).not.toHaveBeenCalled();
+  } finally { process.emit("SIGTERM", "SIGTERM"); await result; log.mockRestore(); }
+});
+
+test.each(["rolled-back", "unknown"] as const)("native publication carries its real SQLite %s outcome to the runtime fence", async outcome => {
+  setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=11");
+  const quarantine = vi.fn(), originalExec = db.exec.bind(db);
+  if (outcome === "unknown") vi.spyOn(db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw new Error("controlled rollback failure"); return originalExec(sql); });
+  const publication = createNativeInputPublication({
+    db, ticket: { provider: "codex" }, content: {}, assertUsable() {}, quarantine,
+    getOperation: () => { readControllerOutboxByteLength(db); return null; },
+  } as never);
+  const request = { identity: { provider: "codex", nativeSessionId: "native", nativeMessageId: "message", operationId: randomUUID(), intentSha256: "a".repeat(64), entryId: randomUUID() } };
+  let original: ReturnType<typeof publication.publishNativeInputAssociation> | undefined;
+  const journal = fixture.journal();
+  journal.publishNativeInputAssociation = () => original = publication.publishNativeInputAssociation(request as never);
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const result = running.then(() => null, error => error);
+  try {
+    await vi.waitFor(() => expect(journal.getSnapshot().startup).toMatchObject({ state: "ready" }));
+    const native = fixture.options as { imageRuntime: { publishNativeInputAssociation(request: unknown): unknown } };
+    const receipt = native.imageRuntime.publishNativeInputAssociation(request);
+    expect(receipt).toBe(original);
+    expect(receipt).toMatchObject({ state: outcome === "unknown" ? "unknown" : "not_committed", error: { code: outcome === "unknown" ? "publication_unknown" : "publication_unavailable" } });
+    const failure = nativeInputPublicationFailure(original!);
+    expect(failure).toBeDefined();
+    expect(await result).toBe(failure);
+    expect(journal.disableOutboxWrites).toHaveBeenCalled();
+    expect(quarantine).toHaveBeenCalledTimes(outcome === "unknown" ? 1 : 0);
+    if (outcome === "rolled-back") expect(failure).toMatchObject({ outcome: "rolled-back", cause: { outcome: "unknown" } });
+    else expect(failure).toBeInstanceOf(AggregateError);
+  } finally { process.emit("SIGTERM", "SIGTERM"); await result; vi.restoreAllMocks(); if (db.open) db.close(); log.mockRestore(); }
 });
