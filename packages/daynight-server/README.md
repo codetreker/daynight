@@ -82,7 +82,7 @@ remain enforced; database and backup readers can read retained credentials.
 
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
-It does not expose a connection endpoint or run synchronization.
+The [single-Project executor](../../docs/design/github-sync-executor.md) provides callable synchronization; the service does not yet expose a connection endpoint or schedule it.
 
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.

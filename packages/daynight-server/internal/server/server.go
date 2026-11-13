@@ -5,6 +5,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
+	assistanttaskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/assistanttask"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
@@ -123,6 +124,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	sessions := app.Sessions
 	deletions := app.BotDeletions
 	relay := sessionhttp.NewRoutes(sessions, auth, logger, app.TaskHistory)
+	assistanttaskhttp.RegisterRoutes(mux, app.AssistantTasks, auth, logger)
 	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
 	relay.RegisterRoutes(mux)

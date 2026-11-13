@@ -15,6 +15,7 @@ import (
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
 	taskwork "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/taskwork"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/assistanttask"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
@@ -92,6 +93,7 @@ type Application struct {
 	Workers          *worker.Workers
 	Prompts          *prompt.Prompts
 	WorkerReadOnly   *workerreadonly.Broker
+	AssistantTasks   *assistanttask.Tasks
 	Bots             *bot.Bots
 	BotDeletions     *bot.Deletions
 	Tags             *tag.Tags
@@ -155,6 +157,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		Workers:          worker.NewWorkersWithPrompts(database, database),
 		Prompts:          prompt.New(database),
 		WorkerReadOnly:   workerReadOnly,
+		AssistantTasks:   assistanttask.New(database),
 		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly),
 		BotDeletions:     bot.NewDeletions(database, files, engine),
 		Tags:             tag.New(database),

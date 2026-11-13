@@ -49,7 +49,7 @@ func KnownFault(err error) (*model.Fault, bool) {
 		switch fault.Code {
 		case "invalid_tag_name", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict":
 			return fault, true
-		case "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
+		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
 			return fault, true
 		case "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path":
 			return fault, true
