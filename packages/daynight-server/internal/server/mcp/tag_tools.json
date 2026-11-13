@@ -1,0 +1,882 @@
+[
+  {
+    "name": "tag_list",
+    "description": "List a project’s tags and visible usage counts; the cursor binds query, limit and catalog epoch.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "projectId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64
+                  },
+                  "version": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]{0,18}$",
+                    "description": "Exact positive int64 decimal version."
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "updatedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "usage": {
+                    "type": "object",
+                    "properties": {
+                      "tasks": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "goals": {
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "tasks",
+                      "goals"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "id",
+                  "projectId",
+                  "name",
+                  "version",
+                  "createdAt",
+                  "updatedAt",
+                  "usage"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "catalogEpoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "items",
+            "catalogEpoch",
+            "nextCursor"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "tag_show",
+    "description": "Read a project tag and its visible usage counts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "description": "Exact positive int64 decimal version."
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "usage": {
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "goals": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "tasks",
+                "goals"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "version",
+            "createdAt",
+            "updatedAt",
+            "usage"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "tag_create",
+    "description": "Create a project tag. Do not automatically replay an unknown result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Trim Unicode whitespace; 1–64 code points after trimming, without control characters."
+        }
+      },
+      "required": [
+        "projectId",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "description": "Exact positive int64 decimal version."
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "usage": {
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "goals": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "tasks",
+                "goals"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "version",
+            "createdAt",
+            "updatedAt",
+            "usage"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "tag_rename",
+    "description": "Rename a project tag using its exact version.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Trim Unicode whitespace; 1–64 code points after trimming, without control characters."
+        },
+        "ifVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 decimal version."
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId",
+        "name",
+        "ifVersion"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "description": "Exact positive int64 decimal version."
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "usage": {
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "goals": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "tasks",
+                "goals"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "version",
+            "createdAt",
+            "updatedAt",
+            "usage"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "tag_delete",
+    "description": "Delete a project tag and all its associations using its exact version and explicit confirmation. Do not automatically replay an unknown result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "ifVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 decimal version."
+        },
+        "confirm": {
+          "const": true
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId",
+        "ifVersion",
+        "confirm"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "tagId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "deleted": {
+              "const": true
+            }
+          },
+          "required": [
+            "projectId",
+            "tagId",
+            "deleted"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  }
+]

@@ -218,6 +218,7 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 			return mcphttp.RegisterInvitationTools(entry, app.Identity, app.Teams, app.Memberships, origin)
 		},
 		func() error { return mcphttp.RegisterBotTools(entry, app.Bots, app.BotDeletions) },
+		func() error { return mcphttp.RegisterTagTools(entry, app.Tags) },
 		func() error { return mcphttp.RegisterThreadTools(entry, app.TaskThreads) },
 		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks, app.TaskObservations) },
 		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks, app.TaskObservations) },
