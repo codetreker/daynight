@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { checkDependencyGeometry } from '../helpers/dependency-geometry';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
@@ -2172,6 +2172,12 @@ test('Goal overview retires an invalidated Goal and rejects the late old snapsho
   await page.locator(`#project-goal-graph-${goalId}`).click();
   const dialog = page.locator(`#task-graph-${goalId}`);
   await expect(dialog.locator('.task-node')).toHaveCount(4);
+  let heldRequest: Request | null = null;
+  const requestOutcome = new Promise<'finished' | 'failed'>((resolve) => {
+    page.on('request', request => { if (heldRequest === null && request.url().includes('/task-sync')) heldRequest = request; });
+    page.on('requestfinished', request => { if (request === heldRequest) resolve('finished'); });
+    page.on('requestfailed', request => { if (request === heldRequest) resolve('failed'); });
+  });
   fixture.holdNextSync();
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(fixture.syncHeld).toBe(true);
@@ -2181,6 +2187,8 @@ test('Goal overview retires an invalidated Goal and rejects the late old snapsho
   await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
   fixture.releaseSync();
   await expect.poll(fixture.heldSyncFinished).toBe(true);
+  const outcome = await requestOutcome;
+  console.log(`Held task-sync request ${outcome}`);
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
 });
