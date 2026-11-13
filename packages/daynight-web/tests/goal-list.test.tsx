@@ -1,6 +1,6 @@
 import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { TaskSummary } from '../src/api/types';
+import type { TaskSummary, WorkerClaim } from '../src/api/types';
 import { projectSummaries } from '../src/features/task-cache/projection';
 import { GoalList } from '../src/features/projects/GoalList';
 import { TaskPauseProvider } from '../src/features/task-pause/TaskPause';
@@ -21,6 +21,12 @@ const goal = summary('goal', 'goal', null, 'todo');
 const other = summary('other', 'goal', null, 'done');
 const empty = summary('empty', 'goal', null, 'todo');
 const tasks = [goal, other, empty, summary('root', 'task', other.id, 'done'), summary('child', 'task', goal.id, 'in_progress', { dependsOn: ['root'], startedAt: '2026-10-20T11:50:00Z' }), summary('standalone', 'task', goal.id, 'cancelled'), summary('solo-other', 'task', other.id, 'todo')];
+const claim = (state: WorkerClaim['state']): WorkerClaim => ({
+  claimId: '00000000-0000-4000-8000-000000000201', state, userId: '00000000-0000-4000-8000-000000000202',
+  workerId: '00000000-0000-4000-8000-000000000203', machine: { id: '00000000-0000-4000-8000-000000000204', name: 'host' },
+  platform: 'linux', agent: 'codex', agentControlMode: 'web', worktreeId: '00000000-0000-4000-8000-000000000205',
+  phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time,
+});
 const noop = () => {};
 const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn(), onOpenListChain = vi.fn(), onOpenGoalGraph = vi.fn()) => <TaskPauseProvider taskIds={new Set(['child'])}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
   <GoalList projectId={projectId} index={value.index} goals={[value.summaries.get(goal.id)!, value.summaries.get(other.id)!, value.summaries.get(empty.id)!]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenGoalGraphTask={noop} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
@@ -78,6 +84,60 @@ describe('Goal list', () => {
       expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
     }
     expect(openGoal).not.toHaveBeenCalled();
+  });
+
+  it('summarizes only direct children and follows status, claim and parent changes', () => {
+    const source = [
+      { ...goal, status: 'in_progress' as const, properties: { worker: claim('active') } }, other, empty,
+      summary('outside', 'task', other.id, 'done', { properties: { worker: claim('active') } }),
+      summary('external', 'task', null, 'in_progress', { properties: { worker: claim('active') } }),
+      summary('child', 'task', goal.id, 'in_progress', { dependsOn: ['outside'], properties: { paused: true } }),
+      summary('pending', 'task', goal.id, 'todo', { dependsOn: ['external'], externalDependsOn: ['external'] }),
+      summary('anchor', 'task', goal.id, 'done'),
+      summary('cross-running', 'task', other.id, 'in_progress', { dependsOn: ['anchor'] }),
+      summary('standalone', 'task', goal.id, 'todo', { allowAgents: true }),
+    ];
+    const view = createLocaleRender('en', { taskCache: true })(list(snapshot(source)));
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    const otherCard = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
+    const emptyCard = document.querySelector<HTMLElement>('[data-goal-id="empty"]')!;
+    const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    const header = (element: HTMLElement) => element.querySelector<HTMLElement>('.goal-list-toggle')!;
+    expect(toggle).toHaveAccessibleDescription(/1 in progress/);
+    expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
+    expect(header(otherCard)).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
+    expect(header(emptyCard)).toHaveAccessibleDescription(/0 in progress/);
+    expect(card.querySelector('.chain-worker-active')).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    toggle.focus();
+
+    const active = source.map(task => task.id === 'child' ? { ...task, properties: { paused: true, worker: claim('active') } } : task.id === 'standalone' ? { ...task, status: 'in_progress' as const } : task);
+    view.rerender(list(snapshot(active)));
+    expect(card.querySelector('.goal-list-toggle')).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle).toHaveAccessibleDescription(/2 in progress.*Automatic execution active/);
+    const indicator = toggle.querySelector('.chain-worker-active')!;
+    expect(indicator.querySelector('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
+    expect(within(indicator as HTMLElement).queryByRole('button')).toBeNull();
+
+    const moved = active.map(task => task.id === 'child' ? { ...task, parentId: other.id } : task);
+    view.rerender(list(snapshot(moved)));
+    expect(toggle).toHaveAccessibleDescription(/1 in progress/);
+    expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
+    expect(header(otherCard)).toHaveAccessibleDescription(/2 in progress.*Automatic execution active/);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    for (const properties of [{}, { worker: claim('completed') }]) {
+      const inactive = active.map(task => task.id === 'child' ? { ...task, properties } : task);
+      view.rerender(list(snapshot(inactive)));
+      expect(toggle).toHaveAccessibleDescription(/2 in progress/);
+      expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
+    }
+    view.rerender(list(snapshot(source)));
+    expect(toggle).toHaveAccessibleDescription(/1 in progress/);
+    expect(toggle).not.toHaveAccessibleDescription(/Automatic execution active/);
   });
 
   it('updates the Goal surface from its own status without changing child progress', () => {

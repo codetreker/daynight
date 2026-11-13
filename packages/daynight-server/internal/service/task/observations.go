@@ -94,6 +94,14 @@ func goalObservation(observed time.Time) sp.TaskSessionObservation {
 // are read from the same authorized snapshot and are never substituted by a
 // later Task execution. Live facts remain separately fenced by the observer.
 func (s *Observations) observeBatch(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []model.Task, observed time.Time) (map[string]sp.TaskSessionObservation, bool, error) {
+	return s.observeExecutionBatch(ctx, snapshot, principal, projectID, taskExecutionIdentities(tasks), observed)
+}
+
+func (s *Observations) observeExecutionBatch(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []executionIdentity, observed time.Time) (map[string]sp.TaskSessionObservation, bool, error) {
+	return s.observeExecutionBatchWithPolicy(ctx, snapshot, principal, projectID, tasks, observed, false)
+}
+
+func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []executionIdentity, observed time.Time, strictSourceErrors bool) (map[string]sp.TaskSessionObservation, bool, error) {
 	result := make(map[string]sp.TaskSessionObservation, len(tasks))
 	partial := false
 	for _, task := range tasks {
@@ -106,14 +114,14 @@ func (s *Observations) observeBatch(ctx context.Context, snapshot store.Snapshot
 		end := min(start+200, len(tasks))
 		batch := tasks[start:end]
 		ids := make([]string, len(batch))
-		selected := make(map[string]model.Task, len(batch))
+		selected := make(map[string]executionIdentity, len(batch))
 		for i, t := range batch {
 			ids[i] = t.ID
 			selected[t.ID] = t
 		}
 		sources, err := snapshot.SessionDAO().TaskSessionSources(ctx, projectID, ids)
 		if err != nil {
-			if observationAuthorityFailure(err) || ctx.Err() != nil {
+			if strictSourceErrors || observationAuthorityFailure(err) || ctx.Err() != nil {
 				return nil, false, err
 			}
 			partial = true
@@ -129,8 +137,8 @@ func (s *Observations) observeBatch(ctx context.Context, snapshot store.Snapshot
 				continue
 			}
 			changed := source.ProjectID != projectID || source.TaskVersion != task.Version
-			if raw, exists := task.Properties["worker"]; exists && len(raw) > 0 {
-				worker, decodeErr := taskproperty.Worker(task.Properties)
+			if len(task.Worker) > 0 {
+				worker, decodeErr := taskproperty.Worker(model.TaskProperties{"worker": task.Worker})
 				if decodeErr != nil {
 					changed = true
 				} else if (worker == nil) != (source.Worker == nil) || worker != nil && source.Worker != nil && worker.ClaimID != source.Worker.ClaimID {
@@ -145,6 +153,9 @@ func (s *Observations) observeBatch(ctx context.Context, snapshot store.Snapshot
 			matched = append(matched, source)
 		}
 		observations, err := s.observer.ObserveTaskSessions(ctx, principal, matched)
+		if ctx.Err() != nil {
+			return nil, false, ctx.Err()
+		}
 		if err != nil {
 			if observationAuthorityFailure(err) || ctx.Err() != nil {
 				return nil, false, err
@@ -152,7 +163,10 @@ func (s *Observations) observeBatch(ctx context.Context, snapshot store.Snapshot
 			partial = true
 		}
 		current, recheckErr := s.recheckSources(ctx, principal, projectID, ids)
-		if recheckErr != nil && (observationAuthorityFailure(recheckErr) || ctx.Err() != nil) {
+		if recheckErr != nil && (strictSourceErrors || observationAuthorityFailure(recheckErr) || ctx.Err() != nil) {
+			if strictSourceErrors {
+				return nil, false, personalTaskPhase("recheck", recheckErr)
+			}
 			return nil, false, recheckErr
 		}
 		original := make(map[string]store.TaskSessionSource, len(sources))

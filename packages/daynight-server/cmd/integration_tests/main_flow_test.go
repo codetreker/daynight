@@ -47,8 +47,10 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("worker readonly directory", func(t *testing.T) { serverAPIWorkerReadOnlyNormalFlow(t, f) })
 	t.Run("assistant task collaboration", func(t *testing.T) { serverAPIAssistantTaskFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
+	t.Run("personal task inventory", func(t *testing.T) { serverAPIPersonalTaskNormalFlow(t, f) })
 	t.Run("GitHub reads", func(t *testing.T) { serverAPIGitHubReadNormalFlow(t, f) })
 	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })
+	t.Run("project tag catalog", func(t *testing.T) { serverAPITagCatalogNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {
 		project := createProject(t, f, "API Goal")
 		goal := createTask(t, f, project, "Goal", map[string]any{"type": "goal"})

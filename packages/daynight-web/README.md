@@ -1634,7 +1634,13 @@ Separate Goal details and graph buttons open their readers without changing the 
 the Goal, so a scoped single member of a larger component remains a chain.
 Goal and chain disclosures start closed; closing a Goal preserves its chain
 choices until that row unmounts. Scoped progress counts only its own members,
-including separate done and cancelled results. List filters and 20-item pagination
+including separate done and cancelled results. The header shows a localized
+in-progress count of direct children, including zero and paused or manually
+executed tasks. It also shows the shared automatic execution indicator after the
+assignee when any direct child has an active Worker claim. Permission alone,
+Session activity and claims outside the Goal do not trigger it. Both summaries
+use the existing project snapshot, remain readable when collapsed, and update
+with status, claim and Parent changes without extra requests. List filters and 20-item pagination
 apply to Goals themselves, not their children. Graph and Task readers preserve
 the original Goal source, background list state and focus fallback.
 
