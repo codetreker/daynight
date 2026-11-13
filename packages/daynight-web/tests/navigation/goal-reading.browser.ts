@@ -1669,7 +1669,7 @@ test('Goal and task-chain headers match with an assigned owner on desktop', asyn
 for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale);
-  fixture.addCrossGoal(); fixture.setGoalTitle('LongGoal名称'.repeat(20)); fixture.addLongGoalListWorker();
+  fixture.addCrossGoal(); fixture.setGoalTitle('LongGoal名称'.repeat(20)); fixture.setGoalStatusFixture('todo', false); fixture.addLongGoalListWorker();
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`/projects/${projectId}`);
@@ -1677,6 +1677,7 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const firstGoal = page.locator(`[data-goal-id="${goalId}"]`);
   const otherGoal = page.locator(`[data-goal-id="${otherGoalId}"]`);
+  await expect(firstGoal.locator('.assignee-name')).toContainText('Long owner name');
   const geometry = await firstGoal.locator('.goal-list-row').evaluate(row => {
     const rect = (element: Element) => { const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
     const bounds = rect(row);
