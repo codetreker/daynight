@@ -5,7 +5,7 @@ import { ProtocolError } from "../../../api/parse.js";
 import { RepositoryGitError } from "../../../repository/git.js";
 import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { WorkerCleanupError } from "../cleanup-error.js";
-import { classifyConfigurationFailure, ConfigurationFileOperationError } from "../configuration-failure.js";
+import { classifyConfigurationFailure, ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../configuration-failure.js";
 import { WorktreePreconditionError } from "../worktrees.js";
 import { NativeVersionOutputError } from "../herdr/version-probe.js";
 import { HerdrCommandDeadlineError, HerdrCommandError } from "../herdr/command.js";
@@ -84,7 +84,7 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
   if (error instanceof HerdrCommandDeadlineError) return diagnostic("timeout");
   if (error instanceof HerdrCommandError && Number.isSafeInteger(error.exitCode) && error.exitCode !== 0) return diagnostic("command-failed");
   if (error instanceof RepositoryGitError && Number.isSafeInteger(error.exitCode) && error.exitCode !== null && error.exitCode > 0) return diagnostic("command-failed");
-  if (error instanceof ToolSelectionError || error instanceof ConfigurationFileOperationError) {
+  if (error instanceof ToolSelectionError || error instanceof ConfigurationFileOperationError || error instanceof WorkerConfigurationSourceError) {
     if (error instanceof ToolSelectionError && error.code === "cancelled") return diagnostic("cancelled");
     return diagnostic(configurationCodes[classifyConfigurationFailure(error).code]);
   }

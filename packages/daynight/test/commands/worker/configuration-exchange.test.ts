@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { ApiError } from "../../../src/api/client.js";
+import { ApiError, createApiClient } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
@@ -21,6 +21,21 @@ const deferred = <T = void>() => {
 const operations: Operation[] = [];
 const operation = (): Operation => { const current = createOperation({ limits: { totalMs: 10_000 } }); operations.push(current); return current; };
 afterEach(() => { for (const current of operations.splice(0)) current.dispose(); });
+
+it("uses actual ApiClient dispatch evidence when root cancellation wins before the queued fetch", async () => {
+  const root = new AbortController(), current = createOperation({ signal: root.signal }); operations.push(current);
+  const fetch = vi.fn(async () => { throw new Error("An undispatched report must not invoke fetch."); });
+  const client = createApiClient({ serverUrl: "http://127.0.0.1:19099", operation: current, fetch });
+  const events: WorkerConfigurationExchangeEvent[] = [], accept = vi.fn(async () => {});
+  const captured: WorkerCloudReport = { bootstrap: null, observation: null };
+  await expect(syncWorkerConfigurationOnce({ operation: current, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
+    capture: () => captured,
+    send: (sample, body) => client.reportWorkerConfiguration("33333333-3333-4333-8333-333333333333", sample, body), accept,
+    observe: event => { events.push(event); if (event.phase === "report-send" && event.status === "started") queueMicrotask(() => root.abort(new Error("Root closes before the queued fetch."))); },
+  } })).rejects.toMatchObject({ name: "ApiError", phase: "request", outcomeUnconfirmed: false });
+  expect(fetch).not.toHaveBeenCalled(); expect(accept).not.toHaveBeenCalled();
+  expect(events.at(-1)).toMatchObject({ phase: "report-send", status: "failed", remoteOutcome: "not_sent", localOutcome: "not_attempted" });
+});
 
 const fixture = () => {
   const order: string[] = [];
@@ -258,7 +273,7 @@ it.each([
   [new ApiError({ operation: "worker.configuration.report" }, "request", { cause: new Error("lost response"), outcomeUnconfirmed: true }), "unknown"],
   [new ApiError({ operation: "worker.configuration.report" }, "protocol", { cause: new Error("invalid response"), outcomeUnconfirmed: true }), "unknown"],
   [new ApiError({ operation: "worker.configuration.report" }, "protocol", { cause: new Error("invalid response") }), "unknown"],
-  [new ApiError({ operation: "worker.configuration.report" }, "request", { cause: new Error("request failure without a trusted reply") }), "unknown"],
+  [new ApiError({ operation: "worker.configuration.report" }, "request", { cause: new Error("request cancelled before dispatch") }), "not_sent"],
   [new ApiError({ operation: "worker.configuration.report" }, "response", { cause: new Error("refused"), status: 403, confirmedRefusal: true,
     serverError: { code: "forbidden", requestId: "request-correlated", message: "private response" } }), "rejected"],
 ] as const)("retains report dispatch certainty and available request identity (%s)", async (failure, outcome) => {

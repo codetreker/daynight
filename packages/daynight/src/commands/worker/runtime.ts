@@ -138,6 +138,8 @@ const throwFailures = (failures: readonly unknown[]): void => {
 };
 
 const projectUnavailable = (error: unknown): boolean => error instanceof ApiError && error.phase === "response" && error.status === 404 && error.code === "not_found";
+const configurationPreparationFailure = (error: unknown): unknown => error instanceof Error && "errno" in error && typeof error.errno === "number" && "syscall" in error && typeof error.syscall === "string"
+  ? new ConfigurationFileOperationError("directory", error) : error;
 
 const transientAuthorityFailure = (error: unknown): boolean => {
   if (error instanceof OperationError) return error.kind === "deadline" || error.kind === "request_timeout";
@@ -158,10 +160,10 @@ const verifyWorkerPrincipal = async (read: () => Promise<string>, signal: AbortS
     observe({ syncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
     try { const userId = await read(); observe({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: "not_attempted" }); return userId; }
     catch (error) {
-      if (signal.aborted || !transientAuthorityFailure(error)) throw error;
-      const retryMs = delays[Math.min(attempt++, delays.length - 1)]!;
-      observe({ syncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", backoffStep: Math.min(attempt, delays.length), nextAttemptAt: new Date(Date.now() + retryMs).toISOString(), error,
+      const retryMs = signal.aborted || !transientAuthorityFailure(error) ? undefined : delays[Math.min(attempt++, delays.length - 1)]!;
+      observe({ syncId, phase: "authority-read", status: signal.aborted ? "discarded" : "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(retryMs === undefined ? {} : { backoffStep: Math.min(attempt, delays.length) }), nextAttemptAt: retryMs === undefined ? null : new Date(Date.now() + retryMs).toISOString(), error,
         ...(error instanceof ApiError && error.requestId !== undefined && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(error.requestId) ? { requestId: error.requestId } : {}) });
+      if (retryMs === undefined) throw error;
       await delay(retryMs, undefined, { signal });
     }
   }
@@ -824,6 +826,7 @@ export const runWorker = async (options: {
         if (failure !== undefined && revision !== undefined && !applicationSignal.aborted) failure.successRevision = revision;
         if (activityId !== undefined && !applicationSignal.aborted) observeMonitoring(m => m.updateActivity(activityId!, { progress: true }));
       } catch (error) {
+        const reported = applicationSignal.aborted ? error : configurationPreparationFailure(error);
         const current = manager.current();
         const item = current.items.find(value => value.key.kind === "projectPreparation" && value.key.projectId === projectId);
         if (applicationSignal.aborted) {
@@ -834,11 +837,11 @@ export const runWorker = async (options: {
           const observedAt = new Date().toISOString(), operationId = preparationFailures.get(projectId)?.operationId ?? randomUUID();
           preparationFailures.set(projectId, { operationId, observedAt, revision, successRevision: null });
           observeMonitoring(m => {
-            m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId }, error });
+            m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId }, error: reported });
             m.setProjectPreparationReason(projectId, { observedAt, nextAttemptAt: null });
           });
         }
-        throw error;
+        throw reported;
       } finally {
         if (applicationSignal.aborted) {
           const failure = preparationFailures.get(projectId);

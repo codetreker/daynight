@@ -6,7 +6,7 @@ import { HerdrCommandDeadlineError, HerdrCommandError } from "./herdr/command.js
 import { NativeVersionOutputError } from "./herdr/version-probe.js";
 
 export type ConfigurationFileOperation = "read" | "directory" | "persist";
-export type ConfigurationFailureReason = ToolSelectionCode | "timeout" | "operation_limit" | "disposed" | "invalid_configuration" | "invalid_output" | "command_failed" | "unavailable";
+export type ConfigurationFailureReason = ToolSelectionCode | "timeout" | "operation_limit" | "disposed" | "authentication_required" | "invalid_configuration" | "invalid_output" | "command_failed" | "unavailable";
 export type ConfigurationFailure = Readonly<{
   code: WorkerCloudFailure["code"];
   reason: ConfigurationFailureReason;
@@ -17,11 +17,22 @@ export type ConfigurationFailure = Readonly<{
   operationKind?: OperationError["kind"];
 }>;
 
-/** Construct only at a configuration filesystem boundary, retaining its original failure. */
+/**
+ * Construct only at a configuration filesystem boundary. Supply filesystemCause
+ * separately only when a known I/O adapter has wrapped its direct failure.
+ */
 export class ConfigurationFileOperationError extends Error {
-  constructor(readonly operation: ConfigurationFileOperation, cause: unknown) {
+  constructor(readonly operation: ConfigurationFileOperation, cause: unknown, readonly filesystemCause: unknown = cause) {
     super(`Worker configuration file ${operation} failed.`, { cause });
     this.name = "ConfigurationFileOperationError";
+  }
+}
+
+/** Construct only after parsing or validating the local configuration source. */
+export class WorkerConfigurationSourceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "WorkerConfigurationSourceError";
   }
 }
 
@@ -58,13 +69,14 @@ export const classifyConfigurationFailure = (error: unknown): ConfigurationFailu
     operationKind: error.kind,
   };
   if (error instanceof ConfigurationFileOperationError) {
-    const codes = fileCodes(error.cause);
+    const codes = fileCodes(error.filesystemCause);
     if (codes !== undefined) {
       const categories = new Set(codes.map(fileCode)), code = categories.size === 1 ? fileCode(codes[0]!) : "io_error";
       return { code, reason: code,
         ...(new Set(codes).size === 1 ? { systemCode: codes[0]! } : {}) };
     }
   }
+  if (error instanceof WorkerConfigurationSourceError) return { code: "invalid_configuration", reason: "invalid_configuration" };
   if (error instanceof NativeVersionOutputError) return { code: "invalid_output", reason: "invalid_output" };
   if (error instanceof HerdrCommandDeadlineError) return { code: "timeout", reason: "timeout" };
   if (error instanceof HerdrCommandError && error.exitCode !== null && Number.isSafeInteger(error.exitCode) && error.exitCode > 0) return { code: "command_failed", reason: "command_failed" };

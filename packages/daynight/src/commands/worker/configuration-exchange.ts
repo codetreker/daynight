@@ -81,6 +81,8 @@ export const failedConfigurationRequestOutcome = (error: unknown): WorkerConfigu
   if (!(error instanceof ApiError) || error.outcomeUnconfirmed) return "unknown";
   if (error.confirmedRefusal) return "rejected";
   if (error.phase === "prepare") return "not_sent";
+  // This mutation's client flag distinguishes a queued cancellation from dispatched I/O; GETs do not provide that fact.
+  if (error.operation === "worker.configuration.report" && error.phase === "request" && error.confirmedMutationId === undefined) return "not_sent";
   if (error.phase === "response" && error.status !== undefined && error.status >= 400 && error.status <= 599) return "rejected";
   return "unknown";
 };

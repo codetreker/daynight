@@ -16,7 +16,13 @@ capped backoff position as the number of failures.
 
 Configuration diagnostics are a projection of facts supplied by the operation
 that owns them. Typed tool and Operation errors, and explicit configuration file
-boundaries, produce fixed reasons and permitted context. Local tool reasons
+boundaries, produce fixed reasons and permitted context. The source parser owns
+a typed error for invalid YAML, top-level shape and pure local validation while
+preserving its existing actionable message and cause. A controlled file-reader
+wrapper identifies the original filesystem cause explicitly while retaining its
+outer error chain. Project preparation requires Node's numeric errno, string
+syscall and a known system code before using this evidence; a bare code does not
+establish it. Local tool reasons
 retain the original closed code; cloud application failures and monitoring keep
 their existing vocabularies. Arbitrary error properties, messages and output do
 not establish classification. Native arguments, commands, environment values and
@@ -32,7 +38,13 @@ authenticated service observation. The sync identity belongs to the original
 receive or acknowledgement context frozen with its checkpoint, so its storage
 retries and completion preserve the same association.
 Known remote confirmation remains confirmed during a pending checkpoint or a
-cancelled local wait. A received service target and baseline are projected
+cancelled local wait. A configuration POST cancelled before its queued
+transport dispatch remains not_sent, based on the actual mutation metadata;
+a GET's absence of an unconfirmed-mutation flag cannot establish that fact.
+Terminal principal authentication and permission refusals retain a failed
+authority-read event with fixed local reasons, request association and the known
+remote outcome without changing retry behavior. A received service target and
+baseline are projected
 separately from the operation's captured local source until its checkpoint
 commits. Old-generation results may be locally ignored without
 changing their known remote meaning. Logging neither acknowledges a failure nor

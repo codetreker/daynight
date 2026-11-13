@@ -54,6 +54,7 @@ const exchangeFailure = (error: unknown, phase: WorkerConfigurationDiagnosticMet
   if (error instanceof ApiError) {
     if (error.cause instanceof OperationError) return classifyConfigurationFailure(error.cause);
     if (error.phase === "response") {
+      if (error.status === 401) return { code: "unavailable", reason: "authentication_required" };
       if (error.status === 403) return { code: "permission_denied", reason: "permission_denied" };
       if (error.status === 404) return { code: "not_found", reason: "not_found" };
       if (error.status === 408 || error.status === 504) return { code: "timeout", reason: "timeout" };

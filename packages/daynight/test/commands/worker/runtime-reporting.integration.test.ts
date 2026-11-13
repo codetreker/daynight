@@ -155,6 +155,18 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("classifies a real filesystem failure at the owned project-preparation boundary", async () => {
+    const f = await fixture();
+    prepare.mockImplementation(async () => { await readFile(f.homeDirectory, "utf8"); });
+    const running = start(f);
+    await eventually(() => expect(mocks.createdConfiguration).toHaveBeenCalledOnce());
+    const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+    await eventually(() => expect(manager.current().items).toContainEqual(expect.objectContaining({ key: { kind: "projectPreparation", projectId: uuid(1) }, state: "error", error: expect.objectContaining({ code: "io_error", phase: "prepare" }) })));
+    expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({ phase: "prepare", reason: "io_error", details: expect.objectContaining({ systemCode: "EISDIR" }) }) }));
+    expect(manager.current().effective.projects.find(project => project.projectId === uuid(1))?.ready).toBe(false);
+    f.signal.abort(); await running;
+  });
+
   it("persists a confirmed receipt when its diagnostic notification throws and retains that original error for shutdown", async () => {
     const f = await fixture(), original = new Error("configuration diagnostic formatter failed", { cause: new Error("original diagnostic cause") });
     target = { ...target, value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { OperationError } from "../../../src/api/operation.js";
 import { ToolSelectionError, type ToolSelectionCode } from "../../../src/platform/tool-executables.js";
-import { classifyConfigurationFailure, ConfigurationFileOperationError } from "../../../src/commands/worker/configuration-failure.js";
+import { classifyConfigurationFailure, ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../../../src/commands/worker/configuration-failure.js";
 import { HerdrCommandDeadlineError, HerdrCommandError } from "../../../src/commands/worker/herdr/command.js";
 import { NativeVersionOutputError } from "../../../src/commands/worker/herdr/version-probe.js";
 import type { WorkerCloudFailure } from "../../../src/api/worker-configuration.js";
@@ -54,6 +54,25 @@ describe("configuration failure classification", () => {
     expect(classifyConfigurationFailure(new ConfigurationFileOperationError("directory", mixed))).toEqual({ code: "io_error", reason: "io_error" });
     const repeated = new AggregateError([systemError("EIO"), new AggregateError([systemError("EIO")], secret)], secret);
     expect(classifyConfigurationFailure(new ConfigurationFileOperationError("persist", repeated))).toEqual({ code: "io_error", reason: "io_error", systemCode: "EIO" });
+  });
+
+  it("classifies known source validation without trusting arbitrary messages or losing its cause", () => {
+    const original = new Error(secret), error = new WorkerConfigurationSourceError("Configuration must be a mapping.", { cause: original });
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "invalid_configuration", reason: "invalid_configuration" });
+    expect(error.cause).toBe(original);
+    expect(error.message).toBe("Configuration must be a mapping.");
+    expect(classifyConfigurationFailure({ name: error.name, message: error.message, cause: original })).toEqual({ code: "unavailable", reason: "unavailable" });
+    expect(classifyConfigurationFailure(new Error(error.message))).toEqual({ code: "unavailable", reason: "unavailable" });
+    expect(JSON.stringify(classifyConfigurationFailure(error))).not.toContain(secret);
+  });
+
+  it("retains an I/O adapter's original wrapper and classifies only its explicit filesystem evidence", () => {
+    const filesystemCause = systemError("EACCES"), original = new Error("Cannot read configuration file.", { cause: filesystemCause });
+    const error = new ConfigurationFileOperationError("read", original, filesystemCause);
+    expect(error.cause).toBe(original);
+    expect(original.cause).toBe(filesystemCause);
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "permission_denied", reason: "permission_denied", systemCode: "EACCES" });
+    expect(classifyConfigurationFailure(new ConfigurationFileOperationError("read", original))).toEqual({ code: "unavailable", reason: "unavailable" });
   });
 
   it("rejects spoofed errors, untrusted chains and mixed format failures", () => {

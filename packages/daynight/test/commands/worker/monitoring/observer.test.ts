@@ -8,7 +8,7 @@ import { ProtocolError } from "../../../../src/api/parse.js";
 import { RepositoryGitError, runRepositoryGit } from "../../../../src/repository/git.js";
 import { ToolSelectionError, type ToolSelectionCode } from "../../../../src/platform/tool-executables.js";
 import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-error.js";
-import { ConfigurationFileOperationError } from "../../../../src/commands/worker/configuration-failure.js";
+import { ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../../../../src/commands/worker/configuration-failure.js";
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
 import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
 import { HerdrCommandCleanupError, HerdrCommandDeadlineError, HerdrCommandError } from "../../../../src/commands/worker/herdr/command.js";
@@ -193,6 +193,15 @@ describe("worker monitoring observer", () => {
 });
 
 describe("safe monitoring diagnostics", () => {
+  it("classifies source-owner validation evidence without copying newly edited credentials", () => {
+    const error = new WorkerConfigurationSourceError("Invalid YAML in the Worker configuration.", { cause: new Error(secret) });
+    expect(classifyFailure(error)).toEqual(diagnostic("configuration-invalid"));
+    expect(classifyFailure(error, true)).toEqual(diagnostic("outcome-unknown"));
+    expect(classifyFailure({ name: "WorkerConfigurationSourceError", message: secret })).toEqual(diagnostic("unknown"));
+    expect(classifyFailure(new Error(secret, { cause: error }))).toEqual(diagnostic("unknown"));
+    expect(JSON.stringify(classifyFailure(error))).not.toContain(secret);
+  });
+
   it("uses the complete fixed diagnostic vocabulary", () => {
     const expected: readonly [DiagnosticCode, string][] = [
       ["cancelled", "The operation was cancelled."],

@@ -2959,7 +2959,11 @@ generation and baseline, report/sync IDs and an available HTTP request ID. Unrea
 authority, initialized authority and an uninitialized service are distinct;
 `"0"` remains a valid initial observation baseline. Typed tool failures and
 controlled file errors retain fixed reasons without recording native arguments,
-command output or credentials. Remote confirmation stays confirmed while its
+command output or credentials. Malformed YAML and invalid local fields are
+classified as invalid configuration without copying newly edited credentials;
+authentication and permission refusals remain visible terminal authority-read
+failures. A configuration POST cancelled before its queued transport dispatch
+remains unsent. Remote confirmation stays confirmed while its
 local checkpoint is pending, including after the report waiter ends. Diagnostic
 failures do not change application or receipt outcomes.
 
