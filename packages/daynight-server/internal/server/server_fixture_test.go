@@ -2846,3 +2846,11 @@ func startupTaskDocument(t *testing.T, value model.Task) api.Task {
 	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Status: string(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn, BlockedBy: value.BlockedBy, AssignedTo: value.AssignedTo, RequiredPlatform: platform, AllowAgents: value.AllowAgents, Ready: value.Ready}
 }
+
+func (s *taskHTTPSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO {
+	panic("unexpected GitHubDAO access")
+}
+
+func (s *taskHTTPProjectScopeMock) GitHubDAO() store.GitHubWriteDAO {
+	panic("unexpected GitHubDAO access")
+}

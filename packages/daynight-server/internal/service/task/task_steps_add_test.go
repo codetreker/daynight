@@ -599,3 +599,5 @@ func (f *strictStepWrite) ParentTask(context.Context, string) (model.Task, error
 	f.t.Fatal("unexpected ParentTask")
 	return model.Task{}, nil
 }
+
+func (s *strictStepWrite) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }

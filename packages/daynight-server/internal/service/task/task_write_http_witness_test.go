@@ -345,3 +345,5 @@ func (d *writeWitnessTaskDAO) GoalProgresses(context.Context, string, []string) 
 func (d *writeWitnessTaskDAO) ParentTask(context.Context, string) (model.Task, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ParentTask"))
 }
+
+func (s *writeWitnessScope) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }

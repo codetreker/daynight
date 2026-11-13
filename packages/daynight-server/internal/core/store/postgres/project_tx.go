@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
@@ -41,7 +42,8 @@ func (tx *ProjectTx) EligibilityDAO() WebhookEligibilityDAO { return eligibility
 func (tx *ProjectTx) CaptureDAO() WebhookCaptureDAO {
 	return webhook.NewProjectCapture(tx.tx, tx.projectID)
 }
-func (tx *ProjectTx) TaskDAO() TaskWriteDAO { return task.NewWriter(tx.tx, tx.projectID) }
+func (tx *ProjectTx) TaskDAO() TaskWriteDAO     { return task.NewWriter(tx.tx, tx.projectID) }
+func (tx *ProjectTx) GitHubDAO() GitHubWriteDAO { return github.NewWriter(tx.tx, tx.projectID) }
 func (tx *ProjectTx) SessionDAO() ProjectSessionDAO {
 	return session.NewProjectDAO(tx.tx, tx.projectID)
 }

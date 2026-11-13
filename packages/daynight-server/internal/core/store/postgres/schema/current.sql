@@ -1,4 +1,4 @@
--- Schema snapshot version: 67
+-- Schema snapshot version: 68
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -287,6 +287,46 @@ CREATE TABLE "private_upload_chunks" (
     CONSTRAINT "private_upload_chunks_sha256_check" CHECK (("sha256" ~ '^[0-9a-f]{64}$'::"text"))
 );
 
+CREATE TABLE "project_github" (
+    "project_id" "uuid" NOT NULL,
+    "version" bigint DEFAULT 1 NOT NULL,
+    "generation" bigint DEFAULT 0 NOT NULL,
+    "revision" bigint DEFAULT 0 NOT NULL,
+    "enabled" boolean DEFAULT false NOT NULL,
+    "app_id" bigint,
+    "installation_id" bigint,
+    "repository_id" bigint,
+    "installation_account_login" "text",
+    "repository_full_name" "text",
+    "repository_private" boolean,
+    "poll_interval_minutes" integer DEFAULT 5 NOT NULL,
+    "access_state" "text" DEFAULT 'unknown'::"text" NOT NULL,
+    "access_reason" "text",
+    "access_checked_at" timestamp with time zone,
+    "next_access_check_at" timestamp with time zone,
+    "access_hint_id" "uuid",
+    "access_delivery_id" "text",
+    "next_poll_at" timestamp with time zone,
+    "not_before" timestamp with time zone,
+    "last_poll_attempt_at" timestamp with time zone,
+    "last_full_success_at" timestamp with time zone,
+    "last_full_generation" bigint,
+    "poll_error_code" "text",
+    "poll_error_message" "text",
+    "poll_error_at" timestamp with time zone,
+    "last_webhook_received_at" timestamp with time zone,
+    "last_webhook_attempt_at" timestamp with time zone,
+    "last_webhook_success_at" timestamp with time zone,
+    "webhook_error_code" "text",
+    "webhook_error_message" "text",
+    "webhook_error_at" timestamp with time zone,
+    "claim_token" "uuid",
+    "claim_until" timestamp with time zone,
+    "claim_kind" "text",
+    "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL
+);
+
 CREATE SEQUENCE "project_grant_versions"
     START WITH 1
     INCREMENT BY 1
@@ -327,6 +367,31 @@ CREATE TABLE "project_ownership" (
     "version" bigint DEFAULT 1 NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     CONSTRAINT "project_ownership_version_check" CHECK (("version" > 0))
+);
+
+CREATE TABLE "project_pull_requests" (
+    "project_id" "uuid" NOT NULL,
+    "number" bigint NOT NULL,
+    "github_id" bigint NOT NULL,
+    "url" "text" NOT NULL,
+    "title" "text" NOT NULL,
+    "author_id" bigint,
+    "author_login" "text",
+    "state" "text" NOT NULL,
+    "draft" boolean NOT NULL,
+    "base_ref" "text" NOT NULL,
+    "head_repository_id" bigint,
+    "head_repository_full_name" "text",
+    "head_ref" "text",
+    "head_sha" "text" NOT NULL,
+    "github_created_at" timestamp with time zone NOT NULL,
+    "github_updated_at" timestamp with time zone NOT NULL,
+    "github_closed_at" timestamp with time zone,
+    "github_merged_at" timestamp with time zone,
+    "description" "text",
+    "observed_at" timestamp with time zone NOT NULL,
+    "revision" bigint NOT NULL,
+    "seen_poll_id" "uuid"
 );
 
 CREATE TABLE "projects" (
@@ -1271,6 +1336,9 @@ ALTER TABLE ONLY "private_upload_chunks"
 ALTER TABLE ONLY "private_upload_chunks"
     ADD CONSTRAINT "private_upload_chunks_transfer_id_object_id_key" UNIQUE ("transfer_id", "object_id");
 
+ALTER TABLE ONLY "project_github"
+    ADD CONSTRAINT "project_github_pkey" PRIMARY KEY ("project_id");
+
 ALTER TABLE ONLY "project_grants"
     ADD CONSTRAINT "project_grants_pkey" PRIMARY KEY ("project_id", "user_id");
 
@@ -1282,6 +1350,9 @@ ALTER TABLE ONLY "project_invitations"
 
 ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
+
+ALTER TABLE ONLY "project_pull_requests"
+    ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "number");
 
 ALTER TABLE ONLY "projects"
     ADD CONSTRAINT "projects_pkey" PRIMARY KEY ("id");
@@ -1534,6 +1605,12 @@ CREATE INDEX "private_transfers_owner_active" ON "private_transfers" USING "btre
 
 CREATE INDEX "private_transfers_retention" ON "private_transfers" USING "btree" ("retain_until") WHERE ("state" = 'closed'::"text");
 
+CREATE INDEX "project_github_access_due" ON "project_github" USING "btree" ("next_access_check_at", "project_id") WHERE "enabled";
+
+CREATE INDEX "project_github_binding" ON "project_github" USING "btree" ("app_id", "installation_id", "repository_id");
+
+CREATE INDEX "project_github_poll_due" ON "project_github" USING "btree" ("next_poll_at", "project_id") WHERE "enabled";
+
 CREATE INDEX "project_grants_user" ON "project_grants" USING "btree" ("user_id", "project_id");
 
 CREATE INDEX "project_invitations_expiry" ON "project_invitations" USING "btree" ("project_id", "expires_at");
@@ -1541,6 +1618,8 @@ CREATE INDEX "project_invitations_expiry" ON "project_invitations" USING "btree"
 CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree" ("project_id", "created_at", "id");
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
+
+CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "state", "number" DESC);
 
 CREATE INDEX "projects_created_id" ON "projects" USING "btree" ("created_at", "id");
 

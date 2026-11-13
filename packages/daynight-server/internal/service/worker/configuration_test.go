@@ -602,3 +602,5 @@ func TestWorkerConfigurationAuthorityServiceReport(t *testing.T) {
 		})
 	}
 }
+
+func (s configurationReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

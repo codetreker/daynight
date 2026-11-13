@@ -1095,3 +1095,5 @@ func TestApplicationBeginShutdownStopsWorkerReadOnlyAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func (s *httpTestSnapshot) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

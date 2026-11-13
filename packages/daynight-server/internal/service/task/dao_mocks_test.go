@@ -904,3 +904,7 @@ func (mock *taskReaderMock) TaskWorkTargets(context.Context, string, []string, *
 	mock.need("TaskWorkTargets", false)
 	return store.TaskWorkTargets{}, nil
 }
+
+func (s *taskSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
+
+func (s *taskProjectScopeMock) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }
