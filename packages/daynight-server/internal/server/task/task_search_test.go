@@ -338,6 +338,8 @@ func TestSearchInputRejectsInvalidJSONFields(t *testing.T) {
 }
 
 func TestSearchHTTPTagFilterParsingAndErrors(t *testing.T) {
+	const filterTagA = "a1111111-a111-4111-8111-a11111111111"
+	const filterTagB = "b2222222-b222-4222-8222-b22222222222"
 	var logs bytes.Buffer
 	calls := 0
 	server := serveSearch(func(_ context.Context, _ model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
