@@ -153,6 +153,7 @@ export const inspection: InspectionMessages = {
     successorsMissing: "当前任务尚未包含在任务图中，请刷新任务图以查看后续关系。", noSuccessors: "无后续任务",
     created: "创建时间", updated: "更新时间", taskId: "任务 ID",
     copyTaskId: "复制任务 ID", copyTaskTitle: "复制任务标题", copied: "已复制",
+    goalId: "Goal ID", copyGoalId: "复制 Goal ID", copyGoalIdFailed: "无法复制 Goal ID，请选中并手动复制。",
     copyFailed: "无法复制任务 ID，请选中并手动复制。", copyTitleFailed: "无法复制任务标题，请选中并手动复制。",
     countedHeading: ({ label, count }) => `${label} · ${count}`,
   },
