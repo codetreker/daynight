@@ -54,6 +54,13 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     return next;
   });
   return { prepareImageHistorySync,
+    hasImageHistoryCheckpoint: (sourceThrough: string): boolean => transactions.read(() => {
+      const epoch = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as { value: string } | undefined;
+      const completed = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(checkpoint) as { value: string } | undefined;
+      if (!epoch || !completed) return false;
+      const value = JSON.parse(completed.value) as ImageHistorySyncIntent;
+      return value.historyEpoch === JSON.parse(epoch.value) && BigInt(value.sourceThrough) >= BigInt(sourceThrough);
+    }),
     getImageHistorySyncFailure: (): ImageError | null => transactions.read(() => {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(failureKey) as { value: string } | undefined;
       return row ? parseImageError(JSON.parse(row.value)) : null;

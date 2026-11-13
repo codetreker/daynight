@@ -79,6 +79,22 @@ Web shows the retained history without the old current claim. These API registra
 do not start a Worker process. The same resource IDs and content cross the clients
 and persist in the real database.
 
+The same authenticated journey launches the compiled CLI's public Test Session
+Controller with an environment-owned Codex stdio peer. The peer replaces only
+the upstream native agent: the production adapter, source authority checks,
+Markdown parser, image decoder, sealed media owner, relay and service run
+normally. One native tool image and one local Markdown image are captured through
+direct submit and read back with their exact bytes and resource identities.
+The runner packages the production image validator with its locked native
+dependencies, records helper and manifest hashes, and configures the real service
+through its `DAYNIGHT_IMAGE_*` settings. Its private decoder directory shares
+the environment's cleanup lifecycle.
+After the source is removed, normal Controller stopping publishes a complete
+archive; the manifest, timeline, originals and production Web are read again.
+This establishes the product's normal Controller path, without claiming live
+third-party provider behavior. Failure, capability, retry and transport matrices
+remain with their CLI and service owners.
+
 The tag journey creates a shared catalog and independently tagged Goal and child
 Tasks through the CLI. Web reads and edits the child's tags and filters sibling
 Tasks; CLI reads the saved set, renames and confirms deletion of a shared tag.

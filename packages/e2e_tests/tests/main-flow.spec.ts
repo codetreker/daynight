@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { test, expect, topology, cli, cliEnvironment } from "./fixtures.ts";
 import { startCommand } from "../src/command.ts";
 import { verifyCompletionFlow } from "./completion-flow.ts";
+import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
@@ -11,7 +12,7 @@ type SearchItem = { id: string; title: string; match: { fields: string[]; descri
 type Token = { id: string; name: string; lastUsedAt: string | null };
 
 test("compiled CLI and production Web share a normal task lifecycle", async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(360_000);
   await page.goto(`${topology.baseURL}/login`);
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click();
   await page.getByRole("button", { name: "Authorize local identity", exact: true }).click();
@@ -178,6 +179,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await expect(page.getByRole("dialog").getByRole("button", { name: "Done", exact: true })).toBeVisible();
 
   await verifyCompletionFlow(page, projectId!, task.id);
+  await verifyControllerImages(page);
   await verifyTagFlow(page, projectId!);
 
   // These API registrations exercise the assembled service without starting a

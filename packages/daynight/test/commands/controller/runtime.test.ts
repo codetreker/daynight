@@ -5,6 +5,9 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { createNativeInputPublication, nativeInputPublicationFailure } from "../../../src/commands/controller/media/native-publication.js";
 import { readControllerOutboxByteLength } from "../../../src/commands/controller/outbox-store.js";
+import * as imageHistory from "../../../src/commands/controller/media/history-sync.js";
+import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+const historyRuntime = vi.hoisted(() => ({ flush: vi.fn(async () => {}), supported: false, connected: true }));
 const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void } }));
 const storage = vi.hoisted(() => ({ acquire: vi.fn(), prepare: vi.fn(), release: vi.fn(), open: vi.fn(), order: [] as string[] }));
 vi.mock("../../../src/commands/controller/storage-lock.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/storage-lock.js")>(), acquireControllerStoragePermit: (file: string) => storage.acquire(file), isControllerStorageLockHeld: (error: unknown) => error instanceof Error && error.message === "fixture-lock-busy" }));
@@ -22,7 +25,7 @@ vi.mock("../../../src/commands/controller/media/capture.js", async importOrigina
   return { ...original, createControllerCaptureBridge: (...args: Parameters<typeof original.createControllerCaptureBridge>) => { fixture.captureCreate(); return original.createControllerCaptureBridge(...args); } };
 });
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: () => fixture.capture(), captureProcessProof: async () => ({ pid: 1 }) }));
-vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void }) => { fixture.relayCreate(); fixture.relayCallbacks = callbacks; if (fixture.synchronousRelay) callbacks.onConnection(false); return { stop: vi.fn(), flush: async () => {}, close: fixture.relayClose, connected: () => true, authorize: async () => {}, receipt: vi.fn() }; } }));
+vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void }) => { fixture.relayCreate(); fixture.relayCallbacks = callbacks; if (fixture.synchronousRelay) callbacks.onConnection(false); return { stop: vi.fn(), flush: historyRuntime.flush, close: fixture.relayClose, connected: () => historyRuntime.connected, imageHistorySupported: () => historyRuntime.supported, currentFence: () => ({ connectionEpoch: "1" }), authorize: async () => {}, receipt: vi.fn() }; } }));
 vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCodexProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/copilot.js", () => ({ openCopilotProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
@@ -36,6 +39,7 @@ import { runController } from "../../../src/commands/controller/runtime.js";
 afterEach(() => { toolSelectionFixture.read = null; });
 afterEach(() => { externalRuntime.coordinatorOptions = null; externalRuntime.close.mockReset(); externalRuntime.close.mockResolvedValue(); vi.clearAllMocks(); fixture.options = null; fixture.ticketOverrides = {}; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
 const setup = () => {
+  historyRuntime.flush.mockReset(); historyRuntime.flush.mockResolvedValue(); historyRuntime.supported = false; historyRuntime.connected = true;
   fixture.synchronousRelay = false;
   fixture.serverCreate.mockReset(); fixture.relayCreate.mockReset(); fixture.captureCreate.mockReset();
   fixture.serverClose.mockReset(); fixture.serverClose.mockImplementation(() => { storage.order.push("server"); });
@@ -56,6 +60,59 @@ const setup = () => {
   fixture.close.mockImplementation(async () => { expect(fixture.closed).toBe(false); });
   return patch;
 };
+
+test("capture preparation flushes the source tail and serializes its required checkpoint behind an active upload", async () => {
+  setup(); historyRuntime.supported = true;
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const journal = fixture.journal();
+  Object.assign(journal, { registerImageCaptureRequest: vi.fn(), getImageHistorySyncFailure: () => null, getLastSourceSequence: () => "7", hasImageHistoryCheckpoint: () => true });
+  let flushed!: () => void, uploaded!: () => void;
+  historyRuntime.flush.mockImplementationOnce(() => new Promise<void>(resolve => { flushed = resolve; }));
+  const sync = vi.spyOn(imageHistory, "syncControllerImageHistory").mockImplementationOnce(() => new Promise<void>(resolve => { uploaded = resolve; })).mockResolvedValue(undefined);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  let first: Promise<void> | undefined, second: Promise<void> | undefined;
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    const prepare = (fixture.options as ProviderOptions).prepareImageCapture!;
+    first = prepare({} as never);
+    expect(journal.registerImageCaptureRequest).toHaveBeenCalledOnce(); expect(sync).not.toHaveBeenCalled();
+    flushed(); await vi.waitFor(() => expect(sync).toHaveBeenCalledOnce());
+    expect(sync).toHaveBeenCalledWith(expect.objectContaining({ requiredSourceThrough: "7", fence: { connectionEpoch: "1" } }));
+    let settled = false; void first.then(() => { settled = true; });
+    second = prepare({} as never); await Promise.resolve();
+    expect(sync).toHaveBeenCalledOnce(); expect(settled).toBe(false);
+    uploaded(); await Promise.all([first, second]); expect(sync).toHaveBeenCalledTimes(2);
+  } finally { flushed?.(); uploaded?.(); await Promise.allSettled([first, second]); process.emit("SIGTERM", "SIGTERM"); await running; sync.mockRestore(); }
+});
+
+test.each(["offline", "unsupported", "unacknowledged"] as const)("capture history %s remains a prerequisite refusal before submission", async condition => {
+  setup(); historyRuntime.supported = condition !== "unsupported"; historyRuntime.connected = condition !== "offline";
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const journal = fixture.journal(); Object.assign(journal, { registerImageCaptureRequest: vi.fn(), getImageHistorySyncFailure: () => null });
+  if (condition === "unacknowledged") historyRuntime.flush.mockRejectedValueOnce(new Error("Session events remain in the durable outbox."));
+  const sync = vi.spyOn(imageHistory, "syncControllerImageHistory").mockResolvedValue(undefined);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    await expect((fixture.options as ProviderOptions).prepareImageCapture!({} as never)).rejects.toMatchObject(condition === "unsupported" ? { name: "ImageCapturePrerequisiteError", code: "component_unsupported" } : { name: "ImageCaptureNotDispatchedError" });
+    expect(sync).not.toHaveBeenCalled();
+  } finally { process.emit("SIGTERM", "SIGTERM"); await running; sync.mockRestore(); }
+});
+
+test("capture history catches up a source tail that advances while its frozen checkpoint uploads", async () => {
+  setup(); historyRuntime.supported = true;
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const journal = fixture.journal(); let through = "7", completed = "0";
+  Object.assign(journal, { registerImageCaptureRequest: vi.fn(), getImageHistorySyncFailure: () => null, getLastSourceSequence: () => through, hasImageHistoryCheckpoint: (value: string) => BigInt(completed) >= BigInt(value) });
+  const sync = vi.spyOn(imageHistory, "syncControllerImageHistory").mockImplementation(async options => { completed = options.requiredSourceThrough!; through = "8"; });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    await (fixture.options as ProviderOptions).prepareImageCapture!({} as never);
+    expect(sync.mock.calls.map(([options]) => options.requiredSourceThrough)).toEqual(["7", "8"]);
+    expect(historyRuntime.flush).toHaveBeenCalledTimes(2); expect(completed).toBe("8");
+  } finally { process.emit("SIGTERM", "SIGTERM"); await running; sync.mockRestore(); }
+});
 
 test.each(["SIGTERM", "SIGINT"] as const)("%s during native initialization closes the eventual provider before releasing its journal", async signal => {
   setup(); let ready!: (value: unknown) => void;
@@ -712,7 +769,7 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
 test.each(["rolled-back", "unknown"] as const)("native publication carries its real SQLite %s outcome to the runtime fence", async outcome => {
   setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const db = new Database(":memory:");
-  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=11");
+  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=12");
   const quarantine = vi.fn(), originalExec = db.exec.bind(db);
   if (outcome === "unknown") vi.spyOn(db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw new Error("controlled rollback failure"); return originalExec(sql); });
   const publication = createNativeInputPublication({
