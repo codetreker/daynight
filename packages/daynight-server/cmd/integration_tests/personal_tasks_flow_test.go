@@ -17,8 +17,20 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	team := requestJSON[api.Team](t, f, http.MethodPost, "/api/v1/teams", api.CreateTeamRequest{Name: "Inventory Team", ExpectedUserID: f.userID}, http.StatusCreated)
 	project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Team inventory project", RepoURL: "https://github.com/example/inventory-team", TeamID: &team.ID, ExpectedUserID: f.userID}, http.StatusCreated)
 	goal := createTask(t, f, project, "Inventory Goal", map[string]any{"type": "goal"})
+	if goal.Status != "todo" {
+		t.Fatalf("initial goal status = %q, want todo", goal.Status)
+	}
 	child := createTask(t, f, project, "Inventory child", map[string]any{"parentId": goal.ID, "assignedTo": f.userID, "status": "todo"})
 	child = setStatus(t, f, child, "in_progress", nil)
+	startedGoal := requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)
+	if startedGoal.ID != goal.ID || startedGoal.ProjectID != goal.ProjectID || startedGoal.Status != "in_progress" || startedGoal.Version != goal.Version+1 {
+		t.Fatalf("started goal = %+v, want same goal in_progress at version %d", startedGoal, goal.Version+1)
+	}
+	expectedGoal := goal
+	expectedGoal.Status = "in_progress"
+	expectedGoal.Version++
+	assertTaskContent(t, startedGoal, expectedGoal)
+	goal = startedGoal
 	access := requestJSON[api.ProjectDocument](t, f, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusOK).Access
 	if access.DirectGrant == nil {
 		t.Fatal("creator grant is absent")
