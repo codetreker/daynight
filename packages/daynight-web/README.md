@@ -2341,12 +2341,8 @@ polling remains unchanged.
 
 Readiness must describe the operation being observed. Retired Step parent-check
 tests settle the reopened parent and Steps collection before arming their fault
-responses. The ordinary Task-write fixture holds parent admission after its real
-IndexedDB transaction, verifies that fresh Steps cannot authorize a write while
-the parent remains stale, then jointly waits for parent and Steps readiness and
-write admission. Steps history-replacement tests flush pending React work, then
-jointly require fresh parent and Steps versions, the rendered row and the retained
-draft.
+responses. Steps history-replacement tests flush pending React work, then jointly
+require fresh parent and Steps versions, the rendered row and the retained draft.
 The [direct-observation state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-direct-observation-state-waits.md)
 and [Steps session state-wait decision](../../.agents/notes/implemented/testing/2026-11-07-steps-session-state-waits.md)
 record these readiness and reader-lifetime requirements.
