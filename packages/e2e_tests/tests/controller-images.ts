@@ -62,8 +62,12 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
       expect(Buffer.from(chunk.data, "base64")).toEqual(png);
     };
     for (const { resourceId } of images) await readOriginal(resourceId);
+    const showImages = async (): Promise<void> => {
+      await page.locator(".session-tool > summary").filter({ hasText: "render_plot" }).click();
+      await expect(page.locator(".session-timeline img")).toHaveCount(2);
+    };
     await page.goto(`${topology.baseURL}/test-sessions/${sessionId}`);
-    await expect(page.locator(".session-timeline img")).toHaveCount(2);
+    await showImages();
     await unlink(path.join(directory, "plot.png"));
     process.kill(command.pid, "SIGINT");
     const result = await command.finished;
@@ -86,7 +90,7 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
     expect(imageParts((JSON.parse(timelineBytes.toString()) as { entries: TimelineEntry[] }).entries)).toEqual(images);
     for (const { resourceId } of images) await readOriginal(resourceId);
     await page.reload();
-    await expect(page.locator(".session-timeline img")).toHaveCount(2);
+    await showImages();
   } finally {
     if (!exited) { process.kill(command.pid, "SIGINT"); await command.finished; }
     await command.stop();
