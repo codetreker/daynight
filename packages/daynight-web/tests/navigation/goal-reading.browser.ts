@@ -1633,9 +1633,11 @@ for (const width of [1440, 320, 390]) for (const locale of ['en', 'zh-CN'] as co
   await expect(overviewRow).toContainText('4 / 6');
   await expect(overviewRow).toContainText('66%');
   await expect(overviewRow).toHaveAttribute('aria-label', zh ? /4.*6.*66%/ : /4 \/ 6 completed, 66%/);
+  await expect(overviewRow.locator('.root-progress-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
   await overviewRow.click();
   const ordinary = page.locator('[data-chain-id="00000000-0000-4000-8000-000000000500"]');
   await expect(ordinary.locator('.root-progress-label')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(ordinary.locator('.root-progress-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
   expect(parseFloat(await ordinary.locator('.root-progress-track i').evaluate(node => node.style.width))).toBeCloseTo(66.6667, 3);
   await ordinary.locator('.goal-graph-button').click();
   await expect(page.locator('.task-chain-dialog .task-chain-meta')).toContainText(zh ? '4/6 已完成' : '4/6 completed');
@@ -1643,9 +1645,11 @@ for (const width of [1440, 320, 390]) for (const locale of ['en', 'zh-CN'] as co
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
   await expect(card.locator('.goal-list-progress')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(card.locator('.goal-list-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
   await card.locator('.goal-list-toggle').click();
   const scoped = card.locator('[data-chain-id="00000000-0000-4000-8000-000000000300"]');
   await expect(scoped.locator('.root-progress-label')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(scoped.locator('.root-progress-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
   expect(parseFloat(await scoped.locator('.root-progress-track i').evaluate(node => node.style.width))).toBeCloseTo(66.6667, 3);
   await card.locator(`#project-goal-graph-${goalId}`).click();
   const goalGraph = page.locator(`#task-graph-${goalId}`);
@@ -1655,6 +1659,7 @@ for (const width of [1440, 320, 390]) for (const locale of ['en', 'zh-CN'] as co
   await card.locator('.goal-list-detail').click();
   const info = page.locator('.goal-information');
   await expect(info.locator('.goal-information-progress')).toHaveText(zh ? '4/6 已完成' : '4/6 completed');
+  await expect(info.locator('.goal-information-track i')).toHaveCSS('background-color', 'rgb(37, 106, 72)');
   expect(parseFloat(await info.locator('.goal-information-track i').evaluate(node => node.style.width))).toBeCloseTo(66.6667, 3);
   await expect(info.locator('.goal-information-counts').first()).toContainText('9');
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
