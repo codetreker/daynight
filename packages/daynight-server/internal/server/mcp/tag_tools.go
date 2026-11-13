@@ -212,5 +212,7 @@ func safeTagNameConflict(err error) bool {
 		}
 	}
 	visit(err)
-	return valid && transactions == 1 && databases == 1 && markers == 1
+	// Project transaction completion can wrap the same database failure once
+	// more; both wrappers must retain the unique-violation facts.
+	return valid && transactions == 1 && (databases == 1 || databases == 2) && markers == 1
 }

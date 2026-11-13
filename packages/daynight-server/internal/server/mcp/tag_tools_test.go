@@ -411,15 +411,26 @@ func TestTagToolsBudgetAndCancellation(t *testing.T) {
 
 func TestTagConflictClassificationAndSafeLogging(t *testing.T) {
 	conflict := tagcore.Unique(fmt.Errorf("%w: %w", store.ErrTagNameConflict, &store.Error{DatabaseFailure: true, SQLState: "23505", Cause: errors.New("private database text")}))
+	validTx := &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: conflict}
+	for _, err := range []error{
+		&store.Error{DatabaseFailure: true, SQLState: "40001", Cause: validTx},
+		errors.Join(validTx, errors.New("independent failure")),
+	} {
+		if safeTagNameConflict(err) {
+			t.Fatalf("unsafe conflict exposed: %v", err)
+		}
+	}
 	for _, tc := range []struct {
 		name    string
 		outcome store.TransactionOutcome
 		tx      store.TransactionError
+		outer   bool
 		code    string
 	}{
-		{"reliable", store.TransactionNotCommitted, store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: conflict}, "tag_name_conflict"},
-		{"cleanup failure", store.TransactionNotCommitted, store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: conflict}, "internal_error"},
-		{"unknown", store.TransactionUnknown, store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: conflict}, "internal_error"},
+		{"reliable", store.TransactionNotCommitted, store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: conflict}, false, "tag_name_conflict"},
+		{"project write wrapper", store.TransactionNotCommitted, store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: conflict}, true, "tag_name_conflict"},
+		{"cleanup failure", store.TransactionNotCommitted, store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: conflict}, true, "internal_error"},
+		{"unknown", store.TransactionUnknown, store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: conflict}, true, "internal_error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -428,7 +439,11 @@ func TestTagConflictClassificationAndSafeLogging(t *testing.T) {
 			calls := 0
 			ops := tagTestOperations{t: t, create: func(context.Context, model.Principal, string, string) (tagservice.WriteResult, error) {
 				calls++
-				return tagservice.WriteResult{ProjectID: testProjectID, TagID: testTargetID, Outcome: tc.outcome, Phase: tc.tx.Phase, CleanupFailed: tc.tx.CleanupFailed}, &tc.tx
+				var err error = &tc.tx
+				if tc.outer {
+					err = &store.Error{Phase: "project write", DatabaseFailure: true, SQLState: "23505", Cause: err}
+				}
+				return tagservice.WriteResult{ProjectID: testProjectID, TagID: testTargetID, Outcome: tc.outcome, Phase: tc.tx.Phase, CleanupFailed: tc.tx.CleanupFailed}, err
 			}}
 			if err := RegisterTagTools(entry, ops); err != nil {
 				t.Fatal(err)
