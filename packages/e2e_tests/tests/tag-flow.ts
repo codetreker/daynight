@@ -38,6 +38,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await expect(detail.locator(".task-tag")).toHaveText(["Other"]);
   await detail.getByRole("button", { name: "Edit tags" }).click();
   const editor = detail.locator(".task-tags-editor");
+  await editor.getByRole("searchbox", { name: "Search tags" }).fill("Backend");
   await editor.getByRole("checkbox", { name: "Backend" }).check();
   await editor.getByRole("button", { name: "Save", exact: true }).click();
   await expect(editor).toHaveCount(0);
@@ -49,6 +50,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await detail.locator(".task-detail-close").click();
   const filter = card.locator(".tag-filter");
   await filter.locator("summary").click();
+  await filter.locator('input[type="search"]').fill("Backend");
   await filter.getByRole("checkbox", { name: "Backend" }).check();
   await expect(child).toBeVisible();
   await expect(control).toHaveCount(0);
@@ -81,7 +83,10 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await card.locator(".goal-list-toggle").click();
   await expect(child.locator(".task-tag")).toHaveText(["Other"]);
   await filter.locator("summary").click();
+  await filter.locator('input[type="search"]').fill("Other");
   await expect(filter.getByRole("checkbox", { name: "Other" })).toBeVisible();
+  await filter.locator('input[type="search"]').fill("Platform");
+  await expect(filter.getByText("No matching tags.", { exact: true })).toBeVisible();
   await expect(filter.getByRole("checkbox", { name: "Platform" })).toHaveCount(0);
   console.log(`Tag journey: project=${projectId} goal=${goalId} task=${taskId} control=${controlId} renamed/deleted=${backend.id} retained=${other.id}`);
 };
