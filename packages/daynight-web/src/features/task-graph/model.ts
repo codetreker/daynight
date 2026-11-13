@@ -28,11 +28,14 @@ export type ProjectionEdge = {
   readonly external: boolean;
 };
 
-export type ChainProjection = {
-  readonly rootId: string;
+export type GraphProjection = {
   readonly mainIds: ReadonlySet<string>;
   readonly externalIds: ReadonlySet<string>;
   readonly edges: readonly ProjectionEdge[];
+};
+
+export type ChainProjection = GraphProjection & {
+  readonly rootId: string;
   readonly completed: number;
 };
 

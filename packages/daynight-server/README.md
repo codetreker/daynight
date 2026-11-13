@@ -80,6 +80,10 @@ remain enforced; database and backup readers can read retained credentials.
 
 ## Contracts
 
+The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
+the independent Project resource, persisted observations and transaction scopes.
+It does not expose a connection endpoint or run synchronization.
+
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
 Read the [organization rules](../../docs/daynight-server.md) before adding to,
@@ -787,6 +791,10 @@ diagnostics and cause categories.
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
 | `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
+| `DAYNIGHT_GITHUB_ENABLED` | Enable GitHub App configuration (`0` or `1`) | `0` |
+| `DAYNIGHT_GITHUB_APP_ID` | Positive GitHub App ID, required when enabled | Unconfigured |
+| `DAYNIGHT_GITHUB_PRIVATE_KEY_FILE` | RSA PEM private key path, required when enabled | Unconfigured |
+| `DAYNIGHT_GITHUB_WEBHOOK_SECRET` | Webhook secret, required when enabled | Unconfigured |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
@@ -810,6 +818,12 @@ diagnostics and cause categories.
 | `DAYNIGHT_IMAGE_HELPER_PATH` | Path to the packaged image validation helper | Unconfigured |
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
+
+GitHub App settings are validated locally on startup when enabled; invalid keys or
+missing credentials stop startup without exposing their contents. Relative key paths
+resolve from the configuration root. The [remote design](../../docs/design/github-app-remote.md)
+describes token handling and the read contract. These settings alone do not start a
+synchronization worker or expose a connection endpoint.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII

@@ -1,4 +1,5 @@
 import { browserNavigation } from "../src/app/navigation";
+import { readProjectHistory } from '../src/app/page-history';
 import { summariesForGraph } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
@@ -1318,6 +1319,37 @@ describe('recent task browsing and pagination', () => {
     expect(document.querySelector('.root-toggle')).toBe(chainRow(canonicalTask(200)));
     closeChain();
     await waitFor(() => expect(chainRow(replacement)).toHaveFocus());
+  });
+
+  it('retains a historical Goal chain while its snapshot is pending and restores its list focus without an opener', async () => {
+    const goal = canonicalTask(500), source = canonicalTask(1), child = canonicalTask(2);
+    const tasks = [{ ...seed(goal), type: 'goal' as const }, { ...seed(source), parentId: goal },
+      { ...seed(child, 'todo', [source]), parentId: goal }];
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
+    selectTasks(); fireEvent.click(tab('goals'));
+    const goalRow = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
+    fireEvent.click(goalRow.querySelector<HTMLButtonElement>('.goal-list-toggle')!);
+    fireEvent.click(goalRow.querySelector<HTMLButtonElement>('.goal-graph-button')!);
+    await screen.findByTestId('graph-node');
+    first.unmount();
+    root.remove();
+    root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+
+    state = { ...state, snapshot: null, status: 'loading' };
+    const second = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
+    expect(readProjectHistory(browserNavigation().snapshot().view, TEST_VIEWER_ID, project)?.projectGraphWitness).toBe(source);
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
+    state = { ...state, snapshot: mockNavigationSnapshot(tasks, 2), status: 'ready' };
+    second.rerender(<ProjectPage projectId={project} />);
+    await screen.findByTestId('graph-node');
+    expect(document.querySelectorAll('.task-chain-dialog')).toHaveLength(1);
+    closeChain();
+    await waitFor(() => expect(document.querySelector(`[data-goal-id="${goal}"] .goal-list-toggle`)).toHaveFocus());
+    second.unmount();
+    scope.dispose();
   });
 
   it.each(['removed', 'singleton'] as const)('closes an external graph whose actual task becomes %s on refresh without reopening it', async (kind) => {
