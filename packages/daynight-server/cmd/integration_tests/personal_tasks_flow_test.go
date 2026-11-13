@@ -17,8 +17,19 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	team := requestJSON[api.Team](t, f, http.MethodPost, "/api/v1/teams", api.CreateTeamRequest{Name: "Inventory Team", ExpectedUserID: f.userID}, http.StatusCreated)
 	project := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Team inventory project", RepoURL: "https://github.com/example/inventory-team", TeamID: &team.ID, ExpectedUserID: f.userID}, http.StatusCreated)
 	goal := createTask(t, f, project, "Inventory Goal", map[string]any{"type": "goal"})
+	if goal.Status != "todo" || goal.StartedAt != nil {
+		t.Fatalf("new goal lifecycle differs: %+v", goal)
+	}
 	child := createTask(t, f, project, "Inventory child", map[string]any{"parentId": goal.ID, "assignedTo": f.userID, "status": "todo"})
 	child = setStatus(t, f, child, "in_progress", nil)
+	expectedGoal := goal
+	expectedGoal.Status = "in_progress"
+	expectedGoal.Version++
+	goal = requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)
+	assertTaskContent(t, goal, expectedGoal)
+	if goal.StartedAt == nil || goal.CompletedAt != nil || goal.CancelledAt != nil {
+		t.Fatalf("started goal lifecycle differs: %+v", goal)
+	}
 	access := requestJSON[api.ProjectDocument](t, f, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusOK).Access
 	if access.DirectGrant == nil {
 		t.Fatal("creator grant is absent")
@@ -67,5 +78,9 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 		t.Fatalf("shared task: %+v", sharedItem)
 	}
 	assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(child), nil, http.StatusOK), child)
-	assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK), goal)
+	goalReadback := requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)
+	assertTaskContent(t, goalReadback, goal)
+	if goalReadback.StartedAt == nil || !goalReadback.StartedAt.Equal(*goal.StartedAt) || goalReadback.CompletedAt != nil || goalReadback.CancelledAt != nil {
+		t.Fatalf("goal lifecycle readback differs: %+v", goalReadback)
+	}
 }
