@@ -3,7 +3,9 @@ import { ApiError } from "../../../api/client.js";
 import { OperationError } from "../../../api/operation.js";
 import { ProtocolError } from "../../../api/parse.js";
 import { RepositoryGitError } from "../../../repository/git.js";
+import { ToolSelectionError } from "../../../platform/tool-executables.js";
 import { WorkerCleanupError } from "../cleanup-error.js";
+import { classifyConfigurationFailure, ConfigurationFileOperationError } from "../configuration-failure.js";
 import { WorktreePreconditionError } from "../worktrees.js";
 import { NativeVersionOutputError } from "../herdr/version-probe.js";
 import { HerdrCommandDeadlineError, HerdrCommandError } from "../herdr/command.js";
@@ -23,6 +25,10 @@ const messages: Record<DiagnosticCode, string> = {
   "worktree-validation-failed": "The worktree failed ownership validation.", "branch-mismatch": "The worktree branch does not match the recorded owner.",
   "recovery-blocked": "Recovery is blocked and needs attention.", "outcome-unknown": "The operation outcome is unknown.",
   unknown: "The operation failed; inspect local Worker diagnostics for details.",
+};
+const configurationCodes: Readonly<Record<ReturnType<typeof classifyConfigurationFailure>["code"], DiagnosticCode>> = {
+  not_found: "not-found", permission_denied: "permission-denied", timeout: "timeout", command_failed: "command-failed",
+  invalid_output: "invalid-output", invalid_configuration: "configuration-invalid", io_error: "io-error", unavailable: "unavailable",
 };
 
 // Only a caller that has read the typed Web recovery state may construct this evidence.
@@ -78,5 +84,9 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
   if (error instanceof HerdrCommandDeadlineError) return diagnostic("timeout");
   if (error instanceof HerdrCommandError && Number.isSafeInteger(error.exitCode) && error.exitCode !== 0) return diagnostic("command-failed");
   if (error instanceof RepositoryGitError && Number.isSafeInteger(error.exitCode) && error.exitCode !== null && error.exitCode > 0) return diagnostic("command-failed");
+  if (error instanceof ToolSelectionError || error instanceof ConfigurationFileOperationError) {
+    if (error instanceof ToolSelectionError && error.code === "cancelled") return diagnostic("cancelled");
+    return diagnostic(configurationCodes[classifyConfigurationFailure(error).code]);
+  }
   return diagnostic("unknown");
 };

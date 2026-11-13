@@ -49,6 +49,20 @@ export type WorkerConfigurationSnapshot = {
   };
 };
 export type ConfigurationFailureToken = { readonly sourceRecordId: string; readonly failureId: number };
+export type WorkerConfigurationSource = {
+  readonly state: "unread" | "initialized" | "uninitialized";
+  readonly generation: string;
+  readonly desiredRevision: string | null;
+  readonly observationRevision: string;
+};
+export type WorkerConfigurationReportContext = {
+  readonly reportId: string;
+  readonly generation: string;
+  readonly baseRevision: string;
+  readonly recordIds: readonly string[];
+  readonly failures: readonly ConfigurationFailureToken[];
+  readonly items: readonly { readonly key: WorkerCloudItemKey; readonly recordId: string; readonly targetRevision: string }[];
+};
 export type ConfigurationProjection = {
   readonly reportId: string;
   readonly report: WorkerCloudReport;

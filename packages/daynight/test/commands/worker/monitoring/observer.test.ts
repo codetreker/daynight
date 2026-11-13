@@ -6,7 +6,9 @@ import { ApiError } from "../../../../src/api/client.js";
 import { createOperation, OperationError } from "../../../../src/api/operation.js";
 import { ProtocolError } from "../../../../src/api/parse.js";
 import { RepositoryGitError, runRepositoryGit } from "../../../../src/repository/git.js";
+import { ToolSelectionError, type ToolSelectionCode } from "../../../../src/platform/tool-executables.js";
 import { WorkerCleanupError } from "../../../../src/commands/worker/cleanup-error.js";
+import { ConfigurationFileOperationError } from "../../../../src/commands/worker/configuration-failure.js";
 import { WorktreePreconditionError } from "../../../../src/commands/worker/worktrees.js";
 import { NativeVersionOutputError } from "../../../../src/commands/worker/herdr/version-probe.js";
 import { HerdrCommandCleanupError, HerdrCommandDeadlineError, HerdrCommandError } from "../../../../src/commands/worker/herdr/command.js";
@@ -246,6 +248,49 @@ describe("safe monitoring diagnostics", () => {
     expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 500, cause: new Error(secret) }))).toEqual(diagnostic("unknown"));
     expect(classifyFailure(new ApiError({ operation: "read" }, "pagination", { cause: new Error(secret) }))).toEqual(diagnostic("invalid-response"));
     expect(classifyFailure(new WorktreePreconditionError("validation_failed", secret))).toEqual(diagnostic("worktree-validation-failed"));
+  });
+
+  it("classifies trusted configuration tool failures with the existing monitoring vocabulary", () => {
+    const cases: readonly [ToolSelectionCode, DiagnosticCode][] = [
+      ["not_found", "not-found"], ["permission_denied", "permission-denied"], ["probe_timeout", "timeout"],
+      ["incompatible_runtime", "configuration-invalid"], ["invalid_path", "configuration-invalid"],
+      ["not_executable", "configuration-invalid"], ["unsupported_launcher", "configuration-invalid"],
+      ["unrecognized_output", "invalid-output"], ["io_error", "io-error"], ["cleanup_unknown", "unavailable"],
+      ["tool_identity_changed", "unavailable"], ["legacy_tool_identity_missing", "unavailable"], ["cancelled", "cancelled"],
+    ];
+    const observer = createMonitoringObserver({ runId });
+    for (const [reason, code] of cases) {
+      const error = new ToolSelectionError("copilot", "web", "probe", reason, { cause: new Error(secret) }); error.message = secret;
+      for (const failure of [error, new WorkerCleanupError("observation", error)]) expect(classifyFailure(failure)).toEqual(diagnostic(code));
+      observer.fail({ operationId: observer.startActivity({ kind: "maintenance", phase: "configuration", scope: { kind: "worker" } }), component: "configuration", phase: "configuration", scope: { kind: "worker" }, error });
+      expect(classifyFailure(error, true)).toEqual(diagnostic("outcome-unknown"));
+    }
+    const actual = new ToolSelectionError("codex", "web", "resolve", "not_found");
+    for (const error of [
+      { name: "ToolSelectionError", tool: "codex", context: "web", stage: "resolve", code: "not_found" },
+      Object.assign(new Error(secret), { name: "ToolSelectionError", code: "permission_denied" }),
+      new Error(secret, { cause: actual }), new AggregateError([actual], secret),
+    ]) expect(classifyFailure(error)).toEqual(diagnostic("unknown"));
+    expect(classifyFailure(new ApiError({ operation: "write" }, "request", { cause: actual, outcomeUnconfirmed: true }))).toEqual(diagnostic("outcome-unknown"));
+    expect(classifyFailure(new ApiError({ operation: "read" }, "response", { status: 403, cause: actual }))).toEqual(diagnostic("permission-denied"));
+    expect(JSON.stringify(observer.capture("1"))).not.toContain(secret);
+  });
+
+  it("requires controlled file evidence before classifying system error properties", () => {
+    const codes: readonly [string, DiagnosticCode][] = [["ENOENT", "not-found"], ["ENOTDIR", "not-found"], ["EACCES", "permission-denied"], ["EPERM", "permission-denied"], ["ETIMEDOUT", "timeout"], ["EIO", "io-error"]];
+    for (const [code, expected] of codes) {
+      const original = Object.assign(new Error(secret), { code, path: secret, syscall: "write" });
+      const error = new ConfigurationFileOperationError("persist", original);
+      expect(classifyFailure(original)).toEqual(diagnostic("unknown"));
+      expect(classifyFailure({ name: error.name, operation: "persist", cause: original })).toEqual(diagnostic("unknown"));
+      expect(classifyFailure(new Error(secret, { cause: error }))).toEqual(diagnostic("unknown"));
+      expect(classifyFailure(new AggregateError([error], secret))).toEqual(diagnostic("unknown"));
+      expect(classifyFailure(error)).toEqual(diagnostic(expected));
+      expect(classifyFailure(new WorkerCleanupError("observation", error))).toEqual(diagnostic(expected));
+      expect(classifyFailure(error, true)).toEqual(diagnostic("outcome-unknown"));
+      expect(JSON.stringify(classifyFailure(error))).not.toContain(secret);
+      expect(error.cause).toBe(original);
+    }
   });
 
   it("classifies trusted native probe failures without exposing command data or guessing aggregate causes", () => {

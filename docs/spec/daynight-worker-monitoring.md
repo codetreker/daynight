@@ -146,7 +146,7 @@ PUT 完整 JSON 及规范化正文各最多 256 KiB。activities/reservations/cu
 
 观测器保留完整准入计数，详情按阻塞/异常优先、首次观测时间、稳定 ID 排序截取。所有时间、质量、完整计数均独立于被截取的明细。达到编码预算时，先按既有顺序裁减活动和容量责任；在移除完整异常前，按 Go JSON 编码体积从大到小、稳定顺序将相对路径转为 `unavailable/limit-exceeded` 并标记 partial，重新计量。单字段超限也显式标 partial；内存记录不受快照裁减影响。Server 在权限过滤和名称补充后按真实 Go JSON escaping 再执行响应预算，在包含 worktree 与 labels-omitted 占位的完整准入基础上保留精确容量与无名称故障摘要，逐项加入标签/普通活动，超限明确 labelsOmitted/detailCoverage=partial。
 
-配置存储与诊断文件的运行期 I/O 故障使用既有故障观察和重试字段，恢复只退休对应故障。监控帧不替代本机存储 readiness、执行资格或原资源证明；当前成功值、较新的监控帧以及日志缺项均不授权清理或重放未确认操作。
+配置存储与诊断文件的运行期 I/O 故障使用既有故障观察和重试字段，恢复只退休对应故障。ToolSelectionError 和受控配置文件错误使用下述固定分类，不能把缺工具、权限、超时、不兼容模式、无效输出和持久化错误统一归为 unknown。配置本地日志的 syncId、原项/权威来源、五分钟摘要及远端/本地确定性由[报告诊断需求](daynight-worker-reporting.md#配置交换)拥有，不扩大本监控帧。监控帧不替代本机存储 readiness、执行资格或原资源证明；当前成功值、较新的监控帧以及日志缺项均不授权清理或重放未确认操作。
 
 ## 诊断内容准入
 
@@ -187,7 +187,8 @@ Worker 在拥有事实的操作边界，从受控枚举、协议结果或已确�
 2. 实际观测的 `OperationError.kind`：`cancelled` 为 `cancelled`，`deadline`/`request_timeout` 为 `timeout`，`request_limit`/`response_limit`/`total_limit` 为 `limit-exceeded`；`disposed` 使用 `unknown`。
 3. 已确认的 API 拒绝仅按确定的状态分类：401 为 `authentication-required`，403 为 `permission-denied`，404 为 `not-found-or-inaccessible`，409 为 `conflict`，413 为 `limit-exceeded`，429 为 `rate-limited`，503 为 `unavailable`；其他状态为 `unknown`。响应解析或分页失败且无未确认写入时为 `invalid-response`。不能复制服务端错误正文或 code。
 4. 本地 `WorktreePreconditionError.code` 的 `branch_mismatch` 和 `validation_failed` 分别为 `branch-mismatch` 和 `worktree-validation-failed`；受控 `RecoveryState.reasonCode` 的 `native_identity_missing`、`recovery_limit`、`recovery_blocked` 分别为 `native-identity-missing`、`recovery-limit`、`recovery-blocked`。实际 `HerdrCommandError` 的明确非零安全整数退出码，或 `RepositoryGitError` 的明确正安全整数退出码，归 `command-failed`；Git 启动失败产生的负 errno、仅信号退出、无明确退出码或不合法退出码不能据此归类。已知输出解析失败为 `invalid-output`；只在可信 I/O 边界确知 I/O 失败时为 `io-error`，不能把任意未知异常当作 I/O 故障。
-5. 其他情形为 `unknown`。对聚合错误不猜测其中哪一条代表整体原因；确知结果未确认时仍按第 1 条，否则用 `unknown`。`WorkerCleanupError.stage` 仅选择阶段；可在受控包装关系内检查其已知类型 cause，但不递归采用任意对象、消息或未经验证的属性。
+5. 实际 `ToolSelectionError` 的 `not_found`、`permission_denied`、`probe_timeout`、`unrecognized_output`、`io_error` 分别投影为 `not-found`、`permission-denied`、`timeout`、`invalid-output`、`io-error`；`not_executable`、`unsupported_launcher`、`incompatible_runtime`、`invalid_path` 为 `configuration-invalid`，`cancelled` 保留取消，`cleanup_unknown` 与工具身份不可用保持 `unavailable`。只有配置文件操作边界构造的受控包装才可采用其真实系统错误，区分缺失、权限、超时与其它 I/O；任意带 `.code` 的 Error 不取得此证据。工具原始闭合 code 和允许的 tool/context/stage 仅留在本地结构化诊断。
+6. 其他情形为 `unknown`。对聚合错误不猜测其中哪一条代表整体原因；确知结果未确认时仍按第 1 条，否则用 `unknown`。`WorkerCleanupError.stage` 仅选择阶段；可在受控包装关系内检查其已知类型 cause，但不递归采用任意对象、消息或未经验证的属性。
 
 任何其他表项仅由明确的对应操作事实构造；若捕获点没有可靠证据，则不选择它。
 

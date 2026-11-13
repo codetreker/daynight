@@ -116,13 +116,32 @@ API 在认证配置读取确认 Daynight-Worker-Tool-Paths 能力后才发送扩
 
 ## 失败与可观察性
 
-reporter 按字段或 report 子系统保存故障签名和重复次数；故障变化时输出 worker_report_failed，恢复时输出 worker_report_recovered。诊断重新构造错误类别与 cause 结构，不传递原错误消息或命令输出。该状态只去重，不承担重试或恢复职责。
+`configuration-diagnostics.ts` 接收拥有事实的 exchange、manager 与持久化边界事件，保存本次运行的失败分组与实际次数。首次失败、固定原因或相关目标变化、对应操作恢复立即输出；持续同因失败由现有调用周期每五分钟最多输出一条 summary，不新增操作重试。签名包含组件、实际阶段、key、固定原因与相关目标身份，排除 requestId、syncId、generation、时间、次数、backoffStep 和 nextAttemptAt；原生目标只用于本机比较，参数和正文不进入事件。occurrences 记录真实失败发生次数，backoffStep 仅说明封顶退避档位。普通采集字段和 report 子系统分别保留故障及恢复；诊断状态不承担执行、重放或恢复职责。
+
+`configuration-failure.ts` 从 ToolSelectionError、OperationError 与受控文件操作生成固定原因。工具类型以 reason 保留原闭合 code，并保留有限 tool/context/stage；Operation 保留 kind，文件边界保留经过识别的 systemCode。任意对象属性和错误消息不参与分类。云端应用观测继续使用既有 code/category/phase，monitoring 映射到其固定英文摘要，本机允许的结构化细节不进入公开 DTO。采集与传输日志仍重新构造安全类别及 cause 结构，不带命令、输出或凭据。formatter 与通知错误单独保留原链，不把已成功应用改为失败，也不确认或丢弃 lastFailure。
+
+JSONL 在顶层保留 workerId、component、phase，嵌套 configuration 只显式投影允许字段。source 含 state、generation、desiredRevision、observationRevision；state 分别为 unread、uninitialized、initialized，未知基线用 null，合法初始基线保留字符串 "0"。unread 可以携带缓存已知计数，但不能据此宣称本轮已认证读取服务。source 表示该操作捕获的本机状态，received 单独记录可信 GET/回执已返回的 desiredRevision 与 observationRevision；即使本机仍为 10、服务已返回 5，也不能在持久化前把两者混为一份状态。previousSource 可关联重新对齐前的权威；reportId、recordId/recordIds、syncId 与可用 requestId 按实际已有事实关联原捕获和具体请求。syncId 随 receive/acknowledge 的原提交上下文进入冻结检查点，存储重试和完成事件保留该轮关联。应用的 generation、targetRevision 属于原记录，不能以 source.generation 或 source.desiredRevision 替换；较高版本停止仍可与较低当前目标并存。终端使用相同已清洗字段的紧凑摘要，保留原因、key/目标、source/received、关联及确定性和次数；完整 recordIds 批次与细节留在 JSONL，避免单条终端事件被大批记录淹没。
+
+remote 记录 not_sent、confirmed、rejected 或 unknown；local 记录 not_attempted、pending、persisted 或 ignored。收到可信回执后，缓存未完成或等待者结束只改变本地进度，保留 remote=confirmed/local=pending；旧代回执可以 remote=confirmed/local=ignored。observationAccepted 独立保留回执中的实际布尔值，HTTP 200 且 false 仍为已确认的报告结果，不能据此宣称应用观测已接纳。cache-persist 的 storagePhase 单独标明 read、directory 或 persist，避免把初始读与目录错误都称为写入失败。已经派发但没有可信结果才是 remote=unknown。诊断不反向驱动状态转换，缺少日志不能证明请求未派发或结果已持久化。
 
 传输、响应解析及 principal 不一致使本次失败；服务端 `409 active_worker_limit_exceeded` 同样按报告失败处理，不改变本机执行。后续触发重新收集并发送；响应丢失不证明服务端未写入，也不授权重放。机器采集与清单没有 SQLite 元数据、报告历史或跨进程日志恢复。服务端保持最新观测并按当前权限规范化引用，故客户端无需在本机保存另一份任务展示状态。配置应用与观测确认使用独立 JSON owner，不复用任务索引或机器报告去重状态。
 
+### 查询配置日志
+
+对本次运行中完整有效的 segment 设置 WORKER_LOG；WORKER_ID、KEY_KIND、TARGET_REVISION、SYNC_ID 和 REQUEST_ID 使用日志实际值。原生项与项目项均可按 Worker、key kind 和原项目标筛选；项目项可继续过滤 configuration.key.projectId：
+
+```bash
+jq -c --arg worker "$WORKER_ID" --arg key "$KEY_KIND" --arg target "$TARGET_REVISION" \
+  'select(.workerId == $worker and .configuration.key.kind == $key and .configuration.targetRevision == $target)' "$WORKER_LOG"
+jq -c --arg sync "$SYNC_ID" 'select(.configuration.syncId == $sync)' "$WORKER_LOG"
+jq -c --arg request "$REQUEST_ID" 'select(.configuration.requestId == $request)' "$WORKER_LOG"
+```
+
+日志 sink 的新 run/segment、未知 append 和未派发遗漏由[存储与日志设计](daynight-worker.md#临时存储恢复与准入)拥有。旧 segment 可以带部分尾部；先检查恢复 summary 中的路径与计数，再单独检查旧文件，不能将损坏尾部连同新段作为完整 JSONL 输入，也不能从可解析记录还原可靠丢失账本。日志只供诊断，不作为恢复输入。
+
 ## 验证结构
 
-reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次。配置测试核对不可变 token、较低/同版本异内容/null 权威、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
+reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。配置诊断以受控时钟核对首次、原因变化、五分钟 summary、真实次数与恢复，动态关联字段不能破坏分组。真实 JSONL 与 segment 读回验证字段投影、原项/当前权威分别关联、凭据脱敏、部分 append 不重放及错误链。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次，并核对实际失败阶段与远端/本地确定性。配置测试核对不可变 token、较低/同版本异内容/null 权威、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
 
 collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。
 

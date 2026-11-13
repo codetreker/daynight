@@ -2951,6 +2951,27 @@ exact loss ledger. Periodic flush joins current work; final close stops retry
 scheduling and joins file/notification work after all emitters and stores finish.
 Formatting, stdout/stderr and independent notification errors retain their chains.
 
+Configuration diagnostics preserve the actual authority read, bootstrap
+preparation, telemetry collection, observation capture, report send, receipt
+acceptance, cache persistence and application stage. Queryable `configuration`
+metadata includes the original item target and record, the current authority
+generation and baseline, report/sync IDs and an available HTTP request ID. Unread
+authority, initialized authority and an uninitialized service are distinct;
+`"0"` remains a valid initial observation baseline. Typed tool failures and
+controlled file errors retain fixed reasons without recording native arguments,
+command output or credentials. Remote confirmation stays confirmed while its
+local checkpoint is pending, including after the report waiter ends. Diagnostic
+failures do not change application or receipt outcomes.
+
+The first failure, changed reason or target, and genuine recovery are emitted
+immediately. Continuing failures produce at most one summary per five minutes
+through existing cycles. `occurrences` counts actual failures in this run;
+`backoffStep` describes the separately capped retry delay. Dynamic request IDs and
+timestamps do not split the same cause into new groups. The
+[configuration diagnostics design](../../docs/design/daynight-worker-reporting.md#失败与可观察性)
+defines the complete fields, certainty values, `jq` filters by Worker/key/target,
+sync ID or request ID, and the limits of querying an older partial segment.
+
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
 known session ID. After credential redaction, the terminal renderer shortens each
 full hyphenated GUID in context, messages and error chains to its first eight

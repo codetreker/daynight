@@ -155,6 +155,26 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("persists a confirmed receipt when its diagnostic notification throws and retains that original error for shutdown", async () => {
+    const f = await fixture(), original = new Error("configuration diagnostic formatter failed", { cause: new Error("original diagnostic cause") });
+    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(observationRevision), observation: null }));
+    let failed = false;
+    mocks.emit.mockImplementation(event => {
+      if (!failed && event.configuration?.phase === "report-send" && event.configuration.status === "succeeded") { failed = true; throw original; }
+    });
+    const running = start(f);
+    await eventually(() => expect(mocks.createdConfiguration).toHaveBeenCalledOnce());
+    const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+    await eventually(() => { expect(failed).toBe(true); expect(observationRevision).toBeGreaterThan(0n); expect(manager.current().observationRevision).toBe(String(observationRevision)); });
+    expect(report.mock.calls.map(([, , captured]) => captured.observation?.baseRevision)).toEqual([...new Set(report.mock.calls.map(([, , captured]) => captured.observation?.baseRevision))]);
+    f.signal.abort(); await expect(running).rejects.toBe(original);
+    const persisted = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } };
+    expect(persisted.authority.observationRevision).toBe(String(observationRevision));
+    expect(original.cause).toBeInstanceOf(Error);
+  });
+
   it.each(["lower", "same-revision"] as const)("reconciles a restarted %s target and cursor from the authenticated service", async scenario => {
     const f = await fixture();
     const cached: WorkerCloudDesired = { ...target, revision: "10", value: { ...target.value, projects: [], maxConcurrent: 8, native: { ...target.value.native, model: "cached-model" } } };
@@ -331,7 +351,7 @@ describe("worker runtime configuration reporting", () => {
     await eventually(() => expect(accepted.some(configuration => configuration.observation?.items.some(item => item.key.kind === "native" && item.state === "applied"))).toBe(true));
     const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
     const acknowledgement = manager.acknowledge, committed = deferred<void>();
-    const observeAcknowledgement = vi.spyOn(manager, "acknowledge").mockImplementation(async (...args) => { await acknowledgement(...args); committed.resolve(); });
+    const observeAcknowledgement = vi.spyOn(manager, "acknowledge").mockImplementation(async (...args) => { const outcome = await acknowledgement(...args); committed.resolve(); return outcome; });
     const reporter = mocks.createdReporter.mock.calls[0]![0] as ReturnType<typeof createWorkerReporter>;
     reporter.trigger(); await committed.promise;
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -1031,6 +1051,14 @@ describe("worker runtime configuration reporting", () => {
       const expectedReceipt = String(BigInt(baseline) + 1n);
       releaseReceipt.resolve();
       await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked" })));
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked", configuration: expect.objectContaining({
+        phase: "cache-persist", storagePhase: "persist", remote: "confirmed", local: "pending", syncId: expect.any(String), reportId: expect.any(String),
+        source: expect.objectContaining({ observationRevision: baseline }),
+      }) }));
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({
+        phase: "receipt-accept", status: "started", remote: "confirmed", local: "pending", observationAccepted: true,
+        received: expect.objectContaining({ observationRevision: expectedReceipt }), source: expect.objectContaining({ observationRevision: baseline }),
+      }) }));
       expect(mocks.coordinator.mock.calls[0]![0].configurationComplete()).toBe(false);
       await vi.advanceTimersByTimeAsync(5_000);
       await writing.promise;
