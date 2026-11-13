@@ -3,7 +3,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
-import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph } from './helpers/taskSync';
+import { TEST_VIEWER_ID, viewerHeaders, taskSyncFromGraph, directAccessFixture } from './helpers/taskSync';
 import { wireResponse } from './helpers/wireJson';
 import { createTerminalSessionApi, type SessionHistoryItem } from '../src/api/terminal-sessions';
 import { ApiError, pauseAuthRequests, subscribeUnauthorized } from '../src/api/client';
@@ -183,15 +183,33 @@ it('withdraws direct records and selection across a batched access recheck, and 
   expect(api.history.mock.calls.map(call => call[0])).toEqual([null, 'next', null, null]);
 });
 
-it('does not retry direct records while project access is uncertain or its recheck fails', async () => {
+it.each(['same account', 'different account'] as const)('does not retry direct records until project access is rechecked for the %s', async account => {
+  TestChannel.channels = []; TestChannel.suspended = false; TestChannel.holdClear = false; TestChannel.held = []; TestChannel.holdHint = false; TestChannel.heldHints = [];
+  vi.stubGlobal('BroadcastChannel', TestChannel);
   let sessions!: TaskDetailSessions;
   const { scope, api } = setup(epoch, value => { sessions = value; });
   fireEvent.click(await screen.findByRole('button', { name: /Herdr/ }));
-  const emit = (scope as unknown as { emit(event: { projectId: string; directAccessUncertain?: true; directAccessRecheck?: true; error?: unknown }): void }).emit.bind(scope);
-  act(() => emit({ projectId, directAccessUncertain: true }));
+  const sender = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(sender);
+  const ticket = await sender.beginSync(projectId, sender.signal);
+  const firstAccess = Promise.withResolvers<Response>(); let accessReads = 0;
+  const fetcher = vi.fn(async (url: string) => {
+    if (url.endsWith('/access')) {
+      if (++accessReads === 1) return firstAccess.promise;
+      const viewer = account === 'same account' ? TEST_VIEWER_ID : '00000000-0000-4000-8000-000000000202';
+      return wireResponse(directAccessFixture(projectId), { headers: viewerHeaders(viewer) });
+    }
+    return wireResponse(detailFixture(projectId, taskId), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Daynight-Task-Epoch': epoch }) });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const events: { directAccessUncertain?: true; directAccessRecheck?: true; error?: unknown }[] = [];
+  const unsubscribe = scope.subscribe(event => events.push(event));
+  await act(async () => { await sender.revokeProject(ticket, sender.signal); });
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessUncertain: true })));
+  await waitFor(() => expect(accessReads).toBe(1));
   expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  act(() => emit({ projectId, directAccessRecheck: true, error: new Error('Access check failed') }));
+  await act(async () => firstAccess.reject(new TypeError('Access check failed')));
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessRecheck: true, error: expect.anything() })));
   fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await act(async () => { await Promise.resolve(); });
   expect(api.history).toHaveBeenCalledOnce();
@@ -199,9 +217,17 @@ it('does not retry direct records while project access is uncertain or its reche
   expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
   api.history.mockResolvedValueOnce({ items: [second], nextCursor: null });
   act(() => sessions.load(projectId, taskId, 1, 'refresh'));
-  expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toHaveAttribute('aria-pressed', 'false');
-  expect(api.history.mock.calls.map(call => call[0])).toEqual([null, null]);
+  if (account === 'same account') {
+    expect(await screen.findByRole('button', { name: /2026-11-02.*Herdr/ })).toHaveAttribute('aria-pressed', 'false');
+    expect(api.history.mock.calls.map(call => call[0])).toEqual([null, null]);
+  } else {
+    await waitFor(() => expect(scope.hasIdentityMismatch).toBe(true));
+    expect(api.history).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: /Herdr/ })).toBeNull();
+  }
+  expect(accessReads).toBeGreaterThanOrEqual(2);
   expect(screen.queryByRole('button', { name: 'Close recording' })).toBeNull();
+  unsubscribe();
 });
 
 it.each(['same mount', 'remount'] as const)('recovers direct records after confirmed project withdrawal and reauthorization on %s', async mode => {
