@@ -9,6 +9,7 @@ import (
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/cors"
+	githubhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth"
@@ -97,6 +98,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
+	githubhttp.RegisterReadRoutes(mux, app.GitHubRead, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	teamhttp.RegisterDirectMemberRoutes(mux, app.DirectMembers, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
