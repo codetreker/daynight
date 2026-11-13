@@ -15,13 +15,14 @@ export const AssigneeAvatar = ({ person, name }: { readonly person?: ProjectPers
   </span>;
 };
 
-export const TaskAssigneeIdentity = ({ projectId, assignedTo, compact = false }: { readonly projectId: string; readonly assignedTo: string | null; readonly compact?: boolean }) => {
+export const TaskAssigneeIdentity = ({ projectId, assignedTo, compact = false, id }: { readonly projectId: string; readonly assignedTo: string | null; readonly compact?: boolean; readonly id?: string }) => {
   const { messages: { assignment: m } } = useI18n();
   const { people } = useTaskAssigneeDemand(projectId, [assignedTo]);
   const person = assignedTo === null ? undefined : people.get(assignedTo);
   const name = assignedTo === null ? m.unassigned : personName(person, assignedTo);
   const fullName = `${m.personLabel({ name })}${person?.hasProjectAccess === false ? ` · ${m.formerMember}` : ''}`;
   return <span className={`task-assignee-identity${compact ? ' task-assignee-identity-compact' : ''}`} title={fullName} aria-label={fullName}>
+    {id !== undefined && <span id={id} hidden>{fullName}</span>}
     <AssigneeAvatar {...(person === undefined ? {} : { person })} name={assignedTo === null ? null : name} />
     <span className="assignee-name">{name}</span>
     {person?.hasProjectAccess === false && <span className="assignee-former" aria-hidden="true">{m.formerMember}</span>}

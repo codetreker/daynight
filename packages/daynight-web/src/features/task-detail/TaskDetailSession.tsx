@@ -208,7 +208,7 @@ export class TaskDetailSessions {
         }
         if (entry.source === "direct" && event.directAccessRecheck && entry.directAccessPending) {
           if (event.error !== undefined) {
-            if (!event.scopeSuspended) { entry.directAccessPending = false; entry.admitted = true; }
+            if (!event.scopeSuspended) entry.admitted = true;
             this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
           }
           else {

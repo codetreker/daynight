@@ -19,15 +19,17 @@ type ClockProps = {
   readonly snapshot: GraphSnapshot | null;
   readonly children: ReactNode;
 };
-const ClockScope = ({ projectId, snapshot, children }: ClockProps) => {
-  if (snapshot !== null && snapshot.graph.project.id !== projectId) throw new Error("The task execution clock requires its project's graph snapshot.");
-  const [clock] = useState(() => createTaskExecutionClock(inputFor(snapshot)));
+export const ClockInputProvider = ({ input, children }: { readonly input: ClockInput | null; readonly children: ReactNode }) => {
+  const [clock] = useState(() => createTaskExecutionClock(input));
   useLayoutEffect(() => clock.mount(), [clock]);
-  useLayoutEffect(() => { clock.update(inputFor(snapshot)); }, [clock, snapshot]);
+  useLayoutEffect(() => { clock.update(input); }, [clock, input]);
   return <ClockContext.Provider value={clock}>{children}</ClockContext.Provider>;
 };
 
-export const TaskExecutionClockProvider = (props: ClockProps) => <ClockScope key={props.projectId} {...props} />;
+export const TaskExecutionClockProvider = ({ projectId, snapshot, children }: ClockProps) => {
+  if (snapshot !== null && snapshot.graph.project.id !== projectId) throw new Error("The task execution clock requires its project's graph snapshot.");
+  return <ClockInputProvider key={projectId} input={inputFor(snapshot)}>{children}</ClockInputProvider>;
+};
 export const useTaskExecutionClock = () => useContext(ClockContext);
 
 export const useTaskExecution = (task: ExecutionTask): TaskExecution | null => {

@@ -1,4 +1,4 @@
--- Schema snapshot version: 68
+-- Schema snapshot version: 72
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -7,6 +7,155 @@ BEGIN
     RAISE EXCEPTION 'webhook policies are immutable';
 END
 $$;
+
+CREATE TABLE "assistant_task_appendix" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "text" "text" NOT NULL,
+    "source_records" "jsonb" NOT NULL,
+    "author_bot_id" "uuid",
+    "state" "text" NOT NULL,
+    "version" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_claim_operations" (
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "operation_id" "uuid" NOT NULL,
+    "kind" "text" NOT NULL,
+    "actor_bot_id" "uuid",
+    "request_fingerprint" "text" NOT NULL,
+    "admitted_at" timestamp with time zone NOT NULL,
+    "resulting_version" bigint NOT NULL,
+    "resulting_generation" bigint NOT NULL,
+    "holder_bot_id" "uuid",
+    "credential_operation_id" "uuid",
+    "lease_until" timestamp with time zone
+);
+
+CREATE TABLE "assistant_task_events" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "target_bot_id" "uuid" NOT NULL,
+    "type" "text" NOT NULL,
+    "payload" "jsonb" NOT NULL,
+    "state" "text" NOT NULL,
+    "attention" boolean NOT NULL,
+    "delivered_at" timestamp with time zone,
+    "seen_at" timestamp with time zone,
+    "ack_operation_id" "uuid",
+    "ack_fingerprint" "text",
+    "created_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_inquiries" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "item_id" "uuid",
+    "from_bot_id" "uuid" NOT NULL,
+    "to_bot_id" "uuid" NOT NULL,
+    "answer_bot_id" "uuid",
+    "question" "text" NOT NULL,
+    "answer" "text" NOT NULL,
+    "state" "text" NOT NULL,
+    "deadline" timestamp with time zone NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "answered_at" timestamp with time zone
+);
+
+CREATE TABLE "assistant_task_items" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "key" "text" NOT NULL,
+    "episode" bigint NOT NULL,
+    "state" "text" NOT NULL,
+    "category" "text" NOT NULL,
+    "follower_bot_id" "uuid",
+    "app_state" "jsonb" NOT NULL,
+    "version" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_manual_versions" (
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "version" bigint NOT NULL,
+    "body" "text" NOT NULL,
+    "rules" "jsonb" NOT NULL,
+    "source" "text" NOT NULL,
+    "proposal_id" "uuid",
+    "created_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_proposals" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "base_version" bigint NOT NULL,
+    "body" "text" NOT NULL,
+    "rules" "jsonb" NOT NULL,
+    "reason" "text" NOT NULL,
+    "evidence_records" "jsonb" NOT NULL,
+    "author_bot_id" "uuid",
+    "widens" boolean NOT NULL,
+    "status" "text" NOT NULL,
+    "decision_note" "text" NOT NULL,
+    "decided_at" timestamp with time zone,
+    "created_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_task_records" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "item_id" "uuid",
+    "author" "text" NOT NULL,
+    "author_bot_id" "uuid",
+    "kind" "text" NOT NULL,
+    "text" "text" NOT NULL,
+    "refs" "jsonb" NOT NULL,
+    "created_at" timestamp with time zone NOT NULL
+);
+
+CREATE TABLE "assistant_tasks" (
+    "id" "uuid" NOT NULL,
+    "owner_user_id" "uuid" NOT NULL,
+    "request_fingerprint" "text" NOT NULL,
+    "application" "text" NOT NULL,
+    "name" "text" NOT NULL,
+    "purpose" "text" NOT NULL,
+    "scope" "text" NOT NULL,
+    "kind" "text" NOT NULL,
+    "state" "text" NOT NULL,
+    "takeover" "text" NOT NULL,
+    "trigger" "jsonb",
+    "version" bigint NOT NULL,
+    "manual_version" bigint NOT NULL,
+    "claim_generation" bigint NOT NULL,
+    "holder_bot_id" "uuid",
+    "claim_token_hash" "text",
+    "credential_operation_id" "uuid",
+    "claimed_at" timestamp with time zone,
+    "renewed_at" timestamp with time zone,
+    "lease_until" timestamp with time zone,
+    "record_last_created_at" timestamp with time zone,
+    "record_last_id" "uuid",
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL
+);
 
 CREATE TABLE "bot_configuration_preferences" (
     "user_id" "uuid" NOT NULL,
@@ -327,6 +476,16 @@ CREATE TABLE "project_github" (
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL
 );
 
+CREATE TABLE "project_github_pending_prs" (
+    "project_id" "uuid" NOT NULL,
+    "number" bigint NOT NULL,
+    "generation" bigint NOT NULL,
+    "request_id" "uuid" NOT NULL,
+    "delivery_id" "text" NOT NULL,
+    "received_at" timestamp with time zone NOT NULL,
+    "next_attempt_at" timestamp with time zone NOT NULL
+);
+
 CREATE SEQUENCE "project_grant_versions"
     START WITH 1
     INCREMENT BY 1
@@ -394,6 +553,16 @@ CREATE TABLE "project_pull_requests" (
     "seen_poll_id" "uuid"
 );
 
+CREATE TABLE "project_tags" (
+    "id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "name" "text" NOT NULL,
+    "name_key" "text" NOT NULL COLLATE "pg_catalog"."C",
+    "version" bigint DEFAULT 1 NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL
+);
+
 CREATE TABLE "projects" (
     "id" "uuid" NOT NULL,
     "name" "text" NOT NULL,
@@ -404,6 +573,7 @@ CREATE TABLE "projects" (
     "settings_version" bigint DEFAULT 1 NOT NULL,
     "task_cache_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "deleted_at" timestamp with time zone,
+    "tag_catalog_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     CONSTRAINT "projects_execution_warning_minutes_check" CHECK (("execution_warning_minutes" > 0)),
     CONSTRAINT "projects_name_check" CHECK (("btrim"("name") <> ''::"text")),
     CONSTRAINT "projects_repo_url_check" CHECK (("btrim"("repo_url") <> ''::"text")),
@@ -767,6 +937,12 @@ CREATE TABLE "task_steps" (
     CONSTRAINT "task_steps_id_check" CHECK (("id" ~ '^[0-9a-f]{8}$'::"text")),
     CONSTRAINT "task_steps_position_check" CHECK (("position" >= 0)),
     CONSTRAINT "task_steps_status_check" CHECK (("status" = ANY (ARRAY['todo'::"text", 'in_progress'::"text", 'done'::"text", 'skipped'::"text"])))
+);
+
+CREATE TABLE "task_tags" (
+    "project_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "tag_id" "uuid" NOT NULL
 );
 
 CREATE TABLE "task_thread_messages" (
@@ -1246,6 +1422,33 @@ CREATE TABLE "workers" (
     CONSTRAINT "workers_telemetry_check" CHECK (("jsonb_typeof"("telemetry") = 'object'::"text"))
 );
 
+ALTER TABLE ONLY "assistant_task_appendix"
+    ADD CONSTRAINT "assistant_task_appendix_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "assistant_task_claim_operations"
+    ADD CONSTRAINT "assistant_task_claim_operations_pkey" PRIMARY KEY ("owner_user_id", "task_id", "operation_id");
+
+ALTER TABLE ONLY "assistant_task_events"
+    ADD CONSTRAINT "assistant_task_events_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "assistant_task_inquiries"
+    ADD CONSTRAINT "assistant_task_inquiries_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "assistant_task_items"
+    ADD CONSTRAINT "assistant_task_items_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "assistant_task_manual_versions"
+    ADD CONSTRAINT "assistant_task_manual_versions_pkey" PRIMARY KEY ("task_id", "version");
+
+ALTER TABLE ONLY "assistant_task_proposals"
+    ADD CONSTRAINT "assistant_task_proposals_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "assistant_task_records"
+    ADD CONSTRAINT "assistant_task_records_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "assistant_tasks"
+    ADD CONSTRAINT "assistant_tasks_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "bot_configuration_preferences"
     ADD CONSTRAINT "bot_configuration_preferences_pkey" PRIMARY KEY ("user_id", "worker_id");
 
@@ -1336,6 +1539,9 @@ ALTER TABLE ONLY "private_upload_chunks"
 ALTER TABLE ONLY "private_upload_chunks"
     ADD CONSTRAINT "private_upload_chunks_transfer_id_object_id_key" UNIQUE ("transfer_id", "object_id");
 
+ALTER TABLE ONLY "project_github_pending_prs"
+    ADD CONSTRAINT "project_github_pending_prs_pkey" PRIMARY KEY ("project_id", "number");
+
 ALTER TABLE ONLY "project_github"
     ADD CONSTRAINT "project_github_pkey" PRIMARY KEY ("project_id");
 
@@ -1353,6 +1559,9 @@ ALTER TABLE ONLY "project_ownership"
 
 ALTER TABLE ONLY "project_pull_requests"
     ADD CONSTRAINT "project_pull_requests_pkey" PRIMARY KEY ("project_id", "number");
+
+ALTER TABLE ONLY "project_tags"
+    ADD CONSTRAINT "project_tags_pkey" PRIMARY KEY ("id");
 
 ALTER TABLE ONLY "projects"
     ADD CONSTRAINT "projects_pkey" PRIMARY KEY ("id");
@@ -1477,6 +1686,9 @@ ALTER TABLE ONLY "task_steps"
 ALTER TABLE ONLY "task_steps"
     ADD CONSTRAINT "task_steps_task_id_position_key" UNIQUE ("task_id", "position") DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY "task_tags"
+    ADD CONSTRAINT "task_tags_pkey" PRIMARY KEY ("project_id", "task_id", "tag_id");
+
 ALTER TABLE ONLY "task_thread_messages"
     ADD CONSTRAINT "task_thread_messages_pkey" PRIMARY KEY ("task_id", "message_id");
 
@@ -1561,6 +1773,32 @@ ALTER TABLE ONLY "worker_prompts"
 ALTER TABLE ONLY "workers"
     ADD CONSTRAINT "workers_pkey" PRIMARY KEY ("user_id", "worker_id");
 
+CREATE INDEX "assistant_task_appendix_page" ON "assistant_task_appendix" USING "btree" ("task_id", "created_at", "id");
+
+CREATE INDEX "assistant_task_events_page" ON "assistant_task_events" USING "btree" ("task_id", "created_at", "id");
+
+CREATE INDEX "assistant_task_events_target_state" ON "assistant_task_events" USING "btree" ("target_bot_id", "state");
+
+CREATE INDEX "assistant_task_inquiries_page" ON "assistant_task_inquiries" USING "btree" ("task_id", "created_at", "id");
+
+CREATE INDEX "assistant_task_inquiries_state_deadline" ON "assistant_task_inquiries" USING "btree" ("state", "deadline");
+
+CREATE UNIQUE INDEX "assistant_task_items_open_key" ON "assistant_task_items" USING "btree" ("task_id", "key") WHERE ("state" = 'open'::"text");
+
+CREATE INDEX "assistant_task_items_page" ON "assistant_task_items" USING "btree" ("task_id", "created_at", "id");
+
+CREATE INDEX "assistant_task_proposals_page" ON "assistant_task_proposals" USING "btree" ("task_id", "created_at", "id");
+
+CREATE INDEX "assistant_task_records_item_page" ON "assistant_task_records" USING "btree" ("task_id", "item_id", "created_at", "id");
+
+CREATE INDEX "assistant_task_records_page" ON "assistant_task_records" USING "btree" ("task_id", "created_at", "id");
+
+CREATE INDEX "assistant_tasks_holder" ON "assistant_tasks" USING "btree" ("holder_bot_id", "state");
+
+CREATE UNIQUE INDEX "assistant_tasks_owner_application" ON "assistant_tasks" USING "btree" ("owner_user_id", "application") WHERE (("application" <> ''::"text") AND ("state" <> 'deleted'::"text"));
+
+CREATE INDEX "assistant_tasks_owner_page" ON "assistant_tasks" USING "btree" ("owner_user_id", "created_at", "id");
+
 CREATE INDEX "bots_owner_list" ON "bots" USING "btree" ("owner_user_id", "created_at", "id") WHERE ("deletion" IS NULL);
 
 CREATE INDEX "bots_worker_list" ON "bots" USING "btree" ("owner_user_id", "worker_id", "created_at", "id");
@@ -1609,6 +1847,8 @@ CREATE INDEX "project_github_access_due" ON "project_github" USING "btree" ("nex
 
 CREATE INDEX "project_github_binding" ON "project_github" USING "btree" ("app_id", "installation_id", "repository_id");
 
+CREATE INDEX "project_github_pending_prs_due" ON "project_github_pending_prs" USING "btree" ("next_attempt_at", "project_id");
+
 CREATE INDEX "project_github_poll_due" ON "project_github" USING "btree" ("next_poll_at", "project_id") WHERE "enabled";
 
 CREATE INDEX "project_grants_user" ON "project_grants" USING "btree" ("user_id", "project_id");
@@ -1620,6 +1860,8 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
 CREATE INDEX "project_pull_requests_state_number" ON "project_pull_requests" USING "btree" ("project_id", "state", "number" DESC);
+
+CREATE UNIQUE INDEX "project_tags_project_name_key_idx" ON "project_tags" USING "btree" ("project_id", "name_key");
 
 CREATE INDEX "projects_created_id" ON "projects" USING "btree" ("created_at", "id");
 
@@ -1645,7 +1887,11 @@ CREATE INDEX "task_session_history" ON "task_sessions" USING "btree" ("project_i
 
 CREATE INDEX "task_sessions_project_id_id_task_idx" ON "task_sessions" USING "btree" ("project_id", "id") WHERE ("scope" = 'task'::"text");
 
+CREATE INDEX "task_tags_project_tag_task_idx" ON "task_tags" USING "btree" ("project_id", "tag_id", "task_id");
+
 CREATE INDEX "task_thread_messages_order" ON "task_thread_messages" USING "btree" ("task_id", "created_at", "message_id");
+
+CREATE INDEX "tasks_personal_in_progress" ON "tasks" USING "btree" ("assigned_to", "project_id", "started_at" DESC NULLS LAST, "id") WHERE (("type" = 'task'::"text") AND ("status" = 'in_progress'::"text") AND ("deleted_at" IS NULL));
 
 CREATE INDEX "tasks_project_assigned_to_created_id" ON "tasks" USING "btree" ("project_id", "assigned_to", "created_at", "id") WHERE ("deleted_at" IS NULL);
 

@@ -32,6 +32,8 @@ consistent.
 
 ## Consequences
 
+The [Goal overview graph](../feature/2026-11-13-goal-overview-graph.md) uses this shared layer with a complete Parent-scoped projection and its own actions and framing.
+
 Consumers can provide their own projection, nodes, inspection and framing while
 the existing chain retains its reading behavior. Each consumer remains
 responsible for its own membership, actions and viewport policy; sharing the

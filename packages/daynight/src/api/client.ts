@@ -1,3 +1,5 @@
+import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
+import type { Tag, TagDeletionReceipt, TagListQuery, TagPage } from "./tags.js";
 import { projectWorkerCloudReport, decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
 import { parseObservedTask, parseObservedTaskGraph, parseTaskSessionObservation, taskObservationPartial, unsupportedSessionObservation } from "./task-observation.js";
 import type { ObservedTask, ObservedTaskGraph, TaskObservationList } from "./task-observation.js";
@@ -147,6 +149,11 @@ const safeInvitationFailure = (error: unknown, context: Context): ApiError => {
 export type ApiClient = TaskSessionClient & {
   withExpectedUserId(userId: string): ApiClient;
   webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
+  listTags(projectId: string, query?: TagListQuery): Promise<TagPage>;
+  getTag(projectId: string, tagId: string): Promise<Tag>;
+  createTag(projectId: string, name: string): Promise<Tag>;
+  renameTag(projectId: string, tagId: string, name: string, version: bigint): Promise<Tag>;
+  deleteTag(projectId: string, tagId: string, version: bigint): Promise<TagDeletionReceipt>;
   listBots(): Promise<readonly Bot[]>;
   getBot(botId: string): Promise<Bot>;
   createBot(input: CreateBotInput): Promise<Bot>;
@@ -756,6 +763,68 @@ export const createApiClient = (options: {
         const serverError = code !== undefined && allowed.includes(code) ? { code, message: "Webhook request failed.", requestId: error.requestId !== undefined && error.requestId === error.responseRequestId && validRequestId(error.requestId) ? error.requestId : "unavailable" } : undefined;
         throw new ApiError(context, error.phase, { cause: safeInvitationCause(error.cause), ...(error.status === undefined ? {} : { status: error.status }), ...(serverError === undefined ? {} : { serverError }), confirmedRefusal: error.confirmedRefusal, outcomeUnconfirmed: error.outcomeUnconfirmed, ...(error.confirmedMutationId === undefined ? {} : { confirmedMutationId: error.confirmedMutationId }) });
       }
+    },
+    listTags: async (projectId, input = {}) => {
+      const project = resourceId(projectId), context = { operation: "tag.list", projectId: project };
+      const limit = input.limit ?? 50;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Tag page limit must be an integer from 1 to 100.");
+      if (input.query !== undefined && !isText(input.query)) throw new Error("Tag query must be Unicode text without NUL.");
+      if (input.cursor !== undefined && (!isNonemptyText(input.cursor))) throw new Error("Tag cursor must be nonempty Unicode text without NUL.");
+      const path = resourcePath("projects", project, "tags");
+      const items: Tag[] = [], identities = new Set<string>(), cursors = new Set<string>();
+      let cursor: string | null = input.cursor ?? null, epoch: string | undefined;
+      if (cursor !== null) cursors.add(cursor);
+      try {
+        do {
+          operation.check();
+          const query = new URLSearchParams({ ...(input.query === undefined ? {} : { query: input.query }), limit: String(limit), ...(cursor === null ? {} : { cursor }) });
+          const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse: (value) => parseTagPage(value, project, limit) }, [200]);
+          if (epoch !== undefined && epoch !== page.catalogEpoch) throw new ProtocolError("Tag catalog epoch changed across pages.");
+          epoch = page.catalogEpoch;
+          for (const item of page.items) {
+            if (identities.has(item.id)) throw new ProtocolError("Duplicate tag identity across catalog pages.");
+            identities.add(item.id); items.push(item);
+          }
+          cursor = page.nextCursor;
+          if (cursor !== null) {
+            if (cursors.has(cursor)) throw new ProtocolError("Repeated tag catalog cursor.");
+            cursors.add(cursor);
+          }
+        } while (cursor !== null);
+        operation.check();
+        return { items, catalogEpoch: epoch!, nextCursor: null };
+      } catch (cause) {
+        if (cause instanceof ApiError) throw cause;
+        throw new ApiError(context, "pagination", { cause });
+      }
+    },
+    getTag: (projectId, tagId) => {
+      const project = resourceId(projectId), tag = resourceId(tagId);
+      return exchange({ operation: "tag.show", projectId: project }, resourcePath("projects", project, "tags", tag), "GET", { kind: "json", parse: value => parseTag(value, project, tag) }, [200]);
+    },
+    createTag: (projectId, name) => {
+      const project = resourceId(projectId), path = resourcePath("projects", project, "tags");
+      if (!isText(name)) throw new Error("Tag name must be Unicode text without NUL.");
+      return exchange({ operation: "tag.create", projectId: project }, path, "POST", { kind: "json", parse: (value, metadata) => {
+        const result = parseTag(value, project);
+        if (result.name !== normalizedTagName(name) || result.version !== 1n || metadata.locationHeader !== `/api/v1${path}/${result.id}`) throw new ProtocolError("Tag creation response does not match the request.");
+        return result;
+      }, confirmMutation: result => result.id }, [201], { kind: "json", value: { name } });
+    },
+    renameTag: (projectId, tagId, name, version) => {
+      const project = resourceId(projectId), tag = resourceId(tagId);
+      if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Tag version must be a positive int64.");
+      if (!isText(name)) throw new Error("Tag name must be Unicode text without NUL.");
+      return exchange({ operation: "tag.rename", projectId: project }, resourcePath("projects", project, "tags", tag), "PATCH", { kind: "json", parse: value => {
+        const result = parseTag(value, project, tag);
+        if (result.name !== normalizedTagName(name) || result.version !== version && result.version !== version + 1n) throw new ProtocolError("Tag rename response does not match the request.");
+        return result;
+      }, confirmMutation: result => result.id }, [200], { kind: "json", value: { version, name } });
+    },
+    deleteTag: (projectId, tagId, version) => {
+      const project = resourceId(projectId), tag = resourceId(tagId);
+      if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Tag version must be a positive int64.");
+      return exchange({ operation: "tag.delete", projectId: project }, resourcePath("projects", project, "tags", tag), "DELETE", { kind: "json", parse: value => parseTagDeletionReceipt(value, project, tag), confirmMutation: result => result.tagId }, [200], { kind: "json", value: { version, confirm: true } });
     },
     listBots: () => {
       const principal = accountPrincipal();

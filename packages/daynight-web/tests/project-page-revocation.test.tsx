@@ -517,6 +517,41 @@ it.each(['bound', 'unbound'] as const)('isolates Project and direct detail on a 
   } finally { sessions.dispose(); }
 });
 
+it.each(['during verification', 'after failure'] as const)('restores Project and direct detail with one retry %s of a bound denial', async timing => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const sender = scope(); await admit(sender);
+  const peer = scope(); await admit(peer);
+  const ticket = await sender.beginSync(projectId, sender.signal);
+  const pending = Promise.withResolvers<ReturnType<typeof directAccessFixture>>(); let online = false;
+  const directCheck = vi.spyOn(peer, 'revalidateProjectAccess');
+  vi.mocked(getProject).mockReset().mockResolvedValue(graph.project);
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(() => online ? Promise.resolve(directAccessFixture(projectId)) : pending.promise);
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  let access!: ProjectAccessSession;
+  const Probe = () => { access = useProjectAccessSession(projectId)!; return null; };
+  const sessions = new TaskDetailSessions(peer); sessions.subscribe(projectId, taskId, () => {});
+  const events: { directAccessRecheck?: true; error?: unknown }[] = []; peer.subscribe(event => events.push(event));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
+      <ProjectAccessBoundary projectId={projectId}><Probe /><ProjectPage projectId={projectId} /></ProjectAccessBoundary>
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: graph.project.name });
+    sessions.openDirect(projectId, taskId);
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    await act(async () => { await sender.revokeProject(ticket, sender.signal); });
+    await waitFor(() => expect(directCheck).toHaveBeenCalled());
+    if (timing === 'after failure') {
+      await act(async () => pending.reject(new ApiError('network')));
+      await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessRecheck: true, error: expect.objectContaining({ kind: 'network' }) })));
+    }
+    online = true; act(() => access.retryProjectRead());
+    if (timing === 'during verification') await act(async () => pending.reject(new ApiError('network')));
+    expect(await screen.findByRole('heading', { name: graph.project.name })).toBeVisible();
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+  } finally { pending.reject(new ApiError('network')); directCheck.mockRestore(); observation.mockRestore(); sessions.dispose(); }
+});
+
 it.each(['before verification finishes', 'while cleanup is pending'] as const)('honors one explicit retry %s after an unbound 404', async timing => {
   vi.stubGlobal('BroadcastChannel', Channel);
   const peer = scope(); await admit(peer);
@@ -734,6 +769,7 @@ it.each(['bound', 'unbound'] as const)('recovers Project after a %s hint is inde
     act(() => access.retryProjectRead());
     expect(await screen.findByRole('heading', { name: graph.project.name })).toBeVisible();
     expect(peer.getAuthorizedProject(projectId)).toBeNull();
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
   } finally { sessions.dispose(); }
 });
 

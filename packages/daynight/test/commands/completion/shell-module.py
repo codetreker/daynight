@@ -336,7 +336,7 @@ def scenarios():
         ("project repo after text name", 'daynight project create "Day Night" --re\t', ["project", "create", "Day Night", "--repo"]),
         ("project list JSON", "daynight project list --js\t", ["project", "list", "--json"]),
         ("project show JSON", "daynight project show project-id --js\t", ["project", "show", "project-id", "--json"]),
-        ("root task and local directory collision", "daynight ta\t", ["task"]),
+        ("root task and local directory collision", "daynight tas\t", ["task"]),
         ("task create", "daynight task cre\t", ["task", "create"]),
         ("task delete", "daynight task del\t", ["task", "delete"]),
         ("task delete dependency removal switch", "daynight task delete task-id --remove-dep\t", ["task", "delete", "task-id", "--remove-depends"]),
@@ -645,12 +645,16 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
                 path_index = expected.index(directory_option) + 1
                 if path_index < len(expected) and path_index < len(actual) and expected[path_index].endswith("/") and actual[path_index] == expected[path_index][:-1]:
                     native_expected[path_index] = expected[path_index][:-1]
-            result = {"name": name, "line": line, "cursor": cursor, "argv": actual, "passed": actual == native_expected}
+            task_collision = name == "root task and local directory collision"
+            task_line_valid = not task_collision or (line == "daynight task " and cursor == len(line))
+            result = {"name": name, "line": line, "cursor": cursor, "argv": actual, "passed": actual == native_expected and task_line_valid}
             receipt["scenarios"].append(result)
             if actual != native_expected:
                 raise AssertionError(f"{label}: {name}: expected {native_expected!r}, received {actual!r}, line={line!r}, terminal={output!r}")
             if name in ["root command and local directory collision", "short root command and local directory collision"] and line != keys.split()[0] + " review ":
                 raise AssertionError(f"{label}: command completion must append a space despite the local review directory: {line!r}")
+            if not task_line_valid:
+                raise AssertionError(f"{label}: task completion must append a space despite the local task directory: line={line!r}, cursor={cursor}")
             print(f"PASS {label}: {name}", flush=True)
         for name, line in unchanged:
             actual, cursor, output = shell.complete(line + "\t")
@@ -661,6 +665,7 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
                 raise AssertionError(f"{label}: {name}: expected unchanged {line!r}, received {actual!r}, terminal={output!r}")
             print(f"PASS {label}: {name}", flush=True)
         for name, line, candidates in [
+            ("ambiguous root tag and task prefix", "daynight ta", ["tag", "task"]),
             ("empty root prefix", "daynight ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
             ("empty short root prefix", "dn ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
             ("empty review prefix", "daynight review ", ["run", "list", "ls", "add-repo"]),
@@ -695,10 +700,17 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             ("empty setup shell choice", "daynight completion setup --shell ", ["bash", "zsh"]),
         ]:
             actual, cursor, output = shell.complete(line + "\t\t")
-            missing = [candidate for candidate in candidates if candidate not in output]
+            if name == "ambiguous root tag and task prefix":
+                display = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+                missing = [candidate for candidate in candidates if re.search(r"(?<![\w/-])" + re.escape(candidate) + r"(?![\w/-])", display) is None]
+            else:
+                missing = [candidate for candidate in candidates if candidate not in output]
             removed_setup = name in ["empty root prefix", "empty short root prefix"] and re.search(r"(?<![\w-])setup(?![\w-])", output) is not None
-            receipt["scenarios"].append({"name": name, "line": actual, "cursor": cursor, "passed": not missing and not removed_setup})
+            ambiguous_changed = name == "ambiguous root tag and task prefix" and (actual != line or cursor != len(line))
+            receipt["scenarios"].append({"name": name, "line": actual, "cursor": cursor, "passed": not missing and not removed_setup and not ambiguous_changed})
             shell.clear()
+            if ambiguous_changed:
+                raise AssertionError(f"{label}: {name}: expected unchanged line and cursor, received line={actual!r}, cursor={cursor}")
             if removed_setup:
                 raise AssertionError(f"{label}: {name}: removed setup command is offered: {output!r}")
             if missing:

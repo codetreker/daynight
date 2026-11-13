@@ -192,6 +192,13 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 		applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
 		result = applied.Task
 		if err == nil {
+			var parent taskcore.Mutation
+			parent, err = taskcore.PrepareParentStart(ctx, tx.TaskDAO(), mutation)
+			if err == nil && parent.Changed {
+				_, err = taskcore.ApplyMutation(ctx, tx.TaskDAO(), parent)
+			}
+		}
+		if err == nil {
 			values := []model.Task{result}
 			err = decorateGoalProgress(ctx, tx.TaskDAO(), projectID, values)
 			result = values[0]

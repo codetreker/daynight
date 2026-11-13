@@ -68,8 +68,8 @@ describe('task dependency canvas', () => {
     const emptyExpansion = { ids: [], totalHidden: 0, addedEdges: 0 };
     const nodes: TaskFlowNode[] = [{ id: node.id, position: node.position, type: 'task', width: node.width, height: node.height,
       data: { task: graph.tasks[0]!, kind: node.kind, center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
-        size: { width: node.width, height: node.height }, onInspectTask: noop, onOpenTask: noop, onNavigateExternalTask: noop, onExpandTask: noop,
-        expansions: { prerequisites: emptyExpansion, successors: emptyExpansion }, revealRequest: null } }];
+        size: { width: node.width, height: node.height }, actions: { kind: 'chain', onInspectTask: noop, onOpenTask: noop, onNavigateExternalTask: noop, onExpandTask: noop,
+        expansions: { prerequisites: emptyExpansion, successors: emptyExpansion }, revealRequest: null } } }];
     const dimensions = vi.fn();
     const reset = vi.fn();
     const inspection = { selectedTaskId: null, highlightedIds: new Set<string>() };

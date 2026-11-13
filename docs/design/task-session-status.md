@@ -8,13 +8,13 @@
 
 | `sessions[taskId]` | 角标 | 含义与入口 |
 |---|---|---|
-| `warning` | warning（红） | 任务仍在进行中，会话需要检查，入口可用 |
-| `notice` | notice（黄） | 会话需要响应，入口可用 |
-| `working` | working（绿） | 会话正在工作，入口可用 |
+| `warning` | warning（attention） | 任务仍在进行中，会话需要检查，入口可用 |
+| `notice` | notice（attention） | 会话需要响应，入口可用 |
+| `working` | working（activity） | 会话正在工作，入口可用 |
 | `pending` | 无 | 可靠当前会话正在初始化或同步，入口仍可用 |
 | Task 键缺席 | 无 | 无可靠当前贡献，不产生该贡献的入口 |
 
-生命周期非 active 或明确断线优先于未同步及残留活动；connected 且 synchronized 时，waiting_input 为 notice、idle/stopped 为 warning、working 为 working。active 且未断线的 unknown 活动不提供可靠贡献；缺失 live 或 live fence 不匹配沿用服务端断线归一化，仍可贡献 warning。`pending` 不表示未注册、失败或无会话。HTTP 或解析失败撤销摘要，不能解释为离线、pending 或合法空集合。Provider 已将待处理审批、问题和表单归一为 waiting_input，操作能力不用于推测待处理内容。绿色不代表任务完成或整链所有成员均被观测。
+生命周期非 active 或明确断线优先于未同步及残留活动；connected 且 synchronized 时，waiting_input 为 notice、idle/stopped 为 warning、working 为 working。active 且未断线的 unknown 活动不提供可靠贡献；缺失 live 或 live fence 不匹配沿用服务端断线归一化，仍可贡献 warning。`pending` 不表示未注册、失败或无会话。HTTP 或解析失败撤销摘要，不能解释为离线、pending 或合法空集合。Provider 已将待处理审批、问题和表单归一为 waiting_input，操作能力不用于推测待处理内容。activity 只表达实际工作，不代表任务完成或整链所有成员均被观测；attention 表达需要响应或检查，不能将 warning 的线名或断连／停止本身当作明确失败。
 
 子任务所有有效状态入口使用 `taskDetailUrl` 的 `tab=session` 导航到相应任务页面，随后复用详情的权限、claim 和会话检查；pending 沿用同一无角标入口。标题仍打开概览。链状态入口仅展开成员，不选择任意 Session；链标题仍负责展开或折叠。完整 Current 的读取与控制准入属于详情客户端，列表状态不授予内容或操作权限。
 
@@ -46,9 +46,11 @@ Session entry 只含四态、执行绑定与本次 receipt，并只驻留当前�
 
 ## 视觉与可访问性
 
+配色接入必须遵循[UI 语义角色](../ui-design.md#semantic-color-roles)：working 使用 activity，notice 与 warning 使用 attention，精确色值仅由该文档拥有。观察协议保持不变，明确失败反馈仍由独立 error 角色表达。Task 的生命周期、Session 活动和 runtime 在线健康分别显示，在线绿色连接点不能替代 working 注记。
+
 进行中状态保持无背景和边框的正文。角标使用 Georgia 斜体，回退 Times New Roman/serif，字号 8.5px、行高 12px、字距 0.03em；没有背景、边框、图标或动画。固定状态区域预留右侧余量，绝对定位角标，显隐和词长变化不改变标题、状态坐标或行高。
 
-标题与状态入口为同级控件。有效入口至少 44px 高，鼠标、触屏和键盘使用同一动作。悬浮或键盘焦点提供具体状态说明，aria-label 同时包含任务名、状态和动作；文字与颜色共同表达语义。状态更新不重新挂载行或改变标题、焦点和展开状态。
+标题与状态入口为同级控件。有效入口至少 44px 高，鼠标、触屏和键盘使用同一动作。悬浮或键盘焦点提供具体状态说明，aria-label 同时包含任务名、状态和动作；文字与颜色共同表达语义。默认、悬停及焦点状态均须满足 UI 角色的文字对比度与焦点可见要求。状态更新不重新挂载行或改变标题、焦点和展开状态。
 
 ## 验证边界
 

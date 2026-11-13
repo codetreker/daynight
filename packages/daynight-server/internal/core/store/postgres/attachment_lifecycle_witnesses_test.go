@@ -263,7 +263,7 @@ func TestAttachmentLifecycleObservesDeletionCommitAndRollback(t *testing.T) {
 			})
 			attachmentWitnessWait(t, ctx, reached)
 			var deletingPID int32
-			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'UPDATE tasks%' OR query LIKE 'UPDATE projects%')`).Scan(&deletingPID); err != nil {
+			if err := f.database.Pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE application_name=current_schema() AND state='idle in transaction' AND (query LIKE 'UPDATE tasks%' OR query LIKE 'DELETE FROM project_github_pending_prs%')`).Scan(&deletingPID); err != nil {
 				t.Fatal(err)
 			}
 			mutation := attachmentWitnessAsync(t, ctx, func() error {

@@ -621,9 +621,14 @@ export class TaskCacheScope {
               }
               return;
             }
-            this.directRecheckErrors.delete(projectId);
-            if (accessible) this.emit({ projectId, accessRestored: true, directAccessRecheck: true }, true, true);
-            else this.emit({ projectId, directAccessRecheck: true, error: new ApiError("server", 404, "not_found") }, true, true);
+            if (accessible) {
+              this.directRecheckErrors.delete(projectId);
+              this.emit({ projectId, accessRestored: true, directAccessRecheck: true }, true, true);
+            } else {
+              const error = new ApiError("server", 404, "not_found");
+              this.directRecheckErrors.set(projectId, error);
+              this.emit({ projectId, directAccessRecheck: true, error }, true, true);
+            }
             return;
           } catch (error) {
             if (!this.isInvalidated && (this.directHintCounts.has(projectId) || this.isProjectSuspended(projectId) || this.directRecheckPending.has(projectId))) {
@@ -1602,7 +1607,7 @@ export class TaskCacheScope {
       if (denial.inFlight || denial.retry === null) { denial.retryRequested = true; return; }
       if (denial.timer !== null) clearTimeout(denial.timer);
       denial.timer = null; denial.retry();
-    } else if (this.directRecheckErrors.has(projectId)) {
+    } else if (this.directRecheckErrors.has(projectId) || this.directHintCounts.has(projectId) || this.directRecheckPending.has(projectId) || this.directRecheckWorks.has(projectId)) {
       this.directRecheckPending.add(projectId); this.requestDirectAccessRecheck(projectId);
     }
   }

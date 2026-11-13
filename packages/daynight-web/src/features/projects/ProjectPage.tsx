@@ -186,10 +186,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition]);
   if (graphWitness !== null) lastGraphResource.current = graphWitness;
   const openGraphTarget = section === "tasks" && (activeView === "chains" || activeView === "goals")
-    ? resolveProjectGraphTarget(graphWitness, snapshot?.index ?? null) : null;
+    ? resolveProjectGraphTarget(graphWitness, snapshot?.index ?? null, activeView === "goals" ? snapshot?.summaries : undefined) : null;
   openGraph.current = openGraphTarget;
   useLayoutEffect(() => {
-    if (graphWitness === null || snapshot === null || openGraphTarget !== null) return;
+    if (graphWitness === null || snapshot === null || snapshot.receivedAt === null || openGraphTarget !== null) return;
     history.select({ ...selection, projectGraphWitness: null }, true);
     if (section !== "tasks") focusVisible(document.getElementById(`project-section-tab-${section}`));
     else if (activeView !== "chains" && activeView !== "goals") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
@@ -200,6 +200,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false;
     });
   }, [activeView, history.select, selection]);
+  const onOpenGoalGraph = useCallback((id: string, trigger: HTMLElement) => onOpenListChain(id, trigger, id), [onOpenListChain]);
   const onCloseChain = useCallback(() => { history.select({ ...selection, projectGraphWitness: null }, true); }, [history.select, selection]);
 
   const selectedSummary = useRef<{ id: string; revision: number } | null>(null);
@@ -244,6 +245,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   useLayoutEffect(() => { projectMounted.current = true; return () => { projectMounted.current = false; }; }, []);
   const indexForFocus = useRef(snapshot?.index ?? null);
   indexForFocus.current = snapshot?.index ?? null;
+  const summariesForFocus = useRef(snapshot?.summaries);
+  summariesForFocus.current = snapshot?.summaries;
   const restoreFocus = useCallback(() => {
     if (!restoreRequested.current || pendingRetirement.current !== null || previousDetail.current !== null) return;
     const trigger = originalTrigger.current;
@@ -253,11 +256,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (!projectMounted.current || previousDetail.current !== null) return false;
       if (openGraph.current !== null) {
         if (focusVisible(trigger)) return true;
-        return focusVisible(document.getElementById(`task-graph-${openGraph.current.rootId}`)?.querySelector<HTMLButtonElement>('.task-chain-close'));
+        return focusVisible(document.getElementById(`task-graph-${openGraph.current.kind === "chain" ? openGraph.current.rootId : openGraph.current.goalId}`)?.querySelector<HTMLButtonElement>('.task-chain-close'));
       }
       if (fromSearch && (focusVisible(trigger) || focusVisible(searchInput.current))) return true;
       if (origin === null && focusVisible(trigger)) return true;
-      if (focusProjectList(currentView.current, origin, resolveProjectGraphTarget(lastGraphResource.current, indexForFocus.current), indexForFocus.current, lastGraphResource.current)) return true;
+      if (focusProjectList(currentView.current, origin, resolveProjectGraphTarget(lastGraphResource.current, indexForFocus.current, summariesForFocus.current), indexForFocus.current, lastGraphResource.current)) return true;
       if (focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return true;
       if (focusVisible(document.getElementById(`project-section-tab-${currentSection.current}`))) return true;
       return focusVisible(heading.current);
@@ -558,7 +561,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
               standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
-              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onRefreshGraph: graph.refresh, pagination: goalPagination,
+              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onOpenGoalGraph, onOpenGoalGraphTask: onOpenTask, graphError: graph.error, onRefreshGraph: graph.refresh, pagination: goalPagination,
                 summaries: snapshot.summaries, openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: onOpenChainTask, onOpenListTask, onOpenListChain, onGraphRootChange: setChainOverlay, onOpenSession }} />}
             </div>

@@ -1321,6 +1321,30 @@ describe('recent task browsing and pagination', () => {
     await waitFor(() => expect(chainRow(replacement)).toHaveFocus());
   });
 
+  it('retains a Goal graph history witness through an incomplete cached preview', async () => {
+    const goal = canonicalTask(500);
+    const tasks = [{ ...seed(goal), type: 'goal' as const }];
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+    const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
+    selectTasks(); fireEvent.click(tab('goals'));
+    fireEvent.click(document.getElementById(`project-goal-graph-${goal}`)!);
+    expect(document.getElementById(`task-graph-${goal}`)).toBeVisible();
+    first.unmount(); root.remove(); root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    const preview = mockNavigationSnapshot([], 0);
+    state = { ...state, snapshot: { ...preview, observedAt: null, receivedAt: null, revision: 0, localTime: Date.now() } };
+    const second = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
+    expect(readProjectHistory(browserNavigation().snapshot().view, TEST_VIEWER_ID, project)?.projectGraphWitness).toBe(goal);
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
+    state = { ...state, snapshot: mockNavigationSnapshot(tasks, 2) };
+    second.rerender(<ProjectPage projectId={project} />);
+    expect(document.getElementById(`task-graph-${goal}`)).toBeVisible();
+    closeChain();
+    await waitFor(() => expect(document.getElementById(`project-goal-graph-${goal}`)).toHaveFocus());
+    second.unmount(); scope.dispose();
+  });
+
   it('retains a historical Goal chain while its snapshot is pending and restores its list focus without an opener', async () => {
     const goal = canonicalTask(500), source = canonicalTask(1), child = canonicalTask(2);
     const tasks = [{ ...seed(goal), type: 'goal' as const }, { ...seed(source), parentId: goal },

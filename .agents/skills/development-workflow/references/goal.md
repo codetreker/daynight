@@ -21,7 +21,7 @@ This file covers only stage progression and Goal-specific requirements.
 
 Discussions remain `in_progress` without user confirmation; completed prose, agent confidence, successful reviews, and passing CI cannot replace confirmation.
 Substantive revisions after confirmation require renewed confirmation.
-Goal status remains independently controlled and does not replace these stage gates or change Task dependencies.
+A child entering `in_progress` starts a `todo` Goal; Goal status does not replace these stage gates or change Task dependencies.
 Discussion acceptance does not automatically add repository PR merge requirements; only repository artifacts or PR delivery explicitly included in that task are subject to the corresponding delivery conditions.
 
 ## From requirements to solution
@@ -124,7 +124,7 @@ Complete each task under its actual assignment and applicable execution rules; r
 A single done task, an empty ready page, completed requirements, or a completed solution does not mean the whole Goal has been delivered.
 Done and cancelled are both scheduling terminal states. When all members are
 terminal, their scheduling has ended, but cancelled members do not establish successful delivery.
-The Goal status remains independent of its members.
+Child completion and cancellation do not automatically end the Goal.
 Cancellation cannot replace a required stage result, source artifact, user
 confirmation or whole-Goal acceptance; judge delivery against the current confirmed
 scope and actual results.

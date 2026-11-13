@@ -238,6 +238,15 @@ global prefix. Ordinary CLI tests own command behavior and its error and
 concurrency cases. The installed suite does not modify the operator's installed
 CLI or require live review credentials.
 
+The update supervisor confirms POSIX cleanup only after its invocation's anchor
+has exited, the inherited process group no longer exists, and captured output
+pipes have closed. The 10-second cleanup deadline includes all three checks;
+an unconfirmed cleanup retains the original command error. Descendants that
+leave the inherited process group are outside this guarantee. Windows retains
+attached console handles and uses `taskkill` for tree termination. The
+[cleanup decision](../.agents/notes/implemented/bug-fix/2026-11-13-update-process-group-cleanup.md)
+records the ownership and observation limits.
+
 Ordinary CLI tests retain completion unit tests without launching a real shell
 editor. Real-shell validation has two explicit entries: the complete behavior
 matrix in `shell-module.py`, and the artifact acceptance command
