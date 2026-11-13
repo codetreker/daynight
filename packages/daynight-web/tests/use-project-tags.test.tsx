@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/client";
 import { useProjectTags } from "../src/features/task-tags/useProjectTags";
 
-const state = vi.hoisted(() => ({ list: vi.fn(), listeners: new Set<(event: { projectId: string; accessRevoked?: boolean; accessRestored?: boolean; directAccessUncertain?: boolean }) => void>(), scope: null as any, access: null as null | { revalidateAfterMutation: ReturnType<typeof vi.fn> } }));
+const state = vi.hoisted(() => ({ list: vi.fn(), listeners: new Set<(event: { projectId: string; accessRevoked?: boolean; accessRestored?: boolean; directAccessUncertain?: boolean }) => void>(), scope: null as any, access: null as null | { revalidateAfterMutation: ReturnType<typeof vi.fn>; snapshot: ReturnType<typeof vi.fn> } }));
 vi.mock("../src/api/task-tags", () => ({ listProjectTags: state.list }));
 vi.mock("../src/features/task-cache/TaskCacheProvider", () => ({ useTaskCacheScope: () => state.scope }));
 vi.mock("../src/features/projects/ProjectAccess", () => ({ useProjectAccessSession: () => state.access }));
@@ -12,7 +12,7 @@ const page = (name: string, catalogEpoch = epoch, nextCursor: string | null = nu
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const reset = () => {
   state.listeners.clear(); state.list.mockReset(); state.access = null;
-  state.scope = { userId: "user", signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { state.listeners.add(listener); return () => state.listeners.delete(listener); } };
+  state.scope = { userId: "user", signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { state.listeners.add(listener); return () => state.listeners.delete(listener); } };
 };
 afterEach(() => { vi.useRealTimers(); });
 
@@ -98,17 +98,71 @@ describe("scoped project tag pages", () => {
     await act(async () => { pending.resolve(page("late")); await pending.promise; });
     expect(view.result.current.page?.items[0]?.name).toBe("new account"); expect(oldSignal.aborted).toBe(false);
   });
-  it("permits an explicit retry after a denied catalog read and successful access revalidation", async () => {
-    reset(); const accessCheck = deferred<object | null>();
-    state.access = { revalidateAfterMutation: vi.fn().mockReturnValue(accessCheck.promise) };
+  it("revalidates access on retry after an initial denial check fails, then reloads the catalog", async () => {
+    reset(); const first = deferred<object | null>(), retry = deferred<object | null>();
+    const check = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(retry.promise);
+    state.access = { revalidateAfterMutation: check, snapshot: vi.fn().mockReturnValue({ error: new ApiError("network") }) };
     state.list.mockRejectedValueOnce(new ApiError("server", 403, "forbidden")).mockResolvedValueOnce(page("recovered"));
     const view = renderHook(() => useProjectTags(project));
     await waitFor(() => expect(view.result.current.error).toMatchObject({ status: 403 }));
-    act(() => view.result.current.refresh()); expect(state.list).toHaveBeenCalledTimes(1);
-    await act(async () => { accessCheck.resolve({}); await accessCheck.promise; });
-    expect(state.list).toHaveBeenCalledTimes(1);
+    await act(async () => { first.resolve(null); await first.promise; });
     act(() => view.result.current.refresh());
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+    expect(state.list).toHaveBeenCalledTimes(1);
+    await act(async () => { retry.resolve({}); await retry.promise; });
     await waitFor(() => expect(view.result.current.page?.items[0]?.name).toBe("recovered"));
+    expect(state.list).toHaveBeenCalledTimes(2);
+  });
+  it("does not publish an access retry after revocation", async () => {
+    reset(); const retry = deferred<object | null>();
+    const check = vi.fn().mockResolvedValueOnce(null).mockReturnValueOnce(retry.promise);
+    state.access = { revalidateAfterMutation: check, snapshot: vi.fn().mockReturnValue({ error: new ApiError("network") }) };
+    state.list.mockRejectedValueOnce(new ApiError("server", 404, "not_found"));
+    const view = renderHook(() => useProjectTags(project));
+    await waitFor(() => expect(view.result.current.error).toMatchObject({ status: 404 }));
+    act(() => view.result.current.refresh()); await waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+    act(() => { for (const listener of state.listeners) listener({ projectId: project, directAccessUncertain: true }); });
+    await act(async () => { retry.resolve({}); await retry.promise; });
+    expect(state.list).toHaveBeenCalledTimes(1); expect(view.result.current.page).toBeNull();
+  });
+  it("allows explicit access revalidation after an independent revocation and an unsuccessful check", async () => {
+    reset(); const retry = deferred<object | null>();
+    const check = vi.fn().mockResolvedValueOnce(null).mockReturnValueOnce(retry.promise);
+    state.access = { revalidateAfterMutation: check, snapshot: vi.fn().mockReturnValue({ error: new ApiError("network") }) };
+    state.list.mockResolvedValueOnce(page("first")).mockResolvedValueOnce(page("restored"));
+    const view = renderHook(() => useProjectTags(project));
+    await waitFor(() => expect(view.result.current.page?.items[0]?.name).toBe("first"));
+    state.scope.isProjectSuspended.mockReturnValue(true);
+    act(() => { for (const listener of state.listeners) listener({ projectId: project, accessRevoked: true }); });
+    expect(view.result.current.page).toBeNull(); expect(view.result.current.error).not.toBeNull();
+    act(() => view.result.current.refresh());
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    expect(state.list).toHaveBeenCalledTimes(1);
+    act(() => view.result.current.refresh()); await waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+    state.scope.isProjectSuspended.mockReturnValue(false);
+    await act(async () => { retry.resolve({}); await retry.promise; });
+    await waitFor(() => expect(view.result.current.page?.items[0]?.name).toBe("restored"));
+  });
+  it("retires an access retry on scope switch or deactivation", async () => {
+    for (const mode of ["scope", "inactive"] as const) {
+      reset(); const retry = deferred<object | null>();
+      const check = vi.fn().mockResolvedValueOnce(null).mockReturnValueOnce(retry.promise);
+      state.access = { revalidateAfterMutation: check, snapshot: vi.fn().mockReturnValue({ error: new ApiError("network") }) };
+      state.list.mockRejectedValueOnce(new ApiError("server", 403, "forbidden")).mockResolvedValueOnce(page("new scope"));
+      const view = renderHook(({ active }) => useProjectTags(project, active), { initialProps: { active: true } });
+      await waitFor(() => expect(view.result.current.error).toMatchObject({ status: 403 }));
+      act(() => view.result.current.refresh()); await waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+      if (mode === "scope") {
+        state.scope = { ...state.scope, userId: "other", signal: new AbortController().signal }; view.rerender({ active: true });
+        await waitFor(() => expect(view.result.current.page?.items[0]?.name).toBe("new scope"));
+      } else view.rerender({ active: false });
+      await act(async () => { retry.resolve({}); await retry.promise; });
+      expect(state.list).toHaveBeenCalledTimes(mode === "scope" ? 2 : 1);
+      if (mode === "scope") expect(view.result.current.page?.items[0]?.name).toBe("new scope");
+      else expect(view.result.current.loading).toBe(false);
+      view.unmount();
+    }
   });
   it("retains read errors and cancels in-flight reads on access revocation", async () => {
     reset(); const pending = deferred<ReturnType<typeof page>>();
