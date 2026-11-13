@@ -70,8 +70,12 @@ owners. A high-origin stop continues through a lower target; excluded Projects
 receive current stop verification after the original operation joins, while
 reselected preparation waits for that original stop. Initial retained-Project
 coverage counts only after the manager accepts it under usable authenticated
-authority. Unread, null or unsupported state cannot consume that verification;
-recovery rechecks it, and cached success does not prove that the current
+authority. Unread, null or unsupported state resets coverage and invalidates its
+awaiting pass. Progress and completion remain bound to that pass's reset identity,
+so a late accepted result cannot complete a later recovered round or restore old
+progress. Normal synchronized report generations do not reset this ownership;
+otherwise continuous reporting could prevent the required checks from finishing.
+Recovery rechecks the mappings, and cached success does not prove that the current
 coordinator observed the resources. Startup identity retries
 transient network failures under the instance lock; a transient initial
 configuration GET remains unread and recovers through report preparation.

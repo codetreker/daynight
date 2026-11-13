@@ -666,25 +666,33 @@ export const runWorker = async (options: {
     };
     let initialRemovalsComplete = false;
     let initialRemovalsJob: Promise<void> | undefined;
+    // A reset invalidates an awaiting pass even if usable authority returns before it resumes.
+    let initialRemovalsEpoch = {};
     // Keep progress across capacity retries, but require a new coordinator to observe each binding again.
     const initialRemovalsRegistered = new Set<string>();
     const ensureInitialRemovals = (): Promise<void> => {
       const current = manager.current();
       if (!current.synchronized || current.desired === null) {
+        initialRemovalsEpoch = {};
         initialRemovalsComplete = false;
         initialRemovalsRegistered.clear();
         return Promise.resolve();
       }
       if (initialRemovalsComplete) return Promise.resolve();
       if (initialRemovalsJob !== undefined) return initialRemovalsJob;
+      const epoch = initialRemovalsEpoch;
       const job = (async () => {
         for (const project of getStore().listProjects()) {
           signal.throwIfAborted();
+          if (epoch !== initialRemovalsEpoch) return;
           if (initialRemovalsRegistered.has(project.projectId)) continue;
-          if (!await manager.ensureProjectRemoval(project.projectId, signal)) { initialRemovalsRegistered.clear(); return; }
+          const accepted = await manager.ensureProjectRemoval(project.projectId, signal);
+          if (epoch !== initialRemovalsEpoch) return;
+          if (!accepted) { initialRemovalsRegistered.clear(); return; }
           initialRemovalsRegistered.add(project.projectId);
         }
         const latest = manager.current();
+        if (epoch !== initialRemovalsEpoch) return;
         if (!latest.synchronized || latest.desired === null) { initialRemovalsRegistered.clear(); return; }
         initialRemovalsComplete = true;
       })();
