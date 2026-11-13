@@ -33,6 +33,11 @@ verified actual selection and an online observation. Missing or older facts
 remain readable without implying that the new target has applied. Bounded active
 groups expose incomplete inventory independently of target application.
 
+Tool states use the shared semantic palette: successful application, active
+checking, waiting and failure retain distinct labels and readable contrast.
+Local helper text and focus outlines meet the same contrast requirements without
+changing unrelated configuration styles.
+
 This consumes the [negotiated configuration decision](../architecture/2026-11-11-worker-tool-path-configuration.md).
 The [Web specification](../../../../docs/spec/daynight-web.md#云端运行配置) owns
 the interaction requirements; the [Web design](../../../../docs/design/daynight-web.md#worker-云端配置编辑)
