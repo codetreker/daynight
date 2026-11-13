@@ -59,6 +59,7 @@ type IdentityOperations interface {
 
 // TaskObservationOperations is the observation output consumed by protocol adapters.
 type TaskObservationOperations interface {
+	PersonalTasks(context.Context, model.Principal, int, *string) (task.PersonalTaskPage, error)
 	ObserveGet(context.Context, model.Principal, string, string) (task.ObservedTask, error)
 	ObserveList(context.Context, model.Principal, string, task.TaskListRequest) (task.ObservedTaskPage, error)
 	ObserveGraph(context.Context, model.Principal, string, string) (task.ObservedGraph, error)

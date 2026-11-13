@@ -107,6 +107,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	workerReadOnly := workerhttp.NewReadOnlyRoutes(app.WorkerReadOnly, auth, logger)
 	workerReadOnly.RegisterRoutes(mux)
 	taskhttp.TaskRoutes(mux, app.Tasks, app.TaskObservations, auth, logger)
+	taskhttp.PersonalTaskRoutes(mux, app.TaskObservations.PersonalTasks, auth, logger)
 	sessionhttp.RegisterInspectionRoutes(mux, app.TaskInspection, auth, logger)
 	sessionhttp.RegisterHistoryRoutes(mux, app.TaskHistory, auth, logger)
 	taskhttp.TaskSearchRoutes(mux, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {

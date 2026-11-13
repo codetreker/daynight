@@ -2,10 +2,29 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+// executionIdentity is the subset of a selected Task used to bind a Session
+// observation to the selected snapshot. Worker is optional when the selection
+// did not read properties; the source itself still carries the worker binding.
+type executionIdentity struct {
+	ID      string
+	Version int64
+	Type    model.TaskType
+	Worker  json.RawMessage
+}
+
+func taskExecutionIdentities(tasks []model.Task) []executionIdentity {
+	result := make([]executionIdentity, len(tasks))
+	for i, task := range tasks {
+		result[i] = executionIdentity{ID: task.ID, Version: task.Version, Type: task.Type, Worker: task.Properties["worker"]}
+	}
+	return result
+}
 
 // Selected sources outlive their read-only snapshot as immutable lightweight
 // facts. Live sampling and a fresh authorization snapshot run after release,
@@ -34,6 +53,14 @@ func (s selectedObservationSources) TaskSessionSources(_ context.Context, _ stri
 	return values, nil
 }
 func loadSelectedSources(ctx context.Context, snapshot store.SnapshotScope, projectID string, tasks []model.Task) (store.SnapshotScope, error) {
+	return loadSelectedExecutionSources(ctx, snapshot, projectID, taskExecutionIdentities(tasks))
+}
+
+func loadSelectedExecutionSources(ctx context.Context, snapshot store.SnapshotScope, projectID string, tasks []executionIdentity) (store.SnapshotScope, error) {
+	return loadSelectedExecutionSourcesWithPolicy(ctx, snapshot, projectID, tasks, false)
+}
+
+func loadSelectedExecutionSourcesWithPolicy(ctx context.Context, snapshot store.SnapshotScope, projectID string, tasks []executionIdentity, strict bool) (store.SnapshotScope, error) {
 	tasks = observableExecutionTasks(tasks)
 	selected := selectedObservationSources{values: make(map[string]store.TaskSessionSource, len(tasks)), failures: map[string]error{}}
 	for start := 0; start < len(tasks); start += 200 {
@@ -44,7 +71,7 @@ func loadSelectedSources(ctx context.Context, snapshot store.SnapshotScope, proj
 		}
 		sources, err := snapshot.SessionDAO().TaskSessionSources(ctx, projectID, ids)
 		if err != nil {
-			if observationAuthorityFailure(err) || ctx.Err() != nil {
+			if strict || observationAuthorityFailure(err) || ctx.Err() != nil {
 				return nil, err
 			}
 			for _, id := range ids {
@@ -59,8 +86,8 @@ func loadSelectedSources(ctx context.Context, snapshot store.SnapshotScope, proj
 	return selectedObservationSnapshot{reader: selected}, nil
 }
 
-func observableExecutionTasks(tasks []model.Task) []model.Task {
-	result := make([]model.Task, 0, len(tasks))
+func observableExecutionTasks(tasks []executionIdentity) []executionIdentity {
+	result := make([]executionIdentity, 0, len(tasks))
 	for _, task := range tasks {
 		if task.Type != model.TaskTypeGoal {
 			result = append(result, task)

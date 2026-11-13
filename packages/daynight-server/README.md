@@ -3610,3 +3610,7 @@ success, do not restore the old release writer. Existing Web readers accept a
 missing worker, but an old CLI cannot validate the new release response. The
 migration preserves task status, timing, ordinary materials and Session/archive
 history while updating affected task versions and project cache epochs.
+
+## Account in-progress Task reads
+
+`GET /api/v1/me/in-progress-tasks` returns a lightweight, authenticated cross-project page of the caller's in-progress ordinary Tasks, with complete project counts, actual Parent Goal context and existing Session observations. The [API contract](../../docs/spec/daynight-personal-in-progress-tasks.md) defines ordering, cursor, revision, errors and partial observation semantics. The [server design](../../docs/design/daynight-server.md#账号进行中任务读取) describes snapshot and authorization checks and the cost of aggregating all Task history in active projects.
