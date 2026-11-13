@@ -91,7 +91,7 @@ func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+	return s.writeTagged(ctx, principal, projectID, input.TagIDs, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
 		mutation, err := s.writeOperations.prepareCreate(ctx, tx.TaskDAO(), id.String(), values)
 		return mutation, err
 	})
@@ -158,7 +158,12 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 		var ids []string
 		var tagsChanged bool
 		if requested != nil {
-			ids, tagsChanged, err = prepareTagReplacement(ctx, tx, mutation.Current, mutation.Current.Version, requested)
+			if mutation.Create {
+				ids, err = prepareCreateTags(ctx, tx, *requested)
+				tagsChanged = len(ids) != 0
+			} else {
+				ids, tagsChanged, err = prepareTagReplacement(ctx, tx, mutation.Current, mutation.Current.Version, requested)
+			}
 			if err != nil {
 				return err
 			}
@@ -224,13 +229,21 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 			}
 			return err
 		}
-		if tagsChanged {
+		if tagsChanged && !mutation.Create {
 			if err := tx.TaskTagDAO().ReplaceTaskTags(ctx, mutation.ID, ids); err != nil {
 				return err
 			}
 		}
 		applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
 		result = applied.Task
+		if err == nil && mutation.Create && tagsChanged {
+			if err = tx.TaskTagDAO().ReplaceTaskTags(ctx, mutation.ID, ids); err == nil {
+				result, err = tx.TaskDAO().Task(ctx, mutation.ID)
+			}
+		}
+		if err == nil && mutation.Create && !taskcore.MatchesTagIDs(result.Tags, ids) {
+			return errors.New("created task tag references do not match requested identities")
+		}
 		if err == nil {
 			var parent taskcore.Mutation
 			parent, err = taskcore.PrepareParentStart(ctx, tx.TaskDAO(), mutation)

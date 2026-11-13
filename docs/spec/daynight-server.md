@@ -119,8 +119,8 @@ Task 包含以下持久化字段：
 |---|---|
 | `id` | 服务生成的 UUID |
 | `projectId` | 所属 project，创建后不可变 |
-| `type` | 必填资源类型；当前公开创建只产生 `task` |
-| `parentId` | 必填、可空的父资源 UUID；当前公开创建为 null，公开写入不接受此字段 |
+| `type` | 必填资源类型，公开创建支持 `task` 或 `goal` |
+| `parentId` | 必填、可空的父 Goal UUID；普通 Task 创建和更新可指定 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL，最多 1024 bytes |
 | `description` | 不含 NUL 的 UTF-8 描述，最多 65536 bytes；省略时为空字符串，允许更新为空字符串 |
 | `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
@@ -133,9 +133,9 @@ Task 包含以下持久化字段：
 | `startedAt`、`completedAt`、`cancelledAt` | 只读UTC执行起止与取消时间，字段必填但允许`null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
 
-完整 REST Task、列表、ready、搜索结果和同步摘要包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联。PATCH 可用 `tagIds` 指定完整标签 ID 集合：省略保留，`[]` 清空；失效或跨项目 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。创建入口不接受 `tagIds`。标签改名或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
+完整 REST Task、列表、ready、搜索结果和同步摘要包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联，不继承或汇总父子标签。创建可用 `tagIds` 指定本项目标签的完整 ID 集合，省略或 `[]` 表示无标签；创建与关联原子提交，成功回执包含规范化集合的实际引用。失效、已删除或跨项目 ID、权限及响应容量拒绝均不留下部分创建。PATCH 可用 `tagIds` 指定完整集合：省略保留，`[]` 清空；无效 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。标签改名或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
 
-完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。现有公开写入口不接受 `type` 或 `parentId`，不产生 Goal。
+完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。
 
 单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。
 

@@ -16,6 +16,7 @@ import (
 )
 
 type CreateTask struct {
+	TagIDs                  *[]string
 	Type                    model.TaskType
 	ParentID                *string
 	AssignedToPresent       bool
