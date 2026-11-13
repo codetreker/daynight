@@ -17,6 +17,7 @@
 .worker-tool-path-content { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 7px; padding: 6px 0; min-width: 0; }
 .worker-tool-path-content > code { display: block; flex: 1 1 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; font: 11px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: text; }
 .worker-tool-path-content > .button { padding: 4px 8px; min-height: 28px; font-size: 11px; }
+.worker-tool-path-content > .button:focus-visible { outline: 3px solid #344054; outline-offset: 3px; }
 .worker-tool-error { color: #a3322b; margin: 6px 0; }
 .worker-tool-reason { color: #805b27; margin: 6px 0; }
 .worker-tool-active { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 9px; }

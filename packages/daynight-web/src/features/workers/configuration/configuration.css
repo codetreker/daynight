@@ -15,7 +15,7 @@
 .configuration-tool-paths > summary:focus-visible { outline: 3px solid #344054; outline-offset: -3px; border-radius: 7px; }
 .configuration-tool-paths .configuration-field-detail { color: #556176; }
 .configuration-tool-paths .status-chip.unsaved { color: #805b27; background: #fff7e8; }
-.worker-configuration .configuration-tool-input input:focus-visible, .configuration-tool-input .button:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
+.worker-configuration .configuration-tool-paths .configuration-tool-input input:focus-visible, .configuration-tool-input .button:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
 .configuration-tool-paths[open] > summary { border-bottom: 1px solid var(--line); }
 .configuration-tool-field { padding: 20px 0; min-width: 0; border-bottom: 1px solid var(--line); }
 .configuration-tool-field:last-child { padding-bottom: 0; border-bottom: 0; }
@@ -24,7 +24,7 @@
 .configuration-tool-input .button { flex: none; }
 .configuration-tool-field > .field-error { font-size: 11px; color: #9b4651; overflow-wrap: anywhere; }
 .worker-tool-version { margin: 0 0 4px; }
-.worker-tool-connection { display: grid; }
+.worker-tool-connection { display: grid; color: #556176; }
 .worker-tool-connection > span { grid-area: 1 / 1; }
 .worker-tool-connection > .concealed { visibility: hidden; }
 .worker-tool-software-details { margin-top: 8px; text-align: left; }
