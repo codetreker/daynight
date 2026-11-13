@@ -3503,8 +3503,9 @@ project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
 Task lists support `limit`, `cursor`, `type`, `parentId`, `status`, `ready`,
-`allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo` and UUID
-`workerId`, once each. Type defaults to `task` and can select `goal`; parentId
+`allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo`, UUID
+`workerId`, `tagIds`, `tagMatch` and `untagged`, once each. Type defaults to
+`task` and can select `goal`; parentId
 accepts `none` or a canonical UUID and is omitted for all parents. Goal lists
 cannot select a nonempty parent. The ready, allowAgents and platformSpecific
 filters accept literal `true` or `false`; compatibility accepts `windows`,
@@ -3519,6 +3520,20 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
+
+List and ready selection accept comma-separated UUID `tagIds`,
+`tagMatch=all|any` (default all), and literal boolean `untagged`. IDs are
+canonicalized, sorted and deduplicated. `untagged=true` conflicts with nonempty
+IDs; omitted IDs without untagged impose no tag predicate. Every requested tag
+must exist in the current Project in the same authorized repeatable-read
+snapshot used to select the page; missing, cross-Project or deleted tags return
+400 `invalid_tag_filter`. SQL applies the tag predicate with existing filters
+before ordering, pagination and priority/ready candidate limits. Each Task or
+Goal matches its own associations. Cursors bind a SHA-256 digest of the
+normalized IDs, mode and untagged state, keeping cursor size independent of the
+selected set. Existing 24 KiB query, 48 KiB request-target and 16 KiB cursor
+limits remain; no tag-count quota is added.
+
 Task cursor version 3 includes type, parent and the resolved assignee scope; me and its concrete
 UUID may share that scope, but another account's me cannot. Account-owned Worker
 list cursors remain version 1.

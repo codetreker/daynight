@@ -13,6 +13,7 @@ import (
 )
 
 type listCursor struct {
+	TagFilterIdentity  string              `json:"tagFilter"`
 	Type               model.TaskType      `json:"type,omitempty"`
 	Parent             *string             `json:"parent,omitempty"`
 	Version            int                 `json:"version"`
@@ -34,6 +35,7 @@ type listCursor struct {
 }
 
 type ListScope struct {
+	TagFilterIdentity  string
 	Type               model.TaskType
 	Parent             *string
 	Kind               string
@@ -91,7 +93,7 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 	}
 	id, err := model.CanonicalID(cursor.ID)
 	if err != nil || id != cursor.ID || cursor.Version != expectedVersion || cursor.Kind != scope.Kind ||
-		cursor.Type != scope.Type || !model.EqualOptional(cursor.Parent, scope.Parent) || cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || cursor.TeamID != scope.TeamID || !model.EqualOptional(cursor.Status, scope.Status) ||
+		cursor.TagFilterIdentity != scope.TagFilterIdentity || cursor.Type != scope.Type || !model.EqualOptional(cursor.Parent, scope.Parent) || cursor.UserID != scope.UserID || cursor.ProjectID != scope.ProjectID || cursor.TeamID != scope.TeamID || !model.EqualOptional(cursor.Status, scope.Status) ||
 		!model.EqualOptional(cursor.Ready, scope.Ready) || !model.EqualOptional(cursor.AllowAgents, scope.AllowAgents) || !model.EqualOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || !model.EqualOptional(cursor.PlatformSpecific, scope.PlatformSpecific) || cursor.AutomaticCandidate != scope.AutomaticCandidate || !model.EqualOptional(cursor.WorkerID, scope.WorkerID) || !model.EqualOptional(cursor.WorkerUserID, scope.WorkerUserID) || cursor.CreatedAt.IsZero() {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
@@ -100,7 +102,7 @@ func ListPage(request model.PageRequest, scope ListScope) (store.Page, error) {
 }
 
 func EncodeListCursor(scope ListScope, createdAt time.Time, id string) (string, error) {
-	cursor := listCursor{Version: 1, Kind: scope.Kind, UserID: scope.UserID, ProjectID: scope.ProjectID, TeamID: scope.TeamID, Status: scope.Status,
+	cursor := listCursor{TagFilterIdentity: scope.TagFilterIdentity, Version: 1, Kind: scope.Kind, UserID: scope.UserID, ProjectID: scope.ProjectID, TeamID: scope.TeamID, Status: scope.Status,
 		Ready: scope.Ready, AllowAgents: scope.AllowAgents, CompatiblePlatform: scope.CompatiblePlatform, PlatformSpecific: scope.PlatformSpecific, AutomaticCandidate: scope.AutomaticCandidate, WorkerID: scope.WorkerID, WorkerUserID: scope.WorkerUserID, CreatedAt: createdAt, ID: id}
 	if scope.Kind == "tasks" {
 		assignment, err := TaskAssignmentScope(scope.AssignedTo)

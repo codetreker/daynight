@@ -27,6 +27,7 @@ type WorkerQuery struct {
 }
 
 type TaskQuery struct {
+	TagFilter          TagFilter
 	Type               model.TaskType
 	Parent             *string
 	AssignedTo         model.TaskAssignmentFilter
@@ -56,6 +57,7 @@ type TaskPriorityPosition struct {
 
 // TaskPriorityQuery applies all filters before priority ordering and limiting.
 type TaskPriorityQuery struct {
+	TagFilter          TagFilter
 	Type               model.TaskType
 	Parent             *string
 	AssignedTo         model.TaskAssignmentFilter

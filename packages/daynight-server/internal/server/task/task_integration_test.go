@@ -49,7 +49,7 @@ func TestTaskHTTPCreateUpdateReadAndListProjection(t *testing.T) {
 		return taskservice.TaskObservation{Task: changed, Epoch: testEpoch}, nil
 	}
 	h.Tasks.ListFunc = func(ctx context.Context, principal model.Principal, projectID string, input taskservice.TaskListRequest) (taskservice.TaskPage, error) {
-		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || !reflect.DeepEqual(input, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}}) {
+		if ctx.Err() != nil || principal != h.principal || projectID != testProjectID || !reflect.DeepEqual(input, taskservice.TaskListRequest{PageRequest: model.PageRequest{Limit: 50}, TagFilter: store.TagFilter{TagIDs: []string{}, TagMatch: "all"}}) {
 			t.Fatalf("list input: %+v", input)
 		}
 		return taskservice.TaskPage{Items: []model.Task{changed}}, nil

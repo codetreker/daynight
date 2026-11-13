@@ -4,6 +4,7 @@ package main
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
@@ -37,5 +38,28 @@ func serverAPITaskTagsNormalFlow(t *testing.T, f *fixture) {
 	check(summary.Tags)
 	if delta.Epoch != baseline.Epoch || summary.Version != resourceVersion(updated.Version) || delta.DependencyStates[task.ID].TaskVersion != summary.Version {
 		t.Fatalf("sync differs: %+v", delta)
+	}
+	second := createTask(t, f, project, "Another tagged task", map[string]any{"status": "todo"})
+	requestJSON[api.Task](t, f, http.MethodPatch, taskPath(second), map[string]any{"version": second.Version, "tagIds": []string{tag.ID}}, http.StatusOK)
+	createTask(t, f, project, "Untagged task", map[string]any{"status": "todo"})
+	filter := url.Values{"tagIds": {tag.ID}, "ready": {"true"}, "limit": {"1"}}
+	seen := map[string]bool{}
+	for {
+		page := requestJSON[api.TaskPage](t, f, http.MethodGet, taskCollection(project.ID)+"?"+filter.Encode(), nil, http.StatusOK)
+		if len(page.Items) != 1 || seen[page.Items[0].ID] {
+			t.Fatalf("filtered page differs: %+v", page)
+		}
+		check(page.Items[0].Tags)
+		seen[page.Items[0].ID] = true
+		if page.NextCursor == nil {
+			break
+		}
+		if len(seen) >= 2 {
+			t.Fatal("filtered pagination did not end")
+		}
+		filter.Set("cursor", *page.NextCursor)
+	}
+	if len(seen) != 2 || !seen[task.ID] || !seen[second.ID] {
+		t.Fatalf("filtered task identities differ: %+v", seen)
 	}
 }

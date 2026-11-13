@@ -49,6 +49,7 @@ func NewTasks(database taskStore, capture ...Capturer) *Tasks {
 }
 
 type TaskListRequest struct {
+	TagFilter  store.TagFilter
 	Type       model.TaskType
 	Parent     *string
 	AssignedTo *string
