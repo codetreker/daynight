@@ -10,7 +10,7 @@
 
 ## 读取合同
 
-GitHub API 固定使用 `https://api.github.com` 和 `X-GitHub-Api-Version: 2026-03-10`。每次 HTTP 请求最多 15 秒，调用方的 context 可以更早取消；重定向和分页链接只能指向同一 API origin。安装发现使用 App JWT；安装访问验证分别读取仓库身份和最小 open PR 页，不能只凭仓库信息推断 PR 权限。
+GitHub API 固定使用 `https://api.github.com` 和 `X-GitHub-Api-Version: 2026-03-10`。每次 HTTP 请求最多 15 秒，调用方的 context 可以更早取消；重定向和分页链接只能指向同一 API origin。安装发现与安装状态读取使用 App JWT；安装状态区分确认删除、暂停与其他错误。安装访问验证分别读取仓库身份和最小 open PR 页，不能只凭仓库信息推断 PR 权限。执行器通过 context 注入请求前检查点，每次实际 HTTP 跳转（包括 token 获取、重试和重定向）均执行检查点，失败时不发送该请求。
 
 仓库 ID 是稳定身份；当前名称可从 installation repositories 全部分页按 ID 查找，不能把同名新仓库视为原仓库。open PR 按创建时间正序读取并逐页交付，遵循全部 Link next；单项读取可取得已关闭 PR。读取不根据 `updated_at` 丢弃观测，保留同秒 head 变化、原始正文及可空作者和 fork。缺失必要字段或无效响应返回错误，不伪造空结果。
 

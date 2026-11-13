@@ -185,6 +185,21 @@ func (w *writer) HasPending(ctx context.Context, l store.GitHubLease) (bool, boo
 	return pending, true, nil
 }
 
+// HasDuePending retains the connection lock through claim admission so a
+// broadcast cannot insert a hint between the work decision and claim.
+func (w *writer) HasDuePending(ctx context.Context, now time.Time) (bool, error) {
+	locked, err := w.lockConnection(ctx)
+	if err != nil || !locked {
+		return false, err
+	}
+	var pending bool
+	err = w.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_github_pending_prs p JOIN project_github g ON g.project_id=p.project_id AND g.generation=p.generation WHERE p.project_id=$1 AND p.next_attempt_at<=$2)`, w.projectID, now).Scan(&pending)
+	if err != nil {
+		return false, pg.QueryError("check due github pull requests", err)
+	}
+	return pending, nil
+}
+
 func (w *writer) AckPending(ctx context.Context, l store.GitHubLease, number int64, request string) (bool, error) {
 	valid, err := w.ValidLease(ctx, l)
 	if err != nil || !valid {
