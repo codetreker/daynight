@@ -97,6 +97,53 @@ describe('shared Session image originals', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  it('coalesces new consumers after an abandoned reader drains without inheriting its cancellation', async () => {
+    const value = await sample(), images = store(), waiting = deferred<Blob>();
+    const read = vi.fn(async (_id: string, _signal: AbortSignal) => value.blob).mockImplementationOnce(() => waiting.promise);
+    const scope = images.createScope({ identity, read, canRead: () => true, canDownload: () => true }), asset = scope.asset(value.descriptor)!;
+    const first = new AbortController(), next = new AbortController();
+    const abandoned = asset.acquire(first.signal), rejected = expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+    first.abort();
+    let settled = false;
+    const replacement = Promise.all([asset.acquire(next.signal), asset.acquire(next.signal, 'preview')]).then(leases => { settled = true; return leases; });
+    try {
+      await rejected; await Promise.resolve();
+      expect(settled).toBe(false); expect(read).toHaveBeenCalledTimes(1);
+      expect(read.mock.calls[0]![1].aborted).toBe(true);
+      expect(images.usage().bytes).toBe(png.length * 2);
+      waiting.resolve(value.blob);
+      const leases = await replacement;
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(leases[0]!.blob).toBe(leases[1]!.blob);
+      expect(leases.every(lease => lease.valid && lease.sha256 === value.descriptor.sha256)).toBe(true);
+      expect(images.usage().bytes).toBe(png.length);
+      leases.forEach(lease => lease.release());
+    } finally { next.abort(); waiting.resolve(value.blob); await Promise.allSettled([abandoned, replacement]); }
+  });
+
+  it.each(['consumer', 'scope', 'asset', 'permission'] as const)('does not restart a draining read after %s access ends', async kind => {
+    const value = await sample(), images = store(), waiting = deferred<Blob>(); let allowed = true;
+    const read = vi.fn(async (_id: string, _signal: AbortSignal) => value.blob).mockImplementationOnce(() => waiting.promise);
+    const scope = images.createScope({ identity, read, canRead: () => allowed, canDownload: () => allowed }), asset = scope.asset(value.descriptor)!;
+    const first = new AbortController(), next = new AbortController();
+    const abandoned = asset.acquire(first.signal), abandonedResult = expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+    first.abort();
+    const replacement = asset.acquire(next.signal);
+    const rejected = expect(replacement).rejects.toMatchObject(kind === 'consumer' ? { name: 'AbortError' } : { code: kind === 'permission' ? 'access_pending' : 'access_revoked' });
+    let closed: Promise<void> | undefined;
+    try {
+      if (kind === 'consumer') next.abort();
+      else if (kind === 'scope') closed = scope.invalidate();
+      else if (kind === 'asset') scope.retainResources(new Set());
+      else allowed = false;
+      if (kind !== 'permission') await rejected;
+      expect(read).toHaveBeenCalledTimes(1); expect(images.usage().bytes).toBe(png.length * 2);
+      waiting.resolve(value.blob);
+      await Promise.all([abandonedResult, rejected, closed]);
+      expect(read).toHaveBeenCalledTimes(1); expect(images.usage().bytes).toBe(0);
+    } finally { next.abort(); waiting.resolve(value.blob); await Promise.allSettled([abandoned, replacement, closed]); }
+  });
+
   it('invalidates synchronously but keeps reservations until a cancelled reader actually ends', async () => {
     const value = await sample(), waiting = deferred<Blob>(), read = vi.fn((_id: string, _signal: AbortSignal) => waiting.promise), images = store();
     const scope = images.createScope({ identity, read, canRead: () => true, canDownload: () => true }), asset = scope.asset(value.descriptor)!;
