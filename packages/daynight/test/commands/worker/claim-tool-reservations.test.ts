@@ -18,8 +18,8 @@ const fixture = () => {
   const project = { projectId: reservation.projectId, repoUrl: "https://github.com/owner/repo.git", localPath: path.resolve(".tmp/reservation-repository") };
   store.registerProject(project);
   const claim: WorkerClaim = { claimId: reservation.claimId, worktreeId: reservation.worktreeId, workerId: reservation.workerId, userId: uuid(6), machine: { id: uuid(7), name: "fixture" }, platform: "macos", agent: "codex", agentControlMode: "herdr", state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-12T00:00:00.000Z" };
-  const granted = (worker: Partial<WorkerClaim> = {}, task: Partial<Task> = {}): Task => ({ id: reservation.taskId, projectId: reservation.projectId, type: "task", parentId: null, title: "Claim fixture", description: "", tags: [], status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: null, startedAt: null, completedAt: null, cancelledAt: null, version: reservation.version + 1n,
-    properties: { worker: { ...claim, ...worker } }, createdAt: "2026-11-12T00:00:00.000Z", updatedAt: "2026-11-12T00:00:00.000Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, ...task });
+  const granted = (worker: Partial<WorkerClaim> = {}, task: Partial<Task> = {}): Task => ({ id: reservation.taskId, projectId: reservation.projectId, type: "task", parentId: null, title: "Claim fixture", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: null, startedAt: null, completedAt: null, cancelledAt: null, version: reservation.version + 1n,
+    properties: { worker: { ...claim, ...worker } }, createdAt: "2026-11-12T00:00:00.000Z", updatedAt: "2026-11-12T00:00:00.000Z", tags: [], dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, ...task });
   return { db, store, reservation, project, granted };
 };
 afterEach(() => {
