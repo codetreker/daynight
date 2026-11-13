@@ -1782,6 +1782,15 @@ IDs outside the current page. Leaving the section cancels its reads; an
 already dispatched write is retained as unknown for review on return. Identity
 or project access withdrawal retires private data and requests.
 
+Task and Goal details share a searchable multi-select tag editor. Its draft starts
+from the resource's own detail and keeps its original version until the user
+explicitly adopts a newer one. Saving replaces the complete association set,
+including an empty set. Conflicts and unknown outcomes retain the draft and
+show the current saved tags without replaying the write. Creating a tag in the
+picker writes to the catalog independently; cancelling the association edit
+does not delete it. Pending saves retain later local edits. Identity change or
+project access withdrawal retires private editing state.
+
 Both stable inner tabpanel wrappers retain their IDs and hide inactive content.
 Task page scroll restoration and scroll/pagehide listeners are active only when
 Task list is selected and a snapshot is available. Leaving Tasks saves its
