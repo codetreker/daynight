@@ -1,3 +1,5 @@
+import { expectTextContrast, roleColors } from './color-roles';
+import type { TimelineEntry } from '../../src/api/types';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { sessionFence, type SessionSnapshot } from '../../../daynight/src/session/protocol';
@@ -16,9 +18,9 @@ const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for 
 type State = keyof typeof states;
 type Provider = keyof typeof providers;
 
-async function open(page: Page, locale: string, provider: Provider, state: State, entry: 'task' | 'test' = 'task') {
+async function open(page: Page, locale: string, provider: Provider, state: State, entry: 'task' | 'test' = 'task', withTools = false) {
   const archived = state === 'archived';
-  const taskSnapshot: TaskSessionSnapshot = { ...source, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: '1',
+  const taskSnapshot: TaskSessionSnapshot = { ...source, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: withTools ? '4' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'header-fixture-turn' : null,
     operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: false } };
@@ -26,7 +28,8 @@ async function open(page: Page, locale: string, provider: Provider, state: State
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'header-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
-  const entries = [{ entryId: '00000009-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Header layout acceptance conversation' }] }];
+  const entries: TimelineEntry[] = [{ entryId: '00000009-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: 'Header layout acceptance conversation' }] }];
+  if (withTools) entries.push(...(['running', 'completed', 'failed'] as const).map((status, index) => ({ kind: 'tool_call' as const, entryId: `00000009-1111-4111-8111-${String(111111111112 + index)}`, entrySeq: String(index + 2), revision: '1', callId: `color-${status}`, name: `Color ${status}`, input: '{}', output: [], status, truncated: false })));
   const worker = { claimId: source.claimId, state: archived ? 'completed' : 'active', userId: TEST_VIEWER_ID, workerId: source.identity.workerId,
     machine: { id: source.identity.controllerId, name: 'Header fixture' }, platform: 'macos', agent: provider, agentControlMode: 'web',
     worktreeId: source.identity.worktreeId, phase: archived ? 'completing' : 'executing', herdr: null, nativeSessionId: 'native-thread', claimedAt: time };
@@ -239,5 +242,30 @@ for (const mode of ['normal', 'dialog', 'fullscreen'] as const) for (const local
         return node.scrollWidth <= node.clientWidth && button.right <= box.right && box.height > 50;
       })).toBe(true);
     }
+  });
+}
+
+for (const locale of ['en', 'zh-CN']) for (const width of [1280, 320]) for (const activity of ['working', 'waiting_input'] as const) {
+  test(`semantic Session roles distinguish ${activity} from health at ${width}px in ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { header, observations } = await open(page, locale, 'codex', activity, 'task', true);
+    const health = header.locator('.session-status.online');
+    await expect(health).toHaveCSS('color', 'rgb(85, 97, 118)');
+    expect(await health.evaluate(node => getComputedStyle(node, '::before').backgroundColor)).toBe(roleColors.done[3]);
+    const marker = page.locator('.session-activity-dot');
+    await expect(marker).toHaveAttribute('data-activity', activity);
+    await expect(marker).toHaveCSS('background-color', activity === 'working' ? roleColors.in_progress[3] : roleColors.attention[3]);
+    const statuses = { running: 'in_progress', completed: 'done', failed: 'error' } as const;
+    for (const [status, role] of Object.entries(statuses)) {
+      const tool = page.locator(`.session-tool-${status}`);
+      await expect(tool.locator('.session-tool-status')).toHaveCSS('color', roleColors[role][3]);
+      await expectTextContrast(tool.locator('.session-tool-status'));
+      await expectTextContrast(tool.locator('.session-tool-summary'));
+      await tool.locator('summary').click();
+      await expect(tool.locator('.session-tool-input')).toHaveText('{}');
+    }
+    await expectTextContrast(health);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(observations.writes).toEqual([]);
   });
 }
