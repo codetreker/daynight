@@ -234,7 +234,7 @@ test('preserves selection, searches, drafts and reading through responsive navig
   await expect(search).toHaveValue('Bot');
   await expect(page.locator('.bot-list a')).toHaveCount(2);
   await focusBotControl(page, page.locator(`.bot-list a[href="/bots/${botId(2)}"]`)); await page.keyboard.press('Enter');
-  await expect(message()).toBeEnabled();
+  await expect(message()).toBeEditable();
   await focusBotControl(page, page.locator(`${visiblePane} textarea`)); await page.keyboard.type('Independent draft B');
   await closeBotConversation(page);
   await page.setViewportSize({ width: 1024, height: 1000 });

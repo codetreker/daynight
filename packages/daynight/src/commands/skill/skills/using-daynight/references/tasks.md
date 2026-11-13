@@ -12,11 +12,14 @@ daynight task create --type goal --title "Improve installation"
 daynight task create --parent <goal-id> --title "Document prerequisites" --status todo
 daynight task list --type goal --json
 daynight task list --parent <goal-id> --json
+daynight task list --tag <tag-id> --tag <another-tag-id> --tag-match any --json
+daynight task list --untagged --json
 daynight task list --all --json
 daynight task list --status in_progress --json
 daynight task list --ready --assigned-to me --json
 daynight task list --assigned-to unassigned --json
 daynight task ready --limit 20 --json
+daynight task ready --tag <tag-id> --limit 20 --json
 daynight task show <task-id> --json
 ```
 
@@ -63,6 +66,17 @@ identity even on empty pages. Ready supports parent and permission/platform filt
 assignee filter; use `task list --ready --assigned-to me`. Readiness, assignment
 and automatic permission are independent.
 
+Ordinary list, ready and search accept repeated `--tag <tag-id>` UUIDs; IDs are
+canonicalized, deduplicated and sorted. `--tag-match all` (default) requires all
+selected tags, while `any` requires at least one. `--untagged` selects resources
+without tags and conflicts with a nonempty tag selection. With neither selected
+IDs nor `--untagged`, there is no tag predicate. The service applies it with
+other filters before pagination or the ready limit; a Task matches only its own
+tags, not its Goal's. The same selection is sent on every page. Invalid UUIDs
+and conflicting options fail; unknown, deleted or cross-project tags produce
+`invalid_tag_filter`. Request and cursor limits still apply and inputs are never
+truncated. Grouped chain queries reject tag options.
+
 Lists order in_progress, ready todo, blocked todo, proposed, then selected
 terminal Tasks; done/cancelled stay distinct. Neither list nor ready ordering
 ranks relevance. List/show/graph include [Session observations](session-reads.md#observations);
@@ -84,8 +98,10 @@ a leading dash. Grammar: uppercase `AND`, `OR`, `NOT`, parentheses, quoted phras
 with ASCII case folding.
 
 Search accepts `--status`, `--assigned-to`, `--ready`, `--allow-agents`,
-`--compatible-platform`, `--type` and `--parent`, not `--all`; it traverses all pages in server relevance
+`--compatible-platform`, `--type`, `--parent` and the tag filters above, not `--all`; it traverses all pages in server relevance
 order. Matches and actual parent Goal context are compact, not full Tasks.
+Tag filters intersect the expression; tag names are not search fields. An
+expression is still required, so use list for tag-only queries.
 Text/JSON omit assignee and update time;
 JSON fields are id, type, parentId, projectId, title, tags, status, cancelledAt, context
 and match. Search text also displays Type and Parent. `context:{taskId,title}`
