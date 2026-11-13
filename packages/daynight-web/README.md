@@ -2506,7 +2506,7 @@ Chromium, then the Playwright configuration starts its
 own Vite host. It uploads `daynight-web-assistant-browser` with JUnit results and
 browser captures, including available evidence after a failed browser run.
 The same job then runs the ordinary Session draft configuration and uploads
-`daynight-web-draft-browser` with its JSON report and failure captures.
+`daynight-web-session-drafts-browser` with its JSON report and failure captures.
 The separate capacity configuration remains local-only. The
 [draft acceptance decision](../../.agents/notes/implemented/testing/2026-11-13-session-draft-browser-acceptance.md)
 owns this suite's evidence and scheduling boundaries.
