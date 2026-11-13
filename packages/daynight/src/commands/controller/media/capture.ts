@@ -74,7 +74,7 @@ export const createControllerCaptureBridge = (options: {
       journal.assertImageCaptureAttempt(captureId, attemptId);
       return journal.observeImageCaptureReceipt(await options.capture("failed", { captureId, attemptId, error }));
     },
-    stageImageCapture: async input => { await options.beforeCapture(); return journal.media().stageCapture(input); },
+    stageImageCapture: input => journal.media().stageCapture(input),
   };
   return { providerOptions,
     retry: async ({ captureId, attemptId }: { captureId: string; attemptId: string }, signal: AbortSignal) => {

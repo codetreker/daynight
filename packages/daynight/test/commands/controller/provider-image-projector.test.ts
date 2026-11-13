@@ -516,12 +516,12 @@ test.each(["rate", "local"] as const)("known unsent native %s refusal retries th
 });
 
 test("definite history failure settles before source IO and exposes its actual reason", async () => {
-  const f = fixture(); f.acknowledge();
+  const f = fixture(), read = vi.fn(async () => f.slot.payload); f.acknowledge();
   vi.mocked(f.options.prepareImageCapture!).mockRejectedValueOnce(new ImageCapturePrerequisiteError({ code: "quota_exceeded", message: "Full history cannot be published." }));
   const projector = new ProviderImageProjector(f.options);
   try {
-    projector.publish(f.entry, [f.slot]); await projector.settled(); projector.acknowledged(); await projector.settled();
-    expect(f.options.stageImageCapture).not.toHaveBeenCalled(); expect(f.options.submitImageCapture).not.toHaveBeenCalled(); expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "deferred", read } }]); await projector.settled(); projector.acknowledged(); await projector.settled();
+    expect(read).not.toHaveBeenCalled(); expect(f.options.stageImageCapture).not.toHaveBeenCalled(); expect(f.options.submitImageCapture).not.toHaveBeenCalled(); expect(f.options.queryImageCapture).not.toHaveBeenCalled();
     expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image_unavailable", error: { code: "quota_exceeded" } }, { text: "after" }] });
   } finally { await projector.close(); }
 });

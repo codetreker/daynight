@@ -41,7 +41,12 @@ controller frames in order, so later source events cannot invalidate the ledger
 before capture identity creation. An incomplete history barrier remains a
 not-dispatched retry with the same sealed submission. Source IO depends on the
 acknowledged position, current source authority and local media capacity,
-without a service registration or reserved receipt. The [image contract](../../../../docs/design/session-image-contracts.md)
+without a service registration or reserved receipt. Local staging does not
+repeat the network history barrier: a read admitted before disconnection can
+finish validation and retain its immutable bytes, while submission waits for a
+current connection and history. Treating disconnection during this local step
+as source validation failure would discard bytes that cannot safely be read
+again under the same attempt. The [image contract](../../../../docs/design/session-image-contracts.md)
 owns the wire forms and recovery rules. Actual storage admission remains owned by
 the [content capacity decision](2026-11-13-session-actual-content-capacity.md).
 

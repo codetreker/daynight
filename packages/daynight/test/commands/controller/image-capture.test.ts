@@ -3,16 +3,19 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { unlinkSync } from "node:fs";
 import sharp from "sharp";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createControllerCaptureBridge } from "../../../src/commands/controller/media/capture.js";
-import { ImageCaptureNotDispatchedError } from "../../../src/commands/controller/media/capture-error.js";
+import { ImageCaptureNotDispatchedError, ImageCaptureRequestError } from "../../../src/commands/controller/media/capture-error.js";
 import { ImageHistorySyncFailedError } from "../../../src/commands/controller/media/history-sync.js";
 import { createMarkdownCaptureCoordinator } from "../../../src/commands/controller/markdown/coordinator.js";
 import { validateImageFile } from "../../../src/commands/controller/media/image-validation.js";
-import type { NativeProvider } from "../../../src/commands/controller/providers/types.js";
-import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../src/session/image-values.js";
+import type { NativeProvider, ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import { ProviderImageProjector } from "../../../src/commands/controller/providers/image-projector.js";
+import type { NativeImageProjectionState } from "../../../src/commands/controller/media/native-publication-types.js";
+import type { DirectCaptureSubmission, ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart, NativeImageSource } from "../../../src/session/image-values.js";
 import type { createControllerRelay } from "../../../src/commands/controller/relay.js";
 const disk = vi.hoisted(() => ({ freeBytes: null as bigint | null }));
 vi.mock("node:fs", async original => {
@@ -85,7 +88,7 @@ test("a sealed direct submission waits for a fresh history checkpoint without re
     const submission = { request: f.request, attemptId: f.request.attemptId, outcome: { kind: "validated" as const, validated } };
     beforeCapture.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
     const submitting = consumer.providerOptions.submitImageCapture!(submission);
-    expect(beforeCapture).toHaveBeenCalledTimes(3); expect(capture).not.toHaveBeenCalled();
+    expect(beforeCapture).toHaveBeenCalledTimes(2); expect(capture).not.toHaveBeenCalled();
     expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
     release(); await submitting;
     expect(capture).toHaveBeenCalledExactlyOnceWith("submit", submission);
@@ -93,6 +96,59 @@ test("a sealed direct submission waits for a fresh history checkpoint without re
     await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toBeInstanceOf(ImageCaptureNotDispatchedError);
     expect(capture).toHaveBeenCalledOnce(); expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
   } finally { release?.(); await f.journal.stopMedia(); f.journal.close(); }
+});
+
+test("a native source finishing offline is sealed locally and its frozen bytes survive reopen and submit reconciliation", async () => {
+  const f = await fixture(), source = await f.source("blue");
+  let journal = f.journal, online = true, stateKey = "", resolveRead!: (value: { kind: "file"; path: string; byteLength: string; sha256: string; release(): void }) => void;
+  const release = vi.fn(() => unlinkSync(source.inputPath));
+  const read = vi.fn(() => new Promise<Parameters<typeof resolveRead>[0]>(resolve => { resolveRead = resolve; }));
+  const beforeCapture = vi.fn(async () => { if (!online) throw new ImageCaptureNotDispatchedError("History connection is offline."); });
+  const submissions: DirectCaptureSubmission[] = [], actions: string[] = [];
+  const capture: ReturnType<typeof createControllerRelay>["capture"] = async (action, body) => {
+    actions.push(action);
+    if (action === "query") throw new ImageCaptureRequestError({ code: "capture_not_found", message: "No capture was registered." });
+    if (action !== "submit" || !("request" in body)) throw new Error("Unexpected legacy capture exchange.");
+    const submission = body as DirectCaptureSubmission;
+    submissions.push(structuredClone(submission));
+    if (submissions.length === 1) throw new Error("Submit receipt was lost.");
+    if (submission.outcome.kind !== "validated") throw new Error("The original native bytes were not sealed.");
+    return { captureId: submission.request.captureId, attemptId: submission.attemptId, revision: "1", occurrence: submission.request.occurrence, state: "committed", resourceId: f.receipt().resourceId, error: null,
+      resource: { resourceId: f.receipt().resourceId!, revision: "1", status: "available", name: "original.png", error: null, ...submission.outcome.validated } };
+  };
+  const stages: ReturnType<typeof vi.fn>[] = [];
+  const options = (): ProviderOptions => {
+    const consumer = createControllerCaptureBridge({ journal, capture, beforeCapture, provider: () => null, writable: () => online });
+    const stage = vi.fn(consumer.providerOptions.stageImageCapture!); stages.push(stage);
+    return { ...consumer.providerOptions, stageImageCapture: stage,
+      onTimeline: (entry: ProviderEntry) => journal.projectTimeline(entry),
+      onImageOccurrence: (occurrence: ImageOccurrence, native: NativeImageSource | null) => journal.registerImageOccurrence(occurrence, native).acknowledged,
+      imageOccurrenceAcknowledged: (imageId: string) => journal.imageOccurrenceAcknowledged(imageId),
+      imageRuntime: { readState: (key: string) => journal.readNativeImageState(key), writeState: (key: string, value: unknown) => { stateKey = key; journal.writeNativeImageState(key, value); }, patchNativeImagePart: (occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart) => journal.patchNativeImagePart(occurrence, part) },
+    } as unknown as ProviderOptions;
+  };
+  const entry: ProviderEntry = { entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Native image" }] };
+  const slot = { index: 0, label: "Native image", native: { provider: "codex" as const, nativeSessionId: "native", nativeMessageId: "original-message", nativePartId: "content/0" }, payload: { kind: "deferred" as const, read } };
+  let projector = new ProviderImageProjector(options());
+  try {
+    projector.publish(entry, [slot]); journal.acknowledgeEvents(journal.getLastSourceSequence()); projector.acknowledged();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce()); expect(beforeCapture).toHaveBeenCalledOnce();
+    online = false;
+    resolveRead({ kind: "file", path: source.inputPath, byteLength: source.byteLength, sha256: source.sha256, release });
+    await projector.settled();
+    const frozen = journal.readNativeImageState(stateKey) as NativeImageProjectionState;
+    expect(frozen).toMatchObject({ phase: "submit", submission: { outcome: { kind: "validated", validated: { sha256: source.sha256 } } } });
+    expect(journal.media().captureStatus(frozen.request.captureId, frozen.attemptId)).toEqual(frozen.submission!.outcome.kind === "validated" ? frozen.submission!.outcome.validated : null);
+    expect(actions).toEqual([]); expect(release).toHaveBeenCalledOnce(); expect(beforeCapture).toHaveBeenCalledOnce(); expect(stages[0]).toHaveBeenCalledOnce();
+    await projector.close(); await journal.stopMedia(); journal.close();
+    journal = openControllerLifecycleStore(f.file, f.ticket, f.options); online = true;
+    projector = new ProviderImageProjector(options()); projector.publish(entry, [slot]);
+    await vi.waitFor(() => expect(actions).toEqual(["submit", "query", "submit"]), { timeout: 4000 }); await projector.settled();
+    expect(submissions).toEqual([frozen.submission, frozen.submission]);
+    expect(read).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce(); expect(stages[0]).toHaveBeenCalledOnce(); expect(stages[1]).not.toHaveBeenCalled();
+    expect(journal.readNativeImageState(stateKey)).toMatchObject({ phase: "settled", part: { type: "image", resourceId: f.receipt().resourceId } });
+    expect(await journal.media().read({ resourceId: f.receipt().resourceId!, offset: "0", limit: 524288 })).toMatchObject({ data: source.bytes.toString("base64") });
+  } finally { resolveRead?.({ kind: "file", path: source.inputPath, byteLength: source.byteLength, sha256: source.sha256, release }); await projector.close(); await journal.stopMedia(); journal.close(); }
 });
 
 test.each(["missing", "corrupt"] as const)("direct replay refuses %s sealed files while retaining the frozen identity", async kind => {

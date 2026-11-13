@@ -609,7 +609,7 @@ Controller和服务采用同一 `image-validation-v1`、隔离 Node.js 24 + shar
 
 ### 原生文件、服务取回与引用
 
-`stageCapture` 只接受原出现已 ACK、必要完整历史已确认且来源获准后取得的完整私有文件；实际参数为 `CaptureStageInput {captureId,attemptId,imageId,inputPath,byteLength,sha256,declaredMediaType?}`，调用方持有原来源授权和文件租约，存储层重核本地原 request 的当前 attempt、位置 ACK、私有普通文件及完整摘要/解码。该步骤不调用服务 register，也不要求 reserved。`reserveCaptureSource` 为来源 reader 创建0600空文件，并将来源与验证副本的最坏双份容量计入同一媒体账本；reader 不自行创建资源身份。`readPrepared` 按 upload/capture命名空间、attempt与lease读；`ensureLocalResource` 校验服务原bytes后重建本地verified；`acquireInput` 整组验证并原子保存原intent/pin，返回有序只读native路径，不调用Provider。稳定native文件写随机临时副本、核hash、fsync、设只读、rename并持久目录后才准许pin/dispatching；既有有pin路径不得覆盖。
+`stageCapture` 只接受原出现已 ACK、必要完整历史已确认且来源获准后取得的完整私有文件；实际参数为 `CaptureStageInput {captureId,attemptId,imageId,inputPath,byteLength,sha256,declaredMediaType?}`，调用方持有原来源授权和文件租约，存储层重核本地原 request 的当前 attempt、位置 ACK、私有普通文件及完整摘要/解码。该步骤纯本地封存，不重复网络历史屏障，不调用服务 register，也不要求 reserved。已获准的来源读取完成时发生断线，仍可验证、封存该次完整字节并持久冻结结果；提交继续等待当前连接、完整历史及授权，重连只发送原冻结结果。断线不等于验证失败，也不授权重读原来源。`reserveCaptureSource` 为来源 reader 创建0600空文件，并将来源与验证副本的最坏双份容量计入同一媒体账本；reader 不自行创建资源身份。`readPrepared` 按 upload/capture命名空间、attempt与lease读；`ensureLocalResource` 校验服务原bytes后重建本地verified；`acquireInput` 整组验证并原子保存原intent/pin，返回有序只读native路径，不调用Provider。稳定native文件写随机临时副本、核hash、fsync、设只读、rename并持久目录后才准许pin/dispatching；既有有pin路径不得覆盖。
 
 `media.adoptCaptureResource(captureId,attemptId,resource)` 将已提交的capture原件交给资源所有者。它要求原请求、耐久committed回执、原occurrence及完整resource严格一致，并逐项比对validated的MIME、byteLength、SHA-256、宽高和frameCount。复制前取得共用IO槽并检查保存副本的第三份峰值预算，经 `ResourceFiles.importResourceFile` 按512 KiB分块验证和耐久导入。已有available原件仅核验原descriptor和原bytes；missing/corrupt不得从stage或旧source重建。coordinator只有在导入与原位置投影都成功后才持久settled，失败保留原capture以query协调。
 
