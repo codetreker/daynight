@@ -134,6 +134,9 @@ tail 不能通过最小首序列和最大末序列合并。此前真实行仍按
 `BotHistorySnapshotObserver` 仅观察真实 client。确认完整绑定、scope、历史与
 可信名称后取得 store-owned lease，再合并约两秒的变化；候选保持原 lease，
 隐藏、pagehide 和关闭尽力 flush。异步 lease 返回后重新验证当前历史与撤销代次。
+store 在锁内通过 lease 与历史进度检查后，将规范化候选与当前记录比较；仅
+`savedAt` 不同不写入、不改变 LRU，也不发布变更。名称、阅读锚点和历史内容
+变化仍会保存；内存降级的相同记录仍报告内存结果。
 预览行不进入 client state 或保存输入；替换半成品、空壳和无法保留一条完整 entry
 的超大记录不能覆盖最后成功快照。预算与 UTF-16 单位裁剪继续由既有 codec/store
 拥有；pagehide 写入不保证完成，无 Web Locks 或存储失败沿用内存降级。

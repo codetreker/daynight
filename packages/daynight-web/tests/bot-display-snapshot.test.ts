@@ -217,6 +217,41 @@ describe('Bot display snapshot codec', () => {
 });
 
 describe('Bot display snapshot storage', () => {
+  it('skips unchanged saves without touching LRU, while preserving changes and lease fences', async () => {
+    const owner = crypto.randomUUID(), target = store(owner), first = preview(owner), second = preview(owner, 2);
+    expect(await save(target, first)).toBe('saved');
+    expect(await save(target, second)).toBe('saved');
+    const observed = (await target.observe(owner, first.botId))!;
+    const write = vi.spyOn(Storage.prototype, 'setItem');
+    const notify = vi.fn(), detach = target.subscribe(notify);
+    const before = localStorage.getItem(key(owner));
+    const submit = (value: BotDisplayPreview) => target.save(observed, { source: 'verified-history', historyLoaded: true, preview: value });
+    expect(await submit({ ...first, savedAt: 2_000 })).toBe('saved');
+    expect(localStorage.getItem(key(owner))).toBe(before);
+    expect(write).not.toHaveBeenCalled(); expect(notify).not.toHaveBeenCalled();
+    const renamed = { ...first, botName: 'Renamed', savedAt: 3_000 };
+    const revised = { ...renamed, entries: [{ ...entry(), revision: '2' }] };
+    const anchored = { ...revised, readingAnchor: { entryId: entry().entryId, offset: 4, following: false } };
+    for (const [index, value] of [renamed, revised, anchored].entries()) {
+      expect(await submit(value)).toBe('saved');
+      expect(await target.read(owner, first.botId, { touch: false })).toEqual(value);
+      expect(write).toHaveBeenCalledTimes(index + 1);
+    }
+    expect(JSON.parse(localStorage.getItem(key(owner))!).records.map((row: { preview: BotDisplayPreview }) => row.preview.botId)).toEqual([second.botId, first.botId]);
+    await target.clearTarget(owner, first.botId);
+    expect(await submit(anchored)).toBe('stale');
+    detach(); write.mockRestore();
+  });
+
+  it('does not mistake a memory-only snapshot for a durable save', async () => {
+    const owner = crypto.randomUUID(), target = store(owner, { storage: null }), value = preview(owner);
+    const observed = (await target.observe(owner, value.botId))!;
+    const submit = (savedAt: number) => target.save(observed, { source: 'verified-history', historyLoaded: true, preview: { ...value, savedAt } });
+    expect(await submit(1)).toBe('memory');
+    expect(await submit(2)).toBe('memory');
+    expect((await target.read(owner, value.botId, { touch: false }))?.savedAt).toBe(1);
+  });
+
   it('uses the browser Storage adapter, isolates owners, and recovers from persisted bytes', async () => {
     const owner = crypto.randomUUID(), other = crypto.randomUUID(), target = store(owner), value = preview(owner);
     expect(await save(target, value)).toBe('saved');
