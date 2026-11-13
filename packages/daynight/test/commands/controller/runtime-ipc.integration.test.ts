@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { createConnection, Socket } from "node:net";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
-const f = vi.hoisted(() => ({ send: vi.fn(), close: vi.fn(), waitForTurn: vi.fn() }));
+const f = vi.hoisted(() => ({ send: vi.fn(), close: vi.fn(), waitForTurn: vi.fn(), opened: vi.fn() }));
 vi.mock("node:net", async importOriginal => {
   const net = await importOriginal<typeof import("node:net")>();
   const { relative } = await import("node:path");
@@ -26,12 +27,14 @@ vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRe
   return { flush: async () => {}, close: () => {}, connected: () => true };
 } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: async (options: ProviderOptions) => {
+  f.opened(options);
   options.onState({ nativeSessionId: "native-test", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: false, cancel: true, respond: true } });
   return { nativeSessionId: "native-test", send: f.send, close: f.close, cancel: async () => {}, waitForTurn: f.waitForTurn };
 } }));
 import { runController } from "../../../src/commands/controller/runtime.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { CodexRpc } from "../../../src/commands/controller/providers/codex-rpc.js";
 const roots: string[] = [];
 afterEach(async () => { vi.useRealTimers(); vi.clearAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const setup = async () => {
@@ -44,6 +47,31 @@ const setup = async () => {
   await vi.waitFor(async () => expect((await requestController(ticket, { kind: "observe" })).snapshot.lifecycle).toBe("ready"));
   return { ticket, running, stop: async () => { await requestController(ticket, { kind: "stop", deadline: Date.now() + 2000 }); await running; } };
 };
+
+test("authenticated runtime observation responds while Codex output still has ordered frames to consume", async () => {
+  const v = await setup(), provider = f.opened.mock.calls[0]![0] as ProviderOptions;
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough() });
+  const complete = Promise.withResolvers<void>(), observing = Promise.withResolvers<Awaited<ReturnType<typeof requestController>>>();
+  const count = 40, received: number[] = [];
+  let observedAt = 0;
+  const rpc = new CodexRpc(child, message => {
+    const index = (message.params as { index: number }).index;
+    received.push(index);
+    provider.onState({ nativeSessionId: "native-test", activity: "working", currentTurnId: `turn-${index}`, capabilities: { send: true, steer: true, cancel: true, respond: true } });
+    if (received.length === 1) void requestController(v.ticket, { kind: "observe" }, { timeoutMs: 2000 }).then(response => {
+      observedAt = received.length; observing.resolve(response);
+    }, observing.reject);
+    if (received.length === count) complete.resolve();
+  }, { createSpool: () => { throw new Error("Ordinary notifications must not create media."); } });
+  try {
+    child.stdout.write(Array.from({ length: count }, (_, index) => JSON.stringify({ method: "notice", params: { index } }) + "\n").join(""));
+    const response = await observing.promise;
+    expect(observedAt).toBeGreaterThan(0); expect(observedAt).toBeLessThan(count);
+    expect(response.snapshot).toMatchObject({ sessionId: v.ticket.sessionId, testExecutionId: v.ticket.testExecutionId, executionId: v.ticket.executionId, controllerInstanceId: v.ticket.controllerInstanceId, executionGeneration: v.ticket.executionGeneration, nativeSessionId: "native-test", lifecycle: "working" });
+    expect(Number(response.snapshot.currentTurnId!.slice("turn-".length))).toBeLessThan(count - 1);
+    await complete.promise; expect(received).toEqual(Array.from({ length: count }, (_, index) => index));
+  } finally { rpc.dispose(); await rpc.stopped; await v.stop(); }
+});
 
 test("authenticated input clears its admission deadline while incomplete frames still expire", async () => {
   const nativeInput = Promise.withResolvers<{ disposition: "started"; turnId: string }>();

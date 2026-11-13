@@ -87,6 +87,17 @@ for await (const line of createInterface({input:process.stdin})) {
  if(m.method==='turn/start'){
   const turn={id:'native-turn',status:'inProgress'},text=m.params.input[0].text;
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
+  if(process.env.CODEX_TEST_EXIT_BURST) {
+   const messages=Array.from({length:1000},()=>({method:'item/agentMessage/delta',params:{threadId:'native-thread',turnId:turn.id,itemId:'final-answer',delta:'received output '}}));
+   if(process.env.CODEX_TEST_EXIT_BURST==='unsupported request')messages.push({id:42,method:'unsupported/request',params:{threadId:'native-thread'}});
+   if(process.env.CODEX_TEST_EXIT_BURST==='foreign request')messages.push({id:42,method:'unsupported/request',params:{threadId:'other-thread'}});
+   if(process.env.CODEX_TEST_EXIT_BURST==='invalid form')messages.push({id:42,method:'mcpServer/elicitation/request',params:{threadId:'native-thread',mode:'form',requestedSchema:{type:'array'}}});
+   messages.push({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:{id:'final-answer',type:'agentMessage',text:'final answer before exit'}}});
+   messages.push({method:'turn/completed',params:{threadId:'native-thread',turn:{...turn,status:'completed'}}});
+   messages.push({id:m.id,result:{turn}});
+   await new Promise((resolve,reject)=>process.stdout.write(messages.map(value=>JSON.stringify(value)+'\n').join(''),error=>error?reject(error):resolve()));
+   break;
+  }
   interruptUser={id:userItemId,type:'userMessage',clientId:m.params.clientUserMessageId,content:m.params.input};
   if(!['missing-user','completion-items','history-user','history-read-failure','history-delayed'].includes(interruptCase)) out({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:interruptUser}});
   const approvalCase=JSON.parse(process.env.CODEX_TEST_APPROVAL_CASES ?? '{}')[text];
@@ -137,3 +148,4 @@ for await (const line of createInterface({input:process.stdin})) {
   out({method:'turn/completed',params:{threadId:'native-thread',turn:{id:'native-turn',status:'completed'}}});
  }
 }
+process.stdin.destroy();

@@ -102,7 +102,7 @@ Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reje
 | metadata / 结构 | 每帧 16 MiB、深度 64、100000 tokens。已知文字沿原文字截断并标识，不能截断 JSON 后 parse。 |
 | 整帧 | 总输入 128 MiB、绝对解析期限 30 秒。超限关闭该私有连接，未决操作 unknown；已保存历史保留。 |
 
-完成队列最多两帧，stdout 背压。RPC 回执分发不等待服务 capture 网络；暂存不足的图可保留容量错误，不能拖死控制消息。自有回显若已可信关联原件，可验证格式/摘要后丢弃冗余 inline bytes。只读重取工具图片绑定已知 item/turn 和待采 part 索引，避免已采图占满暂存；没有可信身份的实时帧按其准入结果处理，绝不重新执行工具。未通过完整帧验证的文件不能关联消息；释放须等 reader/writer 停止及实际 unlink。
+完成队列最多两帧，stdout 背压。RPC reader 将 OS chunk 以至多 64 KiB 的 subarray 片段交给同一个惰性 decoder，每帧和片段末尾等待一次 ref'ed setImmediate，覆盖无完整帧和 UTF-8 分割。每帧先分发，再让微任务取得独立媒体 lease，最后释放帧引用；I/O 让步前同步原绝对帧 timer，完成帧清除旧 timer。显式释放、原生错误或期限失败后停止派发及 timer 重设；自然进程关闭立即禁止新写入，已收到的 stdout 由 reader 排空后再触发 Provider 收尾。已安排 immediate 正常结算并 join rpc.stopped，decoder 清理不释放消费者持有的 lease。完整调度及 IPC 合同由[Controller 输出消费](task-session-protocol.md#codex-输出消费与-io)拥有。RPC 回执分发不等待服务 capture 网络；暂存不足的图可保留容量错误，不能拖死控制消息。自有回显若已可信关联原件，可验证格式/摘要后丢弃冗余 inline bytes。只读重取工具图片绑定已知 item/turn 和待采 part 索引，避免已采图占满暂存；没有可信身份的实时帧按其准入结果处理，绝不重新执行工具。未通过完整帧验证的文件不能关联消息；释放须等 reader/writer 停止及实际 unlink。
 
 ## Claude Code
 
