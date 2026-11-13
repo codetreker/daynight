@@ -121,3 +121,15 @@ func TestNativeSelectionFaultsRequireReliableCompletion(t *testing.T) {
 		t.Fatal("unregistered faults became public")
 	}
 }
+
+func TestTagFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"invalid_tag_name", "invalid_tag_filter", "confirmation_required", "tag_not_found", "catalog_changed", "tag_name_conflict"} {
+		fault := &model.Fault{Code: code, Message: "refused"}
+		if got, ok := KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
+			t.Fatalf("confirmed refusal %s was suppressed", code)
+		}
+		if _, ok := KnownFault(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}); ok {
+			t.Fatalf("unknown result exposed as %s", code)
+		}
+	}
+}

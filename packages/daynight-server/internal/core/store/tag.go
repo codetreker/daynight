@@ -11,6 +11,9 @@ import (
 // ErrTagWriteConflict means a conditional tag write matched no row.
 var ErrTagWriteConflict = errors.New("tag write condition not met")
 
+// ErrTagNameConflict identifies a collision on the project-local name key.
+var ErrTagNameConflict = errors.New("tag name already exists")
+
 type TagPosition struct {
 	NameKey string
 	ID      string

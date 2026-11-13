@@ -26,6 +26,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/prompt"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/tag"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/team"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
@@ -96,6 +97,7 @@ type Application struct {
 	AssistantTasks   *assistanttask.Tasks
 	Bots             *bot.Bots
 	BotDeletions     *bot.Deletions
+	Tags             *tag.Tags
 	Tasks            *task.Tasks
 	TaskObservations TaskObservationOperations
 	TaskInspection   *session.Inspection
@@ -159,6 +161,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		AssistantTasks:   assistanttask.New(database),
 		Bots:             bot.NewWithNativeDiscovery(database, workerReadOnly),
 		BotDeletions:     bot.NewDeletions(database, files, engine),
+		Tags:             tag.New(database),
 		Tasks:            construct.tasks(database, capturer),
 		TaskObservations: construct.taskObservations(database, engine),
 		TaskInspection:   inspection,
