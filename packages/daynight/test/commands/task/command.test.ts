@@ -18,7 +18,7 @@ const accountId = "abcdefab-6666-4222-8333-123456789abc";
 const currentUser = { id: accountId, email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", kind: "personal" as const, name: null } };
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task title", description: "Description", tags: [], properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, proposed: 0, todo: 1, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 0 }, tasks: [{ type: "task", parentId: null, id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
 const observe = (task: Task) => ({ ...task, session });
@@ -611,7 +611,7 @@ describe("task output contracts", () => {
   it("preserves full titles and descriptions beside a longer task value", () => {
     const tasks = [task, { ...task, id: "22222222-2222-4222-8333-123456789abc", title: "Long task title ".repeat(4), description: "Long description ".repeat(4) }];
     const output = renderTaskList(tasks);
-    for (const current of tasks) expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nType: task\nParent: none\nTitle: ${current.title}\nDescription: ${current.description}\n`);
+    for (const current of tasks) expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nType: task\nParent: none\nTitle: ${current.title}\nTags: none\nDescription: ${current.description}\n`);
   });
 });
 

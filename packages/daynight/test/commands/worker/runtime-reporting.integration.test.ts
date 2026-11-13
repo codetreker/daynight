@@ -1628,7 +1628,7 @@ it("admits another task through the real coordinator after a stop wake with both
   const resources = new Map<string, any>();
   const worktrees = new Map<string, any>();
   const grants = new Map<string, any>(); const trace: string[] = []; let stopped = false, originalEnded = false;
-  const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+  const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", tags: [], status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
   const candidates = [task(owner.taskId), task(uuid(30))];
   const started = vi.fn(async (context: any, nativeBinding: any) => ({ ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null }));
   const tasks = {

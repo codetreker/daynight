@@ -316,6 +316,8 @@ export type TaskPropertyDefinition = {
 };
 export type TaskPropertySchema = { readonly properties: Readonly<Record<string, TaskPropertyDefinition>> };
 
+export type TagReference = { readonly id: string; readonly name: string };
+
 export type Task = {
   readonly id: string;
   readonly type: "task" | "goal";
@@ -323,6 +325,7 @@ export type Task = {
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
+  readonly tags: readonly TagReference[];
   readonly status: TaskStatus;
   readonly allowAgents: boolean;
   readonly requiredPlatform: TaskPlatform | null;
@@ -343,7 +346,7 @@ export type Task = {
 
 export type GoalProgress = { readonly total: number; readonly done: number; readonly cancelled: number; readonly unfinished: number };
 
-export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "version" | "properties" | "progress" | "type"> & {
+export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "tags" | "version" | "properties" | "progress" | "type"> & {
   readonly type: "task";
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
@@ -437,6 +440,7 @@ export type TaskSearchItem = {
   readonly parentId: string | null;
   readonly projectId: string;
   readonly title: string;
+  readonly tags: readonly TagReference[];
   readonly status: TaskStatus;
   readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;

@@ -25,7 +25,7 @@ it("cancels through both installed native launchers and reconciles an unknown re
   const cancelledAt = "2026-11-07T00:00:00.987654321Z";
   const original: Task = { type: "task", parentId: null,
     id: taskId, projectId, title: "  Existing <result&> 中文😀  ", description: "# Preserved\n\nTask materials",
-    properties: { pullRequests: [{ url: "opaque", title: "Existing result" }] }, status: "done", allowAgents: true,
+    tags: [], properties: { pullRequests: [{ url: "opaque", title: "Existing result" }] }, status: "done", allowAgents: true,
     requiredPlatform: "windows", assignedTo: principal, version: 9_007_199_254_740_993n,
     startedAt: time, completedAt: time, cancelledAt: null, createdAt: time, updatedAt: time,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,

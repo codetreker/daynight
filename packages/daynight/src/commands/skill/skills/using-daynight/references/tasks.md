@@ -67,6 +67,10 @@ Lists order in_progress, ready todo, blocked todo, proposed, then selected
 terminal Tasks; done/cancelled stay distinct. Neither list nor ready ordering
 ranks relevance. List/show/graph include [Session observations](session-reads.md#observations);
 ready and Task-returning writes retain full Task data without querying live Sessions.
+Task and Goal details, lists, ready results and receipts contain their own `tags`
+array of `{id,name}` references; `[]` means no tags. Text displays each name on
+its own line, or `Tags: none`. Missing or invalid references fail as protocol
+errors; graph nodes do not include tags.
 A candidate page or single Task cannot prove a complete inventory or verify all
 relationships. Include terminal Tasks for duplicate/history checks; read full
 descriptions and separate materials required for the decision.
@@ -83,7 +87,7 @@ Search accepts `--status`, `--assigned-to`, `--ready`, `--allow-agents`,
 `--compatible-platform`, `--type` and `--parent`, not `--all`; it traverses all pages in server relevance
 order. Matches and actual parent Goal context are compact, not full Tasks.
 Text/JSON omit assignee and update time;
-JSON fields are id, type, parentId, projectId, title, status, cancelledAt, context
+JSON fields are id, type, parentId, projectId, title, tags, status, cancelledAt, context
 and match. Search text also displays Type and Parent. `context:{taskId,title}`
 identifies the visible actual parent Goal, or is null for an independent Task;
 dependencies do not establish Goal membership.
