@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
+import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
 
 const taskId = botId(80), firstProposalId = botId(81), secondProposalId = botId(82), personalId = botId(100);
 const personal = { id: personalId, kind: 'personal', name: null };
@@ -17,7 +17,7 @@ async function install(page: Page) {
   const writes: { path: string; input: unknown }[] = [];
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers(), status) } });
     const paged = (items: unknown[]) => ({ items, nextCursor: null, observedAt: BOT_TIME });
     if (request.method() !== 'GET') {
       const input = request.postDataJSON(); writes.push({ path, input });

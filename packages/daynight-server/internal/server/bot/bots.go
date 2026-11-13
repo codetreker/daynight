@@ -37,16 +37,19 @@ type botsHandler struct {
 
 func RegisterRoutes(mux *http.ServeMux, bots definitions, relay deletion, auth *authhttp.Authentication, logger *slog.Logger) {
 	h := &botsHandler{bots: bots, relay: relay, logger: logger}
+	admit := func(handler httpx.AuthenticatedHandler) http.HandlerFunc {
+		return auth.Require(h.withAttention(handler))
+	}
 	const base = "/api/v1/me/bots"
-	mux.HandleFunc("GET "+base, auth.Require(h.list))
-	mux.HandleFunc("POST "+base, auth.Require(h.create))
-	mux.HandleFunc(base, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("GET "+base+"/defaults", auth.Require(h.defaults))
-	mux.HandleFunc(base+"/defaults", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
-	mux.HandleFunc(base+"/{botId}", auth.Require(h.detail))
+	mux.HandleFunc("GET "+base, admit(h.list))
+	mux.HandleFunc("POST "+base, admit(h.create))
+	mux.HandleFunc(base, admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
+	mux.HandleFunc("GET "+base+"/defaults", admit(h.defaults))
+	mux.HandleFunc(base+"/defaults", admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc(base+"/{botId}", admit(h.detail))
 	const worker = "/api/v1/me/workers/{workerId}/bots"
-	mux.HandleFunc("GET "+worker, auth.Require(h.list))
-	mux.HandleFunc(worker, auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	mux.HandleFunc("GET "+worker, admit(h.list))
+	mux.HandleFunc(worker, admit(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 }
 
 func (h *botsHandler) detail(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -107,7 +110,7 @@ func (h *botsHandler) create(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "bot", "create", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, Response(bot))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, responseForRequest(request, bot))
 }
 
 func (h *botsHandler) defaults(w http.ResponseWriter, request *http.Request, principal model.Principal) {
@@ -184,7 +187,7 @@ func (h *botsHandler) list(w http.ResponseWriter, request *http.Request, princip
 	}
 	response := api.BotPage{Items: make([]api.Bot, 0, len(result.Items)), NextCursor: result.NextCursor}
 	for _, item := range result.Items {
-		response.Items = append(response.Items, Response(item))
+		response.Items = append(response.Items, responseForRequest(request, item))
 	}
 	httpx.WriteJSON(w, request, logger, http.StatusOK, response)
 }
@@ -207,7 +210,7 @@ func (h *botsHandler) get(w http.ResponseWriter, request *http.Request, principa
 		httpx.WriteError(w, request, logger, "bot", "read", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, Response(bot))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, responseForRequest(request, bot))
 }
 
 func botDeleteInput(fields map[string]json.RawMessage) (store.DeleteBot, error) {
@@ -242,7 +245,7 @@ func (h *botsHandler) remove(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "bot", "delete", err)
 		return
 	}
-	httpx.WriteJSON(w, request, logger, http.StatusOK, Response(bot))
+	httpx.WriteJSON(w, request, logger, http.StatusOK, responseForRequest(request, bot))
 }
 
 // Response projects a Bot into its public representation, redacting deleted definitions.

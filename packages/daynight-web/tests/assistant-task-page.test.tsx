@@ -152,3 +152,26 @@ it('keeps task controls available and displays application JSON numbers without 
   expect(screen.queryByText(/9007199254740992/)).toBeNull();
   expect(f.writes).toEqual([]);
 });
+
+it('keeps Bot attention outstanding while the task detail hides its conversation', async () => {
+  const f = fixture(), original = f.fetch.getMockImplementation()!;
+  const bot = { ...botDefinition(1), attentionCount: 1 };
+  f.fetch.mockImplementation(async (url, options) => {
+    const path = String(url).split('?')[0];
+    if (path === `/api/v1/bots/${bot.id}/attention/seen`) { bot.attentionCount = 0; return botResponse({ targetBotId: bot.id }); }
+    if (path === '/api/v1/me/bots') return botResponse({ items: [bot], nextCursor: null });
+    if (path === `/api/v1/me/bots/${bot.id}`) return botResponse(bot);
+    return original(url, options);
+  });
+  const scope = createTaskCacheScope({ userId: BOT_USER, onIdentityMismatch: vi.fn() }); scopes.push(scope);
+  const node = (selectedTask: string | null) => <TaskCacheProvider scope={scope}><BotsPage botId={bot.id} taskId={selectedTask} readEnabled /></TaskCacheProvider>;
+  const view = renderWithLocale(node(taskId), { locale: 'en' });
+  await screen.findByRole('region', { name: 'Coordination task' });
+  expect(screen.getByTestId('retained-session')).not.toBeVisible();
+  expect(screen.getByLabelText('1 items need your attention')).toBeVisible();
+  expect(f.fetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
+  view.rerender(node(null));
+  await waitFor(() => expect(screen.queryByLabelText('1 items need your attention')).toBeNull());
+  expect(screen.getByTestId('retained-session')).toBeVisible();
+  expect(f.fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1);
+});

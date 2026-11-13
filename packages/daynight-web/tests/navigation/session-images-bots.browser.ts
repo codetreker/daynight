@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { sessionFence, type SessionSnapshot } from '../../../daynight/src/session/protocol';
-import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
+import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
 import { imageBrowserData } from '../helpers/sessionImageBrowser';
 import { stringifyWireJson } from '../helpers/wireJson';
 
@@ -28,7 +28,7 @@ async function install(page: Page) {
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) observed.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': BOT_USER } });
+    const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers(), status) } });
     if (path === '/api/v1/me') return send({ id: BOT_USER, personalTeam: personal, name: 'Image reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personal.id}`) return send({ ...personal, version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME, membership: { teamId: personal.id, userId: BOT_USER, role: 'admin', version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME } });
