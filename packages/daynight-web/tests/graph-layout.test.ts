@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ChainProjection } from '../src/features/task-graph/model';
+import type { ChainProjection, GraphProjection } from '../src/features/task-graph/model';
 import { layoutGraph, TASK_NODE_COMPACT_HEIGHT, TASK_NODE_EXPANDABLE_HEIGHT, TASK_NODE_WIDTH, type CanvasLayout } from '../src/features/task-graph/layout';
 import { compileDependencyRoute } from '../src/features/task-graph/routes';
 import { entersRectangle, parseRoute, tangent } from './route-geometry';
@@ -76,6 +76,17 @@ describe('horizontal task graph layout', () => {
 
   it('returns an explicit empty layout without non-finite Dagre bounds', () => {
     expect(layoutGraph(projection([], []))).toEqual({ nodes: [], edges: [], width: 0, height: 0, direction: 'horizontal' });
+  });
+
+  it.each(['horizontal', 'vertical'] as const)('lays out a rootless projection with the same geometry in %s', (direction) => {
+    const chain = projection(['A', 'B', 'C'], [['A', 'B'], ['X', 'B']], ['X'], [['X', 'B']]);
+    const shared: GraphProjection = { mainIds: chain.mainIds, externalIds: chain.externalIds, edges: chain.edges };
+    const result = layoutGraph(shared, undefined, direction);
+    expect(result).toEqual(layoutGraph(chain, undefined, direction));
+    expect(result.nodes.map(({ id }) => id)).toEqual(['A', 'B', 'C', 'X']);
+    expect(result.edges.map(({ source, target, external }) => ({ source, target, external }))).toEqual([
+      { source: 'A', target: 'B', external: false }, { source: 'X', target: 'B', external: true },
+    ]);
   });
 
   it('routes mixed-height cards to their actual boundaries without overlapping cards', () => {
