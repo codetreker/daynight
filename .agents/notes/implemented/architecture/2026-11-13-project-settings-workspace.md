@@ -12,19 +12,21 @@ write protection.
 
 ## Decision
 
-Project settings use four URL-addressed sections within a stable user and Project
+Project settings use five URL-addressed sections within a stable user and Project
 workspace. The shared Project read remains active for the workspace; individual
 controllers retain their own drafts, results, admission and retention facts.
 Section visibility is distinct from workspace membership, and state summaries do
 not participate in the management guard. Accepted operations retain their business
 identity while presentation also checks the section generation and original
-location. The [Web requirements](../../../../docs/spec/daynight-web.md#项目设置工作空间)
-and [design](../../../../docs/design/daynight-web.md#项目设置工作空间) own the
+location. The [requirements](../../../../docs/spec/project-settings.md)
+and [design](../../../../docs/design/project-settings.md) own the
 observable behavior and implementation boundaries.
 
-Members and invitations remain on their existing independent page. The settings,
-GitHub, transfer and deletion operations retain their shared guard; personal
-prompts remain independent.
+The initial four-section delivery retained the independent member page. The
+[member integration decision](2026-11-13-project-settings-members.md) brings its
+controller into the same workspace while preserving its independent operation
+limits. Settings, GitHub, transfer and deletion retain their shared guard;
+personal prompts remain independent.
 
 A confirmed deletion withdraws its original admitted cache generation independently of section presentation; the [paused-result decision](../bug-fix/2026-11-11-project-deletion-paused-result.md) retains the admission and cleanup limits.
 
@@ -45,5 +47,5 @@ Users can link to and revisit a section while retained controllers preserve
 in-memory drafts and results. The workspace must coordinate section visibility,
 dialog suspension and scroll restoration without replacing the existing business
 state machines. Refresh does not persist unsaved drafts or operation results in
-the URL. Member and invitation management continue to use their separate route
-and lifecycle.
+the URL. Member and invitation management retain their own lifecycle inside the
+workspace; the legacy member route selects that section.

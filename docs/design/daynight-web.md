@@ -897,24 +897,18 @@ TaskExecutionPresentation 在图卡片与独立行以 time/title 和独立可访
 TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留容纳英文 Details；琥珀提醒不替换蓝色状态、显式外部虚线、链外卡片与选中/前置样式。
 独立行与项目 Goal 展开区的子任务行局部订阅并保持原 row 与焦点，视觉计时元数据不参与按钮名称；没有逐秒 alert/status/live region。普通 Task 和链的完成时间表示完成时刻，独立于执行耗时，其消费者和提示机制见[完成时间设计](daynight-completion-time.md)。子任务标题使用行内排版，耗时允许内部换行并保留完整文本，状态与行操作保留各自空间；没有逐行定时器或网络读取。
 
-项目页头在独立 Project 读取尚未提供链接时，为本地化的成员与设置链接预留实际操作几何；隐藏占位不进入可访问树，Project 读取成功后替换为真实链接。页头不展示当前用户角色，成员页仍展示成员的有效角色及其来源。
+项目页头在独立 Project 读取尚未提供链接时，为本地化的设置链接预留实际操作几何；隐藏占位不进入可访问树，Project 读取成功后替换为真实链接。页头不展示当前用户角色，设置的成员与邀请分组展示成员的有效角色及其来源。
 链接替换保留操作宽度，不因权限核验结果重新压窄长标题或移动已恢复的页签滚动位置。
 [页头角色展示决策](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md)记录了当前取舍，
 [任务视图决策](../../.agents/notes/archived/feature/2026-10-22-project-task-views.md)记录了按项目/页签保存位置的历史取舍；计时订阅与图布局保持独立。
 
 ## 项目设置工作空间
 
-`app/project-settings-route.ts` 解析四组阅读选择并构造链接，`router.ts` 保留项目身份及无效选择；现有 `authError` 处理和独立成员路由不变。URL 是选择的权威来源，默认执行组使用无 `tab` 的地址，其他组使用相应参数。导航沿用 `BrowserNavigation` 的离开保护；相同选择不产生历史条目，修饰键和新标签使用原生链接。
-
-`ProjectSettingsPanel` 的 user/project owner 和 `ProjectAccessBoundary` 保持稳定，工作空间组合四组及其独立 controller。所属工作空间、工作空间活动和当前组活动是不同事实：切组不结束 `onRoute`，而隐藏组停止相应活动并使用 `hidden` 和 `inert`。共享 Project GET 在活动工作空间读取，提供项目身份、仓库和设置；其错误不阻断提示词或 GitHub 的独立读取。保留回调仍分别属于设置、提示词、GitHub、转移和删除，展示摘要只派生 dirty、pending 和需要处理的事实，不充当写锁。
-
-对话框沿用 suspended 机制，在组不可见时释放焦点约束并保留确认。操作接受时捕获展示身份：可信回执和撤权等业务安全处理仍归原操作，关闭确认、重置输入、焦点和主动导航须同时匹配当前展示代际与原位置。项目提示词的导航保护把同项目设置地址视为同一工作空间，取消离开时先选择提示词再恢复有效焦点。
-
-组的阅读位置在工作空间内存中按组保存，历史恢复先更新可见组再恢复位置；活动工作空间临时使用 manual scroll restoration，离开后恢复浏览器设置。手机导航只调整自身横向滚动，不覆盖正文位置。[分组决策](../../.agents/notes/implemented/architecture/2026-11-13-project-settings-workspace.md)记录状态与交付边界。
+稳定的用户和项目 owner 组合五个分组及其独立 controller。URL 决定阅读选择；旧成员地址直接映射到成员与邀请。共享 Project 读取、活动范围、保留事实、成员结果与展示代际的组织由[项目设置设计](project-settings.md)拥有。
 
 ## 项目执行提醒设置
 
-`AuthenticatedApp` 注册 `/projects/:id/settings`，与成员路由共用项目管理导航、面包屑和本地化标题；Go 同源页面入口提供 GET/HEAD 深链接及既有方法拒绝。
+`AuthenticatedApp` 注册 `/projects/:id/settings`，成员旧地址映射到同一设置工作空间；项目管理导航、面包屑和标题统一设置入口；Go 同源页面入口提供 GET/HEAD 深链接及既有方法拒绝。
 `ProjectSettingsPanel` 按 user/project 键隔离，`useProjectSettings` 读取完整 Project，
 共享内存 access 提供已确认的本人角色；后台复核保留 admin 的编辑界面，但写入等待新鲜权限。
 权限刷新沿身份/项目生命周期发布，保留独立设置草稿；成员资料不再承担本人准入。

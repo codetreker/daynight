@@ -102,14 +102,15 @@ describe("sidebar integration with the authenticated workspace", () => {
     render(<AuthenticatedApp />);
     await screen.findByText("Project Beta · 管理协作成员与加入邀请");
     act(() => navigate(`/projects/${projectId}`));
-    await screen.findByRole("link", { name: "项目成员" });
-    fireEvent.click(screen.getByRole("link", { name: "项目成员" }));
+    fireEvent.click(await screen.findByRole("link", { name: "项目设置" }));
+    fireEvent.click(await screen.findByRole("link", { name: "成员与邀请" }));
     await screen.findByText("私有项目 · 管理协作成员与加入邀请");
     act(() => navigate(`/projects/${second}/settings`));
     await screen.findByRole("heading", { name: "Project Beta" });
-    fireEvent.click(within(screen.getByRole("navigation", { name: "项目设置" })).getByRole("link", { name: "项目成员" }));
+    fireEvent.click(within(screen.getByRole("navigation", { name: "项目设置分组" })).getByRole("link", { name: "成员与邀请" }));
     await waitFor(() => expect(screen.getByText("Project Beta · 管理协作成员与加入邀请")).toBeVisible());
-    expect(screen.getByText("私有项目 · 管理协作成员与加入邀请")).not.toBeVisible();
+    const previous = screen.queryByText("私有项目 · 管理协作成员与加入邀请");
+    if (previous !== null) expect(previous).not.toBeVisible();
   });
 
   it("retains a project invitation and stops remote work after account change", async () => {
@@ -141,13 +142,14 @@ describe("sidebar integration with the authenticated workspace", () => {
     expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(1);
     expect(nav.getByRole("link", { name: "项目" })).toHaveAttribute("aria-current", "page");
     fireEvent.click(link);
-    await screen.findByRole("link", { name: "项目成员" });
+    await screen.findByRole("link", { name: "项目设置" });
     expect(nav.getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
     expect(nav.getByRole("link", { name: "项目" })).not.toHaveAttribute("aria-current");
-    fireEvent.click(screen.getByRole("link", { name: "项目成员" }));
+    fireEvent.click(screen.getByRole("link", { name: "项目设置" }));
+    fireEvent.click(await screen.findByRole("link", { name: "成员与邀请" }));
     await screen.findByRole("heading", { name: "项目成员" });
     expect(nav.getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
-    fireEvent.click(screen.getByRole("link", { name: "项目设置" }));
+    fireEvent.click(screen.getByRole("link", { name: "执行与提醒" }));
     await screen.findByRole("heading", { name: "私有项目" });
     expect(nav.getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
     expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(1);
@@ -662,7 +664,8 @@ describe("authenticated application shell", () => {
   it("retains private project navigation after a shared account change", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     const fetcher = install(); render(<AuthenticatedApp />);
-    fireEvent.click(await screen.findByRole("link", { name: "项目成员" }));
+    fireEvent.click(await screen.findByRole("link", { name: "项目设置" }));
+    fireEvent.click(await screen.findByRole("link", { name: "成员与邀请" }));
     const heading = await screen.findByRole("heading", { name: "项目成员" });
     await screen.findByText("私有项目");
     accountChange(otherId); await screen.findByText("账户已变化");
@@ -765,11 +768,11 @@ describe("authenticated application shell", () => {
   });
 
   it.each([
-    { role: "admin", locale: "zh-CN", members: "项目成员", settings: "项目设置" },
-    { role: "member", locale: "zh-CN", members: "项目成员", settings: "项目设置" },
-    { role: "admin", locale: "en", members: "Project members", settings: "Project settings" },
-    { role: "member", locale: "en", members: "Project members", settings: "Project settings" },
-  ] as const)("shows project actions without a role for $role in $locale", async ({ role, locale, members, settings }) => {
+    { role: "admin", locale: "zh-CN", settings: "项目设置" },
+    { role: "member", locale: "zh-CN", settings: "项目设置" },
+    { role: "admin", locale: "en", settings: "Project settings" },
+    { role: "member", locale: "en", settings: "Project settings" },
+  ] as const)("shows project actions without a role for $role in $locale", async ({ role, locale, settings }) => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     const snapshot: TaskGraph = { observedAt: now, project: project(), tasks: [], summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } };
     const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
@@ -783,17 +786,17 @@ describe("authenticated application shell", () => {
     createLocaleRender(locale)(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" }, { timeout: 5000 });
     const actions = document.querySelector<HTMLElement>(".project-title-actions")!;
-    expect(within(actions).getByRole("link", { name: members })).toHaveAttribute("href", `/projects/${projectId}/members`);
+    expect(within(actions).getAllByRole("link")).toHaveLength(1);
     expect(within(actions).getByRole("link", { name: settings })).toHaveAttribute("href", `/projects/${projectId}/settings`);
     await waitForState(() => expect(syncUrl).not.toBe(""));
     await act(async () => pending.resolve(taskSyncResponse(snapshot, { viewerId: userId, query: taskSyncQuery(new URL(syncUrl, window.location.origin)), versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, role) })));
-    expect(await within(actions).findByRole("link", { name: members })).toHaveAttribute("href", `/projects/${projectId}/members`);
+    expect(await within(actions).findAllByRole("link")).toHaveLength(1);
     expect(within(actions).getByRole("link", { name: settings })).toHaveAttribute("href", `/projects/${projectId}/settings`);
     for (const view of ["overview", "tasks"]) {
       if (view === "tasks") await selectTaskList();
       expect(document.querySelector(".project-heading .badge, .project-heading .project-title-role, .project-heading .project-title-role-measure")).toBeNull();
       expect([...actions.children].map(element => element.textContent)).not.toContain(locale === "zh-CN" ? (role === "admin" ? "管理员" : "成员") : (role === "admin" ? "Administrator" : "Member"));
-      expect(within(actions).getByRole("link", { name: members })).toBeVisible();
+      expect(within(actions).getAllByRole("link")).toHaveLength(1);
       expect(within(actions).getByRole("link", { name: settings })).toBeVisible();
     }
   });
@@ -803,17 +806,17 @@ describe("authenticated application shell", () => {
     let failing = false;
     const fetcher = install((url) => url.endsWith("/access") && failing ? fail(503, "internal") : defaults(url));
     render(<AuthenticatedApp />);
-    const members = await screen.findByRole("link", { name: "项目成员" });
+    const settings = await screen.findByRole("link", { name: "项目设置" });
     await screen.findByRole("heading", { name: "概览" });
-    members.focus(); failing = true;
+    settings.focus(); failing = true;
     returnFromAnotherWindow();
     expect(await screen.findByText("暂时无法读取项目权限。", {}, { timeout: 5000 })).toBeVisible();
-    expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
-    expect(members).toHaveFocus();
+    expect(screen.getByRole("link", { name: "项目设置" })).toBe(settings);
+    expect(settings).toHaveFocus();
     failing = false;
     fireEvent.click(screen.getByRole("button", { name: "重试读取权限" }));
     await waitFor(() => expect(screen.queryByText("暂时无法读取项目权限。")).toBeNull());
-    expect(screen.getByRole("link", { name: "项目成员" })).toBe(members);
+    expect(screen.getByRole("link", { name: "项目设置" })).toBe(settings);
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1);
   });
 
@@ -897,7 +900,7 @@ describe("authenticated application shell", () => {
 
   it("handles valid account, membership and malformed routes", () => {
     expect(parseAuthRoute("/account")).toEqual({ kind: "account" });
-    expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "members", projectId });
+    expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
     expect(parseAuthRoute("/projects/%E0%A4%A")).toEqual({ kind: "notFound" });
     expect(parseAuthRoute("/projects/no/members")).toEqual({ kind: "notFound" });
     expect(parseAuthRoute("/unknown")).toEqual({ kind: "notFound" });
@@ -918,7 +921,7 @@ describe("authenticated standalone attachment reader", () => {
     }
     expect(parseAuthRoute("/account")).toEqual({ kind: "account" });
     expect(parseAuthRoute("/invitations")).toEqual({ kind: "invitations" });
-    expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "members", projectId });
+    expect(parseAuthRoute(`/projects/${projectId}/members`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
   });
 
   it("checks the session before opening a deep link outside workspace chrome and keeps the reader on a locale change", async () => {
@@ -1436,7 +1439,6 @@ it.each(['pending', 'failed'] as const)('recovers the project header through an 
   denied = false;
   fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
   expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
-  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
   expect(screen.getByRole('link', { name: '项目设置' })).toBeVisible();
   expect(screen.queryByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeNull();
 });
@@ -1458,7 +1460,7 @@ it('rejects a recovery response after a newer project withdrawal', async () => {
   await waitFor(() => expect(recoveryReads).toBe(2));
   await act(async () => pending.resolve(json(project())));
   expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
-  expect(screen.queryByRole('link', { name: '项目成员' })).toBeNull();
+  expect(screen.queryByRole('link', { name: '项目设置' })).toBeNull();
   expect(screen.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
   await act(async () => newer.resolve(json(project())));
   expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
@@ -1498,7 +1500,7 @@ it('recovers Project after its access recheck confirms denial and cache cleanup 
   projectAllowed = true;
   fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
   expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
-  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目设置' })).toBeVisible();
   expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length).toBeGreaterThan(1);
   purge.mockRestore();
 });
@@ -1527,5 +1529,5 @@ it('automatically rereads Project after task sync denial even when the cache bec
   expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
   await act(async () => pending.resolve(json(project())));
   expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
-  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目设置' })).toBeVisible();
 });
