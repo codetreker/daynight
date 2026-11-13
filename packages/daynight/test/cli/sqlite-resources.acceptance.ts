@@ -33,7 +33,7 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => { if (fixture !== undefined) await fixture.cleanup(); });
 
-it("ships exact SQL resources and initializes each installed store", () => {
+it("ships exact SQL resources and executes installed stores and staged timeline content", () => {
   const expectedResources = sqlDirectories.map(directory => ({ directory, source: files(path.join(packageDirectory, "src", directory)) }));
   const expectedCount = expectedResources.reduce((sum, { source }) => sum + Object.keys(source).length, 0);
   let count = 0;
@@ -44,6 +44,8 @@ it("ships exact SQL resources and initializes each installed store", () => {
     expect(installedResources).toEqual(source);
   }
   expect(count).toBe(expectedCount);
+  const stagedSql = "commands/controller/content/timeline-schema.sql";
+  expect(readFileSync(path.join(installed, "dist", stagedSql))).toEqual(readFileSync(path.join(packageDirectory, "src", stagedSql)));
   const workerVersion = currentSqliteVersion(workerStoreFormat);
   const workerTables = sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../src/commands/worker/sqlite/", import.meta.url)))
     .get(workerVersion)!.filter(object => object.type === "table").map(({ name }) => name);
@@ -57,7 +59,8 @@ import { pathToFileURL } from "node:url";
 const [installed, directory, workerExpectation] = process.argv.slice(1);
 const worker = JSON.parse(workerExpectation);
 const load = relative => import(pathToFileURL(path.join(installed, "dist", relative)).href);
-const { openSqliteDatabase } = await load("platform/sqlite-access.js");
+const { openSqliteDatabase, runSqliteImmediate } = await load("platform/sqlite-access.js");
+const { currentSqliteVersion, inspectSqlite } = await load("platform/sqlite-format.js");
 const { acquireControllerStoragePermit, controllerStorageConnectionIsOpen } = await load("commands/controller/storage-lock.js");
 const { controllerJournalWriteOptions } = await load("commands/controller/storage-preparation.js");
 const owners = [
@@ -81,8 +84,38 @@ for (const [module, name, version, tables] of owners) {
     versions.push(version);
   } finally { db.close(); if (permit !== undefined) permit.release(); }
 }
+const { controllerTimelineFormat, controllerTimelineFormatForMigration } = await load("commands/controller/content/migration.js");
+const { createTimelineMaintenanceReservation } = await load("commands/controller/content/maintenance.js");
+const { openTimelineStore } = await load("commands/controller/content/timeline-store.js");
+const { controllerJournalFormat } = await load("commands/controller/journal-format.js");
+assert.equal(currentSqliteVersion(controllerJournalFormat), 9);
+assert.equal(currentSqliteVersion(controllerTimelineFormat), 10);
+const timelineFile = path.join(directory, "staged-timeline.sqlite"), timelinePermit = acquireControllerStoragePermit(timelineFile);
+let reservation, timelineDb;
+const timelineFormat = controllerTimelineFormatForMigration(db => reservation ??= createTimelineMaintenanceReservation(db, { journalFile: timelineFile, stateDirectory: directory, storagePermit: timelinePermit }));
+const entry = { entryId: "00000000-0000-4000-8000-000000000001", entrySeq: "9007199254740993", revision: "9007199254740995", kind: "assistant_message", content: [{ type: "text", text: "Installed 正文 😀" }] };
+const replacement = { ...entry, revision: "9007199254740996", content: [{ type: "text", text: "Reopened 当前正文 🧩" }] };
+try {
+  timelineDb = openSqliteDatabase({ file: timelineFile, format: timelineFormat, allowCreate: false, onMigration: () => {} });
+  let writing = false;
+  const timeline = openTimelineStore(timelineDb, { assertWrite: bytes => { assert.equal(writing, true); reservation.assertReservedWrite(bytes); } });
+  assert.throws(() => timeline.save(entry), /original journal write transaction/);
+  runSqliteImmediate(timelineDb, () => { writing = true; try { timeline.save(entry); timeline.save(replacement); } finally { writing = false; } });
+  assert.deepEqual(timeline.get(entry.entryId), replacement);
+  assert.deepEqual(timeline.totals(), { entryCount: 1, byteLength: Buffer.byteLength(JSON.stringify(replacement)), timelineBytes: Buffer.byteLength('{"entries":[]}') + Buffer.byteLength(JSON.stringify(replacement)) });
+  assert.equal(timeline.nextSequence(), "9007199254740994");
+  assert.deepEqual(timelineDb.prepare("SELECT COUNT(*) AS count,typeof(entry_seq) AS seq,typeof(revision) AS rev FROM timeline_entries").get(), { count: 1, seq: "integer", rev: "integer" });
+  assert.equal(timelineDb.prepare("SELECT name FROM sqlite_schema WHERE name='content_index'").get(), undefined);
+  assert.throws(() => inspectSqlite(timelineDb, controllerJournalFormat), error => error.kind === "unsupported-version");
+  timelineDb.close();
+  timelineDb = openSqliteDatabase({ file: timelineFile, format: controllerTimelineFormat, allowCreate: false, onMigration: () => {} });
+  const reopened = openTimelineStore(timelineDb, { assertWrite: () => { throw new Error("Installed readback is read-only."); } });
+  assert.deepEqual(reopened.get(entry.entryId), replacement);
+  assert.equal(timelineDb.pragma("user_version", { simple: true }), 10);
+  versions.push(10);
+} finally { if (timelineDb !== undefined && timelineDb.open) timelineDb.close(); timelinePermit.release(); }
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 9, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 9, 1, 10]);
 });

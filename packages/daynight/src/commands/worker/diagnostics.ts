@@ -14,6 +14,8 @@ const sqliteMetadata = (event: SqliteMigrationEvent): SqliteMigrationEvent => ({
   kind: event.kind, phase: event.phase, fromVersion: event.fromVersion, toVersion: event.toVersion,
   ...(event.stepVersion === undefined ? {} : { stepVersion: event.stepVersion }),
   durationMs: event.durationMs, outcome: event.outcome,
+  ...(event.storage === undefined ? {} : { storage: event.storage }),
+  ...(event.error === undefined ? {} : { error: event.error }),
 });
 
 export const workerSqliteMigrationEvent = (event: SqliteMigrationEvent): WorkerDiagnostic => ({

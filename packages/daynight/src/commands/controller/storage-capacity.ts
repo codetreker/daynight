@@ -31,27 +31,35 @@ const reservations = (file: string, db: Database.Database): Map<string, number> 
   return reserved;
 };
 
+export const controllerStorageMediaUsage = (file: string, db: Database.Database): { reservedBytes: number; actualBytes: number } => {
+  const roots = [`${file}.media-staging`, path.join(`${file}.pending-content`, "blobs")].filter(exists);
+  return { reservedBytes: controllerMediaDiskBytes(roots, reservations(file, db)), actualBytes: controllerMediaDiskBytes(roots, new Map()) };
+};
+
+/** Replace the original execution's charge only after checking its complete remaining peak. */
+export const reserveControllerStoragePeak = (file: string, stateDirectory: string, executionId: string | undefined, absoluteBytes: number, additionalDiskBytes: number, deadline?: number): void => {
+  if (!Number.isSafeInteger(absoluteBytes) || absoluteBytes < 0 || !Number.isSafeInteger(additionalDiskBytes) || additionalDiskBytes < 0) throw new TypeError("Controller storage peak must be a nonnegative safe integer.");
+  if (absoluteBytes > 2_306_867_200) throw new ControllerMediaBudgetError("execution");
+  const space = statfsSync(path.dirname(file), { bigint: true });
+  if (space.bavail * space.bsize < 536_870_912n + BigInt(additionalDiskBytes)) throw new ControllerStorageFreeSpaceError();
+  if (executionId === undefined) return;
+  if (canonicalId(executionId) !== executionId) throw new Error("Controller storage reservation requires its original execution identity.");
+  const remaining = deadline === undefined ? 5000 : deadline - Date.now();
+  if (remaining <= 0) throw new Error("Controller storage reservation exceeded its deadline.");
+  const ledger = openMediaBudgetLedger(stateDirectory, executionId, { timeoutMs: Math.min(5000, remaining) });
+  let failure: unknown;
+  try { ledger.reserve(absoluteBytes); }
+  catch (error) { failure = error; }
+  try { ledger.close(); }
+  catch (close) { if (failure !== undefined) throw new AggregateError([failure, close], "Controller storage reservation and ledger close failed."); throw close; }
+  if (failure !== undefined) throw failure;
+};
+
 /** A reservation replaces the execution's absolute charge, including durable unfinished uploads. */
 export const assertControllerStorageCapacity = (file: string, db: Database.Database, stateDirectory: string, executionId: string | undefined, additionalBytes = 0, deadline?: number): void => {
   if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) throw new TypeError("Controller storage growth must be a nonnegative safe integer.");
   controllerMetadataBudget(file, db).assert(additionalBytes);
   if (db.memory) return;
-  const roots = [`${file}.media-staging`, path.join(`${file}.pending-content`, "blobs")].filter(exists);
-  const retained = reservations(file, db);
-  const mediaBytes = controllerMediaDiskBytes(roots, retained);
-  const actualBytes = controllerMediaDiskBytes(roots, new Map());
-  if (executionId !== undefined) {
-    if (canonicalId(executionId) !== executionId) throw new Error("Controller storage reservation requires its original execution identity.");
-    const remaining = deadline === undefined ? 5000 : deadline - Date.now();
-    if (remaining <= 0) throw new Error("Controller storage reservation exceeded its deadline.");
-    const ledger = openMediaBudgetLedger(stateDirectory, executionId, { timeoutMs: Math.min(5000, remaining) });
-    let failure: unknown;
-    try { ledger.reserve(mediaBytes + CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES); }
-    catch (error) { failure = error; }
-    try { ledger.close(); }
-    catch (close) { if (failure !== undefined) throw new AggregateError([failure, close], "Controller storage reservation and ledger close failed."); throw close; }
-    if (failure !== undefined) throw failure;
-  }
-  const space = statfsSync(path.dirname(file), { bigint: true });
-  if (space.bavail * space.bsize < 536_870_912n + BigInt(Math.max(0, mediaBytes - actualBytes) + additionalBytes)) throw new ControllerStorageFreeSpaceError();
+  const media = controllerStorageMediaUsage(file, db);
+  reserveControllerStoragePeak(file, stateDirectory, executionId, media.reservedBytes + CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES, Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes, deadline);
 };

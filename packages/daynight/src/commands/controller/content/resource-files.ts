@@ -9,25 +9,56 @@ export type PendingResource = { resource: SessionResource; data: string | null }
 export type ControlledResourceLease = { readonly path: string; readonly resource: SessionResource; read(offset: string, limit: number): Buffer; close(): void };
 const MAX_RESOURCE_BYTES = 10 * 1024 * 1024;
 const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+type PendingContentIndex = { entries: string[]; resources: string[] };
+const readIndex = (root: string): { source: Buffer; value: PendingContentIndex } | undefined => {
+  const file = join(root, "index.json");
+  if (!existsSync(file)) return undefined;
+  const source = readFileSync(file), value = JSON.parse(source.toString("utf8")) as PendingContentIndex;
+  if (!Array.isArray(value.entries) || !Array.isArray(value.resources)) throw new Error("Invalid pending content index.");
+  if ([...value.entries, ...value.resources].some(name => typeof name !== "string" || !/^[a-f0-9]{64}\.json$/.test(name))) throw new Error("Pending archive source is incomplete.");
+  return { source, value };
+};
+const validatedIndex = (root: string): PendingContentIndex | undefined => {
+  let index = readIndex(root);
+  if (index === undefined) return undefined;
+  const legacyExists = (value: PendingContentIndex): boolean => value.entries.every(name => existsSync(join(root, "timeline", name)));
+  if (!legacyExists(index.value)) {
+    // A reader may capture the inventory before maintenance publishes retirement.
+    // Only a changed atomic inventory can supersede its disappearing legacy files.
+    const current = readIndex(root);
+    if (current === undefined || current.source.equals(index.source)) throw new Error("Pending archive source is incomplete.");
+    if (!legacyExists(current.value)) throw new Error("Pending archive source is incomplete.");
+    index = current;
+  }
+  if (index.value.resources.some(name => !existsSync(join(root, "resources", name)))) throw new Error("Pending archive source is incomplete.");
+  return index.value;
+};
+const publishIndex = (root: string, value: PendingContentIndex): void => writeDurableJson(join(root, "index.json"), value);
+const assertSessionManifest = (root: string, sessionId: string): void => {
+  const value = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")) as { schemaVersion: number; sessionId: string };
+  if (value.schemaVersion !== 1 || value.sessionId !== sessionId) throw new Error("Pending content belongs to another session.");
+};
+
+/** Publish retirement before its reader-safe owner removes any legacy timeline files. */
+export const retireLegacyTimelineReferences = (journal: string, sessionId: string): void => {
+  const root = `${journal}.pending-content`;
+  assertSessionManifest(root, sessionId);
+  const index = validatedIndex(root);
+  if (index !== undefined) publishIndex(root, { ...index, entries: [] });
+};
 
 export const openResourceFiles = (journal: string, sessionId: string) => {
   const root = `${journal}.pending-content`;
-  const timelineDirectory = join(root, "timeline"), resourceDirectory = join(root, "resources"), blobDirectory = join(root, "blobs");
+  const resourceDirectory = join(root, "resources"), blobDirectory = join(root, "blobs");
   mkdirSync(resourceDirectory, { recursive: true, mode: 0o700 });
   mkdirSync(blobDirectory, { recursive: true, mode: 0o700 });
   syncDirectory(dirname(root));
   syncDirectory(root);
   const manifest = join(root, "manifest.json");
-  if (existsSync(manifest)) {
-    const value = JSON.parse(readFileSync(manifest, "utf8")) as { schemaVersion: number; sessionId: string };
-    if (value.schemaVersion !== 1 || value.sessionId !== sessionId) throw new Error("Pending content belongs to another session.");
-  } else writeDurableJson(manifest, { schemaVersion: 1, sessionId });
+  if (existsSync(manifest)) assertSessionManifest(root, sessionId);
+  else writeDurableJson(manifest, { schemaVersion: 1, sessionId });
   const indexPath = join(root, "index.json");
-  const index = existsSync(indexPath) ? JSON.parse(readFileSync(indexPath, "utf8")) as { entries: string[]; resources: string[] } : { entries: [], resources: [] };
-  if (!Array.isArray(index.entries) || !Array.isArray(index.resources)) throw new Error("Invalid pending content index.");
-  for (const [directory, names] of [[timelineDirectory, index.entries], [resourceDirectory, index.resources]] as const) {
-    for (const name of names) if (!/^[a-f0-9]{64}\.json$/.test(name) || !existsSync(join(directory, name))) throw new Error("Pending archive source is incomplete.");
-  }
+  validatedIndex(root);
   const resources = new Map<string, PendingResource>();
   const leases = new Map<string, number>();
   let recoveryNeeded = false;
@@ -84,10 +115,10 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     if (resource.status === "available") verifyBlob(resource);
     resources.set(resource.resourceId, { resource, data: null });
   }
-  // SQL content_index is the durable timeline inventory. Rewriting a growing
+  // The journal owns the durable timeline inventory. Rewriting a growing
   // entry list on each insert would make an otherwise linear archive quadratic.
   // Resources have their own small inventory because their bytes do not live in SQL.
-  const updateIndex = () => writeDurableJson(indexPath, { entries: [], resources: [...resources.keys()].map(name).sort() });
+  const updateIndex = () => publishIndex(root, { entries: [], resources: [...resources.keys()].map(name).sort() });
   let descriptorBytes = [...resources.values()].reduce((sum, value) => sum + encodedBytes(value.resource), 0);
   const pendingCleanup = new Set<string>();
   const retryCleanup = (): void => {
@@ -180,7 +211,7 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     const backups: string[] = [];
     const previous = resources.get(id), previousPins = pins[id];
     const oldPins = existsSync(pinsPath) ? JSON.parse(readFileSync(pinsPath, "utf8")) as unknown : undefined;
-    const oldIndex = existsSync(indexPath) ? JSON.parse(readFileSync(indexPath, "utf8")) as unknown : undefined;
+    const oldIndex = readIndex(root)?.value;
     let pinsAttempted = false, indexAttempted = false;
     try {
       // Retain both originals until every fallible deletion and metadata update
@@ -205,7 +236,7 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
         try { if (oldPins === undefined) { if (existsSync(pinsPath)) unlinkSync(pinsPath); } else writeDurableJson(pinsPath, oldPins); } catch (failure) { failures.push(failure); }
       }
       if (indexAttempted) {
-        try { if (oldIndex === undefined) { if (existsSync(indexPath)) unlinkSync(indexPath); } else writeDurableJson(indexPath, oldIndex); } catch (failure) { failures.push(failure); }
+        try { if (oldIndex === undefined) { if (existsSync(indexPath)) unlinkSync(indexPath); } else publishIndex(root, oldIndex); } catch (failure) { failures.push(failure); }
       }
       if (!failures.length) {
         for (const file of backups) { try { unlinkSync(file + suffix); } catch {} }

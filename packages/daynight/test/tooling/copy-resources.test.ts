@@ -24,8 +24,9 @@ const sqlDirectories = [
 ] as const;
 const resources = [...bundles, ...sqlDirectories];
 const standaloneManual = "commands/skill/usage.md" as const;
+const stagedTimelineSql = "commands/controller/content/timeline-schema.sql" as const;
 const firstTopic = `commands/skill/skills/using-daynight/${manualTopicFiles[0]}`;
-const allResources = [...resources, standaloneManual];
+const allResources = [...resources, stagedTimelineSql, standaloneManual];
 type Resource = typeof allResources[number];
 const directories: string[] = [];
 
@@ -63,6 +64,10 @@ const fixture = (missing?: Resource) => {
     if (resource === missing) continue;
     mkdirSync(source(resource), { recursive: true });
     writeFileSync(path.join(source(resource), "001-baseline.sql"), "CREATE TABLE baseline (value TEXT NOT NULL);\n");
+  }
+  if (missing !== stagedTimelineSql) {
+    mkdirSync(path.dirname(source(stagedTimelineSql)), { recursive: true });
+    cpSync(path.join(packageDirectory, "src", stagedTimelineSql), source(stagedTimelineSql));
   }
   const run = () => {
     const result = spawnSync(process.execPath, [path.join(scripts, "copy-resources.ts")], {
@@ -161,6 +166,7 @@ describe("packaged resource copy", () => {
         writeFileSync(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
       }
     }
+    writeFileSync(f.source(stagedTimelineSql), readFileSync(f.source(stagedTimelineSql), "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
     const copied = f.run();
     expect(copied.status, copied.stderr).toBe(0);
     const topics = new Map(manualTopicFiles.map((filename) => [filename, readFileSync(path.join(f.source(bundles[1]), filename))] as const));
@@ -172,6 +178,7 @@ describe("packaged resource copy", () => {
         expect(readFileSync(path.join(f.destination(resource), relative)).equals(readFileSync(path.join(f.source(resource), relative))), path.join(resource, relative)).toBe(true);
       }
     }
+    expect(readFileSync(f.destination(stagedTimelineSql))).toEqual(readFileSync(f.source(stagedTimelineSql)));
     await inspectInstalledSkill(f.destination(bundles[1]));
   });
 
@@ -224,6 +231,7 @@ describe("packaged resource copy", () => {
         expect(readFileSync(path.join(f.destination(resource), relative)).equals(readFileSync(path.join(f.source(resource), relative))), path.join(resource, relative)).toBe(true);
       }
     }
+    expect(readFileSync(f.destination(stagedTimelineSql))).toEqual(readFileSync(f.source(stagedTimelineSql)));
     expect(readFileSync(compiled, "utf8")).toBe("compiled module\n");
     expect(existsSync(path.join(f.directory, "dist/commands/skill/skills/private-development"))).toBe(false);
     expect(existsSync(path.join(f.directory, "dist/.agents"))).toBe(false);
@@ -237,6 +245,7 @@ describe("packaged resource copy", () => {
       resource,
       files: files(f.destination(resource)).map((relative) => ({ relative, content: readFileSync(path.join(f.destination(resource), relative)) })),
     }));
+    const originalTimelineSql = readFileSync(f.destination(stagedTimelineSql));
     const compiled = path.join(f.directory, "dist/commands/skill/command.js");
     writeFileSync(compiled, "installed compiled module\n");
     for (const resource of resources) {
@@ -245,6 +254,7 @@ describe("packaged resource copy", () => {
         writeFileSync(source, `${readFileSync(source, "utf8")}\nReplacement resource.\n`);
       }
     }
+    writeFileSync(f.source(stagedTimelineSql), `${readFileSync(f.source(stagedTimelineSql), "utf8")}\nReplacement resource.\n`);
 
     const repeated = f.run();
     expect(repeated.status).not.toBe(0);
@@ -254,6 +264,7 @@ describe("packaged resource copy", () => {
         expect(readFileSync(path.join(f.destination(resource), relative)).equals(content), path.join(resource, relative)).toBe(true);
       }
     }
+    expect(readFileSync(f.destination(stagedTimelineSql))).toEqual(originalTimelineSql);
     expect(readFileSync(compiled, "utf8")).toBe("installed compiled module\n");
   });
 

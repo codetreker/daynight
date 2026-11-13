@@ -39,12 +39,12 @@ const storageTimeout = (deadline?: number): number => {
   return Math.min(5000, remaining);
 };
 
-type ExecutionRow = { snapshot: string; ticket_hash: string; owner_pid: number | null };
-const executionRow = (db: Database.Database): ExecutionRow | undefined => {
+export type ControllerStorageExecutionRow = { snapshot: string; ticket_hash: string; owner_pid: number | null };
+export const controllerStorageExecutionRow = (db: Database.Database): ControllerStorageExecutionRow | undefined => {
   if (db.prepare("SELECT 1 FROM sqlite_schema WHERE name='execution' COLLATE NOCASE AND type IN ('table','view')").get() === undefined) return undefined;
-  return db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as ExecutionRow | undefined;
+  return db.prepare("SELECT snapshot,ticket_hash,owner_pid FROM execution WHERE id=1").get() as ControllerStorageExecutionRow | undefined;
 };
-const originalSnapshot = (row: ExecutionRow | undefined): ControllerSnapshot | null => {
+const originalSnapshot = (row: ControllerStorageExecutionRow | undefined): ControllerSnapshot | null => {
   if (row === undefined) return null;
   const value: unknown = JSON.parse(row.snapshot);
   if (typeof value !== "object" || value === null || Array.isArray(value) || !("executionId" in value) || typeof value.executionId !== "string" || canonicalId(value.executionId) !== value.executionId || !("sessionId" in value) || typeof value.sessionId !== "string" || canonicalId(value.sessionId) !== value.sessionId) throw new Error("Controller storage execution or session identity is invalid.");
@@ -61,7 +61,7 @@ export const createControllerJournalMigrationContext = (db: Database.Database, p
   assertReservedWrite: (additionalBytes: number): void => {
     assertControllerStoragePermit(permit, permit.journalFile);
     storageTimeout(deadline);
-    const snapshot = originalSnapshot(executionRow(db));
+    const snapshot = originalSnapshot(controllerStorageExecutionRow(db));
     if (executionId !== undefined && snapshot !== null && snapshot.executionId !== executionId) throw new Error("Controller storage reservation belongs to another execution.");
     assertControllerStorageCapacity(permit.journalFile, db, stateDirectory, executionId === undefined ? snapshot?.executionId : executionId, additionalBytes, deadline);
     storageTimeout(deadline);
@@ -97,7 +97,7 @@ export const controllerJournalReadOptions = (file: SqliteDatabaseSource, existin
   };
 };
 
-const assertOwnerStopped = (row: ExecutionRow): void => {
+const assertOwnerStopped = (row: ControllerStorageExecutionRow): void => {
   if (row.owner_pid === null) return;
   try { process.kill(row.owner_pid, 0); }
   catch (cause) {
@@ -109,7 +109,7 @@ const assertOwnerStopped = (row: ExecutionRow): void => {
 const assertBinding = (snapshot: ControllerSnapshot, ticket: ControllerLaunchTicket): void => {
   if (snapshot === null || typeof snapshot !== "object" || snapshot.executionId !== ticket.executionId || snapshot.sessionId !== ticket.sessionId || snapshot.claimId !== ticket.claimId || snapshot.testExecutionId !== ticket.testExecutionId) throw new Error("Controller storage belongs to another execution.");
 };
-const assertRole = (request: ControllerStorageRequest, row: ExecutionRow | undefined): ControllerSnapshot | null => {
+export const assertControllerStorageRole = (request: ControllerStorageRequest, row: ControllerStorageExecutionRow | undefined): ControllerSnapshot | null => {
   const snapshot = originalSnapshot(row);
   if (request.mode === "upgrade-only") { if (row !== undefined) assertOwnerStopped(row); return snapshot; }
   const ticket = parseLaunchTicket(request.ticket);
@@ -134,12 +134,12 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, perm
   let snapshot: ControllerSnapshot | null = null;
   try {
     db = openSqliteDatabase({ ...options, allowCreate: request.mode === "writer", timeoutMs: storageTimeout(request.deadline), ...(onMigration === undefined ? {} : { onMigration }),
-      assertMigrationAllowed: (database, source) => { assertJournalMigrationAllowed(database, source); if (source.version !== 0) assertRole(request, executionRow(database)); },
+      assertMigrationAllowed: (database, source) => { assertJournalMigrationAllowed(database, source); if (source.version !== 0) assertControllerStorageRole(request, controllerStorageExecutionRow(database)); },
       onReady: database => {
         try {
         storageTimeout(request.deadline);
         assertControllerStoragePermit(permit, request.journalFile);
-        snapshot = assertRole(request, executionRow(database));
+        snapshot = assertControllerStorageRole(request, controllerStorageExecutionRow(database));
         if (!database.memory) chmodSync(request.journalFile, 0o600);
         if (snapshot !== null || request.mode === "writer") {
           const sessionId = request.mode === "writer" ? request.ticket.sessionId : snapshot!.sessionId;

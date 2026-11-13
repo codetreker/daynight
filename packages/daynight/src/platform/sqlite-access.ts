@@ -11,6 +11,8 @@ export type SqliteMigrationEvent = {
   readonly kind: "started" | "completed" | "failed"; readonly phase: string;
   readonly fromVersion: number; readonly toVersion: number; readonly stepVersion?: number;
   readonly durationMs: number; readonly outcome: SqliteOutcome;
+  readonly storage?: Readonly<Record<string, number | string | boolean>>;
+  readonly error?: ReturnType<typeof serializeSqliteError>;
 };
 export type SqliteMigrationReporter = (event: SqliteMigrationEvent) => undefined;
 export type SqliteDatabaseSource = string | Database.Database;
@@ -165,7 +167,7 @@ const prepareSqliteDatabase = (options: OpenSqliteOptions, closeOnFailure: boole
     }
     const wrapped = wrap(options, failedPhase, failure, closed, phase === "inspect" && transactionPhase === undefined || phase === "configure" || phase === "report" && !committed ? "not-started" : outcome, source?.version);
     if (migrationId !== undefined) {
-      try { report({ ...event("failed", failedPhase, wrapped.outcome), ...(wrapped.context.stepVersion === undefined ? {} : { stepVersion: wrapped.context.stepVersion }) }); }
+      try { report({ ...event("failed", failedPhase, wrapped.outcome), error: serializeSqliteError(wrapped), ...(wrapped.context.stepVersion === undefined ? {} : { stepVersion: wrapped.context.stepVersion }) }); }
       catch (reportError) { throw wrap(options, "report", new AggregateError([wrapped, reportError], "SQLite operation and failure reporting failed."), closed, wrapped.outcome, source?.version); }
     }
     if (phase === "startup" && transactionPhase === "action" && closed && failure === primary && primary instanceof Error && primary.constructor === Error && !(primary instanceof SqliteAccessError) && !("code" in primary && typeof primary.code === "string" && primary.code.startsWith("SQLITE_"))) throw primary;
