@@ -2164,7 +2164,7 @@ test('Goal graph history and direction remain independent of other Goals and cha
   await expect(firstDialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
 });
 
-test('Goal overview retires an invalidated Goal and rejects the late old snapshot', async ({ page }) => {
+test('Goal overview retires an invalidated Goal and cancels its old sync', async ({ page }) => {
   const fixture = await install(page); fixture.addExternalGoalChain();
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
