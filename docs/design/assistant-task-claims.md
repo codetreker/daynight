@@ -1,6 +1,6 @@
 # 助手任务的认领凭据与转交
 
-本文定义助手任务服务端、CLI 与 Worker 共同遵守的认领合同。[服务端设计](assistant-task.md)说明 API 与持久化实现；[CLI 私有状态](assistant-task-cli.md)实现单次命令的凭据与操作恢复；Worker 接收循环由对应模块交付，服务端与 CLI 支持不表示跨 Worker 执行已通过验收。助手任务独立于项目 Task、Worker 执行 claim、Steps 和 Thread；本文不改变这些现有资源的协议。
+本文定义助手任务服务端、CLI 与 Worker 共同遵守的认领合同。[服务端设计](assistant-task.md)说明 API 与持久化实现；[CLI 私有状态](assistant-task-cli.md)实现单次命令的凭据与操作恢复；[Worker 接收循环](worker-bot-runtime.md#助手任务维护)负责自动绑定、续约与认领丢失后的停止。各层的单独支持不表示跨 Worker 执行已通过验收。助手任务独立于项目 Task、Worker 执行 claim、Steps 和 Thread；本文不改变这些现有资源的协议。
 
 ## 目标与约束
 

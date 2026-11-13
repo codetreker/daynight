@@ -26,6 +26,7 @@ afterEach(cleanupBotProcesses);
 
 test.each(["codex","claude","copilot"] as const)("launches %s in an ordinary cwd with a persisted role and no user turn",async provider=>{
   const f=fixture(provider); const snapshot=await f.process.advance(f.current(),new AbortController().signal);
+  expect(f.prepareEnvironment).toHaveBeenCalledWith(expect.objectContaining({ botId: f.current().botId, workerPaths: resolveConfigurationPaths(f.home) }));
   expect(snapshot.lifecycle).toBe("ready"); expect(f.getTicket()).toMatchObject({provider,cwd:f.home,initialInput:"none",initialPrompt:"",instructions:f.current().intent!.roleConfiguration!.instructions,resumeNativeSessionId:null});
   expect(f.getTicket()).not.toHaveProperty("claimId"); expect(f.getTicket()).not.toHaveProperty("workerId"); expect(f.getTicket().configuration.agentControlMode).toBe("web");
   expect(existsSync(path.join(f.home,".git"))).toBe(false); expect(f.executions.get(f.current())!.launchSubmission).toBe("acknowledged"); expect(f.release).not.toHaveBeenCalled();

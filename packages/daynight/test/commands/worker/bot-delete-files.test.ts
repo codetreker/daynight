@@ -25,8 +25,9 @@ const fixture = async () => {
   const directory = controllerExecutionDirectory(home, executionId), ticket = controllerTicketPath(home, launchId), previousTicket = controllerTicketPath(home, previousId);
   const alias = path.join(home, "state", "agent-cli-aliases", "execution-current");
   const retainedAlias = path.join(home, "state", "agent-cli-aliases", "execution-previous");
-  for (const target of [directory, path.dirname(ticket), alias, retainedAlias]) await mkdir(target, { recursive: true });
-  for (const target of [ticket, previousTicket, path.join(directory, "journal.sqlite"), path.join(directory, "journal.sqlite-wal"), path.join(directory, "credential.json"), path.join(directory, "pending.json"), path.join(directory, "receipt.json"), path.join(alias, "daynight"), path.join(retainedAlias, "dn")]) await writeFile(target, "private");
+  const state = path.join(home, "state", "bots", id(3), "state");
+  for (const target of [state, directory, path.dirname(ticket), alias, retainedAlias]) await mkdir(target, { recursive: true });
+  for (const target of [path.join(state, "claim.json"), ticket, previousTicket, path.join(directory, "journal.sqlite"), path.join(directory, "journal.sqlite-wal"), path.join(directory, "credential.json"), path.join(directory, "pending.json"), path.join(directory, "receipt.json"), path.join(alias, "daynight"), path.join(retainedAlias, "dn")]) await writeFile(target, "private");
   const record: BotRecord = {
     owner: { serverOrigin: "https://daynight.example", ownerUserId: id(1), workerId: id(2) }, botId: id(3), observedAt: 1,
     observed: { id: id(3), workerId: id(2), version: "2", deletion: { deletionId: id(4), requestedVersion: "1", workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null } } }, definition: null,
@@ -40,7 +41,7 @@ const fixture = async () => {
   const ticketContent = JSON.stringify(ticketValue);
   await writeFile(ticket, ticketContent, { mode: 0o600 }); await chmod(ticket, 0o600);
   await writeFile(previousTicket, JSON.stringify({ ...ticketValue, launchId: previousId, ipcEndpoint: resolveControllerIpcEndpoint(home, previousId), executionGeneration: "1", controllerInstanceId: id(14), resumeNativeSessionId: null }), { mode: 0o600 }); await chmod(previousTicket, 0o600);
-  return { home, directory, ticket, previousTicket, alias, retainedAlias, record, execution, ticketValue, ticketContent };
+  return { home, state, directory, ticket, previousTicket, alias, retainedAlias, record, execution, ticketValue, ticketContent };
 };
 const metadata = async (target: string) => { const entry = await lstat(target, { bigint: true }); return `${entry.dev}:${entry.ino}`; };
 const captured = async (target: string, kind: BotDeletionTarget["kind"]): Promise<BotDeletionTarget> => ({ path: target, root: path.dirname(target), kind, identity: await metadata(target), rootIdentity: await metadata(path.dirname(target)), completed: false });
@@ -48,20 +49,49 @@ const captured = async (target: string, kind: BotDeletionTarget["kind"]): Promis
 describe("Bot private file deletion", () => {
   it("captures only owned execution, launch and aliases while leaving cwd, native home and task worktrees intact", async () => {
     const f = await fixture();
-    const unrelated = [path.join(f.home, "cwd"), path.join(f.home, ".codex"), path.join(f.home, ".worktrees", "task"), controllerExecutionDirectory(f.home, id(50))];
+    const unrelated = [path.join(f.home, "state", "bots", id(4), "state"), path.join(f.home, "state", "bots", id(3), "other"), path.join(f.home, "cwd"), path.join(f.home, ".codex"), path.join(f.home, ".worktrees", "task"), controllerExecutionDirectory(f.home, id(50))];
     for (const directory of unrelated) { await mkdir(directory, { recursive: true }); await writeFile(path.join(directory, "keep"), "keep"); }
     const targets = await captureBotDeletionFiles(f.home, f.record, f.execution, signal());
-    expect(targets.filter(target => !target.completed).map(target => target.path).sort()).toEqual([f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias].sort());
+    expect(targets.filter(target => !target.completed).map(target => target.path).sort()).toEqual([f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias].sort());
     if (process.platform === "win32") {
       expect(f.ticketValue.ipcEndpoint.startsWith("\\\\.\\pipe\\")).toBe(true);
-      expect(targets).toHaveLength(5);
+      expect(targets).toHaveLength(6);
       expect(targets.some(target => target.kind === "socket" || target.path === f.ticketValue.ipcEndpoint)).toBe(false);
     } else {
       expect(targets.filter(target => target.kind === "socket")).toHaveLength(2);
     }
     for (const target of targets) await removeBotDeletionFile(target, signal());
-    for (const target of [f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias]) await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    for (const target of [f.state, f.directory, f.ticket, f.previousTicket, f.alias, f.retainedAlias]) await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
     for (const directory of unrelated) expect(await readFile(path.join(directory, "keep"), "utf8")).toBe("keep");
+  });
+
+
+  it("captures private state created before a launch intent while preserving unrelated state", async () => {
+    const f = await fixture();
+    f.record.intent = null;
+    const targets = await captureBotDeletionFiles(f.home, f.record, null, signal());
+    expect(targets.map(target => target.path)).toEqual([f.state]);
+    await removeBotDeletionFile(targets[0]!, signal());
+    await expect(lstat(f.state)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
+  });
+
+  it.each(["state", "bot root"])("rejects symbolic %s during private state capture", async kind => {
+    const f = await fixture();
+    const target = kind === "state" ? f.state : path.dirname(f.state);
+    await rename(target, `${target}.original`);
+    await symlink(`${target}.original`, target, "dir");
+    await expect(captureBotDeletionFiles(f.home, f.record, f.execution, signal())).rejects.toThrow(/symbolic/);
+    expect(await readFile(path.join(f.state, "claim.json"), "utf8")).toBe("private");
+  });
+
+  it.each([true, false])("protects cwd within Bot state with launch intent %s", async launched => {
+    const f = await fixture(), cwd = path.join(f.state, "user-cwd");
+    await mkdir(cwd); await writeFile(path.join(cwd, "keep"), "user data");
+    f.record.definition = { resolvedConfiguration: { cwd } } as never;
+    if (!launched) f.record.intent = null;
+    await expect(captureBotDeletionFiles(f.home, f.record, launched ? f.execution : null, signal())).rejects.toThrow(/working directory/);
+    expect(await readFile(path.join(cwd, "keep"), "utf8")).toBe("user data");
   });
 
   it("removes only canonical temporary tickets for the original current and retained launches", async () => {

@@ -35,7 +35,7 @@ Provider 传递沿用[共享角色机制](task-session-protocol.md#角色指令�
 ## 环境准备接口
 
 `prepareBotEnvironment` 接收真实 `homeDirectory`、Bot `cwd`、目标 Worker 的
-`workerPaths`（配置路径）、绑定 `serverOrigin`、`ownerUserId` 和取消 `signal`。
+`workerPaths`（配置路径）、绑定 `serverOrigin`、`ownerUserId`、自身 `botId` 和取消 `signal`。
 可显式提供继承 `environment`；缺省使用当前进程环境。返回准备后的
 `environment`、alias `bindings`、可空 `aliasDirectory` 和 `release()`。
 
@@ -44,7 +44,7 @@ Provider 传递沿用[共享角色机制](task-session-protocol.md#角色指令�
 或无认证，再用已有 API client 查询当前用户，并检查响应 principal 与目标 owner。
 不使用 Worker 缓存身份作为此次启动/恢复的认证证明。
 
-复制继承环境并无条件设置 `DN_CONFIG_DIR`，剔除 Controller relay token 环境值。
+复制继承环境并无条件设置 `DN_CONFIG_DIR`、该助手的 `DAYNIGHT_BOT_ID` 和 `DAYNIGHT_BOT_STATE_DIR`，剔除 Controller relay token 环境值。Bot ID 必须是非零规范 UUID；私有状态固定为配置根下 `bots/<botId>/state`，沿现有私有文件机制验证归属、权限及路径。它在普通停止和恢复期间保留，用于 CLI 与 [Worker 助手任务维护](worker-bot-runtime.md#助手任务维护)共享认领和原操作身份；只有精确删除该 Bot 时才清理。
 `prepareAgentCliAliases` 继续解析真实目标并生成私有 shim；没有 alias 时 PATH
 原样保留，有 alias 时只按现有规则前置目录。HOME、CODEX_HOME 和其他原生账户
 目录不替换；Provider 的 native PATH 合并逻辑仍由其已有适配器负责。
