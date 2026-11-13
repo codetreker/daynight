@@ -192,6 +192,8 @@ projectionCursor 是持久化的 recordId 字典序位置。投影先固定一�
 
 coordinator 的 `configurationComplete` 同时包含存储就绪与已有项目映射条件。Bot host 向 runtime/process 提供独立 `canAdmitNewExecution()`；能力采样的 `configuration()` 不替代这个门禁。首次环境准备后、持久 intent、注册及初次 launch submission 前重新检查；初次意图已经冻结但未派发时仍须等待。已提交或可能提交的原执行、拥有已知原生会话的冻结恢复及输入/停止继续使用原配置、身份和证明；等待不报告环境初始化失败。[Bot 执行设计](worker-bot-runtime.md#启动与授权)拥有具体边界。
 
+配置持久化事件携带本次真实 I/O 失败次数、退避档位、记录身份及下次时间。报告回执和应用完成的本地 pending 结果保持其原 source、reportId 或 recordId；日志不能用当前权威版本改写较高版本原停止项。文件 sink 的未知 append、未派发遗漏及新 segment 仍独立计数，配置故障分组与五分钟摘要不把日志当作恢复状态。[配置诊断设计](daynight-worker-reporting.md#失败与可观察性)拥有固定分类、阶段、远端/本地确定性、字段与查询方法。
+
 ### 工具目标与验证接缝
 
 配置快照的 toolTargets 使用运行管理器同一 `{source,revision,choices}` 输入。未启用云端工具能力时给完整本地选择；已协商云端值仍有未采纳 null 时返回 null，待逐项导入完成后才发布完整 cloud 目标。不能把本地 fallback 标成该云端 revision 的事实。显式 auto 始终保持 auto。

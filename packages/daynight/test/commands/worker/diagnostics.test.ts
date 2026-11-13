@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnosticFiles, type WorkerDiagnosticSinkEvent } from "../../../src/commands/worker/diagnostics.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
+import type { WorkerConfigurationDiagnosticMetadata } from "../../../src/commands/worker/configuration-diagnostics.js";
 
 const directories: string[] = [];
 const sinks: Awaited<ReturnType<typeof createWorkerDiagnostics>>[] = [];
@@ -152,6 +153,53 @@ const gate = () => {
   return { promise, release };
 };
 
+it("projects configuration source and result facts into redacted JSONL without extra payload", async () => {
+  const token = "configuration-diagnostic-secret", projectId = "fb1a3e30-f945-4c48-ab0f-55be117e098e";
+  const f = await sinkFixture({ secrets: [token] });
+  const metadata = {
+    phase: "cache-persist", status: "failed", reason: "permission_denied",
+    key: { kind: "projectRemoval", projectId, command: "private-native-command" },
+    source: { state: "initialized", generation: "current-generation", desiredRevision: "10", observationRevision: "0", prompt: "private-source-prompt" },
+    previousSource: { state: "unread", generation: null, desiredRevision: null, observationRevision: null, credential: "private-previous-credential" },
+    received: { desiredRevision: "5", observationRevision: "1", command: "private-received-command" },
+    observationAccepted: false, storagePhase: "persist",
+    reportId: "report-id", targetRevision: "20", generation: "original-generation", recordId: "original-stop-record", recordIds: ["original-stop-record"],
+    syncId: "sync-id", requestId: token, remote: "confirmed", local: "pending", occurrences: 7, backoffStep: 5,
+    nextAttemptAt: "2030-01-01T00:01:00.000Z",
+    details: { tool: "codex", context: "web", stage: "probe", systemCode: "EACCES", operationKind: "request_timeout", stdout: "private-output" },
+    nativeArgs: ["private-native-argument"],
+  } as const;
+  const configuration: WorkerConfigurationDiagnosticMetadata = metadata;
+  f.sink.emit({ kind: "worker-configuration-failed", component: "configuration", phase: "cache-persist", message: "A confirmed receipt is waiting for its local checkpoint.", configuration,
+    error: new Error("Checkpoint failed.", { cause: new Error("Bearer " + token) }) });
+  await f.sink.flush();
+  const record = (await records(f.sink.filename))[0]!;
+  expect(record.configuration).toEqual({
+    phase: "cache-persist", status: "failed", reason: "permission_denied", key: { kind: "projectRemoval", projectId },
+    source: { state: "initialized", generation: "current-generation", desiredRevision: "10", observationRevision: "0" },
+    previousSource: { state: "unread", generation: null, desiredRevision: null, observationRevision: null },
+    received: { desiredRevision: "5", observationRevision: "1" },
+    observationAccepted: false, storagePhase: "persist",
+    reportId: "report-id", targetRevision: "20", generation: "original-generation", recordId: "original-stop-record", recordIds: ["original-stop-record"],
+    syncId: "sync-id", requestId: "[redacted]", remote: "confirmed", local: "pending", occurrences: 7, backoffStep: 5,
+    nextAttemptAt: "2030-01-01T00:01:00.000Z",
+    details: { tool: "codex", context: "web", stage: "probe", systemCode: "EACCES", operationKind: "request_timeout" },
+  });
+  expect(record).toMatchObject({ workerId: "00112233-4455-4677-8899-aabbccddeeff", error: { cause: { message: "Bearer [redacted]" } } });
+  const text = await readFile(f.sink.filename, "utf8");
+  expect(text).not.toContain(token);
+  expect(text).not.toContain("private-");
+  expect(f.output.join("")).not.toContain(token);
+  expect(f.output[0]).toContain('"key":{"kind":"projectRemoval","projectId":"fb1a3e30"}');
+  expect(f.output[0]).toContain('"targetRevision":"20"');
+  expect(f.output[0]).toContain('"received":{"desiredRevision":"5","observationRevision":"1"}');
+  expect(f.output[0]).toContain('"observationAccepted":false,"storagePhase":"persist"');
+  expect(f.output[0]).toContain('"generation":"original-generation"');
+  expect(f.output[0]).toContain('"remote":"confirmed","local":"pending","occurrences":7');
+  expect(f.output[0]).not.toContain('"recordIds"');
+  expect(f.output[0]).not.toContain('"details"');
+});
+
 it("recovers a failed log directory without treating an undispatched record as an unknown append", async () => {
   let clock = Date.UTC(2030, 0, 1);
   const f = await sinkFixture({ now: () => clock }, async directory => {
@@ -180,6 +228,9 @@ it("retains a partial append and recovers automatically in an independent valid 
   vi.useFakeTimers();
   vi.setSystemTime(Date.UTC(2030, 0, 1));
   const secret = "sink-secret-credential", failure = Object.assign(new Error("EIO " + secret), { code: "EIO" });
+  const configuration: WorkerConfigurationDiagnosticMetadata = { phase: "report-send", status: "failed", reason: "unavailable",
+    source: { state: "uninitialized", generation: "original-generation", desiredRevision: null, observationRevision: "0" },
+    syncId: "original-sync", reportId: "original-report", remote: "unknown", local: "not_attempted", occurrences: 1, nextAttemptAt: null };
   const recovered = gate();
   let appends = 0;
   const f = await sinkFixture({ secrets: [secret], files: {
@@ -191,7 +242,7 @@ it("retains a partial append and recovers automatically in an independent valid 
     },
   }, onSinkState: event => { if (event.state === "recovered") recovered.release(); } });
   const original = f.sink.filename;
-  f.sink.emit({ kind: "unknown-record", message: "This record must not be replayed." });
+  f.sink.emit({ kind: "unknown-record", message: "This record must not be replayed.", configuration });
   f.sink.emit({ kind: "queued-record", message: "Not dispatched after the append failed." });
   await f.sink.flush();
   f.sink.emit({ kind: "blocked-record", message: "Omitted while blocked." });
@@ -211,9 +262,11 @@ it("retains a partial append and recovers automatically in an independent valid 
   expect(values[0]).toMatchObject({ kind: "diagnostic-sink-recovered", sink: { previousFilename: original, unknownAppends: 1, omittedRecords: 2 } });
   expect(f.stderr.join("")).not.toContain(secret);
   expect(f.stderr.join("")).toContain("[redacted]");
-  f.sink.emit({ kind: "after-recovery", message: "Log path=" + f.sink.filename });
+  f.sink.emit({ kind: "after-recovery", message: "Log path=" + f.sink.filename, configuration: { ...configuration, phase: "receipt-accept", status: "succeeded", remote: "confirmed", local: "persisted" } });
   await f.sink.flush();
-  expect((await records(f.sink.filename)).map(record => record.kind)).toEqual(["diagnostic-sink-recovered", "after-recovery"]);
+  const recoveredRecords = await records(f.sink.filename);
+  expect(recoveredRecords.map(record => record.kind)).toEqual(["diagnostic-sink-recovered", "after-recovery"]);
+  expect(recoveredRecords[1]).toMatchObject({ configuration: { source: configuration.source, syncId: "original-sync", reportId: "original-report", remote: "confirmed", local: "persisted" } });
   expect(f.output.at(-1)).toContain(f.sink.filename);
   expect(await readFile(original)).toEqual(partial);
 });

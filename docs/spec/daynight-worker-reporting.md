@@ -92,7 +92,13 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 捕获绑定本机 reportId、generation、精确基线、实际观察及 recordId/failureId。只有当前 generation 的匹配接纳确认该份已发送失败与游标；发送期间新增的失败以及被拒绝观测中的失败继续保留，报告前已恢复时仍携带 lastFailure。当前捕获被拒绝时采用回执完整规范状态，再生成最新报告；observation:null 对应的 false 是正常未提交观察。旧代回执不能改变当前目标、基线、失败或游标；响应未知不能确认失败或重放旧报告。配置读取、缓存与报告不依赖 taskInventory 已知或业务执行准备成功。
 
-日志对采集字段和传输分别记录故障状态转换及恢复；连续相同故障不重复输出。诊断只暴露清洗后的阶段、子系统、闭合 code 和错误类别，不记录原生命令、stdout/stderr、环境变量、完整遥测或凭据。原始错误仅在内存保留，供清理失败传递，不参与日志或跨进程恢复。
+配置诊断区分 authority-read、bootstrap-prepare、telemetry-collect、observation-capture、report-send、receipt-accept、cache-persist，以及应用 validate、prepare、apply、stop。每轮 syncId 关联真实配置 key、本机 generation、reportId、recordId、原项 targetRevision、当前权威目标与观测基线，以及已取得的 HTTP requestId。请求关联仅来自实际 ApiError，优先保留合法 X-Request-ID；只有头缺席时才采用合法错误正文 ID，正文损坏不抹去已取得的头关联。不合法头与伪造对象均不进入关联字段，所选值遵守既有 64 字符安全格式。权威未读取、已读取但未初始化、有效初始观测基线 "0" 分别表达；不能用伪造的 0 或当前目标改写原项来源。
+
+诊断只从实际 ToolSelectionError、OperationError、本地来源校验及受控文件边界取得固定原因和允许的 tool/context/stage/code；云端应用观测、运行监控及本地日志各自使用所属闭合词汇。缺工具、权限、超时、不兼容配置、无效输出和持久化错误保持可区分，非法 YAML、顶层结构或本地字段明确归为 invalid_configuration。取消与清理未确认保留原语义。任意对象的 .code、消息或未经验证的 cause 不能成为分类证据；不记录原生命令、stdout/stderr、环境变量、完整遥测或凭据，包括候选文件中刚修改的凭据。身份认证的 401/403 必须留下 authority-read 的终止失败及已有请求关联，本地原因分别为 authentication_required/permission_denied，保持原拒绝与重试规则。
+
+远端请求尚未派发为 remote=not_sent，可信响应确认结果为 confirmed，明确拒绝为 rejected，派发后未获可信响应为 unknown。配置 POST 在 ApiClient 排队期间取消、尚未调用传输时保持 not_sent；GET 不能仅从没有未确认变更标记推断未派发。source 保留操作捕获的本机状态，received 单独保留可信 GET/回执已返回的目标与观测基线；不能在本机落盘前把较低的服务版本冒充已提交本机状态。observationAccepted 保留实际布尔值，可信 HTTP 200 的 false 仍为报告结果已确认，不能解释为应用确认。cache-persist 的 storagePhase 区分 read、directory、persist。已确认远端但检查点仍等待持久化时保留 remote=confirmed/local=pending，旧代回执被忽略时记录 local=ignored；不能把本地等待超时、formatter 或通知失败改写成远端未知、重放依据或 lastFailure 确认。持久化成功后才能记录 local=persisted。
+
+首次失败、原因或相关目标变化，以及真实恢复立即记录。同因故障在现有周期中每五分钟最多输出一次摘要，包含本次运行中实际发生次数；退避档位单列为 backoffStep，不能冒充次数。分组按组件、实际阶段、key、固定原因和相关目标判断；原生相关目标包含当次 native 元组、实际模式与相关工具的配置选择，同规范版本的模式/选择变化仍须区分，只有匹配配方的成功才能记录恢复。requestId、syncId、generation、selectionKey、时间、次数与 nextAttemptAt 不使同因故障分裂，内部比较配方不进入日志正文。采集字段和普通传输继续分别报告故障及恢复。诊断失败保留独立错误链，不改变应用、确认、重试或恢复职责；日志不参与跨进程恢复。
 
 ## 工具路径事实
 

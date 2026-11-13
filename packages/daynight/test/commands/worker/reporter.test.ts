@@ -551,7 +551,7 @@ it("exchanges cloud configuration without a task inventory and acknowledges only
   pending.resolve({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt });
   await settle();
   expect(accept.mock.calls[0]![0]).toBe(captureValue);
-  expect(accept).toHaveBeenCalledWith(captureValue, receipt, send.mock.calls[0]![2]);
+  expect(accept).toHaveBeenCalledWith(captureValue, receipt, send.mock.calls[0]![2], expect.any(String));
   await reporter.stop();
 });
 
@@ -570,7 +570,7 @@ it("captures current configuration after an unknown send outcome instead of repl
   expect(send.mock.calls.map(([, sent]) => sent.observation?.desiredRevision)).toEqual(["1", "2"]);
   expect(accept).toHaveBeenCalledOnce();
   expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
-  expect(accept).toHaveBeenCalledWith(capture.mock.results[1]!.value, receipt, send.mock.calls[1]![2]);
+  expect(accept).toHaveBeenCalledWith(capture.mock.results[1]!.value, receipt, send.mock.calls[1]![2], expect.any(String));
   await reporter.stop();
 });
 
@@ -618,4 +618,39 @@ it("reconciles an unknown import before capturing a fresh report within the same
   expect(send.mock.calls[1]![1]).toEqual({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } });
   expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
   await reporter.stop();
+});
+
+
+it("summarizes the same failure every five minutes with actual occurrences despite changing request IDs", async () => {
+  const f = fixture();
+  let requests = 0;
+  f.send.mockImplementation(async () => { throw new ApiError({ operation: "report" }, "response", {
+    status: 503, cause: new Error("private provider data"), serverError: { code: "service_unavailable", requestId: `request-${++requests}`, message: "private response" },
+  }); });
+  const reporter = f.start(); await settle();
+  await vi.advanceTimersByTimeAsync(270_000);
+  expect(f.send).toHaveBeenCalledTimes(10);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed"]);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed", "worker_report_failure_summary"]);
+  expect(JSON.parse(f.emit.mock.calls[1]![0].message)).toMatchObject({ occurrences: 11, request_id: "request-11" });
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(f.emit.mock.calls.map(([event]) => event.kind)).toEqual(["worker_report_failed", "worker_report_failure_summary", "worker_report_failure_summary"]);
+  expect(JSON.parse(f.emit.mock.calls[2]![0].message)).toMatchObject({ occurrences: 21, request_id: "request-21" });
+  f.send.mockResolvedValue({ observedAt: timestamp, lastReportedAt: timestamp });
+  reporter.trigger(); await settle();
+  expect(JSON.parse(f.emit.mock.calls[3]![0].message)).toMatchObject({ failures: 21 });
+  expect(JSON.stringify(f.emit.mock.calls)).not.toContain("private");
+  await reporter.stop();
+});
+
+it("keeps successful configuration exchange independent of a failing observer and reports that failure at stop", async () => {
+  const f = fixture(), observerFailure = new Error("observer failed"), accept = vi.fn(async () => "persisted" as const);
+  const reporter = createWorkerReporter({ signal: f.cancellation.signal, collect: f.collect, send: f.send, emit: f.emit,
+    configuration: { capture: () => ({ bootstrap: null, observation: null }),
+      send: async () => ({ observedAt: timestamp, lastReportedAt: timestamp, configuration: { desired: null, observationRevision: "0", observationAccepted: false } }),
+      accept, observe: () => { throw observerFailure; } } });
+  await settle();
+  expect(accept).toHaveBeenCalledOnce(); expect(f.emit).not.toHaveBeenCalled();
+  await expect(reporter.stop()).rejects.toBe(observerFailure);
 });

@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import type { WorkerCloudValue } from "../../../src/api/worker-configuration.js";
@@ -9,8 +10,9 @@ import { updateConfigurationFile } from "../../../src/config/files.js";
 import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import {
   assertWorkerConfigurationIsLocal, parseWorkerCloudBootstrap, parseWorkerLocalConfiguration,
-  readWorkerLocalConfiguration, resolveCloudNative, workerLocalRepositoryForId, workerLocalRepositoryForProject,
+  readWorkerLocalConfiguration, resolveCloudNative, validateWorkerBootstrapIdentity, WorkerBootstrapIdentityError, workerLocalRepositoryForId, workerLocalRepositoryForProject,
 } from "../../../src/commands/worker/configuration-source.js";
+import { classifyConfigurationFailure, ConfigurationFileOperationError, WorkerConfigurationSourceError } from "../../../src/commands/worker/configuration-failure.js";
 import { resolveWorkerCloudProjectNative } from "../../../src/commands/worker/configuration.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { runWorkerRepositoryCommand } from "../../../src/commands/worker/configuration-guide.js";
@@ -56,6 +58,50 @@ afterEach(async () => {
 });
 
 describe("Worker cloud configuration sources", () => {
+  it.each([
+    ["serverToken: changed-credential-not-in-running-redactor\nworker: [", "Invalid YAML"],
+    ["- changed-credential-not-in-running-redactor\n", "Configuration must be a mapping"],
+  ])("retains typed invalid-source evidence from the production reader: %s", async (source, message) => {
+    const f = await fixture();
+    await writeFile(f.paths.configFile, source);
+    const error = await readWorkerLocalConfiguration(f.paths).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(WorkerConfigurationSourceError);
+    expect(error).toMatchObject({ message: expect.stringContaining(message), cause: expect.any(Error) });
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "invalid_configuration", reason: "invalid_configuration" });
+    expect(inspect(error, { depth: 10 })).not.toContain("changed-credential-not-in-running-redactor");
+    expect(JSON.stringify(classifyConfigurationFailure(error))).not.toContain("changed-credential-not-in-running-redactor");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+  });
+
+  it("retains actual read failures as file evidence and leaves cancellation unchanged", async () => {
+    const f = await fixture();
+    await rm(f.paths.configFile);
+    await mkdir(f.paths.configFile);
+    const error = await readWorkerLocalConfiguration(f.paths).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(ConfigurationFileOperationError);
+    expect(error).toMatchObject({ operation: "read", cause: { message: expect.stringContaining("Cannot read configuration file"), cause: { code: "EISDIR" } }, filesystemCause: { code: "EISDIR" } });
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "io_error", reason: "io_error", systemCode: "EISDIR" });
+    const cancellation = new Error("Original source read cancellation"), controller = new AbortController();
+    controller.abort(cancellation);
+    await expect(readWorkerLocalConfiguration(f.paths, controller.signal)).rejects.toBe(cancellation);
+  });
+
+  it("preserves typed bootstrap identity mismatch fields and source validation causes", async () => {
+    const f = await fixture({ workerId: uuid(6) });
+    const local = await readWorkerLocalConfiguration(f.paths);
+    let error: unknown;
+    try { validateWorkerBootstrapIdentity(local, f.paths, { serverOrigin: connection.serverUrl, workerId: uuid(5) }); }
+    catch (failure) { error = failure; }
+    expect(error).toBeInstanceOf(WorkerBootstrapIdentityError);
+    expect(error).toBeInstanceOf(WorkerConfigurationSourceError);
+    expect(error).toMatchObject({ field: "workerId" });
+    expect(classifyConfigurationFailure(error)).toEqual({ code: "invalid_configuration", reason: "invalid_configuration" });
+    const invalid = stringify({ ...connection, worker: { agentControlMode: "unsupported" } });
+    expect(() => parseWorkerLocalConfiguration(invalid, f.paths)).toThrow(WorkerConfigurationSourceError);
+    try { parseWorkerLocalConfiguration(invalid, f.paths); }
+    catch (failure) { expect(failure).toMatchObject({ cause: expect.any(TypeError) }); }
+  });
+
   it("imports complete tool choices from the same parsed local source", async () => {
     const f = await fixture({ worker: { toolPaths: { codex: path.join(path.parse(process.cwd()).root, "tools with spaces", "codex"), copilot: null } } });
     const local = parseWorkerLocalConfiguration(f.source, f.paths);

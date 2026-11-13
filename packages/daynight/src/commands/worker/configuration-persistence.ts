@@ -4,7 +4,14 @@ import { getSystemErrorMap } from "node:util";
 import { replaceFileAtomicallyFromChunks } from "../../platform/files.js";
 import { configurationCacheChunks, createConfigurationCache, readConfigurationCache } from "./configuration-cache.js";
 import { configurationRetryDelays, freezeConfiguration } from "./configuration-model.js";
-import type { WorkerConfigurationCache, WorkerConfigurationIdentity } from "./configuration-model.js";
+import type { WorkerConfigurationCache, WorkerConfigurationIdentity, WorkerConfigurationReportContext, WorkerConfigurationSource } from "./configuration-model.js";
+
+export type ConfigurationPersistenceContext = {
+  readonly kind: "authority-read" | "receipt-accept" | "application" | "other";
+  readonly source: WorkerConfigurationSource;
+  readonly report?: WorkerConfigurationReportContext;
+  readonly syncId?: string;
+};
 
 export type ConfigurationPersistenceEvent = {
   readonly kind: "blocked" | "recovered";
@@ -13,12 +20,14 @@ export type ConfigurationPersistenceEvent = {
   readonly attempts: number;
   readonly nextAttemptAt: string | null;
   readonly recordIds: readonly string[];
+  readonly context?: ConfigurationPersistenceContext;
 };
 export type PreparedConfigurationCommit = {
   readonly cache: WorkerConfigurationCache;
   readonly write: boolean;
   readonly recordIds: readonly string[];
   readonly publish: (committedCache: WorkerConfigurationCache) => void;
+  readonly context?: ConfigurationPersistenceContext;
 };
 export type WorkerConfigurationPersistence = {
   current(): WorkerConfigurationCache;
@@ -87,7 +96,7 @@ export const createWorkerConfigurationPersistence = async (options: {
     const previous = blocked;
     blocked = undefined;
     lastIoError = undefined;
-    if (previous !== undefined) notify({ kind: "recovered", phase: previous.phase, attempts: previous.attempts, nextAttemptAt: null, recordIds: previous.recordIds });
+    if (previous !== undefined) notify({ kind: "recovered", phase: previous.phase, attempts: previous.attempts, nextAttemptAt: null, recordIds: previous.recordIds, ...(previous.context === undefined ? {} : { context: previous.context }) });
     settleWaiters();
   };
   const beginDrain = (): void => {
@@ -113,7 +122,7 @@ export const createWorkerConfigurationPersistence = async (options: {
     cancelRetry = done;
     if (expired) done();
   });
-  const retry = async <T>(phase: ConfigurationPersistenceEvent["phase"], recordIds: readonly string[], action: () => Promise<T>): Promise<T> => {
+  const retry = async <T>(phase: ConfigurationPersistenceEvent["phase"], recordIds: readonly string[], action: () => Promise<T>, context?: ConfigurationPersistenceContext): Promise<T> => {
     let attempts = 0;
     while (true) {
       if (expired || drainDeadline !== undefined && now() >= drainDeadline) throw new UnsavedConfigurationError(recordIds, lastIoError ?? stoppingReason());
@@ -124,7 +133,7 @@ export const createWorkerConfigurationPersistence = async (options: {
         const delay = configurationRetryDelays[Math.min(attempts++, configurationRetryDelays.length - 1)]!;
         const retryAt = now() + delay;
         const scheduled = !expired && (drainDeadline === undefined || retryAt < drainDeadline);
-        blocked = { kind: "blocked", phase, error, attempts, nextAttemptAt: scheduled ? new Date(retryAt).toISOString() : null, recordIds };
+        blocked = { kind: "blocked", phase, error, attempts, nextAttemptAt: scheduled ? new Date(retryAt).toISOString() : null, recordIds, ...(context === undefined ? {} : { context }) };
         notify(blocked);
         // The deadline interrupts scheduling only. The action above has already joined all owned I/O.
         if (!scheduled && draining) {
@@ -187,7 +196,8 @@ export const createWorkerConfigurationPersistence = async (options: {
       const operation = tail.then(async () => {
         if (fatal !== undefined) throw fatal.error;
         const prepared = prepare(cache), next = freezeConfiguration(prepared.cache), recordIds = Object.freeze([...prepared.recordIds]);
-        if (prepared.write) await retry("persist", recordIds, () => persist(options.file, () => configurationCacheChunks(next)));
+        const context = prepared.context === undefined ? undefined : freezeConfiguration(prepared.context);
+        if (prepared.write) await retry("persist", recordIds, () => persist(options.file, () => configurationCacheChunks(next)), context);
         cache = next;
         prepared.publish(cache);
         if (prepared.write) recovered();

@@ -2,12 +2,13 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
-import type { WorkerConfigurationManager, WorkerConfigurationManagerOptions, WorkerConfigurationSnapshot } from "../../../src/commands/worker/configuration.js";
+import type { WorkerConfigurationApplicationEvent, WorkerConfigurationManager, WorkerConfigurationManagerOptions, WorkerConfigurationSnapshot } from "../../../src/commands/worker/configuration.js";
 import { parseWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudNative, WorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import { replaceFileAtomically } from "../../../src/platform/files.js";
 import { parseProviderArguments } from "../../../src/commands/controller/providers/projection.js";
-import { createOperation } from "../../../src/api/operation.js";
+import { createOperation, OperationError } from "../../../src/api/operation.js";
+import { ToolSelectionError } from "../../../src/platform/tool-executables.js";
 import { syncWorkerConfigurationOnce } from "../../../src/commands/worker/reporter.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 import type { Tool, ToolPaths } from "../../../src/platform/tool-path-choice.js";
@@ -663,7 +664,9 @@ describe("Worker cloud configuration application", () => {
     const invalid = { ...desired("10", "original", false), value: { ...desired("10", "original", false).value, maxConcurrent: 65 } };
     const onInvalidDesired = vi.fn(), applyNative = vi.fn(async () => {});
     const { manager } = await fixture({ onInvalidDesired, applyNative });
+    expect(manager.hasAuthority()).toBe(false);
     await manager.receive(invalid); await manager.settle();
+    expect(manager.hasAuthority()).toBe(true);
     expect(manager.current().synchronized).toBe(false);
     expect(manager.current().desired).toEqual(invalid);
     expect(applyNative).not.toHaveBeenCalled();
@@ -1492,5 +1495,77 @@ describe("Worker cloud configuration application", () => {
     await manager.receive(desired("1", "good", false));
     await manager.settle();
     expect(item(manager.current(), "native")).toMatchObject({ state: "applied", appliedValue: { agent: "codex", model: "good" } });
+  });
+
+  it.each([
+    [new ToolSelectionError("codex", "herdr", "resolve", "not_found"), "not_found"],
+    [new ToolSelectionError("codex", "herdr", "verify", "permission_denied"), "permission_denied"],
+    [new ToolSelectionError("codex", "herdr", "probe", "probe_timeout"), "timeout"],
+    [new ToolSelectionError("codex", "herdr", "verify", "incompatible_runtime"), "invalid_configuration"],
+    [new ToolSelectionError("codex", "herdr", "probe", "unrecognized_output"), "invalid_output"],
+    [new ToolSelectionError("codex", "herdr", "probe", "cleanup_unknown"), "unavailable"],
+    [new OperationError("request_timeout"), "timeout"],
+    [Object.assign(new Error("Untrusted upstream detail"), { code: "EACCES" }), "unavailable"],
+  ] as const)("persists the established native failure classification for %s", async (failure, code) => {
+    const { manager, file } = await fixture({ applyNative: async () => { throw failure; } });
+    await manager.receive(desired("1", "bad", false)); await manager.settle();
+    const expected = { code, category: "agent", phase: "validate" };
+    expect(item(manager.current(), "native")).toMatchObject({ state: "error", error: expected, lastFailure: expected });
+    const persisted = await readConfigurationCache(file, identity, new AbortController().signal);
+    expect(persisted.cache.currentItems.find(entry => entry.value.key.kind === "native")?.value.lastFailure).toMatchObject(expected);
+  });
+
+  it("reports tool preparation at its actual phase and retains one attempt across checkpoint progress", async () => {
+    const events: WorkerConfigurationApplicationEvent[] = [];
+    const error = new ToolSelectionError("codex", "herdr", "probe", "probe_timeout");
+    const { manager } = await fixture({ prepareToolSelection: async () => { throw error; }, onApplication: event => { events.push(event); } });
+    await manager.receive(desired("1", "bad", false)); await manager.settle();
+    expect(item(manager.current(), "native")?.error).toMatchObject({ code: "timeout", phase: "prepare" });
+    const failures = events.filter(event => event.kind === "failed");
+    expect(failures).toHaveLength(2);
+    expect(failures.map(event => event.local)).toEqual(["pending", "persisted"]);
+    expect(new Set(failures.map(event => event.attemptId)).size).toBe(1);
+    expect(failures[0]).toMatchObject({ phase: "prepare", key: { kind: "native" }, revision: "1", source: { state: "initialized", desiredRevision: "1", observationRevision: "0" }, error });
+    expect(failures[1]).toMatchObject({ recordId: failures[0]!.recordId, generation: failures[0]!.generation, backoffStep: 1, nextAttemptAt: expect.any(String) });
+    const scalar = events.filter(event => event.key.kind === "maxConcurrent");
+    expect(scalar.map(event => [event.phase, event.kind, event.local])).toEqual([["apply", "succeeded", "pending"], ["apply", "succeeded", "persisted"]]);
+    expect(scalar[0]!.attemptId).toBe(scalar[1]!.attemptId);
+  });
+
+  it("keeps application results durable when its diagnostic observer fails and exposes the original failure at stop", async () => {
+    const diagnosticFailure = new Error("Diagnostic formatter failed"), applyNative = vi.fn(async () => {});
+    const { manager, file } = await fixture({ applyNative, onApplication: () => { throw diagnosticFailure; } });
+    fixtures.at(-1)!.expectedStopError = diagnosticFailure;
+    await manager.receive(desired("1", "good", false)); await manager.settle();
+    expect(applyNative).toHaveBeenCalledOnce();
+    expect(item(manager.current(), "native")?.state).toBe("applied");
+    expect((await readConfigurationCache(file, identity, new AbortController().signal)).cache.currentItems.find(entry => entry.value.key.kind === "native")?.value.state).toBe("applied");
+    await expect(manager.stop()).rejects.toBe(diagnosticFailure);
+  });
+
+  it("exposes only the exact captured token and reports a stale queued acknowledgement as ignored", async () => {
+    const entered = deferred(), release = deferred(); let block = false;
+    const { manager } = await fixture({ persist: async (file, chunks) => {
+      const bytes = [...chunks()].join("");
+      if (block && JSON.parse(bytes).authority.desired?.revision === "2") { block = false; entered.resolve(); await release.promise; }
+      await writeFile(file, bytes);
+    } });
+    const original = desired("1", "original", false);
+    await manager.receive(original); await manager.settle();
+    const captured = manager.report(), context = manager.reportContext(captured)!;
+    expect(context).toMatchObject({ reportId: expect.any(String), generation: manager.current().generation, baseRevision: "0", recordIds: expect.any(Array), failures: [] });
+    expect(context.items).toEqual(captured.observation!.items.map((entry, index) => ({ key: entry.key, targetRevision: entry.targetRevision, recordId: context.recordIds[index] })));
+    expect(Object.isFrozen(context)).toBe(true); expect(Object.isFrozen(context.items)).toBe(true);
+    expect(manager.reportContext(structuredClone(captured))).toBeUndefined();
+    block = true;
+    const receiving = manager.receive(desired("2", "canonical", false), "7"); await entered.promise;
+    const acknowledging = manager.acknowledge(captured, { desired: original, observationRevision: "1", observationAccepted: true });
+    release.resolve(); await receiving;
+    const generation = manager.current().generation;
+    await expect(acknowledging).resolves.toBe("ignored");
+    expect(manager.current()).toMatchObject({ generation, desired: { revision: "2" }, observationRevision: "7" });
+    expect(manager.reportContext(captured)).toBeUndefined();
+    await manager.settle();
+    await expect(manager.acknowledge(manager.report(), { desired: desired("2", "canonical", false), observationRevision: "8", observationAccepted: true })).resolves.toBe("persisted");
   });
 });

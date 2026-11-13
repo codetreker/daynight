@@ -6,13 +6,13 @@ import type { WorkerReport, WorkerReportReceipt, WorkerTaskInventory, WorkerTask
 import type { WorkerDiagnostic } from "./diagnostics.js";
 import { hasHerdrCommandCleanupFailure, hasUnconfirmedHerdrCommandCleanup, HerdrCommandCleanupError } from "./herdr/command.js";
 import type { WorkerTelemetryIssue, WorkerTelemetrySample } from "./telemetry.js";
-import { syncWorkerConfigurationOnce } from "./configuration-exchange.js";
+import { syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures } from "./configuration-exchange.js";
 import type { WorkerConfigurationExchange } from "./configuration-exchange.js";
 export { syncWorkerConfigurationOnce } from "./configuration-exchange.js";
 export type { WorkerConfigurationExchange } from "./configuration-exchange.js";
 
 type SafeFailure = { category: string; cause?: SafeFailure; errors?: readonly SafeFailure[] };
-type FailureState = { signature: string; repetitions: number };
+type FailureState = { signature: string; repetitions: number; lastEmittedAt: number };
 
 const describeFailure = (error: unknown, seen = new Set<unknown>(), depth = 0): SafeFailure => {
   if (depth >= 6 || seen.has(error)) return { category: "truncated" };
@@ -53,8 +53,10 @@ export const createWorkerReporter = (options: {
   send: (report: WorkerReport, operation: Operation) => Promise<WorkerReportReceipt>;
   emit: (event: WorkerDiagnostic) => void;
   configuration?: WorkerConfigurationExchange;
+  now?: () => number;
 }): { trigger(): void; demandChanged(): void; publishInventory(inventory: WorkerTaskInventory | null): void; recordClaim(reference: WorkerTaskReference): void; stop(): Promise<void> } => {
   const cancellation = new AbortController();
+  const now = options.now ?? Date.now;
   const failures = new Map<string, FailureState>();
   const cleanupFailures = new Set<unknown>();
   let inventory: WorkerTaskInventory | null = null;
@@ -76,9 +78,13 @@ export const createWorkerReporter = (options: {
     const requestId = error instanceof ApiError && error.requestId !== undefined && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(error.requestId) ? error.requestId : undefined;
     const signature = JSON.stringify({ phase, code, errorCode, failure });
     const previous = failures.get(subsystem);
-    if (previous?.signature === signature) { previous.repetitions++; return; }
-    failures.set(subsystem, { signature, repetitions: 1 });
-    emit({ kind: "worker_report_failed", message: JSON.stringify({ component: "worker_report", phase, subsystem, ...(code === undefined ? {} : { code }), ...(errorCode === undefined ? {} : { error_code: errorCode }), ...(requestId === undefined ? {} : { request_id: requestId }), category: failure.category }), error: safeError(failure) });
+    const repeated = previous?.signature === signature;
+    const state = repeated ? previous : { signature, repetitions: 0, lastEmittedAt: now() };
+    state.repetitions++;
+    failures.set(subsystem, state);
+    if (repeated && now() - state.lastEmittedAt < 300_000) return;
+    state.lastEmittedAt = now();
+    emit({ kind: repeated ? "worker_report_failure_summary" : "worker_report_failed", message: JSON.stringify({ component: "worker_report", phase, subsystem, ...(code === undefined ? {} : { code }), ...(errorCode === undefined ? {} : { error_code: errorCode }), ...(requestId === undefined ? {} : { request_id: requestId }), category: failure.category, occurrences: state.repetitions }), error: safeError(failure) });
   };
   const recover = (subsystem: string, phase: string): void => {
     const failure = failures.get(subsystem);
@@ -204,7 +210,7 @@ export const createWorkerReporter = (options: {
     stop: async () => {
       halt();
       await running;
-      const errors = [...[...cleanupFailures].filter(error => requiresCleanupFailure(error)), diagnosticFailure].filter(error => error !== undefined);
+      const errors = [...new Set([...[...cleanupFailures].filter(error => requiresCleanupFailure(error)), ...(options.configuration === undefined ? [] : workerConfigurationDiagnosticFailures(options.configuration)), diagnosticFailure].filter(error => error !== undefined))];
       if (errors.length === 1) throw errors[0];
       if (errors.length !== 0) throw new AggregateError(errors, "Worker reporter could not finish safely.");
     },

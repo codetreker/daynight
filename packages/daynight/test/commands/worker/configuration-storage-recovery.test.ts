@@ -148,7 +148,7 @@ describe("Worker configuration manager storage recovery", () => {
     await f.manager.ensureProjectRemoval(completedId); await f.manager.ensureProjectRemoval(failedId); await f.manager.settle();
     const before = await f.disk(), capturedNative = record(before, { kind: "native" })!, capturedStop = record(before, { kind: "projectRemoval", projectId: failedId })!;
     const capturedCompleted = record(before, { kind: "projectRemoval", projectId: completedId })!;
-    const sent = f.manager.report(), cursor = record(before, sent.observation!.items.at(-1)!.key)!.recordId;
+    const sent = f.manager.report(), capturedContext = f.manager.reportContext(sent)!, cursor = record(before, sent.observation!.items.at(-1)!.key)!.recordId;
     expect(sent.observation!.items[0]!.key).toEqual({ kind: "projectRemoval", projectId: failedId });
     expect(sent.observation!.items.find(item => item.key.kind === "native")?.lastFailure).toEqual(capturedNative.value.lastFailure);
     expect(sent.observation!.items.find(item => item.key.kind === "projectRemoval" && item.key.projectId === failedId)?.lastFailure).toEqual(capturedStop.value.lastFailure);
@@ -163,7 +163,9 @@ describe("Worker configuration manager storage recovery", () => {
     const op = operation({ limits: { totalMs: 15_000 } });
     const remoteResult = await post(sent, op);
     const accepting = f.manager.acknowledge(sent, remoteResult, op.signal).catch(error => error);
-    await f.blocked;
+    const blocked = await f.blocked;
+    expect(blocked.context).toMatchObject({ kind: "receipt-accept", source: { state: "initialized", desiredRevision: "1", observationRevision: "0" }, report: capturedContext });
+    expect(Object.isFrozen(blocked.context)).toBe(true);
     expect(f.manager.isReady()).toBe(false); expect((await f.disk()).authority.observationRevision).toBe("0");
     expect(record(await f.disk(), { kind: "projectRemoval", projectId: completedId })?.recordId).toBe(capturedCompleted.recordId);
     await advance(15_000);
@@ -182,6 +184,9 @@ describe("Worker configuration manager storage recovery", () => {
     const ackAttempts = f.attempts.filter(attempt => attempt.bytes === ackBytes);
     expect(ackAttempts).toHaveLength(4); expect(new Set(ackAttempts.map(attempt => attempt.iterator)).size).toBe(4);
     expect(f.written.filter(attempt => attempt.bytes === ackBytes)).toHaveLength(1);
+    const receiptEvents = f.states.filter(event => event.context?.kind === "receipt-accept");
+    expect(receiptEvents.at(-1)).toMatchObject({ kind: "recovered", context: blocked.context });
+    expect(receiptEvents.every(event => event.context === blocked.context)).toBe(true);
     expect(post).toHaveBeenCalledOnce(); expect(remoteResult).toEqual(receipt); expect(f.errors).toEqual([]);
   });
 
