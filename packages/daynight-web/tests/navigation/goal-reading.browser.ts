@@ -46,7 +46,7 @@ async function expectHit(target: Locator) {
   await target.scrollIntoViewIfNeeded();
   expect(await target.evaluate(element => { const r = element.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit === element || element.contains(hit); })).toBe(true);
 }
-async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
+async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'Long owner name '.repeat(8)) {
   let details = all;
   let currentGraph = graph;
   let colorRevision = 0;
@@ -77,7 +77,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-assignees` && failPeople) return send({ error: { code: 'unavailable', message: 'Assignee service unavailable', requestId: 'people-error' } }, 503);
-    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Long owner name '.repeat(8), avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
+    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: ownerName, avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
@@ -140,6 +140,11 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en') {
       : item.parentId === goalId && item.status !== (completedChildren ? 'done' : 'todo')
         ? { ...item, status: completedChildren ? 'done' as const : 'todo' as const, version: item.version + 1n, updatedAt: changedAt, completedAt: completedChildren ? time : null, cancelledAt: null } : item);
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, assignChainRoot: () => {
+    details = [...details,
+      detailFixture(projectId, outsideId, { title: 'Short chain', assignedTo: TEST_VIEWER_ID }),
+      detailFixture(projectId, otherTaskId, { title: 'Chain child', dependsOn: [outsideId], blockedBy: [outsideId], ready: false })];
+    currentGraph = graphFixture(details);
   }, setMixedChildren: () => {
     const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
     details = details.map(item => item.id === singleId ? { ...item, status: 'cancelled' as const, version: item.version + 1n, updatedAt: changedAt, cancelledAt: time } : item);
@@ -1633,7 +1638,35 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
 });
 
-for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+test('Goal and task-chain headers match with an assigned owner on desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 800 });
+  const fixture = await install(page, 'en', 'Owner');
+  fixture.setGoalStatusFixture('todo', false);
+  fixture.assignChainRoot();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Task chains/ }).click();
+  const chain = page.locator(`[data-chain-id="${outsideId}"]`);
+  const chainHeader = chain.locator('.root-toggle');
+  await expect(chainHeader.locator('.assignee-avatar')).toBeVisible();
+  await expect(chainHeader.locator('.assignee-name')).toHaveText('Owner');
+  const chainHeight = await chainHeader.evaluate(element => element.getBoundingClientRect().height);
+  const chainCardHeight = await chain.evaluate(element => element.getBoundingClientRect().height);
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await expect(card.locator('.assignee-avatar')).toBeVisible();
+  await expect(card.locator('.assignee-name')).toHaveText('Owner');
+  const row = card.locator('.goal-list-row');
+  const goalHeight = await row.evaluate(element => element.getBoundingClientRect().height);
+  const cardHeight = await card.evaluate(element => element.getBoundingClientRect().height);
+  expect(chainHeight).toBe(62);
+  expect(Math.abs(goalHeight - chainHeight)).toBeLessThanOrEqual(1);
+  expect(Math.abs(cardHeight - chainCardHeight)).toBeLessThanOrEqual(1);
+  await card.locator('.goal-list-toggle').click();
+  expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(goalHeight);
+});
+
+for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale);
   fixture.addCrossGoal(); fixture.setGoalTitle('LongGoal名称'.repeat(20)); fixture.addLongGoalListWorker();
@@ -1644,6 +1677,21 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const firstGoal = page.locator(`[data-goal-id="${goalId}"]`);
   const otherGoal = page.locator(`[data-goal-id="${otherGoalId}"]`);
+  const geometry = await firstGoal.locator('.goal-list-row').evaluate(row => {
+    const rect = (element: Element) => { const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
+    const bounds = rect(row);
+    const elements = ['.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status'].map(selector => rect(row.querySelector(selector)!));
+    return { bounds, elements };
+  });
+  for (const [index, box] of geometry.elements.entries()) {
+    expect(box.left).toBeGreaterThanOrEqual(geometry.bounds.left - 1);
+    expect(box.right).toBeLessThanOrEqual(geometry.bounds.right + 1);
+    expect(box.top).toBeGreaterThanOrEqual(geometry.bounds.top - 1);
+    expect(box.bottom).toBeLessThanOrEqual(geometry.bounds.bottom + 1);
+    for (const other of geometry.elements.slice(index + 1)) {
+      expect(box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1).toBe(true);
+    }
+  }
   const firstToggle = firstGoal.locator('.goal-list-toggle');
   const otherToggle = otherGoal.locator('.goal-list-toggle');
   await expect(firstToggle).toHaveAttribute('aria-expanded', 'false');
