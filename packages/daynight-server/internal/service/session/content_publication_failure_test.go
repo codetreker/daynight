@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
@@ -23,7 +26,8 @@ import (
 // observation is controlled to exercise an unknown or failed cleanup result.
 type capacityOutcomeWriter struct {
 	store.SessionWriter
-	mode string
+	mode    string
+	observe func(store.Completion, error)
 }
 
 func (w capacityOutcomeWriter) WriteSession(ctx context.Context, work func(store.SessionScope) error) (store.Completion, error) {
@@ -31,14 +35,18 @@ func (w capacityOutcomeWriter) WriteSession(ctx context.Context, work func(store
 	var refusal *model.Fault
 	if w.mode != "rollback" && errors.As(err, &refusal) && refusal.Code == "quota_exceeded" {
 		if w.mode == "cleanup" {
-			return store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: err}
+			completion, err = store.Completion{Outcome: store.TransactionNotCommitted}, &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionNotCommitted, CleanupFailed: true, Cause: err}
+		} else {
+			completion, err = store.Completion{Outcome: store.TransactionUnknown}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: err}
 		}
-		return store.Completion{Outcome: store.TransactionUnknown}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: err}
+	}
+	if w.observe != nil {
+		w.observe(completion, err)
 	}
 	return completion, err
 }
 
-func serviceCapacityFixture(t *testing.T, mode string) (serviceFixture, *Service) {
+func serviceCapacityFixture(t *testing.T, mode string) (serviceFixture, *Service, *local.Storage) {
 	t.Helper()
 	f := newServiceFixture(t)
 	files, err := local.New(t.TempDir())
@@ -65,7 +73,7 @@ func serviceCapacityFixture(t *testing.T, mode string) (serviceFixture, *Service
 		}
 	})
 	service := New(capacityOutcomeWriter{SessionWriter: f.db, mode: mode}, engine)
-	return f, service
+	return f, service, files
 }
 
 func seedFullSessionResource(t *testing.T, f serviceFixture, id string) {
@@ -84,7 +92,7 @@ func seedFullSessionResource(t *testing.T, f serviceFixture, id string) {
 func TestServiceArchiveCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 	for _, mode := range []string{"rollback", "unknown", "cleanup"} {
 		t.Run(mode, func(t *testing.T) {
-			f, service := serviceCapacityFixture(t, mode)
+			f, service, _ := serviceCapacityFixture(t, mode)
 			f.service = service
 			v := f.registerWeb(t)
 			if _, err := f.db.Pool.Exec(t.Context(), `UPDATE tasks SET status='done' WHERE id=$1`, f.task); err != nil {
@@ -134,7 +142,7 @@ func TestServiceArchiveCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 func TestServiceImageCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 	for _, mode := range []string{"rollback", "unknown", "cleanup"} {
 		t.Run(mode, func(t *testing.T) {
-			f, service := serviceCapacityFixture(t, mode)
+			f, service, files := serviceCapacityFixture(t, mode)
 			f.service = service
 			v := f.registerWeb(t)
 			grant, err := service.Grant(t.Context(), f.owner, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, ExecutionGeneration: "1", Kind: "bootstrap"})
@@ -146,33 +154,10 @@ func TestServiceImageCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// An admitted input profile lets the real publication transaction reach
-			// the exhausted storage budget whose completion outcome is controlled.
-			modelID := "capacity-fixture-model"
-			v.Capabilities.Images = &sp.ImageCapabilities{
-				Revision: "1", ProviderRevision: "1", ExpectedNativeSessionID: v.Identity.NativeSessionID, ModelID: &modelID,
-				Send: "supported", Steer: "unsupported", InputMediaTypes: []string{"image/png"},
-				MaxImageBytes: "5", MaxMessageImageBytes: "5", MaxImagesPerMessage: 1,
-				Geometry: sp.ImageGeometry{Version: 1, Known: true, MaxWidth: 2, MaxHeight: 3, MaxPixels: 6, MaxFrames: 1},
-			}
-			snapshot, err := json.Marshal(v)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = sp.DecodeSnapshot(snapshot); err != nil {
-				t.Fatal("invalid capacity fixture snapshot", err)
-			}
-			capabilities, err := json.Marshal(v.Capabilities.Images)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = f.db.Pool.Exec(t.Context(), `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{capabilities,images}',$2::jsonb) WHERE id=$1`, v.SessionID, capabilities); err != nil {
-				t.Fatal(err)
-			}
 			raw := []byte("image")
 			hash := sha256.Sum256(raw)
 			digest := hex.EncodeToString(hash[:])
-			spec := sp.ImageUploadSpec{UploadID: uuid.NewString(), ImageID: uuid.NewString(), Target: sp.ImageTarget{ServerOrigin: "https://daynight.cc", ActorUserID: f.owner.UserID, Fence: v.Fence, ExpectedNativeSessionID: v.Identity.NativeSessionID}, Name: "image.png", MediaType: "image/png", ByteLength: "5", SHA256: digest}
+			spec := sp.ImageUploadSpec{UploadID: uuid.NewString(), ImageID: uuid.NewString(), Target: sp.ImageTarget{ServerOrigin: "https://daynight.cc", ActorUserID: f.owner.UserID, Fence: v.Fence, ExpectedNativeSessionID: v.Identity.NativeSessionID}, Name: "image", MediaType: "image/png", ByteLength: "5", SHA256: digest}
 			if _, _, err = service.PrepareUpload(t.Context(), f.owner, f.project, f.task, v.SessionID, spec); err != nil {
 				t.Fatal(err)
 			}
@@ -181,51 +166,97 @@ func TestServiceImageCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 			}
 			seedFullSessionResource(t, f, v.SessionID)
 			validated := sp.ValidatedImage{MediaType: "image/png", ByteLength: "5", SHA256: digest, Width: 2, Height: 3, FrameCount: 1}
-			prepare := sp.LocalImagePreparation{UploadID: spec.UploadID, ImageID: spec.ImageID, Target: spec.Target, State: "receiving", AcceptedOffset: "0"}
-			complete := sp.LocalImagePreparation{UploadID: spec.UploadID, ImageID: spec.ImageID, Target: spec.Target, State: "validated", AcceptedOffset: "5", Validated: &validated}
-			encode := func(value any) []byte {
-				data, e := json.Marshal(value)
-				if e != nil {
-					t.Fatal(e)
-				}
-				return data
-			}
-			rows := []store.SessionMediaRequest{
-				{Action: "prepare", Body: encode(spec), Result: encode(prepare)},
-				{Action: "write", Body: encode(map[string]any{"uploadId": spec.UploadID, "offset": "0", "sha256": digest, "$data": map[string]any{"sha256": digest, "byteLength": len(raw)}}), Result: encode(prepare)},
-				{Action: "complete", Body: encode(map[string]any{"uploadId": spec.UploadID, "sha256": digest, "byteLength": "5"}), Result: encode(complete)},
-			}
+			captureID := uuid.NewString()
 			_, err = f.db.WriteSession(t.Context(), func(scope store.SessionScope) error {
-				dao := scope.SessionDAO().(store.SessionMediaDAO)
-				for _, row := range rows {
-					row.SessionID, row.Fence, row.Complete = v.SessionID, v.ControllerFence, true
-					suffix := row.Action
-					if suffix == "write" {
-						suffix = "write/0"
-					}
-					row.RequestID = uuid.NewSHA1(uuid.MustParse(spec.UploadID), []byte(suffix)).String()
-					if e := dao.SaveSessionMediaRequest(t.Context(), row); e != nil {
-						return e
-					}
+				dao := scope.SessionDAO().(store.SessionResourceDAO)
+				upload, err := dao.SessionUpload(t.Context(), v.SessionID, spec.UploadID)
+				if err != nil {
+					return err
 				}
-				return nil
+				request := sp.ImageCaptureRequest{CaptureID: captureID, AttemptID: spec.UploadID, Occurrence: sp.ImageOccurrence{ImageID: spec.ImageID, EntryID: uuid.NewString(), Container: "content", SourceKey: "original"}, Locator: sp.ImageLocator{Kind: "external", URL: "https://images.example/original.png"}}
+				return dao.SaveSessionCapture(t.Context(), store.SessionCaptureRecord{SessionID: v.SessionID, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: captureID, AttemptID: spec.UploadID, Revision: "1", Occurrence: request.Occurrence, State: "reserved", ResourceID: &upload.BlobID}})
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = service.CompleteUpload(t.Context(), f.owner, f.project, f.task, v.SessionID, spec.UploadID, sp.ImageUploadComplete{SHA256: digest, ByteLength: "5"})
+			// Display capture uses the same publication and failure-settlement
+			// transaction without enabling a native input profile. Observe its
+			// persisted receipt before capture-owned cleanup releases it.
+			type publication struct {
+				upload store.SessionUploadRecord
+				err    error
+			}
+			observed := make(chan publication, 1)
+			var mutex sync.Mutex
+			var failure error
+			sent := false
+			service.writer = capacityOutcomeWriter{SessionWriter: f.db, mode: mode, observe: func(completion store.Completion, err error) {
+				mutex.Lock()
+				defer mutex.Unlock()
+				if sent {
+					return
+				}
+				var refusal *model.Fault
+				if errors.As(err, &refusal) && refusal.Code == "quota_exceeded" {
+					failure = err
+				}
+				if failure == nil || mode == "rollback" && (err != nil || completion.Outcome != store.TransactionCommitted) {
+					return
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				var row store.SessionUploadRecord
+				_, readErr := f.db.WriteSession(ctx, func(scope store.SessionScope) error {
+					var e error
+					row, e = scope.SessionDAO().(store.SessionResourceDAO).SessionUpload(ctx, v.SessionID, spec.UploadID)
+					return e
+				})
+				if readErr != nil {
+					sent = true
+					observed <- publication{err: readErr}
+					return
+				}
+				if mode == "rollback" && row.Receipt.State != "failed" {
+					return
+				}
+				sent = true
+				observed <- publication{upload: row, err: failure}
+			}}
+			body, err := json.Marshal(sp.ImageCaptureCommit{CaptureID: captureID, AttemptID: spec.UploadID, Validated: validated})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = service.Handle(t.Context(), sp.ControllerMessage{Type: "image_capture", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, RequestID: uuid.NewString(), Action: "commit", MediaBody: body}); err != nil {
+				t.Fatal(err)
+			}
+			var result publication
+			select {
+			case result = <-observed:
+			case <-time.After(10 * time.Second):
+				t.Fatal("image publication transaction did not finish")
+			}
 			var refusal *model.Fault
-			if !errors.As(err, &refusal) || refusal.Code != "quota_exceeded" {
-				t.Fatalf("capacity refusal: %v", err)
+			if !errors.As(result.err, &refusal) || refusal.Code != "quota_exceeded" {
+				t.Fatalf("capacity refusal: %v", result.err)
 			}
-			var row store.SessionUploadRecord
-			_, err = f.db.WriteSession(t.Context(), func(scope store.SessionScope) error {
-				var e error
-				row, e = scope.SessionDAO().(store.SessionResourceDAO).SessionUpload(t.Context(), v.SessionID, spec.UploadID)
-				return e
-			})
-			if err != nil {
-				t.Fatal(err)
+			row := result.upload
+			if mode != "rollback" {
+				// Completion releases this gate after every deferred settlement.
+				// Observe uncertainty only after those writes have had a chance to run.
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				gate, err := files.AcquireGate(ctx, filestorage.PrivateGate, "session-image-upload/"+v.SessionID+"/"+spec.UploadID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = f.db.WriteSession(ctx, func(scope store.SessionScope) error {
+					var e error
+					row, e = scope.SessionDAO().(store.SessionResourceDAO).SessionUpload(ctx, v.SessionID, spec.UploadID)
+					return e
+				})
+				if err = errors.Join(err, gate.Close()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if mode == "rollback" {
 				if row.Receipt.State != "failed" || row.Receipt.Error == nil || row.Receipt.Error.Code != "quota_exceeded" {

@@ -40,7 +40,9 @@ func sessionImageHTTP(t *testing.T, f *fixture, method, path, contentType string
 	if headers["Authorization"] != "" {
 		// Active history uses the original Controller grant, not the browser PAT.
 		selected := *client
-		selected.Transport = client.Transport.(tokenTransport).next
+		workerTransport := client.Transport.(sessionWorkerTransport)
+		workerTransport.next = workerTransport.next.(tokenTransport).next
+		selected.Transport = workerTransport
 		client = &selected
 	}
 	resp, err := client.Do(req)
@@ -71,7 +73,7 @@ func imageDigest(b []byte) string { digest := sha256.Sum256(b); return hex.Encod
 
 func sessionImageController(ctx context.Context, connection *websocket.Conn, fence sp.ControllerFence, spec sp.ImageUploadSpec, original []byte) error {
 	validated := &sp.ValidatedImage{MediaType: spec.MediaType, ByteLength: spec.ByteLength, SHA256: spec.SHA256, Width: 3, Height: 2, FrameCount: 1}
-	for _, expected := range []string{"prepare", "write", "complete"} {
+	for _, expected := range []string{"prepare", "write", "complete", "release"} {
 		kind, data, err := connection.Read(ctx)
 		if err != nil {
 			return err
@@ -93,7 +95,7 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 			if json.Unmarshal(request.Body, &chunk) != nil || chunk.UploadID != spec.UploadID || chunk.Offset != "0" || chunk.SHA256 != spec.SHA256 || chunk.Data != base64.StdEncoding.EncodeToString(original) {
 				return fmt.Errorf("Controller chunk differs: %s", request.Body)
 			}
-		} else {
+		} else if expected == "complete" {
 			var completion struct {
 				UploadID   string `json:"uploadId"`
 				SHA256     string `json:"sha256"`
@@ -101,6 +103,13 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 			}
 			if json.Unmarshal(request.Body, &completion) != nil || completion.UploadID != spec.UploadID || completion.SHA256 != spec.SHA256 || completion.ByteLength != spec.ByteLength {
 				return fmt.Errorf("Controller completion differs: %s", request.Body)
+			}
+		} else {
+			var release struct {
+				UploadID string `json:"uploadId"`
+			}
+			if json.Unmarshal(request.Body, &release) != nil || release.UploadID != spec.UploadID {
+				return fmt.Errorf("Controller release identity differs: %s", request.Body)
 			}
 		}
 		state, offset := "receiving", "0"
@@ -110,6 +119,9 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 		}
 		if expected == "complete" {
 			state, offset, image = "validated", spec.ByteLength, validated
+		}
+		if expected == "release" {
+			state = "released"
 		}
 		result, err := sp.MarshalWire(sp.LocalImagePreparation{UploadID: spec.UploadID, ImageID: spec.ImageID, Target: spec.Target, State: state, AcceptedOffset: offset, Validated: image})
 		if err != nil {
@@ -243,11 +255,25 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodPost, upload+"/complete", "application/json", imageWire(t, sp.ImageUploadComplete{SHA256: hash, ByteLength: size}), nil, http.StatusConflict), &refusal); err != nil {
 		t.Fatal(err)
 	}
+	if refusal.Error.Code != "component_unsupported" {
+		t.Fatalf("unqualified input was not refused: %+v", refusal)
+	}
+	var released sp.ImageUploadReceipt
+	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodDelete, upload, "", nil, nil, http.StatusOK), &released); err != nil {
+		t.Fatal(err)
+	}
 	if err := <-controllerResult; err != nil {
 		t.Fatalf("Controller image exchange: %v", err)
 	}
-	if refusal.Error.Code != "component_unsupported" {
-		t.Fatalf("unqualified input was not refused: %+v", refusal)
+	if released.State != "released" || released.UploadID != spec.UploadID {
+		t.Fatalf("rejected upload was not released: %+v", released)
+	}
+	var observed sp.ImageUploadReceipt
+	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodGet, upload, "", nil, nil, http.StatusOK), &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.State != "released" || observed.UploadID != spec.UploadID {
+		t.Fatalf("released upload readback differs: %+v", observed)
 	}
 	// Display capture remains available while native input profiles are closed.
 	imageID := uuid.NewString()
