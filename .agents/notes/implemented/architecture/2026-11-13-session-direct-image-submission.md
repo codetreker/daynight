@@ -28,10 +28,25 @@ terminal-state cleanup rules.
 
 Existing capability discovery and Controller upgrade responses advertise version
 1 in an optional header. The legacy exchanges and response bodies remain
-compatible. Server support is deployed independently; the existing Controller
-continues its register and commit flow. The [image contract](../../../../docs/design/session-image-contracts.md)
+compatible. The Controller checks that header on each authenticated connection
+and reports `upgrade_required` before sending a new submit to an unsupported
+Server. Native and Markdown capture share local preparation, actual complete
+history synchronization, immutable staging and direct submission. Source IO
+depends on the acknowledged position, current source authority and local media
+capacity, without a service registration or reserved receipt. The [image contract](../../../../docs/design/session-image-contracts.md)
 owns the wire forms and recovery rules. Actual storage admission remains owned by
 the [content capacity decision](2026-11-13-session-actual-content-capacity.md).
+
+Before sending, the Controller persists the original request, current attempt,
+outcome and sealed-file association. Transport request IDs and connection epochs
+are supplied by each current relay connection. An uncertain submission queries
+the original capture. Only an explicit `capture_not_found` under the same valid
+Session and authorization permits replay of that frozen content; late original
+frames still encounter the Server's identity and attempt checks. Missing sealed
+bytes cannot authorize another source read. Receipt observation and exact retry
+controls preserve the immutable initial request while advancing the separate
+current attempt. Local source cleanup remains independent of service settlement
+and must finish before replacing its attempt.
 
 ## Alternatives
 
@@ -53,6 +68,11 @@ replayed only under the documented conditions.
 
 Both direct and compatibility consumers retain the same persistence and error
 boundaries. The first JSON request must fit the existing body budget, and a
-consumer may need a smaller first chunk. The Server can accept direct capture
-submissions before the Controller adopts that path; advertising Server support
-does not claim that a particular Controller has switched protocols.
+consumer may need a smaller first chunk. Server support remains independently
+deployable before a new Controller; a new Controller requires the advertised
+capability and cannot silently fall back to compatibility registration. Durable
+local state must retain incomplete cleanup and sealed-byte responsibility across
+upgrades. A representative product journey replaces only the upstream native
+agent with a controlled stdio peer while the compiled Controller, decoder,
+service, database and archive path execute normally; it does not qualify live
+third-party provider behavior or the module-owned failure matrix.

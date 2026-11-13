@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
 import sharp from "sharp";
@@ -46,6 +46,53 @@ const fixture = async () => {
   return { home, file, ticket, options, journal, request, receipt, source };
 };
 const bridge = (journal: ReturnType<typeof openControllerLifecycleStore>, capture: ReturnType<typeof createControllerRelay>["capture"], provider: NativeProvider | null = null) => createControllerCaptureBridge({ journal, capture, beforeCapture: async () => {}, provider: () => provider, writable: () => true });
+
+test("direct submission freezes the original business before dispatch and reuses sealed bytes after reopen", async () => {
+  const f = await fixture(), source = await f.source("blue"), lost = new Error("Submit receipt was lost");
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockRejectedValue(lost);
+  const consumer = bridge(f.journal, capture);
+  await consumer.providerOptions.prepareImageCapture!(f.request);
+  const validated = await consumer.providerOptions.stageImageCapture!({ ...source, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
+  const submission = { request: f.request, attemptId: f.request.attemptId, outcome: { kind: "validated" as const, validated } };
+  try {
+    expect(capture).not.toHaveBeenCalled();
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toBe(lost);
+    expect(capture).toHaveBeenCalledExactlyOnceWith("submit", submission);
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+  await rm(source.inputPath);
+  const journal = openControllerLifecycleStore(f.file, f.ticket, f.options);
+  const replay = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockResolvedValue(f.receipt({ state: "copying" }));
+  try {
+    await expect(bridge(journal, replay).providerOptions.submitImageCapture!(submission)).resolves.toMatchObject({ state: "copying" });
+    expect(replay).toHaveBeenCalledExactlyOnceWith("submit", submission);
+    const bytes = await journal.media().readCapture({ captureId: f.request.captureId, attemptId: f.request.attemptId, sha256: validated.sha256, byteLength: validated.byteLength, offset: "0", limit: 524288 }, policy);
+    expect(bytes.data).toBe(source.bytes.toString("base64"));
+    await expect(bridge(journal, replay).providerOptions.submitImageCapture!({ ...submission, outcome: { kind: "failed", error: { code: "changed", message: "Changed outcome" } } })).rejects.toThrow("frozen outcome");
+    expect(replay).toHaveBeenCalledOnce();
+  } finally { await journal.stopMedia(); journal.close(); }
+});
+
+test.each(["missing", "corrupt"] as const)("direct replay refuses %s sealed files while retaining the frozen identity", async kind => {
+  const f = await fixture(), source = await f.source("blue"), capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockRejectedValue(new Error("Original receipt lost"));
+  const consumer = bridge(f.journal, capture);
+  try {
+    await consumer.providerOptions.prepareImageCapture!(f.request);
+    const validated = await consumer.providerOptions.stageImageCapture!({ ...source, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
+    const submission = { request: f.request, attemptId: f.request.attemptId, outcome: { kind: "validated" as const, validated } };
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toThrow("receipt lost");
+    const db = new Database(f.file, { readonly: true });
+    let filename: string;
+    try { filename = (db.prepare("SELECT filename FROM image_captures WHERE capture_id=?").get(`${f.request.captureId}:${f.request.attemptId}`) as { filename: string }).filename; } finally { db.close(); }
+    const sealed = path.join(`${f.file}.media-staging`, filename);
+    await chmod(sealed, 0o600);
+    if (kind === "missing") await rm(sealed); else await writeFile(sealed, Buffer.alloc(source.bytes.length));
+    await rm(source.inputPath);
+    expect(f.journal.media().captureStatus(f.request.captureId, f.request.attemptId)).toEqual(validated);
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toThrow(kind === "missing" ? "ENOENT" : "digest differs");
+    expect(capture).toHaveBeenCalledOnce();
+    expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
 
 test("history synchronization failures cannot be mistaken for an unknown capture dispatch", async () => {
   const f = await fixture(), lost = new Error("History response lost");
@@ -198,7 +245,7 @@ test.each(["local", "external"] as const)("cached %s retries share admission wor
   const first = consumer.retry(f.request, abort.signal), second = consumer.retry(f.request, abort.signal);
   const outcomes = Promise.allSettled([first, second]);
   try {
-    expect(resolver).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(resolver).toHaveBeenCalledOnce());
     abort.abort(reason); released.resolve();
     expect(await outcomes).toEqual([{ status: "rejected", reason }, { status: "rejected", reason }]);
     expect(await consumer.retry(f.request, new AbortController().signal)).toEqual(f.validated);
@@ -237,7 +284,7 @@ test("query reconciles a service retry whose request was lost without reviving a
     await expect(consumer.providerOptions.commitImageCapture!(f.request.captureId, f.request.attemptId, { mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 })).rejects.toThrow("attempt conflict");
     current = f.receipt({ revision: "4" });
     await expect(consumer.providerOptions.queryImageCapture!(f.request.captureId)).rejects.toThrow("attempt conflict");
-  } finally { f.journal.close(); }
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
 

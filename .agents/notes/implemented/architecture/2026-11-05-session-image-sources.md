@@ -44,10 +44,13 @@ Projection state, source intents, contexts and request admission use the existin
 journal's `image_runtime_state` and metadata budget. A source intent preserves
 the original occurrence, locator, context and capture/attempt identity before
 position registration. Recovery repairs an interrupted registration and waits
-for the original position's service ACK before register, reservation or source
-IO. A persisted receipt can repair an interrupted timeline update without
-changing the occurrence. Unknown register/commit outcomes query the original
-capture; an interrupted source writer is never restarted by recovery. A source
+for the original position's service ACK and actual complete history before local
+reservation or source IO. The [direct-submission decision](2026-11-13-session-direct-image-submission.md)
+replaces the original register/reserved prerequisite with sealed-byte submission.
+A persisted receipt can repair an interrupted timeline update without
+changing the occurrence. Unknown submissions query the original capture and
+replay only the same frozen business content and sealed bytes after an explicit
+authorized absence result; an interrupted source writer is never restarted by recovery. A source
 intent becomes settled only after committed-byte adoption and its original
 position projection both succeed.
 

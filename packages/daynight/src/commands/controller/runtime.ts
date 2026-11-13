@@ -281,7 +281,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   // native callbacks only persist text and never wait for media work.
   markdownTimer = setInterval(() => {
     void markdownTimeline.tick().catch(fail);
-    void markdownCaptures.tick().catch(fail);
+    void markdownCaptures.tick().catch(error => { if (isOutboxFailure(error)) fail(error); else diagnostic(error); });
   }, 250);
   own(() => { if (markdownTimer) { clearInterval(markdownTimer); markdownTimer = null; } });
   own(async () => {

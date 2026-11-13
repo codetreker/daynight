@@ -1,11 +1,11 @@
 import type Database from "better-sqlite3";
-import { canonicalImageJson, imageId, parseImageCaptureRequest, parseImageCaptureReceipt, type ImageCaptureRequest, type ImageCaptureReceipt } from "../../../session/image-values.js";
+import { canonicalImageJson, imageId, parseImageCaptureRequest, parseImageCaptureReceipt, parseDirectCaptureSubmission, type DirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt } from "../../../session/image-values.js";
 import { parseSessionResource } from "../../../session/protocol.js";
 import type { ControllerSnapshot } from "../lifecycle-store.js";
 import type { controllerMetadataBudget } from "./metadata-budget.js";
 
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
-type Capture = { request: ImageCaptureRequest; attemptId: string; attempts: string[]; receipt: ImageCaptureReceipt | null };
+type Capture = { request: ImageCaptureRequest; attemptId: string; attempts: string[]; receipt: ImageCaptureReceipt | null; submissions?: Record<string, DirectCaptureSubmission> };
 
 /** A retry can only reuse the original durable occurrence and locator. */
 export const createImageCaptureSource = (db: Database.Database, transactions: Transactions, snapshot: () => ControllerSnapshot, budget: ReturnType<typeof controllerMetadataBudget>) => {
@@ -46,6 +46,16 @@ export const createImageCaptureSource = (db: Database.Database, transactions: Tr
       save({ request, attemptId: request.attemptId, attempts: [request.attemptId], receipt: null }); return request;
     }),
     getImageCaptureRequest: (captureId: string): ImageCaptureRequest => transactions.read(() => load(captureId).request),
+    getImageCaptureAttempt: (captureId: string): string => transactions.read(() => load(captureId).attemptId),
+    freezeImageCaptureSubmission: (input: DirectCaptureSubmission): DirectCaptureSubmission => transactions.write(() => {
+      const submission = parseDirectCaptureSubmission(input), capture = load(submission.request.captureId);
+      assertImageCaptureAttempt(submission.request.captureId, submission.attemptId);
+      if (canonicalImageJson(submission.request) !== canonicalImageJson(capture.request)) throw new Error("Image capture submission changed its original request.");
+      const previous = capture.submissions?.[submission.attemptId];
+      if (previous && canonicalImageJson(previous) !== canonicalImageJson(submission)) throw new Error("Image capture submission changed its frozen outcome.");
+      if (!previous) { capture.submissions = { ...capture.submissions, [submission.attemptId]: submission }; save(capture); }
+      return previous ?? submission;
+    }),
     assertImageCaptureAttempt,
     retryImageCaptureRequest: (captureId: string, attemptId: string): ImageCaptureRequest => transactions.write(() => {
       imageId(attemptId); const capture = load(captureId); assertSource(capture.request);

@@ -1,4 +1,4 @@
-import type { ImageCaptureRequest, ImagePart, ImageUnavailablePart, InputObservation, NativeImageSource, ValidatedImage } from "../../../session/image-values.js";
+import type { DirectCaptureSubmission, ImageCaptureRequest, ImagePart, ImageUnavailablePart, InputObservation, NativeImageSource } from "../../../session/image-values.js";
 import type { TimelineEntry } from "../../../session/protocol.js";
 
 export type NativePublicationEntry = Extract<TimelineEntry, { kind: "user_message" | "assistant_message" }> & { kind: "user_message" };
@@ -22,13 +22,12 @@ export type NativeInputPublicationRequest = {
 /** Durable capture progress is shared by publication and the image projector. */
 export type NativeImageProjectionState = {
   request: ImageCaptureRequest;
+  attemptId: string;
   index: number;
   waitingForSource: boolean;
-  phase: "new" | "query" | "reserved" | "commit" | "failure" | "settled";
-  unknownAction: "register" | "commit" | "failure" | null;
-  retryAt?: number;
+  phase: "new" | "preparing" | "submit" | "query" | "settled";
   part: ImagePart | ImageUnavailablePart;
-  validated: ValidatedImage | null;
+  submission: DirectCaptureSubmission | null;
 };
 export type CommittedOriginalImageSlot = {
   readonly imageId: string;

@@ -1,4 +1,4 @@
-import { canonicalImageJson, type ImageCaptureRequest, type ImageCaptureReceipt, type ImageError, type ImageLocator, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type ValidatedImage } from "../../../session/image-values.js";
+import { canonicalImageJson, type ImageCaptureRequest, type ImageCaptureReceipt, type ImageError, type ImageLocator, type ImagePart, type ImageUnavailablePart, type NativeImageSource, type DirectCaptureSubmission } from "../../../session/image-values.js";
 import type { MarkdownTimelineMetadata, NativeImageFile, ProviderEntry, ProviderOptions } from "./types.js";
 import { nativeEntryId } from "./projection.js";
 import type { NativeImageProjectionState, NativeInputPublicationView } from "../media/native-publication-types.js";
@@ -31,7 +31,7 @@ const contentOf = (entry: ProviderEntry) => entry.kind === "tool_call" ? entry.o
 export class ProviderImageProjector {
   private readonly pending = new Map<string, Pending>();
   private readonly cleanup = new Set<NativeImagePayload>();
-  private readonly registerRetryAt = new Map<string, number>();
+  private readonly retryAt = new Map<string, number>();
   private work: Promise<void> = Promise.resolve();
   private scheduled = false;
   private requested = false;
@@ -131,7 +131,7 @@ export class ProviderImageProjector {
             nativeSource: slot.native,
             locator: slot.original ? { kind: "resource", resourceId: slot.original.resourceId } : slot.payload.kind === "resource" ? { kind: "resource", resourceId: slot.payload.resourceId } : slot.payload.kind === "source" ? slot.payload.locator : { kind: "native", ...slot.native },
           };
-          saved = { request, index: slot.index, waitingForSource: slot.payload.kind === "pending", phase: "new", unknownAction: null, part: pendingPart(imageId, slot.label), validated: null };
+          saved = { request, attemptId: request.attemptId, index: slot.index, waitingForSource: slot.payload.kind === "pending", phase: "new", part: pendingPart(imageId, slot.label), submission: null };
           this.options.imageRuntime?.writeState(key, saved);
         }
         parts[slot.index] = saved.part;
@@ -220,132 +220,130 @@ export class ProviderImageProjector {
     try { this.release(pending); this.pending.delete(pending.saved.request.occurrence.imageId); }
     catch { this.options.onDiagnostic?.("Saved native image bytes could not be released; their original lease is retained."); this.scheduleQuery(); }
   }
-  private applyReceipt(pending: Pending, receipt: ImageCaptureReceipt): boolean {
-    const original = pending.saved.request;
-    if (receipt.captureId !== original.captureId || receipt.attemptId !== original.attemptId || canonicalImageJson(receipt.occurrence) !== canonicalImageJson(original.occurrence)) throw new Error("Native image capture receipt identity differs.");
+  private applyReceipt(pending: Pending, receipt: ImageCaptureReceipt, reconcileAttempt = false): boolean {
+    const { request, attemptId } = pending.saved;
+    if (receipt.captureId !== request.captureId || canonicalImageJson(receipt.occurrence) !== canonicalImageJson(request.occurrence)) throw new Error("Native image capture receipt identity differs.");
+    if (receipt.attemptId !== attemptId) {
+      if (!reconcileAttempt) throw new Error("Native image capture receipt attempt differs.");
+      // Query may discover a service-owned source retry. Only that retry's
+      // exact command can acquire new bytes; projection keeps observing it.
+      pending.saved.attemptId = receipt.attemptId;
+      pending.saved.submission = null;
+      pending.saved.phase = "query";
+    }
     if (receipt.state === "committed") {
       if (!receipt.resourceId) throw new Error("Native image capture has no committed original.");
-      pending.saved.part = { type: "image", imageId: original.occurrence.imageId, resourceId: receipt.resourceId, label: pending.slot.label };
+      pending.saved.part = { type: "image", imageId: request.occurrence.imageId, resourceId: receipt.resourceId, label: pending.slot.label };
     } else if (receipt.state === "failed") {
-      pending.saved.part = pendingPart(original.occurrence.imageId, pending.slot.label, receipt.error ?? { code: "image_unavailable", message: "The original image could not be saved." });
-    } else return false;
+      if (!receipt.error) throw new Error("Native image capture has no failure result.");
+      pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, receipt.error);
+    } else { this.save(pending); return false; }
     pending.saved.phase = "settled"; this.save(pending);
     this.emitPart(pending); this.retire(pending); return true;
   }
-  private async capture(pending: Pending): Promise<void> {
-    const { options } = this, { request } = pending.saved;
-    if (pending.saved.phase === "settled") {
+  private freeze(pending: Pending, outcome: DirectCaptureSubmission["outcome"]): void {
+    pending.saved.submission = structuredClone({ request: pending.saved.request, attemptId: pending.saved.attemptId, outcome });
+    pending.saved.phase = "submit";
+    this.save(pending);
+  }
+  private sourceFailure(pending: Pending, error: unknown, fallback: ImageError): void {
+    const code = error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : fallback.code;
+    this.options.onDiagnostic?.(`${fallback.message} ${String(error)}`);
+    this.freeze(pending, { kind: "failed", error: { code, message: fallback.message } });
+  }
+  private async prepare(pending: Pending): Promise<void> {
+    const { options } = this, { saved } = pending;
+    await options.prepareImageCapture!(saved.request);
+    if (this.stopped) return;
+    // Persist the source start before IO. An interrupted reader cannot be
+    // reopened under the same attempt against possibly changed source bytes.
+    saved.phase = "preparing"; this.save(pending);
+    let payload = pending.slot.payload;
+    if (payload.kind === "resource") { this.freeze(pending, { kind: "resource" }); return; }
+    if (payload.kind === "deferred" || payload.kind === "source") {
       try {
-        // The known receipt may precede either durable state or timeline
-        // projection. Retry only these writes, never its capture or source IO.
-        this.save(pending);
-        this.emitPart(pending);
-        this.retire(pending);
-      } catch { this.scheduleQuery(); }
+        if (payload.kind === "deferred") payload = await payload.read(this.controller.signal);
+        else {
+          if (!options.resolveImageCaptureSource) throw new Error("Native image source resolver is unavailable.");
+          payload = await options.resolveImageCaptureSource(saved.request, this.controller.signal);
+        }
+        pending.slot = { ...pending.slot, payload };
+      } catch (error) {
+        if (this.stopped) return;
+        this.sourceFailure(pending, error, { code: "source_unavailable", message: "The original native image source could not be read." }); return;
+      }
+      if (this.stopped) { this.release(pending); return; }
+    }
+    if (payload.kind !== "file") {
+      const error = payload.kind === "unavailable" ? payload.error : { code: "source_unavailable", message: "The original native image source is unavailable." };
+      this.freeze(pending, { kind: "failed", error }); return;
+    }
+    let validated;
+    try { validated = await options.stageImageCapture!({ captureId: saved.request.captureId, attemptId: saved.attemptId, imageId: saved.request.occurrence.imageId, inputPath: payload.path, byteLength: payload.byteLength, sha256: payload.sha256 }); }
+    catch (error) {
+      if (this.stopped) return;
+      this.sourceFailure(pending, error, { code: "source_validation_failed", message: "The native image could not be completely validated and saved." });
       return;
     }
-    if (pending.slot.payload.kind === "pending" && pending.saved.phase === "new") return;
-    if (!options.imageRuntime || !options.registerImageCapture || !options.queryImageCapture || !options.stageImageCapture || !options.commitImageCapture || !options.failImageCapture) {
-      pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "component_unsupported", message: "The native image capture component is unavailable." });
-      this.emitPart(pending); this.release(pending); this.pending.delete(request.occurrence.imageId); return;
+    this.freeze(pending, { kind: "validated", validated });
+  }
+  private async capture(pending: Pending): Promise<void> {
+    const { options } = this, { saved } = pending, { request } = saved;
+    if (saved.phase === "settled") {
+      try { this.save(pending); this.emitPart(pending); this.retire(pending); }
+      catch { this.scheduleQuery(); }
+      return;
     }
-    let registerRefusal = false;
-    let controlRefusal: "commit" | "failure" | null = null;
+    if (saved.waitingForSource && saved.phase === "new") return;
+    if (!options.imageRuntime || !options.prepareImageCapture || !options.queryImageCapture || !options.stageImageCapture || !options.submitImageCapture) {
+      saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "component_unsupported", message: "The native image capture component is unavailable." });
+      saved.phase = "settled"; this.save(pending); this.emitPart(pending); this.retire(pending); return;
+    }
+    if (Date.now() < (this.retryAt.get(request.captureId) ?? 0)) { this.scheduleQuery(); return; }
+    this.retryAt.delete(request.captureId);
+    let dispatching = false;
     try {
-      if (pending.saved.phase === "new") {
-        if (Date.now() < (this.registerRetryAt.get(request.captureId) ?? 0)) { this.scheduleQuery(); return; }
-        this.registerRetryAt.delete(request.captureId);
-        pending.saved.phase = "query"; pending.saved.unknownAction = "register"; this.save(pending);
-        const receipt = await options.registerImageCapture(request).catch(error => { registerRefusal = error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError || isRetryableCaptureRefusal(error); throw error; });
-        if (this.applyReceipt(pending, receipt)) return;
-        pending.saved.phase = receipt.state === "reserved" ? "reserved" : "query"; pending.saved.unknownAction = null; this.save(pending);
-      } else if (pending.saved.phase === "query") {
-        const receipt = await options.queryImageCapture(request.captureId);
-        if (this.applyReceipt(pending, receipt)) return;
-        if (receipt.state === "reserved" && pending.saved.unknownAction === "register") {
-          pending.saved.phase = "reserved"; pending.saved.unknownAction = null;
+      if (saved.phase === "query") {
+        try {
+          const receipt = await options.queryImageCapture(request.captureId);
+          if (this.applyReceipt(pending, receipt, true)) return;
+          this.scheduleQuery(); return;
+        } catch (error) {
+          if (!(error instanceof ImageCaptureRequestError) || error.code !== "capture_not_found" || !saved.submission) throw error;
+          saved.phase = "submit"; this.save(pending);
         }
-        this.save(pending);
       }
+      if (saved.phase === "new") await this.prepare(pending);
+      else if (saved.phase === "preparing") this.freeze(pending, { kind: "failed", error: { code: "source_unavailable", message: "The original native image source read was interrupted." } });
       if (this.stopped) return;
-      if (pending.saved.phase === "reserved") {
-        if (!pending.saved.validated) {
-          if (pending.slot.payload.kind === "pending") return;
-          let payload = pending.slot.payload;
-          if (payload.kind === "deferred" || payload.kind === "source") {
-            const deferred = payload.kind === "deferred" ? payload : null;
-            const resolver = options.resolveImageCaptureSource;
-            const read = deferred ? () => deferred.read(this.controller.signal) : resolver ? () => resolver(request, this.controller.signal) : null;
-            if (read) {
-              try { payload = await read(); pending.slot = { ...pending.slot, payload }; }
-              catch {
-                if (this.stopped) return;
-                payload = { kind: "unavailable", error: { code: "source_unavailable", message: "The original native image source could not be read." } };
-              }
-            } else payload = { kind: "unavailable", error: { code: "component_unsupported", message: "The native image source resolver is unavailable." } };
-            if (this.stopped) { this.release(pending); return; }
-          }
-          if (payload.kind !== "file") {
-            const error = payload.kind === "unavailable" ? payload.error : { code: "resource_unavailable", message: "The original uploaded image could not be associated." };
-            pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, error);
-            pending.saved.phase = "failure"; this.save(pending);
-          } else try {
-            pending.saved.validated = await options.stageImageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath: payload.path, byteLength: payload.byteLength, sha256: payload.sha256 });
-          } catch {
-            // Staging has joined its owned reader/decoder. No service commit
-            // has been invoked, so this is a source failure, not a lost commit.
-            pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "source_validation_failed", message: "The native image could not be completely validated and saved." });
-            pending.saved.phase = "failure"; this.save(pending);
-          }
-          if (pending.saved.phase === "reserved") { this.save(pending); this.release(pending); }
-        }
-        if (pending.saved.phase === "reserved") { pending.saved.phase = "commit"; this.save(pending); }
-      }
-      if (pending.saved.phase === "failure") {
-        if (Date.now() < (pending.saved.retryAt ?? 0)) { this.scheduleQuery(); return; }
-        if (pending.saved.part.type !== "image_unavailable") throw new Error("Native image capture failure is missing.");
-        const failure = pending.saved.part.error;
-        delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
-        if (this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, failure).catch(error => { if (error instanceof ImageCaptureRequestError || isRetryableCaptureRefusal(error)) controlRefusal = "failure"; throw error; }))) return;
-      }
-      if (pending.saved.phase === "commit") {
-        if (Date.now() < (pending.saved.retryAt ?? 0)) { this.scheduleQuery(); return; }
-        const validated = pending.saved.validated;
-        if (!validated) throw new Error("Native image capture validation is missing.");
-        delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "commit"; this.save(pending);
-        if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated).catch(error => { if (error instanceof ImageCaptureRequestError || isRetryableCaptureRefusal(error)) controlRefusal = "commit"; throw error; }))) return;
+      if (saved.phase === "submit") {
+        const submission = saved.submission;
+        if (!submission || submission.attemptId !== saved.attemptId) throw new Error("Native image capture has no frozen current submission.");
+        try { this.release(pending); }
+        catch (error) { this.options.onDiagnostic?.(`Native image source cleanup is incomplete: ${String(error)}`); }
+        saved.phase = "query"; this.save(pending);
+        dispatching = true;
+        const receipt = await options.submitImageCapture(submission);
+        dispatching = false;
+        if (this.applyReceipt(pending, receipt)) return;
       }
       this.scheduleQuery();
     } catch (error) {
-      if ((pending.saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
-      if (controlRefusal && isRetryableCaptureRefusal(error)) {
-        const action = controlRefusal;
-        pending.saved.phase = action; pending.saved.unknownAction = null; pending.saved.retryAt = Date.now() + 1000;
-        try { this.save(pending); } catch (saveError) {
-          pending.saved.phase = "query"; pending.saved.unknownAction = action; delete pending.saved.retryAt;
-          throw saveError;
-        }
-        this.scheduleQuery(); return;
-      }
-      if (registerRefusal && isRetryableCaptureRefusal(error)) {
-        // Admission preceded registration, so the same frozen request remains eligible.
-        pending.saved.phase = "new"; pending.saved.unknownAction = null;
-        this.registerRetryAt.set(request.captureId, Date.now() + 1000);
+      if ((saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
+      if (isRetryableCaptureRefusal(error)) {
+        if (dispatching) saved.phase = "submit";
+        this.retryAt.set(request.captureId, Date.now() + 1000);
         this.save(pending); this.scheduleQuery(); return;
       }
-      if (registerRefusal && (error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError)) {
-        // A correlated refusal is a known request result, not a lost receipt.
-        // Keep the original identity without inventing a service receipt.
-        pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: error.code, message: error.message });
-        pending.saved.phase = "settled"; pending.saved.unknownAction = null;
+      if (error instanceof ImageCapturePrerequisiteError || dispatching && error instanceof ImageCaptureRequestError && error.code === "upgrade_required") {
+        saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: error.code, message: error.message });
+        saved.phase = "settled";
         try { this.save(pending); this.emitPart(pending); this.retire(pending); } catch { this.scheduleQuery(); }
         return;
       }
-      pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "capture_unknown", message: "The original image capture result is unknown." });
-      // Reconciliation retains the same capture and attempt. It never repeats
-      // register or commit after a response with an unknown outcome.
-      this.scheduleQuery();
-      this.save(pending); this.emitPart(pending);
+      saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, error instanceof ImageCaptureRequestError ? { code: error.code, message: error.message } : { code: "capture_unknown", message: "The original image capture result is unknown." });
+      this.options.onDiagnostic?.(`Native image capture requires reconciliation: ${String(error)}`);
+      this.save(pending); this.emitPart(pending); this.scheduleQuery();
     }
   }
   private scheduleQuery(): void {

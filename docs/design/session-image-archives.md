@@ -28,7 +28,7 @@ flowchart LR
 
 Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服务的消息关联与原件是页面历史来源。原生事件按同一 sourceKey 重放，只更新原出现；historyEpoch、分页、工具折叠和网络重连不分配新 imageId。
 
-出现采用两个持久阶段。Controller 先保存 entry/出现位置，通过 sourceSeq/outbox 的 timeline upsert 或完整历史同步取得覆盖该位置的服务 ACK；再用原 captureId register 原出现、sourceKey、可信 nativeSource 与原身份，收到 reserved 才允许来源 IO。register 必须匹配已确认位置、revision/hash；ACK 或 register 结果未知时保留 outbox/原身份查询，不先读取来源。可信原生键由 Provider 映射提供，没有则为 null，不按文字、摘要或位置猜配。自有上传图的原生回显在位置 ACK 后通过同 Session resource locator 登记，只增加出现引用和来源映射，不分配第二份 blob；该关联不证明原生接受，也不解除 unknown。
+出现采用两个持久阶段。Controller 先保存 entry/出现位置与原 request，通过 sourceSeq/outbox 的 timeline upsert 取得覆盖该位置的服务 ACK，并实际上传必要完整历史；当前来源权限和本机容量有效时读取并封存 bytes，再以原 request、当前 attempt 和 frozen outcome 直接 submit。服务核验已确认位置、revision/hash、sourceKey、可信 nativeSource 与原身份；source IO 不等待 register 或 reserved。ACK 未知保留 outbox 且不先读源；submit 未知先查询原 capture，只有当前授权、Session 和 fence 有效且明确 capture_not_found 才重放同一冻结业务与封存字节。可信原生键由 Provider 映射提供，没有则为 null，不按文字、摘要或位置猜配。自有上传图的原生回显在位置 ACK 后通过同 Session resource locator 和 resource outcome submit，只增加出现引用和来源映射，不分配第二份 blob；该关联不证明原生接受，也不解除 unknown。
 
 资源与已确认出现的提交原子可见；原生接受和消息关联尚未结算的意图持有原 pin 和关联身份，不广播虚构消息。终结前必须处理全部待挂接关联，不能把资源未出现在最后显示页误当无引用。停止后的完整同步先确认原位置，再按原 stopped 权限登记已经发生的来源与已有 validated 结果，不重新启动来源 IO。冻结的记录来源索引不保存正文、路径或 Base64，须与 timeline 的原出现和 resource hash 相符；Controller 已丢失且只有未上报本地映射时明确 context_unavailable，不能伪造恢复。
 
@@ -311,7 +311,7 @@ settling 下的最终同步使用有界原字节文件传输，避免一条合�
 
 本地采集终态结算改变绑定，或对已持久正文的有界解析恢复成功改变图片投影时，只有先确认原同步complete或failed、实际writer已停且prepare仍settling，才能显式以新syncId开启新完整轮次。解析成功清除imageProjectionError并输出完整空bindings也适用，不依赖capture结算或WebSocket重连。新轮次保持同一prepare/stopped身份、historyEpoch和sourceThrough，以推进的entry/片段revision提交修正投影；旧syncId的文件/hash不得改变，禁止新原生执行和新的来源IO。旧metadata账本和pin在新轮次complete前保留，旧轮次迟到请求不能覆盖新事实。服务计算并保存逐entry/hash/长度/引用元数据，legacy内嵌bytes的编码长度按其已登记长度和规范Base64计算，最终归档文件再验实际bytes。同步临时正文文件仅为校验使用，完成并写入元数据后删除；失败/未知按writer lease与准备引用协调清理。整个合法entry可跨任意文件块，不拆文字part、不改entryId；解析在有界执行单元完成，测量最坏128MiB timeline 文件而非假设单entry小于传输块。此同步 DTO 由本文定义并由公共 codec 统一实现，与图片upload和正式timeline file区分。
 
-服务不能验证本地全部native事件是否真实存在，但只接受原Controller已验证的最终本地库存与连续序列/完整性声明，并保持现有archive_incomplete拒绝；已知仅需full resynchronization的gap允许此完整同步修复。原生停止后未上报的最后条目有不启动Provider的前进路径。同步不启动图源IO；尚未在服务register的本地图片出现只能以原已发生来源及其本地结果登记元数据，不在停机后重新抓路径/URL。已有validated本地文件在原归档权限profile内复制结算，缺本地字节者明确未采集。
+服务不能验证本地全部native事件是否真实存在，但只接受原Controller已验证的最终本地库存与连续序列/完整性声明，并保持现有archive_incomplete拒绝；已知仅需full resynchronization的gap允许此完整同步修复。原生停止后未上报的最后条目有不启动Provider的前进路径。同步不启动图源IO；尚未在服务 submit 的本地图片出现只能以原已发生来源及其本地结果提交元数据，不在停机后重新抓路径/URL。已有validated本地文件在原归档权限profile内复制结算，缺本地字节者明确未采集。
 
 公共 codec 按本文合同一次实现严格 TS/Go 解析；归档模块实现准备、最终历史同步与消费者。不能将现有POST archive的pending/failed body偷换成该对象。
 

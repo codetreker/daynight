@@ -18,6 +18,7 @@ import { createControllerRelay, publicOperation } from "../../../src/commands/co
 import { RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { ImageReleaseStorageError } from "../../../src/commands/controller/media/release-error.js";
 import { ImageCaptureNotDispatchedError } from "../../../src/commands/controller/media/capture-error.js";
+import type { DirectCaptureSubmission } from "../../../src/session/image-values.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(close => close()); transport.sockets.length = 0; vi.clearAllMocks(); });
 const setup = async (operations: ControllerOperation[] = [], live = false, images = false) => {
@@ -399,6 +400,28 @@ test("full capture slots refuse before dispatch and permit the same control afte
   await second;
   expect(await retry).toMatchObject({ captureId, attemptId, state: "failed", error: body.error });
   await relay.close();
+});
+
+test("direct capture requires the upgrade capability and preserves frozen business across current transport frames", async () => {
+  const { relay, socket, emit, frame, callbacks } = await setup([], false, true);
+  emit(frame("reconcile_result", { operations: [] }));
+  const captureId = randomUUID(), attemptId = randomUUID();
+  const occurrence = { imageId: randomUUID(), entryId: randomUUID(), container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-native-part" };
+  const submission: DirectCaptureSubmission = { request: { captureId, attemptId, occurrence, nativeSource: null, locator: { kind: "resource", resourceId: randomUUID() } }, attemptId, outcome: { kind: "resource" } };
+  await expect(relay.capture("submit", submission)).rejects.toMatchObject({ code: "upgrade_required" });
+  expect(socket.sent.filter(value => value.type === "image_capture")).toHaveLength(0);
+  socket.emit("upgrade", { headers: { "daynight-session-direct-upload-version": "1" } });
+  const receipt = { captureId, attemptId, revision: "1", occurrence, state: "copying", resourceId: randomUUID(), resource: null, error: null };
+  const request = relay.capture("submit", submission), original = socket.sent.at(-1)!;
+  expect(original).toMatchObject({ action: "submit", body: submission, connectionEpoch: "3" });
+  emit(frame("image_capture_result", { requestId: original.requestId, action: "submit", result: receipt, error: null }));
+  expect(await request).toEqual(receipt);
+  const replay = relay.capture("submit", structuredClone(submission)), replayFrame = socket.sent.at(-1)!;
+  expect(replayFrame.body).toEqual(original.body);
+  expect(replayFrame.requestId).not.toEqual(original.requestId);
+  emit(frame("image_capture_result", { requestId: replayFrame.requestId, action: "submit", result: receipt, error: null }));
+  expect(await replay).toEqual(receipt);
+  expect(relay.connected()).toBe(true); expect(callbacks.onError).not.toHaveBeenCalled();
 });
 
 test("retry_capture consumes the source hook separately from native commands and aborts on connection loss", async () => {

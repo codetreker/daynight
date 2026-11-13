@@ -64,9 +64,9 @@ SDK callback 与 permission event 的共享对象跨进程时，由 worker 对�
 
 图片采集不依赖滚动、工具展开或浏览器在线。Controller 从可信消息内容建立位置，保存成功后才公开 available；浏览器懒加载只影响已保存原件的读取。Thread、Herdr、通用文件浏览、第三方登录、任意 MCP resource/read、网络文件共享和主动刷新历史图片不在此设计内。
 
-共同流程为：可信投影器提交 entry、正文片段和来源上下文；纯 AST 模块只识别节点、不做 IO；Controller 持久原 imageId/sourceKey/locator 与位置，经 timeline/source outbox 得到覆盖该位置的服务 ACK；服务 register 原子核验位置和来源映射并登记原身份；Controller 得到兼容 reserved 回执后才读取来源，状态名称不表示服务端容量预留；公共存储完整验证实际 bytes 并提交；服务耐久保存 blob、引用与来源索引后 committed。任何未知 register/commit 结果只查询原 captureId，不重抓来源、不更换身份。
+共同流程为：可信投影器提交 entry、正文片段和来源上下文；纯 AST 模块只识别节点、不做 IO；Controller 持久原 imageId/sourceKey/locator 与 request/attempt，经 timeline/source outbox 得到覆盖该位置的服务 ACK，并实际上传必要完整历史；当前来源权限和本机容量有效时读取并封存 immutable validated 字节；冻结原 request、当前 attempt 和 outcome 后直接 submit。服务核验原位置、来源映射及当前 attempt，沿原 writer 保存 blob、引用与来源索引后 committed。此路径不发 register，也不等待 reserved；未知结果先查询原 captureId，只有当前授权和 fence 有效且明确 capture_not_found 才重放同一冻结业务及封存字节，不重抓来源、不更换身份。
 
-可信 `NativeImageSource` 与 locator 分工不同：前者证明原生位置，后者说明如何取 bytes。原生位置须先 ACK，自有上传图的回显也以 resource locator 执行 register；同 Session available 原件直接 committed，只增加出现引用和来源映射，不复制 blob、不增加资源槽。它不证明原生接受，也不能解除发送 unknown。
+可信 `NativeImageSource` 与 locator 分工不同：前者证明原生位置，后者说明如何取 bytes。原生位置须先 ACK，自有上传图的回显也以 resource locator 和 resource outcome 执行 submit；同 Session available 原件直接 committed，只增加出现引用和来源映射，不复制 blob、不增加资源槽。它不证明原生接受，也不能解除发送 unknown。
 
 ## Markdown 语法与正文稳定性
 
@@ -178,17 +178,17 @@ helper 将本次真实遍历产生的来源证明交给策略消费者：原 loc
 
 ### 原件取得与本地资源界限
 
-register 和私有暂存预留成功后再 open。初始 fstat 记录对象身份、长度和纳秒 mtime/ctime；0 bytes 拒绝，大于 10485760 bytes 拒绝。最多 524288 bytes 一块复制，并对总上限+1 探测；结束复核同句柄身份/长度/时间/实读量，变化丢弃未提交快照，不能混拼两次文件。
+原位置 ACK、实际完整历史及私有暂存容量确认后再 open；来源权限由当前原生 Read 决定逐检查点核验。初始 fstat 记录对象身份、长度和纳秒 mtime/ctime；0 bytes 拒绝，大于 10485760 bytes 拒绝。最多 524288 bytes 一块复制，并对总上限+1 探测；结束复核同句柄身份/长度/时间/实读量，变化丢弃未提交快照，不能混拼两次文件。
 
 该检查检测常见并发改写，不承诺文件事务快照。保存的是一次授权读取实际得到且完整解码通过的 bytes；需要严格源快照的生产者先原子发布完成文件，采集器不无界重读。实际格式由嗅探确定，有声明必须一致；公共 decoder 完整验证 PNG/JPEG/GIF/WebP/AVIF，不执行 SVG/HTML，不转码、改 EXIF 或动画。
 
 resolve/open 每次最多 5 秒，源复制最多 30 秒（含打开），解码另最多 15 秒。可挂起调用放专用可取消 IO helper，最多两个打开/复制、一个 decoder，队列最多 32 个元数据项，后续来源从持久索引分批调度；共用公共媒体槽，不另加并发。失败关闭句柄，helper 未实际停止前不回收文件或计费。服务提交可能发生时先 query，计时器不证明未提交，正文与原生回执不等待媒体队列。
 
-source intent 先持久原 occurrence、destination、context、captureId/attemptId、phase、started、awaitingRetry 和冷却状态，再登记 `image_occurrences`；中断后由同一 intent 补登记并等待 `imageOccurrenceAcknowledged`。ACK 覆盖原正文位置后才通过公共 capture 桥 register，拿到 reserved 才执行 `reserveCaptureSource`。`CaptureSourceLease.runWriter` 交付调用方已创建、0600 的空私有普通文件；本地与外部 reader 都只写该文件，随后公共 `stageCapture` 完整验证并建立不可变 prepared 文件。运行中的 source writer、stage 和原预留由同一释放入口取消、join、刷盘删除后结算。
+source intent 先持久原 occurrence、destination、context、captureId/attemptId、phase、started、awaitingRetry 和冷却状态，再登记 `image_occurrences`；中断后由同一 intent 补登记并等待 `imageOccurrenceAcknowledged`。ACK 覆盖原正文位置后通过公共 capture 桥持久本地原 request 并确认实际完整历史，然后执行 `reserveCaptureSource`；该顺序不需要服务 register 或 reserved。`CaptureSourceLease.runWriter` 交付调用方已创建、0600 的空私有普通文件；本地与外部 reader 都只写该文件，随后公共 `stageCapture` 完整验证并建立不可变 prepared 文件。运行中的 source writer、stage 和本机预留由同一释放入口取消、join、刷盘删除后结算。
 
 `reserveCaptureSource` 在既有媒体账本预留来源与验证副本的最坏双份 10 MiB 空间，并使用媒体存储的 `tryAcquireMediaBlock()`。relay 的非解码媒体块也使用该入口，整个 Controller 合计最多两个槽；来源采集没有独立扩容的 semaphore。writer 与 stage 已停止、来源释放已持久确认后，即使刷新空间预算失败也须归还内存槽，预算错误仍交给调用方；重复释放须核对并回收已标记 released 的残留活动槽。join 或释放持久化尚未确认时不能提前归还。coordinator 最多两个活动来源，解析与来源索引每页最多 32 个身份，解码沿公共单 decoder 执行。
 
-本地清理使用独立持久 `sourceCleanup`，保存原 `captureId`、`attemptId`、`pending` 和清理错误，不以服务 receipt 或 source `phase=settled` 代替释放确认。该义务在 reserve 之前保存，覆盖 reservation 已落盘但文件打开失败、尚未返回 lease 的窗口；只有原身份的 release 确认完成后才能持久清除 pending，最后清理错误与来源错误分别保留。后续 tick 先协调待清理义务，再继续服务结果恢复，因此 settled、copying、unknown 或服务查询失败均不能遗弃本地释放。查询或显式 retry 转入新 attempt 前须完成旧义务，不能覆盖旧清理身份，也不能重新读取旧源。回执引起 attempt 切换时，新身份、等待精确 retry 的状态及旧来源错误的清除一并持久化，然后再投影时间线，避免投影中断留下新身份与旧失败状态的混合记录。旧记录缺少该字段但已 started 时，按其原 request 保守补建清理义务。服务失败结算结果未知仍只查询原 capture；若确认仍为 reserved，只能继续结算原失败，不能因已有 staged 字节而改为提交失败的副本。
+本地清理使用独立持久 `sourceCleanup`，保存原 `captureId`、`attemptId`、`pending` 和清理错误，不以服务 receipt 或 source `phase=settled` 代替释放确认。该义务在 reserve 之前保存，覆盖 reservation 已落盘但文件打开失败、尚未返回 lease 的窗口；只有原身份的 release 确认完成后才能持久清除 pending，最后清理错误与来源错误分别保留。后续 tick 先协调待清理义务，再继续服务结果恢复，因此 settled、copying、unknown 或服务查询失败均不能遗弃本地释放。查询或显式 retry 转入新 attempt 前须完成旧义务，不能覆盖旧清理身份，也不能重新读取旧源。回执引起 attempt 切换时，新身份、等待精确 retry 的状态及旧来源错误的清除一并持久化，然后再投影时间线，避免投影中断留下新身份与旧失败状态的混合记录。旧记录缺少该字段但已 started 时，按其原 request 保守补建清理义务。失败 outcome 的结果未知先查询原 capture；明确 capture_not_found 后仅可重放原冻结失败，不能因已有 staged 字节而改为提交 validated 副本。
 
 final 来源判定通过、helper 完成复制和校验、公共 decoder 成功且 Daynight scope 仍有效后，coordinator 才持久 `sourceAdmission`，绑定原 capture/source record、attempt、实际 policy revision、来源证明摘要和完整 `ValidatedImage`。原始路径遍历证明不持久化。中断后只有 stage 文件而没有匹配 admission，不能提交，也不重新读源；必须协调原 capture 的失败或未知结果。本地与外部 `retry_capture` 先进入来源 coordinator 检查 admission，再决定能否复用 staged metadata，不能由通用 `captureStatus()` 缓存快路提前报告重试成功，使未准入的原 attempt 进入 copying。
 
@@ -196,7 +196,7 @@ final 来源判定通过、helper 完成复制和校验、公共 decoder 成功�
 
 ## 外部 HTTP(S) 获取
 
-外部读取使用 Controller 专用 transport，与 Daynight 认证客户端、请求头和重定向实现分开。只处理已登记可信 occurrence，register 确认原身份并取得本机暂存许可后才向外站发请求。字节交公共 stageCapture，获取器不生成 uploadId 或 available。
+外部读取使用 Controller 专用 transport，与 Daynight 认证客户端、请求头和重定向实现分开。只处理已 ACK 的可信 occurrence，持久本地原身份、确认必要完整历史、取得本机暂存许可并核验当前外部 policy 后才向外站发请求。字节交公共 stageCapture，获取器不生成 uploadId 或 available。
 
 ### URL、DNS 与实际对端
 
@@ -261,7 +261,7 @@ DNS 前拒绝 localhost/子域、`.local`、单标签内部名称及元数据名
 
 同 URL/path 只是来源，不是资源身份。两个真实出现可保存不同 bytes；同 source event 重放只恢复原映射。成功后固定原 resourceId/hash，再次预览、下载或历史读取都不访问原 source。同源新内容只能通过明确新出现/记录取得，不能用“重试”改写已保存图。
 
-coordinator 在 register 或 commit 发出前持久原请求及 unknown 阶段。重新打开 journal 后，已开始的 writer 不会重启；只查询原 captureId，已验证的原 attempt 文件可继续原 commit 协调。源读取是否开始、私有文件是否存在或本地等待超时均不推断服务未提交。committed 回执先持久，再经 `media.adoptCaptureResource(captureId,attemptId,resource)` 导入本地保存原件并更新原 imageId 的当前或 retained 位置；两者都成功才将 source intent 标为 settled。任一步中断保留原身份，由后续 query 继续导入和投影，不提前把仅有 descriptor 的资源当作完整本地原件。正文删改不会让迟到 committed 换位置，也不会生成新来源请求。
+coordinator 在 submit 发出前持久冻结业务 submission 与原 sealed 字节关联，并先记 unknown。原 request 保留初始 attemptId，顶层 attemptId 独立表示服务当前 attempt；requestId 与 connectionEpoch 由每次当前 relay 连接生成。重新打开 journal 后，已开始的 writer 不会重启；先查询原 captureId，copying 继续观察，committed/failed 采用原结果。只有当前授权、Session 和 fence 有效且明确 capture_not_found 时，可重放同一冻结 submission 和原 attempt 文件；缺失或损坏的 sealed 字节不能重新抓源代替。源读取是否开始、私有文件是否存在或本地等待超时均不推断服务未提交。committed 回执先持久，再经 `media.adoptCaptureResource(captureId,attemptId,resource)` 导入本地保存原件并更新原 imageId 的当前或 retained 位置；两者都成功才将 source intent 标为 settled。任一步中断保留原身份，由后续 query 继续导入和投影，不提前把仅有 descriptor 的资源当作完整本地原件。正文删改不会让迟到 committed 换位置，也不会生成新来源请求。
 
 `adoptCaptureResource` 要求耐久 committed 回执的 capture、attempt、occurrence 和完整 resource 严格匹配原请求，且 resource 的 MIME、byteLength、SHA-256、宽高与 frameCount 全部等于原 validated 结果。导入前取得共用媒体 IO 槽，并在来源与验证副本之外检查保存副本的第三份峰值预算，再经 `ResourceFiles.importResourceFile` 以 512 KiB 块核摘要并耐久导入。已有 available 原件只校验原 descriptor 和原 bytes；missing/corrupt 明确失败，绝不从 stage 或旧 source 修复已保存历史。导入收尾的资源删除经过正文组合层的引用检查；资源所有权与文件格式见[公共合同](session-image-contracts.md#私有文件与-journal)。
 
@@ -273,7 +273,7 @@ coordinator 在 register 或 commit 发出前持久原请求及 unknown 阶段�
 
 | 状态/失败 | 允许的恢复 |
 | --- | --- |
-| register/validated/commit 未知 | query 原 capture；`capture_not_found`、超时或本地计时器不证明未提交。 |
+| submit 未知 | query 原 capture；当前授权、Session 和 fence 有效且明确 `capture_not_found` 才重放同一冻结 submission 与原 sealed 字节；超时、普通 404 或本地计时器不证明未提交。 |
 | reserved 且原 attempt 活跃 | 返回进度，不并行第二次源请求。 |
 | 原 writer 停止，只剩 partial staging | 先查服务，确定未提交且无活跃 attempt 后 failed/释放；显式重试才新 attempt，不 Range 续抓或拼接新响应。 |
 | validated/copying/提交未知 | 用原 immutable prepared 文件协调，不换 hash/ID。准备丢失先查服务，确认未提交才可结算失败。 |

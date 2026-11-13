@@ -26,6 +26,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
   let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
   let historyEpoch = "";
   let supportsImageHistory = false;
+  let supportsDirectCapture = false;
   const contentRequests: { request: ContentRequest; response: ContentResponse | null }[] = [];
   let reconciliation: ControllerOperation[][] = [];
   const mediaRequests = new Map<string, { key: string; promise: Promise<void>; controller: AbortController }>();
@@ -119,6 +120,8 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       const grant = await readControllerGrant(ticket); if (stopped) return; currentToken = grant.token;
       const url = new URL("/api/v1/controller-channel", ticket.serverOrigin); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1" }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
+      supportsDirectCapture = false;
+      ws.on("upgrade", response => { if (socket === ws) supportsDirectCapture = response.headers["daynight-session-direct-upload-version"] === "1"; });
       ws.on("error", error => callbacks.onError(error.message));
       ws.on("close", () => { if (socket !== ws) return; socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
       ws.on("open", () => { if (stopped || socket !== ws) return; send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
@@ -251,6 +254,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     imageHistorySupported: (): boolean => supportsImageHistory && fence !== null,
     capture: <K extends ImageCaptureAction>(action: K, body: ImageCaptureBody[K]): Promise<ImageCaptureReceipt> => new Promise((resolve, reject) => {
       if (!synchronized || !supportsImageHistory) { reject(new ImageCaptureNotDispatchedError("Image capture relay is unavailable.")); return; }
+      if (action === "submit" && !supportsDirectCapture) { reject(new ImageCaptureRequestError({ code: "upgrade_required", message: "The server must support direct Session image submissions." })); return; }
       if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
       const requestId = randomUUID();
       const timer = setTimeout(() => { captureRequests.delete(requestId); reject(new Error("Image capture outcome is unknown; query the original capture.")); }, 15_000);

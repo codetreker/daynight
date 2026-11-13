@@ -4,7 +4,7 @@ import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerOperation, ControllerOutboxEvent, ControllerSnapshot } from "../lifecycle-store.js";
 import type { SessionContent } from "../content/session-content.js";
 import type { SourceTimelineEntry } from "../../../session/controller-protocol.js";
-import { canonicalImageJson, imageId, parseImageCaptureRequest, parseImagePart, parseInputObservation, parseLocalImagePreparation, parseNativeImageSource, parseValidatedImage, type ImageOccurrence, type InputObservation, type NativeImageSource } from "../../../session/image-values.js";
+import { canonicalImageJson, imageId, parseImageCaptureRequest, parseDirectCaptureSubmission, parseImagePart, parseInputObservation, parseLocalImagePreparation, parseNativeImageSource, parseValidatedImage, type ImageOccurrence, type InputObservation, type NativeImageSource } from "../../../session/image-values.js";
 import { parseTimelineEntry, type MessagePart, type TimelineEntry } from "../../../session/protocol.js";
 import { runSqliteImmediate, sqliteTransactionOutcome } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
@@ -44,10 +44,11 @@ const observationOf = (identity: NativeInputPublicationIdentity): InputObservati
 const imagePart = (part: MessagePart | undefined): part is NativeImageProjectionState["part"] => part?.type === "image" || part?.type === "image_unavailable";
 const parseCaptureState = (value: unknown): NativeImageProjectionState => {
   const state = value as NativeImageProjectionState;
-  if (!state || typeof state !== "object" || !["index,part,phase,request,unknownAction,validated,waitingForSource", "index,part,phase,request,retryAt,unknownAction,validated,waitingForSource"].includes(Object.keys(state).sort().join(",")) || !Number.isSafeInteger(state.index) || state.index < 0 || typeof state.waitingForSource !== "boolean" || !["new", "query", "reserved", "commit", "failure", "settled"].includes(state.phase) || ![null, "register", "commit", "failure"].includes(state.unknownAction) || state.retryAt !== undefined && (!Number.isSafeInteger(state.retryAt) || state.retryAt < 0 || !["commit", "failure"].includes(state.phase)) || state.waitingForSource && state.phase !== "new") throw new Error("Native publication capture state is corrupt.");
-  const request = parseImageCaptureRequest(state.request), part = parseImagePart(state.part), validated = state.validated === null ? null : parseValidatedImage(state.validated);
-  if (part.imageId !== request.occurrence.imageId || state.phase === "commit" && !validated || state.phase === "failure" && part.type !== "image_unavailable" || !["query", "settled"].includes(state.phase) && state.unknownAction !== null) throw new Error("Native publication capture progress is inconsistent.");
-  return { ...state, request, part, validated };
+  if (!state || typeof state !== "object" || Object.keys(state).sort().join(",") !== "attemptId,index,part,phase,request,submission,waitingForSource" || !Number.isSafeInteger(state.index) || state.index < 0 || typeof state.waitingForSource !== "boolean" || !["new", "preparing", "submit", "query", "settled"].includes(state.phase) || state.waitingForSource && state.phase !== "new") throw new Error("Native publication capture state is corrupt.");
+  const request = parseImageCaptureRequest(state.request), part = parseImagePart(state.part), submission = state.submission === null ? null : parseDirectCaptureSubmission(state.submission);
+  imageId(state.attemptId);
+  if (part.imageId !== request.occurrence.imageId || state.phase === "submit" && !submission || submission && (!same(submission.request, request) || submission.attemptId !== state.attemptId)) throw new Error("Native publication capture progress is inconsistent.");
+  return { ...state, request, part, submission };
 };
 const errorValue = (cause: unknown, unknown: boolean) => ({
   code: unknown ? "publication_unknown" as const : cause instanceof PublicationConflict ? "publication_conflict" as const : "publication_unavailable" as const,
@@ -136,7 +137,7 @@ export const createNativeInputPublication = (context: Context) => {
       if (original && (state.request.locator.kind !== "resource" || state.request.locator.resourceId !== original.resourceId || state.part.type === "image" && state.part.resourceId !== original.resourceId)) conflict("Native publication original locator changed.");
     } else {
       if (requireExisting) conflict("Native publication cannot establish the source of an existing original image.");
-      state = { request: { captureId: nativeEntryId(expectedImageId, "capture"), attemptId: nativeEntryId(expectedImageId, "attempt"), occurrence, nativeSource, locator: original ? { kind: "resource", resourceId: original.resourceId } : { kind: "native", ...nativeSource } }, index, waitingForSource: false, phase: "new", unknownAction: null, part, validated: null };
+      state = { request: { captureId: nativeEntryId(expectedImageId, "capture"), attemptId: nativeEntryId(expectedImageId, "attempt"), occurrence, nativeSource, locator: original ? { kind: "resource", resourceId: original.resourceId } : { kind: "native", ...nativeSource } }, attemptId: nativeEntryId(expectedImageId, "attempt"), index, waitingForSource: false, phase: "new", part, submission: null };
       const encoded = JSON.stringify(state); metadataBudget.assert(Buffer.byteLength(encoded) + 16384, true);
       db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(`native_provider:${key}`, encoded);
     }

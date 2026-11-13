@@ -446,6 +446,22 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     }
   };
   return { prepare, write, complete, release, readPrepared, read, stageCapture, readCapture, adoptCaptureResource, acquireInput, preparationPath, createSpool,
+    assertCaptureSealed: (captureId: string, attemptId: string, expected: ValidatedImage): void => {
+      checkOpen(); captureSource.assertImageCaptureAttempt(captureId, attemptId);
+      const row = transactions.read(() => db.prepare("SELECT filename,validated FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`) as { filename: string; validated: string } | undefined);
+      if (!row || !/^[a-f0-9-]{36}\.part$/.test(row.filename) || canonicalImageJson(parseValidatedImage(JSON.parse(row.validated))) !== canonicalImageJson(expected)) throw new Error("Image capture has no original sealed bytes.");
+      const fd = openSync(path.join(root, row.filename), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = fstatSync(fd), digest = createHash("sha256"), bytes = Buffer.alloc(IMAGE_LIMITS.chunkBytes);
+        if (!stat.isFile() || String(stat.size) !== expected.byteLength) throw new Error("Image capture sealed file is corrupt.");
+        for (let offset = 0; offset < stat.size;) {
+          const count = readSync(fd, bytes, 0, Math.min(bytes.length, stat.size - offset), offset);
+          if (!count) throw new Error("Image capture sealed file is incomplete.");
+          digest.update(bytes.subarray(0, count)); offset += count;
+        }
+        if (digest.digest("hex") !== expected.sha256) throw new Error("Image capture sealed digest differs.");
+      } finally { closeSync(fd); }
+    },
     reserveCaptureSource: sourceReservations.reserve, releaseCaptureSource: sourceReservations.release, tryAcquireMediaBlock,
     nativeIndexDirectory: (): string => { checkOpen(); metadataBudget.assert(16384); const directory = `${file}.native-index`; checkedDirectory(directory); return directory; },
     reserveNativeIndex: (additional: number): void => { checkOpen(); metadataBudget.assert(additional); },
