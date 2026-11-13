@@ -9,6 +9,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
 func TestPersonalTaskInventory(t *testing.T) {
@@ -164,5 +165,71 @@ func TestPersonalTaskInventoryCancellation(t *testing.T) {
 	}
 	if got := db.Pool.Stat().AcquiredConns(); got != 0 {
 		t.Fatalf("retained %d connections", got)
+	}
+}
+
+// Tag storage exposes separate association and touch operations; the business
+// writer must coordinate those operations with the corresponding Task version.
+func TestPersonalTaskRevisionWithCoordinatedTagWrites(t *testing.T) {
+	db := readerStore(t)
+	project := readerProject(t, db, 1)
+	actor := readerAssigneeUser(t, db, project.ID, 2, true)
+	item := readerTask(t, db, project.ID, 3, model.TaskInProgress)
+	readerExec(t, db, `UPDATE tasks SET assigned_to=$1 WHERE id=$2`, actor, item.ID)
+	item = readerSnapshotTask(t, db, project.ID, item.ID)
+	tagID := readerID(4)
+	now := time.Now().UTC()
+	revision := func() string {
+		t.Helper()
+		var result string
+		err := db.ReadSnapshot(t.Context(), func(scope store.SnapshotScope) error {
+			facts, err := scope.TaskDAO().(store.PersonalTaskReader).PersonalTaskFacts(t.Context(), actor)
+			if err != nil {
+				return err
+			}
+			result, err = taskcore.PersonalTaskRevision(facts)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	before := revision()
+	if err := readerWriteProject(db, t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
+		_, err := scope.TagDAO().InsertTag(t.Context(), model.Tag{ID: tagID, ProjectID: project.ID, Name: "Alpha", NameKey: "alpha", CreatedAt: now})
+		if err != nil {
+			return err
+		}
+		if err = scope.TaskTagDAO().ReplaceTaskTags(t.Context(), item.ID, []string{tagID}); err != nil {
+			return err
+		}
+		_, err = scope.TaskDAO().UpdateTask(t.Context(), item.ID, readerMutationValues(item))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	associated := revision()
+	if before == associated {
+		t.Fatal("association with Task update did not change revision")
+	}
+	if err := readerWriteProject(db, t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
+		_, err := scope.TagDAO().UpdateTag(t.Context(), tagID, 1, "Beta", "beta", now)
+		if err != nil {
+			return err
+		}
+		count, err := scope.TaskTagDAO().TouchTaggedTasks(t.Context(), tagID, now)
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			t.Fatalf("touched %d Tasks", count)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if revision() == associated {
+		t.Fatal("rename with Task touch did not change revision")
 	}
 }

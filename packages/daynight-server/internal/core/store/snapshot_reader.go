@@ -15,6 +15,7 @@ type SnapshotScope interface {
 	CredentialDAO() CredentialReader
 	TeamDAO() TeamReader
 	ProjectDAO() ProjectReader
+	TagDAO() TagReader
 	TaskDAO() TaskReader
 	WorkerDAO() WorkerReader
 	SessionDAO() SessionReader

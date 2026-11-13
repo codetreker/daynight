@@ -1,3 +1,4 @@
+import type { TaskSummary } from '../src/api/types';
 import { describe, expect, it } from 'vitest';
 import { resolveProjectGraphTarget } from '../src/features/projects/project-graph-target';
 import { buildGraphIndex } from '../src/features/task-graph/model';
@@ -16,6 +17,15 @@ describe('project graph target', () => {
     expect(resolveProjectGraphTarget(witness, before)).toEqual({ kind: 'chain', witnessTaskId: witness, rootId: root });
     expect(resolveProjectGraphTarget(witness, merged)).toEqual({ kind: 'chain', witnessTaskId: witness, rootId: replacement });
     expect(resolveProjectGraphTarget(witness, split)).toEqual({ kind: 'chain', witnessTaskId: witness, rootId: replacement });
+  });
+
+  it('admits typed Goals independently of their membership, and rejects absent resources', () => {
+    const data = graph([{ id: root }, { id: witness }]);
+    const index = buildGraphIndex({ ...data, tasks: data.tasks.map((task) => task.id === witness ? { ...task, parentId: missing } : task) });
+    const summaries = new Map([[missing, { id: missing, type: 'goal' } as TaskSummary]]);
+    expect(resolveProjectGraphTarget(missing, index, summaries)).toEqual({ kind: 'goal', goalId: missing });
+    expect(resolveProjectGraphTarget(missing, buildGraphIndex(graph([])), summaries)).toEqual({ kind: 'goal', goalId: missing });
+    expect(resolveProjectGraphTarget(missing, index, new Map())).toBeNull();
   });
 
   it('rejects missing snapshots, absent or singleton witnesses, and non-Task resources', () => {

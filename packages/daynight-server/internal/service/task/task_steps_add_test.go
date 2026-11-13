@@ -600,4 +600,14 @@ func (f *strictStepWrite) ParentTask(context.Context, string) (model.Task, error
 	return model.Task{}, nil
 }
 
+func (f *strictStepWrite) TagDAO() store.TagWriteDAO { f.t.Fatal("unexpected TagDAO call"); return nil }
+func (f *strictStepWrite) TaskTagDAO() store.TaskTagWriteDAO {
+	f.t.Fatal("unexpected TaskTagDAO call")
+	return nil
+}
+func (p *strictWriteProject) RotateTagCatalogEpoch(context.Context) error {
+	p.f.unexpected("RotateTagCatalogEpoch")
+	return nil
+}
+
 func (s *strictStepWrite) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }
