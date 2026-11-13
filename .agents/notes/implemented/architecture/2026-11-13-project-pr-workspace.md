@@ -22,4 +22,4 @@ Background reconciliation retains the initial upper bound and current page ancho
 
 ## Consequences
 
-PR browsing remains available independently of task graph loading and errors. The activity timer and first-page probe add bounded reads only while the PR workspace is visible. Cursor pages remain observations of a changing collection, so page counts can change and a previously populated anchor can become empty; the previous-page action remains available. PR state lives only for the current authenticated Project workspace, with no persistent PR cache.
+PR browsing remains available independently of task graph loading and errors. The activity timer and first-page probe add bounded reads only while the PR workspace is visible. Cursor pages remain observations of a changing collection, so page counts can change and a previously populated anchor can become empty. Pagination remains visible whenever either server cursor exists, preserving both previous-only and next-only escape paths independently of the displayed page number. PR state lives only for the current authenticated Project workspace, with no persistent PR cache.

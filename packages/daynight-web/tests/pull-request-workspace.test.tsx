@@ -62,6 +62,39 @@ describe('pull request workspace', () => {
     expect(requests.filter(url => url.pathname.endsWith('/pull-requests')).every(url => url.searchParams.get('limit') === '6')).toBe(true);
   });
 
+  it('keeps Next available on an empty earlier page when only its return cursor remains', async () => {
+    const cursor = (anchorNumber: string, direction: 'next' | 'previous') => btoa(JSON.stringify({ v: 1, projectId, state: 'active', q: '', limit: 6, upperNumber: '12', anchorNumber, direction })).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+    const next = cursor('7', 'next'), previous = cursor('6', 'previous');
+    const later = Array.from({ length: 6 }, (_, index) => summary(String(6 - index)));
+    let earlierRemoved = false;
+    mockReads(url => {
+      if (url.pathname.endsWith('/github')) return status();
+      const requested = url.searchParams.get('cursor');
+      const counts = { active: earlierRemoved ? '6' : '12', merged: '0', closed: '0', all: earlierRemoved ? '6' : '12' };
+      if (requested === previous) return page([], { revision: '5', total: '6', counts, nextCursor: next });
+      if (requested === next) return page(later, { revision: earlierRemoved ? '5' : '4', total: earlierRemoved ? '6' : '12', counts, previousCursor: earlierRemoved ? null : previous });
+      return earlierRemoved ? page(later, { revision: '5' }) : page(Array.from({ length: 6 }, (_, index) => summary(String(12 - index))), { total: '12', counts, nextCursor: next });
+    });
+    renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    await screen.findByRole('button', { name: '#12 Preserve 12, Open' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('button', { name: '#6 Preserve 6, Open' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled());
+    earlierRemoved = true;
+    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    await screen.findByRole('heading', { name: 'No saved pull requests in this view' });
+    expect(screen.getByText('Page 1 of 1')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    fireEvent.focus(window);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByRole('button', { name: '#6 Preserve 6, Open' });
+    expect(screen.getAllByRole('button', { name: /^#[1-6] Preserve/ })).toHaveLength(6);
+  });
+
   it.each(['not_connected', 'initializing', 'empty', 'disconnected', 'unavailable', 'service-unavailable', 'errors'] as const)('presents the %s state without inventing unknown zero counts', async scene => {
     const syncError = { code: 'network', message: 'safe diagnostic', at: time };
     const base = status();
