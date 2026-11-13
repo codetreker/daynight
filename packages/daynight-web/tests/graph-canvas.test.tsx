@@ -1151,10 +1151,10 @@ describe('task chain dialog entries', () => {
     await ready(view.baseElement);
     const originalRoots = [...view.baseElement.querySelectorAll('.root-toggle')];
     const originalCanvas = view.baseElement.querySelector('.task-graph-canvas');
-    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
-    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveClass('graph-status-in_progress');
-    expect(originalRoots[2]!.parentElement!.querySelector('.root-status')).toHaveClass('graph-status-todo');
-    expect(originalRoots[3]!.parentElement!.querySelector('.root-status')).toHaveTextContent('待处理');
+    expect(originalRoots[0]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(originalRoots[0]!.closest('.goal-header')!.querySelector('.root-status')).toHaveClass('graph-status-in_progress');
+    expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-status')).toHaveClass('graph-status-todo');
+    expect(originalRoots[3]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('待处理');
 
     for (const selectedTaskId of ['C', 'D', null]) {
       progressReads.mockClear();
@@ -1177,11 +1177,11 @@ describe('task chain dialog entries', () => {
       summary: { proposed: 0, total: 6, todo: 0, inProgress: 0, done: 6, cancelled: 0, ready: 0, blocked: 0 },
     });
     view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
-    expect(originalRoots[2]!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
-    expect(originalRoots[2]!.parentElement!.querySelector('.root-status')).toHaveTextContent('已完成');
-    expect(originalRoots[0]!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
-    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveTextContent('已完成');
-    expect(originalRoots[0]!.parentElement!.querySelector('.root-status')).toHaveClass('graph-status-done');
+    expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
+    expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('已完成');
+    expect(originalRoots[0]!.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
+    expect(originalRoots[0]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('已完成');
+    expect(originalRoots[0]!.closest('.goal-header')!.querySelector('.root-status')).toHaveClass('graph-status-done');
     expect(view.baseElement.querySelectorAll('.root-toggle')[2]).toBe(originalRoots[2]);
   });
 
@@ -1196,8 +1196,8 @@ describe('task chain dialog entries', () => {
     const graphButtons = container.querySelectorAll<HTMLButtonElement>('.goal-graph-button');
     expect(roots).toHaveLength(4);
     expect(roots[0]!.id).toBe('task-root-A');
-    expect(roots[0]!.textContent).toContain('1/3 已完成');
-    expect(roots[0]!.parentElement!.querySelector('.root-status')).toHaveTextContent('进行中');
+    expect(roots[0]!).toHaveAccessibleName(/1\/3 已完成/);
+    expect(roots[0]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     for (const root of roots) {
       expect(root).not.toHaveAttribute('aria-haspopup');
       expect(root).toHaveAttribute('aria-expanded', 'false');

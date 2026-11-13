@@ -18,8 +18,10 @@ value. Project Goal disclosures reuse Task rows and scoped chain summaries. Goal
 detail displays its own exact completion time in the common metadata row,
 independently of child progress; task browsing remains in the project Goal list.
 Chain summaries use their complete scoped members and provide a separate time
-button alongside existing actions. Its tooltip remains in the owning DOM subtree and
-uses a manual popover to escape clipping without becoming a modal. The
+button in the metadata below the title, as described in the
+[chain layout decision](2026-11-13-chain-completion-time-layout.md). Its tooltip
+remains in the owning DOM subtree and uses a manual popover to escape clipping
+without becoming a modal. The
 [completion time design](../../../../docs/design/daynight-completion-time.md)
 owns interaction, positioning and lifecycle details. The
 [shared clock decision](2026-11-12-shared-completion-clock.md) owns time

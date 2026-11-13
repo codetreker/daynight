@@ -15,6 +15,7 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
   const tip = useRef<HTMLSpanElement | null>(null);
   const hoveredAnchor = useRef<HTMLElement | null>(null);
   const sources = useRef(initialSources());
+  const touchPin = useRef(false);
   const timer = useRef<number | null>(null);
   const schedulePosition = useRef<(() => void) | null>(null);
   const [open, setOpen] = useState(false);
@@ -26,6 +27,7 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
   const dismiss = useCallback(() => {
     cancelTimer();
     sources.current = { ...initialSources(), dismissed: true };
+    touchPin.current = false;
     setOpen(false);
   }, [cancelTimer]);
   const deferUpdate = useCallback(() => {
@@ -44,12 +46,13 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
     },
   };
   const triggerEvents = {
+    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => { touchPin.current = event.pointerType === "touch"; },
     onFocus: () => { cancelTimer(); sources.current.focus = true; sources.current.dismissed = false; update(); },
     onBlur: (_event: FocusEvent<HTMLButtonElement>) => dismiss(),
     onClick: () => {
       if (!pinnable) { dismiss(); return; }
       if (sources.current.pinned) { dismiss(); return; }
-      cancelTimer(); sources.current.pinned = true; sources.current.dismissed = false; update();
+      cancelTimer(); sources.current.pinned = true; sources.current.dismissed = false; update(); schedulePosition.current?.();
     },
   };
   useEffect(() => () => cancelTimer(), [cancelTimer]);
@@ -93,8 +96,9 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
       bubble.style.maxWidth = `${Math.max(0, right - left - 16)}px`;
       const anchor = (sources.current.hover || sources.current.tip ? hoveredAnchor.current : null)?.getBoundingClientRect() ?? button.getBoundingClientRect();
       const rect = bubble.getBoundingClientRect();
+      const upperAnchor = pinnable && sources.current.pinned && touchPin.current ? button.closest('.chain-summary')?.getBoundingClientRect().top ?? anchor.top : anchor.top;
       bubble.style.left = `${Math.max(left + 8, Math.min(anchor.left, right - rect.width - 8))}px`;
-      bubble.style.top = `${anchor.bottom + rect.height + 8 <= bottom ? anchor.bottom + 6 : Math.max(top + 8, anchor.top - rect.height - 6)}px`;
+      bubble.style.top = `${anchor.bottom + rect.height + 8 <= bottom ? anchor.bottom + 6 : Math.max(top + 8, upperAnchor - rect.height - 6)}px`;
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(position); };
     schedulePosition.current = schedule;
@@ -137,7 +141,7 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
       window.visualViewport?.removeEventListener("scroll", schedule);
       window.visualViewport?.removeEventListener("resize", schedule);
     };
-  }, [open, value !== null, dismiss]);
+  }, [open, value !== null, dismiss, pinnable]);
   useLayoutEffect(() => { schedulePosition.current?.(); }, [value?.label, value?.exact]);
   const hint: ReactNode = value === null ? null : <span id={id} ref={tip} role="tooltip" popover="manual" className="completion-hint"
     onPointerEnter={(event) => { if (event.pointerType !== "touch") { cancelTimer(); sources.current.tip = true; update(); } }}

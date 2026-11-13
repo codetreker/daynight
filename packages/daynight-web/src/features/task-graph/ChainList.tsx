@@ -89,16 +89,15 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
   }, [index, rootId]);
   return <li ref={setContainer} className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
     <div className="goal-header task-status-surface" data-task-status={progress.status}>
-      <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded}
-        aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
-        <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-        <span className="root-heading">
-          <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span><TaskPauseCount count={pausedCount} />{pausedTaskIds.has(rootId) && <TaskPausedBadge />}</span>
-          <span className="task-assignee-row-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /><ActiveWorkerIndicator memberIds={component.memberIds} workerMachines={workerMachines} /></span>
-        </span>
-        <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.ended / progress.total * 100}%` }} /></span></span>
-      </button>
-      <ChainCompletionTime value={completion} title={title} />
+      <div className="chain-summary">
+        <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded}
+          aria-controls={`goal-children-${rootId}`} aria-labelledby={`chain-title-${rootId} chain-meta-${rootId} chain-progress-${rootId}`} onClick={() => setExpanded((value) => !value)}>
+          <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+          <span className="goal-title-line" id={`chain-title-${rootId}`}><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span><TaskPauseCount count={pausedCount} />{pausedTaskIds.has(rootId) && <TaskPausedBadge />}</span>
+        </button>
+        <div className="task-assignee-row-meta chain-summary-meta"><span className="chain-summary-context" id={`chain-meta-${rootId}`}><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /><ActiveWorkerIndicator memberIds={component.memberIds} workerMachines={workerMachines} /></span><ChainCompletionTime value={completion} title={title} /></div>
+      </div>
+      <span className="root-progress" id={`chain-progress-${rootId}`}><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.ended / progress.total * 100}%` }} /></span></span>
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`}
         {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
       <button className="button goal-graph-button" type="button" id={`task-chain-graph-${rootId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined}

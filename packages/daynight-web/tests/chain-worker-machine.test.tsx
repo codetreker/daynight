@@ -110,7 +110,7 @@ describe('chain worker machine presentation', () => {
     const view = renderWithLocale(workspace(snapshot([root, inside, remaining, external])), { locale: 'zh-CN', taskCache: true });
     const header = document.getElementById(`task-root-${root.id}`)!;
     expect(header).not.toHaveAccessibleName(/自动执行中/);
-    expect(header.parentElement!.querySelector('[data-session-indicator]')).toHaveAttribute('data-session-indicator', 'working');
+    expect(header.closest('.goal-header')!.querySelector('[data-session-indicator]')).toHaveAttribute('data-session-indicator', 'working');
 
     const active = { ...inside, status: 'in_progress' as const, dependsOn: [root.id], externalDependsOn: [], properties: { worker: claim('inside', 'active') } };
     view.rerender(workspace(snapshot([root, active, remaining, external])));
@@ -130,7 +130,7 @@ describe('chain worker machine presentation', () => {
     const view = renderWithLocale(workspace(snapshot([hiddenRoot, inScope]), noop, scope), { locale: 'zh-CN', taskCache: true });
     const header = document.getElementById(`task-root-${root.id}`)!;
     expect(header).toHaveAccessibleName(/自动执行中/);
-    expect(header).toHaveTextContent('子任务 · 1');
+    expect(header.closest('.goal-header')!.querySelector('.root-meta')).toHaveTextContent('子任务 · 1');
     fireEvent.click(header);
     expect(header).toHaveAttribute('aria-expanded', 'true');
     expect(header).toHaveAccessibleName(/自动执行中/);

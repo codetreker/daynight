@@ -45,12 +45,14 @@ export const ScopedTaskChainRow = memo(forwardRef<HTMLLIElement, ScopedTaskChain
   const childrenId = `goal-children-${instanceId}`;
   return <li ref={setRef} className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
     <div className="goal-header task-status-surface" data-task-status={progress.status}>
-      <button className="root-toggle goal-toggle" type="button" id={`task-root-${instanceId}`} aria-expanded={expanded} aria-controls={childrenId} onClick={() => onExpandedChange(!expanded)}>
-        <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-        <span className="root-heading"><span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: progress.inProgress })}</span></span><span className="task-assignee-row-meta"><span className="root-meta">{m.childTasks({ count: memberIds.length })}</span><ActiveWorkerIndicator memberIds={index.components.get(rootId)!.memberIds} workerMachines={workerMachines} /></span></span>
-        <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${(progress.done + progress.cancelled) / progress.total * 100}%` }} /></span></span>
-      </button>
-      <ChainCompletionTime value={completion} title={title} />
+      <div className="chain-summary">
+        <button className="root-toggle goal-toggle" type="button" id={`task-root-${instanceId}`} aria-expanded={expanded} aria-controls={childrenId} aria-labelledby={`chain-title-${instanceId} chain-meta-${instanceId} chain-progress-${instanceId}`} onClick={() => onExpandedChange(!expanded)}>
+          <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+          <span className="goal-title-line" id={`chain-title-${instanceId}`}><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: progress.inProgress })}</span></span>
+        </button>
+        <div className="task-assignee-row-meta chain-summary-meta"><span className="chain-summary-context" id={`chain-meta-${instanceId}`}><span className="root-meta">{m.childTasks({ count: memberIds.length })}</span><ActiveWorkerIndicator memberIds={index.components.get(rootId)!.memberIds} workerMachines={workerMachines} /></span><ChainCompletionTime value={completion} title={title} /></div>
+      </div>
+      <span className="root-progress" id={`chain-progress-${instanceId}`}><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${(progress.done + progress.cancelled) / progress.total * 100}%` }} /></span></span>
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={childrenId} {...(sessionIndicator === null ? {} : { onActivate: () => onExpandedChange(true) })} />
       <button className="button goal-graph-button" type="button" id={`task-chain-graph-${instanceId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined} onClick={(event) => onOpenChain(memberIds[0]!, event.currentTarget)}>{m.viewDependencies}</button>
     </div>
