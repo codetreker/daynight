@@ -34,6 +34,9 @@ first confirms an unchanged complete input/history snapshot, bound to the
 execution and connection identity. Two minutes of sufficiently frequent matching
 observations establish a conservative quiet interval; changed or incomplete
 evidence resets it. Final submission verifies that same evidence again.
+Oversized user entries can retain complete page coverage while losing their
+inline origin. Such entries still constrain recent-input handling, but cannot
+prove human progress and suppress escalation.
 
 ## Alternatives
 

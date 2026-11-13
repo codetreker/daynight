@@ -7,7 +7,9 @@ import { openControllerLifecycleStore } from "../../../src/commands/controller/l
 import type { SourceTimelineEntry } from "../../../src/session/controller-protocol.js";
 import { parseInspectionPage } from "../../../src/session/history.js";
 import { createWatchdogSource, type WatchdogApiScope } from "../../../src/commands/worker/bots/apps/watchdog-transport.js";
-import type { WatchdogObservation } from "../../../src/commands/worker/bots/apps/watchdog.js";
+import { createWatchdogEvaluator, type WatchdogObservation, type WatchdogState } from "../../../src/commands/worker/bots/apps/watchdog.js";
+import type { AssistantTask, AssistantTaskClient, AssistantTaskItem, JsonValue } from "../../../src/api/assistant-task.js";
+import type { AssistantApplicationContext } from "../../../src/commands/worker/bots/assistant-tasks.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -62,6 +64,47 @@ it("supplies stable untimed input evidence to Watchdog through the real inspecti
     const history = await source.history(observation, new AbortController().signal);
     expect(history).toMatchObject({ complete: true, lastInputAt: null, untimedInputId: `${epoch}/${inputId}/1`, lastAssistantText: "Please continue" });
     expect(history.inputQuietSince).toBeUndefined();
+  } finally { store.close(); }
+});
+
+it("keeps escalation active when a large automatic input is projected without its origin", async () => {
+  const f = await fixture(), store = f.open(), epoch = randomUUID(), assistantId = randomUUID(), inputId = randomUUID();
+  let now = Date.parse("2026-11-14T00:00:00Z");
+  try {
+    store.projectTimeline({ entryId: assistantId, revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Please continue" }] });
+    store.projectTimeline({ entryId: inputId, revision: "1", kind: "user_message", origin: "daynight", content: [{ type: "text", text: "x".repeat(300 * 1024) }] });
+    const projected = store.readInspection(query(epoch));
+    expect(projected.coverage.state).toBe("complete");
+    expect(projected.items.at(-1)).toMatchObject({ entryId: inputId, body: null, truncated: true });
+    const observation = { projectId: f.ticket.projectId, taskId: f.ticket.taskId, title: "Task", inScope: true,
+      session: { sessionId: f.ticket.sessionId, observation: "observed", error: null, freshUntil: null, registration: "registered", lifecycle: "active", activity: "idle", indicator: "warning", reason: "idle", send: { allowed: true } },
+    } as WatchdogObservation;
+    const source = createWatchdogSource(f.ticket.userId, (async (_signal, action) => action({
+      readTaskSession: async () => ({ ...store.readInspection(query(epoch)), source: "live", sessionId: f.ticket.sessionId }),
+    } as never)) as WatchdogApiScope);
+    const history = await source.history(observation, new AbortController().signal);
+    expect(history).toMatchObject({ complete: true, lastEntryId: `${epoch}/${assistantId}/1`, untimedInputId: `${epoch}/${inputId}/1`, lastInputAt: null });
+    const state: WatchdogState = { schemaVersion: 1, since: now - 600_000, reportedCategory: "stalled", reportedAt: now,
+      closedAt: null, recurrence: false, observation, notices: [], attempt: { operationId: randomUUID(), ruleId: "continue", message: "Continue", at: now,
+        historyId: `${epoch}/${assistantId}/1`, observation, result: "confirmed", notifiedResult: "confirmed", escalated: false, progressed: false } };
+    let item = { id: randomUUID(), key: observation.taskId, taskId: randomUUID(), episode: "1", state: "open", category: "stalled", version: "1", appState: state as unknown as JsonValue } as AssistantTaskItem;
+    const events: { type: string }[] = [], records: unknown[] = [];
+    const api = {
+      listItems: async () => ({ items: [structuredClone(item)], nextCursor: null }),
+      saveItem: async (_task: string, value: Partial<AssistantTaskItem>) => { item = { ...item, ...value }; return structuredClone(item); },
+      listRecords: async () => ({ items: records, nextCursor: null }),
+      addRecord: async (_task: string, value: unknown) => { records.push(value); return value; },
+      listEvents: async () => ({ items: events, nextCursor: null }),
+      addEvent: async (_task: string, value: { type: string }) => { events.push(value); return value; },
+    } as unknown as AssistantTaskClient;
+    const task = { id: item.taskId } as AssistantTask;
+    const context: AssistantApplicationContext = { task, botId: randomUUID(), signal: new AbortController().signal,
+      withClaim: action => action(api, task, { claimToken: "fixture", claimGeneration: "1" }) };
+    const evaluator = createWatchdogEvaluator(context, { ...source, scan: async () => [observation] }, { clock: { now: () => now, wait: async () => undefined } });
+    now += 599_999; await evaluator.tick(); expect(events).toEqual([]);
+    now += 1; await evaluator.tick(); await evaluator.tick();
+    expect((item.appState as unknown as WatchdogState).attempt).toMatchObject({ progressed: false, escalated: true });
+    expect(events.map(event => event.type)).toEqual(["escalation"]);
   } finally { store.close(); }
 });
 

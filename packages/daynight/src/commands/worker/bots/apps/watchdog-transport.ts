@@ -86,7 +86,10 @@ const source: WatchdogSource = {
       if (page.coverage.state !== "complete" || page.source !== "live") return result;
       for (const entry of [...page.items].reverse()) {
         const automaticInput = entry.body?.kind === "user_message" && entry.body.origin === "daynight";
-        if (!automaticInput && result.lastEntryId === null) result.lastEntryId = `${epoch}/${entry.entryId}/${entry.revision}`;
+        // A projected input reference does not reveal its origin. It still
+        // protects the quiet interval, but cannot prove progress after our send.
+        const unreadableInput = entry.kind === "user_message" && (entry.truncated || entry.body?.kind !== "user_message");
+        if (!automaticInput && !unreadableInput && result.lastEntryId === null) result.lastEntryId = `${epoch}/${entry.entryId}/${entry.revision}`;
         if (entry.kind === "user_message" && !inputFound) {
           inputFound = true;
           if (entry.timestamp === null) result.untimedInputId = `${epoch}/${entry.entryId}/${entry.revision}`;
