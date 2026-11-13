@@ -64,7 +64,7 @@ describe("Worker canonical configuration authority", () => {
     await manager.settle();
     const sent = manager.report();
     await manager.acknowledge(sent, { desired: null, observationRevision: "0", observationAccepted: false });
-    expect(manager.current()).toMatchObject({ desired: null, observationRevision: "0", effective: { native: null, projects: [] } });
+    expect(manager.current()).toMatchObject({ desired: null, observationRevision: "0", retainedRecoveryLimit: 4, effective: { native: null, recoveryLimit: null, projects: [] } });
     expect(manager.report().observation).toBeNull();
     expect((await read()).retainedItems.some(item => item.value.key.kind === "native" && item.value.appliedValue !== null)).toBe(true);
   });

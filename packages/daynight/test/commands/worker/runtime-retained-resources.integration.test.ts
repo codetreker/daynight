@@ -4,8 +4,10 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import type { Task } from "../../../src/api/types.js";
+import { OperationError } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudReport } from "../../../src/api/worker-configuration.js";
-import type { WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
+import { createWorkerConfigurationManager, type WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
+import type { ExecutionInput } from "../../../src/commands/worker/execution.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -22,7 +24,11 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn(), configuration: vi.fn() }));
+const mocks = vi.hoisted(() => ({ durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn(), configuration: vi.fn(), nativeAdvance: vi.fn() }));
+vi.mock("../../../src/commands/worker/execution.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/worker/execution.js")>();
+  return { ...actual, createExecutionDriver: (...args: Parameters<typeof actual.createExecutionDriver>) => ({ ...actual.createExecutionDriver(...args), advance: mocks.nativeAdvance }) };
+});
 vi.mock("../../../src/commands/worker/configuration.js", async original => {
   const actual = await original<typeof import("../../../src/commands/worker/configuration.js")>();
   return { ...actual, createWorkerConfigurationManager: async (...args: Parameters<typeof actual.createWorkerConfigurationManager>) => {
@@ -147,4 +153,79 @@ it.each([false, true])("keeps retained Herdr and frozen Web execution responsibi
   expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original);
   expect(task.status).toBe("in_progress"); expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
   expect(await readFile(retainedJournal, "utf8")).toBe("retained Herdr journal marker");
+});
+
+it.each(["null", "unread", "unsupported"] as const)("cold-resumes an original frozen Herdr claim with its retained recovery policy while authority is %s", async authority => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/runtime-retained-resources-tests");
+  await mkdir(base, { recursive: true });
+  const homeDirectory = await mkdtemp(path.join(base, "w-")); directories.push(homeDirectory);
+  const paths = resolveWorkerPaths(homeDirectory);
+  await mkdir(paths.workerDirectory, { recursive: true });
+  const project = { projectId, repoUrl: "https://git.example/team/repo.git", localPath: path.join(homeDirectory, "repo") };
+  await mkdir(project.localPath);
+  await writeFile(paths.configFile, stringify({ serverUrl: serverOrigin, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId, worker: { agentControlMode: "web", recoveryLimit: 1, repositories: [{ remote: project.repoUrl, path: project.localPath, projectId }] } }));
+  const retainedJournal = path.join(paths.workerDirectory, "herdr-executions.sqlite");
+  await writeFile(retainedJournal, "retained Herdr journal marker");
+  const store = openWorkerStore(paths.databaseFile); stores.add(store); store.registerProject(project);
+  const pending = store.registerPending({ projectId, taskId, claimId, agent: "codex", agentControlMode: "herdr" });
+  const frozen = store.freezeNativeConfiguration(pending, { agent: "codex", model: "original-frozen-model", args: ["--effort", "low"] });
+  store.activateTask(pending);
+  const localTask = store.setSessionId(pending, uuid(8));
+  const target: WorkerCloudDesired = { revision: "10", updatedAt: workerTelemetryTime, value: { agentControlMode: "herdr", maxConcurrent: 2, pollIntervalMs: 1000, recoveryLimit: 6, preferPlatformSpecificTasks: false, native: { agent: "codex", model: frozen.model, args: frozen.args }, projects: [{ projectId, nativeOverrides: {} }] } };
+  const seed = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {} });
+  await seed.configureProjectAdapters({ prepare: async () => {} });
+  await seed.receive(target, "9"); await seed.settle();
+  if (authority === "null") await seed.receive(null, "0");
+  await seed.stop();
+  const canonical = authority === "null" ? null : authority === "unsupported" ? { ...target, revision: "11", value: { ...target.value, maxConcurrent: 65, recoveryLimit: 1 } } : target;
+  const task: Task = { type: "task", parentId: null,
+    id: taskId, projectId, title: "Retained Herdr execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
+    dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
+    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId, phase: "executing", herdr: null, nativeSessionId: localTask.sessionId, claimedAt: workerTelemetryTime } },
+  };
+  const originalClaim = readWorkerClaim(task.properties);
+  const resolveProject = vi.fn(async (_repository: unknown, signal: AbortSignal) => {
+    await new Promise<void>(resolve => signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true }));
+    signal.throwIfAborted();
+    return { id: projectId, repoUrl: project.repoUrl };
+  });
+  const remote = {
+    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => {
+      if (authority === "unread") throw new OperationError("request_timeout");
+      return { desired: canonical, observationRevision: "0", observation: null };
+    }), reportConfiguration: vi.fn(async () => { throw new OperationError("request_timeout"); }), report: vi.fn(),
+    project: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })), resolveProject,
+    ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
+  };
+  mocks.remote.mockReturnValue(remote);
+  const lifecycle = { responsibilities: vi.fn(() => [{ projectId, taskId, claimId, worktreeId }]), isStopped: vi.fn(() => true), close: vi.fn(), registerClaim: vi.fn(), assertCanAdvance: vi.fn(), hasPreparedRun: vi.fn(() => false), stop: vi.fn(async () => {}) };
+  mocks.durable.mockReturnValue({ lifecycle, tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []) }, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn(), attachment: {} });
+  const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", worktreeId), branch: "original-branch" };
+  const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(async () => []), resolveWorktreeBinding: vi.fn(async () => binding), dispose }, { scanWorktrees: scanFromList }));
+  mocks.webBackend.mockReturnValue({ advance: vi.fn(), cleanup: vi.fn() });
+  const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
+  mocks.nativeAdvance.mockImplementation(async (_input: ExecutionInput) => ({ kind: "waiting_input", reason: "configuration_pending", observation: null }));
+  const cancellation = new AbortController(); cancellations.add(cancellation);
+  const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
+  running.add(execution); void execution.catch(() => {});
+  await vi.waitFor(() => expect(remote.configuration).toHaveBeenCalled(), { timeout: 3500, interval: 10 });
+  if (authority === "null") await vi.waitFor(() => expect(resolveProject).toHaveBeenCalled(), { timeout: 3500, interval: 10 });
+  await vi.waitFor(() => expect(mocks.nativeAdvance).toHaveBeenCalled(), { timeout: 3500, interval: 10 });
+  const input = mocks.nativeAdvance.mock.calls[0]![0] as ExecutionInput;
+  expect(input).toMatchObject({ task: localTask, owner: { projectId, taskId, claimId, worktreeId }, project, configuration: { ...frozen, agentControlMode: "herdr", recoveryLimit: 6 } });
+  expect(input.canAdmitNewExecution!()).toBe(false);
+  const snapshot = (mocks.configuration.mock.calls.at(-1)![0] as WorkerConfigurationManager).current();
+  expect(snapshot.retainedRecoveryLimit).toBe(6);
+  expect(snapshot.effective.recoveryLimit).toBeNull();
+  expect(snapshot.desired).toEqual(canonical);
+  expect(store.getNativeConfiguration(localTask)).toEqual(frozen);
+  expect(store.getNativeConfiguration(localTask)).not.toHaveProperty("recoveryLimit");
+  expect(remote.claim).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled(); expect(mocks.probe).not.toHaveBeenCalled();
+  cancellation.abort(); await execution;
+  expect(store.getTask(localTask)).toEqual(localTask);
+  expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
+  expect(await readFile(retainedJournal, "utf8")).toBe("retained Herdr journal marker");
+  expect(lifecycle.close).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce();
 });

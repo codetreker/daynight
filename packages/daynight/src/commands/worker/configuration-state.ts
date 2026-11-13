@@ -144,6 +144,7 @@ export const configurationSnapshot = (
 ): WorkerConfigurationSnapshot => {
   const desired = cache.authority.desired;
   const failures = latestFailures(cache);
+  const retainedRecoveryLimit = configurationInheritanceSources(cache).get(configurationKey({ kind: "recoveryLimit" }))?.value.appliedValue;
   const current = new Map(cache.currentItems.map(item => [configurationKey(item.value.key), item]));
   const unfinishedRemovals = unfinishedRemovalProjects(cache);
   const applied = (key: WorkerCloudItemKey) => current.get(configurationKey(key))?.value.appliedValue ?? null;
@@ -160,7 +161,7 @@ export const configurationSnapshot = (
   const projects = synchronized && desired !== null ? desired.value.projects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
     ready: current.get(configurationKey({ kind: "projectPreparation", projectId: project.projectId }))?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !unfinishedRemovals.has(project.projectId) })) : [];
   const globalNative = native({ kind: "native" });
-  return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, observationRevision: cache.authority.observationRevision,
+  return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: configurationToolTargets(cache, localTools), effective: {
       agentControlMode: desired?.value.agentControlMode == null || globalNative !== null || projects.some(project => project.native !== null) ? mode : null,
       maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,

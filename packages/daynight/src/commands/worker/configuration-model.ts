@@ -35,6 +35,7 @@ export type WorkerConfigurationSnapshot = {
   readonly synchronized: boolean;
   readonly desired: WorkerCloudDesired | null;
   readonly observationRevision: string;
+  readonly retainedRecoveryLimit: number | null;
   readonly items: readonly WorkerCloudItem[];
   readonly toolTargets: WorkerConfigurationToolTargets | null;
   readonly effective: {

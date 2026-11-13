@@ -53,9 +53,16 @@ the candidate. Unknown import results read first. Running connection, credential
 Worker identity and local execution overrides remain frozen; a file naming
 another origin or Worker is rejected without switching ownership.
 
-Null recovery closes new Task and Bot admission. The coordinator keeps its
-original resource view, including retained mappings after restart, so a missing
-target is not presented as every Project being removed. Original claims,
+Null, unread and unsupported authority closes new Task and Bot admission. The
+coordinator keeps its original resource view so a missing target is not presented
+as every Project being removed. A cold restart derives resource coverage from
+actual registered Projects and combines original frozen native tuples with any
+genuinely applied recovery limit retained in current or historical records. The
+snapshot exposes that policy separately as retainedRecoveryLimit, outside its
+effective admission configuration. Herdr's frozen tuple deliberately stores only
+Agent, model and arguments; omitting the known policy would prevent original
+recovery, while borrowing it from a blocked local candidate would invent a new
+execution policy. Missing applied facts remain unknown. Original claims,
 workspaces, frozen native identity, unfinished stops and failures keep their
 owners. A high-origin stop continues through a lower target; excluded Projects
 receive current stop verification after the original operation joins, while

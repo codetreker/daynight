@@ -2384,10 +2384,14 @@ when another item fails. Failed application attempts use 5, 10, 20, 40 and then
 60-second backoff. Storage failures retain the original error and do not publish
 uncommitted results. The last committed target, effective values and Project view
 remain available; storage readiness closes new execution admission without
-manufacturing a removed-Project target. An uninitialized target also closes new
-Task and Bot admission while the original coordinator resource view remains
-available; a local bootstrap candidate grants no execution qualification. Task
-configurationComplete and Bot canAdmitNewExecution are checked after awaited
+manufacturing a removed-Project target. An uninitialized, unread or unsupported
+target also closes new Task and Bot admission while the original coordinator
+resource view remains available; a local bootstrap candidate grants no execution
+qualification. After a cold restart, that recovery view uses actual registered
+Project IDs, the original frozen native tuple and any retained, genuinely applied
+recovery limit. The limit is exposed separately from effective admission values;
+missing facts remain unknown and are not filled from a local candidate or default.
+Task configurationComplete and Bot canAdmitNewExecution are checked after awaited
 preparation and before the first intent, registration and dispatch. Original
 submitted/unknown execution and frozen native recovery/input/stop keep their
 original identities and permissions.

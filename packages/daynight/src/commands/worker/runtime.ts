@@ -445,10 +445,11 @@ export const runWorker = async (options: {
     const toolRuntime = tools;
     let retainedView: WorkerCoordinatorConfiguration | undefined;
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
-      if (snapshot.desired === null) {
+      if (snapshot.desired === null || !snapshot.synchronized) {
         if (retainedView !== undefined) return retainedView;
         const projects = getStore().listProjects().map(project => project.projectId);
-        return projects.length === 0 ? null : { repositories: [], targetProjectIds: projects, readyProjectIds: projects, globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
+        return projects.length === 0 ? null : { repositories: [], targetProjectIds: projects, readyProjectIds: projects, globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false,
+          ...(snapshot.retainedRecoveryLimit === null ? {} : { recoveryLimit: snapshot.retainedRecoveryLimit }) };
       }
       const effective = snapshot.effective;
       if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.preferPlatformSpecificTasks === null) return null;
