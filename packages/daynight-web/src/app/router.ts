@@ -56,7 +56,7 @@ export type Route =
 export type ProtectedRoute = Route
   | WebhookRoute
   | { readonly kind: "team" | "teamSettings" | "teamMembers"; readonly teamId: string }
-  | { readonly kind: "sharedProjects" }
+  | { readonly kind: "sharedProjects" | "myTasks" }
   | { readonly kind: "bots" }
   | { readonly kind: "bot"; readonly botId: string }
   | { readonly kind: "workers" }
@@ -108,6 +108,7 @@ export const parseRoute = (pathname: string, search = ""): Route => {
 
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/webhooks") return webhookRoute(search);
+  if (pathname === "/my-tasks") return { kind: "myTasks" };
   if (pathname === "/shared-projects") return { kind: "sharedProjects" };
   const team = /^\/teams\/([^/]+)(\/(?:settings|members))?$/.exec(pathname);
   if (team !== null) {

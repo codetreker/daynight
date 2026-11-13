@@ -1,0 +1,26 @@
+.my-tasks-page { min-width: 0; }
+.my-task-total { margin: 8px 0 0; color: #68758b; font-size: 11px; }
+.my-task-groups { display: flex; flex-direction: column; gap: 25px; }
+.my-task-group { min-width: 0; }
+.my-task-group-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 9px; margin-bottom: 10px; }
+.my-task-group-heading h2 { font-size: 14px; font-weight: 650; min-width: 0; overflow-wrap: anywhere; }
+.my-task-scope, .my-task-project-id { color: #78859a; font-size: 11px; overflow-wrap: anywhere; }
+.my-task-count { background: #eaeafa; color: #6465ae; padding: 2px 7px; border-radius: 10px; font-size: 10px; }
+.my-task-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 7px; }
+.my-task-row { display: flex; gap: 18px; align-items: center; min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 14px 16px; }
+.my-task-main { flex: 1; min-width: 0; }
+.my-task-title { color: #283348; font-size: 13px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; text-decoration: none; }
+.my-task-title:hover, .my-task-goal:hover { color: var(--indigo); text-decoration: underline; }
+.my-task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 5px; color: #727d90; font-size: 11px; min-width: 0; }
+.my-task-id { font-variant-numeric: tabular-nums; }
+.my-task-goal { display: inline-flex; align-items: center; gap: 5px; color: #6264a4; min-width: 0; max-width: 100%; text-decoration: none; }
+.my-task-goal span { overflow-wrap: anywhere; min-width: 0; }
+.my-task-goal svg { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.my-task-title:focus-visible, .my-task-goal:focus-visible { outline: 2px solid #7777d8; outline-offset: 3px; border-radius: 2px; }
+.my-task-state { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.my-task-session { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: #68758b; }
+.my-task-session-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.my-task-session-working { color: #447a5f; }
+.my-task-session-notice, .my-task-session-expired { color: #866724; }
+.my-task-session-warning { color: #945c60; }
+@media (max-width: 600px) { .my-task-row { align-items: flex-start; flex-direction: column; gap: 10px; padding: 12px; } .my-task-state { justify-content: flex-start; } }
