@@ -232,6 +232,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     details = details.map(item => item.id === firstId ? { ...item, assignedTo: TEST_VIEWER_ID, status: 'in_progress', startedAt: time, ready: false, properties: { worker } } : item);
     currentGraph = graphFixture(details);
+  }, moveActiveGoalChild: () => {
+    const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
+    details = details.map(item => item.id === firstId ? { ...item, parentId: otherGoalId, version: item.version + 1n, updatedAt: changedAt } : item);
+    currentGraph = { ...graphFixture(details), observedAt: changedAt };
   }, addGoalExternalChain: () => {
     const outside = detailFixture(projectId, outsideId, { title: 'Outside chain', dependsOn: [singleId], externalDependsOn: [singleId] });
     const outsideChild = detailFixture(projectId, otherTaskId, { title: 'Outside child', dependsOn: [outsideId] });
@@ -1764,10 +1768,25 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   const firstGoal = page.locator(`[data-goal-id="${goalId}"]`);
   const otherGoal = page.locator(`[data-goal-id="${otherGoalId}"]`);
   await expect(firstGoal.locator('.assignee-name')).toContainText('Long owner name');
+  const firstHeader = firstGoal.locator('.goal-list-toggle');
+  const otherHeader = otherGoal.locator('.goal-list-toggle');
+  const count = locale === 'zh-CN' ? '1 进行中' : '1 in progress';
+  const active = locale === 'zh-CN' ? '自动执行中' : 'Automatic execution active';
+  await expect(firstHeader.locator('.goal-in-progress')).toHaveText(count);
+  await expect(firstHeader.locator('.chain-worker-active')).toHaveText(active);
+  await expect(firstHeader).toHaveAccessibleDescription(new RegExp(`${count}.*${active}`));
+  await expect(firstHeader.locator('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
+  await expect(firstHeader.locator('.chain-worker-active button, .chain-worker-active a')).toHaveCount(0);
+  await expect(otherHeader.locator('.goal-in-progress')).toHaveText(locale === 'zh-CN' ? '0 进行中' : '0 in progress');
+  await expect(otherHeader.locator('.chain-worker-active')).toHaveCount(0);
+  for (const selector of ['.goal-in-progress', '.chain-worker-active']) {
+    expect(await firstHeader.locator(selector).evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+  }
+
   const geometry = await firstGoal.locator('.goal-list-row').evaluate(row => {
     const rect = (element: Element) => { const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
     const bounds = rect(row);
-    const elements = ['.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status'].map(selector => rect(row.querySelector(selector)!));
+    const elements = ['.goal-list-title', '.goal-in-progress', '.goal-list-meta', '.goal-list-progress', '.root-status'].map(selector => rect(row.querySelector(selector)!));
     return { bounds, elements };
   });
   for (const [index, box] of geometry.elements.entries()) {
@@ -1821,6 +1840,34 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await page.reload();
   await expect(page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`)).toHaveAttribute('aria-expanded', 'false');
   expect(errors).toEqual([]);
+});
+
+test('Goal summary follows snapshot membership without resetting disclosure or focus', async ({ page }) => {
+  const fixture = await install(page); fixture.addCrossGoal(); fixture.addLongGoalListWorker();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const other = page.locator(`[data-goal-id="${otherGoalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  await toggle.click(); await toggle.focus();
+  await toggle.evaluate(element => { (element as HTMLElement).dataset.testIdentity = 'retained'; });
+  const refresh = async () => {
+    const response = page.waitForResponse(response => response.url().includes('/task-sync') && response.ok());
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await response;
+  };
+  await refresh();
+  await expect(toggle).toHaveAttribute('data-test-identity', 'retained');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
+  fixture.moveActiveGoalChild(); await refresh();
+  await expect(toggle.locator('.goal-in-progress')).toHaveText('0 in progress');
+  await expect(toggle.locator('.chain-worker-active')).toHaveCount(0);
+  await expect(other.locator('.goal-list-toggle')).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toBeFocused();
 });
 
 test('Goal list graph navigation and history retain the source and scroll', async ({ page }) => {
