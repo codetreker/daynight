@@ -17,6 +17,7 @@ vi.mock("ws", () => ({ default: class extends EventEmitter {
 import { createControllerRelay, publicOperation } from "../../../src/commands/controller/relay.js";
 import { RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 import { ImageReleaseStorageError } from "../../../src/commands/controller/media/release-error.js";
+import { ImageCaptureNotDispatchedError } from "../../../src/commands/controller/media/capture-error.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(close => close()); transport.sockets.length = 0; vi.clearAllMocks(); });
 const setup = async (operations: ControllerOperation[] = [], live = false, images = false) => {
@@ -372,6 +373,31 @@ test("capture refusal rejects only its request and a following query consumes th
   const receipt = { captureId, attemptId, revision: "1", occurrence, state: "failed", resourceId: null, resource: null, error: { code: "quota_exceeded", message: "Capture capacity is exhausted." } };
   emit(frame("image_capture_result", { requestId: queryWire.requestId, action: "query", result: receipt, error: null }));
   expect(await query).toEqual(receipt); expect(relay.connected()).toBe(true);
+  await relay.close();
+});
+
+test("full capture slots refuse before dispatch and permit the same control after a slot frees", async () => {
+  const { relay, socket, emit, frame } = await setup([], false, true);
+  await expect(relay.capture("query", { captureId: randomUUID() })).rejects.toBeInstanceOf(ImageCaptureNotDispatchedError);
+  expect(socket.sent.some(message => message.type === "image_capture")).toBe(false);
+  emit(frame("reconcile_result", { operations: [] }));
+  const captureId = randomUUID(), attemptId = randomUUID(), occurrence = { imageId: randomUUID(), entryId: randomUUID(), container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-part" };
+  const receipt = { captureId, attemptId, revision: "1", occurrence, state: "reserved", resourceId: randomUUID(), resource: null, error: null };
+  const first = relay.capture("query", { captureId });
+  const second = relay.capture("query", { captureId });
+  const body = { captureId, attemptId, error: { code: "source_unavailable", message: "Source unavailable." } };
+  await expect(relay.capture("failed", body)).rejects.toBeInstanceOf(ImageCaptureNotDispatchedError);
+  expect(socket.sent.filter(message => message.type === "image_capture")).toHaveLength(2);
+  const queries = socket.sent.filter(message => message.type === "image_capture");
+  emit(frame("image_capture_result", { requestId: queries[0]!.requestId, action: "query", result: receipt, error: null }));
+  await first;
+  const retry = relay.capture("failed", body);
+  const wire = socket.sent.filter(message => message.type === "image_capture").at(-1)!;
+  expect(wire).toMatchObject({ action: "failed", body });
+  emit(frame("image_capture_result", { requestId: queries[1]!.requestId, action: "query", result: receipt, error: null }));
+  emit(frame("image_capture_result", { requestId: wire.requestId, action: "failed", result: { ...receipt, revision: "2", state: "failed", resourceId: null, error: body.error }, error: null }));
+  await second;
+  expect(await retry).toMatchObject({ captureId, attemptId, state: "failed", error: body.error });
   await relay.close();
 });
 

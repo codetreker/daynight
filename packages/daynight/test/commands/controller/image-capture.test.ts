@@ -7,6 +7,8 @@ import sharp from "sharp";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createControllerCaptureBridge } from "../../../src/commands/controller/media/capture.js";
+import { ImageCaptureNotDispatchedError } from "../../../src/commands/controller/media/capture-error.js";
+import { ImageHistorySyncFailedError } from "../../../src/commands/controller/media/history-sync.js";
 import { createMarkdownCaptureCoordinator } from "../../../src/commands/controller/markdown/coordinator.js";
 import { validateImageFile } from "../../../src/commands/controller/media/image-validation.js";
 import type { NativeProvider } from "../../../src/commands/controller/providers/types.js";
@@ -44,6 +46,25 @@ const fixture = async () => {
   return { home, file, ticket, options, journal, request, receipt, source };
 };
 const bridge = (journal: ReturnType<typeof openControllerLifecycleStore>, capture: ReturnType<typeof createControllerRelay>["capture"], provider: NativeProvider | null = null) => createControllerCaptureBridge({ journal, capture, beforeCapture: async () => {}, provider: () => provider, writable: () => true });
+
+test("history synchronization failures cannot be mistaken for an unknown capture dispatch", async () => {
+  const f = await fixture(), lost = new Error("History response lost");
+  const beforeCapture = vi.fn().mockRejectedValueOnce(lost).mockResolvedValueOnce(undefined);
+  const capture = vi.fn(async () => f.receipt());
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture, provider: () => null, writable: () => true });
+  try {
+    const failure = await consumer.providerOptions.registerImageCapture!(f.request).catch(error => error);
+    expect(failure).toBeInstanceOf(ImageCaptureNotDispatchedError);
+    expect(failure.cause).toBe(lost); expect(capture).not.toHaveBeenCalled();
+    expect(f.journal.getImageCaptureRequest(f.request.captureId)).toEqual(f.request);
+    expect(await consumer.providerOptions.registerImageCapture!(f.request)).toEqual(f.receipt());
+    expect(capture).toHaveBeenCalledExactlyOnceWith("register", f.request);
+    const refused = new ImageHistorySyncFailedError({ code: "quota_exceeded", message: "History capacity exhausted." });
+    beforeCapture.mockRejectedValueOnce(refused);
+    await expect(consumer.providerOptions.registerImageCapture!(f.request)).rejects.toMatchObject({ name: "ImageCapturePrerequisiteError", code: "quota_exceeded", message: "History capacity exhausted." });
+    expect(capture).toHaveBeenCalledOnce();
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
+});
 
 test("an unknown register survives reopen and observes only the original capture identity", async () => {
   const f = await fixture(), calls: unknown[] = [];

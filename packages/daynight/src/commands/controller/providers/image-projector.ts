@@ -2,7 +2,7 @@ import { canonicalImageJson, type ImageCaptureRequest, type ImageCaptureReceipt,
 import type { MarkdownTimelineMetadata, NativeImageFile, ProviderEntry, ProviderOptions } from "./types.js";
 import { nativeEntryId } from "./projection.js";
 import type { NativeImageProjectionState, NativeInputPublicationView } from "../media/native-publication-types.js";
-import { ImageCaptureRequestError } from "../media/capture-error.js";
+import { ImageCapturePrerequisiteError, ImageCaptureRequestError, isRetryableCaptureRefusal } from "../media/capture-error.js";
 
 export type NativeImagePayload =
   | { kind: "resource"; resourceId: string }
@@ -256,7 +256,7 @@ export class ProviderImageProjector {
         if (Date.now() < (this.registerRetryAt.get(request.captureId) ?? 0)) { this.scheduleQuery(); return; }
         this.registerRetryAt.delete(request.captureId);
         pending.saved.phase = "query"; pending.saved.unknownAction = "register"; this.save(pending);
-        const receipt = await options.registerImageCapture(request).catch(error => { registerRefusal = error instanceof ImageCaptureRequestError; throw error; });
+        const receipt = await options.registerImageCapture(request).catch(error => { registerRefusal = error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError || isRetryableCaptureRefusal(error); throw error; });
         if (this.applyReceipt(pending, receipt)) return;
         pending.saved.phase = receipt.state === "reserved" ? "reserved" : "query"; pending.saved.unknownAction = null; this.save(pending);
       } else if (pending.saved.phase === "query") {
@@ -306,19 +306,19 @@ export class ProviderImageProjector {
         if (pending.saved.part.type !== "image_unavailable") throw new Error("Native image capture failure is missing.");
         const failure = pending.saved.part.error;
         delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "failure"; this.save(pending);
-        if (this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, failure).catch(error => { if (error instanceof ImageCaptureRequestError) controlRefusal = "failure"; throw error; }))) return;
+        if (this.applyReceipt(pending, await options.failImageCapture(request.captureId, request.attemptId, failure).catch(error => { if (error instanceof ImageCaptureRequestError || isRetryableCaptureRefusal(error)) controlRefusal = "failure"; throw error; }))) return;
       }
       if (pending.saved.phase === "commit") {
         if (Date.now() < (pending.saved.retryAt ?? 0)) { this.scheduleQuery(); return; }
         const validated = pending.saved.validated;
         if (!validated) throw new Error("Native image capture validation is missing.");
         delete pending.saved.retryAt; pending.saved.phase = "query"; pending.saved.unknownAction = "commit"; this.save(pending);
-        if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated).catch(error => { if (error instanceof ImageCaptureRequestError) controlRefusal = "commit"; throw error; }))) return;
+        if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated).catch(error => { if (error instanceof ImageCaptureRequestError || isRetryableCaptureRefusal(error)) controlRefusal = "commit"; throw error; }))) return;
       }
       this.scheduleQuery();
     } catch (error) {
       if ((pending.saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
-      if (controlRefusal && error instanceof ImageCaptureRequestError && error.code === "rate_limited") {
+      if (controlRefusal && isRetryableCaptureRefusal(error)) {
         const action = controlRefusal;
         pending.saved.phase = action; pending.saved.unknownAction = null; pending.saved.retryAt = Date.now() + 1000;
         try { this.save(pending); } catch (saveError) {
@@ -327,13 +327,13 @@ export class ProviderImageProjector {
         }
         this.scheduleQuery(); return;
       }
-      if (registerRefusal && error instanceof ImageCaptureRequestError && error.code === "rate_limited") {
+      if (registerRefusal && isRetryableCaptureRefusal(error)) {
         // Admission preceded registration, so the same frozen request remains eligible.
         pending.saved.phase = "new"; pending.saved.unknownAction = null;
         this.registerRetryAt.set(request.captureId, Date.now() + 1000);
         this.save(pending); this.scheduleQuery(); return;
       }
-      if (registerRefusal && error instanceof ImageCaptureRequestError) {
+      if (registerRefusal && (error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError)) {
         // A correlated refusal is a known request result, not a lost receipt.
         // Keep the original identity without inventing a service receipt.
         pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: error.code, message: error.message });

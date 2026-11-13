@@ -6,7 +6,7 @@ import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { NativeReadPolicy, ProviderOptions } from "../providers/types.js";
 import type { CaptureReadPolicy, CaptureSourceLease } from "../media/preparations.js";
-import { ImageCaptureRequestError } from "../media/capture-error.js";
+import { ImageCapturePrerequisiteError, ImageCaptureRequestError, isRetryableCaptureRefusal } from "../media/capture-error.js";
 import { copyLocalImage, createLocalImageContext, parseLocalImagePath } from "./local-source.js";
 import type { LocalImageCheckpoint } from "./local-source-proof.js";
 import type { ExternalImagePolicyLease } from "./external-policy.js";
@@ -174,7 +174,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     if (terminal) { record.phase = "settled"; saved(record); }
   };
   const settleRefusal = (record: MarkdownCaptureRecord, error: unknown): boolean => {
-    if (!(error instanceof ImageCaptureRequestError)) return false;
+    if (!(error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError)) return false;
     // The local projection records the refusal, not a fabricated service receipt.
     record.error = { code: error.code, message: error.message }; record.receipt = null; record.phase = "settled";
     saved(record); options.onFailure?.(record.occurrence, record.error);
@@ -184,7 +184,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     record.error = error; record.phase = "unknown"; record.observeOnly = true; saved(record);
     try { observe(record, await hooks.failImageCapture(record.request!.captureId, record.request!.attemptId, error)); }
     catch (cause) {
-      if (cause instanceof ImageCaptureRequestError && cause.code === "rate_limited") {
+      if (isRetryableCaptureRefusal(cause)) {
         record.retryControl = { action: "failure", attemptId: record.request!.attemptId, after: Date.now() + 1000, error };
         record.observeOnly = false;
       } else record.observeOnly = true;
@@ -195,7 +195,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     record.phase = "unknown"; record.observeOnly = true; saved(record);
     try { observe(record, await hooks.commitImageCapture(record.request!.captureId, record.request!.attemptId, validated)); }
     catch (cause) {
-      if (cause instanceof ImageCaptureRequestError && cause.code === "rate_limited") {
+      if (isRetryableCaptureRefusal(cause)) {
         record.retryControl = { action: "commit", attemptId: record.request!.attemptId, after: Date.now() + 1000, validated };
         record.observeOnly = false;
       } else record.observeOnly = true;
@@ -286,7 +286,7 @@ export const createMarkdownCaptureCoordinator = (options: {
       record.phase = "unknown"; saved(record);
       try { receipt = await hooks.registerImageCapture(request); }
       catch (error) {
-        if (error instanceof ImageCaptureRequestError && error.code === "rate_limited") {
+        if (isRetryableCaptureRefusal(error)) {
           record.phase = "waiting"; record.cooldownUntil = Date.now() + 1000; saved(record);
         } else settleRefusal(record, error);
         return;

@@ -2,6 +2,8 @@ import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import type { NativeProvider, ProviderOptions } from "../providers/types.js";
 import type { createControllerRelay } from "../relay.js";
 import type { ImageCaptureRequest, ValidatedImage } from "../../../session/image-values.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError } from "./capture-error.js";
+import { ImageHistorySyncFailedError } from "./history-sync.js";
 
 /** Provider capture hooks share one durable service identity with source retries. */
 export const createControllerCaptureBridge = (options: {
@@ -17,7 +19,11 @@ export const createControllerCaptureBridge = (options: {
   const providerOptions: Pick<ProviderOptions, "registerImageCapture" | "queryImageCapture" | "commitImageCapture" | "failImageCapture" | "stageImageCapture"> = {
     registerImageCapture: async input => {
       const request = journal.registerImageCaptureRequest(input);
-      await options.beforeCapture();
+      try { await options.beforeCapture(); }
+      catch (error) {
+        if (error instanceof ImageHistorySyncFailedError) throw new ImageCapturePrerequisiteError(error.imageError);
+        throw new ImageCaptureNotDispatchedError("Image history synchronization has not completed.", { cause: error });
+      }
       return journal.observeImageCaptureReceipt(await options.capture("register", request));
     },
     queryImageCapture: async captureId => {

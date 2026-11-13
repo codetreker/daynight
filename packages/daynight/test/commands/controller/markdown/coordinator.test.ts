@@ -7,7 +7,7 @@ import sharp from "sharp";
 import Database from "better-sqlite3";
 import { openControllerLifecycleStore } from "../../../../src/commands/controller/lifecycle-store.js";
 import { createControllerCaptureBridge } from "../../../../src/commands/controller/media/capture.js";
-import { ImageCaptureRequestError } from "../../../../src/commands/controller/media/capture-error.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError } from "../../../../src/commands/controller/media/capture-error.js";
 import { createMarkdownCaptureCoordinator } from "../../../../src/commands/controller/markdown/coordinator.js";
 import { validateImageFile } from "../../../../src/commands/controller/media/image-validation.js";
 import type { ControllerLaunchTicket } from "../../../../src/commands/controller/launch-ticket.js";
@@ -99,9 +99,10 @@ const freeSlots = (f: Awaited<ReturnType<typeof fixture>>) => {
   return leases.length;
 };
 
-test("correlated register refusal settles Markdown locally without repeated queries or a fabricated receipt", async () => {
+test.each(["capture", "history"] as const)("definite %s refusal settles Markdown without repeated queries or a fabricated receipt", async kind => {
   const f = await fixture();
-  vi.spyOn(f.bridge.providerOptions, "registerImageCapture").mockRejectedValue(new ImageCaptureRequestError({ code: "quota_exceeded", message: "Capture capacity is exhausted." }));
+  const failure = { code: "quota_exceeded", message: "Capture capacity is exhausted." };
+  vi.spyOn(f.bridge.providerOptions, "registerImageCapture").mockRejectedValue(kind === "capture" ? new ImageCaptureRequestError(failure) : new ImageCapturePrerequisiteError(failure));
   const query = vi.spyOn(f.bridge.providerOptions, "queryImageCapture");
   f.coordinator.enqueue(f.occurrence, "original.png", f.context);
   f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
@@ -110,9 +111,9 @@ test("correlated register refusal settles Markdown locally without repeated quer
   expect(f.coordinator.get(f.occurrence.imageId)).toMatchObject({ phase: "settled", receipt: null, error: { code: "quota_exceeded", message: "Capture capacity is exhausted." } });
 });
 
-test("Markdown register rate limit retries its frozen identity after a delay", async () => {
+test.each(["rate", "local"] as const)("Markdown register retries %s refusal with its frozen identity", async kind => {
   const f = await fixture(), original = f.bridge.providerOptions.registerImageCapture!;
-  const register = vi.spyOn(f.bridge.providerOptions, "registerImageCapture").mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." })).mockImplementation(original);
+  const register = vi.spyOn(f.bridge.providerOptions, "registerImageCapture").mockRejectedValueOnce(kind === "rate" ? new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }) : new ImageCaptureNotDispatchedError("Capture slots are full.")).mockImplementation(original);
   const query = vi.spyOn(f.bridge.providerOptions, "queryImageCapture"), now = vi.spyOn(Date, "now").mockReturnValue(Date.now());
   const start = Date.now();
   f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
@@ -125,12 +126,12 @@ test("Markdown register rate limit retries its frozen identity after a delay", a
   expect(f.coordinator.get(f.occurrence.imageId)).toMatchObject({ phase: "unknown", receipt: { state: "copying" } });
 });
 
-test.each(["commit", "failure"] as const)("rate-limited Markdown %s survives restart without rereading its source", async action => {
+test.each((["commit", "failure"] as const).flatMap(action => (["rate", "local"] as const).map(kind => ({ action, kind }))))("Markdown $action retries $kind refusal after restart without rereading its source", async ({ action, kind }) => {
   let sourceReads = 0;
   const f = await fixture(checkpoint => { if (checkpoint.stage === "initial") sourceReads++; });
   if (action === "failure") await rm(path.join(f.home, "original.png"));
   const target = action === "commit" ? "commitImageCapture" : "failImageCapture";
-  const control = vi.spyOn(f.bridge.providerOptions, target).mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }));
+  const control = vi.spyOn(f.bridge.providerOptions, target).mockRejectedValueOnce(kind === "rate" ? new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }) : new ImageCaptureNotDispatchedError("Capture slots are full."));
   const now = vi.spyOn(Date, "now").mockReturnValue(Date.now()), start = Date.now();
   f.coordinator.enqueue(f.occurrence, "original.png", f.context); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
   await f.coordinator.tick();

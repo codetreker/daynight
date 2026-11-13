@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { ProviderImageProjector } from "../../../src/commands/controller/providers/image-projector.js";
-import { ImageCaptureRequestError } from "../../../src/commands/controller/media/capture-error.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError } from "../../../src/commands/controller/media/capture-error.js";
 import type { ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 import type { ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart } from "../../../src/session/image-values.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
@@ -176,9 +176,10 @@ test("a lost register response is queried by its original capture identity and n
   } finally { await projector.close(); }
 });
 
-test("a correlated register refusal settles the local projection without querying or inventing a receipt", async () => {
+test.each(["capture", "history"] as const)("a definite %s refusal settles without querying or inventing a receipt", async kind => {
   const f = fixture(); f.acknowledge();
-  vi.mocked(f.options.registerImageCapture!).mockRejectedValue(new ImageCaptureRequestError({ code: "quota_exceeded", message: "Capture capacity is exhausted." }));
+  const failure = { code: "quota_exceeded", message: "Capture capacity is exhausted." };
+  vi.mocked(f.options.registerImageCapture!).mockRejectedValue(kind === "capture" ? new ImageCaptureRequestError(failure) : new ImageCapturePrerequisiteError(failure));
   const projector = new ProviderImageProjector(f.options);
   try {
     projector.publish(f.entry, [f.slot]); await projector.settled();
@@ -191,11 +192,11 @@ test("a correlated register refusal settles the local projection without queryin
   } finally { await projector.close(); }
 });
 
-test("register rate limit retries the frozen identity after a delay without querying it", async () => {
+test.each(["rate", "local"] as const)("register retries %s refusal with its frozen identity without querying it", async kind => {
   const f = fixture(); f.acknowledge();
   const now = vi.spyOn(Date, "now").mockReturnValue(10000);
   const register = vi.mocked(f.options.registerImageCapture!);
-  register.mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }));
+  register.mockRejectedValueOnce(kind === "rate" ? new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }) : new ImageCaptureNotDispatchedError("Capture slots are full."));
   const projector = new ProviderImageProjector(f.options);
   try {
     projector.publish(f.entry, [f.slot]); await projector.settled();
@@ -209,11 +210,11 @@ test("register rate limit retries the frozen identity after a delay without quer
   } finally { now.mockRestore(); await projector.close(); }
 });
 
-test.each(["commit", "failure"] as const)("rate-limited %s survives restart and reuses the original request", async action => {
+test.each((["commit", "failure"] as const).flatMap(action => (["rate", "local"] as const).map(kind => ({ action, kind }))))("$action retries $kind refusal after restart with the original request", async ({ action, kind }) => {
   const f = fixture(); f.acknowledge();
   const now = vi.spyOn(Date, "now").mockReturnValue(10000);
   const control = action === "commit" ? vi.mocked(f.options.commitImageCapture!) : vi.mocked(f.options.failImageCapture!);
-  control.mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }));
+  control.mockRejectedValueOnce(kind === "rate" ? new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }) : new ImageCaptureNotDispatchedError("Capture slots are full."));
   if (action === "failure") vi.mocked(f.options.failImageCapture!).mockImplementationOnce(async (captureId, attemptId, error) => {
     const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
     return { captureId, attemptId, revision: "2", occurrence: saved.request.occurrence, state: "failed", resourceId: null, resource: null, error };

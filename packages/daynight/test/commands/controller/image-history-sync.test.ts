@@ -106,7 +106,7 @@ test("a failed original synchronization can be retired but a conflicting receipt
     const request: typeof fetch = async () => Response.json({ syncId: intent.syncId, state: "failed", acceptedOffset: "0", byteLength: intent.byteLength, sha256: "b".repeat(64), timelineRevision: null, error: { code: "source_changed", message: "Source changed" } });
     await expect(syncControllerImageHistory({ ...f, request })).rejects.toThrow("original synchronization intent");
     expect(f.journal.prepareImageHistorySync()).toEqual(intent);
-    await expect(syncControllerImageHistory({ ...f, request: async () => Response.json({ syncId: intent.syncId, state: "failed", acceptedOffset: "0", byteLength: intent.byteLength, sha256: intent.sha256, timelineRevision: null, error: { code: "source_changed", message: "Source changed" } }) })).rejects.toThrow("original controller history synchronization failed");
+    await expect(syncControllerImageHistory({ ...f, request: async () => Response.json({ syncId: intent.syncId, state: "failed", acceptedOffset: "0", byteLength: intent.byteLength, sha256: intent.sha256, timelineRevision: null, error: { code: "source_changed", message: "Source changed" } }) })).rejects.toMatchObject({ name: "ImageHistorySyncFailedError", imageError: { code: "source_changed", message: "Source changed" } });
     const db = new Database(f.file, { readonly: true }); try { expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='active_history_sync'").get()).toBeUndefined(); } finally { db.close(); }
     expect(f.journal.prepareImageHistorySync()!.syncId).not.toBe(intent.syncId);
   } finally { f.journal.close(); }
