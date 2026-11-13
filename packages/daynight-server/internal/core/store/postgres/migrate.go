@@ -212,8 +212,11 @@ var apiOAuthLifetimeSQL string
 
 //go:embed migrations/068_project_github.sql
 var projectGitHubSQL string
-//go:embed migrations/069_assistant_tasks.sql
+//go:embed migrations/070_assistant_tasks.sql
 var assistantTasksSQL string
+
+//go:embed migrations/069_project_github_pending_prs.sql
+var projectGitHubPendingPRsSQL string
 
 type migration struct {
 	version         int64
@@ -291,7 +294,8 @@ var schemaMigrations = []migration{
 	{version: 66, sql: credentialLastUsedSQL},
 	{version: 67, sql: apiOAuthLifetimeSQL},
 	{version: 68, sql: projectGitHubSQL},
-	{version: 69, sql: assistantTasksSQL},
+	{version: 69, sql: projectGitHubPendingPRsSQL},
+	{version: 70, sql: assistantTasksSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
