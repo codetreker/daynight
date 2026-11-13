@@ -53,7 +53,9 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1100, 320]) 
       await page.keyboard.press('End');
       const tagsTab = tabs.getByRole('tab', { name: m.tags, exact: true });
       await expect(tagsTab).toBeFocused(); await expect(tagsTab).toHaveAttribute('aria-selected', 'true');
+      expect(await tagsTab.evaluate(element => element.matches(':focus-visible'))).toBe(true);
       await expect(page.getByText('Release', { exact: true })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       const search = page.locator('.project-tags-search input');
       await expect(search).toHaveAccessibleName(m.search);
       await search.fill('Rele');

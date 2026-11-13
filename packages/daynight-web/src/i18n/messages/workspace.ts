@@ -111,6 +111,7 @@ export type WorkspaceMessages = {
     readonly label: string;
     readonly overview: string;
     readonly tasks: string;
+    readonly prs: string;
     readonly tags: string;
     readonly overviewDescription: string;
     readonly tasksDescription: string;

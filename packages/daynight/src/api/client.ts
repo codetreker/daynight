@@ -1,3 +1,4 @@
+import { confirmTaskTagIds, normalizeTaskTagIds } from "./task-tags.js";
 import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
 import type { Tag, TagDeletionReceipt, TagListQuery, TagPage } from "./tags.js";
 import { projectWorkerCloudReport, decodeWorkerCloudJsonSource, decodeWorkerCloudSyncSource, parseWorkerPromptSelectors, parseWorkerPromptResults, parseWorkerCloudReport, parseWorkerCloudReportReceipt, parseWorkerCloudResource } from "./worker-configuration.js";
@@ -213,7 +214,7 @@ export type ApiClient = TaskSessionClient & {
   searchTasks(projectId: string, input: TaskSearchInput): Promise<readonly TaskSearchItem[]>;
   listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
-  updateTask(projectId: string, taskId: string, input: UpdateTaskInput): Promise<Task>;
+  updateTask(projectId: string, taskId: string, input: UpdateTaskInput, options?: { readonly tagOnlyPreviousIds: readonly string[] }): Promise<Task>;
   deleteTask(projectId: string, taskId: string, input: DeleteTaskInput): Promise<void>;
   setTaskStatus(projectId: string, taskId: string, input: SetTaskStatusInput): Promise<Task>;
   claimWorkerTask(projectId: string, taskId: string, input: ClaimWorkerTaskInput): Promise<Task>;
@@ -1325,11 +1326,13 @@ export const createApiClient = (options: {
       const assignedTo = taskAssignmentInput(input.assignedTo);
       const parentId = taskParentInput(input.parentId);
       const goal = input.type === "goal";
+      const tagIds = normalizeTaskTagIds(input.tagIds ?? []);
       return exchange({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", { kind: "json", ...(goal && assignedTo === undefined ? { requirePrincipal: true } : {}), parse: (value, metadata) => {
         const task = parseTask(value, project);
         if (task.type !== (input.type ?? "task") || task.parentId !== (parentId ?? null)) throw new ProtocolError("Task does not confirm the requested type and parent.");
         if (task.status !== (input.status ?? (goal ? "todo" : "proposed"))) throw new ProtocolError("Task does not confirm the requested initial status.");
         if (task.assignedTo !== (assignedTo === undefined ? (goal ? metadata.principalId : null) : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
+        confirmTaskTagIds(task, tagIds);
         return task;
       } }, [201], { kind: "json", value: {
         title: input.title,
@@ -1342,6 +1345,7 @@ export const createApiClient = (options: {
         ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
         ...(input.externalDependsOn === undefined ? {} : { externalDependsOn: input.externalDependsOn }),
         ...(input.properties === undefined ? {} : { properties: input.properties }),
+        ...(input.tagIds === undefined ? {} : { tagIds }),
       } });
     },
     getTask: (projectId, taskId) => {
@@ -1543,17 +1547,27 @@ export const createApiClient = (options: {
         return page.items;
       });
     },
-    updateTask: (projectId, taskId, input) => {
+    updateTask: (projectId, taskId, input, options) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       const assignedTo = taskAssignmentInput(input.assignedTo);
       const parentId = taskParentInput(input.parentId);
+      const tagIds = input.tagIds === undefined ? undefined : normalizeTaskTagIds(input.tagIds);
+      const version = input.version;
+      taskVersion(version);
+      const previousTagIds = options === undefined ? undefined : normalizeTaskTagIds(options.tagOnlyPreviousIds);
+      if (previousTagIds !== undefined && (tagIds === undefined || Object.keys(input).some(key => key !== "version" && key !== "tagIds"))) throw new Error("A previous tag set requires a tag-only update.");
+      const expectedTagVersion = previousTagIds === undefined ? undefined : version + (previousTagIds.length === tagIds!.length && previousTagIds.every((id, index) => id === tagIds![index]) ? 0n : 1n);
       return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => {
         const result = parseTask(value, project, task);
         if (assignedTo !== undefined && result.assignedTo !== assignedTo) throw new ProtocolError("Task does not confirm the requested assignment.");
         if (parentId !== undefined && result.parentId !== parentId) throw new ProtocolError("Task does not confirm the requested parent.");
+        if (tagIds !== undefined) {
+          confirmTaskTagIds(result, tagIds);
+          if (expectedTagVersion === undefined ? result.version !== version && result.version !== version + 1n : result.version !== expectedTagVersion) throw new ProtocolError("Task does not confirm the submitted version.");
+        }
         return result;
       }, {
-        version: input.version,
+        version,
         ...(parentId === undefined ? {} : { parentId }),
         ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
@@ -1563,6 +1577,7 @@ export const createApiClient = (options: {
         ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
         ...(input.externalDependsOn === undefined ? {} : { externalDependsOn: input.externalDependsOn }),
         ...(input.properties === undefined ? {} : { properties: input.properties }),
+        ...(tagIds === undefined ? {} : { tagIds }),
       });
     },
     deleteTask: (projectId, taskId, input) => {

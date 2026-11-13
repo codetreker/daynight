@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { openWorkerStore, type WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ClaimIdentity, WorkerProject } from "../../../src/commands/worker/types.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
 
 const stores = new Set<WorkerStore>();
 const connections = new Set<Database.Database>();
@@ -85,6 +86,15 @@ describe("worker project mappings", () => {
 });
 
 describe("worker claim and native session index", () => {
+  it("keeps both Herdr and native recipes across reopening without adopting a replacement", () => {
+    const { store, database, register } = fixture(); register();
+    const tools = recordedHerdrTools();
+    const configuration = { agent: "codex" as const, model: null, args: [], toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation };
+    store.freezeNativeConfiguration(claim, configuration);
+    const reopened = open(database);
+    expect(reopened.getNativeConfiguration(claim)).toEqual(configuration);
+    expect(() => reopened.freezeNativeConfiguration(claim, { ...configuration, herdrLaunch: { ...tools.herdr, source: "path" } })).toThrow("frozen");
+  });
   it("persists the original native tuple and rejects a replacement after reopening", () => {
     const { store, database, register } = fixture();
     register();
@@ -166,6 +176,23 @@ it("rebuilds an unknown unversioned schema containing duplicate identities and i
   expect(rebuilt.listProjects()).toEqual([]);
   expect(rebuilt.listTasks()).toEqual([]);
   expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual(sqliteSchemaSnapshots(loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))).get(currentSqliteVersion(workerStoreFormat))!.filter(object => object.type === "table").map(({ name }) => ({ name })));
+  expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
+});
+
+it("upgrades version 15 without inventing claim reservations or changing frozen recipes", () => {
+  const db = memory(), steps = loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url));
+  for (const step of steps.filter(step => step.version <= 15)) db.exec(step.sql);
+  db.pragma("user_version = 15");
+  const { project } = identityFixture(), tools = recordedHerdrTools();
+  const configuration = JSON.stringify({ agent: "codex", model: "original", args: ["--original"], toolLaunch: tools.agent, toolObservation: tools.agentObservation, herdrLaunch: tools.herdr, herdrObservation: tools.herdrObservation });
+  db.prepare("INSERT INTO projects(project_id, repo_url, local_path) VALUES (@projectId, @repoUrl, @localPath)").run(project);
+  db.prepare("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode) VALUES (@projectId, @taskId, @claimId, 'active', 'codex', NULL, 'herdr')").run(claim);
+  db.prepare("INSERT INTO claim_native_configurations(project_id, task_id, claim_id, configuration) VALUES (@projectId, @taskId, @claimId, @configuration)").run({ ...claim, configuration });
+  const upgraded = open(db);
+  expect(upgraded.listClaimToolReservations()).toEqual([]);
+  expect(upgraded.getTask(claim)?.status).toBe("active");
+  expect(upgraded.getNativeConfiguration(claim)).toEqual(JSON.parse(configuration));
+  expect(db.prepare("SELECT configuration FROM claim_native_configurations").get()).toEqual({ configuration });
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(workerStoreFormat));
 });
 

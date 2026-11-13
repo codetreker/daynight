@@ -384,6 +384,7 @@ export type CreateTaskInput = {
   readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
+  readonly tagIds?: readonly string[];
 };
 export type UpdateTaskInput = {
   readonly version: bigint;
@@ -396,6 +397,7 @@ export type UpdateTaskInput = {
   readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
+  readonly tagIds?: readonly string[];
 };
 export type DeleteTaskInput = { readonly version: bigint; readonly removeDepends?: boolean };
 export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus };

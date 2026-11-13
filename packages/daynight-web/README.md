@@ -6,6 +6,14 @@ account-owned Worker observations and cloud configuration, a cross-project in-pr
 request cancellation, runtime API decoding, native browser routing and a pure
 dependency graph model with horizontal and vertical layouts. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
+Project navigation includes Overview, Task list, PR list and Tags. The independent PR
+workspace reads saved summaries in six-item cursor pages, filters by state and
+title/number, and opens the existing PR detail reader. Visible workspaces reconcile
+every 15 seconds; hidden sections retain filters, pages and selections while
+cancelling reads. Task graph errors do not block PR browsing. The
+[PR read design](../../docs/design/github-pr-reading.md) owns synchronization
+states, unknown counts, identity admission and retained-page behavior.
+
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -1443,7 +1451,7 @@ list section contains Standalone tasks and Task chains. Desktop section navigati
 left of the selected content; narrow screens use horizontal tabs with matching
 keyboard direction. The outer choice is stored per project in browser
 preferences, so the first render after reload or a new visit already shows the saved
-Overview, Task list or Tags selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
+Overview, Task list, PR list or Tags selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
 projects retain all section destinations.
 
 Overview and Task list use one `ProjectView` snapshot, synchronization loop and detail
@@ -1749,7 +1757,7 @@ fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
 written. The outer section uses the independent
 `daynight:project-section:${projectId}` record with the JSON string `"overview"`
-or `"tasks"` or `"tags"`; a missing record selects Overview. A read or format failure selects
+or `"tasks"`, `"prs"` or `"tags"`; a missing record selects Overview. A read or format failure selects
 Overview with a section-specific notice; a write failure retains the current
 in-memory selection and reports that it was not saved. Other preference errors
 likewise leave the current page usable with visible feedback.

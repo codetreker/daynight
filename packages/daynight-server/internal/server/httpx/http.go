@@ -235,7 +235,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusUnauthorized
 		case "permission_denied", "forbidden":
 			status = http.StatusForbidden
-		case "invalid_image", "image_integrity", "image_decode_failed", "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_search_expression":
+		case "invalid_image", "image_integrity", "image_decode_failed", "invalid_path", "invalid_cursor", "invalid_payload", "unsupported_protocol", "unsupported_content_kind", "invalid_input", "invalid_tag_filter", "invalid_search_expression":
 			status = http.StatusBadRequest
 		case "search_timeout", "timeout":
 			status = http.StatusGatewayTimeout

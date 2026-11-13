@@ -1,0 +1,56 @@
+.pull-request-workspace { min-width: 0; }
+.pull-request-workspace .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.pr-heading { align-items: center; justify-content: space-between; gap: 14px; }
+.pr-heading > div { min-width: 0; }
+.pr-heading h2 { margin-bottom: 5px; }
+.pr-heading p { font-size: 11px; color: #556176; white-space: normal; }
+.pr-heading .button { flex: none; }
+.pr-sync-status { display: flex; align-items: center; gap: 7px 12px; flex-wrap: wrap; font-size: 10px; color: #556176; margin: -5px 0 18px; min-height: 18px; }
+.pr-sync-status a, .pr-status-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.pr-status-note { background: #fffaf0; border: 1px solid #ecdfc8; border-radius: 7px; padding: 12px 14px; line-height: 1.9; color: #805b27; margin: 0 0 16px; font-size: 11px; display: block; width: 100%; overflow-wrap: anywhere; }
+.pr-sync-status .pr-status-note { margin: 0; }
+.pr-status-note.danger { color: #a3322b; background: #fff0ef; border-color: #df9d96; }
+.pr-status-note button { font: inherit; color: inherit; border: 0; background: transparent; padding: 0 4px; text-decoration: underline; }
+.pr-toolbar { display: flex; gap: 13px; align-items: center; justify-content: space-between; margin-bottom: 13px; }
+.pr-toolbar select { border: 1px solid #dce0e8; background: #fff; border-radius: 7px; font: inherit; color: #556176; font-size: 12px; padding: 9px 31px 9px 12px; max-width: 100%; }
+.pr-search-wrap { position: relative; max-width: 280px; width: 100%; display: flex; min-width: 0; }
+.pr-search-wrap svg { position: absolute; left: 11px; top: 11px; color: #667287; }
+.pr-search-wrap input { min-width: 0; width: 100%; border: 1px solid #dce0e8; background: #fff; border-radius: 7px; color: #556176; font: inherit; font-size: 11px; padding: 10px 12px 10px 33px; }
+.pr-search-wrap input::placeholder { color: #667287; }
+.pr-search-wrap input:focus-visible, .pr-toolbar select:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
+.pr-list { list-style: none; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: #fff; min-width: 0; }
+.pr-list:empty { border: 0; }
+.pr-list > li + li { border-top: 1px solid var(--line); }
+.pr-row { display: flex; width: 100%; min-width: 0; gap: 12px; align-items: flex-start; text-align: left; background: #fff; border: 0; padding: 17px 18px; }
+.pr-row:hover { background: #fcfcff; }
+.pr-row:focus-visible { outline-offset: -3px; }
+.pr-status-icon { flex: none; margin-top: 1px; color: #357558; }
+.pr-status-icon.draft { color: #657187; }
+.pr-status-icon.merged { color: #79519f; }
+.pr-status-icon.closed { color: #9c5062; }
+.pr-row-main { flex: 1; min-width: 0; }
+.pr-row-heading { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.pr-row-title { font-size: 13px; font-weight: 600; line-height: 1.65; color: #172132; overflow-wrap: anywhere; min-width: 0; }
+.pr-row-heading .badge { flex: none; margin-top: 2px; font-size: 9px; padding: 1px 5px; }
+.pr-row-meta { display: flex; gap: 5px 9px; align-items: center; flex-wrap: wrap; color: #556176; font-size: 10px; margin-top: 5px; line-height: 1.7; }
+.pr-row-number { font-variant-numeric: tabular-nums; }
+.pr-row-branch { display: flex; align-items: center; gap: 5px; color: #556176; min-width: 0; max-width: 100%; font-size: 10px; line-height: 1.9; margin-top: 5px; }
+.pr-row-branch code { font: 9px ui-monospace, SFMono-Regular, Consolas, monospace; background: #f3f4f9; color: #556176; padding: 1px 5px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 350px; min-width: 0; }
+.pr-row-branch code:last-child { flex: none; max-width: 35%; }
+.pr-row-time { font-size: 10px; color: #556176; white-space: nowrap; flex: none; margin-top: 5px; min-width: 65px; text-align: right; }
+.pr-chevron { flex: none; color: #667287; font-size: 16px; margin-top: 17px; }
+.pr-row-badge.draft { background: #f0f1f5; color: #657187; }
+.pr-results-count { font-size: 10px; color: #556176; margin: 0 0 12px; }
+.pr-empty-state { background: #fff; border: 1px solid var(--line); border-radius: 9px; padding: 45px 24px; text-align: center; min-height: 260px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; }
+.pr-empty-icon { height: 42px; width: 42px; border-radius: 12px; background: #f1f1fb; color: #6b6ba3; display: grid; place-items: center; margin-bottom: 3px; }
+.pr-empty-state h3 { margin: 0; font-size: 14px; color: #172132; }
+.pr-empty-state p { font-size: 11px; color: #556176; max-width: 360px; line-height: 1.9; }
+.pr-empty-state > a { font-size: 12px; color: var(--indigo); text-decoration: underline; }
+.pr-empty-state .button { margin-top: 5px; }
+.pr-empty-state .spinner { margin-bottom: 7px; }
+.pr-pagination { font-size: 10px; border-top: 0; padding-top: 0; margin-top: 17px; color: #556176; }
+.pr-pagination .list-pagination-controls { gap: 10px; }
+.pr-pagination .button { font-size: 10px; }
+@media (max-width: 1100px) { .pr-row { padding: 16px; } .pr-row-time { min-width: 54px; } .pr-row-branch code { max-width: 220px; } }
+@media (max-width: 740px) { .pr-row { gap: 9px; padding: 15px 14px; } .pr-row-title { font-size: 12px; } .pr-chevron, .pr-row-time { display: none; } .pr-toolbar { gap: 9px; } .pr-toolbar select { font-size: 11px; } .pr-search-wrap { max-width: none; flex: 1; } .pr-filter-wrap { flex: none; } .pr-row-branch code { max-width: 245px; } .pr-heading { margin-bottom: 16px; } .pr-sync-status { font-size: 10px; line-height: 1.8; margin-bottom: 15px; } .pr-row-meta { gap: 3px 7px; } }
+@media (max-width: 480px) { .pr-toolbar { flex-wrap: wrap; } .pr-filter-wrap { width: 100%; } .pr-filter-wrap select { width: 100%; } .pr-search-wrap { flex-basis: 100%; } .pr-row-heading { flex-wrap: wrap; gap: 3px 7px; } .pr-row-title { flex-basis: 100%; font-size: 11px; } .pr-row-heading .badge { font-size: 9px; margin: 0; } .pr-row { padding: 14px 12px; gap: 8px; } .pr-status-icon { width: 15px; height: 18px; } .pr-row-branch code { max-width: 132px; font-size: 9px; } .pr-row-meta { font-size: 10px; } .pr-heading { gap: 10px; } .pr-heading p { line-height: 1.8; } .pr-heading .button { padding: 7px 9px; } .pr-pagination { gap: 10px; align-items: stretch; } .pr-pagination .list-pagination-controls { width: 100%; justify-content: space-between; } .pr-empty-state { padding: 30px 16px; min-height: 240px; } .pr-empty-state h3 { font-size: 12px; } }

@@ -26,4 +26,4 @@ For a Task with tags, write admission uses the production bounded encoders on a 
 
 ## Consequences
 
-The reservation can reject a set whose current names fit, but every accepted association has room for legal renames and subsequent version/time touches. The existing limit remains the boundary; no tag-count quota is introduced. REST PATCH uses the dedicated operation for tag-only requests and combines metadata and associations under the same project transaction otherwise. Batch reads load references for the selected rows in the same snapshot.
+The reservation can reject a set whose current names fit, but every accepted association has room for legal renames and subsequent version/time touches. The existing limit remains the boundary; no tag-count quota is introduced. REST PATCH and MCP task updates use the dedicated operation for tag-only requests and combine metadata and associations under the same project transaction otherwise, including partitioned dependencies. MCP full and summary projections use the same actual references for output and admission. Batch reads load references for the selected rows in the same snapshot.

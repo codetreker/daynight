@@ -27,10 +27,12 @@ describe("project section navigation", () => {
     const overview = screen.getByRole("tab", { name: "概览" });
     const tasks = screen.getByRole("tab", { name: "任务列表" });
     const tags = screen.getByRole("tab", { name: "标签" });
+    const prs = screen.getByRole("tab", { name: "PR 列表" });
     expect(tabs).toHaveAttribute("aria-orientation", "vertical");
     expect(overview).toHaveAttribute("aria-controls", "project-section-panel-overview");
     expect(tasks).toHaveAttribute("aria-controls", "project-section-panel-tasks");
     expect(tags).toHaveAttribute("aria-controls", "project-section-panel-tags");
+    expect(prs).toHaveAttribute("aria-controls", "project-section-panel-prs");
     expect(overview).toHaveAttribute("tabindex", "0");
     expect(tasks).toHaveAttribute("tabindex", "-1");
     fireEvent.keyDown(overview, { key: "ArrowRight" });
@@ -39,6 +41,8 @@ describe("project section navigation", () => {
     expect(tasks).toHaveAttribute("aria-selected", "true");
     expect(tasks).toHaveFocus();
     fireEvent.keyDown(tasks, { key: "ArrowDown" });
+    expect(prs).toHaveFocus();
+    fireEvent.keyDown(prs, { key: "ArrowDown" });
     expect(tags).toHaveFocus();
     fireEvent.keyDown(tags, { key: "ArrowDown" });
     expect(overview).toHaveFocus();
@@ -83,5 +87,6 @@ describe("project section navigation", () => {
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Task list" })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("tab", { name: "PR list" })).toHaveAttribute("aria-selected", "false");
   });
 });

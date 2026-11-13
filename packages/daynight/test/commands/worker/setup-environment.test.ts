@@ -1,7 +1,9 @@
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Operation } from "../../../src/api/operation.js";
+import * as commands from "../../../src/commands/worker/herdr/command.js";
 import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -56,6 +58,26 @@ afterEach(async () => {
 });
 
 describe("worker setup environment inspection", () => {
+  it("uses the default Windows hook runtime runner during public environment inspection", async () => {
+    const f = await fixture(), environment = { PATH: "/frozen/official/hook/path" }, runner = commands.runHerdrCommand;
+    const start = vi.spyOn(commands, "spawnHerdrProcess").mockImplementation((_file, _args, options) => spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(options.detached === false ? "5.1.26100.7628\n" : "")})`], { ...options, detached: true }));
+    const run = vi.spyOn(commands, "runHerdrCommand").mockImplementation((command, active, provided, options) => command.file === "powershell" ? runner(command, active, provided ?? start, options) : f.runCommand(command));
+    try {
+      const checks = await inspectWorkerEnvironment(f.options, { environment, platform: "win32", nodeVersion: "24.22.1" });
+      expect(checks.find(check => check.label === "powershell hook runtime")).toMatchObject({ status: "passed", detail: "5.1.26100.7628" });
+      expect(start).toHaveBeenCalledOnce();
+      expect(start.mock.calls[0]!.slice(0, 2)).toEqual(["powershell", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"]]);
+      expect(start.mock.calls[0]![2]).toMatchObject({ env: environment, cwd: f.cwd, detached: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    } finally { run.mockRestore(); start.mockRestore(); }
+  });
+
+  it("retains the explicitly supplied Windows hook runtime command runner", async () => {
+    const f = await fixture(), environment = { PATH: "/custom/official/hook/path" };
+    const checks = await inspectWorkerEnvironment(f.options, { ...f.dependencies, environment, platform: "win32" });
+    expect(checks.find(check => check.label === "powershell hook runtime")).toMatchObject({ status: "passed", detail: "5.1.0" });
+    expect(f.runCommand.mock.calls.filter(([command]) => command.file === "powershell").map(([command]) => command)).toEqual([{ file: "powershell", args: ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], environment, cwd: f.cwd }]);
+  });
+
   it("inspects both candidate agents without starting a daemon or altering native configuration", async () => {
     const f = await fixture();
     const before = await readFile(path.join(f.codex, "hooks.json"), "utf8");
