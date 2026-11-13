@@ -517,6 +517,152 @@ it.each(['bound', 'unbound'] as const)('isolates Project and direct detail on a 
   } finally { sessions.dispose(); }
 });
 
+it.each(['before verification finishes', 'while cleanup is pending'] as const)('honors one explicit retry %s after an unbound 404', async timing => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const peer = scope(); await admit(peer);
+  const sender = scope();
+  const ticket = await peer.beginSync(projectId, peer.signal);
+  let online = false, retried = false;
+  const cleanupStarted = Promise.withResolvers<void>(), finishCleanup = Promise.withResolvers<void>();
+  const internals = peer as unknown as { clearDeniedProject: (id: string, notify?: boolean, signal?: AbortSignal) => Promise<void> };
+  const original = internals.clearDeniedProject.bind(peer);
+  let cleanup: { mockRestore(): void } | undefined;
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async () => {
+    if (!online) throw new ApiError('server', 404, 'not_found');
+    return directAccessFixture(projectId);
+  });
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  const sessions = new TaskDetailSessions(peer); sessions.subscribe(projectId, taskId, () => {});
+  const events: { accessRestored?: true; directAccessRecheck?: true; error?: unknown }[] = [];
+  peer.subscribe(event => {
+    events.push(event);
+    if (timing === 'before verification finishes' && !retried && event.accessRevoked && event.error instanceof ApiError && event.error.status === 404) {
+      retried = true; online = true; sessions.load(projectId, taskId, 1, 'refresh');
+    }
+  });
+  try {
+    sessions.openDirect(projectId, taskId);
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    cleanup = vi.spyOn(internals, 'clearDeniedProject').mockImplementation((...args) => {
+      cleanupStarted.resolve(); return finishCleanup.promise.then(() => original(...args));
+    });
+    act(() => sender.reportUnboundProjectDenial(projectId));
+    await cleanupStarted.promise;
+    if (timing === 'while cleanup is pending') {
+      await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessRecheck: true, error: expect.objectContaining({ status: 404 }) })));
+      online = true; retried = true; act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+    }
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+    expect(sessions.snapshot(projectId, taskId).detail).toBeNull();
+    expect(events.some(event => event.accessRestored)).toBe(false);
+    await act(async () => finishCleanup.resolve());
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    expect(getProjectAccess).toHaveBeenCalledTimes(2);
+  } finally { finishCleanup.resolve(); cleanup?.mockRestore(); observation.mockRestore(); sessions.dispose(); }
+});
+
+it('does not publish an older successful verification after a new withdrawal during cleanup', async () => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const peer = scope(); await admit(peer);
+  const sender = scope();
+  const ticket = await peer.beginSync(projectId, peer.signal);
+  let online = false;
+  const cleanupStarted = Promise.withResolvers<void>(), finishCleanup = Promise.withResolvers<void>();
+  const internals = peer as unknown as { clearDeniedProject: (id: string, notify?: boolean, signal?: AbortSignal) => Promise<void> };
+  const original = internals.clearDeniedProject.bind(peer);
+  let cleanup: { mockRestore(): void } | undefined;
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async () => {
+    if (!online) throw new ApiError('server', 404, 'not_found');
+    return directAccessFixture(projectId);
+  });
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  const sessions = new TaskDetailSessions(peer); sessions.subscribe(projectId, taskId, () => {});
+  const events: { accessRestored?: true; directAccessRecheck?: true; error?: unknown }[] = []; peer.subscribe(event => events.push(event));
+  try {
+    sessions.openDirect(projectId, taskId);
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    cleanup = vi.spyOn(internals, 'clearDeniedProject').mockImplementation((...args) => { cleanupStarted.resolve(); return finishCleanup.promise.then(() => original(...args)); });
+    act(() => sender.reportUnboundProjectDenial(projectId));
+    await cleanupStarted.promise;
+    await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessRecheck: true, error: expect.objectContaining({ status: 404 }) })));
+    online = true; act(() => sessions.load(projectId, taskId, 1, 'refresh'));
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+    act(() => peer.suspendProject(projectId));
+    await act(async () => finishCleanup.resolve());
+    await waitFor(() => expect(cleanup).toHaveBeenCalledTimes(2));
+    expect(peer.isProjectSuspended(projectId)).toBe(true);
+    expect(events.some(event => event.accessRestored)).toBe(false);
+    expect(sessions.snapshot(projectId, taskId).detail).toBeNull();
+  } finally { finishCleanup.resolve(); cleanup?.mockRestore(); observation.mockRestore(); sessions.dispose(); }
+});
+
+it('rechecks direct access after an independent suspension overlaps an unbound verification', async () => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const peer = scope(); await admit(peer);
+  const sender = scope();
+  const ticket = await peer.beginSync(projectId, peer.signal);
+  const first = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  const second = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  const schedule = vi.spyOn(globalThis, 'setTimeout');
+  vi.mocked(getProjectAccess).mockReset().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise).mockResolvedValue(directAccessFixture(projectId));
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  const sessions = new TaskDetailSessions(peer); sessions.subscribe(projectId, taskId, () => {});
+  const events: { accessRestored?: true; directAccessRecheck?: true }[] = []; peer.subscribe(event => events.push(event));
+  try {
+    sessions.openDirect(projectId, taskId);
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    act(() => sender.reportUnboundProjectDenial(projectId));
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(1));
+    act(() => peer.suspendProject(projectId));
+    await act(async () => first.resolve(directAccessFixture(projectId)));
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+    await act(async () => second.resolve(directAccessFixture(projectId)));
+    await waitFor(() => expect(schedule).toHaveBeenCalledWith(expect.any(Function), 30_000));
+    expect(peer.isProjectSuspended(projectId)).toBe(true);
+    expect(sessions.snapshot(projectId, taskId).detail).toBeNull();
+    expect(events.some(event => event.accessRestored)).toBe(false);
+    act(() => peer.resumeProject(projectId));
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    expect(events).toContainEqual(expect.objectContaining({ accessRestored: true, directAccessRecheck: true }));
+    expect(peer.isProjectSuspended(projectId)).toBe(false);
+  } finally { first.resolve(directAccessFixture(projectId)); second.resolve(directAccessFixture(projectId)); schedule.mockRestore(); observation.mockRestore(); sessions.dispose(); }
+});
+
+it('restores the independent Task route after one Retry while a confirmed denial is still being cleaned up', async () => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const peer = scope(); await admit(peer);
+  const sender = scope();
+  const ticket = await peer.beginSync(projectId, peer.signal);
+  let online = false;
+  const cleanupStarted = Promise.withResolvers<void>(), finishCleanup = Promise.withResolvers<void>();
+  const internals = peer as unknown as { clearDeniedProject: (id: string, notify?: boolean, signal?: AbortSignal) => Promise<void> };
+  const original = internals.clearDeniedProject.bind(peer);
+  let cleanup: { mockRestore(): void } | undefined;
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async () => {
+    if (!online) throw new ApiError('server', 404, 'not_found');
+    return directAccessFixture(projectId);
+  });
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
+      <TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: 'Private task' });
+    cleanup = vi.spyOn(internals, 'clearDeniedProject').mockImplementation((...args) => { cleanupStarted.resolve(); return finishCleanup.promise.then(() => original(...args)); });
+    act(() => sender.reportUnboundProjectDenial(projectId));
+    await cleanupStarted.promise;
+    const retry = await screen.findByRole('button', { name: 'Retry details' });
+    online = true; fireEvent.click(retry);
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole('heading', { name: 'Private task' })).toBeNull();
+    await act(async () => finishCleanup.resolve());
+    expect(await screen.findByRole('heading', { name: 'Private task' })).toBeVisible();
+  } finally { finishCleanup.resolve(); cleanup?.mockRestore(); observation.mockRestore(); }
+});
+
 it('clears direct verification state for a new identity on the same Project', async () => {
   vi.stubGlobal('BroadcastChannel', Channel);
   const oldScope = scope(); await admit(oldScope);
