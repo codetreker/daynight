@@ -51,6 +51,8 @@ independent. The [Goal row disclosure decision](../bug-fix/2026-11-13-goal-row-d
 makes the heading body the disclosure and keeps detail and graph as separate
 actions. The [Goal execution summary decision](2026-11-13-goal-execution-summary.md)
 uses direct children for the heading's status count and Worker claim indicator.
+The [completion-progress decision](../bug-fix/2026-11-13-completion-progress-excludes-cancelled.md)
+projects scoped counts without removing cancelled members.
 
 ## Alternatives
 
