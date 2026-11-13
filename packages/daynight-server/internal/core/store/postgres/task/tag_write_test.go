@@ -9,6 +9,8 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestTaskTagAssociationsAndTouch(t *testing.T) {
@@ -123,5 +125,46 @@ func TestTaskTagAssociationsAndTouch(t *testing.T) {
 	}
 	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_tags WHERE project_id=$1 AND task_id=$2 AND tag_id=$3`, other.ID, foreign.ID, otherTag).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("foreign association changed: %d, %v", count, err)
+	}
+}
+
+// Failed replacement must roll back its earlier deletion, and DAO errors must
+// retain the underlying transaction failure for completion handling.
+func TestTaskTagWriteFailures(t *testing.T) {
+	db := readerStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	project := readerProject(t, db, 1)
+	item := readerTask(t, db, project.ID, 11, model.TaskTodo)
+	tagID := readerID(21)
+	readerExec(t, db, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES ($1,$2,'name','name',now(),now())`, tagID, project.ID)
+	readerExec(t, db, `INSERT INTO task_tags(project_id,task_id,tag_id) VALUES ($1,$2,$3)`, project.ID, item.ID, tagID)
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dao := task.NewTagWriter(tx, project.ID)
+	err = dao.ReplaceTaskTags(ctx, item.ID, []string{"not-a-uuid"})
+	if err == nil {
+		t.Fatal("invalid tag identity accepted")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM task_tags WHERE project_id=$1 AND task_id=$2 AND tag_id=$3`, project.ID, item.ID, tagID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("failed replacement changed associations: %d %v", count, err)
+	}
+	if _, err := dao.TaskTags(ctx, item.ID); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("read closed transaction: %v", err)
+	}
+	if err := dao.ReplaceTaskTags(ctx, item.ID, nil); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("replace closed transaction: %v", err)
+	}
+	if _, err := dao.TouchTaggedTasks(ctx, tagID, time.Now()); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("touch closed transaction: %v", err)
+	}
+	if err := dao.ClearTagAssociations(ctx, tagID); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("clear closed transaction: %v", err)
 	}
 }

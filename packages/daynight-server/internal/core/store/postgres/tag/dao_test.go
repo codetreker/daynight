@@ -39,6 +39,14 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 				t.Fatalf("insert: %+v", item)
 			}
 		}
+		stored, err := scope.TagDAO().Tag(ctx, ids[0])
+		if err != nil || stored.ID != ids[0] || stored.ProjectID != projectID || stored.Name != "A_1" {
+			t.Fatalf("write-scope tag: %+v %v", stored, err)
+		}
+		_, err = scope.TagDAO().Tag(ctx, uuid.NewString())
+		if !errors.Is(err, model.ErrNotFound) || !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("missing write-scope tag: %v", err)
+		}
 		return nil
 	})
 	if err != nil || completion.Outcome != store.TransactionCommitted {
@@ -275,6 +283,9 @@ func TestDAOErrorsRetainCauses(t *testing.T) {
 	}
 	if _, err = r.ResolveTags(ctx, uuid.NewString(), nil); !errors.Is(err, pgx.ErrTxClosed) {
 		t.Fatalf("closed resolve: %v", err)
+	}
+	if _, err = w.Tag(ctx, uuid.NewString()); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("closed write-scope tag: %v", err)
 	}
 	if _, err = w.InsertTag(ctx, model.Tag{}); !errors.Is(err, pgx.ErrTxClosed) {
 		t.Fatalf("closed insert: %v", err)
