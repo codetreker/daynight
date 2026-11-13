@@ -317,23 +317,6 @@ export const migrateLegacyWorktrees = async (options: MigrationOptions): Promise
     }
     const checkParent = await directory(path.dirname(namespace));
     const checkNamespace = checkParent === null ? null : await directory(namespace);
-    if (checkNamespace !== null) {
-      for (const name of await readdir(namespace)) {
-        const target = path.join(namespace, name);
-        const info = await lstat(target);
-        if (info.isDirectory() && !info.isSymbolicLink() && !values.some(value => value.directoryName === name) && (await readdir(target)).length) {
-          const targetPointer = await resolveGitFile(target, ".git");
-          const foreign = index.entries.filter(entry => entry.physicalPointer?.path === targetPointer.path);
-          if (foreign.length !== 1 || foreign[0]!.managed) throw new Error(`Unassociated nonempty worktree directory: ${target}`);
-          const entry = foreign[0]!;
-          const reverse = await ordinaryFile(path.join(target, ".git"));
-          const commonPointer = await ordinaryFile(path.join(entry.directory, "commondir"));
-          if (targetPointer.missing || reverse === null || !reverse.startsWith("gitdir: ")
-            || await resolveGitDirectory(target, reverse.slice(8)) !== await realpath(entry.directory)
-            || commonPointer === null || await realpath(await resolveGitDirectory(entry.directory, commonPointer)) !== canonicalCommon) throw new Error(`Unassociated nonempty worktree directory: ${target}`);
-        }
-      }
-    }
     const associated: { manifest: WorktreeManifest; entry: typeof index.entries[number] | null }[] = [];
     for (const manifest of values) {
       operation.check();

@@ -2464,7 +2464,10 @@ private Herdr resources. On macOS, each actual run has its own existing Herdr
 daemon and durable lifecycle record; Linux and Windows use the shared private
 daemon. Each task uses branch `daynight/<task-id>` and directory
 `<repository>/.worktrees/daynight/<worktree-id>`. Migrated claims retain their original task-id directory and cwd. Valid claims retain their dirty
-worktree; task branches and commits remain after terminal cleanup.
+worktree; task branches and commits remain after terminal cleanup. Repository
+preparation migrates only worktrees associated with existing resource records,
+manifests or Worker Git registrations. Unrelated directories under
+`.worktrees/daynight/`, including `.tmp`, remain untouched and do not block preparation.
 
 A workspace label starts with the task title and ends with its full stable owner:
 

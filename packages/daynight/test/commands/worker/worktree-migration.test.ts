@@ -510,14 +510,15 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     } finally { f.close(); }
   });
 
-  it("refuses unregistered foreign contents at a retired Herdr cwd", async () => {
+  it("ignores unregistered foreign contents at a retired Herdr cwd", async () => {
     const f = historicalFixture();
     try {
       const record = f.registerHerdr(f.old); f.release(); f.herdr.retireNeverStarted(record);
       mkdirSync(f.original.cwd); const foreign = path.join(f.original.cwd, "foreign.txt"); writeFileSync(foreign, "keep\n");
-      await expect(f.run()).rejects.toThrow();
+      await expect(f.run()).resolves.toEqual([]);
       expect(readFileSync(foreign, "utf8")).toBe("keep\n");
-      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+      expect(f.store.list()).toEqual([]);
+      expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
     } finally { f.close(); }
   });
 
@@ -748,6 +749,16 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
   });
 
+  it.each([".tmp", "scratch", randomUUID()])("ignores unrelated nonempty directory %s during migration", async name => {
+    const f = fixture(), value = owner(), original = f.add(value), cwd = path.join(f.namespace, name);
+    mkdirSync(cwd); writeFileSync(path.join(cwd, "foreign.txt"), "keep\n");
+    await expect(f.migrate()).resolves.toEqual([expected(value)]);
+    expect(readFileSync(path.join(cwd, "foreign.txt"), "utf8")).toBe("keep\n");
+    expect(f.store.list()).toEqual([expected(value)]);
+    expect(existsSync(path.join(original.admin, "locked"))).toBe(false);
+    expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
+  });
+
   it("retains a nonempty directory with no Git registration", async () => {
     const f = fixture(), value = owner(), cwd = f.binding(value).worktreePath;
     mkdirSync(cwd); writeFileSync(path.join(cwd, "foreign.txt"), "keep\n"); f.schedule.push(value);
@@ -756,14 +767,15 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
   });
 
-  it("retains a manually registered nonempty worktree after its reverse Git pointer disappears", async () => {
+  it("ignores a manually registered nonempty worktree after its reverse Git pointer disappears", async () => {
     const f = fixture(), value = owner(), original = f.add(value, false);
     rmSync(path.join(original.cwd, ".git"));
     writeFileSync(path.join(original.cwd, "foreign.txt"), "keep\n");
-    await expect(f.migrate()).rejects.toThrow();
+    await expect(f.migrate()).resolves.toEqual([]);
     expect(readFileSync(path.join(original.cwd, "foreign.txt"), "utf8")).toBe("keep\n");
     expect(existsSync(original.admin)).toBe(true);
-    expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+    expect(f.store.list()).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
   });
 
   it("refuses an unlocatable schedule without assuming its historical path", async () => {
