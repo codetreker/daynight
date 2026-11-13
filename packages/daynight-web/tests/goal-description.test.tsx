@@ -10,6 +10,7 @@ vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAt
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: ({ reveal }: { reveal: { path: string | null } }) => <span>Attachment: {reveal.path}</span> }));
 vi.mock('../src/features/task-thread/TaskDiscussion', () => ({ TaskDiscussion: () => null }));
 vi.mock('../src/features/task-assignment/TaskAssigneeSelect', () => ({ TaskAssigneeSelect: () => null }));
+vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onChange }: { value: readonly { id: string; name: string }[]; onChange: (value: readonly { id: string; name: string }[]) => void }) => <input aria-label="Tag draft" value={value[0]?.name ?? ''} onChange={(event) => onChange([{ id: '30000000-0000-4000-8000-000000000001', name: event.currentTarget.value }])} /> }));
 
 const projectId = '10000000-0000-4000-8000-000000000001';
 const goalId = '20000000-0000-4000-8000-000000000001';
@@ -18,13 +19,13 @@ let root: HTMLDivElement;
 beforeEach(() => { root = document.createElement('div'); root.id = 'root'; document.body.append(root); select.mockClear(); });
 afterEach(() => root.remove());
 
-const surface = (description: string, presentation: 'dialog' | 'page' = 'dialog') => {
+const surface = (description: string, presentation: 'dialog' | 'page' = 'dialog', resourceUnavailable = false, detailError: unknown = null, historyGeneration = 1) => {
   const detail = detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', description });
-  const task = { detail, mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null }, historyGeneration: 1,
+  const task = { detail, mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null }, historyGeneration,
     canEditGoal: false, canDisplayStatus: false, canSetStatus: false, canDisplayAssignee: false, canSetAssignedTo: false,
-    canDisplayDelete: false, canDelete: false, assignmentUncertain: false } as unknown as ReturnType<typeof useTaskDetail>;
+    canDisplayDelete: false, canDelete: false, canSetTags: true, setTags: noop, reconcile: noop, assignmentUncertain: false } as unknown as ReturnType<typeof useTaskDetail>;
   return <GoalDetailSurface projectId={projectId} taskId={goalId} detail={detail} resourceState={task} snapshot={null} presentation={presentation}
-    fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} />;
+    fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onClose={noop} onRefreshGraph={noop} resourceUnavailable={resourceUnavailable} detailError={detailError} />;
 };
 
 it.each(['dialog', 'page'] as const)('keeps description and information with keyboard tabs and attachment navigation in %s', (presentation) => {
@@ -55,4 +56,27 @@ it('shows the localized empty description in its own panel', () => {
   renderWithLocale(surface(''), { locale: 'zh-CN', taskCache: true, container: root });
   fireEvent.click(screen.getByRole('tab', { name: '描述' }));
   expect(screen.getByRole('tabpanel', { name: '描述' })).toHaveTextContent('暂无描述');
+});
+
+it('retains a tag draft through a background failure but retires it when Goal access is lost', () => {
+  const view = renderWithLocale(surface('Goal'), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Tag draft' }), { target: { value: 'Unsubmitted' } });
+  view.rerender(surface('Goal', 'dialog', false, new Error('Temporary refresh failure')));
+  expect(screen.getByRole('textbox', { name: 'Tag draft' })).toHaveValue('Unsubmitted');
+  view.rerender(surface('Goal', 'dialog', true));
+  expect(screen.queryByRole('textbox', { name: 'Tag draft', hidden: true })).toBeNull();
+  view.rerender(surface('Goal'));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+  expect(screen.getByRole('textbox', { name: 'Tag draft' })).toHaveValue('');
+});
+
+it('does not carry a Goal tag draft into a new history generation', () => {
+  const view = renderWithLocale(surface('Goal'), { locale: 'en', taskCache: true, container: root });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Tag draft' }), { target: { value: 'Old draft' } });
+  view.rerender(surface('Goal', 'dialog', false, null, 2));
+  expect(screen.queryByRole('textbox', { name: 'Tag draft' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+  expect(screen.getByRole('textbox', { name: 'Tag draft' })).toHaveValue('');
 });

@@ -1,18 +1,19 @@
-import type { GraphTask, TaskDetail, TaskGraph, TaskProperties } from '../../src/api/types';
+import type { GraphTask, TaskDetail, TaskGraph, TaskProperties, TaskTag } from '../../src/api/types';
 import { createTaskCacheScope, type TaskCacheScope } from '../../src/features/task-cache/TaskCacheProvider';
 import type { CachedProject } from '../../src/features/task-cache/project-cache';
 import { graphFixture } from './taskDetail';
 import { taskSyncEpoch, taskSyncFromGraph, TEST_VIEWER_ID, beginFixtureWorld } from './taskSync';
 
-export const admitTaskGraph = async (scope: TaskCacheScope, graph: TaskGraph, { versionForTask, propertiesForTask, epoch = taskSyncEpoch(graph.project.id) }: {
+export const admitTaskGraph = async (scope: TaskCacheScope, graph: TaskGraph, { versionForTask, propertiesForTask, tagsForTask, epoch = taskSyncEpoch(graph.project.id) }: {
   readonly versionForTask: (task: GraphTask) => bigint;
   readonly propertiesForTask?: (task: GraphTask) => TaskProperties;
+  readonly tagsForTask?: (task: GraphTask) => readonly TaskTag[];
   readonly epoch?: string;
 }): Promise<CachedProject> => {
   let confirmed = false; let retired = false;
   for (;;) {
     const ticket = await scope.beginSync(graph.project.id, scope.signal);
-    const sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
+    const sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }), ...(tagsForTask === undefined ? {} : { tagsForTask }) });
     const history = await scope.observeHistory(ticket, sync.epoch, scope.signal);
     if (history === 'current') return (await scope.applySync(ticket, sync, scope.signal)).project;
     if (history === 'confirm' && !confirmed) { confirmed = true; continue; }
@@ -41,7 +42,7 @@ export const createTaskSessionWorld = ({ viewerId = TEST_VIEWER_ID, onIdentityMi
       }
       for (const projectId of changedProjects) {
         const project = projects.get(projectId)!;
-        await admitTaskGraph(scope, graphFixture([...project.details.values()]), { epoch: project.epoch, versionForTask: (task) => project.details.get(task.id)!.version, propertiesForTask: (task) => project.details.get(task.id)!.properties });
+        await admitTaskGraph(scope, graphFixture([...project.details.values()]), { epoch: project.epoch, versionForTask: (task) => project.details.get(task.id)!.version, propertiesForTask: (task) => project.details.get(task.id)!.properties, tagsForTask: (task) => project.details.get(task.id)!.tags });
       }
     },
     node: (projectId: string, taskId: string): GraphTask => {
