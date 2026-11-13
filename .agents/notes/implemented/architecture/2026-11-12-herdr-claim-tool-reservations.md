@@ -29,9 +29,14 @@ its original stopped daemon without starting its Agent.
 
 Uncertain requests are never replayed. Explicitly unsubmitted requests and
 confirmed POST refusals can release their reservation. Otherwise, only a newer
-original Task version without that active claim fences the original request.
-Inventory absence, the same version and read failures retain it. Conflicting
-identity evidence remains an error. The
+original Task version without that active claim, or its trusted deletion
+tombstone, fences the original request. Tombstone reconciliation requires a
+complete inventory for the Project that remains valid after the scoped Task
+read. Only a confirmed `task.show` response with status 410, code `task_deleted`
+and the exact reserved Project/Task can release the reservation. Cancellation,
+unconfirmed outcomes, conflicting identities and unavailable Project observations
+retain the original responsibility. Inventory absence, the same version and
+other read failures are insufficient. The
 [Herdr design](../../../../docs/design/herdr-tool-launch.md#共享实例切换与恢复)
 owns the protocol and recovery order.
 
@@ -51,7 +56,14 @@ as an actual grant and feeds unowned tasks into execution and cleanup paths.
 
 **Release when the claim is absent from inventory.** The request can still
 commit after that snapshot at the same version. A newer Task version or a
-confirmed refusal is needed to fence it.
+confirmed refusal is needed to fence it; an exact Task deletion tombstone also
+prevents that request from acquiring a claim.
+
+**Retain every failed Task read indefinitely.** This preserves ambiguous reads
+but also retains a reservation after an ungranted Task is authoritatively
+deleted, permanently blocking a different shared Herdr selection. The trusted
+deletion response is terminal evidence. A generic 404, permission failure or
+another resource's response does not provide that guarantee.
 
 ## Consequences
 

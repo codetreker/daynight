@@ -74,7 +74,7 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 冻结 Herdr 的认领请求在发送前另存 SQLite `claim_tool_reservations`，绑定原 Project、Task、claimId、worktreeId、Worker、精确候选版本与完整冻结配置。Linux/Windows 在共享实例的同一串行队列中重新核对原选择仍就绪、daemon 仍存活，再同步提交这份记录；目标切换将其计入旧责任，不能利用请求尚未返回、pending 尚未登记的间隙替换原 daemon。该记录不是已授予 claim 或运行资源，不提前登记 pending、创建 worktree 或启动 Agent。
 
-匹配的实际 grant 在一个 SQLite 事务内写入 pending 和原冻结配置，并移除请求预留。未知响应不重发；重启后先对账该记录，再处理已有执行。原 active claim 即使已暂停或撤权仍转移责任，执行准入另行核验。仅明确未发送、原 POST 的可信拒绝，或原 Task 的更新版本证明原请求不再能成为 active claim，才可解除预留；同版本、读取失败和清单缺席本身不能证明未授予。同 claim 的身份矛盾保留记录并报告。此机制的取舍见[认领工具预留决策](../../.agents/notes/implemented/architecture/2026-11-12-herdr-claim-tool-reservations.md)。
+匹配的实际 grant 在一个 SQLite 事务内写入 pending 和原冻结配置，并移除请求预留。未知响应不重发；重启后先对账该记录，再处理已有执行。原 active claim 即使已暂停或撤权仍转移责任，执行准入另行核验。仅明确未发送、原 POST 的可信拒绝、原 Task 的更新版本证明原请求不再能成为 active claim，或原 Task 的可信删除响应，才可解除预留。删除对账要求本轮完整清单覆盖该 Project，且 scoped read 返回后该观察仍有效；只接受精确原 Project/Task 的已确认 `task.show` 响应、HTTP 410 和 `task_deleted`。取消、未知结果、身份冲突及失效的项目观察保留原责任；同版本、其它读取失败和清单缺席本身不能证明未授予。同 claim 的身份矛盾保留记录并报告。此机制的取舍见[认领工具预留决策](../../.agents/notes/implemented/architecture/2026-11-12-herdr-claim-tool-reservations.md)。
 
 `shared.ts` 的新目标准入依序核验候选、保留切换 intent、停止原实例、确认 API/client 两个 endpoint 关闭及原 daemon 和全部 mapping 进程树停止，再核验并启动新 launch。已验证的文件 recipe 不能证明 daemon 仍存活；新 Herdr 准入仍重入实例检查。运行循环只在配置选择 Herdr 时定期刷新该候选，并唤醒对账，使无旧 claim 的空闲实例退出后也能按同一规则恢复，纯 Web 不因此启动 Herdr。spawn 前保存 starting，取得原 daemon proof 后才接受实际握手并提交 ready/applied。旧执行、未确认 probe、启动/停止未知和遗留 native 都使新目标保持 pending；原执行的 RPC 和健康 Web 执行继续可用。首次迁移旧非受控实例也遵守这些规则，缺原 daemon 身份不能用 RPC 回执冒充完整停止证明。
 

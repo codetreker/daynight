@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { ensureCleanupSchedule } from "../../../src/commands/worker/cleanup-schedule.js";
 import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
 import { ArchiveRepairRequiredError, type ArchiveProbeResult } from "../../../src/commands/controller/archive-error.js";
@@ -23,7 +24,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { TimerOptions } from "node:timers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OperationError } from "../../../src/api/operation.js";
-import { ApiError } from "../../../src/api/client.js";
+import { ApiError, createApiClient } from "../../../src/api/client.js";
+import { createSharedWorkerHerdr } from "../../../src/commands/worker/herdr/shared.js";
+import { resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
+import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
@@ -1401,6 +1405,81 @@ describe("minimal worker resource reconciliation", () => {
     await createWorkerCoordinator({ ...f.options, maxConcurrent: 0 }).tick();
     expect(f.store.listClaimToolReservations()).toEqual(evidence === "newer-version" ? [] : [original]);
     expect(f.store.listTasks()).toEqual([]); expect(f.remote.claim).toHaveBeenCalledOnce(); expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
+  it("releases a deleted unknown claim reservation so the shared Herdr selection can switch", async () => {
+    const f = await fixture(), operation = createOperation({ limits: { totalMs: 10_000 } }), paths = resolveWorkerPaths(f.root);
+    const instancePaths = { ...resolveHerdrInstancePaths({ herdrDirectory: "/state/h", logsDirectory: "/state/logs" }), privateDirectory: paths.herdrDirectory, configurationFile: path.join(paths.herdrDirectory, "config.toml"), sessionDirectory: path.join(paths.herdrDirectory, "sessions") };
+    const launch = async (label: string) => {
+      const file = path.join(f.root, `herdr-${label}`), body = Buffer.from(`\x7fELF${label}`);
+      await writeFile(file, body, { mode: 0o700 });
+      const value = { ...reservedConfiguration().herdrLaunch!, entryPath: file, canonicalEntryPath: file, executablePath: file, command: { file, prefixArgs: [] }, artifacts: [{ role: "entry" as const, path: file, realPath: file, size: String(body.length), sha256: createHash("sha256").update(body).digest("hex") }] };
+      return { ...value, selectionKey: toolSelectionKey(value) };
+    };
+    const a = await launch("A"), b = await launch("B"), frozen = { ...reservedConfiguration(), herdrLaunch: a };
+    let nextPid = 1000, endpoint = false;
+    const processes = new Map<number, { proof: processProof.ProcessProof; running: boolean }>(), transitions: string[] = [];
+    const shared = createSharedWorkerHerdr({ paths, homeDirectory: f.root,
+      hasResponsibilities: () => f.store.listUnfinishedTasks().some(task => task.agentControlMode === "herdr") || f.store.listClaimToolReservations().some(reservation => reservation.agentControlMode === "herdr"),
+      confirmMappingsStopped: async () => true, inspectEndpoints: async () => ({ api: endpoint, client: endpoint }),
+      captureProcess: async pid => processes.get(pid)!.proof,
+      inspectProcess: async proof => processes.get(proof.pid)?.running ? "running" : "stopped",
+      instanceFactory: options => {
+        const key = options.herdrLaunch?.selectionKey ?? "legacy"; let pid: number | undefined;
+        const ready = () => ({ reconnected: false, protocol: 22 as const, version: "0.9.9", snapshot: {} });
+        return { ...f.herdr, paths: instancePaths,
+          ensureInstance: async () => { pid = nextPid++; processes.set(pid, { proof: { pid, parentPid: 1, processGroupId: pid, startedAt: `birth-${pid}`, commandHash: "a".repeat(64) }, running: true }); endpoint = true; transitions.push(`start:${key}`); await options.onDaemonSpawn?.(pid); return ready(); },
+          connectInstance: async () => ready(),
+          stopInstance: async () => { if (pid !== undefined) processes.get(pid)!.running = false; endpoint = false; transitions.push(`stop:${key}`); return { apiClosed: true, clientClosed: true, ownedChildClosed: true }; },
+        } as WorkerHerdrAdapter;
+      },
+    });
+    try {
+      await expect(shared.prepareSelection(a, operation)).resolves.toMatchObject({ state: "applied" });
+      f.candidates.splice(1);
+      vi.mocked(f.remote.claim).mockRejectedValue(new ApiError({ operation: "worker.claim" }, "request", { cause: new Error("Response lost before grant was known."), outcomeUnconfirmed: true }));
+      const runner = createWorkerCoordinator({ ...f.options, freezeConfiguration: async () => frozen, reserveClaimTools: async reservation => { f.store.reserveClaimTools(reservation); } });
+      await runner.tick();
+      const original = f.store.listClaimToolReservations()[0]!;
+      expect(original.nativeConfiguration.herdrLaunch).toEqual(a); expect(f.store.listTasks()).toEqual([]);
+      await expect(shared.prepareSelection(b, operation)).resolves.toEqual({ state: "pending", reason: "active_instance" });
+      f.candidates.splice(0);
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ error: { code: "task_deleted", message: "Task was deleted.", requestId: "deleted-task-read" } }), { status: 410, headers: { "content-type": "application/json" } }));
+      vi.mocked(f.remote.readTask).mockImplementation(async (projectId, taskId, signal) => {
+        const read = createOperation({ signal });
+        try { return await createApiClient({ serverUrl: origin, operation: read, fetch }).getTask(projectId, taskId); }
+        finally { read.dispose(); }
+      });
+      await createWorkerCoordinator({ ...f.options, maxConcurrent: 0 }).tick();
+      expect(fetch).toHaveBeenCalledOnce(); expect(String(fetch.mock.calls[0]![0])).toBe(`${origin}/api/v1/projects/${original.projectId}/tasks/${original.taskId}`);
+      expect(f.store.listClaimToolReservations()).toEqual([]);
+      await expect(shared.prepareSelection(b, operation)).resolves.toMatchObject({ state: "applied" });
+      expect(transitions).toEqual([`start:${a.selectionKey}`, `stop:${a.selectionKey}`, `start:${b.selectionKey}`]);
+      expect(f.store.listTasks()).toEqual([]); expect(f.remote.claim).toHaveBeenCalledOnce();
+      expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+    } finally { operation.dispose(); }
+  });
+
+  it.each(["wrong-status", "wrong-code", "wrong-project", "wrong-task", "wrong-operation", "wrong-phase", "unconfirmed", "not-confirmed", "untyped", "incomplete-inventory", "invalidated", "cancelled"] as const)("retains a deleted unknown claim reservation without trusted current evidence (%s)", async evidence => {
+    const f = await fixture(), frozen = reservedConfiguration(); f.candidates.splice(1);
+    vi.mocked(f.remote.claim).mockRejectedValue(new Error("Unknown ungranted request."));
+    await createWorkerCoordinator({ ...f.options, freezeConfiguration: async () => frozen, reserveClaimTools: async reservation => { f.store.reserveClaimTools(reservation); } }).tick();
+    const original = f.store.listClaimToolReservations()[0]!; f.candidates.splice(0);
+    const cancellation = new AbortController(), runner = createWorkerCoordinator({ ...f.options, maxConcurrent: 0, signal: cancellation.signal });
+    const failure = new ApiError({ operation: evidence === "wrong-operation" ? "task.delete" : "task.show", projectId: evidence === "wrong-project" ? uuid(990) : original.projectId, taskId: evidence === "wrong-task" ? uuid(991) : original.taskId }, evidence === "wrong-phase" ? "protocol" : "response", {
+      cause: new Error("Deleted task response"), status: evidence === "wrong-status" ? 404 : 410, serverError: { code: evidence === "wrong-code" ? "not_found" : "task_deleted", message: "Deleted task", requestId: "deletion-proof" }, confirmedRefusal: evidence !== "not-confirmed", outcomeUnconfirmed: evidence === "unconfirmed",
+    });
+    vi.mocked(f.remote.readTask).mockImplementation(async () => {
+      if (evidence === "invalidated") runner.invalidateProject(original.projectId);
+      if (evidence === "cancelled") cancellation.abort(new Error("Worker cancelled before its read returned."));
+      throw evidence === "untyped" ? Object.assign(new Error("Untrusted deletion"), { ...failure }) : failure;
+    });
+    if (evidence === "incomplete-inventory") vi.mocked(f.remote.ownInventory).mockResolvedValue({ tasks: [], coveredProjectIds: [], unavailableProjectIds: [original.projectId] });
+    const result = await runner.tick().then(() => null, error => error);
+    if (result !== null) expect(isWorkerCancellation(result, cancellation.signal)).toBe(true);
+    expect(f.store.listClaimToolReservations()).toEqual([original]); expect(f.store.listTasks()).toEqual([]);
+    expect(f.remote.claim).toHaveBeenCalledOnce(); expect(f.tasks.start).not.toHaveBeenCalled();
+    if (evidence === "incomplete-inventory") expect(f.remote.readTask).not.toHaveBeenCalled();
   });
 
   it("releases a reservation for a confirmed claim refusal", async () => {

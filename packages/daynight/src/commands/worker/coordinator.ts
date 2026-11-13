@@ -648,6 +648,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         } else if (fresh.version > reservation.version) options.store.releaseClaimToolReservation(reservation);
       } catch (error) {
         if (isWorkerCancellation(error, signal)) throw error;
+        if (!signal.aborted && !invalidated(reservation.projectId) && error instanceof ApiError && error.operation === "task.show"
+          && error.phase === "response" && error.status === 410 && error.code === "task_deleted"
+          && error.projectId === reservation.projectId && error.taskId === reservation.taskId && error.confirmedRefusal && !error.outcomeUnconfirmed) {
+          options.store.releaseClaimToolReservation(reservation);
+          continue;
+        }
         options.emit({ kind: "warning", message: `The original claim request for ${reservation.projectId}/${reservation.taskId}/${reservation.claimId} remains unconfirmed; its frozen tools are retained.`, error });
       }
     }

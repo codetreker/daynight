@@ -247,7 +247,8 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
       deleteClaimToolReservation(reservation);
       return local;
     }),
-    // The caller must prove a definite rejection or a later authoritative task version.
+    // The caller must prove a definite rejection, a later authoritative task
+    // version, or a confirmed deletion of the original task.
     releaseClaimToolReservation: (input: ClaimToolReservation): boolean => atomic(() => {
       const expected = asClaimToolReservation(input), previous = reservationForTask(expected);
       if (previous === null) return false;
