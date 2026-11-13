@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 
-export type ProjectManagementOwner = "settings" | "transfer" | "delete";
+export type ProjectManagementOwner = "settings" | "github" | "transfer" | "delete";
 
 export type ProjectManagementGuard = {
   readonly tryAcquire: (owner: ProjectManagementOwner) => boolean;
