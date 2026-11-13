@@ -573,7 +573,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
     expect(preserved!.after.startedAt).toBe(preserved!.before.startedAt); expect(preserved!.after.completedAt).toBe(preserved!.before.completedAt);
     await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
     await page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true }).selectOption('cancelled');
-    await expect(page.locator(`[data-chain-id="${taskId}"] .root-progress-label`)).toContainText(locale === 'en' ? '1/2 ended' : '1/2 已结束');
+    await expect(page.locator(`[data-chain-id="${taskId}"] .root-progress-label`)).toContainText(locale === 'en' ? '0/1 completed' : '0/1 已完成');
     await expect(page.locator(`#chain-task-${taskId}-${previousId}`)).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });

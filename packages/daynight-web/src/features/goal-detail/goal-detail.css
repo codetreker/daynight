@@ -25,7 +25,6 @@
 .goal-information-track { display: flex; height: 6px; overflow: hidden; border-radius: 3px; background: #edf0f5; }
 .goal-information-track i { display: block; height: 100%; }
 .goal-information-done { background: #78ac94; }
-.goal-information-cancelled { background: #c8bbd3; }
 .goal-information .goal-information-statuses { margin-top: .85rem; }
 .goal-information-loading, .goal-information-error p { margin: 0 0 .65rem; }
 .goal-information-error { margin-top: 1rem; color: #a05252; }

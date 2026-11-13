@@ -50,7 +50,7 @@ describe('Goal list', () => {
     const second = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
     const toggle = within(first).getByRole('button', { name: '展开 Goal：goal' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(first).toHaveTextContent('0 完成 · 1 取消');
+    expect(first.querySelector('.goal-list-progress')).toHaveTextContent('0/1 已完成');
     expect(first).toHaveTextContent('待处理');
     fireEvent.click(toggle);
     fireEvent.click(within(second).getByRole('button', { name: '展开 Goal：other' }));
@@ -78,6 +78,30 @@ describe('Goal list', () => {
     expect(secondChain).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(within(document.querySelector<HTMLElement>('[data-goal-id="empty"]')!).getByRole('button', { name: '展开 Goal：empty' }));
     expect(screen.getByText('此 Goal 暂无子任务。')).toBeVisible();
+  });
+
+  it('projects cancelled children out of progress while retaining members and focus across updates', () => {
+    const members = [summary('done', 'task', goal.id, 'done'), summary('waiting', 'task', goal.id, 'todo'), summary('cancelled', 'task', goal.id, 'cancelled')];
+    const current = [goal, other, empty, ...members];
+    const view = createLocaleRender('en', { taskCache: true })(list(snapshot(current)));
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    const toggle = within(card).getByRole('button', { name: 'Expand Goal: goal' });
+    const progress = card.querySelector('.goal-list-progress')!;
+    expect(progress).toHaveTextContent('1/2 completed');
+    expect(progress.querySelectorAll('i')).toHaveLength(1);
+    expect(progress.querySelector('i')).toHaveStyle({ width: '50%' });
+    fireEvent.click(toggle);
+    const done = within(card).getByRole('button', { name: /done.*Done/ });
+    done.focus();
+    view.rerender(list(snapshot(current.map((item) => item.id === 'done' ? { ...item, status: 'cancelled' } : item))));
+    expect(progress).toHaveTextContent('0/1 completed');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(done).toHaveFocus();
+    view.rerender(list(snapshot(current.map((item) => item.type === 'task' ? { ...item, status: 'cancelled' } : item))));
+    expect(progress).toHaveTextContent('0/0 completed');
+    expect(progress.querySelector('i')).toHaveStyle({ width: '0%' });
+    expect(within(card).queryByText('This Goal has no child tasks yet.')).toBeNull();
+    expect(within(card).getByText('cancelled', { selector: '.root-title' })).toBeVisible();
   });
 
   it('updates membership without resetting surviving groups and discards removed group state', () => {

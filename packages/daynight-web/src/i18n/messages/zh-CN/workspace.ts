@@ -28,7 +28,7 @@ export const workspace: WorkspaceMessages = {
     heading: "整体进度", standalone: "独立任务", standaloneScope: "未完成任务 + 今天及前 6 天完成的任务",
     allCompleted: "暂无近期任务", allCompletedDetail: "当前没有未完成或今天及前 6 天完成的任务链与独立任务。",
     targetUnavailable: "对应的任务分组已不可见，请从任务列表选择任务。",
-    rowLabel: ({ title, done, cancelled, total, percent }) => cancelled === 0 ? `${title}，已完成 ${number(done)} / ${number(total)}，${number(percent)}%，前往任务列表` : `${title}，已结束 ${number(done + cancelled)} / ${number(total)}，${number(done)} 完成，${number(cancelled)} 取消，${number(percent)}%，前往任务列表`,
+    rowLabel: ({ title, done, total, percent }) => `${title}，已完成 ${number(done)} / ${number(total)}，${number(percent)}%，前往任务列表`,
   },
   standalone: {
     list: "独立任务列表", summary: ({ visible, total }) => `最新创建在前 · ${number(visible)} / ${number(total)} 个独立任务`, summaryLabel: ({ visible, total }) => `显示 ${number(visible)} 个，共 ${number(total)} 个独立任务`, empty: "暂无独立任务", emptyDetail: "未归属 Goal 的独立任务将显示在这里。", createdOn: ({ date }) => `创建于 ${date}`,

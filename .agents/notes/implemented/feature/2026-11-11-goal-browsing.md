@@ -46,6 +46,8 @@ detail while retaining the nested reading owners. The
 presentation and lifecycle.
 The [Goal status background decision](2026-11-12-goal-status-backgrounds.md)
 uses the Goal's own state for its list heading while keeping scoped progress independent.
+The [completion-progress decision](../bug-fix/2026-11-13-completion-progress-excludes-cancelled.md)
+projects scoped counts without removing cancelled members.
 
 ## Alternatives
 

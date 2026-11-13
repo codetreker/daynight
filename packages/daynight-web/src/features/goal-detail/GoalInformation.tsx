@@ -1,5 +1,6 @@
 import type { TaskDetail } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { completionProgress } from '../task-graph/completion-progress';
 import type { TaskScope } from '../task-graph/scope';
 
 export const GoalInformation = ({ detail, scope, graphError, onRefreshGraph }: {
@@ -10,6 +11,7 @@ export const GoalInformation = ({ detail, scope, graphError, onRefreshGraph }: {
 }) => {
   const { locale, messages, format } = useI18n();
   const zh = locale === 'zh-CN';
+  const progress = scope === null ? null : completionProgress(scope.progress);
   return <aside className="goal-information" aria-label={zh ? 'Goal 信息' : 'Goal information'}>
     <section className="goal-information-section">
       <h3>{zh ? '常规信息' : 'General information'}</h3>
@@ -20,14 +22,14 @@ export const GoalInformation = ({ detail, scope, graphError, onRefreshGraph }: {
     </section>
     <section className="goal-information-section">
       <h3>{zh ? '任务统计' : 'Task statistics'}</h3>
-      {scope !== null && <>
+      {scope !== null && progress !== null && <>
         <dl className="goal-information-counts">
           <div><dt>{zh ? '独立任务数' : 'Standalone tasks'}</dt><dd>{format.number(scope.standaloneIds.length)}</dd></div>
           <div><dt>{zh ? '任务链数' : 'Task chains'}</dt><dd>{format.number(scope.chains.length)}</dd></div>
           <div><dt>{zh ? '任务总数' : 'Total tasks'}</dt><dd>{format.number(scope.progress.total)}</dd></div>
         </dl>
-        <p className="goal-information-progress">{messages.graph.progress(scope.progress)}</p>
-        <div className="goal-information-track" aria-hidden="true"><i className="goal-information-done" style={{ width: `${scope.progress.total === 0 ? 0 : scope.progress.done / scope.progress.total * 100}%` }} /><i className="goal-information-cancelled" style={{ width: `${scope.progress.total === 0 ? 0 : scope.progress.cancelled / scope.progress.total * 100}%` }} /></div>
+        <p className="goal-information-progress">{messages.graph.progress({ done: progress.displayDone, total: progress.displayTotal })}</p>
+        <div className="goal-information-track" aria-hidden="true"><i className="goal-information-done" style={{ width: `${progress.widthPercent}%` }} /></div>
         <dl className="goal-information-counts goal-information-statuses">
           <div><dt>{zh ? '已完成' : 'Completed'}</dt><dd>{format.number(scope.progress.done)}</dd></div>
           <div><dt>{zh ? '已取消' : 'Cancelled'}</dt><dd>{format.number(scope.progress.cancelled)}</dd></div>

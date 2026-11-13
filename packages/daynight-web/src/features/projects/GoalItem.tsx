@@ -3,6 +3,7 @@ import type { TaskSummary, WorkerClaim } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import type { GraphIndex } from '../task-graph/model';
+import { completionProgress } from '../task-graph/completion-progress';
 import { projectTaskScope } from '../task-graph/scope';
 import { ScopedTaskChainRow } from '../task-graph/ScopedTaskChainRow';
 import { goalListContents } from './goal-list-model';
@@ -43,7 +44,8 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
   }, [contents.chains]);
   const title = `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}`;
   const childrenId = `project-goal-children-${goal.id}`;
-  const { total: count, done, cancelled } = scope.progress;
+  const { total: count } = scope.progress;
+  const progress = completionProgress(scope.progress);
   return <li className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status} ref={root}>
     <div className="goal-list-row task-status-surface" data-task-status={goal.status}>
       <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} onClick={() => {
@@ -53,7 +55,7 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
       <span className="goal-list-icon" aria-hidden="true">◎</span>
       <span className="goal-list-main"><button className="goal-list-title" id={`project-goal-${goal.id}`} type="button" aria-haspopup="dialog" ref={hint.triggerRef} {...hint.triggerEvents} aria-describedby={hint.descriptionId} onClick={(event) => { hint.triggerEvents.onClick(); onOpenGoal(goal.id, event.currentTarget); }}>{title}</button>
         <span className="goal-list-meta"><TaskAssigneeIdentity projectId={projectId} assignedTo={goal.assignedTo} /><span>{m.composition({ chains: scope.chains.length, standalone: scope.standaloneIds.length })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span>{hint.hint}</span>
-      <span className="goal-list-progress"><span>{graph.progress({ done, cancelled, total: count })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${count === 0 ? 0 : done / count * 100}%` }} /><i className="goal-list-cancelled" style={{ width: `${count === 0 ? 0 : cancelled / count * 100}%` }} /></span></span>
+      <span className="goal-list-progress"><span>{graph.progress({ done: progress.displayDone, total: progress.displayTotal })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${progress.widthPercent}%` }} /></span></span>
       <span className={`root-status graph-status-${goal.status}`}>{common.status[goal.status]}</span>
     </div>
     <div id={childrenId} ref={content} hidden={!expanded} className="goal-list-contents">{expanded && <>
