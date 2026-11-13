@@ -45,6 +45,9 @@ result and escalation. Escalation uses a separate persisted follow-up baseline
 recorded after submission returns. Recovery without that baseline starts it
 conservatively after observing the original operation, preserving the original
 intent time without counting preparation or transport delay as response time.
+Progress uses stable entry IDs and revisions independently of the history epoch:
+a Controller reconnect invalidates quiet evidence, but unchanged persisted
+entries do not discharge the follow-up obligation.
 
 ## Alternatives
 

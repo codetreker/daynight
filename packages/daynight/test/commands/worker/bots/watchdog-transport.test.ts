@@ -33,7 +33,7 @@ describe("Watchdog production data adapter", () => {
     const own = message("user_message", "own", "2026-11-13T00:03:00Z");
     const readTaskSession = vi.fn().mockResolvedValueOnce(page([message("tool_call", "tool", "2026-11-13T00:02:00Z"), { ...own, body: { ...own.body, origin: "daynight" } }], { hasMoreBefore: true, beforeCursor: "older" }))
       .mockResolvedValueOnce(page([message("assistant_message", "assistant", "2026-11-13T00:01:00Z", "Please continue")]));
-    expect(await setup({ readTaskSession }).history(observation, signal)).toEqual({ complete: true, lastEntryId: "epoch/tool/1", lastAssistantText: "Please continue", lastInputAt: Date.parse("2026-11-13T00:03:00Z") });
+    expect(await setup({ readTaskSession }).history(observation, signal)).toEqual({ complete: true, lastEntryId: "epoch/tool/1", lastProgressId: "tool/1", lastAssistantText: "Please continue", lastInputAt: Date.parse("2026-11-13T00:03:00Z") });
     expect(readTaskSession).toHaveBeenLastCalledWith("project", "task", "session", { limit: 200, before: "older" });
   });
 

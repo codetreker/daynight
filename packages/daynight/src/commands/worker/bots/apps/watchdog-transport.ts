@@ -71,7 +71,7 @@ const source: WatchdogSource = {
   }),
   history: (observation, signal) => withApi(signal, async api => {
     const sessionId = observation.session.sessionId;
-    const result: WatchdogHistory = { complete: false, lastEntryId: null, lastAssistantText: null, lastInputAt: null };
+    const result: WatchdogHistory = { complete: false, lastEntryId: null, lastProgressId: null, lastAssistantText: null, lastInputAt: null };
     if (sessionId === null) return result;
     let before: string | undefined, epoch: string | undefined, source: string | undefined;
     let inputFound = false, assistantFound = false;
@@ -89,7 +89,10 @@ const source: WatchdogSource = {
         // A projected input reference does not reveal its origin. It still
         // protects the quiet interval, but cannot prove progress after our send.
         const unreadableInput = entry.kind === "user_message" && (entry.truncated || entry.body?.kind !== "user_message");
-        if (!automaticInput && !unreadableInput && result.lastEntryId === null) result.lastEntryId = `${epoch}/${entry.entryId}/${entry.revision}`;
+        if (!automaticInput && !unreadableInput && result.lastEntryId === null) {
+          result.lastEntryId = `${epoch}/${entry.entryId}/${entry.revision}`;
+          result.lastProgressId = `${entry.entryId}/${entry.revision}`;
+        }
         if (entry.kind === "user_message" && !inputFound) {
           inputFound = true;
           if (entry.timestamp === null) result.untimedInputId = `${epoch}/${entry.entryId}/${entry.revision}`;

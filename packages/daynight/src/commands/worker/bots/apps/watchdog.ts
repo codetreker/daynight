@@ -9,7 +9,7 @@ import { matchingWatchdogRule } from "./watchdog-rules.js";
 export type WatchdogCategory = "stalled" | "disconnected" | "waiting_input" | "no_execution" | "unobservable";
 export const WATCHDOG_DURATION: Readonly<Record<WatchdogCategory, number>> = { stalled: 600_000, disconnected: 300_000, waiting_input: 600_000, no_execution: 600_000, unobservable: 900_000 };
 export type WatchdogObservation = { projectId: string; taskId: string; title: string; inScope: boolean; taskStatus?: string; assignedTo?: string | null; session: TaskSessionObservation; textEvidence?: Record<string, TextEvidence> };
-export type WatchdogHistory = { complete: boolean; lastEntryId: string | null; lastAssistantText: string | null; lastInputAt: number | null; untimedInputId?: string; inputQuietSince?: number; inputQuietObservedAt?: number };
+export type WatchdogHistory = { complete: boolean; lastEntryId: string | null; lastProgressId: string | null; lastAssistantText: string | null; lastInputAt: number | null; untimedInputId?: string; inputQuietSince?: number; inputQuietObservedAt?: number };
 export type WatchdogSource = {
   /** A complete inventory; a partial project or task listing must throw. */
   scan(signal: AbortSignal, prior?: WatchdogObservation[]): Promise<WatchdogObservation[]>;
@@ -33,7 +33,7 @@ const snapshot = (observation: WatchdogObservation): WatchdogObservation => {
   }
   return result;
 };
-type Attempt = { operationId: string; ruleId: string; message: string; manualVersion?: string; ruleIndex?: number; messageEvidence?: TextEvidence; ruleIdEvidence?: TextEvidence; at: number; followUpSince?: number; historyId: string | null; observation: WatchdogObservation; result: string; notifiedResult: string | null; escalated: boolean; progressed: boolean };
+type Attempt = { operationId: string; ruleId: string; message: string; manualVersion?: string; ruleIndex?: number; messageEvidence?: TextEvidence; ruleIdEvidence?: TextEvidence; at: number; followUpSince?: number; historyId: string | null; progressId?: string | null; observation: WatchdogObservation; result: string; notifiedResult: string | null; escalated: boolean; progressed: boolean };
 export type WatchdogState = { schemaVersion: 1; since: number; reportedCategory: WatchdogCategory | null; reportedAt: number | null; closedAt: number | null; recurrence: boolean; observation: WatchdogObservation; attempt: Attempt | null; notices: Notice[]; inputQuiet?: { identity: string; since: number; observedAt: number } | null };
 export const watchdogHistoryIdentity = (observation: WatchdogObservation, history: WatchdogHistory): string => digest(JSON.stringify([
   observation.session.sessionId, observation.session.claimId, observation.session.executionGeneration, observation.session.connectionEpoch,
@@ -97,7 +97,7 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
   };
   const history = async (observation: WatchdogObservation): Promise<WatchdogHistory> => {
     try { return await source.history(observation, context.signal); }
-    catch { context.signal.throwIfAborted(); return { complete: false, lastEntryId: null, lastAssistantText: null, lastInputAt: null }; }
+    catch { context.signal.throwIfAborted(); return { complete: false, lastEntryId: null, lastProgressId: null, lastAssistantText: null, lastInputAt: null }; }
   };
   const updateAttempt = async (item: AssistantTaskItem, state: WatchdogState, observation: WatchdogObservation, now: number): Promise<void> => {
     const attempt = state.attempt;
@@ -129,7 +129,16 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
     if (observation.session.observation === "observed" && observation.session.activity === "working" && classifyWatchdogObservation(observation, now) === null) attempt.progressed = true;
     if (!attempt.progressed && observation.session.sessionId === attempt.observation.session.sessionId) {
       const latest = await history(observation);
-      if (latest.complete && latest.lastEntryId !== null && latest.lastEntryId !== attempt.historyId) attempt.progressed = true;
+      if (latest.complete && latest.lastProgressId !== undefined) {
+        if (attempt.progressId === undefined) {
+          // Legacy watermarks included the connection's history epoch. Keep
+          // the original evidence, extracting only a validated durable suffix.
+          // Unknown old formats establish a baseline, never prove progress.
+          const legacy = attempt.historyId?.match(/^.+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[1-9][0-9]*)$/i)?.[1];
+          attempt.progressId = attempt.historyId === null ? null : legacy ?? latest.lastProgressId;
+        }
+        if (latest.lastProgressId !== null && latest.lastProgressId !== attempt.progressId) attempt.progressed = true;
+      }
     }
     if (!attempt.escalated && !attempt.progressed && clock.now() - attempt.followUpSince! >= 600_000) {
       attempt.escalated = true;
@@ -212,7 +221,8 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
     const message = summarize(rule.action.message), ruleId = summarize(rule.id);
     state.attempt = { operationId: randomUUID(), ruleId: ruleId.preview, message: message.preview, manualVersion: manual.version,
       ruleIndex: (manual.rules as JsonValue[]).indexOf(rule as unknown as JsonValue), messageEvidence: message.evidence, ruleIdEvidence: ruleId.evidence,
-      at: clock.now(), historyId: latest.lastEntryId, observation: snapshot(observation), result: "unknown", notifiedResult: null, escalated: false, progressed: false };
+      at: clock.now(), historyId: latest.lastEntryId, progressId: latest.lastProgressId,
+      observation: snapshot(observation), result: "unknown", notifiedResult: null, escalated: false, progressed: false };
     // Persist the original fence before any possible submission. A crash here is
     // intentionally recovered by queries only, never by a replacement send.
     item = await save(item, state);

@@ -5,6 +5,7 @@ import type { AssistantTask, AssistantTaskClient, AssistantTaskEvent, AssistantT
 import type { TaskSessionObservation } from "../../../../src/api/task-observation.js";
 import type { AssistantApplicationContext } from "../../../../src/commands/worker/bots/assistant-tasks.js";
 import { classifyWatchdogObservation, createWatchdogEvaluator, WATCHDOG_DURATION, type WatchdogCategory, type WatchdogHistory, type WatchdogObservation, type WatchdogSource, type WatchdogState } from "../../../../src/commands/worker/bots/apps/watchdog.js";
+import { createWatchdogSource, type WatchdogApiScope } from "../../../../src/commands/worker/bots/apps/watchdog-transport.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const start = Date.parse("2026-11-13T00:00:00Z");
@@ -15,7 +16,7 @@ const fixture = () => {
   let now = start, allowed = true, sendResult = "confirmed", operationResult = "unknown", failSaveAfterSend = false;
   let rules: JsonValue = [];
   const observation: WatchdogObservation = { projectId: id(1), taskId: id(2), title: "Task", inScope: true, session: session() };
-  const history: WatchdogHistory = { complete: true, lastEntryId: "entry-1", lastAssistantText: "Please continue", lastInputAt: start - 300_000 };
+  const history: WatchdogHistory = { complete: true, lastEntryId: "entry-1", lastProgressId: "entry-1", lastAssistantText: "Please continue", lastInputAt: start - 300_000 };
   const items = new Map<string, AssistantTaskItem>(), events: AssistantTaskEvent[] = [], records: AssistantTaskRecord[] = [];
   const page = <T>(all: T[], query: { cursor?: string } = {}) => { const index = Number(query.cursor ?? 0); return { items: all.slice(index, index + 1), nextCursor: index + 1 < all.length ? String(index + 1) : null, observedAt: new Date(now).toISOString() }; };
   const api = {
@@ -85,6 +86,24 @@ const productionWrites = (f: ReturnType<typeof fixture>, loseResultResponse = fa
 };
 
 describe("Watchdog persistent evaluator", () => {
+  it("restarts the quiet interval when production history reconnects with unchanged durable entries", async () => {
+    const f = fixture(); f.rules(); let epoch = id(40);
+    const source = createWatchdogSource(id(1), (async (_signal, action) => action({
+      readTaskSession: async () => ({ source: "live", historyEpoch: epoch, coverage: { state: "complete" }, hasMoreBefore: false, beforeCursor: null,
+        items: [
+          { entryId: id(30), revision: "1", kind: "user_message", timestamp: null, truncated: false, body: { kind: "user_message", origin: "daynight" } },
+          { entryId: id(31), revision: "1", kind: "assistant_message", timestamp: null, truncated: false, body: { kind: "assistant_message", content: [{ type: "text", text: "Please continue" }] } },
+        ],
+      }),
+    } as never)) as WatchdogApiScope);
+    f.source.history.mockImplementation(() => source.history(f.observation, new AbortController().signal));
+    await f.tick(); f.advance(600_000); await f.tick(); f.advance(60_000); await f.tick();
+    epoch = id(41); f.advance(60_000); await f.tick();
+    expect(f.state().inputQuiet?.since).toBe(f.now()); expect(f.source.send).not.toHaveBeenCalled();
+    f.advance(60_000); await f.tick(); expect(f.source.send).not.toHaveBeenCalled();
+    f.advance(60_000); await f.tick(); expect(f.source.send).toHaveBeenCalledOnce();
+    expect(f.state().attempt!.progressId).toBe(`${id(31)}/1`);
+  });
   it.each(["confirmed", "unknown", "rejected"])("keeps large action evidence writable across %s recovery and later tasks", async outcome => {
     const f = fixture(), message = "m".repeat(600 * 1024), largeRuleId = "r".repeat(200 * 1024);
     const ruleValue = [{ id: largeRuleId, category: "stalled", action: { kind: "send_message", message } }];
@@ -266,7 +285,7 @@ describe("Watchdog persistent evaluator", () => {
 
   it("does not escalate after new native history", async () => {
     const f = fixture(); f.rules(); await f.tick(); f.advance(600_000); await f.tick();
-    f.history.lastEntryId = "entry-2"; f.advance(600_000); await f.tick();
+    f.history.lastEntryId = "entry-2"; f.history.lastProgressId = "entry-2"; f.advance(600_000); await f.tick();
     expect(f.events.some(event => event.type === "escalation")).toBe(false);
   });
 

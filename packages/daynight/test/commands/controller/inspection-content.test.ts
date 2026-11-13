@@ -7,7 +7,7 @@ import { openControllerLifecycleStore } from "../../../src/commands/controller/l
 import type { SourceTimelineEntry } from "../../../src/session/controller-protocol.js";
 import { parseInspectionPage } from "../../../src/session/history.js";
 import { createWatchdogSource, type WatchdogApiScope } from "../../../src/commands/worker/bots/apps/watchdog-transport.js";
-import { createWatchdogEvaluator, type WatchdogObservation, type WatchdogState } from "../../../src/commands/worker/bots/apps/watchdog.js";
+import { createWatchdogEvaluator, watchdogHistoryIdentity, type WatchdogObservation, type WatchdogState } from "../../../src/commands/worker/bots/apps/watchdog.js";
 import type { AssistantTask, AssistantTaskClient, AssistantTaskItem, JsonValue } from "../../../src/api/assistant-task.js";
 import type { AssistantApplicationContext } from "../../../src/commands/worker/bots/assistant-tasks.js";
 
@@ -67,8 +67,9 @@ it("supplies stable untimed input evidence to Watchdog through the real inspecti
   } finally { store.close(); }
 });
 
-it("keeps escalation active when a large automatic input is projected without its origin", async () => {
-  const f = await fixture(), store = f.open(), epoch = randomUUID(), assistantId = randomUUID(), inputId = randomUUID();
+it.each(["reconnect", "entry", "revision", "legacy", "unknown-legacy", "empty-legacy"])("distinguishes durable progress from reconnect and unreadable automatic input (%s)", async change => {
+  const f = await fixture(), store = f.open(), assistantId = randomUUID(), inputId = randomUUID();
+  let epoch = randomUUID();
   let now = Date.parse("2026-11-14T00:00:00Z");
   try {
     store.projectTimeline({ entryId: assistantId, revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Please continue" }] });
@@ -83,10 +84,14 @@ it("keeps escalation active when a large automatic input is projected without it
       readTaskSession: async () => ({ ...store.readInspection(query(epoch)), source: "live", sessionId: f.ticket.sessionId }),
     } as never)) as WatchdogApiScope);
     const history = await source.history(observation, new AbortController().signal);
-    expect(history).toMatchObject({ complete: true, lastEntryId: `${epoch}/${assistantId}/1`, untimedInputId: `${epoch}/${inputId}/1`, lastInputAt: null });
+    expect(history).toMatchObject({ complete: true, lastEntryId: `${epoch}/${assistantId}/1`, lastProgressId: `${assistantId}/1`, untimedInputId: `${epoch}/${inputId}/1`, lastInputAt: null });
     const state: WatchdogState = { schemaVersion: 1, since: now - 600_000, reportedCategory: "stalled", reportedAt: now,
       closedAt: null, recurrence: false, observation, notices: [], attempt: { operationId: randomUUID(), ruleId: "continue", message: "Continue", at: now, followUpSince: now,
         historyId: `${epoch}/${assistantId}/1`, observation, result: "confirmed", notifiedResult: "confirmed", escalated: false, progressed: false } };
+    if (!["legacy", "unknown-legacy", "empty-legacy"].includes(change)) state.attempt!.progressId = history.lastProgressId!;
+    if (change === "unknown-legacy") state.attempt!.historyId = "unknown-old-watermark";
+    if (change === "empty-legacy") state.attempt!.historyId = null;
+    const originalHistoryId = state.attempt!.historyId, originalOperationId = state.attempt!.operationId;
     let item = { id: randomUUID(), key: observation.taskId, taskId: randomUUID(), episode: "1", state: "open", category: "stalled", version: "1", appState: state as unknown as JsonValue } as AssistantTaskItem;
     const events: { type: string }[] = [], records: unknown[] = [];
     const api = {
@@ -101,10 +106,16 @@ it("keeps escalation active when a large automatic input is projected without it
     const context: AssistantApplicationContext = { task, botId: randomUUID(), signal: new AbortController().signal,
       withClaim: action => action(api, task, { claimToken: "fixture", claimGeneration: "1" }) };
     const evaluator = createWatchdogEvaluator(context, { ...source, scan: async () => [observation] }, { clock: { now: () => now, wait: async () => undefined } });
+    epoch = randomUUID();
+    const reconnected = await source.history(observation, context.signal);
+    expect(reconnected.lastProgressId).toBe(history.lastProgressId);
+    expect(watchdogHistoryIdentity(observation, reconnected)).not.toBe(watchdogHistoryIdentity(observation, history));
     now += 599_999; await evaluator.tick(); expect(events).toEqual([]);
+    if (change === "entry" || change === "revision") store.projectTimeline({ entryId: change === "entry" ? randomUUID() : assistantId, revision: change === "entry" ? "1" : "2", kind: "assistant_message", content: [{ type: "text", text: "Actual new progress" }] });
     now += 1; await evaluator.tick(); await evaluator.tick();
-    expect((item.appState as unknown as WatchdogState).attempt).toMatchObject({ progressed: false, escalated: true });
-    expect(events.map(event => event.type)).toEqual(["escalation"]);
+    const progressed = ["entry", "revision", "empty-legacy"].includes(change);
+    expect((item.appState as unknown as WatchdogState).attempt).toMatchObject({ progressed, escalated: !progressed, historyId: originalHistoryId, operationId: originalOperationId });
+    expect(events.map(event => event.type)).toEqual(progressed ? [] : ["escalation"]);
   } finally { store.close(); }
 });
 
