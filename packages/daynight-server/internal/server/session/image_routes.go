@@ -16,10 +16,31 @@ import (
 
 func (h *Routes) registerImageRoutes(mux *http.ServeMux) {
 	for _, base := range []string{sessionBase + "/{sessionId}", "/api/v1/test-sessions/{sessionId}"} {
-		for method, handler := range map[string]func(http.ResponseWriter, *http.Request, model.Principal){"PUT " + base + "/image-uploads/{uploadId}": h.prepareImage, "GET " + base + "/image-uploads/{uploadId}": h.getImageUpload, "DELETE " + base + "/image-uploads/{uploadId}": h.releaseImageUpload, "PUT " + base + "/image-uploads/{uploadId}/chunks": h.writeImageChunk, "POST " + base + "/image-uploads/{uploadId}/complete": h.completeImageUpload, "GET " + base + "/image-capabilities": h.imageCapabilities, "GET " + base + "/image-occurrences/{imageId}": h.imageOccurrence, "POST " + base + "/image-occurrences/{imageId}/retry": h.retryImageOccurrence} {
+		for method, handler := range map[string]func(http.ResponseWriter, *http.Request, model.Principal){"PUT " + base + "/image-uploads/{uploadId}": h.prepareImage, "PUT " + base + "/image-uploads/{uploadId}/content": h.directImageUpload, "GET " + base + "/image-uploads/{uploadId}": h.getImageUpload, "DELETE " + base + "/image-uploads/{uploadId}": h.releaseImageUpload, "PUT " + base + "/image-uploads/{uploadId}/chunks": h.writeImageChunk, "POST " + base + "/image-uploads/{uploadId}/complete": h.completeImageUpload, "GET " + base + "/image-capabilities": h.imageCapabilities, "GET " + base + "/image-occurrences/{imageId}": h.imageOccurrence, "POST " + base + "/image-occurrences/{imageId}/retry": h.retryImageOccurrence} {
 			mux.HandleFunc(method, h.auth.Require(h.imageParameters(handler)))
 		}
 	}
+}
+func (h *Routes) directImageUpload(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	if !h.imageRequest(w, r) {
+		return
+	}
+	data, e := readBody(w, r, 1<<20, "Image upload request exceeds the 1 MiB limit.")
+	if e != nil {
+		h.Failure(w, r, e)
+		return
+	}
+	input, e := sp.DecodeDirectImageContent(data)
+	if e != nil || input.Spec.UploadID != r.PathValue("uploadId") {
+		h.Failure(w, r, httpx.InvalidInput("Invalid direct image upload."))
+		return
+	}
+	receipt, created, e := h.service.DirectUpload(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"), input)
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	h.Result(w, r, status, receipt, e)
 }
 
 // Image media is an extension of the existing v1 Session protocol. Its route
@@ -151,6 +172,9 @@ func (h *Routes) imageCapabilities(w http.ResponseWriter, r *http.Request, p mod
 		return
 	}
 	out, e := h.service.ImageCapabilities(r.Context(), p, r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId"))
+	if e == nil {
+		w.Header().Set("Daynight-Session-Direct-Upload-Version", "1")
+	}
 	h.Result(w, r, http.StatusOK, out, e)
 }
 func (h *Routes) imageResource(w http.ResponseWriter, r *http.Request, p model.Principal) {

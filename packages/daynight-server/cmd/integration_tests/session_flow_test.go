@@ -26,7 +26,7 @@ func (r sessionWorkerTransport) RoundTrip(request *http.Request) (*http.Response
 }
 
 func TestServerAPISessionNormalFlow(t *testing.T) {
-	f := newFixture(t)
+	f := newFixtureWithDecoder(t, true)
 	client := *f.client
 	client.Transport = sessionWorkerTransport{next: client.Transport}
 	f.client = &client
@@ -186,6 +186,7 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 			t.Fatal("browser did not receive the controller's timeline entry")
 		}
 	}
+	sessionDirectImageFlow(t, f)
 }
 
 func sessionFlowDial(t *testing.T, f *fixture, path string, options *websocket.DialOptions) *websocket.Conn {

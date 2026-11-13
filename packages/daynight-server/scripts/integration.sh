@@ -67,6 +67,36 @@ fi
 race=true
 if [[ -n "${CI:-}" ]] && [[ "${GITHUB_EVENT_NAME:-}" != push || "${GITHUB_REF:-}" != refs/heads/main ]]; then race=false; fi
 
+decoder_source_fingerprint() {
+  DAYNIGHT_INTEGRATION_REPOSITORY="$repository_root" node --input-type=module <<'JS'
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+const root = process.env.DAYNIGHT_INTEGRATION_REPOSITORY;
+const names = execFileSync("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "packages/daynight", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]).toString().split("\0").filter(Boolean).sort();
+const hash = createHash("sha256");
+for (const name of names) {
+  hash.update(name).update("\0");
+  try { hash.update(readFileSync(join(root, name))); }
+  catch (error) { if (error.code !== "ENOENT") throw error; hash.update("<deleted>"); }
+  hash.update("\0");
+}
+process.stdout.write(hash.digest("hex"));
+JS
+}
+node scripts/integration-runtime.mts phase "$run_root" build
+decoder_source_before="$(decoder_source_fingerprint)"
+decoder_head="$(git rev-parse HEAD)"
+timeout --signal=TERM --kill-after=5s 3m pnpm --dir "$repository_root" --filter @codetreker/daynight build
+timeout --signal=TERM --kill-after=5s 1m node "$repository_root/packages/daynight/scripts/package-image-validation.ts" "$run_root/image-validator"
+if [[ "$decoder_source_before" != "$(decoder_source_fingerprint)" || "$decoder_head" != "$(git rev-parse HEAD)" ]]; then
+  printf '%s\n' 'Image decoder sources changed during its build' >&2
+  exit 1
+fi
+export DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR="$run_root/image-validator"
+export DAYNIGHT_INTEGRATION_NODE_PATH="$(node -p 'process.execPath')"
+
 fingerprint() {
   DAYNIGHT_INTEGRATION_REPOSITORY="$repository_root" node --input-type=module <<'JS'
 import { createHash } from "node:crypto";
@@ -74,7 +104,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { execFileSync } from "node:child_process";
 const root = process.env.DAYNIGHT_INTEGRATION_REPOSITORY;
-const names = new Set(execFileSync("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "packages/daynight-server", "packages/daynight-web"]).toString().split("\0").filter(Boolean));
+const names = new Set(execFileSync("git", ["-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "packages/daynight-server", "packages/daynight-web", "packages/daynight", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]).toString().split("\0").filter(Boolean));
 const assets = join(root, "packages/daynight-server/internal/service/webui/dist");
 for (const entry of readdirSync(assets, { recursive: true, withFileTypes: true })) {
   if (entry.isFile()) names.add(relative(root, join(entry.parentPath, entry.name)));
@@ -86,6 +116,11 @@ for (const name of [...names].sort()) {
   catch (error) { if (error.code !== "ENOENT") throw error; hash.update("<deleted>"); }
   hash.update("\0");
 }
+const decoder = process.env.DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR;
+for (const entry of readdirSync(decoder, { recursive: true, withFileTypes: true }).filter(entry => entry.isFile()).sort((a, b) => join(a.parentPath, a.name).localeCompare(join(b.parentPath, b.name)))) {
+  const file = join(entry.parentPath, entry.name);
+  hash.update(relative(decoder, file)).update("\0").update(readFileSync(file)).update("\0");
+}
 process.stdout.write(hash.digest("hex"));
 JS
 }
@@ -96,7 +131,7 @@ before="$(fingerprint)"
 GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go build -race="$race" -p=2 -trimpath -o "$run_root/server" ./cmd/daynight-server
 GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go build -race="$race" -p=2 -trimpath -tags=integration -o "$run_root/cleanup" ./cmd/integration_tests
 after="$(fingerprint)"
-if [[ "$before" != "$after" || "$source_sha" != "$(git rev-parse HEAD)" ]]; then
+if [[ "$before" != "$after" || "$source_sha" != "$(git rev-parse HEAD)" || "$decoder_head" != "$source_sha" || "$decoder_source_before" != "$(decoder_source_fingerprint)" ]]; then
   printf '%s\n' 'Product sources changed while the integration binaries were built' >&2
   exit 1
 fi

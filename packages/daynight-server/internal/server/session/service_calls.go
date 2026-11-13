@@ -30,6 +30,7 @@ type serviceCalls struct {
 	ArchiveFileStatus              func(context.Context, model.Principal, string, string, string, string) (sp.ArchiveFileReceipt, error)
 	ArchiveTimelineContentReserved func(context.Context, model.Principal, string, string, string, string, io.Closer) (archiveContent, error)
 	PrepareUpload                  func(context.Context, model.Principal, string, string, string, sp.ImageUploadSpec) (sp.ImageUploadReceipt, bool, error)
+	DirectUpload                   func(context.Context, model.Principal, string, string, string, sp.DirectImageContent) (sp.ImageUploadReceipt, bool, error)
 	WriteUploadChunk               func(context.Context, model.Principal, string, string, string, string, sp.ImageChunkWrite) (sp.ImageUploadReceipt, error)
 	CompleteUpload                 func(context.Context, model.Principal, string, string, string, string, sp.ImageUploadComplete) (sp.ImageUploadReceipt, error)
 	GetUpload                      func(context.Context, model.Principal, string, string, string, string) (sp.ImageUploadReceipt, error)
@@ -103,7 +104,7 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 			}
 			return archiveContent{Data: content.Data, Closer: content}, nil
 		},
-		GetImageOccurrence: service.GetImageOccurrence, RetryImageOccurrence: service.RetryImageOccurrence, PrepareUpload: service.PrepareUpload, WriteUploadChunk: service.WriteUploadChunk, CompleteUpload: service.CompleteUpload, GetUpload: service.GetUpload, ReleaseUpload: service.ReleaseUpload, ReadResource: service.ReadResource, ImageCapabilities: service.ImageCapabilities,
+		GetImageOccurrence: service.GetImageOccurrence, RetryImageOccurrence: service.RetryImageOccurrence, PrepareUpload: service.PrepareUpload, DirectUpload: service.DirectUpload, WriteUploadChunk: service.WriteUploadChunk, CompleteUpload: service.CompleteUpload, GetUpload: service.GetUpload, ReleaseUpload: service.ReleaseUpload, ReadResource: service.ReadResource, ImageCapabilities: service.ImageCapabilities,
 		TaskOperation:                  service.TaskOperation,
 		ArchiveContentReserved:         archiveContentCall(service.ArchiveContentReserved),
 		ArchiveStatus:                  service.ArchiveStatus,

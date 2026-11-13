@@ -203,6 +203,18 @@ func testExternalCaptureWritesCompareExactObservedState(t *testing.T, db *postgr
 			}
 			duplicate.Receipt.CaptureID, duplicate.Receipt.AttemptID, duplicate.Receipt.Occurrence = duplicate.Request.CaptureID, duplicate.Request.AttemptID, duplicate.Request.Occurrence
 			refused(duplicate)
+			completion, err := db.WriteSession(t.Context(), func(scope store.SessionScope) error {
+				dao := scope.SessionDAO().(store.SessionResourceDAO)
+				var fault *model.Fault
+				if err := dao.SaveSessionCapture(t.Context(), duplicate); !errors.As(err, &fault) || fault.Code != "resource_conflict" {
+					t.Fatalf("expected identity conflict, got %v", err)
+				}
+				_, err := dao.SessionCapture(t.Context(), id, initial.Request.CaptureID)
+				return err
+			})
+			if err != nil || completion.Outcome != store.TransactionCommitted {
+				t.Fatalf("identity refusal aborted the transaction: %+v %v", completion, err)
+			}
 			read(committed)
 		})
 	}

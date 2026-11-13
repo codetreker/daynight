@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { canonicalSessionIntent, verifyTimelineImageMetadata, parseImageOccurrenceStatus } from "../../src/session/image-values.js";
+import { canonicalSessionIntent, verifyTimelineImageMetadata, parseImageOccurrenceStatus, parseDirectImageContent } from "../../src/session/image-values.js";
 import {
   parseSessionCommand,
   parseSessionResource,
@@ -60,6 +60,22 @@ const command = () => ({
     draftId: id(7),
     draftRevision: "1",
   },
+});
+it("parses a real nonempty direct first chunk within the declared image length", () => {
+  const spec = {
+    uploadId: id(1), imageId: id(2), target: command().payload.target,
+    name: '"'.repeat(1024), mediaType: "image/png", byteLength: "524288", sha256: "a".repeat(64),
+  };
+  const data = Buffer.alloc(524288, 0xa5).toString("base64");
+  const input = { spec, offset: "0", sha256: "b".repeat(64), data };
+  expect(parseDirectImageContent(input)).toEqual(input);
+  expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThanOrEqual(1_048_576);
+  for (const invalid of [
+    { ...input, offset: "1" }, { ...input, data: "" }, { ...input, data: "Zh==" },
+    { ...input, data: Buffer.alloc(524289).toString("base64") },
+    { ...input, spec: { ...spec, byteLength: "524287" } },
+    { ...input, sha256: "invalid" }, { ...input, extra: true },
+  ]) expect(() => parseDirectImageContent(invalid)).toThrow();
 });
 it("keeps image input origin in the intent while treating explicit user as the legacy default", () => {
   const original = parseSessionCommand(command());

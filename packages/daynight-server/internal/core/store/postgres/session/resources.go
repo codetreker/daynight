@@ -198,7 +198,7 @@ func (tx *DAO) SaveSessionCapture(ctx context.Context, r store.SessionCaptureRec
 	}
 	var tag pgconn.CommandTag
 	if r.Expected == nil {
-		tag, e = tx.tx.Exec(ctx, `INSERT INTO session_image_captures(session_id,capture_id,image_id,request,receipt,validated) VALUES($1,$2,$3,$4,$5,$6)`, r.SessionID, r.Request.CaptureID, r.Request.Occurrence.ImageID, request, receipt, validated)
+		tag, e = tx.tx.Exec(ctx, `INSERT INTO session_image_captures(session_id,capture_id,image_id,request,receipt,validated) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, r.SessionID, r.Request.CaptureID, r.Request.Occurrence.ImageID, request, receipt, validated)
 	} else {
 		expectedReceipt, err := json.Marshal(r.Expected.Receipt)
 		if err != nil {

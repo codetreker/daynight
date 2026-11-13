@@ -2,12 +2,17 @@ package session_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
@@ -25,6 +30,28 @@ func imageHTTPRequest(f *sessionHTTPFixture, method, path, body string, headers 
 	response := httptest.NewRecorder()
 	f.handler.ServeHTTP(response, request)
 	return response
+}
+
+func TestControllerUpgradeAdvertisesDirectUpload(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	f.backend.Configure(func(c *sessionhttp.ServiceCallsForTest) {
+		c.AuthenticateController = func(ctx context.Context, token string) error {
+			if token != f.grant.Token {
+				t.Fatal("controller grant changed")
+			}
+			return nil
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, response, err := websocket.Dial(ctx, strings.Replace(f.server.URL, "http://", "ws://", 1)+"/api/v1/controller-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.grant.Token}}, Subprotocols: []string{sp.Protocol}})
+	if err != nil {
+		t.Fatal("controller upgrade", err)
+	}
+	defer conn.CloseNow()
+	if response.Header.Get("Daynight-Session-Direct-Upload-Version") != "1" {
+		t.Fatal("direct upload capability missing from upgrade", response.Header)
+	}
 }
 func TestImageUploadHTTPKeepsScopedReceiptsAndBinaryChunks(t *testing.T) {
 	f := sessionHTTPSetup(t)
@@ -82,7 +109,87 @@ func TestImageUploadHTTPKeepsScopedReceiptsAndBinaryChunks(t *testing.T) {
 	decodeResponse[sp.ImageUploadReceipt](t, imageHTTPRequest(f, "GET", path, "", nil), 200)
 	decodeResponse[sp.ImageUploadReceipt](t, imageHTTPRequest(f, "DELETE", path, "", nil), 200)
 	decodeResponse[sp.ImageReadChunk](t, imageHTTPRequest(f, "GET", base+"/resources/"+id+"/content?offset=0&limit=3", "", nil), 200)
-	decodeResponse[map[string]any](t, imageHTTPRequest(f, "GET", base+"/image-capabilities", "", nil), 200)
+	capabilities := imageHTTPRequest(f, "GET", base+"/image-capabilities", "", nil)
+	decodeResponse[map[string]any](t, capabilities, 200)
+	if capabilities.Header().Get("Daynight-Session-Direct-Upload-Version") != "1" {
+		t.Fatal("direct upload capability missing", capabilities.Header())
+	}
+}
+
+func TestDirectImageUploadHTTPUsesActualContentAndBoundedBody(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	id := uuid.NewString()
+	data := []byte("png")
+	digest := sha256.Sum256(data)
+	hash := hex.EncodeToString(digest[:])
+	input := sp.DirectImageContent{Spec: sp.ImageUploadSpec{UploadID: id, ImageID: uuid.NewString(), Target: sp.ImageTarget{ServerOrigin: "https://daynight.example", ActorUserID: f.handler.principal.UserID, Fence: f.snapshot.Fence}, Name: "image.png", MediaType: "image/png", ByteLength: "3", SHA256: hash}, Offset: "0", SHA256: hash, Data: base64.StdEncoding.EncodeToString(data)}
+	receipt := sp.ImageUploadReceipt{UploadID: id, ImageID: input.Spec.ImageID, Target: input.Spec.Target, State: "receiving", AcceptedOffset: "3"}
+	created := true
+	f.backend.Configure(func(c *sessionhttp.ServiceCallsForTest) {
+		c.DirectUpload = func(ctx context.Context, p model.Principal, project, task, session string, actual sp.DirectImageContent) (sp.ImageUploadReceipt, bool, error) {
+			if err := f.scopeArguments(ctx, p, project, task, session); err != nil {
+				return receipt, false, err
+			}
+			if !reflect.DeepEqual(actual, input) {
+				t.Fatal("direct upload changed", actual)
+			}
+			return receipt, created, nil
+		}
+	})
+	f.backend.ExpectCalls("DirectUpload", 4)
+	path := f.base + "/" + f.snapshot.SessionID + "/image-uploads/" + id + "/content"
+	body := jsonBody(t, input)
+	got := decodeResponse[sp.ImageUploadReceipt](t, imageHTTPRequest(f, "PUT", path, body, nil), 201)
+	if got.AcceptedOffset != "3" {
+		t.Fatal("actual offset not returned", got)
+	}
+	created = false
+	decodeResponse[sp.ImageUploadReceipt](t, imageHTTPRequest(f, "PUT", path, body, nil), 200)
+	boundary := body + strings.Repeat(" ", (1<<20)-len(body))
+	decodeResponse[sp.ImageUploadReceipt](t, imageHTTPRequest(f, "PUT", path, boundary, nil), 200)
+	if response := imageHTTPRequest(f, "PUT", path, boundary+" ", nil); response.Code != 413 {
+		t.Fatal("oversized complete encoding was accepted", response.Code, response.Body)
+	}
+	small := input
+	large := []byte(strings.Repeat("x", 512*1024))
+	largeHash := sha256.Sum256(large)
+	input.Spec.ByteLength = "524288"
+	input.Spec.SHA256 = hex.EncodeToString(largeHash[:])
+	input.SHA256 = input.Spec.SHA256
+	input.Data = base64.StdEncoding.EncodeToString(large)
+	largeBody := jsonBody(t, input)
+	if len(largeBody) >= 1<<20 {
+		t.Fatal("complete 512 KiB body exceeds budget", len(largeBody))
+	}
+	receipt.AcceptedOffset = "524288"
+	if got = decodeResponse[sp.ImageUploadReceipt](t, imageHTTPRequest(f, "PUT", path, largeBody, nil), 200); got.AcceptedOffset != "524288" {
+		t.Fatal("large upload offset changed", got)
+	}
+	input = small
+	for _, invalid := range []struct {
+		path, body string
+		headers    map[string]string
+	}{
+		{path, `{}`, nil},
+		{path, strings.Replace(body, `"offset":"0"`, `"offset":"1"`, 1), nil},
+		{path, strings.Replace(body, `"data":"cG5n"`, `"data":""`, 1), nil},
+		{path, strings.Replace(body, `"sha256":"`+hash+`"`, `"sha256":"bad"`, 1), nil},
+		{path, strings.Replace(body, `"data":"cG5n"`, `"data":"eHh4"`, 1), nil},
+		{strings.Replace(path, id, uuid.NewString(), 1), body, nil},
+		{path, strings.TrimSuffix(body, "}") + `,"extra":true}`, nil},
+		{path + "?extra=1", body, nil},
+		{path, body, map[string]string{"Content-Type": "text/plain"}},
+		{path, body, map[string]string{"Content-Encoding": "gzip"}},
+		{path, body, map[string]string{"Daynight-Session-Content-Revision": "1"}},
+		{path, body, map[string]string{"Daynight-Session-Protocol": "daynight.session.v2"}},
+	} {
+		if response := imageHTTPRequest(f, "PUT", invalid.path, invalid.body, invalid.headers); response.Code != 400 {
+			t.Fatal("invalid direct upload accepted", response.Code, response.Body)
+		}
+	}
+	if f.backend.Called("DirectUpload") != 4 {
+		t.Fatal("invalid body reached direct upload")
+	}
 }
 func TestImageHTTPRejectsInvalidProtocolBeforeBusinessCalls(t *testing.T) {
 	f := sessionHTTPSetup(t)

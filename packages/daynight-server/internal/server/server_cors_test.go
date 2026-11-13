@@ -19,7 +19,7 @@ import (
 
 const browserAPIOrigin = "https://application.example"
 const corsRequestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256"
-const corsExposedHeaders = "Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Bot-Attention, Daynight-Worker-Configuration"
+const corsExposedHeaders = "Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version"
 
 func rootCORSFixture(t *testing.T, origin string, principal model.Principal) (http.Handler, *httpTestStore, *rootIdentityWitness) {
 	t.Helper()
@@ -205,6 +205,7 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 		add("GET", base+"/operations/"+id)
 		add("GET", base+"/resources/"+id+"/content")
 		add("GET PUT DELETE", base+"/image-uploads/"+id)
+		add("PUT", base+"/image-uploads/"+id+"/content")
 		add("PUT", base+"/image-uploads/"+id+"/chunks")
 		add("POST", base+"/image-uploads/"+id+"/complete")
 		add("GET", base+"/image-capabilities")

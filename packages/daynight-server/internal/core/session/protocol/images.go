@@ -446,7 +446,7 @@ func DecodeImageMedia(data []byte) (ImageMediaMessage, error) {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(data, &v)
 	_ = json.Unmarshal(data, &raw)
-	fields := extend(fenceSchema, schema{"type": enum("image_request", "image_response", "image_capture", "image_capture_result"), "protocol": enum(Protocol), "connectionEpoch": sequence, "requestId": identifier, "action": enum("prepare", "write", "complete", "status", "release", "read_prepared", "read_capture", "read", "register", "query", "commit", "failed", "retry_capture")})
+	fields := extend(fenceSchema, schema{"type": enum("image_request", "image_response", "image_capture", "image_capture_result"), "protocol": enum(Protocol), "connectionEpoch": sequence, "requestId": identifier, "action": enum("prepare", "write", "complete", "status", "release", "read_prepared", "read_capture", "read", "register", "query", "commit", "failed", "retry_capture", "submit")})
 	if v.Type == "image_request" || v.Type == "image_capture" {
 		fields["body"] = func(data json.RawMessage) bool { return !null(data) }
 	} else {
@@ -456,6 +456,9 @@ func DecodeImageMedia(data []byte) (ImageMediaMessage, error) {
 	out, e := decode[ImageMediaMessage](data, nested(fields))
 	if e != nil {
 		return out, e
+	}
+	if v.Action == "submit" && v.Type != "image_capture" && v.Type != "image_capture_result" {
+		return out, errInvalid
 	}
 	if v.Type == "image_request" && !validImageMediaBody(v.Action, v.Body) || v.Type == "image_capture" && !validCaptureBody(v.Action, v.Body) {
 		return out, errInvalid

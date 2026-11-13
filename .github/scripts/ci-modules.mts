@@ -13,6 +13,7 @@ const cliBuildInputs = new Set([
   "packages/daynight/config.example.yml",
   "packages/daynight/scripts/clean-dist.ts",
   "packages/daynight/scripts/copy-resources.ts",
+  "packages/daynight/scripts/package-image-validation.ts",
 ]);
 const webBuildInputs = new Set([
   "packages/daynight-web/package.json",
@@ -40,6 +41,7 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
     }
     if (path.startsWith("packages/daynight/src/")) {
       selected.cli = true;
+      selected.api = true;
       selected.e2e = true;
       continue;
     }
@@ -56,7 +58,9 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       selected.e2e = true;
     } else if (path.startsWith("packages/daynight/")) {
       selected.cli = true;
-      selected.e2e ||= cliBuildInputs.has(path) || /^packages\/daynight\/tsconfig(?:\.[^/]+)?\.json$/.test(path);
+      const buildInput = cliBuildInputs.has(path) || /^packages\/daynight\/tsconfig(?:\.[^/]+)?\.json$/.test(path);
+      selected.api ||= buildInput;
+      selected.e2e ||= buildInput;
     } else if (path.startsWith("scripts/")) selected.cli = true;
     else if (path.startsWith("packages/daynight-server/")) {
       selected.server = true;

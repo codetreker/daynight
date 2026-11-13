@@ -57,6 +57,9 @@ func validCaptureBody(action string, body json.RawMessage) bool {
 	case "commit":
 		_, e := DecodeImageCaptureCommit(body)
 		return e == nil
+	case "submit":
+		_, e := DecodeDirectCaptureSubmission(body)
+		return e == nil
 	case "query":
 		return validateObject(body, schema{"captureId": identifier})
 	case "failed":

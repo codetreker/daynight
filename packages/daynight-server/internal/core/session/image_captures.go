@@ -77,6 +77,15 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		return nil, e
 	}
 	switch m.Action {
+	case "submit":
+		input, err := sp.DecodeDirectCaptureSubmission(m.MediaBody)
+		if err != nil {
+			return nil, fault("invalid_input", "Invalid direct image capture submission.")
+		}
+		capture, e = s.submitImageCapture(ctx, tx, r, d, input)
+		if e != nil {
+			return nil, e
+		}
 	case "register":
 		request, e := sp.DecodeImageCaptureRequest(m.MediaBody)
 		if e != nil {

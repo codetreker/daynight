@@ -115,6 +115,12 @@ export type ImageUploadSpec = {
   readonly byteLength: string;
   readonly sha256: string;
 };
+export type DirectImageContent = {
+  readonly spec: ImageUploadSpec;
+  readonly offset: "0";
+  readonly sha256: string;
+  readonly data: string;
+};
 export type ImageUploadReceipt = {
   readonly uploadId: string;
   readonly imageId: string;
@@ -186,6 +192,14 @@ export type ImageCaptureRequest = {
   readonly occurrence: ImageOccurrence;
   readonly locator: ImageLocator;
   readonly nativeSource: NativeImageSource | null;
+};
+export type DirectCaptureSubmission = {
+  readonly request: ImageCaptureRequest;
+  readonly attemptId: string;
+  readonly outcome:
+    | { readonly kind: "validated"; readonly validated: ValidatedImage }
+    | { readonly kind: "resource" }
+    | { readonly kind: "failed"; readonly error: ImageError };
 };
 export type ImageCaptureReceipt = {
   readonly captureId: string;
@@ -391,6 +405,19 @@ export const parseImageUploadSpec = (v: unknown): ImageUploadSpec => {
     sha256: imageSha(o.sha256),
   };
 };
+export const parseDirectImageContent = (v: unknown): DirectImageContent => {
+  const o = imageObject(v, ["spec", "offset", "sha256", "data"]);
+  const spec = parseImageUploadSpec(o.spec);
+  if (
+    o.offset !== "0" || typeof o.data !== "string" || o.data.length === 0 ||
+    o.data.length > 699052 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(o.data)
+  ) return fail();
+  const raw = atob(o.data);
+  if (raw.length === 0 || raw.length > IMAGE_LIMITS.chunkBytes ||
+      BigInt(raw.length) > BigInt(spec.byteLength) || btoa(raw) !== o.data) return fail();
+  return { spec, offset: "0", sha256: imageSha(o.sha256), data: o.data };
+};
 export const parseImageInputPart = (v: unknown): ImageInputPart => {
   const o = imageObject(v, [
     "type",
@@ -589,6 +616,24 @@ export const parseImageCaptureRequest = (v: unknown): ImageCaptureRequest => {
     locator: parseImageLocator(o.locator),
     nativeSource: nullable(o.nativeSource, parseNativeImageSource),
   };
+};
+export const parseDirectCaptureSubmission = (v: unknown): DirectCaptureSubmission => {
+  const o = imageObject(v, ["request", "attemptId", "outcome"]);
+  const request = parseImageCaptureRequest(o.request), attemptId = imageId(o.attemptId);
+  if (!o.outcome || typeof o.outcome !== "object" || Array.isArray(o.outcome)) return fail();
+  const kind = (o.outcome as Record<string, unknown>).kind;
+  let outcome: DirectCaptureSubmission["outcome"];
+  if (kind === "validated") {
+    const value = imageObject(o.outcome, ["kind", "validated"]);
+    outcome = { kind, validated: parseValidatedImage(value.validated) };
+  } else if (kind === "resource") {
+    imageObject(o.outcome, ["kind"]);
+    outcome = { kind };
+  } else if (kind === "failed") {
+    const value = imageObject(o.outcome, ["kind", "error"]);
+    outcome = { kind, error: parseImageError(value.error) };
+  } else return fail();
+  return { request, attemptId, outcome };
 };
 export const parseInputObservation = (v: unknown): InputObservation => {
   const o = imageObject(v, [
