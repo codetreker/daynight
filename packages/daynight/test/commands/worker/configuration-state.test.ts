@@ -96,6 +96,7 @@ describe("Worker configuration fact transitions", () => {
 
   it("does not manufacture runtime native authority from durable applied text", () => {
     const item = tracked(1, { kind: "native" }, native), cache = { ...empty(), currentItems: [item] };
+    expect(configurationSnapshot(cache, false, new Map(), "herdr", options.localTools, valueProof).retainedRecoveryLimit).toBeNull();
     expect(configurationSnapshot(cache, true, new Map(), "herdr", options.localTools, valueProof).effective.native).toBeNull();
     expect(configurationSnapshot(cache, true, new Map([[item.recordId, valueProof(cache, native, "herdr")]]), "herdr", options.localTools, valueProof).effective.native).toEqual(native);
     expect(configurationSnapshot(cache, false, new Map([[item.recordId, valueProof(cache, native, "herdr")]]), "herdr", options.localTools, valueProof).effective.native).toBeNull();
