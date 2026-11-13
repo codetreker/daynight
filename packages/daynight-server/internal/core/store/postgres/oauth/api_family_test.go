@@ -156,7 +156,7 @@ func TestAPIReaderRequiresPersistedUserAndExpiredFamilyIsRejected(t *testing.T) 
 	_, err = tx.Exec(ctx, `INSERT INTO users (id,uniauth_id,created_at,updated_at) VALUES ($1,$2,$3,$3)`, issue.Grant.UserID, uuid.NewString(), now)
 	check(t, err)
 	// The access token can remain live independently of the shorter family deadline.
-	_, err = tx.Exec(ctx, `UPDATE oauth_grants SET expires_at=$2 WHERE id=$1`, issue.Grant.ID, now.Add(-time.Microsecond))
+	_, err = tx.Exec(ctx, `UPDATE oauth_grants SET expires_at=clock_timestamp()-interval '1 microsecond' WHERE id=$1`, issue.Grant.ID)
 	check(t, err)
 	_, err = pg.ThreadCredential(ctx, tx, actor, " FOR SHARE")
 	missing(t, err)
