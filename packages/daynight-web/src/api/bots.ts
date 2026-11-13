@@ -160,11 +160,11 @@ const cursor = (value: unknown): string => {
   const result = controlledText(value);
   return result.length <= 4096 ? result : malformed();
 };
-async function readBot<T>(url: string, signal: AbortSignal, admission: WorkerReadAdmission, parse: (value: unknown) => T, onDispatch?: () => void): Promise<T> {
+async function readBot<T>(url: string, signal: AbortSignal, admission: WorkerReadAdmission, parse: (value: unknown) => T, onDispatch?: () => void, attention = false): Promise<T> {
   const expected = requestId(admission.userId);
-  const response = await request(url, signal, { headers: { Accept: 'application/json' } }, onDispatch);
+  const response = await request(url, signal, { headers: { Accept: 'application/json', ...(attention ? { 'Daynight-Bot-Attention': '1' } : {}) } }, onDispatch);
   assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
-  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parse(value); });
+  return json(response, signal, value => { if (response.status !== 200 || attention && response.headers.get('Daynight-Bot-Attention') !== '1') throw new ApiError('protocol', response.status); return parse(value); });
 }
 export async function listBots(query: { readonly limit?: number; readonly cursor?: string }, signal: AbortSignal, admission: WorkerReadAdmission): Promise<BotPage> {
   const parameters = new URLSearchParams();
@@ -180,11 +180,11 @@ export async function listBots(query: { readonly limit?: number; readonly cursor
     const items = array(data.items, entry => { const bot = parseBot(entry, admission.userId); if (bot.deletion !== null) return malformed(); return bot; });
     if (items.length > 100 || new Set(items.map(bot => bot.id)).size !== items.length) return malformed();
     return { items, nextCursor: data.nextCursor === null ? null : cursor(data.nextCursor) };
-  });
+  }, undefined, true);
 }
 export async function getBot(botId: string, signal: AbortSignal, admission: WorkerReadAdmission, onDispatch?: () => void): Promise<Bot> {
   const target = requestId(botId);
-  return readBot(`/api/v1/me/bots/${target}`, signal, admission, value => parseBot(value, admission.userId, target), onDispatch);
+  return readBot(`/api/v1/me/bots/${target}`, signal, admission, value => parseBot(value, admission.userId, target), onDispatch, true);
 }
 export async function getBotDefaults(workerId: string | null, signal: AbortSignal, admission: WorkerReadAdmission, choices?: Omit<BotOverrides, 'workerId'>): Promise<BotDefaults> {
   const target = workerId === null ? null : requestId(workerId);
@@ -207,10 +207,10 @@ export async function createBot(input: CreateBotInput, signal: AbortSignal, admi
   catch { throw new ApiError('protocol'); }
   let dispatched = false;
   try {
-    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body }, () => { dispatched = true; admission.onDispatch?.(); });
+    const response = await request('/api/v1/me/bots', signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Bot-Attention': '1' }, body }, () => { dispatched = true; admission.onDispatch?.(); });
     assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
     return await json(response, signal, value => {
-      if (response.status !== 200) throw new ApiError('protocol', response.status);
+      if (response.status !== 200 || response.headers.get('Daynight-Bot-Attention') !== '1') throw new ApiError('protocol', response.status);
       const bot = parseBot(value, expected, target);
       if (bot.deletion !== null) return malformed();
       const original = JSON.parse(body) as CreateBotInput;

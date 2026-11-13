@@ -16,6 +16,6 @@ export const botWorkerDefaults = (n = 20) => ({
 });
 export const botDefaults = () => ({ observedAt: BOT_TIME, workerId: botId(20), configuration: botConfiguration(), reason: null, workers: [botWorkerDefaults()] });
 export const botResponse = (value: unknown, principal: string | null = BOT_USER, status = 200) => new Response(JSON.stringify(value), {
-  status, headers: { 'Content-Type': 'application/json', ...(principal === null ? {} : { 'Daynight-User-ID': principal }) },
+  status, headers: { 'Content-Type': 'application/json', 'Daynight-Bot-Attention': '1', ...(principal === null ? {} : { 'Daynight-User-ID': principal }) },
 });
 export const botError = (status: number, code: string, principal: string | null = BOT_USER) => botResponse({ error: { code, message: 'Bot request failed.', requestId: 'bot-request' } }, principal, status);

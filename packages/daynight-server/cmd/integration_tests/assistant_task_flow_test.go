@@ -36,6 +36,14 @@ func assistantFixture(f *fixture, botID string) *fixture {
 	return &result
 }
 
+type botAttentionTransport struct{ next http.RoundTripper }
+
+func (r botAttentionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	copy := request.Clone(request.Context())
+	copy.Header.Set("Daynight-Bot-Attention", "1")
+	return r.next.RoundTrip(copy)
+}
+
 func createAssistantBots(t *testing.T, f *fixture) (string, string) {
 	t.Helper()
 	workerID := uuid.NewString()
@@ -158,13 +166,17 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	if value := expectID(t, appendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != appendix.Text || !reflect.DeepEqual(value.SourceRecords, []string{record.ID}) {
 		t.Fatalf("appendix readback differs: %+v", value)
 	}
+	attentionFixture := *f
+	attentionClient := *f.client
+	attentionClient.Transport = botAttentionTransport{next: attentionClient.Transport}
+	attentionFixture.client = &attentionClient
 	assertAttention := func(want int64) {
 		t.Helper()
-		bot := requestJSON[api.Bot](t, f, http.MethodGet, "/api/v1/me/bots/"+second, nil, http.StatusOK)
-		listed := requestJSON[api.BotPage](t, f, http.MethodGet, "/api/v1/me/bots", nil, http.StatusOK)
+		bot := requestJSON[api.Bot](t, &attentionFixture, http.MethodGet, "/api/v1/me/bots/"+second, nil, http.StatusOK)
+		listed := requestJSON[api.BotPage](t, &attentionFixture, http.MethodGet, "/api/v1/me/bots", nil, http.StatusOK)
 		listBot := expectID(t, listed.Items, second, func(v api.Bot) string { return v.ID })
-		if bot.AttentionCount != want || listBot.AttentionCount != want {
-			t.Fatalf("attention readback differs: detail=%d list=%d want=%d", bot.AttentionCount, listBot.AttentionCount, want)
+		if bot.AttentionCount == nil || listBot.AttentionCount == nil || *bot.AttentionCount != want || *listBot.AttentionCount != want {
+			t.Fatalf("attention readback differs: detail=%v list=%v want=%d", bot.AttentionCount, listBot.AttentionCount, want)
 		}
 	}
 	assertAttention(0)

@@ -270,3 +270,44 @@ it('does not mark hidden or admission-paused conversations seen and fences late 
  expect(screen.getByLabelText('2 items need your attention')).toBeVisible();
  expect(screen.queryByText('Could not confirm that these items were seen.')).toBeNull();
 });
+
+it('keeps reports arriving after a zero-count opening until the conversation is opened again', async()=>{
+ vi.useFakeTimers({toFake:['setInterval','clearInterval']});
+ try {
+  const f=fixture(), base=f.fetch.getMockImplementation()!;
+  f.fetch.mockImplementation(async (url,options)=>{
+   if(String(url).endsWith('/attention/seen')) { f.bots[0]!.attentionCount=0; return botResponse({targetBotId:botId()}); }
+   return base(url,options);
+  });
+  const view=mount(botId());
+  await act(async()=>{});
+  expect(screen.getByRole('heading',{name:'Assistant 1'})).toBeVisible();
+  expect(document.querySelector('.bot-attention-count')).toBeNull();
+  f.bots[0]!.attentionCount=1;
+  await act(async()=>{vi.advanceTimersByTime(5_000);});
+  expect(screen.getByLabelText('1 items need your attention')).toBeVisible();
+  expect(f.fetch.mock.calls.some(([,options])=>options?.method==='POST')).toBe(false);
+  view.select(null);
+  view.select(botId());
+  await act(async()=>{});
+  expect(f.fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(1);
+  expect(document.querySelector('.bot-attention-count')).toBeNull();
+ } finally { vi.useRealTimers(); }
+});
+
+it('waits for the first confirmed count before consuming an opening', async()=>{
+ const f=fixture(); f.bots[0]!.attentionCount=1;
+ const base=f.fetch.getMockImplementation()!, firstDetail=Promise.withResolvers<Response>();
+ let detailReads=0;
+ f.fetch.mockImplementation(async (url,options)=>{
+  if(String(url).endsWith('/attention/seen')) { f.bots[0]!.attentionCount=0; return botResponse({targetBotId:botId()}); }
+  if(String(url).endsWith(`/me/bots/${botId()}`) && detailReads++===0) return firstDetail.promise;
+  return base(url,options);
+ });
+ mount(botId());
+ await screen.findByLabelText('1 items need your attention');
+ expect(f.fetch.mock.calls.some(([,options])=>options?.method==='POST')).toBe(false);
+ await act(async()=>firstDetail.resolve(botResponse(f.bots[0])));
+ expect(f.fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(1);
+ expect(document.querySelector('.bot-attention-count')).toBeNull();
+});

@@ -243,6 +243,33 @@ describe('Bot account API', () => {
 });
 
 describe('Bot attention API', () => {
+  it('requests the attention projection for list, detail and create but not defaults', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(botResponse({ items: [botDefinition()], nextCursor: null }))
+      .mockResolvedValueOnce(botResponse(botDefinition())).mockResolvedValueOnce(botResponse(botDefinition()))
+      .mockResolvedValueOnce(botResponse(botDefaults()));
+    vi.stubGlobal('fetch', fetch);
+    await listBots({}, signal(), admission());
+    await getBot(botId(), signal(), admission());
+    await createBot({ id: botId(), name: 'Assistant 1' }, signal(), admission());
+    await getBotDefaults(null, signal(), admission());
+    expect(fetch.mock.calls.map(([, options]) => new Headers(options.headers).get('Daynight-Bot-Attention'))).toEqual(['1', '1', '1', null]);
+  });
+  it.each([null, '2', '1, 1'])('rejects an unconfirmed attention projection %s without replaying creation', async header => {
+    const response = (value: unknown) => {
+      const result = botResponse(value);
+      if (header === null) result.headers.delete('Daynight-Bot-Attention');
+      else result.headers.set('Daynight-Bot-Attention', header);
+      return result;
+    };
+    const fetch = vi.fn().mockResolvedValueOnce(response({ items: [botDefinition()], nextCursor: null }))
+      .mockResolvedValueOnce(response(botDefinition())).mockResolvedValueOnce(response(botDefinition()));
+    vi.stubGlobal('fetch', fetch);
+    await expect(listBots({}, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(getBot(botId(), signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(createBot({ id: botId(), name: 'Assistant 1' }, signal(), admission())).rejects.toMatchObject({ name: 'BotCreationUnknown', id: botId() });
+    expect(fetch.mock.calls.filter(([, options]) => options.method === 'POST')).toHaveLength(1);
+  });
+
   it.each([-1, 0.5, '1', null, undefined, Number.MAX_SAFE_INTEGER + 1])('rejects invalid attention counts %s', attentionCount => {
     expect(() => parseBot({ ...botDefinition(), attentionCount }, BOT_USER)).toThrow();
   });

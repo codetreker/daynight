@@ -22,7 +22,15 @@ The Bot attention endpoint reuses the assistant-task module's owner-scoped
 transactional clear operation. Event delivery and user viewing remain independent.
 The browser acknowledges the selected conversation only after its current identity
 is confirmed, then rereads the count instead of assigning zero. Cached panes and
-background list reads do not acknowledge other conversations.
+background list reads do not acknowledge other conversations. A confirmed opening
+with zero attention consumes the same allowance without a write, so later polling
+cannot acknowledge reports that arrived after that opening.
+
+Bot HTTP responses expose the count only when the caller requests
+`Daynight-Bot-Attention: 1`; the server echoes that capability. Existing strict
+CLI clients retain their original response shape, including creation and
+original-ID recovery. The current CLI parser accepts a missing count and validates
+the field when present. The website requests and requires the count projection.
 
 ## Alternatives
 
@@ -35,6 +43,11 @@ decision requirement without coupling it to delivery state.
 does not decide pending proposals, and new events can arrive concurrently. An
 authoritative read preserves both facts and exposes failed reads without claiming
 that attention has disappeared.
+
+**Add the field unconditionally and update only the current CLI parser.** Already
+installed strict clients would still reject list, show and successful creation
+responses. Negotiation preserves their behavior without requiring a coordinated
+CLI release.
 
 ## Consequences
 

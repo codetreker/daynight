@@ -15,7 +15,7 @@ type Bot struct {
 }
 
 type BotDefinition struct {
-	AttentionCount        int64                 `json:"attentionCount"`
+	AttentionCount        *int64                `json:"attentionCount,omitempty"`
 	OwnerUserID           string                `json:"ownerUserId"`
 	Name                  string                `json:"name"`
 	CreationOrder         int64                 `json:"creationOrder,string"`
