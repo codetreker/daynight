@@ -241,3 +241,35 @@ describe('Bot account API', () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 });
+
+describe('Bot attention API', () => {
+  it.each([-1, 0.5, '1', null, undefined, Number.MAX_SAFE_INTEGER + 1])('rejects invalid attention counts %s', attentionCount => {
+    expect(() => parseBot({ ...botDefinition(), attentionCount }, BOT_USER)).toThrow();
+  });
+  it('preserves the server attention count and sends one exact seen request', async () => {
+    expect(parseBot({ ...botDefinition(), attentionCount: 3 }, BOT_USER)).toMatchObject({ attentionCount: 3 });
+    const fetch = vi.fn().mockResolvedValue(botResponse({ targetBotId: botId() })); vi.stubGlobal('fetch', fetch);
+    await botsApi.markBotAttentionSeen(botId().toUpperCase(), signal(), admission());
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]![0]).toBe(`/api/v1/bots/${botId()}/attention/seen`);
+    expect(fetch.mock.calls[0]![1]).toMatchObject({ method: 'POST', body: '{}' });
+  });
+  it.each([
+    () => Promise.reject(new TypeError('response lost')),
+    () => Promise.resolve(botResponse({ targetBotId: botId(2) })),
+    () => Promise.resolve(botResponse({ targetBotId: botId() }, BOT_USER, 201)),
+    () => Promise.resolve(botResponse({ targetBotId: botId() }, null)),
+    () => Promise.resolve(botError(403, 'forbidden')),
+  ])('does not replay a failed or unconfirmed seen request %#', async response => {
+    const fetch = vi.fn(response); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.markBotAttentionSeen(botId(), signal(), admission())).rejects.toBeDefined();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+  it('rejects a changed principal and invalid request identity', async () => {
+    const gate = admission(), fetch = vi.fn().mockResolvedValue(botResponse({ targetBotId: botId() }, botId(40))); vi.stubGlobal('fetch', fetch);
+    await expect(botsApi.markBotAttentionSeen(botId(), signal(), gate)).rejects.toMatchObject({ code: 'principal_mismatch' });
+    expect(gate.onPrincipalMismatch).toHaveBeenCalledOnce();
+    await expect(botsApi.markBotAttentionSeen('bad', signal(), gate)).rejects.toMatchObject({ kind: 'protocol' });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+});

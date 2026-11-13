@@ -19,6 +19,7 @@ import { BotConversationHeader, type BotConversationTarget } from './BotConversa
 import { useBotMessages } from './messages';
 import { useBotRead } from './useBotRead';
 import { useBotDetail } from './useBotDetail';
+import { useBotAttentionSeen } from './useBotAttentionSeen';
 import { pendingBotCreation, rememberBotCreation } from './pending-creation';
 import './bots.css';
 
@@ -72,6 +73,7 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
   useLayoutEffect(() => { setCreating(current => current && (current.scope !== scope || current.botId !== botId) ? null : current); }, [scope, botId]);
   const targetUnavailable = deleteTarget !== null && (deleteTarget.scope !== scope || blocked(deleteTarget.bot.id) || deleteTarget.bot.id === botId && (denied || deleted));
   useEffect(() => { if (targetUnavailable) setDeleteTarget(null); }, [targetUnavailable]);
+  const attentionSeenError = useBotAttentionSeen(botId, readEnabled && detail.confirmed && bot !== null, (bot?.attentionCount ?? 0) > 0, () => { list.refresh(); detail.refresh(); });
   const binding = bot && detail.displayBinding?.botId === botId ? detail.displayBinding : null;
   const actionBinding = binding && readEnabled ? detail.actionBinding : null;
   const confirmedNoSession = detail.confirmed && bot !== null && bot.id === botId && bot.sessionId === null && bot.testExecutionId === null;
@@ -136,6 +138,7 @@ export function BotsPage({ botId, readEnabled }: { readonly botId: string | null
     }}>
       {botId === null || blocked(botId) || denied || deleted ? <header className="bot-conversation-heading">{botId === null ? <h2>{m.select}</h2> : <BotConversationHeader target={headerTarget} />}</header> : null}
       <div className="bot-conversation-body"><div className="bot-conversation-content">
+      {attentionSeenError !== null ? <ReadError label={m.attentionSeenError} error={attentionSeenError} retry={() => { list.refresh(); detail.refresh(); }} /> : null}
       {botId !== null && denied && detail.error !== null ? <ReadError label={m.detailError} error={detail.error} retry={detail.refresh} /> : null}
       {botId !== null && deletions.filter(record => record.id === botId).map(record => <div className="bot-selected-deletion" key={record.id}><BotDeletionStatus record={record} coordinator={coordinator} enabled={readEnabled && !scope.isInvalidated} /></div>)}
       {bot && bot.sessionId === null ? <p className="bot-empty" role="status">{bot.startupResult.code ? m.reason(bot.startupResult.code) : m[bot.startupResult.state]}</p> : null}

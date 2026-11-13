@@ -254,7 +254,7 @@ func Response(bot model.Bot) api.Bot {
 			WorkerCleanup: api.BotResult(deletion.WorkerCleanup), ServerCleanup: api.BotResult(deletion.ServerCleanup)}
 		return result
 	}
-	result.BotDefinition = &api.BotDefinition{OwnerUserID: bot.OwnerUserID, Name: bot.Name, CreationOrder: bot.CreationOrder,
+	result.BotDefinition = &api.BotDefinition{AttentionCount: bot.AttentionCount, OwnerUserID: bot.OwnerUserID, Name: bot.Name, CreationOrder: bot.CreationOrder,
 		RequestedOverrides: api.BotOverrides(bot.RequestedOverrides), ResolvedConfiguration: *botConfigurationResponse(&bot.ResolvedConfiguration),
 		SessionID: bot.SessionID, TestExecutionID: bot.TestExecutionID, StartupResult: api.BotResult(bot.StartupResult), CreatedAt: bot.CreatedAt.UTC(), UpdatedAt: bot.UpdatedAt.UTC()}
 	if bot.RoleConfiguration != nil {
