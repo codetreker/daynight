@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -85,8 +86,21 @@ test("canonical discovery adopts the unchanged complete v10 DDL after the publis
   expect(currentSqliteVersion(controllerJournalFormat)).toBe(10);
   const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
   expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-  expect(hash(steps.find(step => step.version === 9)!.sql)).toBe("f3c16ac2b559f1ed684566a6ede5bf82c7fc84b3870a84bee7d6ff3bdc158d76");
-  expect(hash(steps.find(step => step.version === 10)!.sql)).toBe("537649e624dbe080aff7657a08b05eb837b1579e5558481cb7c63d3f01703bcc");
+  const repository = path.resolve(import.meta.dirname, "../../../../..");
+  for (const [version, name, expectedHash] of [
+    [9, "009-message-origins.sql", "f3c16ac2b559f1ed684566a6ede5bf82c7fc84b3870a84bee7d6ff3bdc158d76"],
+    [10, "010-timeline-content.sql", "537649e624dbe080aff7657a08b05eb837b1579e5558481cb7c63d3f01703bcc"],
+  ] as const) {
+    const resource = `packages/daynight/src/commands/controller/sqlite/journal/${name}`;
+    const canonical = execFileSync("git", ["show", `HEAD:${resource}`], { cwd: repository, timeout: 10000 });
+    const checkout = await readFile(path.join(repository, resource));
+    // Published bytes belong to Git; checkout EOL conversion must preserve both
+    // their canonical content and the exact bytes consumed by resource loading.
+    expect(hash(canonical)).toBe(expectedHash);
+    expect(canonical.includes(13)).toBe(false);
+    expect(Buffer.from(steps.find(step => step.version === version)!.sql, "utf8")).toEqual(checkout);
+    expect(Buffer.from(checkout.toString("utf8").replaceAll("\r\n", "\n"), "utf8")).toEqual(canonical);
+  }
 });
 
 test("imports only the committed v9 pointer while retaining an orphan newer candidate", async () => {

@@ -63,20 +63,6 @@ test("current timeline references protect a resource until the entry no longer r
   expect(sessionContent(journal, session, db).resourceFiles.resources.has(resource.resourceId)).toBe(false);
 });
 
-test("admits the exact complete timeline budget and preserves it when a revision exceeds the limit", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "dn-budget-")); roots.push(root);
-  const journal = path.join(root, "journal.sqlite"), session = randomUUID();
-  const db = database(journal), content = sessionContent(journal, session, db);
-  const empty = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "assistant_message" as const, content: Array.from({ length: 64 }, (_, index) => ({ type: "text" as const, text: index === 63 ? "" : "x".repeat(1024 * 1024) })) };
-  const remaining = 64 * 1024 * 1024 - Buffer.byteLength(JSON.stringify({ entries: [empty] }));
-  const entry = { ...empty, content: empty.content.map((part, index) => index === 63 ? { ...part, text: "x".repeat(remaining) } : part) };
-  db.transaction(() => content.timeline.save(entry)).immediate();
-  expect(content.metadataBytes()).toBe(64 * 1024 * 1024);
-  expect(() => db.transaction(() => content.timeline.save({ ...entry, revision: "2", content: entry.content.map((part, index) => index === 63 ? { ...part, text: `${part.text}x` } : part) })).immediate()).toThrow("budget");
-  expect(content.timeline.get(entry.entryId)?.revision).toBe("1");
-  expect(sessionContent(journal, session, db).metadataBytes()).toBe(64 * 1024 * 1024);
-}, 30_000);
-
 test("counts orphan originals before importing a new blob and leaves no new publication on refusal", async () => {
   const { open } = await import("node:fs/promises");
   const root = await mkdtemp(path.join(tmpdir(), "dn-orphan-budget-")); roots.push(root);

@@ -42,15 +42,25 @@ const fixture = () => {
   const journal = openControllerLifecycleStore(file, ticket, { database: db, storagePermit: permit, mediaStateDirectory: root, contentOwnedLocally: true, onMigration: () => {} });
   expect(db.pragma("user_version", { simple: true })).toBe(10); expect(db.pragma("journal_mode", { simple: true })).toBe("wal"); expect(db.pragma("synchronous", { simple: true })).toBe(2); expect(db.pragma("wal_autocheckpoint", { simple: true })).toBe(1000);
   let closed = false, publications = 0, acknowledgements = 0, peakBytes = 0, peakMetadataBytes = 0, peakOutboxBytes = 0;
+  let maximumAcknowledgementBatch = 1;
   let peak: Record<string, number | string> = {}, minimumFreeBytes = Number.MAX_SAFE_INTEGER;
   const started = performance.now();
+  const initialPhysical = controllerJournalPhysicalBytes(file, db);
+  const metadataOverhead = controllerMetadataBudget(file, db).bytes() - initialPhysical.databaseBytes - initialPhysical.walBytes - initialPhysical.shmBytes;
+  const samplePhysical = (phase: string): number => {
+    const physical = controllerJournalPhysicalBytes(file, db), bytes = physical.databaseBytes + physical.walBytes + physical.shmBytes;
+    if (bytes + metadataOverhead > 128 * 1048576) throw new Error("Production capacity fixture exceeded normal metadata admission.");
+    if (bytes > peakBytes) { peakBytes = bytes; peak = { ...physical, bytes, phase, publications, acknowledgements }; }
+    peakMetadataBytes = Math.max(peakMetadataBytes, bytes + metadataOverhead);
+    return bytes;
+  };
   const sample = (phase: string): void => {
     journal.assertInputCapacity();
-    const physical = controllerJournalPhysicalBytes(file, db), bytes = physical.databaseBytes + physical.walBytes + physical.shmBytes;
+    const bytes = samplePhysical(phase);
     const metadataBytes = controllerMetadataBudget(file, db).bytes();
     const outboxBytes = (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes;
-    if (bytes > peakBytes) { peakBytes = bytes; peak = { ...physical, bytes, phase, publications, acknowledgements }; }
     peakMetadataBytes = Math.max(peakMetadataBytes, metadataBytes); peakOutboxBytes = Math.max(peakOutboxBytes, outboxBytes);
+    expect(metadataBytes - bytes).toBe(metadataOverhead);
     const free = statfsSync(root, { bigint: true }); minimumFreeBytes = Math.min(minimumFreeBytes, Number(free.bavail * free.bsize));
     expect(metadataBytes).toBeLessThanOrEqual(128 * 1048576);
   };
@@ -62,6 +72,17 @@ const fixture = () => {
     sample("separate-ack-commit");
     const current = journal.getTimelineEntry(value.entryId); if (current === undefined) throw new Error("Published SQL body is missing.");
     return current;
+  };
+  const publishBatch = (values: readonly TimelineEntry[]): void => {
+    journal.assertInputCapacity();
+    let through = "0";
+    for (const value of values) {
+      const event = journal.projectTimeline(value); publications++;
+      if (event === null || event.sequence !== String(publications)) throw new Error("Production publication lost its ordered source event.");
+      through = event.sequence; samplePhysical("published-before-batch-ack");
+    }
+    maximumAcknowledgementBatch = Math.max(maximumAcknowledgementBatch, values.length);
+    sample("published-before-batch-ack"); journal.acknowledgeEvents(through); acknowledgements++; sample("separate-batch-ack-commit");
   };
   const totals = () => db.prepare("SELECT entry_count AS count,byte_length AS bytes FROM timeline_totals WHERE id=1").get() as { count: number; bytes: number };
   const assertCurrent = (expected: readonly TimelineEntry[]): string => {
@@ -92,15 +113,17 @@ const fixture = () => {
   const report = (name: string, extra: Record<string, unknown>): void => {
     expect(sourceHashes()).toEqual(loadedSourceHashes);
     const settledDbWalShmBytes = ["", "-wal", "-shm"].reduce((sum, suffix) => sum + (existsSync(file + suffix) ? lstatSync(file + suffix).size : 0), 0);
-    process.stdout.write(JSON.stringify({ kind: "production-session-sqlite-capacity", name, node: process.version, sourceHashes: loadedSourceHashes, conditions: { api: "prepareControllerStorage(writer) -> openControllerLifecycleStore -> projectTimeline -> separate acknowledgeEvents", originalStoragePermit: true, journal: "WAL/FULL/1000", heldReader: false, relayConnected: false, nativeProcessStarted: false, generatedInput: true, originalIncidentReplay: false, publications, separateAcknowledgementCommits: acknowledgements, normalMetadataLimitBytes: 128 * 1048576, minimumObservedVolumeFreeBytes: minimumFreeBytes }, peakDbWalShm: peak, peakMetadataBytes, peakOutboxBytes, settledDbWalShmBytes, reopened: true, integrityCheck: "ok", durationMs: performance.now() - started, ...extra }) + "\n");
+    process.stdout.write(JSON.stringify({ kind: "production-session-sqlite-capacity", name, node: process.version, sourceHashes: loadedSourceHashes, conditions: { api: "prepareControllerStorage(writer) -> openControllerLifecycleStore -> projectTimeline -> separate acknowledgeEvents", originalStoragePermit: true, journal: "WAL/FULL/1000", heldReader: false, relayConnected: false, nativeProcessStarted: false, generatedInput: true, originalIncidentReplay: false, publications, separateAcknowledgementCommits: acknowledgements, maximumAcknowledgementBatch, normalMetadataLimitBytes: 128 * 1048576, minimumObservedVolumeFreeBytes: minimumFreeBytes }, peakDbWalShm: peak, peakMetadataBytes, peakOutboxBytes, settledDbWalShmBytes, reopened: true, integrityCheck: "ok", durationMs: performance.now() - started, ...extra }) + "\n");
   };
-  return { root, file, db, journal, ticket, publish, totals, assertCurrent, close, reopen, report, sample };
+  return { root, file, db, journal, ticket, publish, publishBatch, totals, assertCurrent, close, reopen, report, sample };
 };
 
 test("production publication admits 100000 current entries, replaces without accumulation and rejects entry 100001", () => {
   const f = fixture(), expected: TimelineEntry[] = [];
+  let batch: TimelineEntry[] = [];
   for (let number = 1; number <= 100000; number++) {
-    const value = entry(number, 1, `row-${number}`); const current = f.publish(value); expect(current).toEqual(value); expected.push(value);
+    const value = entry(number, 1, `row-${number}`); expected.push(value); batch.push(value);
+    if (batch.length === 100) { f.publishBatch(batch); batch = []; }
     if (number % 25000 === 0) process.stdout.write(JSON.stringify({ kind: "production-capacity-progress", entries: number }) + "\n");
   }
   const before = f.totals(), sequence = f.journal.getLastSourceSequence();

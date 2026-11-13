@@ -3,7 +3,9 @@ import { mkdtemp, mkdir, rm, unlink, stat, readFile, writeFile, open } from "nod
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
+import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import * as archives from "../../../src/commands/controller/archive-upload.js";
@@ -26,8 +28,27 @@ const pending = (file: string, sessionId: string) => {
   const db = new Database(file, { readonly: true }); readers.push(db);
   return openSessionContent(file, sessionId, db, { read: action => db.transaction(action).deferred(), assertWrite: () => { throw new Error("Read only."); } });
 };
-afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-const fixture = async () => {
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
+const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
+const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket, stateDirectory: string): Promise<void> => {
+  if (process.platform !== "win32") return;
+  const db = new Database(journalPath);
+  try {
+    const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+    const snapshot = JSON.parse(row.snapshot);
+    db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...snapshot, lifecycle: "stopping", nativeStopped: false, stoppedAt: null, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` } }));
+  } finally { db.close(); }
+  const jobLease = {} as ControllerJobLease;
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  try {
+    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory, jobLease });
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(stopped.controllerProcess, stopped.nativeProcesses, undefined, jobLease);
+    expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
+  } finally { confirm.mockRestore(); }
+};
+const fixture = async ({ finalizeStop = true }: { finalizeStop?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
@@ -35,7 +56,8 @@ const fixture = async () => {
   const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "durable answer" }] };
   store.projectTimeline(entry); const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
-  return { home, ticket, journalPath, entry, sourceThrough };
+  if (finalizeStop) await completeFixtureStop(journalPath, ticket, home);
+  return { home, ticket, journalPath, entry, sourceThrough, completeStop: () => completeFixtureStop(journalPath, ticket, home) };
 };
 const migrate = (db: Database.Database, stateDirectory: string): void => {
   const permit = acquireControllerStoragePermit(db.name);
@@ -45,7 +67,8 @@ const migrate = (db: Database.Database, stateDirectory: string): void => {
   } finally { permit.release(); }
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
-test("retries confirmed archive busy responses with the same request until the upload completes", async () => {
+test.each(fixturePlatforms)("retries confirmed archive busy responses with the same request until the upload completes (%s)", async fixturePlatform => {
+  selectFixturePlatform(fixturePlatform);
   const f = await fixture(), bodies: string[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });
   const attempts = new Map<string, { body: unknown; count: number }>();
@@ -106,11 +129,14 @@ test.each([
     return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: retryAfter === null ? {} : { "Retry-After": retryAfter } });
   });
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
-  await vi.advanceTimersByTimeAsync(expectedMs - 1);
-  expect(request).toHaveBeenCalledOnce();
-  await vi.advanceTimersByTimeAsync(1);
-  expect((await result).state).toBe("ready");
-  expect(request.mock.calls.length).toBeGreaterThan(1);
+  const joined = Promise.allSettled([result]);
+  try {
+    await vi.advanceTimersByTimeAsync(expectedMs - 1);
+    expect(request).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await result).state).toBe("ready");
+    expect(request.mock.calls.length).toBeGreaterThan(1);
+  } finally { await vi.runAllTimersAsync(); await joined; }
 });
 
 test("archive busy keeps its error identity when the shared 60 second budget expires", async () => {
@@ -119,11 +145,14 @@ test("archive busy keeps its error identity when the shared 60 second budget exp
   const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "120" } }));
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
   const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
-  await vi.advanceTimersByTimeAsync(59_999);
-  expect(request).toHaveBeenCalledOnce();
-  await vi.advanceTimersByTimeAsync(1);
-  await failed;
-  expect(request).toHaveBeenCalledOnce();
+  const joined = Promise.allSettled([result, failed]);
+  try {
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(request).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    await failed;
+    expect(request).toHaveBeenCalledOnce();
+  } finally { await vi.runAllTimersAsync(); await joined; }
 });
 
 test("cancelling an archive busy wait prevents another request", async () => {
@@ -133,11 +162,14 @@ test("cancelling an archive busy wait prevents another request", async () => {
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request, signal: controller.signal });
   const reason = new Error("Worker stopping.");
   const failed = expect(result).rejects.toBe(reason);
-  await vi.advanceTimersByTimeAsync(100);
-  controller.abort(reason);
-  await failed;
-  await vi.advanceTimersByTimeAsync(5000);
-  expect(request).toHaveBeenCalledOnce();
+  const joined = Promise.allSettled([result, failed]);
+  try {
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort(reason);
+    await failed;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(request).toHaveBeenCalledOnce();
+  } finally { controller.abort(reason); await vi.runAllTimersAsync(); await joined; }
 });
 
 test.each(["history", "content"])("exhausted %s busy retries retain the original error without a reconciliation request", async stage => {
@@ -169,9 +201,12 @@ test("archive requests share the same round deadline across upload stages", asyn
   });
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
   const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
-  await vi.advanceTimersByTimeAsync(60_000);
-  await failed;
-  expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET", "GET", "POST"]);
+  const joined = Promise.allSettled([result, failed]);
+  try {
+    await vi.advanceTimersByTimeAsync(60_000);
+    await failed;
+    expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET", "GET", "POST"]);
+  } finally { await vi.runAllTimersAsync(); await joined; }
 });
 
 test.each(["archive_incomplete", "projection_gap"] as const)("rejects %s before reading pending content and preserves source bytes", async code => {
@@ -348,7 +383,7 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); db.close();
 });
 test("an outbox rollback preserves the committed timeline in memory and after restart", async () => {
-  const f = await fixture();
+  const f = await fixture({ finalizeStop: false });
   let store = openControllerLifecycleStore(f.journalPath, f.ticket, { maxOutboxBytes: 256 });
   const next = { ...f.entry, content: [{ type: "text" as const, text: "x".repeat(1000) }] };
   expect(() => store.projectTimeline(next)).toThrow("capacity");
@@ -361,28 +396,29 @@ test("an outbox rollback preserves the committed timeline in memory and after re
 });
 
 test("a delivered relay gap remains a permanent incomplete-archive marker", async () => {
-  const f = await fixture(); const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const f = await fixture({ finalizeStop: false }); const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   store.markProjectionGap("A native event could not be captured.");
-  expect(store.drainProjectionGap()).not.toBeNull(); store.close();
+  expect(store.drainProjectionGap()).not.toBeNull(); store.close(); await f.completeStop();
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: emptyStatus }));
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("unresolved projection gap");
   expect(request.mock.calls.every(call => call[1]?.method === "POST")).toBe(true);
 });
 test("archive migrates an original resource into the common blob model and rejects a mismatching receipt",async()=>{
- const f=await fixture(),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
+ const f=await fixture({ finalizeStop: false }),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
  const bytes=Buffer.from("binary artifact"),resource={resourceId:randomUUID(),name:"output.txt",status:"available" as const,mediaType:"text/plain",byteLength:String(bytes.length),sha256:createHash("sha256").update(bytes).digest("hex"),error:null};
- store.saveResource(resource,bytes);store.projectTimeline({...f.entry,content:[{type:"resource",resourceId:resource.resourceId,label:"artifact"}]});const through=store.getLastSourceSequence();store.close();
+ store.saveResource(resource,bytes);store.projectTimeline({...f.entry,content:[{type:"resource",resourceId:resource.resourceId,label:"artifact"}]});const through=store.getLastSourceSequence();store.close();await f.completeStop();
  const bodies:string[]=[];const receiver=archiveTestReceiver({bodies,sourceThrough:through,onManifest:body=>Response.json({archive:{state:"ready",schemaVersion:3,completeness:"complete",sha256:"0".repeat(64),byteLength:String(Buffer.byteLength(body)),errorCode:null}})});
  await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request})).rejects.toThrow("matching integrity");
  const manifest=JSON.parse(bodies[0]!);expect(manifest.resources[0].resource).toEqual(resource);expect(manifest.resources[0].blobId).toBeTypeOf("string");expect(manifest.resources[0]).not.toHaveProperty("data");expect(receiver.files.get(manifest.resources[0].blobId)?.equals(bytes)).toBe(true);
  expect(pending(f.journalPath,f.ticket.sessionId).resourceFiles.resources.get(resource.resourceId)?.data).toBeNull();
 });
-test("stopped archival retains and retries an available zero-byte legacy resource", async () => {
-  const f = await fixture(), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+test.each(fixturePlatforms)("stopped archival retains and retries an available zero-byte legacy resource (%s)", async fixturePlatform => {
+  selectFixturePlatform(fixturePlatform);
+  const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const bytes = Buffer.alloc(0), resource = { resourceId: randomUUID(), name: "empty.txt", status: "available" as const, mediaType: "text/plain", byteLength: "0", sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
   store.saveResource(resource, bytes);
   store.projectTimeline({ ...f.entry, content: [{ type: "resource", resourceId: resource.resourceId, label: "empty original" }] });
-  const sourceThrough = store.getLastSourceSequence(); store.close();
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
   const bodies: string[] = [], offsets: string[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough });
   const request: typeof fetch = async (input, init) => {
@@ -401,13 +437,13 @@ test("stopped archival retains and retries an available zero-byte legacy resourc
   expect(bodies).toHaveLength(1);
 });
 test("an available resource cannot be published without retained original bytes",async()=>{
- const f=await fixture(),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
+ const f=await fixture({ finalizeStop: false }),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
  try { expect(()=>store.saveResource({resourceId:randomUUID(),name:"missing.txt",status:"available",mediaType:"text/plain",byteLength:"1",sha256:"0".repeat(64),error:null})).toThrow("incomplete"); }finally{store.close()}
 });
 
 // A long conversation must not rewrite a growing timeline manifest on every insert.
 test("timeline growth keeps file inventory writes bounded while SQL detects deleted rows", async () => {
-  const f = await fixture();
+  const f = await fixture({ finalizeStop: false });
   const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const inventory = `${f.journalPath}.pending-content/index.json`;
   const before = await stat(inventory);
@@ -441,11 +477,11 @@ test.each([0, 129])("all archive transport phases release local ownership with %
 
 
 test.each(["none", "transport", "close"] as const)("resource transfers retain pre-frozen file leases after SQL closes and release them (failure: %s)", async failure => {
-  const f = await fixture(), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const bytes = Buffer.from("frozen resource bytes"), resource = { resourceId: randomUUID(), status: "available" as const, name: "original.txt", mediaType: "text/plain", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
   store.saveResource(resource, bytes);
   store.projectTimeline({ ...f.entry, content: [{ type: "resource", resourceId: resource.resourceId, label: "original" }] });
-  const sourceThrough = store.getLastSourceSequence(); store.close();
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
   const connections = new Set<Database.Database>(), prepare = Database.prototype.prepare;
   vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, sql: string) {
     if (this.name === f.journalPath) connections.add(this);
