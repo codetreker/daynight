@@ -204,6 +204,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       { ...second, status: 'in_progress', startedAt: '2026-10-22T09:59:00Z', dependsOn: [firstId, outsideId], externalDependsOn: [outsideId] },
       single, external];
     currentGraph = graphFixture(details);
+  }, retireGoal: () => {
+    details = details.filter(item => item.id !== goalId).map(item => item.parentId === goalId
+      ? { ...item, parentId: null, version: item.version + 1n, updatedAt: '2026-10-22T10:00:01Z' } : item);
+    currentGraph = graphFixture(details);
   }, forbidGoal: () => { forbiddenGoal = true; }, goalReads: () => goalReads, addCrossGoal: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }), detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false })];
     currentGraph = graphFixture(details);
@@ -2158,4 +2162,25 @@ test('Goal graph history and direction remain independent of other Goals and cha
   await page.keyboard.press('Escape');
   await firstOpener.click();
   await expect(firstDialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+});
+
+test('Goal overview retires an invalidated Goal and rejects the late old snapshot', async ({ page }) => {
+  const fixture = await install(page); fixture.addExternalGoalChain();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-graph-${goalId}`).click();
+  const dialog = page.locator(`#task-graph-${goalId}`);
+  await expect(dialog.locator('.task-node')).toHaveCount(4);
+  fixture.holdNextSync();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(fixture.syncHeld).toBe(true);
+  fixture.advanceEpoch(); fixture.retireGoal();
+  await dialog.locator(`[data-id="${firstId}"] .task-node-body`).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
+  fixture.releaseSync();
+  await expect.poll(fixture.heldSyncFinished).toBe(true);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
 });
