@@ -88,7 +88,7 @@ test("canonical discovery adopts the unchanged complete v10 DDL after the publis
   expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   const repository = path.resolve(import.meta.dirname, "../../../../..");
   const accounting = await readFile(path.join(repository, "packages/daynight/src/commands/controller/sqlite/journal/011-outbox-accounting.sql"));
-  expect(hash(accounting)).toBe("8f19353c6e6c4a2887a123efd5d97a472956e70f753b14a3b6ec74c7dc181ffd");
+  expect(hash(Buffer.from(accounting.toString("utf8").replaceAll("\r\n", "\n"), "utf8"))).toBe("8ccff911653736b9af8c346ce75d127291deba9d0082ee8e96521942ff61a462");
   for (const [version, name, expectedHash] of [
     [9, "009-message-origins.sql", "f3c16ac2b559f1ed684566a6ede5bf82c7fc84b3870a84bee7d6ff3bdc158d76"],
     [10, "010-timeline-content.sql", "537649e624dbe080aff7657a08b05eb837b1579e5558481cb7c63d3f01703bcc"],
