@@ -190,6 +190,10 @@ func writeOwnedResources(path string, resources ownedResources) error {
 }
 
 func newFixture(t *testing.T) *fixture {
+	return newFixtureWithDecoder(t, false)
+}
+
+func newFixtureWithDecoder(t *testing.T, imageDecoder bool) *fixture {
 	t.Helper()
 	binary := verifyServerBuild(t)
 	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
@@ -296,6 +300,20 @@ func newFixture(t *testing.T) *fixture {
 		"uniauth":   map[string]any{"url": gateway.Origin, "app_id": gateway.AppID, "app_secret": gateway.AppSecret, "callback_url": callbackURL, "allow_loopback_http": true},
 		"task_sync": map[string]any{"overlap": "10s"},
 		"webhook":   map[string]any{"enabled": true},
+	}
+	if imageDecoder {
+		dir, node := os.Getenv("DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR"), os.Getenv("DAYNIGHT_INTEGRATION_NODE_PATH")
+		if !filepath.IsAbs(dir) || !filepath.IsAbs(node) {
+			t.Fatal("integration runner must provide the real image decoder and Node paths")
+		}
+		temporary := filepath.Join(root, "image-decode")
+		if err := os.Mkdir(temporary, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		configuration["image_decoder"] = map[string]any{
+			"node_path": node, "helper_path": filepath.Join(dir, "image-validation-helper.js"),
+			"manifest_path": filepath.Join(dir, "image-validation-manifest.json"), "temporary_directory": temporary,
+		}
 	}
 	configDir := filepath.Join(root, "config")
 	if err := os.Mkdir(configDir, 0o700); err != nil {

@@ -254,7 +254,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
       const requestId = randomUUID();
       const timer = setTimeout(() => { captureRequests.delete(requestId); reject(new Error("Image capture outcome is unknown; query the original capture.")); }, 15_000);
-      captureRequests.set(requestId, { action, captureId: body.captureId, attemptId: "attemptId" in body ? body.attemptId : null, resolve, reject, timer });
+      captureRequests.set(requestId, { action, captureId: "request" in body ? body.request.captureId : body.captureId, attemptId: "attemptId" in body ? body.attemptId : null, resolve, reject, timer });
       try { send(parseImageCaptureMessage({ ...prefix(), type: "image_capture", requestId, action, body }) as ImageCaptureMessage); }
       catch (error) { clearTimeout(timer); captureRequests.delete(requestId); reject(error); }
     }),

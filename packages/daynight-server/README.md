@@ -1924,10 +1924,11 @@ explicit `DAYNIGHT_TEST_DATABASE_URL` must refer to the invoking test
 environment's isolated instance, such as its fresh CI service or local validation
 container. It must not select a development, shared or production database.
 
-`scripts/integration.sh` builds the production `cmd/daynight-server` from the
-current source and checks its source fingerprint before and after the build.
-The suite verifies the binary hash, Go toolchain and race mode against that
-receipt. Local validation and main pushes use race instrumentation; PR and other
+`scripts/integration.sh` builds the production `cmd/daynight-server` and the
+CLI image validator from the current source, requiring Node 24 and the installed
+workspace dependencies. It fingerprints the server, Web and CLI build inputs
+and the packaged validator; the suite verifies the binary hash, Go toolchain and
+race mode against the receipt. Local validation and main pushes use race instrumentation; PR and other
 CI events use the same non-race policy as the module check. Unit resource
 overlays are not used for this production binary.
 
@@ -1965,8 +1966,10 @@ HTTP current-state readback and native and API browser snapshots retain the
 same identity, generation and native Session ID. A Controller timeline event
 arrives through both browser WebSockets with exact content and source identity.
 Go HTTP and WebSocket clients exercise the actual service and persistence
-assembly. The suite does not run CLI, browser or Web tests and contains no
-business boundary or fault matrices.
+assembly. The Session flow also uploads a real first image chunk over HTTP,
+completes validation using the packaged CLI image decoder and verifies the
+original through resource and archive reads. The suite does not run CLI, browser
+or Web test suites and contains no business boundary or fault matrices.
 
 Startup, build and test execution have deadlines. Owned process cleanup stops
 the Server before releasing its schema and storage and confirms authentication
@@ -1998,8 +2001,8 @@ It waits only for change detection; Go module coverage runs in a separate job.
 Private ownership/resource receipts, configuration, credentials, database files
 and copied build artifacts stay outside the evidence directory.
 
-The job is selected for server inputs and the production Web build inputs used
-by the Server: Web source, resources and build configuration, root Node
+The job is selected for server inputs, the CLI validator build inputs and the
+production Web build inputs used by the Server: Web source, resources and build configuration, root Node
 configuration and dependency patches. CLI-only changes keep their own checks.
 The final gate requires actual success whenever API integration is selected.
 The [API integration decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
