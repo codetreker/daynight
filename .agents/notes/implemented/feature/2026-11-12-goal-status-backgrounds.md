@@ -20,7 +20,7 @@ the required palette, contrast and semantic hierarchy; the
 records that ownership. The earlier
 [task status background decision](../../archived/feature/2026-10-28-task-status-backgrounds.md)
 records the original palette and aggregate chain semantics; the
-[Goal browsing decision](2026-11-11-goal-browsing.md) owns the list's scope and interactions.
+[Goal browsing decision](2026-11-11-goal-browsing.md) owns the list's scope. The [Goal row disclosure decision](../bug-fix/2026-11-13-goal-row-disclosure.md) describes the current heading actions.
 
 ## Alternatives
 

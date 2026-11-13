@@ -1048,6 +1048,26 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, states map[str
 	})
 }
 
+func (mock *taskHTTPSnapshotScopeMock) TagDAO() store.TagReader {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectScopeMock) TagDAO() store.TagWriteDAO {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectScopeMock) TaskTagDAO() store.TaskTagWriteDAO {
+	mock.need("TaskTagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectWriterMock) RotateTagCatalogEpoch(context.Context) error {
+	mock.need("RotateTagCatalogEpoch", false)
+	panic("unreachable")
+}
+
 func (s *taskHTTPSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO {
 	panic("unexpected GitHubDAO access")
 }

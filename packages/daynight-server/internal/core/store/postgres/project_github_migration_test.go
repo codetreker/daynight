@@ -32,7 +32,7 @@ func TestProjectGitHubMigrationRollbackAndUpgradePreserveResources(t *testing.T)
 	// An existing conflicting object makes the second CREATE fail after the
 	// connection table and its indexes have been created in the transaction.
 	mustQueryExec(t, db, `CREATE TABLE project_pull_requests (sentinel text)`)
-	if err := migrate(ctx, pool, schemaMigrations); err == nil {
+	if err := migrate(ctx, pool, schemaMigrations[:68]); err == nil {
 		t.Fatal("expected migration to fail on conflicting table")
 	}
 	var connectionExists bool
@@ -46,7 +46,7 @@ func TestProjectGitHubMigrationRollbackAndUpgradePreserveResources(t *testing.T)
 		t.Fatalf("failed migration changed existing resources: before=%s after=%s", before, after)
 	}
 	mustQueryExec(t, db, `DROP TABLE project_pull_requests`)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:68]); err != nil {
 		t.Fatal(err)
 	}
 	if after := snapshot(); after != before {
@@ -100,7 +100,7 @@ func TestProjectGitHubPendingMigrationRollbackAndUpgrade(t *testing.T) {
 	before := snapshot()
 	// The conflicting index aborts after CREATE TABLE, exercising transactional DDL.
 	mustQueryExec(t, db, `CREATE INDEX project_github_pending_prs_due ON project_github (project_id)`)
-	if err := migrate(ctx, pool, schemaMigrations); err == nil {
+	if err := migrate(ctx, pool, schemaMigrations[:69]); err == nil {
 		t.Fatal("expected migration to fail on conflicting index")
 	}
 	var exists bool
@@ -112,7 +112,7 @@ func TestProjectGitHubPendingMigrationRollbackAndUpgrade(t *testing.T) {
 		t.Fatalf("failed migration changed B1 resources: before=%s after=%s", before, after)
 	}
 	mustQueryExec(t, db, `DROP INDEX project_github_pending_prs_due`)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:69]); err != nil {
 		t.Fatal(err)
 	}
 	if after := snapshot(); after != before {

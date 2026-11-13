@@ -68,3 +68,15 @@ func (tx *writer) InvalidateTaskCache(ctx context.Context) error {
 	}
 	return nil
 }
+
+// RotateTagCatalogEpoch invalidates catalog continuations without changing Project metadata.
+func (tx *writer) RotateTagCatalogEpoch(ctx context.Context) error {
+	result, err := tx.tx.Exec(ctx, `UPDATE projects SET tag_catalog_epoch=gen_random_uuid() WHERE id=$1`, tx.projectID)
+	if err != nil {
+		return pg.QueryError("rotate tag catalog epoch", err)
+	}
+	if result.RowsAffected() != 1 {
+		return pg.QueryError("rotate tag catalog epoch", model.ErrNotFound)
+	}
+	return nil
+}
