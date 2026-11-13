@@ -603,4 +603,9 @@ func TestWorkerConfigurationAuthorityServiceReport(t *testing.T) {
 	}
 }
 
+func (s configurationReadScope) TagDAO() store.TagReader {
+	configurationUnexpected(s.calls.t, "TagDAO")
+	return nil
+}
+
 func (s configurationReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

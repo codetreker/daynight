@@ -6,6 +6,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/tag"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/task"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/attachment"
@@ -53,6 +54,7 @@ func readSnapshot(ctx context.Context, pool *pgxpool.Pool, operation func(pgx.Tx
 func (s *Snapshot) CredentialDAO() CredentialReader { return s }
 func (s *Snapshot) TeamDAO() TeamReader             { return team.NewReader(s.tx) }
 func (s *Snapshot) ProjectDAO() ProjectReader       { return project.NewReader(s.tx) }
+func (s *Snapshot) TagDAO() TagReader               { return tag.NewReader(s.tx) }
 func (s *Snapshot) TaskDAO() TaskReader             { return task.NewReader(s.tx) }
 func (s *Snapshot) WorkerDAO() WorkerReader         { return worker.NewReader(s.tx) }
 func (s *Snapshot) SessionDAO() SessionReader       { return session.NewReader(s.tx) }

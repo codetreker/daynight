@@ -12,7 +12,7 @@
 
 ## 存储与事务
 
-迁移 `070_assistant_tasks.sql` 增加下列独立资源；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
+迁移 `071_assistant_tasks.sql` 增加下列独立资源；每行保存 `owner_user_id`，所有 DAO 查询带 owner 条件。迁移与 `schema/current.sql` 同步，不改写历史迁移，也不新增外键或 CHECK。
 
 | 表 | 持久职责 |
 | --- | --- |

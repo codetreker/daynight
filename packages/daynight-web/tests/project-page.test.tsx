@@ -25,7 +25,7 @@ vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, re
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
   <button onClick={(event) => onOpenSession?.(root, event.currentTarget)}>进入会话 {root}</button>
   <button id={`task-root-${root}`} aria-haspopup="dialog" onClick={(event) => onOpenChain(root, event.currentTarget)}>{index.nodes.get(root)!.titlePreview}</button>
-  {openGraphTarget?.rootId === root && <div role="dialog" className="task-chain-dialog" id={`task-graph-${root}`} data-testid={`chain-${root}`}>
+  {openGraphTarget?.kind === 'chain' && openGraphTarget.rootId === root && <div role="dialog" className="task-chain-dialog" id={`task-graph-${root}`} data-testid={`chain-${root}`}>
     <button className="task-chain-close" onClick={onCloseChain}>关闭依赖图</button>
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}

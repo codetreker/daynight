@@ -36,7 +36,7 @@ const view = (tasks: TaskDetail[], withSnapshot = true) => {
   const snapshot = snapshotFixture(tasks);
   const currentGoal = tasks.find(item => item.id === goalId)!;
   return <TaskExecutionClockProvider projectId={projectId} snapshot={withSnapshot ? snapshot : null}>
-    <GoalList projectId={projectId} index={snapshot.index} goals={[snapshot.summaries.get(goalId)!]} total={1} workerMachines={snapshot.workerMachines} onOpenGoal={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+    <GoalList projectId={projectId} index={snapshot.index} goals={[snapshot.summaries.get(goalId)!]} total={1} workerMachines={snapshot.workerMachines} onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
     <GoalDetailSurface projectId={projectId} taskId={goalId} detail={currentGoal} resourceState={state} snapshot={withSnapshot ? snapshot : null} presentation="page" fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onRefreshGraph={noop} />
   </TaskExecutionClockProvider>;
 };

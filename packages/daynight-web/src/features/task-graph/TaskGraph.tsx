@@ -50,9 +50,9 @@ const TaskCanvas = ({ index, summaries, rootId, onOpenTask, onNavigateExternalTa
       })(),
       center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
       size: { width: node.width, height: node.height },
-      onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask,
+      actions: { kind: 'chain', onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask,
       revealRequest: action?.kind === 'expand' && action.anchorId === node.id ? action.sequence : null,
-      expansions: expansions.get(node.id)!,
+      expansions: expansions.get(node.id)! },
     },
   })), [geometry, index, summaries, m, expansions, action, onInspectTask, onOpenTask, onNavigateExternalTask, onExpandTask]);
   const viewportFactory = useCallback((width: number, height: number) => getInitialTaskViewport(geometry, rootId, width, height, folded), [geometry, rootId, folded]);
