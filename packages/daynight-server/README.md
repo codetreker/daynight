@@ -201,6 +201,13 @@ Worker administrator checks consume access, while claim ownership and acquisitio
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
+Project members manage the tag catalog through `/api/v1/projects/{projectId}/tags`:
+list, create, read, rename and confirmed deletion use stable IDs and original
+versions. List cursors bind the project, principal, query, page size and catalog
+epoch; `/tags/resolve` validates the complete selection within a bounded response.
+Visible Task and Goal usage counts are snapshot hints, while deletion removes all
+associations under the Project write lock. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
+and [server design](../../docs/design/daynight-server.md#领域模型与存储结构) describe the contract and implementation.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph, attachment and Worker route. The production Web entry separates
 the public introduction at `/`, the zero-API guide at `/setup`, and the existing

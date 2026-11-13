@@ -19,6 +19,7 @@ import (
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	prompthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/prompt"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
+	taghttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/tag"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	webhookhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webhook"
 	webhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/webui"
@@ -97,6 +98,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
+	taghttp.RegisterRoutes(mux, app.Tags, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	teamhttp.RegisterDirectMemberRoutes(mux, app.DirectMembers, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)

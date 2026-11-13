@@ -65,8 +65,17 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 		return err
 	})
 	failed, state := store.DatabaseErrorFacts(err)
-	if !failed || state != "23505" || completion.Outcome != store.TransactionNotCommitted {
+	if !failed || state != "23505" || !errors.Is(err, store.ErrTagNameConflict) || completion.Outcome != store.TransactionNotCommitted {
 		t.Fatalf("unique: %+v %v %q", completion, err, state)
+	}
+
+	// A duplicate identity is not a name collision.
+	completion, err = db.WriteProject(ctx, projectID, func(scope store.ProjectWriteScope) error {
+		_, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: ids[0], Name: "distinct", NameKey: "distinct", CreatedAt: observed})
+		return err
+	})
+	if failed, state := store.DatabaseErrorFacts(err); !failed || state != "23505" || errors.Is(err, store.ErrTagNameConflict) || completion.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("identity collision: %+v %v %q", completion, err, state)
 	}
 
 	err = db.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
