@@ -10,4 +10,6 @@ Project 管理员通过 GitHub 子资源发现目标仓库的安装、连接、�
 
 运行时与服务共享生命周期：停止新领取，取消在途工作，等待工作退出后关闭数据库和远端 transport。未完成 drain 时保留仍可能被使用的资源，并允许重试关闭。后台运行器异常退出进入服务监督和 readiness，不能静默停止同步。
 
-部署需要在 GitHub 注册 App、授予 Pull requests read 权限，并将 App 安装到目标仓库；配置 `DAYNIGHT_GITHUB_ENABLED`、`DAYNIGHT_GITHUB_APP_ID`、`DAYNIGHT_GITHUB_PRIVATE_KEY_FILE` 和 `DAYNIGHT_GITHUB_WEBHOOK_SECRET`。私钥由部署文件挂载，不进入 Project 数据或日志。配置及远端读取见 [GitHub App 远端读取](github-app-remote.md)。Webhook 接收由独立入口负责，轮询不依赖它。
+部署需要在 GitHub 注册 App、授予 Pull requests read 权限，并将 App 安装到目标仓库；配置 `DAYNIGHT_GITHUB_ENABLED`、`DAYNIGHT_GITHUB_APP_ID`、`DAYNIGHT_GITHUB_PRIVATE_KEY_FILE` 和 `DAYNIGHT_GITHUB_WEBHOOK_SECRET`。私钥由部署文件挂载，不进入 Project 数据或日志。配置及远端读取见 [GitHub App 远端读取](github-app-remote.md)。
+
+将 App 的 HTTPS Webhook 地址指向 `/api/v1/github/webhook`，使用相同 secret，订阅 `pull_request`、`installation` 和 `installation_repositories` 事件。反向代理须允许 26,214,400 字节的请求体。独立入口以原始字节验证 HMAC-SHA256，在八秒预算内持久化提示；相关事件提交成功返回 202，合法无关事件返回 204，失败或提交结果未知返回 503。入口不请求 GitHub，也不保存事件正文。PR 提示按绑定身份和编号合并；安装事件安排该安装下所有有效连接重新检查访问。执行器读取当前事实并条件确认提示，轮询补齐丢失的投递。主动断开的连接不会被事件重新启用。

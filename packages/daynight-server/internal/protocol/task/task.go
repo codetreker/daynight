@@ -20,6 +20,7 @@ import (
 type REST struct {
 	Progress          *model.GoalProgress        `json:"progress,omitempty"`
 	Properties        map[string]json.RawMessage `json:"properties"`
+	Tags              []RESTTagReference         `json:"tags"`
 	ID                string                     `json:"id"`
 	ProjectID         string                     `json:"projectId"`
 	Type              model.TaskType             `json:"type"`
@@ -40,6 +41,11 @@ type REST struct {
 	AssignedTo        *string                    `json:"assignedTo"`
 	AllowAgents       bool                       `json:"allowAgents"`
 	Ready             bool                       `json:"ready"`
+}
+
+type RESTTagReference struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // SyncRecord is the REST projection shared by sync accounting and output.
@@ -94,7 +100,11 @@ func restTask(t model.Task, extended, copyValues bool) (REST, error) {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
+	tags := make([]RESTTagReference, len(t.Tags))
+	for i, tag := range t.Tags {
+		tags[i] = RESTTagReference{ID: tag.ID, Name: tag.Name}
+	}
+	result := REST{Progress: t.Progress, ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties(t.Properties, copyValues), Tags: tags, Status: string(t.Status), Version: t.Version, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues), ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues), Ready: t.Ready, AllowAgents: t.AllowAgents, RequiredPlatform: platform, AssignedTo: t.AssignedTo}
 	if extended {
 		return result, nil
 	}

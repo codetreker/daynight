@@ -86,12 +86,21 @@ func (r *run) access(ctx context.Context) error {
 			return e
 		}
 		if r.connection.AccessHintID != nil {
-			if _, e = d.AckAccessHint(c, r.lease, *r.connection.AccessHintID); e != nil {
+			acked, e := d.AckAccessHint(c, r.lease, *r.connection.AccessHintID)
+			if e = require(acked, e); e != nil {
 				return e
 			}
 		}
 		w := core.Runtime(conn)
 		core.AccessSuccess(&w, conn, now)
+		if r.connection.AccessHintID != nil {
+			pending, valid, e := d.HasPending(c, r.lease)
+			if e = require(valid, e); e != nil {
+				return e
+			}
+			core.WebhookAttempt(&w, now)
+			core.WebhookSuccess(&w, now, pending)
+		}
 		w.ReleaseClaim = true
 		ok, e := d.SaveRuntime(c, r.lease, w)
 		return require(ok, e)
@@ -142,14 +151,10 @@ func (r *run) recordAccessFailure(ctx context.Context, cause error, reason strin
 		if err != nil {
 			return err
 		}
-		if r.connection.AccessHintID != nil {
-			if _, err = d.AckAccessHint(ctx, r.lease, *r.connection.AccessHintID); err != nil {
-				return err
-			}
-		}
 		w := core.Runtime(conn)
 		f := fail(cause)
-		if r.kind == core.WorkWebhook {
+		eventAccess := r.kind == core.WorkAccess && r.connection.AccessHintID != nil
+		if r.kind == core.WorkWebhook || eventAccess {
 			core.WebhookAttempt(&w, now)
 			core.WebhookFailure(&w, now, f)
 		} else {

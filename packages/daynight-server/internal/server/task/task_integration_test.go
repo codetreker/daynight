@@ -61,10 +61,10 @@ func TestTaskHTTPCreateUpdateReadAndListProjection(t *testing.T) {
 		t.Fatalf("created DTO: %+v headers=%v", actual, response.Header())
 	}
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 21 {
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil || len(fields) != 22 {
 		t.Fatalf("task DTO fields: %s %v", response.Body, err)
 	}
-	for _, key := range []string{"id", "type", "parentId", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "allowAgents", "requiredPlatform", "assignedTo", "cancelledAt", "startedAt", "completedAt"} {
+	for _, key := range []string{"id", "type", "parentId", "projectId", "title", "description", "status", "version", "createdAt", "updatedAt", "dependsOn", "externalDependsOn", "blockedBy", "ready", "properties", "tags", "allowAgents", "requiredPlatform", "assignedTo", "cancelledAt", "startedAt", "completedAt"} {
 		if _, exists := fields[key]; !exists {
 			t.Fatalf("missing task DTO field %s", key)
 		}

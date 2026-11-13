@@ -454,3 +454,24 @@ it('withdraws all people on scope suspension and rejects a pending profile from 
   await vi.waitFor(() => expect(owner.snapshot(projectId).status).toBe('ready'));
   expect(owner.snapshot(projectId).people.get(personId)?.name).toBe(changed.name);
 });
+
+it('does not withdraw a project for an older people read after a newer Project observation', async () => {
+  const { owner, cache } = await harness();
+  owner.setDemand(projectId, Symbol(), [personId]); owner.receipt(projectId, Symbol(), 1);
+  await count(1);
+  cache.markProjectReadable(projectId);
+  requests[0]!.finish(denial());
+  await vi.waitFor(() => expect(owner.snapshot(projectId).error).toMatchObject({ status: 404, code: 'not_found' }));
+  expect(cache.getAuthorizedProject(projectId)).not.toBeNull();
+});
+
+it('keeps accepted people when an older Project denial arrives', async () => {
+  const { owner, cache } = await harness();
+  const ticket = await cache.beginSync(projectId, signal());
+  const revision = cache.getProjectReadRevision(projectId);
+  owner.setDemand(projectId, Symbol(), [personId]); owner.receipt(projectId, Symbol(), 1);
+  await count(1); await settle(0);
+  await vi.waitFor(() => expect(owner.snapshot(projectId).people.get(personId)?.name).toBe('Current person'));
+  expect(cache.canRevokeProjectRead(ticket, revision)).toBe(false);
+  expect(cache.getAuthorizedProject(projectId)).not.toBeNull();
+});
