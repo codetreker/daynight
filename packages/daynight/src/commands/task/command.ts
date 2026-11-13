@@ -1,3 +1,4 @@
+import { parseTagFilter } from "./tag-filter.js";
 import type { CreateTaskInput, Project, Task, TaskFilters, TaskPlatform, UpdateTaskInput } from "../../api/types.js";
 import { UsageError } from "../../cli/context.js";
 import type { CliContext } from "../../cli/context.js";
@@ -152,7 +153,7 @@ export const runTaskCommand = async (
   const groupArgument = command.options.get("--group-id") as string | undefined;
   const targetsCursor = command.options.get("--targets-cursor") as string | undefined;
   if (!grouped && name === "list" && [limitArgument, cursor, groupArgument, targetsCursor].some(value => value !== undefined)) throw new UsageError("Pagination options require --group-by chain.", help);
-  if (grouped && (status !== "in_progress" || assignedTo === "unassigned" || all || command.options.has("--ready") || allowAgents !== undefined || compatiblePlatform !== undefined || type !== undefined || parentId !== undefined)) throw new UsageError("--group-by chain requires --status in_progress and an assigned user or me; other list filters are not supported.", help);
+  if (grouped && (status !== "in_progress" || assignedTo === "unassigned" || all || command.options.has("--ready") || allowAgents !== undefined || compatiblePlatform !== undefined || type !== undefined || parentId !== undefined || ["--tag", "--tag-match", "--untagged"].some(option => command.options.has(option)))) throw new UsageError("--group-by chain requires --status in_progress and an assigned user or me; other list filters are not supported.", help);
   if ((groupArgument === undefined) !== (targetsCursor === undefined)) throw new UsageError("--group-id and --targets-cursor must be supplied together.", help);
   if (groupArgument !== undefined && cursor !== undefined) throw new UsageError("--cursor cannot be combined with --targets-cursor.", help);
   const readyLimit = limitArgument === undefined ? (grouped ? 20 : 10) : Number(limitArgument);
@@ -166,7 +167,8 @@ export const runTaskCommand = async (
   if (title !== undefined && !isNonemptyText(title)) throw new UsageError("Task title must be nonempty UTF-8 text without NUL characters.", help);
   if (description !== undefined && !isText(description)) throw new UsageError("Task description must be UTF-8 text without NUL characters.", help);
   const dependencyFields = await compileDependencies(dependsOn, externalDependsOn, clearDependencies, help);
-  const rawTagIds = command.options.get("--tag") as readonly string[] | undefined;
+  const filterTags = name === "list" || name === "ready" ? parseTagFilter(command, help) : {};
+  const rawTagIds = name === "list" || name === "ready" ? undefined : command.options.get("--tag") as readonly string[] | undefined;
   const clearTags = command.options.has("--clear-tags");
   if (clearTags && rawTagIds !== undefined) throw new UsageError("--clear-tags conflicts with --tag.", help);
   const { normalizeTaskTagIds } = await import("../../api/task-tags.js");
@@ -247,7 +249,7 @@ export const runTaskCommand = async (
         partialObservation = page.partial;
         return command.options.has("--json") ? `${stringifyApiJson(page)}\n` : renderTaskWorkPage(page, project.id, assignedTo ?? "me");
       }
-      const filters: TaskFilters = { ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
+      const filters: TaskFilters = { ...filterTags, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }), ...(command.options.has("--ready") ? { ready: true } : {}), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) };
       const observed = await api.listObservedTasks(project.id, filters);
       partialObservation = observed.partial;
       unsupportedObservation = observed.unsupported;
@@ -258,7 +260,7 @@ export const runTaskCommand = async (
       return command.options.has("--json") ? renderTaskListJson(tasks) : renderTaskSummaryList(tasks);
     }
     if (command.command.name === "ready") {
-      const tasks = await api.listReadyTasks(project.id, readyLimit, { ...(parentId === undefined ? {} : { parentId }), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) });
+      const tasks = await api.listReadyTasks(project.id, readyLimit, { ...filterTags, ...(parentId === undefined ? {} : { parentId }), ...(allowAgents === undefined ? {} : { allowAgents }), ...(compatiblePlatform === undefined ? {} : { compatiblePlatform }) });
       operation.check();
       return command.options.has("--json") ? renderTaskJson(tasks) : tasks.length === 0 ? "No ready tasks.\n" : renderTaskList(tasks);
     }

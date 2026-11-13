@@ -1,3 +1,4 @@
+import { parseTagFilter } from "./tag-filter.js";
 import { ApiError } from "../../api/client.js";
 import { canonicalId } from "../../api/parse.js";
 import type { TaskFilters, TaskSearchItem } from "../../api/types.js";
@@ -53,6 +54,7 @@ export const runTaskSearchCommand = async (command: Command, context: CliContext
   const type = command.options.get("--type") as "task" | "goal" | undefined;
   const parentId = await parseParent(command.options.get("--parent") as string | undefined, help);
   const filters: TaskFilters = {
+    ...parseTagFilter(command, help),
     ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }),
     ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }),
     ...(command.options.has("--ready") ? { ready: true } : {}),

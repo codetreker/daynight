@@ -203,10 +203,10 @@ daynight bot create --name <name> [--worker <worker-id>] [--cwd <path>] [--agent
 daynight bot delete <bot-id> --if-version <version> [--request-id <uuid>] [--json]
 daynight task
 daynight task create --title <title> [options]
-daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
+daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
 daynight task list --status in_progress --group-by chain [--assigned-to <uuid|me>] [--limit <1-50>] [--cursor <cursor> | --group-id <group-id> --targets-cursor <cursor>] [--json] [--project <project-id>]
-daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--json] [--project <project-id>]
-daynight task ready [--limit <N>] [--json] [--project <project-id>]
+daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
+daynight task ready [--limit <N>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
 daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
@@ -857,7 +857,7 @@ A positive exact full ID match ranks before a title match; fragments do not.
 Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `id:`,
 `title:` and `description:` fields form expressions. Inside quotes, `\"` and `\\`
 escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
-`--allow-agents`, `--compatible-platform`, `--type`, and `--parent` intersect the expression; search
+`--allow-agents`, `--compatible-platform`, `--type`, `--parent` and tag filters intersect the expression; search
 does not accept `--all`. Explicit `--project` searches that project directly;
 otherwise the current repository resolves the project.
 
@@ -888,11 +888,15 @@ daynight task create --title "Document prerequisites" --parent <goal-id> --statu
 daynight task ready
 daynight task ready --parent <goal-id> --limit 5 --json
 daynight task ready --allow-agents true --compatible-platform linux --json
+daynight task ready --tag <tag-id> --limit 5 --json
 daynight task list --allow-agents false --ready
 daynight task list --ready
 daynight task list --all --json
 daynight task list --type goal --json
 daynight task list --parent none --json
+daynight task list --tag <tag-id> --tag <another-tag-id> --tag-match any --json
+daynight task list --untagged --json
+daynight task search 'title:cache' --tag <tag-id> --json
 daynight task list --status in_progress --json
 daynight task list --status in_progress --group-by chain --assigned-to me --json
 daynight task list --ready --assigned-to me --json
@@ -1147,6 +1151,20 @@ to permission and other eligibility checks. Existing claim inventory and manual
 control remain execution-based; the
 [self-assigned acquisition decision](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md) records the rationale for the runtime rule.
 
+Ordinary list, ready and search accept repeated `--tag <tag-id>` UUIDs. IDs are
+canonicalized, deduplicated and sorted. `--tag-match all` (the default) requires
+every selected tag; `--tag-match any` requires at least one. `--untagged` selects
+entries with no tags and conflicts with a nonempty tag selection. With neither
+selected IDs nor `--untagged`, there is no tag predicate. The service combines
+the predicate with the other filters before pagination or the ready limit. Each
+Task or Goal is matched on its own tags; a Goal's tags do not match its children.
+Search still requires a nonempty expression and does not search tag names; use
+list to filter only by tags. Invalid UUIDs or incompatible options are rejected,
+and the service rejects unknown, deleted or cross-project tags as
+`invalid_tag_filter`. Failures do not become empty or partial results. The same
+normalized selection is sent on every page, subject to existing request and
+cursor size limits; oversized inputs are rejected rather than truncated.
+
 For `me`, each successful task-page response must carry one canonical
 Daynight-User-ID, even when its items array is empty. A complete list traversal
 binds its first successful page to that identity and rejects a different later
@@ -1160,7 +1178,7 @@ error-response header requirement.
 
 `task list --status in_progress --group-by chain` reads one work-overview page.
 It defaults to `--assigned-to me`; an explicit user UUID is supported, while
-`unassigned`, `--all`, readiness, permission and platform filters are rejected.
+`unassigned`, `--all`, readiness, permission, platform and tag filters are rejected.
 Each ordinary dependency component appears once when it contains a matching
 in-progress task, including when its root is done. External prerequisites do
 not expand a group. Independent tasks are groups with `kind=task`.
