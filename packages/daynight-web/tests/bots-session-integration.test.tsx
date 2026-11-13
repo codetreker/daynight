@@ -1,3 +1,4 @@
+vi.mock('../src/api/assistant-tasks', async original => ({ ...await original<typeof import('../src/api/assistant-tasks')>(), listAssistantTasks: async () => ({items:[],nextCursor:null,observedAt:'2026-11-13T00:00:00Z'}) }));
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import * as sessions from '../src/api/sessions';
