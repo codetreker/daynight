@@ -120,6 +120,18 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       await updateAttempt(item, state, observation, now);
       item = await save(item, state); await flush(item, state); return;
     }
+    for (const queued of state.notices.filter(entry => ["report", "update"].includes(entry.type))) {
+      const payload = queued.payload as { category?: string };
+      if (payload.category === category) continue;
+      // Reconcile a potentially committed report before replacing its category.
+      // An unsubmitted initial report must not turn the new report into an update.
+      if (queued.type === "report") {
+        let reported = false;
+        for await (const event of assistantTaskPages(query => context.withClaim((api, task) => api.listEvents(task.id, query)))) if (event.id === queued.id) { reported = true; break; }
+        if (!reported) { state.reportedCategory = null; state.reportedAt = null; }
+      }
+      state.notices = state.notices.filter(entry => entry.id !== queued.id);
+    }
     if (item.category !== (category ?? "observing")) { item = { ...item, category: category ?? "observing" }; state.since = now; }
     state.observation = observation;
     await updateAttempt(item, state, observation, now);
@@ -185,6 +197,11 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       }
       if (item) await advance(item, observation, category);
       else if (related[0]) await advance(related[0], observation, category);
+      for (const previous of related) {
+        if (previous.id === item?.id || item === undefined && previous.id === related[0]?.id || previous.state !== "closed") continue;
+        const state = readState(previous);
+        if (state.notices.length || state.attempt !== null && !terminal(state.attempt.result)) await advance(previous, observation, category);
+      }
     }
   } };
 };

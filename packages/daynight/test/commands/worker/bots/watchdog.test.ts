@@ -170,6 +170,31 @@ describe("Watchdog persistent evaluator", () => {
     expect(f.state().notices).toEqual([]);
   });
 
+  it("replaces an unsubmitted report when its category changed during recovery", async () => {
+    const f = fixture(); await f.tick(); f.advance(600_000);
+    f.api.addRecord.mockRejectedValueOnce(new Error("record unavailable"));
+    await expect(f.tick()).rejects.toThrow();
+    Object.assign(f.observation.session, { reason: "disconnected", connectionState: "disconnected" });
+    f.recover(); await f.tick();
+    expect(f.events).toEqual([]);
+    f.advance(300_000); await f.tick();
+    expect(f.events.map(event => event.type)).toEqual(["report"]);
+    expect(f.events[0]!.payload).toMatchObject({ category: "disconnected" });
+  });
+
+  it("keeps querying an old unresolved operation after a later episode opens", async () => {
+    const f = fixture(); f.rules(); f.sendResult("unknown"); await f.tick(); f.advance(600_000); await f.tick();
+    const original = f.state().attempt!.operationId;
+    Object.assign(f.observation.session, { activity: "working", reason: "working", indicator: "working" }); await f.tick();
+    Object.assign(f.observation.session, { activity: "idle", reason: "idle", indicator: "warning" });
+    f.advance(1_800_001); f.source.operation.mockClear(); await f.tick();
+    expect(f.items.size).toBe(2);
+    expect(f.source.operation).toHaveBeenCalled();
+    expect(f.state().attempt!.operationId).toBe(original);
+    f.operationResult("confirmed"); await f.tick();
+    expect(f.state().attempt!.result).toBe("confirmed");
+  });
+
   it("refuses direct handling after recent input, incomplete history, or denied sending", async () => {
     const f = fixture(); f.rules(); await f.tick(); f.advance(600_000);
     f.history.lastInputAt = f.now() - 119_999; await f.tick(); expect(f.source.send).not.toHaveBeenCalled();
