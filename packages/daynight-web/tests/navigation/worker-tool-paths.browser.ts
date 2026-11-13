@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { WORKER_TIME } from '../helpers/workers';
+import { WORKER_TIME, workerDetail } from '../helpers/workers';
 import { deferredRead, installTools, observedConfiguration, openToolConfiguration, pathChoice, reportedDetail, targetWorker, toolActual, toolObservation, toolPaths, toolReport } from './worker-tool-paths-fixture';
 
 const configuration = (page: Page) => page.locator('[data-worker-panel="configuration"]:visible');
@@ -237,6 +237,31 @@ test('lost save responses reconcile the submitted path by GET without a second P
   const following = state.events.slice(state.events.indexOf('PUT') + 1);
   expect(following.length).toBeGreaterThanOrEqual(2); expect(following.every(method => method === 'GET')).toBe(true);
   await expect(facts(page)).not.toContainText('已应用');
+});
+
+test('legacy unknown saves adopt untouched remote paths before tool support returns', async ({ page }) => {
+  const original = pathChoice('/opt/original/codex'), remote = pathChoice('/opt/remote/codex');
+  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { ...toolPaths, codex: original } }) });
+  await openToolConfiguration(page); await expandTools(page);
+  state.detail = workerDetail();
+  const revalidate = () => page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange'));
+    delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await revalidate(); await expect(field(page)).toBeDisabled();
+  state.mode = 'unknown'; await page.locator('#config-recoveryLimit').fill('7'); await save(page).click();
+  await expect(page.getByText('保存结果尚未确认，当前草稿已保留。')).toBeVisible();
+  expect(state.writes).toHaveLength(1); expect(state.writes[0]!.value).not.toHaveProperty('toolPaths');
+  state.resource = observedConfiguration('3', { ...state.resource.desired!.value, toolPaths: { ...toolPaths, codex: remote } });
+  state.unknownReads = false;
+  await page.getByRole('button', { name: '核对保存结果' }).click();
+  await expect(field(page)).toHaveValue(remote.path);
+  await expect(page.locator('.config-save-bar').getByRole('status')).toHaveText('没有修改');
+  state.detail = reportedDetail(); state.mode = 'success';
+  await revalidate(); await expect(field(page)).toBeEnabled();
+  await page.locator('#config-recoveryLimit').fill('8'); await save(page).click();
+  await expect.poll(() => state.writes.length).toBe(2);
+  expect(state.writes[1]!.revision).toBe('3'); expect(state.writes[1]!.value.toolPaths?.codex).toEqual(remote);
 });
 
 for (const width of [1440, 390, 320]) {

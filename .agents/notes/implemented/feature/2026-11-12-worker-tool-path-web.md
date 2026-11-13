@@ -19,6 +19,13 @@ Worker report before editing. The same CAS, submitted snapshot, unknown-result
 query and navigation protection own all configuration fields. A lost capability
 does not erase a retained draft or authorize a hidden tool write.
 
+Recovery of an unknown legacy save compares each omitted tool against the
+original baseline, the local draft and the current observed target. Untouched
+paths adopt the current target; unsent edits survive, and divergent concurrent
+edits retain the old revision and require explicit conflict resolution. A legacy
+or stale read cannot authorize retained paths against a newer revision. Confirmed
+receipts remain bound to their own revision even if a later read is available.
+
 Configuration and software details consume one Worker snapshot through a shared
 presenter. Target, candidate, admission selection and active groups remain
 separate. Current application requires matching cloud revision and choice,
@@ -37,6 +44,12 @@ owns data flow and preservation behavior.
 unknown-result ledger and navigation owner, while the service already stores a
 single desired resource. Sharing the form preserves its existing concurrency
 and user-visible cancellation semantics.
+
+**Advance the revision after comparing only submitted fields.** A legacy save
+can omit a path that another client changes before recovery. Reusing the retained
+path with the newer revision would silently overwrite that change after tool
+support returns. Field-level reconciliation preserves independent edits without
+granting a stale full-projection write.
 
 **Pair desired paths with legacy version probes.** A probe can refer to another
 installation or mode. Displaying that pair would invent a successful selection

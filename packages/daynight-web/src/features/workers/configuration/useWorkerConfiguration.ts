@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../../api/client';
 import { getWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
 import type { ExecutionPlatform } from '../../../api/types';
+import type { WorkerCloudToolPaths } from '../../../api/worker-tool-paths';
 import { useTaskCacheScope, type TaskCacheScope } from '../../task-cache/TaskCacheProvider';
 import { isRetryableTaskCacheLifecycleChange } from '../../task-cache/project-cache';
 import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
@@ -20,6 +21,21 @@ const submittedBaseline = (state: State, submission: Submission): ConfigurationD
   const { toolPaths: _tools, ...draft } = submission.draft;
   const toolPaths = submission.toolPathsSupported ? submission.draft.toolPaths : state.baselineDraft?.toolPaths;
   return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }) };
+};
+const reconcileOmittedToolPaths = (state: State, submission: Submission, latest: WorkerCloudToolPaths | undefined) => {
+  const baselineDraft = submittedBaseline(state, submission);
+  if (submission.toolPathsSupported || latest === undefined || state.draft === null) return { draft: state.draft, baselineDraft, conflict: false };
+  const toolPaths = { ...latest };
+  let conflict = false;
+  for (const tool of ['codex', 'copilot', 'herdr'] as const) {
+    const baseline = state.baselineDraft?.toolPaths?.[tool], local = state.draft.toolPaths?.[tool];
+    if (JSON.stringify(local) === JSON.stringify(baseline)) continue;
+    // Omitted fields were not saved. Preserve their local edits and compare
+    // each against the original baseline before adopting a newer revision.
+    if (local !== undefined) toolPaths[tool] = local;
+    if (JSON.stringify(latest[tool]) !== JSON.stringify(baseline) && JSON.stringify(latest[tool]) !== JSON.stringify(local)) conflict = true;
+  }
+  return { draft: { ...state.draft, toolPaths }, baselineDraft: { ...baselineDraft, toolPaths: structuredClone(latest) }, conflict };
 };
 const mergeConfigurationReceipt = (current: WorkerConfigurationResource | null, receipt: WorkerConfigurationResource): WorkerConfigurationResource => {
   const merged = mergeConfigurationResources(current, receipt);
@@ -98,8 +114,10 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
       }
       if (old.uncertain && !old.pending && old.submission !== null) {
         const submitted = old.submission;
-        // A legacy projection cannot settle an unknown write to a hidden field.
-        if (submitted.toolPathsSupported && (resource.toolPathsSupported !== true || tools === undefined)) {
+        const observedTools = incoming.toolPathsSupported === true && incoming.desired?.revision === resource.desired?.revision ? incoming.desired?.value.toolPaths : undefined;
+        // A legacy or stale projection cannot authorize retained paths against
+        // a newer revision, even when those paths were omitted from the PUT.
+        if ((submitted.toolPathsSupported || old.baselineDraft?.toolPaths !== undefined || old.draft?.toolPaths !== undefined) && observedTools === undefined) {
           return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
         }
         if (old.abandoned && resource.desired !== null) {
@@ -107,7 +125,11 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
           return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
         if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value, submitted.controlModeSupported, submitted.toolPathsSupported)) {
-          return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: submittedBaseline(old, submitted), baselineRevision: resource.desired.revision, protectedDraft: false };
+          const reconciled = reconcileOmittedToolPaths(old, submitted, observedTools);
+          if (reconciled.conflict) {
+            return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'conflict', uncertain: false, unavailable: false, submission: null, protectedDraft: true };
+          }
+          return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: reconciled.baselineDraft, baselineRevision: resource.desired.revision, protectedDraft: false };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
         const protectedDraft = conflict && old.draft !== null && !configurationDraftsEqual(old.draft, submitted.draft) &&
