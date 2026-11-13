@@ -81,7 +81,7 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	if got.Version != 2 || got.Generation != 1 || got.Revision != 1 || !got.Enabled || *got.AppID != 123 || *got.InstallationID != 456 || *got.RepositoryID != 789 || *got.InstallationAccountLogin != "owner" || *got.RepositoryFullName != "owner/repo" || !*got.RepositoryPrivate || got.PollIntervalMinutes != 17 || got.AccessState != "available" || !got.AccessCheckedAt.Equal(now) || !got.NextPollAt.Equal(now) || got.CreatedAt == nil || got.UpdatedAt == nil || got.ClaimToken != nil {
 		t.Fatalf("stored configuration: %+v", got)
 	}
-	mustExec(t, tx, `UPDATE project_github SET poll_error_code='retained', last_webhook_success_at=$2 WHERE project_id=$1`, id, now)
+	mustExec(t, tx, `UPDATE project_github SET poll_error_code='retained', last_webhook_success_at=$2, not_before=$2 WHERE project_id=$1`, id, now)
 	write.ExpectedVersion, write.Version, write.PollIntervalMinutes = 2, 3, 20
 	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
 		t.Fatalf("update: %v %v", ok, err)
@@ -90,8 +90,16 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 		t.Fatalf("stale update: %v %v", ok, err)
 	}
 	got, err = reader.Connection(ctx, id)
-	if err != nil || got.Version != 3 || got.PollIntervalMinutes != 20 || got.PollErrorCode == nil || *got.PollErrorCode != "retained" || got.LastWebhookSuccessAt == nil || !got.LastWebhookSuccessAt.Equal(now) {
+	if err != nil || got.Version != 3 || got.PollIntervalMinutes != 20 || got.PollErrorCode == nil || *got.PollErrorCode != "retained" || got.LastWebhookSuccessAt == nil || !got.LastWebhookSuccessAt.Equal(now) || got.NotBefore == nil || !got.NotBefore.Equal(now) {
 		t.Fatalf("updated configuration: %+v, %v", got, err)
+	}
+	write.ExpectedVersion, write.Version, write.Generation = 3, 4, 2
+	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
+		t.Fatalf("new generation: %v %v", ok, err)
+	}
+	got, err = reader.Connection(ctx, id)
+	if err != nil || got.NotBefore == nil || !got.NotBefore.Equal(now) || got.PollErrorCode == nil || got.LastWebhookSuccessAt == nil {
+		t.Fatalf("new generation retained facts: %+v, %v", got, err)
 	}
 	if err = tx.Rollback(ctx); err != nil {
 		t.Fatal(err)

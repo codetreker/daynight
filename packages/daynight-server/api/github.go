@@ -95,3 +95,9 @@ type PullRequestPage struct {
 	NextCursor     *string              `json:"nextCursor"`
 	PreviousCursor *string              `json:"previousCursor"`
 }
+
+// GitHubInstallationCandidate is a verified installation and repository.
+type GitHubInstallationCandidate struct {
+	Installation GitHubInstallation `json:"installation"`
+	Repository   GitHubRepository   `json:"repository"`
+}

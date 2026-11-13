@@ -102,6 +102,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	taghttp.RegisterRoutes(mux, app.Tags, auth, logger)
 	githubhttp.RegisterReadRoutes(mux, app.GitHubRead, auth, logger)
+	githubhttp.RegisterManagementRoutes(mux, app.GitHubManager, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	teamhttp.RegisterDirectMemberRoutes(mux, app.DirectMembers, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)

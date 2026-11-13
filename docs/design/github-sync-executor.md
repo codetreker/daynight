@@ -1,6 +1,6 @@
 # 单 Project GitHub 同步执行器
 
-`service/github.Executor` 提供单 Project 的直接执行入口。调用方提供 Project 写事务和只读 snapshot、GitHub 远端读取组件、当前 App ID 与日志器，并以 context 管理执行生命周期。调度扫描、HTTP 管理入口和服务启停不属于此执行器。
+`service/github.Executor` 提供单 Project 的直接执行入口。调用方提供 Project 写事务和只读 snapshot、GitHub 远端读取组件、当前 App ID 与日志器，并以 context 管理执行生命周期。[连接与运行时](github-connection-runtime.md)负责调度扫描、HTTP 管理入口和服务启停。
 
 ## 领取与发布
 

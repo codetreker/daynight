@@ -19,6 +19,7 @@ import (
 	monitoringredis "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/redis"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
+	githubservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
@@ -36,11 +37,13 @@ import (
 type App struct {
 	*application.Application
 	GitHubRead           *coregithub.Reader
+	GitHubManager        *githubservice.Manager
 	Metrics              *prometheus.Registry
 	Web                  *webresources.Resources
 	Ready                func(context.Context) error
 	Webhooks             *webhook.Service
 	webhookRuntime       *webhookRuntime
+	githubRuntime        *githubRuntime
 	OAuthProfile         *OAuthProfile
 	OAuthError           error
 	DirectMembers        *team.DirectMembers
@@ -88,9 +91,10 @@ func NewIdentityClient(c identityconfig.Config) (*uniauth.Client, error) {
 // stop the engine before closing those dependencies.
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	app := &App{
-		Application: application.New(database, files, client, c.UniAuth.CallbackURL, c.TaskSync.Overlap, capture...),
-		GitHubRead:  coregithub.NewReader(database, c.GitHub.Enabled),
-		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
+		Application:   application.New(database, files, client, c.UniAuth.CallbackURL, c.TaskSync.Overlap, capture...),
+		GitHubRead:    coregithub.NewReader(database, c.GitHub.Enabled),
+		GitHubManager: githubservice.NewManager(database, nil, 0),
+		Web:           webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
 	app.closeLock <- struct{}{}
@@ -269,6 +273,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	if err := app.assembleWebhooks(database.Transactions, c.Webhook.Enabled, logger); err != nil {
 		return failOpen(err)
 	}
+	if err := app.assembleGitHub(database.Transactions, c.GitHub, logger); err != nil {
+		return failOpen(err)
+	}
 	if app.ImageValidationError != nil {
 		return failOpen(app.ImageValidationError)
 	}
@@ -319,6 +326,9 @@ func (a *App) Close(ctx context.Context) error {
 		}
 	}
 	a.producersStopped = true
+	if a.githubRuntime != nil && a.githubRuntime.client != nil {
+		a.githubRuntime.client.CloseIdleConnections()
+	}
 	if err := ctx.Err(); err != nil {
 		return errors.Join(a.closeErr, err)
 	}

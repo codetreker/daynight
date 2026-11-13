@@ -82,7 +82,9 @@ remain enforced; database and backup readers can read retained credentials.
 
 The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
-The [single-Project executor](../../docs/design/github-sync-executor.md) provides callable synchronization; the service does not yet expose a connection endpoint or schedule it.
+The [single-Project executor](../../docs/design/github-sync-executor.md) performs synchronization;
+the [connection and scheduler design](../../docs/design/github-connection-runtime.md)
+describes management, scheduling and resource lifecycle.
 
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.
@@ -829,8 +831,11 @@ diagnostics and cause categories.
 GitHub App settings are validated locally on startup when enabled; invalid keys or
 missing credentials stop startup without exposing their contents. Relative key paths
 resolve from the configuration root. The [remote design](../../docs/design/github-app-remote.md)
-describes token handling and the read contract. These settings alone do not start a
-synchronization worker or expose a connection endpoint.
+describes token handling and the read contract. When enabled, the server starts
+the bounded synchronization worker and exposes Project administrator connection
+and settings operations. Configure the GitHub App with Pull requests read access
+and install it on the target repository. The Webhook receiver is a separate
+integration; polling remains available without it.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII

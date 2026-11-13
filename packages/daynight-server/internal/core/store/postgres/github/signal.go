@@ -27,11 +27,14 @@ func (r *workReader) DueGitHubProjects(ctx context.Context, appID int64, now tim
 	// ordered by work priority, due time, and Project ID, with a bounded result.
 	rows, err := r.pool.Query(ctx, `SELECT g.project_id::text FROM project_github g JOIN projects p ON p.id=g.project_id AND p.deleted_at IS NULL
  JOIN LATERAL (SELECT priority,due FROM (
- SELECT 1 AS priority,g.next_access_check_at AS due WHERE g.next_access_check_at <= $2
- UNION ALL SELECT 2,g.next_poll_at WHERE g.next_poll_at <= $2
- UNION ALL SELECT 3,min(q.next_attempt_at) FROM project_github_pending_prs q WHERE q.project_id=g.project_id AND q.generation=g.generation AND q.next_attempt_at <= $2 HAVING count(*)>0
+ SELECT 1 AS priority,$2::timestamptz AS due WHERE g.app_id <> $1 OR g.access_hint_id IS NOT NULL
+ UNION ALL SELECT 1,g.next_access_check_at WHERE g.next_access_check_at <= $2
+ UNION ALL SELECT 2,g.next_poll_at WHERE g.app_id=$1 AND g.access_state='available' AND g.next_poll_at <= $2
+ UNION ALL SELECT 3,min(q.next_attempt_at) FROM project_github_pending_prs q WHERE g.app_id=$1 AND g.access_state='available' AND q.project_id=g.project_id AND q.generation=g.generation AND q.next_attempt_at <= $2 HAVING count(*)>0
  ) c ORDER BY priority LIMIT 1) work ON true
- WHERE g.enabled AND g.app_id=$1 AND (g.not_before IS NULL OR g.not_before <= $2) AND (g.claim_until IS NULL OR g.claim_until <= $2)
+ WHERE g.enabled AND (g.access_state<>'unavailable' OR g.access_reason IS DISTINCT FROM 'app_changed')
+ AND (g.app_id<>$1 OR g.access_state<>'unavailable' OR g.access_reason IS DISTINCT FROM 'installation_missing')
+ AND (g.not_before IS NULL OR g.not_before <= $2) AND (g.claim_until IS NULL OR g.claim_until <= $2)
  ORDER BY work.priority,work.due,g.project_id LIMIT $3`, appID, now, limit)
 	if err != nil {
 		return nil, pg.QueryError("find due github projects", err)

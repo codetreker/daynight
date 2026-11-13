@@ -40,8 +40,15 @@ type Client struct {
 
 // NewClient creates a client for the fixed GitHub API origin.
 func NewClient(appID int64, key *rsa.PrivateKey) (*Client, error) {
-	return newClient(appID, key, apiOrigin, http.DefaultTransport)
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaults.Clone()
+	}
+	return newClient(appID, key, apiOrigin, transport)
 }
+
+// CloseIdleConnections releases this client's transport after its callers drain.
+func (c *Client) CloseIdleConnections() { c.http.CloseIdleConnections() }
 
 func newClient(appID int64, key *rsa.PrivateKey, origin string, transport http.RoundTripper) (*Client, error) {
 	if appID <= 0 || key == nil {
@@ -262,6 +269,8 @@ func (c *Client) Repository(ctx context.Context, installationID int64, owner, re
 	return decodeRepository(raw)
 }
 
+var errRepositoryAbsent = errors.New("repository absent from installation")
+
 // ResolveRepository locates an immutable repository ID across all installation pages.
 func (c *Client) ResolveRepository(ctx context.Context, installationID, repositoryID int64) (githubpr.RepositoryObservation, error) {
 	if repositoryID <= 0 {
@@ -310,7 +319,7 @@ func (c *Client) ResolveRepository(ctx context.Context, installationID, reposito
 		}
 		target = next
 	}
-	return githubpr.RepositoryObservation{}, &Error{Code: "not_found", Status: http.StatusNotFound}
+	return githubpr.RepositoryObservation{}, errors.Join(&Error{Code: "not_found", Status: http.StatusNotFound}, errRepositoryAbsent)
 }
 
 // ListOpen visits each complete page without retaining the whole repository in memory.
