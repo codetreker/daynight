@@ -137,7 +137,7 @@ beforeEach(() => {
 describe("project dashboard", () => {
   it("keeps the current page when a background snapshot changes the page count", async () => {
     const makeSeeds = (count: number): Seed[] => Array.from({ length: count }, (_, i) => ({ id: `30000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`, title: `Task ${i + 1}`, status: "todo", dependsOn: [] }));
-    graphRequest.mockResolvedValueOnce(graph(makeSeeds(21))).mockResolvedValue(resetSnapshot(graph(makeSeeds(41))));
+    graphRequest.mockResolvedValueOnce(graph(makeSeeds(21))).mockResolvedValue(graph(makeSeeds(41)));
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("tab", { name: /独立任务/ });
     fireEvent.click(taskTabs().getByRole("tab", { name: /独立任务/ }));
