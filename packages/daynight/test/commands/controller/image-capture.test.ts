@@ -72,6 +72,29 @@ test("direct submission freezes the original business before dispatch and reuses
   } finally { await journal.stopMedia(); journal.close(); }
 });
 
+test("a sealed direct submission waits for a fresh history checkpoint without rereading its source", async () => {
+  const f = await fixture(), source = await f.source("blue");
+  const capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockResolvedValue(f.receipt({ state: "copying" }));
+  const beforeCapture = vi.fn(async () => {});
+  const consumer = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture, provider: () => null, writable: () => true });
+  let release!: () => void;
+  try {
+    await consumer.providerOptions.prepareImageCapture!(f.request);
+    const validated = await consumer.providerOptions.stageImageCapture!({ ...source, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
+    await rm(source.inputPath);
+    const submission = { request: f.request, attemptId: f.request.attemptId, outcome: { kind: "validated" as const, validated } };
+    beforeCapture.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    const submitting = consumer.providerOptions.submitImageCapture!(submission);
+    expect(beforeCapture).toHaveBeenCalledTimes(3); expect(capture).not.toHaveBeenCalled();
+    expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
+    release(); await submitting;
+    expect(capture).toHaveBeenCalledExactlyOnceWith("submit", submission);
+    beforeCapture.mockRejectedValueOnce(new Error("New tail ACK is pending."));
+    await expect(consumer.providerOptions.submitImageCapture!(submission)).rejects.toBeInstanceOf(ImageCaptureNotDispatchedError);
+    expect(capture).toHaveBeenCalledOnce(); expect(f.journal.freezeImageCaptureSubmission(submission)).toEqual(submission);
+  } finally { release?.(); await f.journal.stopMedia(); f.journal.close(); }
+});
+
 test.each(["missing", "corrupt"] as const)("direct replay refuses %s sealed files while retaining the frozen identity", async kind => {
   const f = await fixture(), source = await f.source("blue"), capture = vi.fn<ReturnType<typeof createControllerRelay>["capture"]>().mockRejectedValue(new Error("Original receipt lost"));
   const consumer = bridge(f.journal, capture);

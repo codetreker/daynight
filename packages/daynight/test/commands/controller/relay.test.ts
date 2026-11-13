@@ -26,7 +26,7 @@ const setup = async (operations: ControllerOperation[] = [], live = false, image
   const ticket = { ...snapshot.identity, ...snapshot, provider: "codex", controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId, executionId: randomUUID(), credentialFile: "/private/grant", serverOrigin: "http://127.0.0.1:19000" } as unknown as ControllerLaunchTicket;
   files.lstat.mockResolvedValue({ isFile: () => true, isSymbolicLink: () => false, size: 100, mode: 0o600 });
   files.readFile.mockResolvedValue(JSON.stringify({ token: "private-token", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }));
-  const journal = { acknowledgeEvents: vi.fn(), drainProjectionGap: vi.fn(), getLastAcknowledgedSequence: () => "8", pendingEvents: () => [], markOperationAcknowledged: vi.fn(), listUnacknowledgedOperations: (limit: number, after?: string) => operations.slice(after ? operations.findIndex(o => o.operationId === after) + 1 : 0, (after ? operations.findIndex(o => o.operationId === after) + 1 : 0) + limit) } as unknown as ControllerLifecycleStore;
+  const journal = { acknowledgeEvents: vi.fn(), drainProjectionGap: vi.fn(), getLastAcknowledgedSequence: () => "8", getLastSourceSequence: () => "8", hasImageHistoryCheckpoint: () => true, pendingEvents: () => [], markOperationAcknowledged: vi.fn(), listUnacknowledgedOperations: (limit: number, after?: string) => operations.slice(after ? operations.findIndex(o => o.operationId === after) + 1 : 0, (after ? operations.findIndex(o => o.operationId === after) + 1 : 0) + limit) } as unknown as ControllerLifecycleStore;
   let activeMediaBlocks = 0;
   const tryAcquireMediaBlock = () => {
     if (activeMediaBlocks === 2) return null;
@@ -435,6 +435,35 @@ test("direct capture requires the upgrade capability and preserves frozen busine
   receive(frame("image_capture_result", { connectionEpoch: "4", requestId: recoveredFrame.requestId, action: "submit", result: receipt, error: null }));
   expect(await recovered).toEqual(receipt);
   expect(relay.connected()).toBe(true); expect(callbacks.onError).not.toHaveBeenCalled();
+});
+
+test.each(["checkpoint", "outbox", "inflight"] as const)("direct submit refuses %s drift synchronously and preserves the same frozen business for a current checkpoint", async condition => {
+  const { relay, journal, socket, emit, frame, ticket } = await setup([], false, true);
+  socket.emit("upgrade", { headers: { "daynight-session-direct-upload-version": "1" } });
+  let pending = condition !== "checkpoint", current = condition !== "checkpoint";
+  const event = { sequence: "9", payload: { kind: "timeline_upsert", payload: { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "later native output" }] } } };
+  Object.assign(journal, { pendingEvents: () => pending ? [event] : [], getLastSourceSequence: () => "9", hasImageHistoryCheckpoint: (through: string) => current && through === "9" });
+  emit(frame("reconcile_result", { operations: [] }));
+  let batch: Record<string, unknown> | undefined;
+  if (condition === "inflight") {
+    await vi.waitFor(() => expect(socket.sent.some(message => message.type === "events")).toBe(true));
+    batch = socket.sent.find(message => message.type === "events"); pending = false;
+  }
+  const captureId = randomUUID(), attemptId = randomUUID();
+  const occurrence = { imageId: randomUUID(), entryId: randomUUID(), container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-native-part" };
+  const submission: DirectCaptureSubmission = { request: { captureId, attemptId, occurrence, nativeSource: null, locator: { kind: "resource", resourceId: randomUUID() } }, attemptId, outcome: { kind: "resource" } };
+  await expect(relay.capture("submit", submission)).rejects.toBeInstanceOf(ImageCaptureNotDispatchedError);
+  expect(socket.sent.filter(message => message.type === "image_capture")).toHaveLength(0);
+  const receipt = { captureId, attemptId, revision: "1", occurrence, state: "copying", resourceId: randomUUID(), resource: null, error: null };
+  const query = relay.capture("query", { captureId }), queryFrame = socket.sent.at(-1)!;
+  emit(frame("image_capture_result", { requestId: queryFrame.requestId, action: "query", result: receipt, error: null }));
+  await query;
+  pending = false; current = true;
+  if (batch) emit(frame("events_ack", { sourceEpoch: ticket.executionId, batchId: batch.batchId, lastAckedSourceSeq: "9", lastEventSeq: "20" }));
+  const submitted = relay.capture("submit", submission), submittedFrame = socket.sent.at(-1)!;
+  expect(submittedFrame).toMatchObject({ type: "image_capture", action: "submit", body: submission });
+  emit(frame("image_capture_result", { requestId: submittedFrame.requestId, action: "submit", result: receipt, error: null }));
+  expect(await submitted).toEqual(receipt);
 });
 
 test("retry_capture consumes the source hook separately from native commands and aborts on connection loss", async () => {

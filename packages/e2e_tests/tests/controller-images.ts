@@ -49,7 +49,9 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
       expect(response.status(), `${body}\nController output:\n${output}`).toBe(200);
       entries = (await response.json() as { items: TimelineEntry[] }).items;
       return new Set(imageParts(entries).map(part => part.imageId)).size;
-    }, { timeout: 60_000 }).toBe(2);
+    }, { timeout: 60_000 }).toBe(2).catch(cause => {
+      throw new Error(`Controller image publication did not complete.\nController output:\n${output}\nTimeline:\n${JSON.stringify(entries)}`, { cause });
+    });
     const images = imageParts(entries);
     expect(new Set(images.map(part => part.resourceId)).size).toBe(2);
     const readOriginal = async (resourceId: string): Promise<void> => {

@@ -255,6 +255,12 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     capture: <K extends ImageCaptureAction>(action: K, body: ImageCaptureBody[K]): Promise<ImageCaptureReceipt> => new Promise((resolve, reject) => {
       if (!synchronized || !supportsImageHistory) { reject(new ImageCaptureNotDispatchedError("Image capture relay is unavailable.")); return; }
       if (action === "submit" && !supportsDirectCapture) { reject(new ImageCaptureRequestError({ code: "upgrade_required", message: "The server must support direct Session image submissions." })); return; }
+      // Check and enqueue without yielding. The server's controller-channel
+      // loop handles frames in order, so later source events cannot invalidate
+      // this complete checkpoint before the capture identity is established.
+      if (action === "submit" && (pendingBatch || journal.pendingEvents(1).length || !journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence()))) {
+        reject(new ImageCaptureNotDispatchedError("Image capture is waiting for its complete current history checkpoint.")); return;
+      }
       if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
       const requestId = randomUUID();
       const timer = setTimeout(() => { captureRequests.delete(requestId); reject(new Error("Image capture outcome is unknown; query the original capture.")); }, 15_000);

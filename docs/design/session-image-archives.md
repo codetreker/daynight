@@ -213,7 +213,9 @@ historyEpoch 沿既有 history key：非空白、合法 Unicode、无 NUL、UTF-
 
 PUT body 是原始文件块，使用下节统一文件 headers、偏移、持久确认和时间边界；不能加入 JSON fence 或改成普通 timeline 显示页。syncId 是 Controller 为一份冻结本地文件生成的 UUID，首次 offset="0" 固定完整 byteLength/sha256；同 ID 不换文件，块可以跨任意合法 entry。
 
-活动账本请求使用已用于当前WebSocket连接的 `dncontroller_*` grant作为Bearer，并在唯一的`Daynight-Controller-Fence` header中携带完整ControllerFence JSON（含connectionEpoch）。服务核验原已消费grant的hash、当前连接与fence、有效期和parent权限，不再次消费bootstrap grant，也不要求Controller获得Worker PAT。PUT另带下节三个文件headers；GET不接受query。base支持Task Session及Test/Bot Session。原生runtime在welcome取得currentFence，初始同步和events/sync ACK后合并触发完整账本同步；图片prepare/capture前等待该屏障，停止时cancel并join原同步。
+活动账本请求使用已用于当前WebSocket连接的 `dncontroller_*` grant作为Bearer，并在唯一的`Daynight-Controller-Fence` header中携带完整ControllerFence JSON（含connectionEpoch）。服务核验原已消费grant的hash、当前连接与fence、有效期和parent权限，不再次消费bootstrap grant，也不要求Controller获得Worker PAT。PUT另带下节三个文件headers；GET不接受query。base支持Task Session及Test/Bot Session。原生runtime在welcome取得currentFence，初始同步和events/sync ACK后串行触发完整账本同步，停止时cancel并join原同步。图片读取前及sealed submit前均先等待当前outbox尾部ACK，再取得同historyEpoch、覆盖所需sourceThrough的实际complete回执；没有可上传快照、尚未ACK或缺少完整checkpoint均不算成功。已有冻结同步先按原syncId和原字节完成，再上传包含新出现的快照；上传期间来源序列前进时继续确认新的完整尾部。离线或ACK未完成保持未发送，完整历史组件不支持则明确component_unsupported。
+
+relay在发送submit的同步调用内再次核对当前epoch的完整checkpoint、最新本地sourceThrough、空outbox及不存在在途事件批次，检查到发送之间不await。服务controller-channel逐帧同步执行Handle，使随后发送的source事件不能越过该submit、提前使账本失效。若等待期间来源前进，submit保持未发送，沿同一冻结request、attempt和outcome重新确认历史；该过程不重读图片来源、不重新stage，也不把暂时的历史等待记成采集失败。
 
 回执是 ImageHistorySyncReceipt 原对象，不加外层 envelope。acceptedOffset 为 0..byteLength 的非负 Decimal，各状态 byteLength/sha256 都是原绑定身份。receiving 的 timelineRevision/error 均 null；complete 要求 acceptedOffset=byteLength、非 null 正 timelineRevision、error=null；failed 的 timelineRevision=null、error 非 null，并保留原 syncId/身份/最后确认偏移。complete 必须经过完整长度/hash、strict JSON、全部 entry 集合/顺序、源连续性、权限/停止条件和 gap 校验，随后按实际总量检查并原子替换完整索引，不能用长度相等代替内容一致。实际内容总量超限的确定失败将原 `quota_exceeded` code 和安全说明写入该 syncId 的 failed 回执；原偏移和身份保留，旧 checkpoint 不被替换。暂时 IO 故障保持 receiving；提交结果未知先查询同一 syncId，不能据失败响应或超时推断回滚或更换身份。
 

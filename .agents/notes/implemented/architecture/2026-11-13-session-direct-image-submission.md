@@ -31,9 +31,17 @@ Existing capability discovery and Controller upgrade responses advertise version
 compatible. The Controller checks that header on each authenticated connection
 and reports `upgrade_required` before sending a new submit to an unsupported
 Server. Native and Markdown capture share local preparation, actual complete
-history synchronization, immutable staging and direct submission. Source IO
-depends on the acknowledged position, current source authority and local media
-capacity, without a service registration or reserved receipt. The [image contract](../../../../docs/design/session-image-contracts.md)
+history synchronization, immutable staging and direct submission. Preparation
+and sealed submission both wait for an acknowledged source tail and a durable
+complete history checkpoint in the current epoch. Older frozen syncs finish
+under their original identity before newer positions can qualify. The relay
+checks the current local tail, checkpoint and absence of queued or in-flight
+source batches synchronously before enqueueing submit. The Server handles
+controller frames in order, so later source events cannot invalidate the ledger
+before capture identity creation. An incomplete history barrier remains a
+not-dispatched retry with the same sealed submission. Source IO depends on the
+acknowledged position, current source authority and local media capacity,
+without a service registration or reserved receipt. The [image contract](../../../../docs/design/session-image-contracts.md)
 owns the wire forms and recovery rules. Actual storage admission remains owned by
 the [content capacity decision](2026-11-13-session-actual-content-capacity.md).
 
@@ -72,6 +80,12 @@ strict bodies.
 source can produce different bytes and duplicate an operation that already
 committed. The original identity and frozen outcome must instead be observed and
 replayed only under the documented conditions.
+
+**Hold a relay source-send gate throughout history transfer.** Native events
+may continue to append while a frozen history file uploads; holding their send
+gate can block the ACK needed for a newer complete snapshot. A final synchronous
+checkpoint guard and ordered Controller frame processing close the send race
+without holding that gate across network IO.
 
 ## Consequences
 

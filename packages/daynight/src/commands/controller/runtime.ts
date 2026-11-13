@@ -1,6 +1,7 @@
 import { formatOutboxDiagnostic, isOutboxFailure } from "./outbox-diagnostic.js";
 import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError } from "./media/capture-error.js";
 import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
 import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
 import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
@@ -128,7 +129,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   let accountingFailure: unknown;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
-  let historyWork: Promise<void> | null = null, historyRequested = false;
+  let historyWork: Promise<void> | null = null;
   let historyTimer: NodeJS.Timeout | null = null;
   let markdownTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
@@ -290,8 +291,16 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     await historyWork;
   });
   async function synchronizeImageHistory(forCapture = false): Promise<void> {
+    let requiredSourceThrough: string | undefined;
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
-    if (stopping || !relay?.connected() || !journal.prepareImageHistorySync || !relay.currentFence || !relay.imageHistorySupported?.()) return;
+    if (stopping || !relay?.connected()) {
+      if (forCapture) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its history connection.");
+      return;
+    }
+    if (!relay.imageHistorySupported?.()) {
+      if (forCapture) throw new ImageCapturePrerequisiteError({ code: "component_unsupported", message: "Complete image history synchronization is unavailable." });
+      return;
+    }
     if (forCapture) {
       try { assertImageHistoryAvailable(journal); }
       catch (error) {
@@ -300,17 +309,28 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(cause => diagnostic(String(cause))); }, 250);
         throw error;
       }
+      await relay.flush();
+      if (stopping || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image capture history connection changed before synchronization.");
+      requiredSourceThrough = journal.getLastSourceSequence();
     }
-    historyRequested = true;
-    if (historyWork) return historyWork;
-    historyWork = (async () => {
-      while (historyRequested && !stopping) {
-        historyRequested = false;
-        const fence = relay.currentFence(); if (!fence) return;
-        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal });
+    const previous = historyWork;
+    const work = (async () => {
+      if (previous) await previous;
+      if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
+      for (;;) {
+        if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
+        const fence = relay.currentFence();
+        if (!fence || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal, ...(requiredSourceThrough === undefined ? {} : { requiredSourceThrough }) });
+        if (!forCapture || journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence())) return;
+        // Native events can advance the acknowledged source while an older
+        // frozen body uploads. Submit requires the complete current ledger.
+        await relay.flush();
+        requiredSourceThrough = journal.getLastSourceSequence();
       }
     })();
-    try { await historyWork; } finally { historyWork = null; }
+    historyWork = work;
+    try { await work; } finally { if (historyWork === work) historyWork = null; }
   }
   const executeCommand = async (command: SessionCommand, input?: NativeInput) => {
     if (!provider || stopping) throw new NativeRpcError(-32602, "Native provider is unavailable.");

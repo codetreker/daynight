@@ -25,13 +25,17 @@ export const createControllerCaptureBridge = (options: {
     }
     return receipt;
   };
-  const prepare = async (input: ImageCaptureRequest): Promise<void> => {
-    journal.registerImageCaptureRequest(input);
+  const synchronizeHistory = async (): Promise<void> => {
     try { await options.beforeCapture(); }
     catch (error) {
+      if (error instanceof ImageCapturePrerequisiteError) throw error;
       if (error instanceof ImageHistorySyncFailedError) throw new ImageCapturePrerequisiteError(error.imageError);
       throw new ImageCaptureNotDispatchedError("Image history synchronization has not completed.", { cause: error });
     }
+  };
+  const prepare = async (input: ImageCaptureRequest): Promise<void> => {
+    journal.registerImageCaptureRequest(input);
+    await synchronizeHistory();
   };
   const providerOptions: Pick<ProviderOptions, "prepareImageCapture" | "submitImageCapture" | "registerImageCapture" | "queryImageCapture" | "commitImageCapture" | "failImageCapture" | "stageImageCapture"> = {
     prepareImageCapture: prepare,
@@ -41,6 +45,8 @@ export const createControllerCaptureBridge = (options: {
       if (submission.outcome.kind === "validated") {
         journal.media().assertCaptureSealed(submission.request.captureId, submission.attemptId, submission.outcome.validated);
       }
+      await synchronizeHistory();
+      if (!options.writable()) throw new ImageCaptureNotDispatchedError("Image capture execution changed before submission.");
       return observe(await options.capture("submit", submission));
     },
     registerImageCapture: async input => {
