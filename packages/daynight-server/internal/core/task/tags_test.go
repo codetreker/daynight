@@ -52,3 +52,32 @@ func TestTagCandidate(t *testing.T) {
 		t.Fatalf("exhaustion: %v", err)
 	}
 }
+
+func TestCreateTagIdentitySet(t *testing.T) {
+	a := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	b := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	input := []string{strings.ToUpper(b), a, b}
+	ids, err := NormalizeTagIDs(input)
+	if err != nil || !reflect.DeepEqual(ids, []string{a, b}) || input[0] != strings.ToUpper(b) {
+		t.Fatalf("normalization changed input or set: %v %v %v", input, ids, err)
+	}
+	for _, tc := range []struct {
+		tags []model.TagReference
+		want bool
+	}{
+		{[]model.TagReference{{ID: b}, {ID: a}}, true},
+		{[]model.TagReference{{ID: a}}, false},
+		{[]model.TagReference{{ID: a}, {ID: a}}, false},
+		{[]model.TagReference{{ID: a}, {ID: b}, {ID: b}}, false},
+	} {
+		if got := MatchesTagIDs(tc.tags, ids); got != tc.want {
+			t.Fatalf("matching %v: got %v want %v", tc.tags, got, tc.want)
+		}
+	}
+	if !MatchesTagIDs(nil, nil) {
+		t.Fatal("omitted set did not match empty references")
+	}
+	if _, err := NormalizeTagIDs([]string{"invalid"}); err == nil {
+		t.Fatal("invalid identity admitted")
+	}
+}

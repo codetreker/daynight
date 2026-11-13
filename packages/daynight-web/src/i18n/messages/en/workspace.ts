@@ -37,7 +37,7 @@ export const workspace: WorkspaceMessages = {
     heading: "Overall progress", standalone: "Standalone tasks", standaloneScope: "Unfinished tasks + tasks completed today or in the previous 6 days",
     allCompleted: "No recent tasks", allCompletedDetail: "There are no unfinished tasks or tasks completed today or in the previous 6 days.",
     targetUnavailable: "That task group is no longer visible. Choose a task from the task list.",
-    rowLabel: ({ title, done, cancelled, total, percent }) => cancelled === 0 ? `${title}, ${number(done)} / ${number(total)} complete, ${number(percent)}%, view task list` : `${title}, ${number(done + cancelled)} / ${number(total)} ended, ${number(done)} completed, ${number(cancelled)} cancelled, ${number(percent)}%, view task list`,
+    rowLabel: ({ title, done, total, percent }) => `${title}, ${number(done)} / ${number(total)} completed, ${number(percent)}%, view task list`,
   },
   standalone: {
     list: "Standalone task list",

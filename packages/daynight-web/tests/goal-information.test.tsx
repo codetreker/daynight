@@ -33,8 +33,9 @@ it('shows exact Goal timestamps and counts only its children after complete grap
   expect(timestamps[0]).toHaveAttribute('datetime', goal.createdAt);
   expect(timestamps[0]).toHaveTextContent(getFormats('en').dateTime(goal.createdAt));
   expect(timestamps[1]).toHaveAttribute('datetime', goal.updatedAt);
-  expect(region).toHaveTextContent('1 completed');
-  expect(region).toHaveTextContent('1 cancelled');
+  expect(region.querySelector('.goal-information-progress')).toHaveTextContent('1/2 completed');
+  expect(region.querySelectorAll('.goal-information-track i')).toHaveLength(1);
+  expect(region.querySelector('.goal-information-track i')).toHaveStyle({ width: '50%' });
 });
 
 it('distinguishes an unavailable graph from a known empty Goal and exposes retry failures', () => {
@@ -54,6 +55,8 @@ it('distinguishes an unavailable graph from a known empty Goal and exposes retry
   expect(value(region, 'Task chains')).toHaveTextContent('0');
   expect(value(region, 'Total tasks')).toHaveTextContent('0');
   expect(value(region, 'Unfinished')).toHaveTextContent('0');
+  expect(region.querySelector('.goal-information-progress')).toHaveTextContent('0/0 completed');
+  expect(region.querySelector('.goal-information-track i')).toHaveStyle({ width: '0%' });
 });
 
 it('retains observed statistics on a refresh failure and updates facts and language in place', () => {
@@ -74,6 +77,7 @@ it('retains observed statistics on a refresh failure and updates facts and langu
   view.rerender(<GoalInformation detail={updated} scope={{ ...scope, progress: { total: 3, done: 2, cancelled: 1, unfinished: 0 } }} onRefreshGraph={retry} />);
   expect(value(region, '已完成')).toHaveTextContent('2');
   expect(value(region, '未结束')).toHaveTextContent('0');
+  expect(region.querySelector('.goal-information-progress')).toHaveTextContent('2/2 已完成');
   expect(region.querySelectorAll('time')[1]).toHaveAttribute('datetime', updated.updatedAt);
   expect(region.querySelectorAll('time')[1]).toHaveTextContent(getFormats('zh-CN').dateTime(updated.updatedAt));
   expect(within(region).queryByRole('alert')).toBeNull();

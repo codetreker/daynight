@@ -188,8 +188,9 @@ X ─外部→ C             X 不加入该分量
 独立任务行复用现有 `graph-blocked-badge` 显示“被阻塞” / “Blocked”，
 避免只有状态和 ready 标签时无法看出外部前置正在阻塞它。详情继续提供具体阻塞关系。
 分量状态沿当前全成员聚合规则计算，统计成员一次；
-全部普通成员为 done/cancelled 时进度计为已结束，并保留两种结果的数量；全部 done、
+全部普通成员为 done/cancelled 时真实统计计为已结束，并保留两种结果的数量；全部 done、
 全部 cancelled 与混合终态分别汇总为 done、cancelled 和仅供 UI 使用的 ended。
+完成进度展示排除 cancelled，按 [Web 设计](daynight-web.md#图投影与统计) 的共享投影计算。
 外部上下文不改变该链的完成数、取消数、状态或筛选，项目统计继续按完整任务集合计数。
 普通和外部前置均以 done/cancelled 作为满足状态，取消自身不要求前置满足；
 [任务状态设计](daynight-task-status.md)拥有共享谓词与生命周期规则。

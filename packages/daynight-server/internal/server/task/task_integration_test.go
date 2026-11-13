@@ -149,6 +149,7 @@ func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 		`{"title":"x","description":null}`, `{"title":"x","description":1}`,
 		`{"title":"x","dependsOn":null}`, `{"title":"x","dependsOn":{}}`, `{"title":"x","dependsOn":"id"}`,
 		`{"title":"x","dependsOn":[null]}`, `{"title":"x","dependsOn":[1]}`, `{"title":"x","dependsOn":[{}]}`,
+		`{"title":"x","tagIds":null}`, `{"title":"x","tagIds":"name"}`, `{"title":"x","tagIds":[null]}`, `{"title":"x","tagIds":[1]}`, `{"title":"x","tagIds":[],"tagIds":[]}`,
 		`{"title":"x","status":null}`, `{"title":"x","status":1}`, `{"title":"x","status":[]}`, `{"title":"x","status":{}}`, `{"title":"x","version":1}`, `{"title":"x","projectId":"readonly"}`, `{"title":"x","unknown":"secret-body"}`,
 		`{"title":"x","type":null}`, `{"title":"x","type":""}`, `{"title":"x","type":true}`, `{"title":"x","parentId":true}`, `{"title":"x","parentId":[]}`,
 		"{\"title\":\"" + string([]byte{0xff}) + "\"}",

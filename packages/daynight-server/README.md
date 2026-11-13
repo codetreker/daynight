@@ -208,7 +208,10 @@ list, create, read, rename and confirmed deletion use stable IDs and original
 versions. List cursors bind the project, principal, query, page size and catalog
 epoch; `/tags/resolve` validates the complete selection within a bounded response.
 Visible Task and Goal usage counts are snapshot hints, while deletion removes all
-associations under the Project write lock. Task and Goal PATCH accepts the complete
+associations under the Project write lock. Task and Goal creation accepts `tagIds`
+and atomically saves the validated set with the new resource; omission or an empty
+array creates no associations. The receipt contains the actual references, and a
+failed validation or response admission rolls back the entire creation. Task and Goal PATCH accepts the complete
 `tagIds` set; omission preserves it and an empty array clears it. Mixed metadata
 and tag changes commit atomically with one version increment. Full, list, ready,
 search and sync results contain the current `tags` array, including `[]` when
