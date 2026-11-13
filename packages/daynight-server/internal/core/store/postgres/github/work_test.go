@@ -12,7 +12,16 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func requireGitHubSQLState(t *testing.T, err error, code string) {
+	t.Helper()
+	var databaseError *pgconn.PgError
+	if !errors.As(err, &databaseError) || databaseError.Code != code {
+		t.Fatalf("expected PostgreSQL SQLSTATE %s, got %v", code, err)
+	}
+}
 
 func TestGitHubWorkRuntimeAndConditionalHints(t *testing.T) {
 	db, id := dbFixture(t)
@@ -217,5 +226,120 @@ func TestGitHubWorkRefusalsAndCancellation(t *testing.T) {
 	cancel()
 	if _, err = w.ValidLease(cancelled, lease); !errors.Is(err, context.Canceled) {
 		t.Fatalf("lease cancellation: %v", err)
+	}
+}
+
+func TestGitHubWorkRejectsStaleLeaseAndPropagatesDatabaseErrors(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	tx := begin(t, db, pgx.TxOptions{})
+	token, request := uuid.NewString(), uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,app_id,installation_id,repository_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,10,20,30,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
+	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,9,1,$2,'delivery',$3,$3)`, id, request, now)
+	insertPR(t, tx, id, 9, "open", "one", nil)
+	insertPR(t, tx, id, 10, "open", "two", nil)
+	w := github.NewWriter(tx, id)
+	good := store.GitHubLease{Generation: 1, Token: token}
+	stale := store.GitHubLease{Generation: 1, Token: uuid.NewString()}
+	if got, valid, err := w.Pending(ctx, stale, now, 1); err != nil || valid || len(got) != 0 {
+		t.Fatalf("stale pending: %+v %v %v", got, valid, err)
+	}
+	if got, valid, err := w.UnseenActive(ctx, stale, token, 0, 1); err != nil || valid || len(got) != 0 {
+		t.Fatalf("stale unseen: %+v %v %v", got, valid, err)
+	}
+	if pending, valid, err := w.HasPending(ctx, stale); err != nil || valid || pending {
+		t.Fatalf("stale pending check: %v %v %v", pending, valid, err)
+	}
+	items, valid, err := w.Pending(ctx, good, now, 1)
+	if err != nil || !valid || len(items) != 1 || items[0].RequestID != request {
+		t.Fatalf("bounded pending: %+v %v %v", items, valid, err)
+	}
+	nums, valid, err := w.UnseenActive(ctx, good, token, 9, 1)
+	if err != nil || !valid || !reflect.DeepEqual(nums, []int64{10}) {
+		t.Fatalf("unseen cursor: %+v %v %v", nums, valid, err)
+	}
+
+	// Schema faults are isolated by a savepoint. They exercise the real SQL
+	// error path and demonstrate that failed reads do not become empty results.
+	for _, tc := range []struct {
+		name, table string
+		read        func() error
+	}{
+		{"pending", "project_github_pending_prs", func() error { _, _, err := w.Pending(ctx, good, now, 1); return err }},
+		{"has pending", "project_github_pending_prs", func() error { _, _, err := w.HasPending(ctx, good); return err }},
+		{"unseen", "project_pull_requests", func() error { _, _, err := w.UnseenActive(ctx, good, token, 0, 1); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mustExec(t, tx, `SAVEPOINT missing_relation`)
+			mustExec(t, tx, `ALTER TABLE `+tc.table+` RENAME TO hidden_for_fault`)
+			err := tc.read()
+			requireGitHubSQLState(t, err, "42P01")
+			mustExec(t, tx, `ROLLBACK TO SAVEPOINT missing_relation`)
+		})
+	}
+	// An invalid UUID is rejected by PostgreSQL while the lease is valid. The
+	// previous request remains intact after rollback of the failed statement.
+	mustExec(t, tx, `SAVEPOINT invalid_request`)
+	if ok, err := w.ReschedulePending(ctx, good, 9, "invalid-uuid", now.Add(time.Hour)); err == nil || ok {
+		t.Fatalf("invalid request: %v %v", ok, err)
+	} else {
+		requireGitHubSQLState(t, err, "22P02")
+	}
+	mustExec(t, tx, `ROLLBACK TO SAVEPOINT invalid_request`)
+	items, valid, err = w.Pending(ctx, good, now, 1)
+	if err != nil || !valid || len(items) != 1 || items[0].RequestID != request {
+		t.Fatalf("request after failure: %+v %v %v", items, valid, err)
+	}
+}
+
+func TestGitHubSignalAndProjectInvalidationErrorsRollback(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	tx := begin(t, db, pgx.TxOptions{})
+	token := uuid.NewString()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,app_id,installation_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,10,20,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
+	signal := github.NewSignalWriter(tx)
+	mustExec(t, tx, `SAVEPOINT bad_signal`)
+	if n, err := signal.SignalAccess(ctx, store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: "invalid-uuid", DeliveryID: "delivery", ReceivedAt: now}); err == nil || n != 0 {
+		t.Fatalf("invalid signal: %d %v", n, err)
+	} else {
+		requireGitHubSQLState(t, err, "22P02")
+	}
+	mustExec(t, tx, `ROLLBACK TO SAVEPOINT bad_signal`)
+	c, err := github.NewReader(tx).Connection(ctx, id)
+	if err != nil || c.ClaimToken == nil || *c.ClaimToken != token || c.AccessHintID != nil {
+		t.Fatalf("failed signal changed claim: %+v %v", c, err)
+	}
+	mustExec(t, tx, `SAVEPOINT bad_project`)
+	err = github.InvalidateProject(ctx, tx, "invalid-uuid")
+	requireGitHubSQLState(t, err, "22P02")
+	mustExec(t, tx, `ROLLBACK TO SAVEPOINT bad_project`)
+	mustExec(t, tx, `SAVEPOINT missing_pending`)
+	mustExec(t, tx, `ALTER TABLE project_github_pending_prs RENAME TO hidden_pending_for_fault`)
+	err = github.InvalidateProject(ctx, tx, id)
+	requireGitHubSQLState(t, err, "42P01")
+	mustExec(t, tx, `ROLLBACK TO SAVEPOINT missing_pending`)
+	c, err = github.NewReader(tx).Connection(ctx, id)
+	if err != nil || !c.Enabled || c.ClaimToken == nil || *c.ClaimToken != token {
+		t.Fatalf("failed invalidation persisted: %+v %v", c, err)
+	}
+	hint := uuid.NewString()
+	n, err := signal.SignalAccess(ctx, store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: hint, DeliveryID: "delivery", ReceivedAt: now})
+	if err != nil || n != 1 {
+		t.Fatalf("access signal: %d %v", n, err)
+	}
+	c, err = github.NewReader(tx).Connection(ctx, id)
+	if err != nil || c.AccessHintID == nil || *c.AccessHintID != hint || c.ClaimToken != nil || c.ClaimUntil != nil || c.NextAccessCheckAt == nil || !c.NextAccessCheckAt.Equal(now) {
+		t.Fatalf("access signal facts: %+v %v", c, err)
+	}
+	if err = github.InvalidateProject(ctx, tx, id); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	c, err = github.NewReader(tx).Connection(ctx, id)
+	if err != nil || c.Enabled || c.AccessHintID != nil || c.NextAccessCheckAt != nil {
+		t.Fatalf("invalidation: %+v %v", c, err)
 	}
 }
