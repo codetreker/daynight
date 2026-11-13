@@ -246,3 +246,107 @@ it('treats a missing tag preview as a resource-level result without project acce
   expect(within(dialog).getByRole('button', { name: 'Delete tag' })).toBeDisabled();
   expect(deleteProjectTag).not.toHaveBeenCalled();
 });
+
+it('retries a failed permission check without replaying the rejected write or losing the draft', async () => {
+  const retry = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockRejectedValueOnce(new ApiError('network')).mockReturnValueOnce(retry.promise);
+  vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+  });
+  setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'retained draft' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await within(dialog).findByText('Could not confirm project access. Try again.');
+  expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+  expect(within(dialog).getByLabelText('Name')).toHaveValue('retained draft');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Check permission' }));
+  await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(3));
+  expect(within(dialog).getByRole('button', { name: 'Checking permission…' })).toBeDisabled();
+  expect(createProjectTag).toHaveBeenCalledOnce();
+  await act(async () => { retry.resolve(directAccessFixture(projectId)); await retry.promise; });
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled());
+  expect(within(dialog).getByLabelText('Name')).toHaveValue('retained draft');
+  expect(createProjectTag).toHaveBeenCalledOnce();
+});
+
+it('retires a permission check on section exit and requires a fresh check on return', async () => {
+  const old = Promise.withResolvers<ReturnType<typeof directAccessFixture>>(), fresh = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+  vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+  });
+  const view = setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
+  let dialog = screen.getByRole('dialog');
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'draft' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  view.rerender(view.tree(false));
+  await act(async () => { old.resolve(directAccessFixture(projectId)); await old.promise; });
+  view.rerender(view.tree(true)); dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByLabelText('Name')).toHaveValue('draft');
+  expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Check permission' }));
+  await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(3));
+  await act(async () => { fresh.resolve(directAccessFixture(projectId)); await fresh.promise; });
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled());
+  expect(createProjectTag).toHaveBeenCalledOnce();
+});
+
+it('does not let a retired permission check unlock a newer pending check', async () => {
+  const old = Promise.withResolvers<ReturnType<typeof directAccessFixture>>(), fresh = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+  vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+  });
+  const view = setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
+  let dialog = screen.getByRole('dialog');
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'draft' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  view.rerender(view.tree(false)); view.rerender(view.tree(true));
+  dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Check permission' }));
+  await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(3));
+  await act(async () => { old.resolve(directAccessFixture(projectId)); await old.promise; });
+  expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+  expect(within(dialog).getByLabelText('Name')).toHaveValue('draft');
+  await act(async () => { fresh.resolve(directAccessFixture(projectId)); await fresh.promise; });
+  await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled());
+  expect(createProjectTag).toHaveBeenCalledOnce();
+});
+
+it('retains a denied draft across remount without carrying it to another identity scope', async () => {
+  const old = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  vi.mocked(getProjectAccess).mockResolvedValueOnce(directAccessFixture(projectId)).mockReturnValueOnce(old.promise);
+  vi.mocked(createProjectTag).mockImplementation(async (_project, _name, _signal, admission) => {
+    admission.onDispatch?.(); throw new ApiError('server', 403, 'permission_denied', null, undefined, undefined, undefined, 'not_committed');
+  });
+  const view = setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
+  const original = screen.getByRole('dialog');
+  fireEvent.change(within(original).getByLabelText('Name'), { target: { value: 'scope draft' } });
+  fireEvent.click(within(original).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  view.unmount();
+  const remount = render(view.tree(true));
+  const retained = await screen.findByRole('dialog');
+  expect(within(retained).getByLabelText('Name')).toHaveValue('scope draft');
+  expect(within(retained).getByRole('button', { name: 'Save' })).toBeDisabled();
+  remount.unmount();
+  const otherScope = createTaskCacheScope({ userId: '00000000-0000-4000-8000-000000000099', onIdentityMismatch: vi.fn() }); scopes.push(otherScope);
+  vi.mocked(getProjectAccess).mockResolvedValue(directAccessFixture(projectId, otherScope.userId));
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={otherScope}><ProjectAccessBoundary projectId={projectId} initialRead><ProjectTags projectId={projectId} /></ProjectAccessBoundary></TestTaskCacheBoundary></LocaleProvider>);
+  await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
+  expect(screen.queryByRole('dialog')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
+  const fresh = screen.getByRole('dialog');
+  expect(within(fresh).getByLabelText('Name')).toHaveValue('');
+  await act(async () => { old.resolve(directAccessFixture(projectId)); await old.promise; });
+  expect(within(fresh).getByLabelText('Name')).toHaveValue('');
+  expect(within(fresh).getByRole('button', { name: 'Save' })).toBeEnabled();
+  expect(createProjectTag).toHaveBeenCalledOnce();
+});

@@ -13,13 +13,21 @@ type Dialog = { kind: 'create'; name: string } | { kind: 'rename' | 'delete'; na
 type Phase = 'idle' | 'pending' | 'conflict' | 'unknown';
 type Draft = { dialog: Dialog; phase: Phase; error: unknown; checked: boolean; observed: ProjectTag | null; missing: boolean; matches: readonly ProjectTag[] | null; attempted: boolean };
 const drafts = new WeakMap<TaskCacheScope, Map<string, Draft>>();
+const permissionDenials = new WeakMap<TaskCacheScope, Set<string>>();
+const denialsFor = (scope: TaskCacheScope): Set<string> => {
+  let entries = permissionDenials.get(scope);
+  if (entries === undefined) { entries = new Set(); permissionDenials.set(scope, entries); }
+  return entries;
+};
 const draftsFor = (scope: TaskCacheScope): Map<string, Draft> => {
   let entries = drafts.get(scope);
   if (entries !== undefined) return entries;
   entries = new Map(); drafts.set(scope, entries);
   const owned = entries;
-  const unsubscribe = scope.subscribe(event => { if (event.accessRevoked || event.directAccessUncertain) owned.delete(event.projectId); });
-  scope.signal.addEventListener('abort', () => { owned.clear(); unsubscribe(); }, { once: true });
+  const unsubscribe = scope.subscribe(event => {
+    if (event.accessRevoked || event.directAccessUncertain) owned.delete(event.projectId);
+  });
+  scope.signal.addEventListener('abort', () => { owned.clear(); denialsFor(scope).clear(); unsubscribe(); }, { once: true });
   return owned;
 };
 
@@ -44,13 +52,16 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
   const [missing, setMissing] = useState(() => saved.current?.missing ?? false);
   const [matches, setMatches] = useState<readonly ProjectTag[] | null>(() => saved.current?.matches ?? null);
   const [attempted, setAttempted] = useState(() => saved.current?.attempted ?? false);
-  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(() => denialsFor(scope).has(projectId));
+  const [checkingPermission, setCheckingPermission] = useState(false);
+  const [permissionCheckFailed, setPermissionCheckFailed] = useState(false);
   const lifetime = useRef<AbortController | null>(null);
   const dialogLifetime = useRef(new AbortController());
   const write = useRef<{ dispatched: boolean } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   const permissionRevision = useRef(0);
   const retired = useRef(false);
+  const activeRef = useRef(active); activeRef.current = active;
   const latest = useRef({ dialog, phase, error, checked, observed, missing, matches, attempted });
   latest.current = { dialog, phase, error, checked, observed, missing, matches, attempted };
   useEffect(() => {
@@ -58,11 +69,11 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
     draftsFor(scope).delete(projectId);
     const unsubscribe = scope.subscribe((event) => {
       if (event.projectId !== projectId) return;
-      if (event.accessRevoked || event.directAccessUncertain) { lifetime.current?.abort(); dialogLifetime.current.abort(); write.current = null; retired.current = true; latest.current = { ...latest.current, dialog: null }; setDialog(null); }
-      else if (event.accessRestored) { retired.current = false; lifetime.current = new AbortController(); setPermissionDenied(false); }
+      if (event.accessRevoked || event.directAccessUncertain) { ++permissionRevision.current; setCheckingPermission(false); lifetime.current?.abort(); dialogLifetime.current.abort(); write.current = null; retired.current = true; latest.current = { ...latest.current, dialog: null }; setDialog(null); }
+      else if (event.accessRestored) { ++permissionRevision.current; retired.current = false; lifetime.current = new AbortController(); setCheckingPermission(false); }
     });
     return () => {
-      lifetime.current?.abort(); dialogLifetime.current.abort(); unsubscribe(); lifetime.current = null;
+      ++permissionRevision.current; lifetime.current?.abort(); dialogLifetime.current.abort(); unsubscribe(); lifetime.current = null;
       const snapshot = latest.current;
       if (!retired.current && snapshot.dialog !== null && !scope.isInvalidated && !scope.signal.aborted && !scope.isProjectSuspended(projectId)) {
         const pending = write.current;
@@ -73,6 +84,7 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
   }, [scope, projectId]);
   useEffect(() => {
     if (!active) {
+      ++permissionRevision.current; setCheckingPermission(false);
       dialogLifetime.current.abort();
       setReading(false);
       if (write.current !== null) { setPhase(write.current.dispatched ? 'unknown' : 'idle'); setChecked(false); write.current = null; }
@@ -80,6 +92,20 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
   }, [active]);
   const signal = () => AbortSignal.any([scope.signal, lifetime.current!.signal, dialogLifetime.current.signal]);
   const admission = { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch };
+  const checkPermission = async () => {
+    if (!activeRef.current || retired.current || scope.isInvalidated || lifetime.current === null) return;
+    const revision = ++permissionRevision.current;
+    const signal = AbortSignal.any([scope.signal, lifetime.current.signal]);
+    setCheckingPermission(true); setPermissionCheckFailed(false);
+    try {
+      const result = await access.session.revalidateAfterMutation();
+      if (signal.aborted || revision !== permissionRevision.current || !activeRef.current || retired.current || scope.isInvalidated) return;
+      if (result === null || scope.isProjectSuspended(projectId)) { setPermissionCheckFailed(true); return; }
+      denialsFor(scope).delete(projectId); setPermissionDenied(false);
+    } catch (failure) {
+      if (!signal.aborted && revision === permissionRevision.current && activeRef.current && !retired.current && !scope.isInvalidated && !isAbortError(failure)) setPermissionCheckFailed(true);
+    } finally { if (!signal.aborted && revision === permissionRevision.current && activeRef.current && !retired.current) setCheckingPermission(false); }
+  };
   const canWrite = active && !permissionDenied && access.status === 'ready' && access.access !== null && !scope.isInvalidated && !scope.isProjectSuspended(projectId);
   const open = (next: Dialog) => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; dialogLifetime.current.abort(); dialogLifetime.current = new AbortController(); setReading(false); setMatches(null); setDialog(next); setPhase('idle'); setError(null); setChecked(false); setObserved(null); setMissing(false); setAttempted(false); };
   const close = () => { if (phase !== 'pending' && (phase !== 'unknown' || checked)) { dialogLifetime.current.abort(); setDialog(null); catalog.refresh(); const target = opener.current; queueMicrotask(() => { if (target?.isConnected && !target.closest('[hidden], [inert]')) target.focus(); }); } };
@@ -126,9 +152,8 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
       const unknown = dispatched && (confirmed || !(failure instanceof ApiError) || failure.writeOutcome !== 'not_committed' && (failure.kind !== 'server' || failure.status === null || failure.status >= 500 || failure.code === 'write_outcome_unknown'));
       const conflict = failure instanceof ApiError && failure.code === 'version_conflict';
       if (failure instanceof ApiError && (failure.status === 403 || failure.code === 'permission_denied')) {
-        setPermissionDenied(true);
-        const revision = ++permissionRevision.current;
-        void access.session.revalidateAfterMutation().then(result => { if (revision === permissionRevision.current && result !== null && !scope.isInvalidated && !scope.isProjectSuspended(projectId)) setPermissionDenied(false); });
+        denialsFor(scope).add(projectId); setPermissionDenied(true);
+        void checkPermission();
       }
       setPhase(unknown ? 'unknown' : conflict ? 'conflict' : 'idle'); setError(failure); setChecked(false); setObserved(null);
       if (unknown || conflict) { catalog.refresh(); void inspect(dialog); }
@@ -139,7 +164,7 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
   const errorText = error instanceof ApiError && error.code === 'tag_name_conflict' ? m.duplicate : error instanceof ApiError && error.code === 'invalid_tag_name' ? m.invalid : error instanceof ApiError && (error.code === 'permission_denied' || error.code === 'forbidden') ? m.denied : m.failed;
   return <section className="project-tags" aria-labelledby="project-tags-heading">
     <div className="project-tags-heading"><div><h2 id="project-tags-heading">{m.title}</h2><p>{m.description}</p></div><button className="button primary" type="button" disabled={!canWrite} onClick={() => open({ kind: 'create', name: '' })}>{m.create}</button></div>
-    {denied && <p role="status">{m.denied}</p>}
+    {denied && <div role="status"><p>{m.denied}</p>{dialog === null && permissionDenied && <button className="button" type="button" disabled={checkingPermission} onClick={() => { void checkPermission(); }}>{checkingPermission ? m.checkingPermission : m.checkPermission}</button>}{dialog === null && permissionCheckFailed && <p>{m.permissionCheckFailed}</p>}</div>}
     <label className="project-tags-search">{m.search}<input type="search" value={catalog.query} onChange={(event) => catalog.setQuery(event.currentTarget.value)} /></label>
     {catalog.refreshing && <p role="status">{m.refreshing}</p>}
     {catalog.loading && catalog.page === null && <p role="status">{m.loading}</p>}
@@ -151,6 +176,7 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
         {dialog.kind !== 'delete' ? <div className="project-tag-field"><label htmlFor="project-tag-name">{m.name}</label><input id="project-tag-name" value={dialog.name} disabled={phase === 'pending' || phase === 'unknown'} aria-invalid={attempted && invalid} aria-describedby="project-tag-name-hint" onChange={(event) => { setDialog({ ...dialog, name: event.currentTarget.value }); setError(null); }} /><span id="project-tag-name-hint">{m.hint}</span>{attempted && invalid && <span role="alert">{m.invalid}</span>}</div> : dialog.preview === null ? <p>{reading ? m.preview : m.readError}</p> : <><p><strong>{dialog.preview.name}</strong></p><p>{m.usage(dialog.preview.usage.tasks, dialog.preview.usage.goals)}</p><p>Version: {dialog.preview.version.toString()}</p><p>{m.deleteWarning}</p></>}
         {(phase === 'unknown' || phase === 'conflict') && <div role="alert"><p>{phase === 'unknown' ? m.unknown : m.conflict}</p>{observed !== null && <p>{m.current}: <strong>{observed.name}</strong> ({m.usage(observed.usage.tasks, observed.usage.goals)})</p>}{missing && <p>{m.missing}</p>}{matches !== null && <p>{m.current}: {matches.length === 0 ? m.noMatches : matches.map(item => item.name).join(', ')}</p>}{error !== null && <p>{m.readError}</p>}<button className="button" type="button" disabled={reading} onClick={() => { void inspect(dialog); }}>{reading ? m.checking : m.check}</button>{phase === 'conflict' && observed !== null && dialog.kind !== 'create' && <button className="button" type="button" onClick={() => { setDialog({ ...dialog, tag: observed, preview: dialog.kind === 'delete' ? observed : null }); setPhase('idle'); setError(null); setObserved(null); }}>{m.useCurrent}</button>}</div>}
         {error !== null && phase === 'idle' && <p role="alert">{errorText}</p>}
+        {permissionDenied && <div><button className="button" type="button" disabled={checkingPermission} onClick={() => { void checkPermission(); }}>{checkingPermission ? m.checkingPermission : m.checkPermission}</button>{permissionCheckFailed && <p role="status">{m.permissionCheckFailed}</p>}</div>}
       </form>
     </ManagementDialog>}
   </section>;
