@@ -47,7 +47,7 @@ it('keeps project facts and management available in both sections when the graph
   expect(screen.getByRole('link', { name: 'Manage Independent project' })).toBeVisible();
   expect(screen.getByRole('status', { name: 'Loading task graph' })).toBeVisible();
   const tabs = screen.getByRole('tablist', { name: 'Project views' });
-  expect(within(tabs).getAllByRole('tab')).toHaveLength(2);
+  expect(within(tabs).getAllByRole('tab')).toHaveLength(3);
   fireEvent.click(within(tabs).getByRole('tab', { name: 'Task list' }));
   expect(screen.getByRole('textbox', { name: /Search task IDs/ })).toBeVisible();
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledOnce());

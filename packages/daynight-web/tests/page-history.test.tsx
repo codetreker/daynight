@@ -214,6 +214,8 @@ describe('Project reading history', () => {
     expect(readProjectHistory(state, user, project)).toEqual(selection);
     expect(readProjectHistory(state, other, project)).toBeNull();
     expect(readProjectHistory(state, user, root)).toBeNull();
+    const prs = { ...selection, section: 'prs', projectGraphWitness: null, detail: null } as const;
+    expect(readProjectHistory(projectHistory(user, project, prs), user, project)).toEqual(prs);
     for (const bad of [
       { ...selection, view: 'invalid' }, { ...selection, projectGraphWitness: 'bad' },
       { ...selection, detail: { ...selection.detail, revision: 1 } },

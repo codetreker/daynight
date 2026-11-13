@@ -1,5 +1,5 @@
 import { isTerminalStatus } from "../../api/task-status";
-import { ProjectAccessBoundary } from "./ProjectAccess";
+import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { GraphTask, Project, TaskStatus } from "../../api/types";
 import { navigate, taskDetailUrl } from "../../app/router";
@@ -33,6 +33,7 @@ import { TaskAssigneeFilter, matchesAssignee, type AssigneeFilter } from "../tas
 import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { TaskSearchWorkspace, assigneeValue } from "../task-search/TaskSearchWorkspace";
 import { useTaskSearch } from "../task-search/useTaskSearch";
+import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -61,6 +62,7 @@ const visibleTaskFilters = (tasks: readonly GraphTask[], assignee: AssigneeFilte
 const ProjectView = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => {
   const graph = useTaskGraph(projectId);
   const projectRead = useProjectPageRead(projectId);
+  const projectAccess = useProjectAccess(projectId);
   const graphOwner = useRef(Symbol());
   useProjectAssigneeReceipt(projectId, graphOwner.current, graph.snapshot?.revision ?? 0);
   const viewer = useTaskCacheScope();
@@ -115,6 +117,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const currentSection = useRef<ProjectSection>(section);
   currentSection.current = section;
   const overviewPosition = useRef(0);
+  const prPosition = useRef(0);
   const snapshot = graph.snapshot;
   const snapshotReady = snapshot !== null;
   const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks" && !searchActive);
@@ -126,6 +129,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (section !== "overview" || !snapshotReady) return;
     window.scrollTo({ top: overviewPosition.current, behavior: "instant" });
   }, [section, snapshotReady]);
+  useLayoutEffect(() => {
+    if (section === "prs") window.scrollTo({ top: prPosition.current, behavior: "instant" });
+  }, [section]);
   currentView.current = activeView;
   const categories = useMemo(() => {
     if (snapshot === null) return null;
@@ -298,6 +304,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const saveSectionPosition = useCallback(() => {
     if (section === "tasks") savePosition();
     else if (section === "overview" && snapshotReady) overviewPosition.current = window.scrollY;
+    else if (section === "prs") prPosition.current = window.scrollY;
   }, [section, savePosition, snapshotReady]);
 
   const selectSection = useCallback((next: ProjectSection) => {
@@ -348,7 +355,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (originalTrigger.current === null) originalTrigger.current = trigger;
       if (search.applied !== null) search.clear();
       setNotice(null); setAssigneeFilter({ kind: "all" }); setStatusFilter("all");
-      if (section === "overview") { saveSectionPosition(); onSectionChange("tasks"); }
+      if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
       if (view !== activeView) onViewChange(view);
       setNavigationWitness(id);
     };
@@ -384,7 +391,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         if (detailSelection !== null) suppressRestore.current = true;
         if (originalTrigger.current === null) originalTrigger.current = trigger;
         setNotice(null);
-        if (section === "overview") { saveSectionPosition(); onSectionChange("tasks"); }
+        if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
         if (activeView !== view) onViewChange(view);
       });
     }
@@ -417,7 +424,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       }
       setListTarget(target);
       if (view !== activeView) onViewChange(view);
-      if (section === "overview") { saveSectionPosition(); onSectionChange("tasks"); }
+      if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
     });
   }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
@@ -565,6 +572,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
                 summaries: snapshot.summaries, openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: onOpenChainTask, onOpenListTask, onOpenListChain, onGraphRootChange: setChainOverlay, onOpenSession }} />}
             </div>
+          </section>
+          <section className="project-section-panel project-prs" id="project-section-panel-prs" role="tabpanel"
+            aria-labelledby="project-section-tab-prs" hidden={section !== "prs"} inert={section !== "prs"} tabIndex={0}>
+            <PullRequestWorkspace userId={viewer.userId} projectId={projectId}
+              canRead={projectRead.project !== null && !viewer.isInvalidated}
+              active={section === "prs" && !history.error}
+              onPrincipalMismatch={viewer.principalMismatch}
+              onAccessError={() => { void projectAccess.session.revalidate(); }} />
           </section>
         </div>
       </div>
