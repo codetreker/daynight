@@ -54,8 +54,10 @@ complete. This does not replace Web or durable Herdr evidence.
 ## Consequences
 
 Old Workers cannot manage the converted format; recovery requires stopping the
-manager and explicit data recovery. Unknown sources and conflicting bindings
-retain the affected repository gate. Transient directory checks still protect an
+manager and explicit data recovery. Unreadable resource sources and conflicting
+bindings retain the affected repository gate. Unassociated namespace directories
+remain outside migration and do not block preparation, as defined by the
+[namespace decision](../simplification/2026-11-13-ignore-unassociated-worktree-directories.md). Transient directory checks still protect an
 individual operation, but the mechanism does not isolate malicious concurrent
 filesystem writers. Rebuilding a missing checkout preserves committed branch
 history but cannot recover uncommitted content lost with the directory. Git

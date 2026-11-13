@@ -46,7 +46,7 @@ macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离�
 
 `worktrees/manifest.ts` 提供独立的同步清单存储，路径为 Git common 目录下的 `daynight/worktrees/<worktreeId>.json`。记录仅接受版本 1 的六个字段，按 worktreeId、完整 claim 和目录名分别拒绝冲突。发布先持久化两级命名空间，再 flush 文件并发布；重试已可见的相同记录时重新完成文件和目录屏障。读取不逐文件 flush，退休只在 expected 字段匹配后移除元数据。Worker 通过该清单定位当前资源；后端和本地责任结算后才退休元数据。平台目录同步能力的限制与现有持久文件原语相同。
 
-`worktrees/migration.ts` 提供独立的显式转换入口：调用者持有既有实例所有权和仓库 gate，停止旧 Worker，并提供完整的清理调度、Web 与 Herdr 绑定。转换核对这些来源、旧 Git 注册和已发布清单；全部清单可靠发布并读回后才复核和解开旧 Worker 锁、移除关联的废弃 sidecar，再完整重枚举并发布格式标记。失败可按实际资源重试，冲突和读取失败保持可见；原 checkout 和冻结 cwd 不移动或改写。选中和保留的仓库在文件操作准入前完成转换；失败仅关闭对应仓库的文件 gate。非空且没有 Git 关联的目录不能凭清单获得删除授权。转换顺序与降级限制见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
+`worktrees/migration.ts` 提供独立的显式转换入口：调用者持有既有实例所有权和仓库 gate，停止旧 Worker，并提供完整的清理调度、Web 与 Herdr 绑定。转换核对这些来源、旧 Git 注册和已发布清单；全部清单可靠发布并读回后才复核和解开旧 Worker 锁、移除关联的废弃 sidecar，再完整重枚举并发布格式标记。失败可按实际资源重试，冲突和读取失败保持可见；原 checkout 和冻结 cwd 不移动或改写。选中和保留的仓库在文件操作准入前完成转换；失败仅关闭对应仓库的文件 gate。转换不遍历 namespace 中的未知目录；只验证已有来源关联的 worktree，未关联目录保持原状且不阻断准备。非空且没有 Git 关联的目录不能凭清单获得删除授权。转换顺序与降级限制见[转换决策](../../.agents/notes/implemented/architecture/2026-11-11-worktree-resource-migration.md)。
 
 历史执行可以保留已经交接的 cwd，同一 task 的后续 claim 也可以重用该目录。转换完整读取历史来源，按原 owner 关联 Web 终态清理完成记录，以及 Herdr 已确认资源删除或已核验的 never-started 退休记录；这些记录不证明当前目录缺席，也不授权重新删除。明确退休的历史绑定不占新清单的位置，仍有责任或证据不明的来源继续参与冲突检查。原锁、清单或来源身份与退休证据矛盾时保留错误；历史记录和残留调度不由转换器修改。
 

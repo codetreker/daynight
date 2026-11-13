@@ -17,6 +17,10 @@ and location relationships. It publishes and reads back all manifests before
 rechecking and releasing its own legacy locks and removing associated obsolete
 sidecars. A complete re-enumeration precedes the final format marker. Retries
 resume from observed resources, preserving the original checkout and frozen cwd.
+Unassociated directories are outside the conversion inventory and remain
+untouched without blocking repository preparation; the
+[namespace decision](../simplification/2026-11-13-ignore-unassociated-worktree-directories.md)
+records why namespace-wide rejection was removed.
 The [manifest store](2026-11-11-worktree-manifest-storage.md) supplies durable
 publication and uniqueness checks.
 
