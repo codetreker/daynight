@@ -51,7 +51,7 @@ const install = async (page: Page): Promise<State> => {
   return state;
 };
 const open = async (page: Page) => {
-  await page.goto(`/projects/${projectId}/settings`);
+  await page.goto(`/projects/${projectId}/settings?tab=github`);
   await expect(page.getByRole('heading', { name: 'GitHub PR sync' })).toBeVisible();
   await expect(page.getByLabel('Poll interval')).toHaveValue('5');
 };
@@ -202,17 +202,25 @@ for (const { name, connection, serviceAvailable } of [
 
 test('failed reconciliation retains the management lock until a successful reread', async ({ page }) => {
   const state = await install(page); await open(page);
+  await page.getByRole('link', { name: 'Execution & alerts' }).click();
   const projectField = page.getByLabel('Alert threshold'); await projectField.fill('75');
   const projectSave = page.getByRole('button', { name: 'Save settings' });
+  await expect(projectSave).toBeEnabled();
+  await page.getByRole('link', { name: 'Project management' }).click();
   const deletion = page.getByRole('button', { name: 'Delete project', exact: true });
-  await expect(projectSave).toBeEnabled(); await expect(deletion).toBeEnabled();
+  await expect(deletion).toBeEnabled();
+  await page.getByRole('link', { name: 'GitHub integration' }).click();
   state.unknown = true; state.failReconcile = true;
   await page.getByLabel('Poll interval').fill('12'); await page.getByRole('button', { name: 'Save interval' }).click();
   await expect(page.getByText('Unable to read GitHub sync status.')).toBeVisible();
-  await expect(projectSave).toBeDisabled(); await expect(deletion).toBeDisabled();
+  await page.getByRole('link', { name: 'Execution & alerts' }).click(); await expect(projectSave).toBeDisabled();
+  await page.getByRole('link', { name: 'Project management' }).click(); await expect(deletion).toBeDisabled();
   expect(state.writes).toHaveLength(1);
+  await page.getByRole('link', { name: 'GitHub integration' }).click();
+  await expect(page.getByText('Unable to read GitHub sync status.')).toBeVisible();
   state.failRead = false;
   await page.locator('.github-settings').getByRole('button', { name: 'Retry' }).first().click();
-  await expect(projectSave).toBeEnabled(); await expect(deletion).toBeEnabled();
+  await page.getByRole('link', { name: 'Execution & alerts' }).click(); await expect(projectSave).toBeEnabled();
+  await page.getByRole('link', { name: 'Project management' }).click(); await expect(deletion).toBeEnabled();
   expect(state.writes).toHaveLength(1);
 });

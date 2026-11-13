@@ -76,6 +76,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
   };
   const routeRead = useRef<{ route: number; generation: number; status: "pending" | "succeeded" | "failed" | "cancelled" } | null>(null);
   const confirmedFloor = useRef<bigint | null>(null);
+  const confirmedValue = useRef<string | null>(null);
   const confirmedEditGeneration = useRef<number | null>(null);
   const draftRef = useRef(draft);
   const draftGeneration = useRef(0);
@@ -186,7 +187,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
     revokedAccess.current = false;
     clearPrivateDraft(); setUncertainState(false); setUnavailableState(true);
     returnRead.current = false; setReturnReadRequired(false);
-    confirmedNeedsRead.current = false; confirmedEditGeneration.current = null; confirmedFloor.current = null; setAwaitingSavedRead(false);
+    confirmedNeedsRead.current = false; confirmedEditGeneration.current = null; confirmedFloor.current = null; confirmedValue.current = null; setAwaitingSavedRead(false);
     reconciliationNotice.current = null; rejectedDraft.current = false; setReconciliationRequired(false); setWriteError(null);
     releaseResolvedRetention();
   };
@@ -265,7 +266,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
         setInvalid(false);
         if (!(keepDraft && nextNotice === "conflict" && draftRef.current !== String(saved.settings.executionWarningMinutes))) setNotice(nextNotice);
       }
-      if (nextNotice === "saved") { confirmedNeedsRead.current = false; setAwaitingSavedRead(false); }
+      if (nextNotice === "saved") { confirmedNeedsRead.current = false; confirmedValue.current = null; setAwaitingSavedRead(false); }
       confirmedEditGeneration.current = null; rejectedDraft.current = false;
       if (reconciliationNotice.current !== null && nextNotice === reconciliationNotice.current) {
         reconciliationNotice.current = null; setReconciliationRequired(false); setWriteError(null);
@@ -400,8 +401,16 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
       }
       operation.confirmed = true;
       confirmedFloor.current = saved.settings.version;
+      confirmedValue.current = String(saved.settings.executionWarningMinutes);
       confirmedEditGeneration.current = submittedDraftGeneration;
-      if (!access.session.scope.hasIdentityMismatch && draftGeneration.current === submittedDraftGeneration) draftVersion.current = null;
+      if (!access.session.scope.hasIdentityMismatch) {
+        if (draftGeneration.current === submittedDraftGeneration) draftVersion.current = null;
+        else if (!draftConflictRef.current && (draftVersion.current === null || draftVersion.current === expectedVersion)) {
+          // Later edits follow this confirmed snapshot; a newer external version
+          // still conflicts when it is observed during publication or a read.
+          draftVersion.current = saved.settings.version;
+        }
+      }
       if (routeRef.current && activeRef.current && !authRequestsPaused() && !access.session.scope.hasIdentityMismatch && !unavailableRef.current) setNotice("saved");
       confirmedNeedsRead.current = true; setAwaitingSavedRead(true);
       publish(async (publicationSignal) => {
@@ -439,7 +448,7 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
         } else if (draftVersion.current !== null && draftVersion.current !== latest.settings.version) {
           draftConflictRef.current = true; setDraftConflict(true);
         }
-        confirmedFloor.current = null; confirmedEditGeneration.current = null;
+        confirmedFloor.current = null; confirmedValue.current = null; confirmedEditGeneration.current = null;
         confirmedNeedsRead.current = false; setAwaitingSavedRead(false); setNotice("saved");
       });
     } catch (failure) {
@@ -517,6 +526,8 @@ export const useProjectSettings = (projectId: string, userId: string, onRoute: b
   return {
     project: unavailable || access.status === "unavailable" ? null : project, role, draft, canSubmit: !access.session.scope.hasIdentityMismatch && access.status === "ready" && !awaitingSavedRead && !returnReadRequired && !returnRead.current && !draftConflict && !reconciliationRequired, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain: !unavailable && access.status !== "unavailable" && uncertain, error: error ?? access.error, writeError: unavailable || access.status === "unavailable" ? null : writeError, reconciliation: !unavailable && access.status !== "unavailable" && reconciliationRequired ? reconciliationNotice.current : null, draftConflict, invalid, notice: unavailable || access.status === "unavailable" ? null : notice,
     dirty: project !== null && (draftVersion.current !== null || draft !== String(project.settings.executionWarningMinutes)),
+    hasUnsavedDraft: project !== null && draft !== (confirmedNeedsRead.current && confirmedValue.current !== null ? confirmedValue.current : String(project.settings.executionWarningMinutes)),
+    summaryPending: pending || awaitingSavedRead || returnReadRequired,
     change,
     cancel,
     retry: () => {

@@ -1,0 +1,19 @@
+.project-settings-heading, .project-settings-heading > div { min-width: 0; }
+.project-settings-heading h1 { overflow-wrap: anywhere; }
+.project-settings-layout { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 28px; align-items: start; margin-top: 24px; }
+.project-settings-tabs { display: flex; flex-direction: column; gap: 5px; position: sticky; top: 26px; min-width: 0; }
+.project-settings-tabs a { display: flex; flex-direction: column; gap: 3px; min-height: 44px; padding: 12px; border-radius: 7px; color: #556176; font-size: 12px; text-decoration: none; }
+.project-settings-tabs a:hover { background: #eeeef8; }
+.project-settings-tabs a[aria-current="page"] { background: #ededfb; color: #4545b6; font-weight: 600; }
+.project-settings-tabs a:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
+.project-settings-tab-state { color: #805b27; font-size: 10px; font-weight: 400; }
+.project-settings-content { min-width: 0; }
+.project-settings-content > [hidden] { display: none !important; }
+@media (max-width: 740px) {
+  .project-settings-layout { display: block; }
+  .project-settings-tabs { top: 0; z-index: 3; flex-direction: row; overflow-x: auto; scrollbar-width: thin; padding: 4px; background: #eeeef6; border-radius: 8px; margin-bottom: 20px; }
+  .project-settings-tabs a { flex: 0 0 auto; align-items: center; white-space: nowrap; }
+  .project-settings-tabs a[aria-current="page"] { background: white; }
+  .project-settings-tabs a:focus-visible { outline-offset: -3px; }
+  .content:has(.project-settings-layout) { overflow-x: clip; overflow-y: visible; }
+}

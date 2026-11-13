@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { canonicalId } from "../../api/validation";
 import { previewProjectTransfer, transferProject, type ProjectTransferPreview, type ProjectTransferReceipt } from "../../api/project-transfer";
@@ -41,14 +41,14 @@ const TeamChoices = ({ value, onChange, disabled }: { readonly value: string; re
   </div>;
 };
 
-export const ProjectOwnership = ({ projectId, projectName, onTransferred, active, onRoute = true, unavailable = false, onRetentionChange, guard }: { readonly projectId: string; readonly projectName: string | null; readonly onTransferred?: ((receipt: ProjectTransferReceipt, context: TransferNavigationContext) => void) | undefined; readonly active: boolean; readonly onRoute?: boolean; readonly unavailable?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly guard?: ProjectManagementGuard | undefined }) => {
+export const ProjectOwnership = ({ projectId, projectName, onTransferred, active, onRoute = true, unavailable = false, onRetentionChange, onStateChange, presentationGeneration, guard }: { readonly projectId: string; readonly projectName: string | null; readonly onTransferred?: ((receipt: ProjectTransferReceipt, context: TransferNavigationContext) => void) | undefined; readonly active: boolean; readonly onRoute?: boolean; readonly unavailable?: boolean; readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly guard?: ProjectManagementGuard | undefined; readonly onStateChange?: ((state: { dirty: boolean; pending: boolean; needsAttention: boolean }) => void) | undefined; readonly presentationGeneration?: number | undefined }) => {
   const access = useProjectAccess(projectId), scope = access.session.scope;
   const { locale, messages: { auth: { roles } } } = useI18n(), m = messages(locale === "zh-CN");
   const op = useOperation(scope);
   const operation = useRef(op); operation.current = op;
   const [subject, setSubject] = useState<string | null>(null);
   const [dialog, setDialog] = useState(false), [target, setTarget] = useState(""), [preview, setPreview] = useState<ProjectTransferPreview | null>(null);
-  const current = useRef({ active, onRoute, dialog, target, preview }); current.current = { active, onRoute, dialog, target, preview };
+  const current = useRef({ active, onRoute, dialog, target, preview, presentationGeneration }); current.current = { active, onRoute, dialog, target, preview, presentationGeneration };
   const editor = useRef(0), revision = useRef(0), mounted = useRef(false);
   const revokingEditor = useRef<{ editor: number; revision: number; generation: string } | null>(null);
   const preserveRevokedDraft = useRef(false), retainedPresentation = useRef(false);
@@ -131,11 +131,11 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
     if (!active || gate.current !== null || cleanup.current !== null || op.guarded() || preview === null || reading || snapshot.status !== "ready" || !snapshot.access?.canTransfer || snapshot.access.ownership.teamId !== preview.ownership.teamId || snapshot.access.ownership.version !== preview.ownership.version) return;
     if (guard !== undefined && !guard.tryAcquire("transfer")) return;
     const transfer = Symbol(); transferOwner.current = transfer;
-    const selected = preview, originalTarget = target, originalEditor = editor.current, originalRevision = revision.current;
+    const selected = preview, originalTarget = target, originalEditor = editor.current, originalRevision = revision.current, originalPresentation = presentationGeneration;
     const navigation = browserNavigation(), location = navigation.snapshot();
     const submissionLocation = location.pathname === `/projects/${projectId}/settings` &&
       location.pathname + location.search + location.hash === window.location.pathname + window.location.search + window.location.hash ? location : null;
-    const ownsEditor = () => mounted.current && editor.current === originalEditor && revision.current === originalRevision;
+    const ownsEditor = () => mounted.current && editor.current === originalEditor && revision.current === originalRevision && current.current.presentationGeneration === originalPresentation;
     const ownsPresentation = () => ownsEditor() && current.current.dialog && submissionLocation !== null && navigation.snapshot() === submissionLocation &&
       window.location.pathname + window.location.search + window.location.hash === submissionLocation.pathname + submissionLocation.search + submissionLocation.hash;
     const finishPresentation = (withdrawn = false) => {
@@ -266,6 +266,10 @@ export const ProjectOwnership = ({ projectId, projectName, onTransferred, active
   const safeResult = !scope.isInvalidated && (op.result !== null || cleanupError !== null);
   const cleanupBusy = cleanup.current !== null && cleanupError === null && !cleanupPaused;
   const changedOwner = preview !== null && access.ready && (access.access!.ownership.teamId !== preview.ownership.teamId || access.access!.ownership.version !== preview.ownership.version);
+  const dirty = dialog && target.trim() !== "" && !unknown && cleanup.current === null;
+  const pending = op.pending || op.publicationPending || waiting || cleanupBusy;
+  const needsAttention = readError !== null || invalid || conflict || changedOwner || op.result !== null || op.publicationError !== null || cleanupError !== null || cleanupPaused;
+  useLayoutEffect(() => { onStateChange?.({ dirty, pending, needsAttention }); }, [dirty, pending, needsAttention, onStateChange]);
   return <>
     {!dialog && <OperationPublicationError operation={op} zh={locale === "zh-CN"} />}
     {!dialog && !scope.isInvalidated && cleanupError !== null && <div className="notice error" role="alert"><p>{m.cleanup}</p><button className="button" type="button" onClick={() => { void cleanup.current?.(); }}>{m.retry}</button></div>}
