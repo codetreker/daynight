@@ -13,8 +13,9 @@ errors would hide a persistent holder and abandon owned resources.
 ## Decision
 
 `test/helpers/tool-fixture-cleanup.ts` owns the root-removal function shared by
-`tool-executables.test.ts` and `tool-launchers.test.ts`. Both suites execute
-copied native tools and await this cleanup after disposing their operations.
+`tool-executables.test.ts`, `tool-launchers.test.ts`, and the worker's
+`codex-config.test.ts`. These suites execute copied native tools and await this
+cleanup after disposing their operations.
 Each attempt calls `rm` with `recursive: true`, `force: true`, and `maxRetries: 0`. Only `EBUSY`
 permits another attempt: at most three retries wait 100, 200, and 300 milliseconds.
 Other failures and the last exhausted error are thrown unchanged. The 600
@@ -26,8 +27,10 @@ The retry follows existing resource completion; it does not replace it. The
 successful promisified `execFile` callback follows the child's `close` event in
 [Node 24.22.2](https://github.com/nodejs/node/blob/f7f273a9bb6445f6f7fb6349105e7532972045fb/lib/child_process.js#L378-L436).
 A rejected execution can follow an earlier error event, so rejection alone is
-not a general process-stop witness. Resolver prefix reads and streaming hashes
-await their file-handle closes before a successful result. Cancellation can
+not a general process-stop witness. The configuration RPC waits for child
+`close` before returning successfully, and its frozen-runtime test also verifies
+that the recorded PID is no longer alive before fixture cleanup. Resolver prefix
+reads and streaming hashes await their file-handle closes before a successful result. Cancellation can
 return before pending filesystem cleanup completes and remains a failure.
 The [tool-resolution decision](../architecture/2026-11-11-worker-tool-path-resolution.md)
 owns the production selection and identity rules.
