@@ -99,13 +99,14 @@ it('withdraws the resident client on confirmed no Session and admits a later con
 it('does not restore a saved preview from an in-flight read after no Session confirmation or auth recovery', async () => {
   const f = await fixture();
   const release = Promise.withResolvers<void>();
+  const captured = Promise.withResolvers<BotDisplayPreview | null>();
   let resume: (() => void) | undefined;
   try {
     await screen.findByText('Previously saved history');
     const original = f.owner.store.read.bind(f.owner.store);
-    const read = vi.spyOn(f.owner.store, 'read').mockImplementation(async (...args) => { const result = await original(...args); await release.promise; return result; });
+    vi.spyOn(f.owner.store, 'read').mockImplementation(async (...args) => { const result = await original(...args); captured.resolve(result); await release.promise; return result; });
     await act(() => f.save('Updated assistant'));
-    await waitFor(() => expect(read).toHaveBeenCalled());
+    expect(await captured.promise).not.toBeNull();
     await f.answer(f.absent('pending'));
     await waitFor(() => expect(screen.queryByText('Previously saved history')).toBeNull());
     resume = pauseAuthRequests(); f.view.rerender(f.node(false));
