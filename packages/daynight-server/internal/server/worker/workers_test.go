@@ -760,3 +760,5 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 		t.Fatal("non-JSON report accepted")
 	}
 }
+
+func (s *workerHTTPReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

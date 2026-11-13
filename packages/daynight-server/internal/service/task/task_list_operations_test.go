@@ -501,3 +501,5 @@ func (c *listOperationCapability) GoalProgresses(context.Context, string, []stri
 func (c *listOperationCapability) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
 	return nil, c.fail("TaskBodies")
 }
+
+func (s *listOperationScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }

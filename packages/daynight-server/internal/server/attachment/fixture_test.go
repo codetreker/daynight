@@ -782,3 +782,5 @@ func (s *unexpectedTaskReader) TaskSyncDependencyStates(context.Context, string,
 	s.reject("TaskSyncDependencyStates")
 	panic("unreachable")
 }
+
+func (s *attachmentSnapshot) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
