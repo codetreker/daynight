@@ -2,9 +2,56 @@ package watchdog
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestPortableRegexSharedWorkerCorpus(t *testing.T) {
+	raw, err := os.ReadFile("testdata/portable-regex.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Pattern  string   `json:"pattern"`
+		Accepted bool     `json:"accepted"`
+		Matches  []string `json:"matches"`
+		Misses   []string `json:"misses"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		t.Run(tc.Pattern, func(t *testing.T) {
+			if PortableRegex(tc.Pattern) != tc.Accepted {
+				t.Fatalf("admission mismatch: %q", tc.Pattern)
+			}
+			match, err := json.Marshal(map[string]string{"regex": tc.Pattern})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = ValidateRules(nil, rule(string(match)))
+			if (err == nil) != tc.Accepted {
+				t.Fatalf("manual admission: %v", err)
+			}
+			if !tc.Accepted {
+				return
+			}
+			r := regexp.MustCompile(tc.Pattern)
+			for _, value := range tc.Matches {
+				if !r.MatchString(value) {
+					t.Fatalf("did not match %q", value)
+				}
+			}
+			for _, value := range tc.Misses {
+				if r.MatchString(value) {
+					t.Fatalf("matched %q", value)
+				}
+			}
+		})
+	}
+}
 
 func rule(match string) json.RawMessage {
 	if match != "" {

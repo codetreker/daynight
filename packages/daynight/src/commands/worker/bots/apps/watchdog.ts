@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AssistantTaskItem, JsonValue } from "../../../../api/assistant-task.js";
 import type { TaskSessionObservation } from "../../../../api/task-observation.js";
@@ -8,7 +8,7 @@ import { matchingWatchdogRule } from "./watchdog-rules.js";
 
 export type WatchdogCategory = "stalled" | "disconnected" | "waiting_input" | "no_execution" | "unobservable";
 export const WATCHDOG_DURATION: Readonly<Record<WatchdogCategory, number>> = { stalled: 600_000, disconnected: 300_000, waiting_input: 600_000, no_execution: 600_000, unobservable: 900_000 };
-export type WatchdogObservation = { projectId: string; taskId: string; title: string; inScope: boolean; taskStatus?: string; assignedTo?: string | null; session: TaskSessionObservation };
+export type WatchdogObservation = { projectId: string; taskId: string; title: string; inScope: boolean; taskStatus?: string; assignedTo?: string | null; session: TaskSessionObservation; textEvidence?: Record<string, TextEvidence> };
 export type WatchdogHistory = { complete: boolean; lastEntryId: string | null; lastAssistantText: string | null; lastInputAt: number | null; untimedInputId?: string; inputQuietSince?: number; inputQuietObservedAt?: number };
 export type WatchdogSource = {
   /** A complete inventory; a partial project or task listing must throw. */
@@ -18,12 +18,27 @@ export type WatchdogSource = {
   operation(observation: WatchdogObservation, operationId: string, signal: AbortSignal): Promise<string>;
 };
 type Notice = { id: string; recordId: string; type: string; kind: "fact" | "action" | "unknown"; text: string; payload: JsonValue };
-type Attempt = { operationId: string; ruleId: string; message: string; at: number; historyId: string | null; observation: WatchdogObservation; result: string; notifiedResult: string | null; escalated: boolean; progressed: boolean };
+type TextEvidence = { bytes: number; sha256: string; truncated: boolean };
+const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
+const summarize = (text: string): { preview: string; evidence: TextEvidence } => ({ preview: text.slice(0, 1024), evidence: { bytes: Buffer.byteLength(text), sha256: digest(text), truncated: text.length > 1024 } });
+const snapshot = (observation: WatchdogObservation): WatchdogObservation => {
+  const result = structuredClone(observation), title = summarize(result.title);
+  if (title.evidence.truncated) { result.title = title.preview; result.textEvidence = { ...result.textEvidence, title: title.evidence }; }
+  if (result.session.error !== null) {
+    const message = summarize(result.session.error.message);
+    if (message.evidence.truncated) {
+      result.session = { ...result.session, error: { ...result.session.error, message: message.preview } };
+      result.textEvidence = { ...result.textEvidence, "session.error.message": message.evidence };
+    }
+  }
+  return result;
+};
+type Attempt = { operationId: string; ruleId: string; message: string; manualVersion?: string; ruleIndex?: number; messageEvidence?: TextEvidence; ruleIdEvidence?: TextEvidence; at: number; historyId: string | null; observation: WatchdogObservation; result: string; notifiedResult: string | null; escalated: boolean; progressed: boolean };
 export type WatchdogState = { schemaVersion: 1; since: number; reportedCategory: WatchdogCategory | null; reportedAt: number | null; closedAt: number | null; recurrence: boolean; observation: WatchdogObservation; attempt: Attempt | null; notices: Notice[]; inputQuiet?: { identity: string; since: number; observedAt: number } | null };
-export const watchdogHistoryIdentity = (observation: WatchdogObservation, history: WatchdogHistory): string => JSON.stringify([
+export const watchdogHistoryIdentity = (observation: WatchdogObservation, history: WatchdogHistory): string => digest(JSON.stringify([
   observation.session.sessionId, observation.session.claimId, observation.session.executionGeneration, observation.session.connectionEpoch,
   history.untimedInputId, history.lastEntryId, history.lastAssistantText,
-]);
+]));
 export const watchdogInputIsQuiet = (history: WatchdogHistory, now: number): boolean => {
   if (!history.complete) return false;
   if (history.untimedInputId !== undefined && (history.inputQuietObservedAt === undefined || !Number.isFinite(history.inputQuietObservedAt)
@@ -95,7 +110,12 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       const success = confirmed(attempt.result);
       notice(state, success ? "direct_success" : terminal(attempt.result) ? "escalation" : "result_unknown",
         success ? "Watchdog message was accepted by the Session provider." : terminal(attempt.result) ? "Watchdog message was not accepted; user attention is required." : "Watchdog message outcome is unknown; only the original operation will be queried.",
-        { itemId: item.id, projectId: observation.projectId, taskId: observation.taskId, operationId: attempt.operationId, ruleId: attempt.ruleId, message: attempt.message, result: attempt.result }, success ? "action" : "unknown");
+        { itemId: item.id, projectId: observation.projectId, taskId: observation.taskId, operationId: attempt.operationId,
+          ruleId: summarize(attempt.ruleId).preview, message: summarize(attempt.message).preview,
+          ruleIdEvidence: attempt.ruleIdEvidence ?? summarize(attempt.ruleId).evidence, messageEvidence: attempt.messageEvidence ?? summarize(attempt.message).evidence,
+          messageRef: attempt.manualVersion === undefined ? { itemId: item.id, path: "appState.attempt.message" }
+            : { assistantTaskId: context.task.id, manualVersion: attempt.manualVersion, ruleIndex: attempt.ruleIndex, path: "action.message" },
+          result: attempt.result }, success ? "action" : "unknown");
       attempt.notifiedResult = attempt.result;
       if (terminal(attempt.result) && !success) attempt.escalated = true;
     }
@@ -119,10 +139,10 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       state.notices = state.notices.filter(entry => !["report", "update"].includes(entry.type));
       if (state.attempt !== null) state.attempt.progressed = true;
       await updateAttempt(item, state, observation, now);
-      state.observation = observation; state.closedAt = now; item = { ...item, state: "closed" };
+      state.observation = snapshot(observation); state.closedAt = now; item = { ...item, state: "closed" };
       if (state.reportedCategory !== null) {
         const latest = await history(observation);
-        notice(state, "resolved", "The observed anomaly ended. The cause is unknown unless supported by the recorded changes.", { itemId: item.id, before, after: observation, lastInputAt: latest.lastInputAt, lastEntryId: latest.lastEntryId, historyComplete: latest.complete });
+        notice(state, "resolved", "The observed anomaly ended. The cause is unknown unless supported by the recorded changes.", { itemId: item.id, before: snapshot(before), after: snapshot(observation), lastInputAt: latest.lastInputAt, lastEntryId: latest.lastEntryId, historyComplete: latest.complete });
       }
       item = await save(item, state); await flush(item, state); return;
     }
@@ -144,7 +164,7 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       state.notices = state.notices.filter(entry => entry.id !== queued.id);
     }
     if (item.category !== (category ?? "observing")) { item = { ...item, category: category ?? "observing" }; state.since = now; }
-    state.observation = observation;
+    state.observation = snapshot(observation);
     await updateAttempt(item, state, observation, now);
     let directHistory: WatchdogHistory | undefined;
     if (category === "stalled" && !state.recurrence && state.attempt === null) {
@@ -165,8 +185,11 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
     if (due && state.reportedCategory !== category) {
       const latest = await history(observation);
       notice(state, state.reportedCategory === null ? "report" : "update", "Watchdog observed a persistent Task Session anomaly; possible causes require separate evidence.", {
-        itemId: item.id, projectId: observation.projectId, taskId: observation.taskId, title: observation.title, category, since: state.since,
-        recurrence: state.recurrence, observation: observation.session, lastAssistantText: latest.lastAssistantText, historyComplete: latest.complete,
+        itemId: item.id, projectId: observation.projectId, taskId: observation.taskId, title: state.observation.title, category, since: state.since,
+        recurrence: state.recurrence, observation: state.observation.session, textEvidence: state.observation.textEvidence,
+        lastAssistantText: latest.lastAssistantText === null ? null : summarize(latest.lastAssistantText).preview,
+        lastAssistantTextEvidence: latest.lastAssistantText === null ? null : summarize(latest.lastAssistantText).evidence,
+        lastEntryId: latest.lastEntryId, historyComplete: latest.complete,
       });
       state.reportedCategory = category;
       state.reportedAt = now;
@@ -179,7 +202,10 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
     const manual = await context.withClaim((api, task) => api.getManual(task.id));
     const rule = await matchingWatchdogRule(manual.rules, observation.projectId, latest.lastAssistantText, context.signal);
     if (!rule) return;
-    state.attempt = { operationId: randomUUID(), ruleId: rule.id, message: rule.action.message, at: now, historyId: latest.lastEntryId, observation, result: "unknown", notifiedResult: null, escalated: false, progressed: false };
+    const message = summarize(rule.action.message), ruleId = summarize(rule.id);
+    state.attempt = { operationId: randomUUID(), ruleId: ruleId.preview, message: message.preview, manualVersion: manual.version,
+      ruleIndex: (manual.rules as JsonValue[]).indexOf(rule as unknown as JsonValue), messageEvidence: message.evidence, ruleIdEvidence: ruleId.evidence,
+      at: now, historyId: latest.lastEntryId, observation: snapshot(observation), result: "unknown", notifiedResult: null, escalated: false, progressed: false };
     // Persist the original fence before any possible submission. A crash here is
     // intentionally recovered by queries only, never by a replacement send.
     item = await save(item, state);
@@ -214,10 +240,10 @@ export const createWatchdogEvaluator = (context: AssistantApplicationContext, so
       if (!item && category !== null) {
         const previous = related[0], previousState = previous === undefined ? null : readState(previous);
         if (previous && previous.category === category && previousState?.closedAt !== null && previousState !== null && (previousState.reportedCategory !== null || previousState.recurrence) && now - previousState.closedAt <= 1_800_000) {
-          previousState.recurrence = true; previousState.since = now; previousState.closedAt = null; previousState.reportedCategory = null; previousState.reportedAt = null; previousState.observation = observation;
+          previousState.recurrence = true; previousState.since = now; previousState.closedAt = null; previousState.reportedCategory = null; previousState.reportedAt = null; previousState.observation = snapshot(observation);
           item = await save({ ...previous, state: "open" }, previousState);
         } else {
-          const state: WatchdogState = { schemaVersion: 1, since: now, reportedCategory: null, reportedAt: null, closedAt: null, recurrence: false, observation, attempt: null, notices: [] };
+          const state: WatchdogState = { schemaVersion: 1, since: now, reportedCategory: null, reportedAt: null, closedAt: null, recurrence: false, observation: snapshot(observation), attempt: null, notices: [] };
           item = await save({ id: randomUUID(), taskId: context.task.id, key: observation.taskId, episode: previous === undefined ? "1" : String(BigInt(previous.episode) + 1n), category, state: "open", version: "0" } as AssistantTaskItem, state, false);
         }
       }

@@ -51,6 +51,8 @@ export const matchWatchdogRegex = async (pattern: string, text: string, signal: 
 
 export const matchingWatchdogRule = async (rules: JsonValue, projectId: string, lastAssistantText: string | null, signal: AbortSignal): Promise<WatchdogRule | null> => {
   if (rules === null) return null;
+  // Generic applications historically stored {} for a report-only manual.
+  if (typeof rules === "object" && !Array.isArray(rules) && Object.keys(rules).length === 0) return null;
   if (!Array.isArray(rules)) throw new Error("Invalid Watchdog rules.");
   for (const value of rules) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Watchdog rule.");

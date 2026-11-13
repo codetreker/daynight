@@ -14,7 +14,7 @@ import (
 
 const MaxRegexBytes = 1024
 
-var repetition = regexp.MustCompile(`^\{[0-9]+(?:,[0-9]*)?\}`)
+var repetition = regexp.MustCompile(`^\{(?:0|[1-9][0-9]*)(?:,(?:0|[1-9][0-9]*)?)?\}`)
 
 type Rule struct {
 	ID       string `json:"id"`
@@ -46,9 +46,11 @@ func PortableRegex(value string) bool {
 		return false
 	}
 	inClass, firstInClass := false, false
+	previousAnchor := false
 	classStart := -1
 	for i := 0; i < len(value); i++ {
 		if value[i] == '\\' {
+			previousAnchor = false
 			i++
 			if i >= len(value) || !strings.ContainsRune(`\.+*?()|[]{}^$nrt`, rune(value[i])) {
 				return false
@@ -67,6 +69,12 @@ func PortableRegex(value string) bool {
 			}
 			continue
 		}
+		// Go accepts repetition of bare anchors; JavaScript Unicode mode does
+		// not. A group containing an anchor remains a valid repeatable atom.
+		if previousAnchor && strings.ContainsRune(`*+?{`, rune(value[i])) {
+			return false
+		}
+		previousAnchor = value[i] == '^' || value[i] == '$'
 		switch value[i] {
 		case '[':
 			inClass, firstInClass = true, true

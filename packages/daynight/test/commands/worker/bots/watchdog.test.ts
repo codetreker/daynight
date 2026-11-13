@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { createAssistantTaskClient } from "../../../../src/api/assistant-task.js";
+import { createOperation } from "../../../../src/api/operation.js";
 import type { AssistantTask, AssistantTaskClient, AssistantTaskEvent, AssistantTaskItem, AssistantTaskRecord, JsonValue } from "../../../../src/api/assistant-task.js";
 import type { TaskSessionObservation } from "../../../../src/api/task-observation.js";
 import type { AssistantApplicationContext } from "../../../../src/commands/worker/bots/assistant-tasks.js";
@@ -44,7 +46,7 @@ const fixture = () => {
   return {
     items, events, records, observation, history, api, source, task,
     tick: () => evaluator.tick(), advance: (ms: number) => { now += ms; }, now: () => now,
-    rules: () => { rules = rule; }, loseClaim: () => { allowed = false; },
+    rules: (value: JsonValue = rule) => { rules = value; }, loseClaim: () => { allowed = false; },
     sendResult: (value: string) => { sendResult = value; }, operationResult: (value: string) => { operationResult = value; },
     failSaveAfterSend: () => { failSaveAfterSend = true; },
     recover: (newHolder = false) => { if (newHolder) context.botId = id(9); evaluator = createWatchdogEvaluator(context, source as WatchdogSource, { clock }); },
@@ -52,7 +54,96 @@ const fixture = () => {
   };
 };
 
+// Every evaluator write passes through the production serializer, byte limit
+// and response parser. The fixture controls storage and response loss only.
+const productionWrites = (f: ReturnType<typeof fixture>, loseResultResponse = false) => {
+  const operation = createOperation(), bytes: number[] = [];
+  const saveItem = f.api.saveItem.getMockImplementation()!, addRecord = f.api.addRecord.getMockImplementation()!, addEvent = f.api.addEvent.getMockImplementation()!;
+  const client = createAssistantTaskClient({ serverUrl: "http://localhost:3000", expectedUserId: id(1), botId: id(8), operation,
+    fetch: async (url, init) => {
+      bytes.push(Buffer.byteLength(init!.body as string));
+      const body = JSON.parse(init!.body as string), path = new URL(String(url)).pathname, at = new Date(f.now()).toISOString();
+      let value: unknown;
+      if (path.includes("/items")) value = await saveItem(id(7), body, init!.method === "PATCH" ? path.split("/").at(-1) : undefined);
+      else if (path.endsWith("/records")) {
+        value = { ...await addRecord(id(7), body), taskId: id(7), author: "bot", authorBotId: id(8), createdAt: at };
+        delete (value as Record<string, unknown>).claimToken; delete (value as Record<string, unknown>).claimGeneration;
+      } else {
+        value = { ...await addEvent(id(7), body), taskId: id(7), state: "pending", createdAt: at, deliveredAt: null, seenAt: null, ackOperationId: null };
+        delete (value as Record<string, unknown>).claimToken; delete (value as Record<string, unknown>).claimGeneration;
+        if (loseResultResponse && ["direct_success", "result_unknown", "escalation"].includes(body.type)) { loseResultResponse = false; throw new Error("Lost committed result response"); }
+      }
+      delete (value as Record<string, unknown>).claimToken; delete (value as Record<string, unknown>).claimGeneration;
+      delete (value as Record<string, unknown>).ifVersion;
+      return new Response(JSON.stringify(value), { headers: { "content-type": "application/json", "Daynight-User-ID": id(1) } });
+    },
+  });
+  f.api.saveItem.mockImplementation((task, value, item) => client.saveItem(task, value, item));
+  f.api.addRecord.mockImplementation((task, value) => client.addRecord(task, value));
+  f.api.addEvent.mockImplementation((task, value) => client.addEvent(task, value));
+  return { bytes, close: () => operation.dispose() };
+};
+
 describe("Watchdog persistent evaluator", () => {
+  it.each(["confirmed", "unknown", "rejected"])("keeps large action evidence writable across %s recovery and later tasks", async outcome => {
+    const f = fixture(), message = "m".repeat(600 * 1024), largeRuleId = "r".repeat(200 * 1024);
+    const ruleValue = [{ id: largeRuleId, category: "stalled", action: { kind: "send_message", message } }];
+    f.rules(ruleValue); f.sendResult(outcome); f.operationResult("confirmed");
+    const writes = productionWrites(f, true);
+    try {
+      // These large fields exercise report and quiet-proof storage alongside
+      // the action. JSON escaping would amplify a nested literal identity.
+      f.history.lastAssistantText = "\\\"".repeat(60 * 1024); f.history.lastInputAt = null; f.history.untimedInputId = "input";
+      f.observation.title = "t".repeat(200 * 1024);
+      await f.tick();
+      for (let n = 0; n < 9; n++) { f.advance(60_000); await f.tick(); }
+      f.advance(60_000); await expect(f.tick()).rejects.toThrow();
+      expect(f.source.send).toHaveBeenCalledOnce();
+      expect((f.source.send.mock.calls as unknown[][])[0]![2]).toBe(message);
+      f.recover(true); await f.tick();
+      expect(f.state().attempt).toMatchObject({ manualVersion: "1", ruleIndex: 0, messageEvidence: { bytes: message.length, truncated: true }, ruleIdEvidence: { bytes: largeRuleId.length, truncated: true } });
+      expect(ruleValue[f.state().attempt!.ruleIndex!]!.action.message).toBe(message);
+      expect(f.state().notices).toEqual([]);
+      const following = { ...f.observation, taskId: id(20), session: { ...f.observation.session, sessionId: null, freshUntil: null, reason: "not_registered", registration: "not_registered" as const } };
+      f.source.scan.mockImplementation(async () => { f.observation.session = { ...f.observation.session, freshUntil: new Date(f.now() + 30_000).toISOString() }; return [structuredClone(f.observation), following]; });
+      await f.tick(); f.advance(600_000); await f.tick();
+      expect(f.events.some(event => event.type === "escalation")).toBe(true);
+      expect(f.events.some(event => event.type === "report" && (event.payload as { taskId: string }).taskId === id(20))).toBe(true);
+      Object.assign(f.observation.session, { activity: "working", reason: "working", indicator: "working" });
+      await f.tick();
+      expect(f.events.some(event => event.type === "resolved")).toBe(true);
+      expect(f.source.send).toHaveBeenCalledOnce();
+      expect(Math.max(...writes.bytes)).toBeLessThan(64 * 1024);
+    } finally { writes.close(); }
+  });
+
+  it("bounds error and title snapshots in report and resolution without changing execution identity", async () => {
+    const f = fixture(), writes = productionWrites(f);
+    f.observation.title = "t".repeat(200 * 1024);
+    f.observation.session = { ...f.observation.session, error: { code: "unavailable", message: "e".repeat(600 * 1024) } };
+    try {
+      await f.tick(); f.advance(900_000); await f.tick();
+      f.observation.inScope = false; await f.tick();
+      expect(f.events.map(event => event.type)).toEqual(["report", "resolved"]);
+      expect(f.events[1]!.payload).toMatchObject({ before: { session: { sessionId: id(3), claimId: id(5) }, textEvidence: { title: { truncated: true }, "session.error.message": { bytes: 600 * 1024, truncated: true } } } });
+      expect(Math.max(...writes.bytes)).toBeLessThan(64 * 1024);
+    } finally { writes.close(); }
+  });
+
+  it("references a legacy full action message without duplicating or discarding it", async () => {
+    const f = fixture(); f.rules(); await f.tick(); f.advance(600_000); await f.tick();
+    const message = "m".repeat(600 * 1024), state = f.state();
+    state.attempt!.message = message; state.attempt!.ruleId = "r".repeat(200 * 1024); state.attempt!.notifiedResult = null;
+    delete state.attempt!.manualVersion; delete state.attempt!.ruleIndex; delete state.attempt!.messageEvidence; delete state.attempt!.ruleIdEvidence;
+    const writes = productionWrites(f);
+    try {
+      f.recover(true); await f.tick();
+      expect(f.state().attempt!.message).toBe(message);
+      expect(f.records.at(-1)!.refs).toMatchObject({ messageRef: { itemId: [...f.items.keys()][0], path: "appState.attempt.message" }, messageEvidence: { bytes: message.length, truncated: true } });
+      expect(Math.max(...writes.bytes)).toBeLessThan(900 * 1024);
+      expect(f.source.send).toHaveBeenCalledOnce();
+    } finally { writes.close(); }
+  });
   it.each<WatchdogCategory>(["stalled", "disconnected", "waiting_input", "no_execution", "unobservable"])("reports %s once after its fixed duration", async category => {
     const f = fixture();
     if (category === "disconnected") Object.assign(f.observation.session, { reason: "disconnected", connectionState: "disconnected" });

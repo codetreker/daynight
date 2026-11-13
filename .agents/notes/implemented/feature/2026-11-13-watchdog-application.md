@@ -37,6 +37,11 @@ evidence resets it. Final submission verifies that same evidence again.
 Oversized user entries can retain complete page coverage while losing their
 inline origin. Such entries still constrain recent-input handling, but cannot
 prove human progress and suppress escalation.
+Persisted evidence uses bounded previews with original byte counts and hashes.
+Action attempts reference an immutable manual version and rule position for the
+complete approved message. The outbox carries references instead of duplicating
+large bodies, so a valid send cannot consume the capacity needed to record its
+result and escalation.
 
 ## Alternatives
 
@@ -57,6 +62,11 @@ inputs to the user's execution.
 **Infer resolution from list absence.** A project can disappear because access
 changed. Reading the original task before resolution preserves that distinction
 at the cost of retaining unresolved evidence when access is unavailable.
+
+**Store complete text in every evidence copy.** An approved message can fit the
+manual and send limits while its duplicated attempt and outbox exceed the item
+write limit. Bounded previews and immutable source references retain the needed
+evidence without making post-send recovery unwritable.
 
 **Require provider timestamps for every input.** The current live inspection
 producer supplies null timestamps, so this would permanently disable direct

@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { matchingWatchdogRule, matchWatchdogRegex, watchdogRegex } from "../../../../src/commands/worker/bots/apps/watchdog-rules.js";
+
+const portableCorpus = JSON.parse(readFileSync(new URL("../../../../../daynight-server/internal/core/assistanttask/watchdog/testdata/portable-regex.json", import.meta.url), "utf8")) as { pattern: string; accepted: boolean; matches?: string[]; misses?: string[] }[];
 
 describe("Watchdog portable regular expressions", () => {
   const signal = () => new AbortController().signal;
+  it.each(portableCorpus.filter(value => value.accepted))("executes service-approved pattern $pattern in the actual Worker", async ({ pattern, matches, misses }) => {
+    const rules = [{ id: "portable", category: "stalled", match: { regex: pattern }, action: { kind: "send_message", message: "Continue." } }];
+    for (const value of matches!) expect(await matchingWatchdogRule(rules, "project", value, signal())).toMatchObject({ id: "portable" });
+    for (const value of misses!) expect(await matchingWatchdogRule(rules, "project", value, signal())).toBeNull();
+  });
+  it("treats a legacy empty object as report-only without admitting nonempty objects", async () => {
+    expect(await matchingWatchdogRule({}, "project", "Please continue", signal())).toBeNull();
+    await expect(matchingWatchdogRule({ rules: [] }, "project", "Please continue", signal())).rejects.toThrow("Invalid Watchdog rules");
+  });
   it("uses RE2 strict end anchors and dot's newline behavior with Unicode scalars", async () => {
     expect(await matchWatchdogRegex("^end$", "end\n", signal())).toBe(false);
     expect(await matchWatchdogRegex("^end$", "end", signal())).toBe(true);
