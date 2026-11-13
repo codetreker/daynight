@@ -133,6 +133,8 @@ Task 包含以下持久化字段：
 | `startedAt`、`completedAt`、`cancelledAt` | 只读UTC执行起止与取消时间，字段必填但允许`null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
 
+完整 REST Task 包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。单条读取及完整写回执包含当前真实标签引用；当前公开写入口不接受 `tagIds`，批量读取尚未加载关联。
+
 完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。现有公开写入口不接受 `type` 或 `parentId`，不产生 Goal。
 
 单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。

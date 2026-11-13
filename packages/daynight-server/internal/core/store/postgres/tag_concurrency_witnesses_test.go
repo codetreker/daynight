@@ -14,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	tasktext "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/text"
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	tagservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/tag"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
@@ -42,34 +43,63 @@ func TestTaskTagAdmissionRollbackAndRenameReadback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	item := queryTask(t, s, project.ID, 11, model.TaskTodo)
-	tagID := queryID(21)
-	mustQueryExec(t, s, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES($1,$2,'name','name',statement_timestamp(),statement_timestamp())`, tagID, project.ID)
-	current := snapshotTask(t, s, project.ID, item.ID)
-	reserved := current
-	reserved.Description = ""
-	reserved.Tags = []model.TagReference{{ID: tagID, Name: strings.Repeat("&", 64)}}
-	reserved.Version = math.MaxInt64
-	reserved.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
-	base, err := taskprotocol.EncodeREST(io.Discard, reserved, true, taskcore.MaxTaskResponseJSONBytes)
+	tasks := taskservice.NewTasks(s)
+	description := strings.Repeat("&", tasktext.MaxDescriptionBytes)
+	current, err := tasks.Update(ctx, principal, project.ID, item.ID, taskcore.UpdateTask{Version: item.Version, Description: &description})
+	if err != nil {
+		t.Fatalf("legal description update: %v", err)
+	}
+	mustQueryExec(t, s, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at)
+		SELECT gen_random_uuid(),$1,format('tag-%s',n),format('tag-%s',n),statement_timestamp(),statement_timestamp() FROM generate_series(1,400) n`, project.ID)
+	rows, err := s.Pool.Query(ctx, `SELECT id::text,name FROM project_tags WHERE project_id=$1 ORDER BY id`, project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	safeLength := int(taskcore.MaxTaskResponseJSONBytes - base - 16)
-	if safeLength < 1 {
-		t.Fatal("fixture has no room for a description")
+	var ids []string
+	var refs []model.TagReference
+	for rows.Next() {
+		var ref model.TagReference
+		if err := rows.Scan(&ref.ID, &ref.Name); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		ids = append(ids, ref.ID)
+		refs = append(refs, ref)
 	}
-	ids := []string{tagID}
-	tasks := taskservice.NewTasks(s)
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	reserved := current
+	reserved.Version = math.MaxInt64
+	reserved.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	reserved.Tags = []model.TagReference{{ID: ids[0], Name: strings.Repeat("&", 64)}}
+	first, err := taskprotocol.EncodeREST(io.Discard, reserved, true, taskcore.MaxTaskResponseJSONBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved.Tags = append(reserved.Tags, model.TagReference{ID: ids[1], Name: strings.Repeat("&", 64)})
+	second, err := taskprotocol.EncodeREST(io.Discard, reserved, true, taskcore.MaxTaskResponseJSONBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	safeCount := 1 + int((taskcore.MaxTaskResponseJSONBytes-first)/(second-first))
+	if safeCount < 1 || safeCount >= len(ids) {
+		t.Fatalf("fixture does not span admission boundary: %d of %d", safeCount, len(ids))
+	}
+	safeIDs := ids[:safeCount]
+	tooMany := ids[:safeCount+1]
 	var epoch string
 	if err := s.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch); err != nil {
 		t.Fatal(err)
 	}
-	mustQueryExec(t, s, `UPDATE tasks SET description=$2 WHERE id=$1`, item.ID, strings.Repeat("x", safeLength+32))
-	before := snapshotTask(t, s, project.ID, item.ID)
-	if _, err := taskprotocol.EncodeREST(io.Discard, before, true, taskcore.MaxTaskResponseJSONBytes); err != nil {
-		t.Fatalf("unlabeled original should fit: %v", err)
+	attached, err := tasks.ReplaceTags(ctx, principal, project.ID, item.ID, current.Version, &safeIDs)
+	if err != nil || attached.Version != current.Version+1 || !reflect.DeepEqual(attached.Tags, refs[:safeCount]) {
+		t.Fatalf("attach receipt: count=%d, error=%v", len(attached.Tags), err)
 	}
-	_, err = tasks.ReplaceTags(ctx, principal, project.ID, item.ID, before.Version, &ids)
+	before := snapshotTask(t, s, project.ID, item.ID)
+	_, err = tasks.ReplaceTags(ctx, principal, project.ID, item.ID, before.Version, &tooMany)
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
 		t.Fatalf("oversize association: %v", err)
@@ -79,22 +109,18 @@ func TestTaskTagAdmissionRollbackAndRenameReadback(t *testing.T) {
 		t.Fatal("failed admission changed the task or its references")
 	}
 	var count int
-	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM task_tags WHERE project_id=$1 AND task_id=$2`, project.ID, item.ID).Scan(&count); err != nil || count != 0 {
+	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM task_tags WHERE project_id=$1 AND task_id=$2`, project.ID, item.ID).Scan(&count); err != nil || count != safeCount {
 		t.Fatalf("failed admission persisted association: %d %v", count, err)
 	}
-
-	mustQueryExec(t, s, `UPDATE tasks SET description=$2 WHERE id=$1`, item.ID, strings.Repeat("x", safeLength))
-	attached, err := tasks.ReplaceTags(ctx, principal, project.ID, item.ID, item.Version, &ids)
-	if err != nil || attached.Version != item.Version+1 || !reflect.DeepEqual(attached.Tags, []model.TagReference{{ID: tagID, Name: "name"}}) {
-		t.Fatalf("attach receipt: %#v %v", attached.Tags, err)
-	}
 	name := strings.Repeat("&", 64)
-	if _, err := tagservice.New(s).Rename(ctx, principal, project.ID, tagID, 1, name); err != nil {
+	if _, err := tagservice.New(s).Rename(ctx, principal, project.ID, ids[0], 1, name); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
 	read := snapshotTask(t, s, project.ID, item.ID)
-	if read.Version != attached.Version+1 || !reflect.DeepEqual(read.Tags, []model.TagReference{{ID: tagID, Name: name}}) {
-		t.Fatalf("renamed readback: %#v", read.Tags)
+	want := append([]model.TagReference(nil), refs[:safeCount]...)
+	want[0].Name = name
+	if read.Version != attached.Version+1 || !reflect.DeepEqual(read.Tags, want) {
+		t.Fatalf("renamed readback: count=%d version=%d", len(read.Tags), read.Version)
 	}
 	var afterEpoch string
 	if err := s.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&afterEpoch); err != nil || afterEpoch != epoch {
