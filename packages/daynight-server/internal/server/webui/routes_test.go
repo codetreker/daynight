@@ -59,7 +59,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	if len(entries) != 1 || entries[0]["type"] != "http_request" || entries[0]["route"] != "GET /{$}" || entries[0]["request_id"] != "project-test" {
 		t.Fatalf("UI must reuse exactly one request logger: %+v", entries)
 	}
-	for _, target := range []string{"/team-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/auth/complete?returnPath=%2Fprojects%3Fprivate-query%3Dvalue", "/projects", "/projects?private-query=value", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/teams/00000000-0000-4000-8000-000000000099/settings", "/teams/00000000-0000-4000-8000-000000000099/members", "/teams/invalid-private-team/members", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
+	for _, target := range []string{"/team-invitations", "/login", "/login?returnPath=%2Fprojects&private-query=value", "/auth/complete?returnPath=%2Fprojects%3Fprivate-query%3Dvalue", "/projects", "/projects?private-query=value", "/shared-projects", "/my-tasks", "/my-tasks?private-query=value", "/teams/00000000-0000-4000-8000-000000000099", "/teams/invalid-private-team", "/teams/00000000-0000-4000-8000-000000000099/settings", "/teams/00000000-0000-4000-8000-000000000099/members", "/teams/invalid-private-team/members", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
 		response := projectRequest(handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("product entry did not return the server shell: %d", response.Code)
@@ -88,7 +88,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	for _, target := range []string{
 		"/unknown-private-page", "/team-invitations/child", "/team-invitations/", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/auth/complete/", "/auth/complete/private-child", "/auth/complete-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
 		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
-		"/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
+		"/my-tasks/", "/my-tasks/child", "/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
 		"/teams/", "/teams/id/extra", "/teams/id/settings/extra", "/teams/id/members/extra", "/shared-projects/extra",
 		"/api/unknown-private-route", "/api/v1/projects/id/unknown", "/assets/", "/assets/missing-private.js",
 		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
@@ -191,7 +191,7 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	for _, target := range []string{
-		"/", "/setup", "/login", "/auth/complete?returnPath=%2Fsetup", "/workers", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker?private-query=value", "/projects", "/shared-projects", "/teams/00000000-0000-4000-8000-000000000099", "/projects/00000000-0000-4000-8000-000000000099",
+		"/", "/setup", "/login", "/auth/complete?returnPath=%2Fsetup", "/workers", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker?private-query=value", "/projects", "/shared-projects", "/my-tasks", "/teams/00000000-0000-4000-8000-000000000099", "/projects/00000000-0000-4000-8000-000000000099",
 		"/teams/00000000-0000-4000-8000-000000000099/members",
 		"/projects/00000000-0000-4000-8000-000000000099/members",
 		"/projects/00000000-0000-4000-8000-000000000099/settings",

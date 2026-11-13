@@ -2,7 +2,7 @@
 
 The React/TypeScript Web app provides a public product introduction and a private
 workspace. The workspace implements Team creation and settings, project browsing,
-account-owned Worker observations and cloud configuration, cursor pagination,
+account-owned Worker observations and cloud configuration, a cross-project in-progress Task overview, cursor pagination,
 request cancellation, runtime API decoding, native browser routing and a pure
 dependency graph model with horizontal and vertical layouts. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
