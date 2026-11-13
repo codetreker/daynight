@@ -1,3 +1,4 @@
+import { assistantTaskDefinition } from "../commands/assistant-task/definition.js";
 import { botDefinition } from "../commands/bot/definition.js";
 import { controllerDefinition } from "../commands/controller/definition.js";
 import type { CliCommand } from "./context.js";
@@ -20,6 +21,7 @@ export type CommandRegistration = CommandDefinition & {
 };
 
 export const commands: readonly CommandRegistration[] = [
+  { ...assistantTaskDefinition, load: async () => ({ run: (await import("../commands/assistant-task/command.js")).runAssistantTaskCommand }) },
   { ...botDefinition, load: async () => ({ run: (await import("../commands/bot/commands.js")).runBotCommand }) },
   { ...controllerDefinition, load: async () => ({ run: (await import("../commands/controller/index.js")).runControllerCommand }) },
   { ...workerDefinition, load: async () => ({ run: (await import("../commands/worker/index.js")).runWorkerCommand }) },

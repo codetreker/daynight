@@ -3873,3 +3873,13 @@ The [coordination decision](../../.agents/notes/archived/architecture/2026-10-17
 explains scheduling and the foreground execution boundary. The
 [stale-lock recovery decision](../../.agents/notes/archived/bug-fix/2026-10-18-stale-instance-lock-recovery.md)
 records owner-liveness checks and the separate process-exclusion requirement.
+
+## Assistant tasks
+
+`daynight assistant-task` operates user-owned collaboration tasks separately from
+Project Tasks. Read registration, manuals, items and records; use Bot identity for
+claims, inquiries and protected writes; use a user terminal for proposal decisions,
+pause/resume and transfers. Every command supports `--json` and explicit
+pagination. The [assistant-task manual](src/commands/skill/skills/using-daynight/references/assistant-tasks.md)
+owns commands, private credential storage, operation recovery and failure rules.
+It is also included in `daynight --skill` and the installed `using-daynight` skill.
