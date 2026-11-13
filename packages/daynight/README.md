@@ -30,6 +30,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Shell completion](#shell-completion)
 - [Configuration setup](#configuration-setup)
 - [Project management](#project-management)
+- [Project tag catalog](#project-tag-catalog)
 - [Task management](#task-management)
 - [Task deletion](#task-deletion)
 - [Task discussion threads](#task-discussion-threads)
@@ -164,6 +165,11 @@ daynight project list [--json]
 daynight project show <project-id> [--json]
 daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] [--if-version <version>] [--confirm] [--json]
 daynight project delete [--project <uuid>] [--confirm] [--json]
+daynight tag list [--query <query>] [--limit <1-100>] [--cursor <cursor>] [--project <project-id>] [--json]
+daynight tag show <tag-id> [--project <project-id>] [--json]
+daynight tag create <name> [--project <project-id>] [--json]
+daynight tag rename <tag-id> <name> [--if-version <version>] [--project <project-id>] [--json]
+daynight tag delete <tag-id> [--if-version <version>] [--confirm] [--project <project-id>] [--json]
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
 daynight team create <name> [--confirm] [--json]
@@ -620,6 +626,31 @@ Project name, even with `--confirm`; noninteractive use requires `--confirm`.
 The preview is an observation, not a condition on the deletion. JSON output
 contains only the confirmed receipt; preview text goes to stderr. An unknown
 outcome is never automatically retried, and a later 404 cannot prove success.
+
+## Project tag catalog
+
+`tag` manages the selected Project's catalog using stable Tag UUIDs. Select a
+Project with `--project`, or resolve it from the current Git repository as for
+Task commands. `list` traverses all pages with the same query and limit; JSON
+returns the collected items and catalog epoch. An empty catalog and an empty
+query result are distinct in text output. An empty result starting from a cursor
+only describes the remaining pages. A failed page produces an error without
+publishing a partial list.
+
+`show`, `create` and `rename` return the complete Tag, including its version and
+visible Task and Goal usage. Rename uses the supplied `--if-version` exactly; if
+omitted, the CLI reads the current version before submitting. Versions are
+positive decimal int64 values and retain every digit. Name validation and project
+access are enforced by the service.
+
+`delete` reads the Tag's name, version and visible usage before confirmation.
+Interactive deletion requires the displayed JSON string literal of the name,
+even with `--confirm`; noninteractive deletion requires `--confirm`. The counts
+are a preview: confirmation covers all associations at deletion, including any
+added after the preview. An explicit `--if-version` is preserved; otherwise the
+preview version is used. Cancellation sends no DELETE. Successful JSON output is
+the service's deletion receipt. Refusals and unknown outcomes are reported; a
+mutation with an unknown result is never automatically replayed.
 
 ## Team context
 

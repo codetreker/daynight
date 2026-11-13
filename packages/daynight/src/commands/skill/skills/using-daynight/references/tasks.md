@@ -129,7 +129,12 @@ daynight task set-status <task-id> done --if-version <observed-version>
 
 Goal read states are todo, in_progress, done and cancelled. They
 have no parent, platform restriction or prerequisites; automatic execution is
-disabled and they are never ready.
+disabled and they are never ready. When an ordinary child actually enters
+`in_progress`, by a manual status change or Worker claim, its `todo` Parent Goal
+also enters `in_progress` in the same transaction. Other Goal states are unchanged;
+same-status requests and membership edits do not trigger this transition. Child
+completion, cancellation, rollback or claim release does not end or revert the
+Goal. Progress counts do not derive its status.
 
 Without `--force`, before a Goal is created or set to done/cancelled, the CLI warns on stderr that child Task
 states remain, new automatic claims are excluded and existing claims continue.

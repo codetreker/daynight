@@ -10,6 +10,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const projection = `id::text, project_id::text, name, name_key, version, created_at, updated_at`
@@ -130,11 +131,20 @@ func (w *writer) ResolveTags(ctx context.Context, ids []string) ([]model.Tag, er
 	return (&reader{tx: w.tx}).ResolveTags(ctx, w.projectID, ids)
 }
 
+func tagWriteError(phase string, err error) error {
+	wrapped := pg.QueryError(phase, err)
+	var constraint *pgconn.PgError
+	if errors.As(err, &constraint) && constraint.Code == "23505" && constraint.ConstraintName == "project_tags_project_name_key_idx" {
+		return fmt.Errorf("%w: %w", store.ErrTagNameConflict, wrapped)
+	}
+	return wrapped
+}
+
 func (w *writer) InsertTag(ctx context.Context, item model.Tag) (model.Tag, error) {
 	result, err := scan(w.tx.QueryRow(ctx, `INSERT INTO project_tags (id, project_id, name, name_key, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$5) RETURNING `+projection, item.ID, w.projectID, item.Name, item.NameKey, item.CreatedAt))
 	if err != nil {
-		return model.Tag{}, pg.QueryError("insert tag", err)
+		return model.Tag{}, tagWriteError("insert tag", err)
 	}
 	return result, nil
 }
@@ -146,7 +156,7 @@ func (w *writer) UpdateTag(ctx context.Context, id string, version int64, name, 
 		return model.Tag{}, store.ErrTagWriteConflict
 	}
 	if err != nil {
-		return model.Tag{}, pg.QueryError("update tag", err)
+		return model.Tag{}, tagWriteError("update tag", err)
 	}
 	return item, nil
 }

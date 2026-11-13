@@ -6,7 +6,7 @@ import type { TaskGraph } from "../src/api/types";
 import { buildGraphIndex } from "../src/features/task-graph/model";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
 import { createTaskExecutionClock, taskExecution, type ClockEnvironment, type ClockInput, type ExecutionTask } from "../src/features/task-execution/clock";
-import { TaskExecutionClockProvider, useTaskExecution } from "../src/features/task-execution/TaskExecutionClock";
+import { ClockInputProvider, TaskExecutionClockProvider, useTaskExecution } from "../src/features/task-execution/TaskExecutionClock";
 import { useCompletionTime } from "../src/features/task-completion/useCompletionTime";
 import { LocaleProvider } from "../src/i18n/LocaleProvider";
 
@@ -46,6 +46,24 @@ const environment = () => {
 };
 
 describe("execution intervals", () => {
+  it("uses a direct observation anchor and updates its warning threshold without remounting", () => {
+    vi.useFakeTimers();
+    let monotonic = 100;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+    let current = input(60);
+    const wrapper = ({ children }: { children: ReactNode }) => <ClockInputProvider input={current}>{children}</ClockInputProvider>;
+    const { result, rerender, unmount } = renderHook(() => useTaskExecution(running), { wrapper });
+    expect(result.current?.elapsedMilliseconds).toBe(0);
+    monotonic += 61 * 60_000;
+    act(() => vi.advanceTimersByTime(1000));
+    expect(result.current?.overdue).toBe(true);
+    current = { ...input(120), receivedMonotonic: monotonic };
+    rerender();
+    expect(result.current?.overdue).toBe(false);
+    expect(result.current?.warningMinutes).toBe(120);
+    unmount(); expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers(); vi.restoreAllMocks();
+  });
   it.each([true, false].flatMap((allowAgents) => [3_599_000, 3_600_000, 3_601_000].map((elapsed) => ({ allowAgents, elapsed, overdue: allowAgents && elapsed > 3_600_000 }))))
     ("compares exact elapsed $elapsed with allowAgents=$allowAgents against the saved threshold", ({ allowAgents, elapsed, overdue }) => {
       expect(taskExecution({ ...running, allowAgents }, { serverMilliseconds: epoch + elapsed, warningMinutes: 60 }))
