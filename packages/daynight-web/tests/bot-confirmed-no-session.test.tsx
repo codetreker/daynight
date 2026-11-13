@@ -37,9 +37,9 @@ async function fixture() {
   const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
   const owner = getBotDisplaySnapshotCoordinator(scope);
   const preview: BotDisplayPreview = { schemaVersion: 1, ownerUserId: user, botId: definition.id, lastKnownBinding: previous.binding, botName: definition.name, fence: sessionFence(previous.snapshot()), historyEpoch: previous.snapshot().historyEpoch, lastEventSeq: '0', entries: [{ kind: 'assistant_message', entryId: crypto.randomUUID(), entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Previously saved history' }] }], resources: [], savedAt: 1 };
-  const save = async () => {
+  const save = async (botName = preview.botName) => {
     const lease = (await owner.store.observe(user, definition.id))!;
-    expect(await owner.store.save(lease, { source: 'verified-history', historyLoaded: true, preview })).toBe('saved');
+    expect(await owner.store.save(lease, { source: 'verified-history', historyLoaded: true, preview: { ...preview, botName } })).toBe('saved');
   };
   await save();
   const selections = vi.spyOn(BotSessionCache.prototype, 'select');
@@ -104,7 +104,7 @@ it('does not restore a saved preview from an in-flight read after no Session con
     await screen.findByText('Previously saved history');
     const original = f.owner.store.read.bind(f.owner.store);
     const read = vi.spyOn(f.owner.store, 'read').mockImplementation(async (...args) => { const result = await original(...args); await release.promise; return result; });
-    await act(f.save);
+    await act(() => f.save('Updated assistant'));
     await waitFor(() => expect(read).toHaveBeenCalled());
     await f.answer(f.absent('pending'));
     await waitFor(() => expect(screen.queryByText('Previously saved history')).toBeNull());
