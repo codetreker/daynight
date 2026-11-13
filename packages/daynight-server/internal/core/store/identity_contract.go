@@ -30,6 +30,9 @@ type IdentityDAO interface {
 	AdmitLogin(context.Context, []byte, int, int) (time.Time, string, error)
 	InsertLogin(context.Context, model.LoginTransaction) error
 	ConsumeLogin(context.Context, []byte, []byte, time.Time) (model.LoginTransaction, error)
+	// UpsertUser synchronizes login profile fields atomically, retaining missing
+	// values and keeping email verification paired with its address. It returns
+	// the merged row. PatchUser instead applies explicit nulls as clears.
 	UpsertUser(context.Context, model.User, time.Time) (model.User, error)
 	// EnsureUser preserves an existing profile; inserted describes this transaction, not its commit.
 	EnsureUser(context.Context, model.User, time.Time) (model.User, bool, error)
