@@ -2,7 +2,7 @@ import { useEffect, useState, type KeyboardEvent } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import type { ProjectSection } from "./useProjectViewPreferences";
 
-const sections = ["overview", "tasks"] as const;
+const sections = ["overview", "tasks", "tags"] as const;
 
 export const ProjectSectionTabs = ({ section, onChange }: {
   readonly section: ProjectSection;
@@ -32,7 +32,7 @@ export const ProjectSectionTabs = ({ section, onChange }: {
       id={`project-section-tab-${value}`} aria-controls={`project-section-panel-${value}`} aria-selected={section === value}
       tabIndex={section === value ? 0 : -1} onClick={() => { onChange(value); }} onKeyDown={(event) => { onKeyDown(event, value); }}>
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-        {value === "overview" ? <><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M3 9h18M9 9v12" /></> : <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" strokeLinecap="round" strokeWidth="3" /></>}
+        {value === "overview" ? <><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M3 9h18M9 9v12" /></> : value === "tasks" ? <><path d="M8 6h13M8 12h13M8 18h13" /><path d="M3 6h.01M3 12h.01M3 18h.01" strokeLinecap="round" strokeWidth="3" /></> : <><path d="M20 13 13 20a2 2 0 0 1-3 0L3 13V4h9l8 6a2 2 0 0 1 0 3Z" /><circle cx="7.5" cy="8.5" r="1" /></>}
       </svg>
       {m[value]}
     </button>)}

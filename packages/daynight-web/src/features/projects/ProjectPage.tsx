@@ -33,6 +33,7 @@ import { TaskAssigneeFilter, matchesAssignee, type AssigneeFilter } from "../tas
 import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { TaskSearchWorkspace, assigneeValue } from "../task-search/TaskSearchWorkspace";
 import { useTaskSearch } from "../task-search/useTaskSearch";
+import { ProjectTags } from "../task-tags/ProjectTags";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -75,6 +76,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
   const [tasksMounted, setTasksMounted] = useState(false);
+  const [tagsMounted, setTagsMounted] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
   const searchActive = search.applied !== null;
@@ -122,6 +124,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (!snapshotReady) setTasksMounted(false);
     else if (section === "tasks") setTasksMounted(true);
   }, [snapshotReady, section]);
+  useLayoutEffect(() => { if (section === "tags") setTagsMounted(true); }, [section]);
   useLayoutEffect(() => {
     if (section !== "overview" || !snapshotReady) return;
     window.scrollTo({ top: overviewPosition.current, behavior: "instant" });
@@ -565,6 +568,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
                 summaries: snapshot.summaries, openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: onOpenChainTask, onOpenListTask, onOpenListChain, onGraphRootChange: setChainOverlay, onOpenSession }} />}
             </div>
+          </section>
+          <section className="project-section-panel" id="project-section-panel-tags" role="tabpanel"
+            aria-labelledby="project-section-tab-tags" hidden={section !== "tags"} inert={section !== "tags"} tabIndex={0}>
+            {(tagsMounted || section === "tags") && <ProjectTags projectId={projectId} active={section === "tags"} />}
           </section>
         </div>
       </div>

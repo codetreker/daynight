@@ -38,6 +38,7 @@ export const browserConfigs = [
   'setup-guide-playwright.config.ts',
   'create-project-mobile-playwright.config.ts',
   'task-view-continuity-playwright.config.ts',
+  'project-tags-playwright.config.ts',
   'graph-visibility-browser-playwright.config.ts',
   'team-invitation-browser-playwright.config.ts',
   'graph-direction-browser-playwright.config.ts',

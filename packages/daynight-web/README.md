@@ -1443,12 +1443,12 @@ list section contains Standalone tasks and Task chains. Desktop section navigati
 left of the selected content; narrow screens use horizontal tabs with matching
 keyboard direction. The outer choice is stored per project in browser
 preferences, so the first render after reload or a new visit already shows the saved
-Overview or Task list selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
-projects retain both section destinations.
+Overview, Task list or Tags selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
+projects retain all section destinations.
 
-Both sections use one `ProjectView` snapshot, synchronization loop and detail
+Overview and Task list use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
-inert on Overview. Leaving Task list or its Task chains category closes the
+inert outside Task list. Leaving Task list or its Task chains category closes the
 current graph dialog and clears its temporary opening state; an ordinary return shows
 the list without reopening it. Browser history traversal can restore an earlier graph selection. The retained task subtree does not start another
 cache, index or refresh loop. Task details remain outside either section panel.
@@ -1749,10 +1749,30 @@ fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
 written. The outer section uses the independent
 `daynight:project-section:${projectId}` record with the JSON string `"overview"`
-or `"tasks"`; a missing record selects Overview. A read or format failure selects
+or `"tasks"` or `"tags"`; a missing record selects Overview. A read or format failure selects
 Overview with a section-specific notice; a write failure retains the current
 in-memory selection and reports that it was not saved. Other preference errors
 likewise leave the current page usable with visible feedback.
+
+The Tags section is available to project members and administrators through the
+project access boundary. It reads one in-memory catalog page for the current
+identity, project and query, and offers search, creation, rename and deletion.
+Names are trimmed and validated as 1–64 Unicode code points without controls or
+line separators; the server enforces ASCII case-insensitive uniqueness. A delete
+preview reads the current tag, original version and visible Task and Goal counts.
+Confirmation removes every association, including those added after the preview;
+counts are hints rather than a condition on deletion. Writes retain the observed
+version. Conflicts and unknown outcomes retain the draft and require a current
+observation; a check does not replay a write or establish the original outcome.
+
+Catalog cursors bind the project, principal, query, limit and catalog epoch.
+An invalidated cursor restarts at the first page; background revalidation retains
+the displayed page and drafts while waiting. Counts are refreshed independently
+of the epoch, which tracks names, membership and ordering. The catalog is not
+persisted or accumulated in the Task cache. Batch resolution validates selected
+IDs outside the current page. Leaving the section cancels its reads; an
+already dispatched write is retained as unknown for review on return. Identity
+or project access withdrawal retires private data and requests.
 
 Both stable inner tabpanel wrappers retain their IDs and hide inactive content.
 Task page scroll restoration and scroll/pagehide listeners are active only when

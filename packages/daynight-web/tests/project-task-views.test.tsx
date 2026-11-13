@@ -28,6 +28,7 @@ vi.mock('../src/api/client', async (original) => { const actual = await original
   attachmentPreviewRoot: (projectId: string, taskId: string) => `/fixtures/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/preview/`, }; });
 vi.mock('../src/api/project-settings', async original => ({ ...await original<typeof import('../src/api/project-settings')>(), getProject: vi.fn() }));
 vi.mock('../src/api/auth', async original => ({ ...await original<typeof import('../src/api/auth')>(), getProjectAccess: vi.fn() }));
+vi.mock('../src/features/task-tags/ProjectTags', () => ({ ProjectTags: ({ projectId, active }: { projectId: string; active: boolean }) => <p data-testid="project-tags" data-active={String(active)}>{projectId}</p> }));
 vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, rootId, onOpenTask, onNavigateExternalTask }: {
   index: GraphIndex; rootId: string; onOpenTask: (id: string, trigger: HTMLElement) => void;
   onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
@@ -72,7 +73,7 @@ const taskTabs = () => within(root.querySelector<HTMLElement>('.project-task-tab
 const titleActions = () => within(root.querySelector<HTMLElement>('.project-title-actions')!);
 const filters = () => within(root.querySelector<HTMLElement>('#project-section-panel-tasks .task-list-filters:not(.task-search-filters)')!);
 const overviewProgress = () => within(document.getElementById('project-overview-progress')!);
-const sectionTab = (section: 'overview' | 'tasks') => sectionTabs().getByRole('tab', { name: section === 'overview' ? '概览' : '任务列表' });
+const sectionTab = (section: 'overview' | 'tasks' | 'tags') => sectionTabs().getByRole('tab', { name: section === 'overview' ? '概览' : section === 'tasks' ? '任务列表' : '标签' });
 const tab = (view: 'chains' | 'standalone' | 'goals') => taskTabs().getByRole('tab', { name: view === 'chains' ? '任务链' : view === 'standalone' ? '独立任务' : 'Goal' });
 const findTab = (view: 'chains' | 'standalone') => waitFor(() => tab(view));
 const expectUnfinishedCounts = (chains: number, standalone: number) => {
@@ -964,6 +965,29 @@ describe('project overview and task workspace', () => {
     expect(scroll).toBe(400);
   });
 
+  it('navigates to Tags, retains the task view, and restores the section preference', async () => {
+    mountOverview();
+    await screen.findByRole('heading', { name: project }); await waitForGraph();
+    fireEvent.click(sectionTab('tasks'));
+    await findChainRow();
+    fireEvent.click(tab('standalone'));
+    fireEvent.click(sectionTab('tags'));
+    expect(screen.getByTestId('project-tags')).toHaveTextContent(project);
+    expect(sectionTab('tags')).toHaveAttribute('aria-selected', 'true');
+    expect(window.localStorage.getItem(key('project-section'))).toBe('"tags"');
+    expect(readProjectHistory(browserNavigation().snapshot().view, TEST_VIEWER_ID, project)?.section).toBe('tags');
+    fireEvent.click(sectionTab('tasks'));
+    expect(tab('standalone')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('project-tags')).toHaveAttribute('data-active', 'false');
+    expect(screen.getByTestId('project-tags')).not.toBeVisible();
+    fireEvent.click(sectionTab('tags'));
+    expect(screen.getByTestId('project-tags')).toHaveAttribute('data-active', 'true');
+    cleanup();
+    mountOverview();
+    expect(sectionTab('tags')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('project-tags')).toHaveTextContent(project);
+  });
+
   it('restores the shared offset after the initial snapshot renders the visible task workspace', async () => {
     window.localStorage.setItem(key('project-section'), '"tasks"');
     window.localStorage.setItem(key('task-list-scroll'), '320.5');
@@ -1041,7 +1065,7 @@ describe('project overview and task workspace', () => {
     graphRequest.mockImplementation(async (id) => snapshot([], id));
     const view = mountOverview();
     await screen.findByRole('heading', { name: project }); await waitForGraph();
-    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
     fireEvent.click(sectionTab('tasks'));
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     act(() => browserNavigation().navigate(`/projects/${otherProject}`));

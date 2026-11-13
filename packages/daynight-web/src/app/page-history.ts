@@ -104,7 +104,7 @@ export function readProjectHistory(value: unknown, userId: string, projectId: st
   if (value.userId !== userId || value.pageKey !== `project:${projectId}`) return null;
   const selection = value.selection;
   if (!record(selection) || !exact(selection, ['section', 'view', 'projectGraphWitness', 'detail']) ||
-      (selection.section !== 'overview' && selection.section !== 'tasks') ||
+      (selection.section !== 'overview' && selection.section !== 'tasks' && selection.section !== 'tags') ||
       (selection.view !== 'standalone' && selection.view !== 'chains' && selection.view !== 'goals') ||
       !(selection.projectGraphWitness === null || validId(selection.projectGraphWitness))) throw new Error('Invalid project navigation state.');
   const detail = selection.detail;
