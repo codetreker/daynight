@@ -8,7 +8,7 @@ import { TaskCacheProvider } from "../src/features/task-cache/TaskCacheProvider"
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, TaskCacheError } from "../src/features/task-cache/database";
-import { saveDetail } from "../src/features/task-detail/detail-cache";
+import { readCachedDetail, saveDetail } from "../src/features/task-detail/detail-cache";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { detailFixture, graphFixture, resourceResponse } from "./helpers/taskDetail";
 import { taskSyncFromGraph, TEST_VIEWER_ID, viewerHeaders } from "./helpers/taskSync";
@@ -23,7 +23,7 @@ const sessions: TaskDetailSessions[] = [];
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 const apply = async (scope: TaskCacheScope, details: readonly TaskDetail[], snapshot = false) => {
   let ticket = await scope.beginSync(projectId, signal());
-  const build = () => taskSyncFromGraph(graphFixture(details), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version, propertiesForTask: (task) => details.find((detail) => detail.id === task.id)!.properties });
+  const build = () => taskSyncFromGraph(graphFixture(details), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version, propertiesForTask: (task) => details.find((detail) => detail.id === task.id)!.properties, tagsForTask: (task) => details.find((detail) => detail.id === task.id)!.tags });
   let sync = build();
   if (await scope.observeHistory(ticket, sync.epoch, signal()) === "retired") { ticket = await scope.beginSync(projectId, signal()); sync = build(); }
   return scope.applySync(ticket, sync, signal());
@@ -49,6 +49,27 @@ it("keeps successful duplicate receipts free of detail GETs and persistent write
     await act(async () => { await apply(scope, [detail]); }); rerender({ revision });
   }
   expect(fetch).toHaveBeenCalledOnce(); expect(puts).toEqual([]); expect(result.current.canSetStatus).toBe(true);
+});
+
+it("admits details only when their tags match the same-version summary", async () => {
+  const tag = { id: "30000000-0000-4000-8000-000000000001", name: "Original" };
+  const detail = body({ tags: [tag] }); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  await expect(saveDetail(scope, ticket, { ...detail, tags: [] }, signal())).rejects.toMatchObject({ kind: "protocol" });
+  await expect(saveDetail(scope, ticket, { ...detail, tags: [{ ...tag, name: "Different" }] }, signal())).rejects.toMatchObject({ kind: "protocol" });
+  await expect(saveDetail(scope, ticket, detail, signal())).resolves.toMatchObject({ kind: "matching", detail: { tags: [tag] } });
+  expect(await readCachedDetail(scope, ticket, taskId, signal())).toMatchObject({ tags: [tag] });
+});
+
+it("reconciles an unrelated mutation receipt that loses tags", async () => {
+  const tag = { id: "30000000-0000-4000-8000-000000000001", name: "Keep" };
+  const detail = body({ tags: [tag] }); const scope = await seed([detail]); const recovery = deferred<Response>();
+  const wrong = { ...detail, version: 6n, allowAgents: true, tags: [], updatedAt: "2026-10-22T10:00:20Z" };
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(detail, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(wrong, TEST_VIEWER_ID)).mockReturnValueOnce(recovery.promise); vi.stubGlobal("fetch", fetch);
+  const session = await open(scope); session.setAgentPermission(projectId, taskId, true, detail.version);
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { tags: [tag] }, mutation: { phase: "confirmed", reconciling: true } });
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PATCH")).toHaveLength(1);
+  recovery.resolve(resourceResponse(detail, TEST_VIEWER_ID));
 });
 
 it("does not publish a disk body until this mount has a successful graph receipt, and never enables writes from disk", async () => {

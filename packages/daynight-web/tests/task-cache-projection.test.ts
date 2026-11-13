@@ -6,7 +6,7 @@ import { GraphDataError, projectChain } from "../src/features/task-graph/model";
 const id = (value: number) => `00000000-0000-0000-0000-${value.toString(16).padStart(12, "0")}`;
 const time = "2026-10-20T12:00:00Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: id(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: id(n), version: 1n, properties: {}, tags: [], titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const projectTasks = (owner: Project, tasks: readonly TaskSummary[], observedAt: string) => {
   const states = new Map<string, TaskDependencyState>();
   for (const task of tasks) {
@@ -100,6 +100,17 @@ it("compares complete property values while keeping properties out of graph node
   expect(projection.graph.tasks[0]).not.toHaveProperty("properties");
   expect(projection.index.nodes.get(left.id)).not.toHaveProperty("properties");
   expect(left.properties).toHaveProperty("future", { version: 42, first: 1, second: ["a", "b"] });
+});
+
+it("compares tag identities and names without adding them to graph nodes", () => {
+  const first = { id: id(10), name: "One" }, second = { id: id(11), name: "Two" };
+  const original = task(1, { tags: [first, second] });
+  expect(sameSummary(original, task(1, { tags: [second, first] }))).toBe(true);
+  expect(sameSummary(original, task(1, { tags: [{ ...first, name: "Renamed" }, second] }))).toBe(false);
+  expect(sameSummary(original, task(1, { tags: [first] }))).toBe(false);
+  const projection = projectTasks(project, [original], time);
+  expect(projection.graph.tasks[0]).not.toHaveProperty("tags");
+  expect(projection.index.nodes.get(original.id)).not.toHaveProperty("tags");
 });
 
 it("satisfies both edge kinds from cancelled predecessors without requiring the cancelled task's own inputs", () => {
