@@ -9,6 +9,7 @@ import { createOperation, type Operation } from "../../src/api/operation.js";
 import { fingerprintToolArtifact, probeResourceKey, resolveToolLaunch, toolCommand, toolSelectionKey, verifyToolLaunch } from "../../src/platform/tool-executables.js";
 import { parseResolvedToolLaunch } from "../../src/platform/tool-launch-record.js";
 import { removeFixtureRoot } from "../helpers/tool-fixture-cleanup.js";
+import { holdToolFileWithoutDeleteSharing, ToolUnlinkDiagnostics } from "./tool-unlink-diagnostics.js";
 
 const execute = promisify(execFile);
 const roots: string[] = [], operations: Operation[] = [];
@@ -67,8 +68,13 @@ describe("resolved tool commands", () => {
     await link(node, path.join(path.dirname(entry), nodeName));
     const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: root, workerNode: node, environment: { PATH: pathNode } }, operation());
     const command = toolCommand(launch, []);
-    expect(JSON.parse((await execute(command.file, command.args, { cwd: root, timeout: 5000 })).stdout).node).toBe(await realpath(node));
-    await rm(node);
+    const diagnostics = process.platform === "win32" ? new ToolUnlinkDiagnostics() : undefined;
+    const execution = execute(command.file, command.args, { cwd: root, timeout: 5000 });
+    diagnostics?.observe(execution.child);
+    const result = await execution;
+    diagnostics?.executionCompleted();
+    expect(JSON.parse(result.stdout).node).toBe(await realpath(node));
+    if (diagnostics) await diagnostics.unlink(node); else await rm(node);
     await expect(verifyToolLaunch(launch, operation())).rejects.toMatchObject({ tool: "codex", context: "web", stage: "verify", code: "tool_identity_changed" });
   });
 
@@ -253,6 +259,73 @@ describe("resolved tool commands", () => {
     await expect(verifyToolLaunch(legacy, operation())).rejects.toMatchObject({ stage: "verify", code: "tool_identity_changed" });
   });
 
+});
+
+describe("tool executable unlink diagnostics", () => {
+  it("keeps secrets out of the receipt and rethrows the original unlink error without retry", async () => {
+    const secret = "PRIVATE-UNLINK-SENTINEL";
+    const failure = Object.assign(new Error(`${secret}/worker-node.exe`), {
+      code: "EBUSY", errno: -4082, syscall: "unlink", path: `${secret}/worker-node.exe`,
+      cmd: secret, stdout: secret, stderr: secret, env: { TOKEN: secret },
+    });
+    const output = vi.spyOn(console, "error");
+    const remove = vi.fn(async () => { throw failure; });
+    const diagnostics = new ToolUnlinkDiagnostics();
+    await expect(diagnostics.unlink(`${secret}/worker-node.exe`, remove)).rejects.toBe(failure);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(output).toHaveBeenCalledTimes(1);
+    const line = output.mock.calls[0]![0] as string;
+    expect(line).not.toContain(secret);
+    expect(JSON.parse(line)).toMatchObject({ target: "<fixture>/worker-node.exe", holder: { kind: "unknown" }, process: { exitObserved: false, closeObserved: false } });
+    expect(diagnostics.receipt().events.at(-1)).toMatchObject({ kind: "unlink-error", error: { code: "EBUSY", errno: -4082, syscall: "unlink" } });
+  });
+
+  it.skipIf(process.platform !== "win32").each([true, false])("distinguishes known handle evidence (%s) from child exit before explicit unlink", async knownOwner => {
+    const root = await fixture(), node = path.join(root, "worker-node.exe");
+    await copyFile(process.execPath, node); await chmod(node, 0o755);
+    const entry = await script(root, "codex.js", "controlled");
+    const diagnostics = new ToolUnlinkDiagnostics();
+    const execution = execute(node, [entry], { cwd: root, timeout: 5000 });
+    diagnostics.observe(execution.child);
+    const result = await execution; diagnostics.executionCompleted();
+    expect(JSON.parse(result.stdout).node).toBe(await realpath(node));
+    const release = await holdToolFileWithoutDeleteSharing(node, knownOwner ? diagnostics : undefined);
+    const output = vi.spyOn(console, "error");
+    let receipt: ReturnType<ToolUnlinkDiagnostics["receipt"]>;
+    try {
+      await expect(diagnostics.unlink(node)).rejects.toMatchObject({ code: "EBUSY", syscall: "unlink", path: node });
+      expect(output).toHaveBeenCalledTimes(1);
+      const line = output.mock.calls[0]![0] as string;
+      expect(line).not.toContain(root);
+      receipt = JSON.parse(line);
+      expect(receipt).toMatchObject({
+        holder: knownOwner ? { kind: "test-owned-handle-present", pid: process.pid } : { kind: "unknown", pid: null },
+        process: { pid: execution.child.pid, identityPrecision: "pid-only", birth: null, spawnObserved: true,
+          exitObserved: true, closeObserved: true, executionCompleted: true, exitCode: 0, signal: null },
+      });
+      const kinds = receipt.events.map(event => event.kind);
+      expect(kinds.indexOf("exit")).toBeLessThan(kinds.indexOf("close"));
+      expect(kinds.indexOf("close")).toBeLessThan(kinds.indexOf("execution-completed"));
+      expect(kinds.indexOf("execution-completed")).toBeLessThan(kinds.indexOf("unlink-start"));
+      expect(kinds.at(-1)).toBe("unlink-error");
+      if (knownOwner) {
+        expect(kinds.indexOf("test-handle-opened")).toBeGreaterThan(kinds.indexOf("execution-completed"));
+        expect(kinds.indexOf("test-handle-opened")).toBeLessThan(kinds.indexOf("unlink-start"));
+        expect(kinds).not.toContain("test-handle-closed");
+      } else expect(kinds).not.toContain("test-handle-opened");
+      expect((await stat(node)).isFile()).toBe(true);
+    } finally { release(); }
+    // A real, explicitly released test handle permits a new deletion. This is
+    // not a retry policy, and a later success cannot identify an unknown owner.
+    await diagnostics.unlink(node);
+    await expect(realpath(node)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(output).toHaveBeenCalledTimes(1);
+    expect(receipt!.events.at(-1)?.kind).toBe("unlink-error");
+    expect(diagnostics.receipt().holder.kind).toBe("unknown");
+    if (knownOwner) {
+      expect(diagnostics.receipt().events.slice(-4).map(event => event.kind)).toEqual(["unlink-error", "test-handle-closed", "unlink-start", "unlink-success"]);
+    }
+  });
 });
 
 describe("tool fixture cleanup", () => {
