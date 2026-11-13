@@ -28,7 +28,7 @@ const reads = [
     dependencyStates: { [taskId]: { taskVersion: "1", blockedBy: [], ready: true } }, sessions: {}, actorAccess: directAccessFixture(projectId, userId), assigneeVersions: [] }),
   read: () => getTaskSync(projectId, {}, userId, signal()).then((value) => value.sync.tasks[0]!.tags) },
   { body: (tags: unknown) => ({ projectId, total: 1, items: [{ ...searchItem, tags }], nextCursor: null }),
-    read: () => searchTasks(projectId, "Task", { status: "", assignedTo: "" }, null, signal(), admission).then((value) => value.items[0]!.tags) },
+    read: () => searchTasks(projectId, "Task", { status: "", assignedTo: "", type: "task", parentId: null, tagIds: [], tagMatch: "all", untagged: false }, null, signal(), admission).then((value) => value.items[0]!.tags) },
 ];
 afterEach(() => vi.unstubAllGlobals());
 

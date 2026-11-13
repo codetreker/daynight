@@ -1,5 +1,5 @@
-import { act, fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskSummary, WorkerClaim } from '../src/api/types';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { deriveTaskSyncBindings } from '../src/features/task-cache/execution-binding';
@@ -15,6 +15,14 @@ import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskE
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { statesForSummaries } from './helpers/taskSync';
+import { listProjectTags, resolveProjectTags } from '../src/api/task-tags';
+import { ApiError } from '../src/api/client';
+
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
+beforeEach(() => {
+  vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [], catalogEpoch: 'epoch', nextCursor: null });
+  vi.mocked(resolveProjectTags).mockReset().mockResolvedValue([]);
+});
 
 const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
@@ -40,6 +48,53 @@ const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it('filters only direct children independently while retaining the complete chain context', async () => {
+    vi.mocked(listProjectTags).mockResolvedValue({ items: ['alpha', 'beta'].map((name, i) => ({ id: i === 0 ? 'tag-a' : 'tag-b', name, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: 'epoch', nextCursor: null });
+    vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => ids.map(id => ({ id, name: id === 'tag-a' ? 'alpha' : 'beta' })));
+    const entries = [goal, other, empty,
+      summary('child', 'task', goal.id, 'todo', { tags: [{ id: 'tag-a', name: 'alpha' }], dependsOn: ['sibling'] }),
+      summary('sibling', 'task', goal.id, 'todo', { tags: [{ id: 'tag-b', name: 'beta' }] }),
+      summary('outside', 'task', other.id, 'todo', { tags: [{ id: 'tag-a', name: 'alpha' }] }),
+      summary('standalone', 'task', goal.id, 'todo', { tags: [{ id: 'tag-b', name: 'beta' }] }),
+      summary('untagged', 'task', goal.id, 'todo')];
+    const value = snapshot(entries);
+    const openGraph = vi.fn();
+    createLocaleRender('en', { taskCache: true })(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+      <GoalList projectId={projectId} index={value.index} summaries={value.summaries} goals={[goal, other]} total={2} workerMachines={value.workerMachines} onOpenGoal={noop} onOpenGoalGraph={openGraph} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+    </TaskExecutionClockProvider></TaskPauseProvider>);
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    fireEvent.click(within(card).getByText('Child task tag filter', { selector: 'summary' }));
+    await waitFor(() => expect(within(card).getByRole('checkbox', { name: 'alpha' })).toBeInTheDocument());
+    fireEvent.click(within(card).getByRole('checkbox', { name: 'alpha' }));
+    const titles = () => [...card.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent);
+    expect(titles()).toEqual(['child']);
+    expect(card.querySelector('.root-toggle')).toBeNull();
+    expect(card.querySelector('.goal-list-toggle')).toHaveAccessibleDescription(/4 tasks/);
+    expect(value.index.nodes.size).toBe(5);
+    const graphButton = within(card).getByRole('button', { name: 'goal, View Goal dependency graph' });
+    fireEvent.click(graphButton);
+    expect(openGraph).toHaveBeenCalledWith(goal.id, graphButton);
+    fireEvent.click(within(card).getByRole('checkbox', { name: 'beta' }));
+    expect(titles()).toEqual([]);
+    expect(within(card).getByText('No tasks match the filters')).toBeVisible();
+    fireEvent.change(within(card).getByRole('combobox', { name: 'Child task tag filter: AND / OR' }), { target: { value: 'any' } });
+    expect(titles()).toEqual(['child', 'sibling', 'standalone']);
+    fireEvent.click(within(card).getByRole('checkbox', { name: 'No tags' }));
+    expect(titles()).toEqual(['untagged']);
+    fireEvent.click(within(card).getByRole('button', { name: 'Remove No tags' }));
+    expect(within(card).getByText('standalone', { selector: '.root-title' })).toBeInTheDocument();
+    expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(within(card).getByRole('checkbox', { name: 'alpha' }));
+    vi.mocked(resolveProjectTags).mockRejectedValue(new ApiError('server', 404, 'tag_not_found'));
+    vi.mocked(listProjectTags).mockResolvedValue({ items: [], catalogEpoch: 'new-epoch', nextCursor: null });
+    fireEvent.focus(window);
+    await waitFor(() => expect(within(card).getByText('A selected tag is unavailable. Remove it to search again.')).toBeVisible());
+    expect(titles()).toEqual([]);
+    expect(within(card).queryByText('No tasks match the filters')).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Remove alpha' })).toBeVisible();
+    expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
+  });
   it('toggles from each part of the header and keeps detail and graph actions separate', () => {
     const openGoal = vi.fn(); const openGraph = vi.fn();
     const assigned = tasks.map(task => task.id === goal.id ? { ...task, assignedTo: '12345678-0000-4000-8000-000000000001' } : task);

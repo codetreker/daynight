@@ -16,6 +16,7 @@ import { ProjectPage } from '../src/features/projects/ProjectPage';
 import * as ProjectOverviewModule from '../src/features/projects/ProjectOverview';
 import * as TaskGraphModule from '../src/features/projects/useTaskGraph';
 import * as TaskAssigneeFilterModule from '../src/features/task-assignment/TaskAssigneeFilter';
+import * as TaskTagsApi from '../src/api/task-tags';
 import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/task-graph/model';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
 import { TestTaskCacheBoundary } from './helpers/taskCache';
@@ -318,6 +319,62 @@ describe('project task views', () => {
       if (scroll === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
       else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
     }
+  });
+  it.each([false, true])('opens an excluded external relation without clearing tags (invalid: %s)', async (invalid) => {
+    const goal = canonicalTask(500), child = canonicalTask(1), outside = canonicalTask(2), tagId = canonicalTask(800);
+    const tag = { id: tagId, name: 'backend', projectId: project, version: 1n, createdAt: timestamp, updatedAt: timestamp, usage: { tasks: 1, goals: 1 } };
+    vi.spyOn(TaskTagsApi, 'listProjectTags').mockResolvedValue({ items: [tag], catalogEpoch: canonicalTask(801), nextCursor: null });
+    vi.spyOn(TaskTagsApi, 'resolveProjectTags').mockImplementation(async () => {
+      if (invalid) throw new ApiError('server', 404, 'tag_not_found');
+      return [{ id: tagId, name: 'backend' }];
+    });
+    const tasks = [{ ...seed(goal), type: 'goal' as const }, { ...seed(child), parentId: goal }, seed(outside, 'todo', [child])];
+    const source = snapshot(tasks);
+    graphRequest.mockResolvedValue(source);
+    vi.mocked(getTaskSync).mockImplementation(async (id, query) => {
+      servedGraphs.set(id, source);
+      const sync = syncFixture.toSync(source, query);
+      for (const task of sync.tasks) servedVersions.set(`${id}/${task.id}`, task.version);
+      return taskSyncReadFixture({ ...sync, tasks: sync.tasks.map(task => ({ ...task, tags: task.id === goal || task.id === child ? [{ id: tagId, name: 'backend' }] : [] })) });
+    });
+    vi.mocked(getTask).mockImplementation(async (id, taskId) => {
+      const task = source.tasks.find(item => item.id === taskId)!;
+      return { ...task, tags: taskId === goal || taskId === child ? [{ id: tagId, name: 'backend' }] : [], projectId: id,
+        title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${id}/${taskId}`)! };
+    });
+    mount(); await findTab('chains');
+    fireEvent.click(screen.getByText('标签筛选', { selector: 'summary' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'backend' }));
+    if (invalid) await screen.findByText('选中的标签已不可用，请移除后重新查询。');
+    const originalList = document.getElementById('project-chain-list');
+    fireEvent.click(sectionTab('overview'));
+    const overviewTrigger = overviewProgress().getByRole('button', { name: new RegExp(`${child}，`) });
+    overviewTrigger.focus(); fireEvent.click(overviewTrigger);
+    const childDialog = await screen.findByRole('dialog', { name: `任务 ${child}` });
+    const relation = await within(childDialog).findByRole('button', { name: new RegExp(`任务 ${outside}，`) });
+    let dirty = true;
+    const navigation = browserNavigation();
+    const unregister = navigation.register({ scope: { identity: {}, projectId: project, taskId: child }, isDirty: () => dirty, discard: () => { dirty = false; }, survives: () => false });
+    try {
+      fireEvent.click(relation);
+      expect(navigation.decision()).not.toBeNull();
+      expect(screen.queryByRole('dialog', { name: `任务 ${outside}` })).toBeNull();
+      act(() => navigation.confirm());
+      const target = await screen.findByRole('dialog', { name: `任务 ${outside}` });
+      expect(dirty).toBe(false);
+      expect(readProjectHistory(navigation.snapshot().view, TEST_VIEWER_ID, project)?.detail?.id).toBe(outside);
+      act(() => window.history.back());
+      await screen.findByRole('dialog', { name: `任务 ${child}` });
+      expect(target.isConnected).toBe(false);
+      act(() => window.history.forward());
+      await screen.findByRole('dialog', { name: `任务 ${outside}` });
+      fireEvent.click(screen.getByRole('button', { name: '关闭任务详情' }));
+      await waitFor(() => expect(overviewTrigger).toHaveFocus());
+      selectTasks();
+      expect(document.getElementById('project-chain-list')).toBe(originalList);
+      expect(screen.getByRole('button', { name: '移除 backend' })).toBeVisible();
+      if (invalid) expect(screen.getByText('选中的标签已不可用，请移除后重新查询。')).toBeVisible();
+    } finally { unregister(); vi.restoreAllMocks(); }
   });
   it('shows completed children of an unfinished Goal', async () => {
     graphRequest.mockResolvedValue(snapshot([

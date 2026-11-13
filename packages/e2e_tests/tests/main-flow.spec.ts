@@ -107,6 +107,7 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
 
   await page.goto(`${topology.baseURL}/projects/${projectId}`);
   await page.getByRole("tab", { name: "Task list" }).click();
+  await page.getByRole("tab", { name: "Task chains" }).click();
   const input = page.getByRole("textbox", { name: "Search task IDs, titles and descriptions" });
   await input.fill(task.id);
   const searchResponse = page.waitForResponse(response => response.url().endsWith(`/api/v1/projects/${projectId}/tasks/search`) && response.request().method() === "POST");

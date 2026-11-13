@@ -154,21 +154,20 @@ describe('project assignee filtering', () => {
     await filter('所有负责人'); expectCounts(4, 5, 4);
   });
 
-  it('persists each selection made through the control and restores it on reopening', async () => {
+  it.each([
+    ['分配给我', { kind: 'me' }], ['未分配', { kind: 'unassigned' }],
+    ['Former person', { kind: 'user', userId: formerUser }], ['所有负责人', { kind: 'all' }],
+  ] as const)('persists %s through the control and restores it on reopening', async (label, saved) => {
     install([task(1, TEST_VIEWER_ID), task(2, null), task(3, formerUser)]);
     const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
-    for (const [label, saved] of [
-      ['分配给我', { kind: 'me' }], ['未分配', { kind: 'unassigned' }],
-      ['Former person', { kind: 'user', userId: formerUser }], ['所有负责人', { kind: 'all' }],
-    ] as const) {
-      const view = await mount();
-      await filter(label === 'Former person' ? /^Former person/ : label);
-      expect(JSON.parse(localStorage.getItem(preference)!)).toEqual(saved);
-      view.unmount();
-      const reopened = await mount();
-      await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
-      reopened.unmount();
-    }
+    localStorage.setItem(preference, JSON.stringify(label === '所有负责人' ? { kind: 'unassigned' } : { kind: 'all' }));
+    const view = await mount();
+    await filter(label === 'Former person' ? /^Former person/ : label);
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual(saved);
+    view.unmount(); view.container.remove();
+    const reopened = await mount();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
+    reopened.unmount(); reopened.container.remove();
   });
 
   it('shows localized write failure while keeping the current list usable, and clears it after saving', async () => {

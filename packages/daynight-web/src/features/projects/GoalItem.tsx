@@ -10,6 +10,7 @@ import { useSessionChainVisibility } from '../task-session-summary/TaskSessionSu
 import { compareTaskMembers } from './task-order';
 import { ActiveWorkerIndicator } from '../task-graph/ActiveWorkerIndicator';
 import { TaskTagList } from '../task-tags/TaskTagList';
+import { TagFilter, useTagFilter, matchesTagFilter } from '../task-tags/TagFilter';
 import { completedAtFor } from '../task-completion/model';
 import { useCompletionTime } from '../task-completion/useCompletionTime';
 import { useCompletionHint } from '../task-completion/useCompletionHint';
@@ -27,7 +28,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, on
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => {
-  const { messages: { workspace: { goals: m }, graph, common } } = useI18n();
+  const { messages: { workspace: { goals: m }, graph, common, assignment } } = useI18n();
   const completion = useCompletionTime(completedAtFor(goal));
   const hint = useCompletionHint(completion);
   const scope = useMemo(() => projectTaskScope(index, goal.id), [index, goal.id]);
@@ -36,6 +37,10 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, on
   const tasks = useMemo(() => scope.taskIds.map((id) => index.nodes.get(id)!).toSorted(compareTaskMembers), [scope, index]);
   const visibilityRef = useSessionChainVisibility(`goal-members-${goal.id}`, scope.taskIds);
   const [expanded, setExpanded] = useState(false);
+  const filter = useTagFilter(projectId, expanded);
+  const visibleTasks = useMemo(() => tasks.filter((task) => !filter.invalid && (summaries?.has(task.id)
+      ? matchesTagFilter(summaries.get(task.id)!.tags, filter.value)
+      : filter.value.tagIds.length === 0 && !filter.value.untagged)), [tasks, summaries, filter.value, filter.invalid]);
   const content = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const title = `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}`;
@@ -59,8 +64,10 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, on
       <button className="goal-list-graph" type="button" id={`project-goal-graph-${goal.id}`} aria-haspopup="dialog" aria-label={graph.goalGraphLabel({ title })} title={graph.goalGraph} onClick={(event) => onOpenGoalGraph(goal.id, event.currentTarget)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.4" /><rect x="15" y="15" width="6" height="6" rx="1.4" /><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v5a4 4 0 0 0 4 4h5" /></svg></button>
     </div>
     <div id={childrenId} ref={content} hidden={!expanded} className="goal-list-contents">{expanded && <>
+      <TagFilter controller={filter} child />
       {count === 0 && <p className="goal-list-empty">{m.emptyTasks}</p>}
-      {count > 0 && <ul className="goal-task-list" ref={visibilityRef}>{tasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} {...(summaries?.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={`goal-${goal.id}`} workerMachine={workerMachines.get(task.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+      {count > 0 && !filter.invalid && visibleTasks.length === 0 && <p className="goal-list-empty">{assignment.noMatches}</p>}
+      {visibleTasks.length > 0 && <ul className="goal-task-list" ref={visibilityRef}>{visibleTasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} {...(summaries?.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={`goal-${goal.id}`} workerMachine={workerMachines.get(task.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     </>}</div>
   </li>;
 };

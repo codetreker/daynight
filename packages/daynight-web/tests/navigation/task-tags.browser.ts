@@ -17,11 +17,11 @@ const chained = detailFixture(projectId, id(14), { title: 'Chain child', parentI
 const time = '2026-10-22T10:00:00Z';
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, writes: [] as string[], observedAt: time };
+  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], observedAt: time };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/resolve')) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const graph = () => ({ ...graphFixture(state.tasks), observedAt: state.observedAt });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
@@ -33,6 +33,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Reader', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     const catalogPath = `/api/v1/projects/${projectId}/tags`;
     if (path === catalogPath && request.method() === 'GET') {
+      if (state.holdCatalog) { state.holdCatalog = false; state.heldCatalog = true; await new Promise<void>(resolve => { state.releaseCatalog = resolve; }); state.heldCatalog = false; }
       const query = url.searchParams.get('query')?.toLowerCase() ?? '';
       return send({ items: state.tags.filter(tag => tag.name.toLowerCase().includes(query)).map(tag => ({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: id(999), nextCursor: null });
     }
@@ -256,6 +257,50 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
   await expect(childRow).toHaveAccessibleName(new RegExp(longName));
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   expect(state.writes).toEqual([]);
+});
+
+
+for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale);
+  const childLongName = `${longName}X`;
+  state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, tags: [{ id: id(93), name: childLongName }] } : item);
+  state.tags = state.tags.map(tag => tag.id === id(93) ? { ...tag, name: childLongName } : tag);
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-goals').click();
+  const main = page.locator('.task-search-workspace > .tag-filter-wrap > .tag-filter');
+  const mainTrigger = main.locator('summary');
+  await mainTrigger.focus(); await page.keyboard.press('Enter');
+  await expect(main).toHaveAttribute('open', '');
+  const mainBounds = await main.locator('.tag-filter-panel').boundingBox();
+  expect(mainBounds).not.toBeNull(); expect(mainBounds!.x).toBeGreaterThanOrEqual(0); expect(mainBounds!.x + mainBounds!.width).toBeLessThanOrEqual(width + 1);
+  await page.keyboard.press('Escape'); await expect(mainTrigger).toBeFocused();
+  const card = page.locator(`[data-goal-id="${goal.id}"]`);
+  await card.locator('.goal-list-toggle').click();
+  const filter = card.locator('.tag-filter'), trigger = filter.locator('summary');
+  await trigger.focus(); await page.keyboard.press('Enter');
+  await expect(filter).toHaveAttribute('open', '');
+  const search = filter.locator('input[type="search"]');
+  await search.focus(); await search.fill('Unbroken');
+  await expect(filter.getByText(childLongName, { exact: true })).toBeVisible();
+  const option = filter.getByLabel(childLongName); await option.check();
+  await search.focus(); await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 4));
+  const bounds = await filter.locator('.tag-filter-panel').boundingBox();
+  expect(bounds).not.toBeNull(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  state.holdCatalog = true;
+  try {
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(() => state.heldCatalog).toBe(true);
+    await expect(filter).toHaveAttribute('open', ''); await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
+    expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
+    await expect(option).toBeChecked();
+    await expect(card.locator(`#chain-task-goal-${goal.id}-${child.id}`)).toBeVisible();
+    state.releaseCatalog();
+    await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
+    await page.keyboard.press('Escape'); await expect(trigger).toBeFocused(); await expect(filter).not.toHaveAttribute('open', '');
+  } finally { state.releaseCatalog(); }
 });
 
 for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`edit Task and Goal tags with keyboard and retain independently created tags at ${width}px in ${locale}`, async ({ page }) => {
