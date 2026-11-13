@@ -22,7 +22,8 @@ to remain accessible.
 ProjectPage owns the graph reading state. History retains the resource UUID as
 `projectGraphWitness`; `resolveProjectGraphTarget` resolves an actual Task witness
 through the complete `componentByTask` index and requires a multi-member ordinary
-component. The resulting chain target contains the witness and current root;
+component. It also admits a typed Goal as the resource for the separate
+[Goal overview graph](../feature/2026-11-13-goal-overview-graph.md). The resulting chain target contains the witness and current root;
 the graph host consumes that target while the chain root drives list highlighting.
 Task list / Task chains or Goal must be active. Filtered and off-page components
 remain valid graph resources. An unavailable snapshot retains the witness; an
@@ -62,7 +63,7 @@ coordinates both restorations after overlay cleanup; the origin is neither
 history nor cache data. A history entry without a runtime opener uses visible
 fallbacks without changing list filters or pagination.
 
-`ProjectListGraphHost` composes the existing chain dialog within the active
+`ProjectListGraphHost` composes the chain or Goal dialog within the active
 category and receives the resolved target, complete index and summaries,
 callbacks and focus restoration. It keeps the existing overlay, scroll lock,
 direction and fullscreen lifecycle while reporting the actual graph DOM to the

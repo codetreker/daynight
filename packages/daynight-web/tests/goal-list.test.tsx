@@ -22,11 +22,28 @@ const other = summary('other', 'goal', null, 'done');
 const empty = summary('empty', 'goal', null, 'todo');
 const tasks = [goal, other, empty, summary('root', 'task', other.id, 'done'), summary('child', 'task', goal.id, 'in_progress', { dependsOn: ['root'], startedAt: '2026-10-20T11:50:00Z' }), summary('standalone', 'task', goal.id, 'cancelled'), summary('solo-other', 'task', other.id, 'todo')];
 const noop = () => {};
-const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn(), onOpenListChain = vi.fn()) => <TaskPauseProvider taskIds={new Set(['child'])}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
-  <GoalList projectId={projectId} index={value.index} goals={[value.summaries.get(goal.id)!, value.summaries.get(other.id)!, value.summaries.get(empty.id)!]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn(), onOpenListChain = vi.fn(), onOpenGoalGraph = vi.fn()) => <TaskPauseProvider taskIds={new Set(['child'])}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+  <GoalList projectId={projectId} index={value.index} goals={[value.summaries.get(goal.id)!, value.summaries.get(other.id)!, value.summaries.get(empty.id)!]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenGoalGraphTask={noop} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it('opens the overall graph independently of the title and disclosure, including an empty Goal', () => {
+    const openGoal = vi.fn(); const openGraph = vi.fn();
+    createLocaleRender('en', { taskCache: true })(list(snapshot(tasks), openGoal, vi.fn(), vi.fn(), openGraph));
+    for (const id of ['goal', 'empty']) {
+      const card = document.querySelector<HTMLElement>(`[data-goal-id="${id}"]`)!;
+      const button = within(card).getByRole('button', { name: `${id}, View Goal dependency graph` });
+      fireEvent.click(button);
+      expect(openGraph).toHaveBeenLastCalledWith(id, button);
+      expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(card.querySelector('.goal-list-toggle')!);
+      fireEvent.click(button);
+      expect(openGraph).toHaveBeenLastCalledWith(id, button);
+      expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
+    }
+    expect(openGoal).not.toHaveBeenCalled();
+  });
+
   it('updates the Goal surface from its own status without changing child progress', () => {
     const render = createLocaleRender('en', { taskCache: true });
     const view = render(list(snapshot(tasks)));
