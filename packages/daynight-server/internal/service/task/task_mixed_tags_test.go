@@ -101,3 +101,72 @@ func TestMixedTaskUpdateCoordinatesTags(t *testing.T) {
 		})
 	}
 }
+
+func TestPartitionedDependencyAndTagUpdateSharesWriteScope(t *testing.T) {
+	const tagID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const dependencyID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	for _, mode := range []string{"commit", "invalid tag", "stale version", "unknown commit"} {
+		t.Run(mode, func(t *testing.T) {
+			_, current, _ := taskMockModels()
+			current.Type, current.AssignedTo = model.TaskTypeTask, nil
+			f := newTagServiceFixture(t, current)
+			f.ids = []string{tagID}
+			f.resolved = []model.Tag{{ID: tagID, Name: "label"}}
+			f.after.Tags = []model.TagReference{{ID: tagID, Name: "label"}}
+			f.after.DependsOn = []string{dependencyID}
+			f.after.BlockedBy = []string{dependencyID}
+			f.after.Ready = false
+			f.writer.TaskFn = func(ctx context.Context, id string) (model.Task, error) {
+				f.events = append(f.events, "task")
+				if ctx != f.ctx || id != current.ID {
+					t.Fatal("task read context or ID changed")
+				}
+				return current, nil
+			}
+			f.dependencies(f.ctx, []string{dependencyID}, []model.Task{ruleTask(dependencyID, "Prerequisite")})
+			f.noCycles(f.ctx, current.ID, []string{dependencyID})
+			f.writer.UpdateTaskFn = func(ctx context.Context, id string, values store.TaskWrite) (model.Task, error) {
+				f.events = append(f.events, "update")
+				if ctx != f.ctx || id != current.ID || !slices.Equal(values.DependsOn, []string{dependencyID}) || len(values.ExternalDependsOn) != 0 {
+					t.Fatalf("partitioned dependency write changed: %#v", values)
+				}
+				return f.after, nil
+			}
+			f.freeze(f.ctx, current.ID)
+			input := taskcore.UpdateTask{Version: current.Version, TagIDs: &[]string{tagID}}
+			sentinel := errors.New("commit outcome unknown")
+			switch mode {
+			case "invalid tag":
+				f.resolved = nil
+			case "stale version":
+				input.Version++
+			case "unknown commit":
+				f.outcome = store.TransactionUnknown
+				f.completionErr = &store.TransactionError{Phase: "commit", Cause: sentinel, Outcome: store.TransactionUnknown, CommitAttempted: true}
+			}
+			got, err := f.tasks.UpdatePartitionedDependencies(f.ctx, f.principal, f.project.ID, current.ID, input, &[]string{dependencyID}, nil)
+			switch mode {
+			case "commit":
+				if err != nil || !reflect.DeepEqual(got, f.after) {
+					t.Fatalf("result: %#v %v", got, err)
+				}
+				assertTagEvents(t, f.events, "authorize", "task", "task", "resolve", "replace", "update")
+			case "invalid tag":
+				assertTagFault(t, err, "tag_not_found")
+				if f.callbackErr == nil {
+					t.Fatal("tag refusal did not abort the shared transaction")
+				}
+				assertTagEvents(t, f.events, "authorize", "task", "task", "resolve")
+			case "stale version":
+				assertTagFault(t, err, "version_conflict")
+				assertTagEvents(t, f.events, "authorize", "task")
+			case "unknown commit":
+				var failure *store.TransactionError
+				if !errors.Is(err, sentinel) || !errors.As(err, &failure) || failure.Outcome != store.TransactionUnknown || !reflect.DeepEqual(got, model.Task{}) {
+					t.Fatalf("unknown completion lost: %#v %v", got, err)
+				}
+				assertTagEvents(t, f.events, "authorize", "task", "task", "resolve", "replace", "update")
+			}
+		})
+	}
+}

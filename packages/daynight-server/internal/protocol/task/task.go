@@ -160,6 +160,7 @@ func EncodeREST(w io.Writer, t model.Task, extended bool, max int64) (int64, err
 
 type MCPFull struct {
 	Progress          *model.GoalProgress        `json:"progress,omitempty"`
+	Tags              []RESTTagReference         `json:"tags"`
 	Projection        string                     `json:"projection"`
 	ID                string                     `json:"id"`
 	ProjectID         string                     `json:"projectId"`
@@ -188,6 +189,7 @@ type MCPFull struct {
 func MCPTask(t model.Task) MCPFull { return mcpTask(t, true) }
 
 type MCPSummary struct {
+	Tags             []RESTTagReference  `json:"tags"`
 	Projection       string              `json:"projection"`
 	ID               string              `json:"id"`
 	ProjectID        string              `json:"projectId"`
@@ -216,11 +218,11 @@ func MCPTaskSummary(t model.Task) MCPSummary {
 		}
 		title = title[:end]
 	}
-	return MCPSummary{Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, TitlePreview: title, TitleTruncated: truncated, Status: t.Status, Version: strconv.FormatInt(t.Version, 10), Ready: t.Ready, BlockedByCount: len(t.BlockedBy), RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
+	return MCPSummary{Tags: RESTTags(t.Tags), Projection: "summary", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, TitlePreview: title, TitleTruncated: truncated, Status: t.Status, Version: strconv.FormatInt(t.Version, 10), Ready: t.Ready, BlockedByCount: len(t.BlockedBy), RequiredPlatform: t.RequiredPlatform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents}
 }
 func mcpTask(t model.Task, copyValues bool) MCPFull {
 	properties := properties(t.Properties, copyValues)
-	return MCPFull{Progress: t.Progress, Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties,
+	return MCPFull{Progress: t.Progress, Tags: RESTTags(t.Tags), Projection: "full", ID: t.ID, ProjectID: t.ProjectID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, Description: t.Description, Properties: properties,
 		Status: t.Status, Version: strconv.FormatInt(t.Version, 10), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt), DependsOn: array(t.DependsOn, copyValues),
 		ExternalDependsOn: array(t.ExternalDependsOn, copyValues), BlockedBy: array(t.BlockedBy, copyValues),
