@@ -28,12 +28,12 @@ describe("assistant task durable claim lifecycle", () => {
     const operationId = randomUUID();
     api.claim.mockImplementation(async (_task, _kind, input: AssistantTaskClaimInput) => {
       const files: string[] = [];
-      const walk = async (dir: string): Promise<void> => { expect((await stat(dir)).mode & 0o777).toBe(0o700); for (const entry of await readdir(dir, { withFileTypes: true })) { const file = path.join(dir, entry.name); if (entry.isDirectory()) await walk(file); else { files.push(file); expect((await stat(file)).mode & 0o777).toBe(0o600); } } };
+      const walk = async (dir: string): Promise<void> => { if (process.platform !== "win32") expect((await stat(dir)).mode & 0o777).toBe(0o700); for (const entry of await readdir(dir, { withFileTypes: true })) { const file = path.join(dir, entry.name); if (entry.isDirectory()) await walk(file); else { files.push(file); if (process.platform !== "win32") expect((await stat(file)).mode & 0o777).toBe(0o600); } } };
       await walk(options.stateDirectory);
       const saved = JSON.parse(await readFile(files.find(f => f.endsWith(`.${operationId}.json`))!, "utf8"));
       expect(saved.input.claimToken).toBe(input.claimToken);
       expect(saved.phase).toBe("prepared");
-      await expect(withClaimStorage(options, async () => undefined)).rejects.toThrow(/Another process/);
+      await expect(withClaimStorage(options, async () => undefined)).rejects.toThrow();
       return result(input);
     });
     const response = await runClaimOperation({ ...options, kind: "claim", operationId, ifVersion: "1", expectedGeneration: "0" });

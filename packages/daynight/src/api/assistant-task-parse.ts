@@ -55,8 +55,10 @@ export const parseAssistantTaskClaim = (value: unknown): T.AssistantTaskClaim =>
 };
 export const parseAssistantTask = (value: unknown, expectedId?: string, ownerId?: string): T.AssistantTask => {
   const d = fields(value, ["id", "ownerUserId", "application", "name", "purpose", "scope", "kind", "state", "takeover", "trigger", "version", "manualVersion", "createdAt", "updatedAt", ...claimFields]);
-  const result = { id: assistantTaskId(d.id), ownerUserId: assistantTaskId(d.ownerUserId), application: text(d.application), name: text(d.name, true), purpose: text(d.purpose), scope: text(d.scope), kind: choice(d.kind, ["continuous", "once"] as const), state: choice(d.state, ["active", "paused", "deleted"] as const), takeover: choice(d.takeover, ["manual", "auto"] as const), trigger: json(d.trigger), version: assistantTaskInteger(d.version), manualVersion: assistantTaskInteger(d.manualVersion), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt), ...parseAssistantTaskClaim(Object.fromEntries(claimFields.map(k => [k, d[k]]))) };
+  const state = choice(d.state, ["active", "paused", "deleted"] as const);
+  const result = { id: assistantTaskId(d.id), ownerUserId: assistantTaskId(d.ownerUserId), application: text(d.application), name: text(d.name, state !== "deleted"), purpose: text(d.purpose), scope: text(d.scope), kind: choice(d.kind, ["continuous", "once"] as const), state, takeover: choice(d.takeover, ["manual", "auto"] as const), trigger: json(d.trigger), version: assistantTaskInteger(d.version), manualVersion: assistantTaskInteger(d.manualVersion, state === "deleted"), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt), ...parseAssistantTaskClaim(Object.fromEntries(claimFields.map(k => [k, d[k]]))) };
   if (expectedId !== undefined && result.id !== expectedId || ownerId !== undefined && result.ownerUserId !== ownerId) return malformed();
+  if (state === "deleted" && (result.name !== "" || result.purpose !== "" || result.scope !== "" || result.trigger !== null || result.manualVersion !== "0" || result.claimState !== "unowned")) return malformed();
   return result;
 };
 export const parseAssistantTaskClaimResult = (value: unknown, taskId: string, operationId: string, expected: T.AssistantTaskClaimExpectation = {}): T.AssistantTaskClaimResult => {
@@ -78,7 +80,10 @@ export const parseAssistantTaskManual = (value: unknown, taskId: string, version
 };
 export const parseAssistantTaskAppendix = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskAppendix => {
   const d = fields(value, ["id", "taskId", "text", "sourceRecords", "authorBotId", "state", "version", "createdAt", "updatedAt"]);
-  return { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, true), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state: choice(d.state, ["active", "edited", "deleted"]), version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
+  const state = choice(d.state, ["active", "edited", "deleted"] as const);
+  const result = { id: assistantTaskId(d.id), taskId: checkScope(d, taskId, expectedId), text: text(d.text, state !== "deleted"), sourceRecords: array(d.sourceRecords, assistantTaskId), authorBotId: nullableId(d.authorBotId), state, version: assistantTaskInteger(d.version), createdAt: timestamp(d.createdAt), updatedAt: timestamp(d.updatedAt) };
+  if (state === "deleted" && (result.text !== "" || result.sourceRecords.length !== 0)) return malformed();
+  return result;
 };
 export const parseAssistantTaskProposal = (value: unknown, taskId: string, expectedId?: string): T.AssistantTaskProposal => {
   const d = fields(value, ["id", "taskId", "baseVersion", "body", "rules", "reason", "evidenceRecords", "authorBotId", "widens", "status", "decisionNote", "createdAt", "decidedAt"]);

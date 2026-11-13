@@ -62,6 +62,27 @@ describe("assistant task response contracts", () => {
 });
 
 describe("assistant task HTTP client", () => {
+  it("confirms deleted task tombstones and preserves the later 410 refusal", async () => {
+    const deleted = { ...task, state: "deleted", name: "", purpose: "", scope: "", manualVersion: "0", claimGeneration: "2" };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(deleted)).mockResolvedValueOnce(response({ error: { code: "task_deleted", message: "Deleted", requestId: operationId } }, 410));
+    const client = setup(fetch);
+    expect(await client.deleteTask(taskId, "7")).toEqual(deleted);
+    await expect(client.getTask(taskId)).rejects.toMatchObject({ status: 410, code: "task_deleted", outcomeUnconfirmed: false });
+    expect(fetch.mock.calls.map(call => call[1]?.method)).toEqual(["DELETE", "GET"]);
+    expect(() => parseAssistantTask({ ...deleted, state: "active" })).toThrow(ProtocolError);
+    expect(() => parseAssistantTask({ ...deleted, name: "Retained content" })).toThrow(ProtocolError);
+    expect(() => parseAssistantTask({ ...deleted, manualVersion: "1" })).toThrow(ProtocolError);
+  });
+  it("confirms deleted appendix tombstones and reads them in a page", async () => {
+    const deleted = { ...appendix, state: "deleted", text: "", sourceRecords: [] };
+    const page = { items: [deleted], nextCursor: null, observedAt: now };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(response(deleted)).mockResolvedValueOnce(response(page));
+    const client = setup(fetch);
+    expect(await client.deleteAppendix(taskId, operationId, "7")).toEqual(deleted);
+    expect(await client.listAppendix(taskId)).toEqual(page);
+    expect(() => parseAssistantTaskAppendix({ ...deleted, state: "active" }, taskId)).toThrow(ProtocolError);
+    expect(() => parseAssistantTaskAppendix({ ...deleted, sourceRecords: [other] }, taskId)).toThrow(ProtocolError);
+  });
   it("sends explicit Bot identity, exact versions and a secret only in the claim body", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
     const client = setup(fetch);
@@ -137,7 +158,7 @@ describe("assistant task resource routing", () => {
   const cases: { name: string; invoke: (api: Client) => Promise<unknown>; path: string; method: string; value: unknown; body?: unknown }[] = [
     { name: "create", invoke: a => a.createTask(create), path: "/assistant-tasks", method: "POST", body: create, value: task },
     { name: "update", invoke: a => a.updateTask(taskId, { ifVersion: "9007199254740993", state: "paused" }), path: `/assistant-tasks/${taskId}`, method: "PATCH", body: { ifVersion: "9007199254740993", state: "paused" }, value: { ...task, state: "paused" } },
-    { name: "delete", invoke: a => a.deleteTask(taskId, "8"), path: `/assistant-tasks/${taskId}`, method: "DELETE", body: { ifVersion: "8" }, value: { ...task, state: "deleted" } },
+    { name: "delete", invoke: a => a.deleteTask(taskId, "8"), path: `/assistant-tasks/${taskId}`, method: "DELETE", body: { ifVersion: "8" }, value: { ...task, state: "deleted", name: "", purpose: "", scope: "", manualVersion: "0", claimGeneration: "2" } },
     { name: "manual", invoke: a => a.getManual(taskId, "1"), path: `/assistant-tasks/${taskId}/manual/versions/1`, method: "GET", value: manual },
     { name: "rollback", invoke: a => a.rollback(taskId, { ifVersion: "8", manualVersion: "1" }), path: `/assistant-tasks/${taskId}/manual/rollback`, method: "POST", body: { ifVersion: "8", manualVersion: "1" }, value: manual },
     { name: "appendix", invoke: a => a.addAppendix(taskId, { ...credential, id: operationId, text: "Experience", sourceRecords: [] }), path: `/assistant-tasks/${taskId}/appendix`, method: "POST", body: { ...credential, id: operationId, text: "Experience", sourceRecords: [] }, value: appendix },
