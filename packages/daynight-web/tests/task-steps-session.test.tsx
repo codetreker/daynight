@@ -739,9 +739,32 @@ it("refreshes the independent Steps resource after an ordinary Task write", asyn
   });
   vi.stubGlobal("fetch", fetcher); session.load(projectId, taskId, 1, "open"); start(session); await waitFor(() => expect(session.canSetStepStatus(projectId, taskId)).toBe(true));
   session.setAgentPermission(projectId, taskId, true, 5n); await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("confirmed"));
-  await apply(scope, next); session.observe(projectId, taskId, node(scope));
-  await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: { version: 6n }, stale: false }));
-  expect(session.canSetStepStatus(projectId, taskId)).toBe(true);
+  const entered = deferred<void>(); const release = deferred<void>();
+  const transaction = scope.detailTransaction.bind(scope); let intercepted = false;
+  vi.spyOn(scope, "detailTransaction").mockImplementation(async (...args) => {
+    const result = await transaction(...args);
+    // Hold parent admission after its real IndexedDB transaction completes.
+    if (result !== null && typeof result === "object" && "kind" in result && result.kind === "matching" && !intercepted) {
+      intercepted = true; entered.resolve(); await release.promise;
+    }
+    return result;
+  });
+  try {
+    await apply(scope, next); session.observe(projectId, taskId, node(scope));
+    await entered.promise;
+    await waitFor(() => expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: resource(6n), status: "ready", stale: false, refreshing: false, error: null }));
+    expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: next, requiresFreshRead: true });
+    expect(session.canSetStepStatus(projectId, taskId)).toBe(false);
+    session.setStepStatus(projectId, taskId, item.id, "done", 6n);
+    expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(0);
+  } finally { release.resolve(); }
+  await waitFor(() => {
+    expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: next, requiresFreshRead: false });
+    expect(session.stepsSnapshot(projectId, taskId)).toMatchObject({ resource: resource(6n), status: "ready", stale: false, refreshing: false, error: null });
+    expect(session.canSetStepStatus(projectId, taskId)).toBe(true);
+  });
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PATCH")).toHaveLength(1);
+  expect(fetcher.mock.calls.filter(([, options]) => options.method === "PUT")).toHaveLength(0);
 });
 
 it("lazily reads a separate complete resource and never persists it in the detail cache", async () => {
