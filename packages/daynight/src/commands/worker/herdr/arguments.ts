@@ -1,8 +1,9 @@
 import path from "node:path";
 import type { WorkerAgent } from "../../../api/types.js";
 import { canonicalId } from "../../../api/parse.js";
+import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 
-export type HerdrAgentConfiguration = { agent: WorkerAgent; model: string | null; args: readonly string[]; validateNativeSelection?: true };
+export type HerdrAgentConfiguration = { agent: WorkerAgent; model: string | null; args: readonly string[]; validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch };
 
 export const nativeAgentPermissionArguments = (agent: WorkerAgent): string[] => agent === "codex"
   ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"]
@@ -99,7 +100,8 @@ export const buildHerdrAgentArguments = (configuration: HerdrAgentConfiguration,
   if (sessionId === undefined && configuration.model !== null) args.push("--model", configuration.model);
   // Native resume owns settings changed inside the original conversation.
   const configured = sessionId === undefined ? configuration.args : omitNativeModelAndEffortArguments(configuration.agent, configuration.args);
-  return [...args, ...configured, ...nativeAgentPermissionArguments(configuration.agent), ...(configuration.agent === "codex" ? ["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments(cwd)] : [])];
+  const updates = configuration.agent === "copilot" && configuration.toolLaunch !== undefined && !configured.includes("--no-auto-update") ? ["--no-auto-update"] : [];
+  return [...args, ...configured, ...updates, ...nativeAgentPermissionArguments(configuration.agent), ...(configuration.agent === "codex" ? ["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments(cwd)] : [])];
 };
 
 export const codexConfigurationArguments = (args: readonly string[]): { arguments: string[]; profile: boolean } => {

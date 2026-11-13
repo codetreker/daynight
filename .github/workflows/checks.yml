@@ -171,6 +171,57 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  verify-herdr-platform:
+    name: verify (real Herdr, ${{ matrix.os }})
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    env:
+      COREPACK_HOME: ${{ github.workspace }}/.tmp/corepack
+      XDG_CACHE_HOME: ${{ github.workspace }}/.tmp/cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          check-latest: true
+          package-manager-cache: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 11.28.6
+          run_install: false
+          dest: ${{ github.workspace }}/.tmp/pnpm
+      - run: pnpm install --frozen-lockfile --store-dir .tmp/pnpm-store
+      - run: pnpm build
+      - name: Download and verify pinned official native assets
+        run: node packages/daynight/scripts/prepare-herdr-platform.mjs
+      - name: Verify the original shell, native terminal and official Session hook
+        id: herdr-platform
+        working-directory: packages/daynight
+        run: node node_modules/vitest/vitest.mjs run test/commands/worker/herdr-tool-platform.integration.test.ts test/commands/worker/herdr-windows-process-metadata-native.test.ts
+      - name: Independently verify owned process and endpoint cleanup
+        if: ${{ always() && steps.herdr-platform.outcome != 'skipped' }}
+        run: node packages/daynight/scripts/check-herdr-platform-cleanup.mjs
+      - name: Upload real Herdr platform evidence
+        if: ${{ always() && steps.herdr-platform.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-herdr-platform-${{ matrix.os }}
+          path: |
+            .tmp/herdr-tools/research-platform/acceptance-*.json
+            .tmp/herdr-tools/research-platform/cleanup.json
+            .tmp/herdr-tools/research-platform/official-tools/receipt.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
   verify-installed:
     name: verify (installed CLI, ${{ matrix.os }})
     needs: detect-changes
@@ -620,7 +671,7 @@ jobs:
 
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-installed, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-e2e]
+    needs: [detect-changes, verify, verify-herdr-platform, verify-installed, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -632,9 +683,10 @@ jobs:
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         env:
           CLI_RESULT: ${{ needs.verify.result }}
+          HERDR_RESULT: ${{ needs.verify-herdr-platform.result }}
           INSTALLED_RESULT: ${{ needs.verify-installed.result }}
           RUNTIME_RESULT: ${{ needs.verify-runtime.result }}
-        run: test "$CLI_RESULT" = success && test "$INSTALLED_RESULT" = success && test "$RUNTIME_RESULT" = success
+        run: test "$CLI_RESULT" = success && test "$HERDR_RESULT" = success && test "$INSTALLED_RESULT" = success && test "$RUNTIME_RESULT" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         with:

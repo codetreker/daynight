@@ -29,19 +29,21 @@ import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const reportSample = { ...workerTelemetry, taskInventory: null };
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null, herdrCandidate: vi.fn() }));
 vi.mock("node:crypto", async original => {
   const actual = await original<typeof import("node:crypto")>();
   return { ...actual, randomUUID: (options?: Parameters<typeof actual.randomUUID>[0]) => mocks.nextUUID === null ? actual.randomUUID(options) : mocks.nextUUID() };
 });
-vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
-  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
-}));
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
+  const { createWorkerToolSelectionFixture } = await import("../../helpers/worker-tool-runtime-fixture.js");
+  return { createWorkerToolSelectionRuntime: (options: Parameters<typeof createWorkerToolSelectionFixture>[0]) => ({ ...createWorkerToolSelectionFixture(options), prepareHerdrCandidate: mocks.herdrCandidate }) };
+});
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
 vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr/shared.js", () => ({ createSharedWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", async original => ({ ...await original<object>(), createWorkerRemote: mocks.remote }));
@@ -130,6 +132,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.nextUUID = null;
   mocks.emit.mockReset();
+  mocks.herdrCandidate.mockReset().mockResolvedValue(false);
   mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
   mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
@@ -153,6 +156,27 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
+  it.each(["herdr", "web"] as const)("refreshes only configured Herdr admission and wakes failed reconciliation (%s)", async mode => {
+    const f = await fixture(), initial = desired([]), target = { ...initial, value: { ...initial.value, agentControlMode: mode, pollIntervalMs: 60_000 } };
+    mocks.remote().configuration.mockResolvedValue(resource(target)); mocks.remote.mockClear();
+    let release!: (changed: boolean) => void, entered!: () => void;
+    const admission = new Promise<boolean>(resolve => { release = resolve; }), firstTick = new Promise<void>(resolve => { entered = resolve; });
+    mocks.herdrCandidate.mockImplementationOnce(() => admission);
+    const tick = vi.fn(async () => { if (tick.mock.calls.length === 1) { entered(); await admission; throw new Error("Original shared daemon has exited."); } });
+    mocks.coordinator.mockReturnValue(coordinator(tick));
+    const { cancellation, running } = start(f);
+    try {
+      await firstTick;
+      if (mode === "herdr") {
+        expect(mocks.herdrCandidate).toHaveBeenCalled(); release(true);
+        await vi.waitFor(() => expect(tick.mock.calls.length).toBeGreaterThan(1), { timeout: 2000, interval: 10 });
+      } else {
+        expect(mocks.herdrCandidate).not.toHaveBeenCalled(); release(false);
+        await vi.waitFor(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error" })), { timeout: 2000, interval: 10 });
+      }
+    } finally { release(false); cancellation.abort(); await running; }
+  });
+
   it("continues retained-project reconciliation with bounded observations and after restart", async () => {
     const f = await fixture(true, false), target = desired([]), ids = [uuid(10_000), uuid(10_001)];
     for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });

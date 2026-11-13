@@ -3,6 +3,7 @@ import { ExecutionSourceConflictError } from "../execution-stop.js";
 import type { CleanupTarget, StopObservation, TerminalCleanupContext } from "../execution-stop.js";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { mkdirSync, lstatSync, readdirSync } from "node:fs";
 import { ApiError } from "../../../api/client.js";
 import { canonicalId } from "../../../api/parse.js";
@@ -15,9 +16,12 @@ import type { SessionV2Message, SessionV2Payloads, SessionV2NativeStopProof, Ter
 import { createWorkerHerdr, HerdrAgentActionError } from "../herdr.js";
 import type { WorkerHerdrAdapter } from "../herdr.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrExecutionOwner, HerdrPromptReceipt, HerdrTaskBinding } from "./agents.js";
-import { openHerdrLifecycleStore, herdrLedgerHash, isHerdrNeverStarted } from "./lifecycle-store.js";
+import { openHerdrLifecycleStore, herdrLedgerHash, isHerdrNeverStarted, parseHerdrExecutionTools } from "./lifecycle-store.js";
 import { connectHerdrSession, publishHerdrLedger } from "./session-connection.js";
-import type { HerdrLifecycleRecord, HerdrLocalRun, HerdrRunPhase } from "./lifecycle-types.js";
+import type { HerdrExecutionTools, HerdrLifecycleRecord, HerdrLocalRun, HerdrRunPhase } from "./lifecycle-types.js";
+import { ToolSelectionError, verifyToolLaunch } from "../../../platform/tool-executables.js";
+import type { ExecutionConfiguration } from "../types.js";
+import type { ActiveToolSelection } from "../tool-selection.js";
 import { createMacProcessControl } from "./native-macos.js";
 import { createHerdrSessionApi } from "./session-api.js";
 import { resolveHerdrInstancePaths } from "./instance.js";
@@ -76,6 +80,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   archiveApi?: HerdrArchiveApi;
   readRecording?: (record: HerdrLifecycleRecord, signal: AbortSignal) => Promise<HerdrRecordingScreen>;
   currentUserId?: (signal: AbortSignal) => Promise<string>;
+  readExecutionConfiguration?: (context: HerdrExecutionContext) => ExecutionConfiguration | null;
 }) : WorkerHerdrAdapter => {
   const selectionOwner = options.selectionVerifier ?? createNativeSelectionVerifier();
   // A newer queued probe invalidates an older cleanup result. The synchronous
@@ -160,10 +165,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     catch (error) { if (error instanceof ClaimAuthorizationError) throw new SessionV2Error("permission_denied"); throw error; }
   };
   const adapter = (record: HerdrLifecycleRecord, directory = current(record).instanceDirectory) => {
-    let value = adapters.get(directory);
+    const source = record.preparation?.instanceDirectory === directory ? record.preparation : record.runs.find(run => run.instanceDirectory === directory);
+    if (!source) throw new Error("The requested Herdr adapter has no original lifecycle owner.");
+    const launches = source.launches, cacheKey = canonicalSessionJson([directory, launches ?? null]);
+    let value = adapters.get(cacheKey);
     if (!value) {
       const owner = identity(record);
       value = createAdapter({ ...options, selectionVerifier, paths: { ...options.paths, herdrDirectory: directory, logsDirectory: path.join(directory, "logs") },
+        ...(launches === undefined ? { herdrLaunch: undefined, toolLaunch: undefined, readExecutionConfiguration: () => null } : { herdrLaunch: launches.herdr,
+          readExecutionConfiguration: () => ({ agent: record.owner.provider, agentControlMode: "herdr", model: null, args: [], recoveryLimit: 0,
+            ...(launches.agent === null ? {} : { toolLaunch: launches.agent, toolObservation: launches.agentObservation! }), herdrLaunch: launches.herdr, herdrObservation: launches.herdrObservation }) }),
         retainOnStartupFailure: true, isolatedRun: true,
         onDaemonSpawn: async pid => {
           const daemon = await native.capture(pid, "daemon");
@@ -173,9 +184,24 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
           });
         },
       });
-      adapters.set(directory, value);
+      adapters.set(cacheKey, value);
     }
     return value;
+  };
+  const frozenTools = async (record: HerdrLifecycleRecord, operation: Operation): Promise<HerdrExecutionTools> => {
+    const previous = record.runs.at(-1);
+    let launches = previous?.launches;
+    if (previous !== undefined && launches === undefined) throw new ToolSelectionError("herdr", "herdr", "launch", "legacy_tool_identity_missing");
+    if (launches === undefined) {
+      const configuration = options.readExecutionConfiguration?.(contextFor(record));
+      if (!configuration?.herdrLaunch || !configuration.herdrObservation || record.owner.provider !== "claude" && (!configuration.toolLaunch || !configuration.toolObservation)) throw new ToolSelectionError("herdr", "herdr", "launch", "legacy_tool_identity_missing");
+      launches = parseHerdrExecutionTools({ agent: record.owner.provider === "claude" ? null : configuration.toolLaunch,
+        agentObservation: record.owner.provider === "claude" ? null : configuration.toolObservation, herdr: configuration.herdrLaunch, herdrObservation: configuration.herdrObservation });
+      if (configuration.agent !== record.owner.provider || launches.agent !== null && launches.agent.tool !== record.owner.provider) throw new Error("The frozen tools belong to another execution provider.");
+    }
+    await verifyToolLaunch(launches.herdr, operation);
+    if (launches.agent !== null) await verifyToolLaunch(launches.agent, operation);
+    return launches;
   };
   const envelope = (record: HerdrLifecycleRecord) => ({ protocol: SESSION_V2_PROTOCOL, schemaVersion: 2 as const, projectionVersion: 1 as const, sessionId: record.sessionId, claimId: record.claimId,
     executionGeneration: current(record).run.executionGeneration, agentControlMode: "herdr" as const, contentKind: "terminal_recording" as const });
@@ -402,6 +428,8 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const retainedResources = () => resources.resources().filter(resource => !hasConfirmedHerdrResourceDeletion(resource));
   const enrich = (owner: Identity, observed: HerdrAgentObservation): void => {
     if (observed.nativeSession === null) return;
+    const agent = need(owner).owner.provider;
+    if (observed.nativeSession.source !== `herdr:${agent}` || observed.nativeSession.agent !== agent || canonicalId(observed.nativeSession.sessionId) !== observed.nativeSession.sessionId) throw new Error("The native Session was not confirmed by the original official Herdr integration.");
     update(owner, draft => {
       const run = current(draft), id = observed.nativeSession!.sessionId;
       if (run.run.binding.nativeSessionId !== null && run.run.binding.nativeSessionId !== id) throw new Error("The native conversation identity changed.");
@@ -432,6 +460,23 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     enrich(owner, observed);
     return publishObservedLedger(owner, operation);
   };
+  const confirmNativeSession = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<HerdrAgentObservation> => {
+    for (;;) {
+      operation.check();
+      const record = need(context);
+      if (current(record).phase !== "active" || canonicalSessionJson(bindingFor(current(record))) !== canonicalSessionJson(binding)) throw new Error("The original native Session confirmation lost its active runtime binding.");
+      await verifyRuntime(record);
+      const observed = await adapter(record).tasks.observe(context, binding, operation);
+      if (canonicalSessionJson(observed.binding) !== canonicalSessionJson(binding)) throw new Error("The native Session observation belongs to another original runtime.");
+      if (observed.nativeSession !== null) {
+        if (observed.nativeSession.source !== `herdr:${context.agent}` || observed.nativeSession.agent !== context.agent || canonicalId(observed.nativeSession.sessionId) !== observed.nativeSession.sessionId) throw new Error("The native Session was not confirmed by the original official Herdr integration.");
+        await verifyRuntime(need(context));
+        await publishObservedIdentity(context, observed, operation);
+        return observed;
+      }
+      await delay(Math.min(25, Math.max(1, Math.ceil(operation.remainingMs()))), undefined, { signal: operation.signal });
+    }
+  };
   const send = async (context: HerdrExecutionContext, prompt: string, operation: Operation, guard?: (operation: Operation) => Promise<boolean>, onSubmitted?: (receipt: HerdrPromptReceipt) => void, initialOnly = false, onTransportCompleted?: () => void) => {
     const record = need(context), run = current(record), arbiter = getInput(context);
     if (run.phase !== "active") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
@@ -447,6 +492,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     const currentInput = arbiter.record();
     if (initialOnly && (currentInput.initialOutcome !== "pending" || currentInput.initialDisposition !== null || currentInput.unknownInput)) return { submission: "skipped" as const, observation: await adapter(record).tasks.observe(context, bindingFor(run), operation) };
     const initial = currentInput.initialOutcome === "pending";
+    if (!initial && run.run.binding.nativeSessionId === null && run.launches !== undefined) throw new HerdrInputWaitingError("native_session_pending", "The initial input is retained; automatic input is waiting for the original official native Session.");
     const body = initial ? record.initialPrompt : prompt;
     if (body === null) throw new Error("The original pending assignment body is missing.");
     const operationId = initial ? arbiter.record().initialOperationId : randomUUID();
@@ -470,6 +516,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     // execution driver holding the accepted assignment as pending input.
     onSubmitted?.(receipt);
     await publishObservedLedger(context, operation);
+    if (initial) return { ...receipt, observation: await confirmNativeSession(context, bindingFor(run), operation) };
     return receipt;
   };
   const finishStop = async (owner: Identity, operation: Operation): Promise<void> => {
@@ -737,24 +784,26 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       if (record.runs.length > 0) assertHerdrRecovery({ phase: current(record).phase, nativeSessionId: current(record).run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) });
       if (record.preparation !== null) throw new Error("A previous Herdr preparation is unconfirmed; no replacement daemon may start.");
       if (!recording.canPrepareRun(record)) throw new Error("The retained recording budget cannot register another native run.");
+      const launches = await frozenTools(record, operation);
       if (record.runs.length === 0) assertConfigurationAdmission(input?.canAdmitNewExecution);
       const instanceId = randomUUID(), instanceDirectory = herdrRunDirectory(options.paths.herdrDirectory, instanceId);
       // Validate the native socket budget before persisting a preparation that could launch.
       resolveHerdrInstancePaths({ herdrDirectory: instanceDirectory, logsDirectory: path.join(instanceDirectory, "logs") });
-      record = update(context, draft => { draft.preparation = { instanceId, instanceDirectory, phase: "prepared", daemon: null }; });
+      record = update(context, draft => { draft.preparation = { instanceId, instanceDirectory, phase: "prepared", daemon: null, launches }; });
       record = update(context, draft => { draft.preparation!.phase = "launch_requested"; });
       const local = adapter(record, instanceDirectory);
-      await local.ensureInstance(operation);
+      const ready = await local.ensureInstance(operation);
       const peer = await native.peer(local.paths.apiEndpoint);
       record = need(context);
       if (!record.preparation?.daemon || JSON.stringify(record.preparation.daemon.auditToken) !== JSON.stringify(peer.auditToken)) throw new Error("The prepared Herdr endpoint does not belong to its original daemon.");
+      record = update(context, draft => { draft.preparation!.instanceObservation = { version: ready.version, protocol: ready.protocol, checkedAt: new Date().toISOString() }; });
       const startup = local.createShellStartup();
       const binding = await local.tasks.prepareWorkspace(context, title, operation, startup === undefined ? undefined : { shellNonce: startup.nonce });
       const processInfo = await local.tasks.processInfo(context, binding, operation);
       const shell = await native.capture(processInfo.shellPid, "shell", startup === undefined ? undefined : { executable: startup.executable, operation, ready: () => startup.isReady(processInfo.shellPid) });
       const generation = String(record.runs.length + 1), startedAt = new Date().toISOString();
       const terminal: TerminalBinding = { instanceId, sessionId: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId, terminalId: binding.terminalId, nativeSessionId: record.runs.at(-1)?.run.binding.nativeSessionId ?? null };
-      record = update(context, draft => { draft.runs.push({ run: { executionGeneration: generation, owner: draft.owner, binding: terminal, startedAt, stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory, daemon: draft.preparation!.daemon, processes: [shell], stopOperationId: null, stopReason: null, error: null, admission: null }); draft.preparation = null; });
+      record = update(context, draft => { draft.runs.push({ run: { executionGeneration: generation, owner: draft.owner, binding: terminal, startedAt, stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "prepared", nativeLaunch: "not_submitted", instanceDirectory, launches: draft.preparation!.launches!, instanceObservation: draft.preparation!.instanceObservation!, daemon: draft.preparation!.daemon, processes: [shell], stopOperationId: null, stopReason: null, error: null, admission: null }); draft.preparation = null; });
       recording.prepare(need(context));
       await publish(context, operation, input?.canAdmitNewExecution);
       await prepareRecording(context, operation);
@@ -765,6 +814,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       if (run.phase !== "prepared" || run.nativeLaunch !== "not_submitted" || JSON.stringify(bindingFor(run)) !== JSON.stringify(binding)) throw new Error("Native launch requires the original prepared Herdr run.");
       const originallySubmitted = record.runs.some(value => value.nativeLaunch !== "not_submitted");
       const canAdmitNewExecution = () => originallySubmitted || (input.canAdmitNewExecution?.() ?? true);
+      if (run.launches === undefined) throw new ToolSelectionError("herdr", "herdr", "launch", "legacy_tool_identity_missing");
       const beforeStart = async (active: Operation): Promise<void> => {
         const fresh = need(context), target = current(fresh), shell = run.processes.find(proof => proof.role === "shell");
         if (target.run.executionGeneration !== run.run.executionGeneration || !["prepared", "launch_requested"].includes(target.phase)) throw new Error("The original native launch no longer owns its prepared run.");
@@ -772,6 +822,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         if (run.daemon === null || shell === undefined || await native.observe(run.daemon) !== "same" || await native.observe(shell) !== "same") throw new Error("The original prepared runtime changed before native launch.");
         const peer = await native.peer(adapter(fresh).paths.apiEndpoint);
         if (JSON.stringify(peer.auditToken) !== JSON.stringify(run.daemon.auditToken) || peer.bootId !== run.daemon.bootId || peer.birthToken !== run.daemon.birthToken) throw new Error("The original daemon endpoint was replaced before native launch.");
+        if (run.launches!.agent !== null) await verifyToolLaunch(run.launches!.agent, active);
         active.check();
       };
       await beforeStart(operation);
@@ -785,15 +836,39 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       assertConfigurationAdmission(canAdmitNewExecution);
       record = update(context, draft => { if (draft.initialAssignment === "pending") draft.initialPrompt = prompt; });
       const manager = adapter(record).tasks;
-      const observed = await manager.launch(context, binding, { configuration: input.configuration, beforeStart, canAdmitNewExecution,
+      const observed = await manager.launch(context, binding, { configuration: { ...input.configuration, ...(run.launches.agent === null ? {} : { toolLaunch: run.launches.agent }) }, beforeStart, canAdmitNewExecution,
         onSubmitting: () => { update(context, draft => { current(draft).phase = "launch_requested"; current(draft).nativeLaunch = "requested"; }); },
         onRejected: () => { store.confirmNativeLaunchRejected(need(context), { method: "agent.start", code: "agent_pane_busy", executionGeneration: run.run.executionGeneration, binding: run.run.binding }); },
         ...(run.run.binding.nativeSessionId === null ? {} : { resumeSessionId: run.run.binding.nativeSessionId }) }, operation);
       const info = await manager.processInfo(context, binding, operation);
-      if (info.shellPid !== run.processes.find(p => p.role === "shell")?.pid) throw new Error("The original shell changed while launching the native agent.");
-      const agents = await Promise.all(info.foregroundPids.filter(pid => pid !== info.shellPid).map(pid => native.capture(pid, "agent")));
-      if (agents.length === 0) throw new Error("The original native agent has no identifiable foreground process; input remains closed.");
-      update(context, draft => { current(draft).processes.push(...agents); current(draft).phase = "active"; current(draft).nativeLaunch = "observed"; });
+      const shell = run.processes.find(p => p.role === "shell");
+      if (shell === undefined || info.shellPid !== shell.pid || await native.observe(shell) !== "same") throw new Error("The original shell changed while launching the native agent.");
+      if (run.launches.agent !== null) {
+        const receipt = await manager.launchReceipt?.(context, binding, operation);
+        if (!receipt || receipt.selectionKey !== run.launches.agent.selectionKey || receipt.helperPid === receipt.childPid) throw new Error("The original native launch receipt is missing or changed; input remains closed.");
+        const helper = await native.capture(receipt.helperPid, "agent");
+        if (helper.ppid !== shell.pid || helper.sid !== shell.sid || helper.bootId !== shell.bootId || await native.observe(shell) !== "same" || await native.observe(helper) !== "same") throw new Error("The original helper process chain cannot be confirmed; input remains closed.");
+        // Register the direct shell child before following loaders or descendants.
+        // Stop recovery may extend only an already durable native-parent chain.
+        update(context, draft => { current(draft).processes.push(helper); });
+        const child = await native.capture(receipt.childPid, "agent");
+        if (child.ppid !== helper.pid || child.pgid !== helper.pgid || child.sid !== shell.sid || child.bootId !== helper.bootId || await native.observe(helper) !== "same" || await native.observe(child) !== "same") throw new Error("The original helper child identity cannot be confirmed; input remains closed.");
+        update(context, draft => { current(draft).processes.push(child); });
+        const pending = await Promise.all(info.foregroundPids.filter(pid => ![shell.pid, helper.pid, child.pid].includes(pid)).map(pid => native.capture(pid, "agent")));
+        while (pending.length > 0) {
+          const known = current(need(context)).processes;
+          const index = pending.findIndex(proof => known.some(parent => parent.role === "agent" && parent.pid === proof.ppid && parent.bootId === proof.bootId) && proof.pgid === helper.pgid && proof.sid === shell.sid);
+          if (index < 0) throw new Error("The original native foreground process has no continuous helper chain; input remains closed.");
+          const proof = pending.splice(index, 1)[0]!, parent = known.find(value => value.pid === proof.ppid)!;
+          if (await native.observe(parent) !== "same" || await native.observe(proof) !== "same") throw new Error("The original native loader identity changed before registration.");
+          update(context, draft => { current(draft).processes.push(proof); });
+        }
+      } else {
+        const agents = await Promise.all(info.foregroundPids.filter(pid => pid !== info.shellPid).map(pid => native.capture(pid, "agent")));
+        if (agents.length === 0) throw new Error("The original native agent has no identifiable foreground process; input remains closed.");
+        update(context, draft => { current(draft).processes.push(...agents); });
+      }
+      update(context, draft => { current(draft).phase = "active"; current(draft).nativeLaunch = "observed"; });
       try { input.onAgentStarted?.(); } catch { /* Optional observation cannot alter launch. */ }
       try { input.onAgentInitializing?.(); } catch { /* Optional observation cannot alter launch. */ }
       enrich(context, observed);
@@ -819,7 +894,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       if (inputState !== "automation") throw new HerdrAgentActionError("The original input admission is not available.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
       try { input.onPromptSubmitting?.(); } catch { /* Optional observation cannot alter input. */ }
       await send(context, prompt, operation, undefined, input.onPromptSubmitted, false, input.onPromptTransportCompleted);
-      const after = await manager.observe(context, binding, operation); await publishObservedIdentity(context, after, operation); return after;
+      return confirmNativeSession(context, binding, operation);
     }),
     observe: (context, binding, operation, onAttached) => serialize(context, async () => {
       await attachRun(context, operation);
@@ -924,6 +999,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       },
       assertCanAdvance: context => { const record = need(context); if (record.preparation !== null) throw new Error("The original Herdr preparation remains unconfirmed."); if (record.runs.length === 0) return; const run = current(record); if (run.run.stopProof !== null && isPreparedSessionV2StopProof(run.run.stopProof)) throw new Error("A stopped prepared runtime cannot grant native recovery or a replacement generation."); if (run.phase === "active" || run.phase === "prepared" && run.nativeLaunch === "not_submitted") return; assertHerdrRecovery({ phase: run.phase, nativeSessionId: run.run.binding.nativeSessionId, initialAssignment: recoveryInitialAssignment(record) }); },
       archive: resources,
+      activeToolSelections: (): ActiveToolSelection[] => store.list().flatMap(record => {
+        if (record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || store.retired(identity(record))) return [];
+        const entries: ActiveToolSelection[] = [];
+        for (const local of [...record.runs.filter(run => run.phase !== "stopped_confirmed"), ...(record.preparation === null ? [] : [record.preparation])]) {
+          const uncertain = local.daemon === null || local.instanceObservation === undefined || local.phase !== "active" && local.phase !== "prepared";
+          entries.push({ tool: "herdr", context: "herdr", launch: local.launches?.herdr ?? null, version: local.instanceObservation?.version ?? null, checkedAt: local.instanceObservation?.checkedAt ?? null, executionCount: 0, instanceCount: uncertain ? null : 1, unconfirmedCount: uncertain ? 1 : 0 });
+          if (record.owner.provider !== "claude" && "nativeLaunch" in local && local.nativeLaunch !== "not_submitted") entries.push({ tool: record.owner.provider, context: "herdr", launch: local.launches?.agent ?? null, version: local.launches?.agentObservation?.version ?? null, checkedAt: local.launches?.agentObservation?.checkedAt ?? null, executionCount: uncertain ? null : 1, instanceCount: 0, unconfirmedCount: uncertain ? 1 : 0 });
+        }
+        return entries;
+      }),
       responsibilities: () => retainedResources().map(resource => resource.owner),
       worktreePath: owner => {
         const record = store.get(owner);

@@ -2258,9 +2258,12 @@ that proof, the Copilot entry is unavailable without an issue. Explicit Copilot
 model discovery and execution continue to prepare it on demand. A tool path or
 previous success alone does not create background demand.
 
-Explicit Herdr targets are rejected until its instance mapping supports them;
-all-automatic Herdr keeps its existing behavior. Explicit paths must be absolute
-on the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
+Herdr Codex/Copilot executions freeze both the Agent and Herdr
+recipes; controlled pane mappings preserve the original kind and logical argv.
+macOS retains per-run instances. Linux/Windows shared instances keep new targets
+pending until the original daemon, endpoints and all old process responsibilities
+are confirmed closed. Explicit paths must be absolute on
+the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
 characters. Windows paths need a drive or complete UNC share. Values retain all
 spaces and punctuation: the parser does not trim, normalize, expand `~` or
 environment variables, split arguments, or access the filesystem. Provide one
@@ -2282,7 +2285,7 @@ reconciles the previous probe's cleanup, then resolves and probes the current
 choice within the same operation. Unconfirmed cleanup blocks the new probe. This
 refresh does not replace the frozen recipe of an existing execution.
 
-New Web executions freeze the complete tool recipe and its observed version before
+New executions freeze the complete tool recipe and its observed version before
 submission. Target or PATH changes affect future executions. Recovery verifies the
 original files and reports `tool_identity_changed` when a dependency is missing or
 changed; it never substitutes another installation. Restore the original matching
@@ -2291,6 +2294,15 @@ existing live process retain its original process identity. Old submitted record
 without a frozen identity report `legacy_tool_identity_missing`; they cannot start
 a replacement. Never-submitted legacy tickets can acquire a private, immutable
 selection sidecar bound to the original ticket, without replaying initial input.
+
+Herdr startup verifies the original shell, helper/native process tree, launch
+receipt, binding and readiness before a single initial input. Startup succeeds
+only after the official integration reports the original native Session to the
+same pane. Missing or unknown results never permit replay or a replacement
+Session. Original-claim recovery and attach keep their frozen recipes. Windows
+uses system PowerShell 5 as the root shell with owned ExternalScript mappings;
+PowerShell 7 is not supported by this path. See the
+[Herdr tool launch design](../../docs/design/herdr-tool-launch.md).
 
 The supported Web Copilot image-authority profile freezes its source SEA, Worker
 Node, preload closure and a complete private extracted distribution. Its public
@@ -2736,8 +2748,10 @@ worker lock or start a replacement daemon. On macOS with a lifecycle journal,
 it reads the current schema without migration or recovery, selects among
 unfinished recorded runs, and verifies the original daemon plus both socket
 peers before connecting. Paused tasks remain attachable. An unreadable journal
-or missing runtime is an error; only installations without a journal use the
-legacy shared session. Detaching preserves execution. Task panes retain their
+or missing runtime is an error. Without a lifecycle journal, attach reads the
+shared instance journal. Both paths verify and use the original frozen Herdr
+client recipe; missing historical identity or changed files prohibit a new client.
+Detaching preserves execution. Task panes retain their
 native XDG and private HISTFILE; client routing uses the original instance's
 attachment descriptor.
 
