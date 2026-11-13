@@ -63,7 +63,7 @@ describe('localized task graph presentation', () => {
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
-      openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
+      openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-progress-label')).toHaveTextContent('0/2 completed');
@@ -79,7 +79,7 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
-      openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} />, { locale: 'en', taskCache: true });
+      openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={select} onCloseChain={noop} />, { locale: 'en', taskCache: true });
     await ready(view.baseElement);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
     expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
@@ -232,7 +232,7 @@ describe('localized task graph presentation', () => {
   });
 
   it('renders empty and filtered chain states in the chosen language', () => {
-    const props = { index, allRepresentativeIds: [], representativeIds: [], openChainId: null,
+    const props = { index, allRepresentativeIds: [], representativeIds: [], openGraphTarget: null,
       onOpenChain: noop, onCloseChain: noop, onOpenTask: noop };
     const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();

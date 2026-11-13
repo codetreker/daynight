@@ -58,7 +58,7 @@ const render = (ui: ReactElement) => {
 };
 const noop = () => {};
 const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
-  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />;
+  openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
@@ -71,7 +71,7 @@ describe('Goal task lists', () => {
     const index = indexOf(items);
     const onOpenTask = vi.fn();
     render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Outside']} allRepresentativeIds={['Outside']}
-      scopedMembers={new Map([['Outside', ['Inside']]])} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />);
+      scopedMembers={new Map([['Outside', ['Inside']]])} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />);
     const header = document.getElementById('task-root-Outside')!;
     expect(header).toHaveTextContent('Outside');
     expect(header.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('0/1');
@@ -92,7 +92,7 @@ describe('Goal task lists', () => {
     const external = { ...task('External', 'done'), completedAt: '2026-10-25T10:00:00Z' };
     const scoped = new Map([['Outside', ['Older', 'Newer']]]);
     const tree = (last: GraphTask) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={indexOf([outside, older, last, external])}
-      representativeIds={['Outside']} allRepresentativeIds={['Outside']} scopedMembers={scoped} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
+      representativeIds={['Outside']} allRepresentativeIds={['Outside']} scopedMembers={scoped} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(tree(newer));
     const aggregate = () => screen.queryByRole('button', { name: '查看 Outside 的完成时间' });
     expect(aggregate()?.querySelector('time')).toHaveAttribute('datetime', newer.completedAt);
@@ -125,7 +125,7 @@ describe('Goal task lists', () => {
     const scopedMembers = new Map([['First', ['First', 'Second']], ['Other', ['Other', 'Last']]]);
     const onRevealed = vi.fn();
     const tree = (revealTaskId: string | null) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['First', 'Other']} allRepresentativeIds={['First', 'Other']}
-      scopedMembers={scopedMembers} revealTaskId={revealTaskId} onRevealed={onRevealed} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
+      scopedMembers={scopedMembers} revealTaskId={revealTaskId} onRevealed={onRevealed} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(tree(null));
     fireEvent.click(document.getElementById('task-root-Other')!);
     view.rerender(tree('First'));
@@ -242,7 +242,7 @@ describe('Goal task lists', () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
       const opener = useRef<HTMLElement | null>(null);
       return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
-        openChainId={openChainId} onOpenChain={(id, trigger) => { opener.current = trigger; setOpenChainId(id); }} onCloseChain={() => setOpenChainId(null)}
+        openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={(id, trigger) => { opener.current = trigger; setOpenChainId(id); }} onCloseChain={() => setOpenChainId(null)}
         onRestoreGraphFocus={() => opener.current?.focus({ preventScroll: true })} onOpenTask={onOpenTask} />;
     };
     render(<Wrapper />);

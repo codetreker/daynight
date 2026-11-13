@@ -40,9 +40,9 @@ const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
 const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView={activeView}
-  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, openChainId: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
+  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
   unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
-  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openChainId, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
+  chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openGraphTarget: openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
   standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 
 describe('paused task discovery', () => {
@@ -72,9 +72,9 @@ describe('paused task discovery', () => {
   it('keeps project count across filtered and paginated lists', () => {
     const value = snapshot();
     const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView="standalone"
-      goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, openChainId: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
+      goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
       unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
-      chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openChainId: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
+      chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
       standalone={{ projectId: project.id, taskIds: [id(4)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop,
         pagination: { page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop } }} /></TaskExecutionClockProvider>, { locale: 'en', taskCache: true });
     expect(view.container.querySelector('.project-section-heading .task-pause-count')).toHaveTextContent('2 paused');
