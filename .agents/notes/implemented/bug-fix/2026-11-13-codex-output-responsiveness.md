@@ -36,7 +36,9 @@ rejection and runtime shutdown until that reader stops, preserving buffered
 terminal evidence. Physical exit and reader completion are tracked separately so
 shutdown cannot wait for an already-consumed close event. Explicit disposal,
 genuine transport errors and frame deadline failures still cancel consumption
-immediately.
+immediately. Automatic rejection of native requests is skipped after known
+physical exit: replying to a dead peer must not abort the remaining input. Live
+peers retain their normal rejection behavior.
 
 The [Controller design](../../../../docs/design/task-session-protocol.md#codex-输出消费与-io)
 owns the execution contract and its limits. Ordinary regressions exercise real

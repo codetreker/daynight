@@ -996,8 +996,12 @@ producing until the observation response. The output records actual pipe chunks,
 consumption/request/response timing, remaining input, ordered content hash and
 independently checked outbox byte totals. Native Windows and Node 24 evidence is
 required for the original pipe scenario; controlled provider/relay behavior does
-not establish real model or service performance. The existing Codex media-stream
-stress suite retains its separate resource responsibility.
+not establish real model or service performance. Client response latency uses
+the client's own clock; causal handoff and parent-local observations prove that
+output consumption precedes the request while input remains. Absolute timestamps
+from different processes are diagnostic, since their clock origins may differ.
+The existing Codex media-stream stress suite retains its separate resource
+responsibility.
 
 ## Package versions
 

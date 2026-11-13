@@ -99,6 +99,7 @@ const run = async (backlog: boolean, mode: "single" | "per-frame", sustained = f
   const deadline = setTimeout(() => { const error = new Error("Output responsiveness phase deadline exceeded."); completed.reject(error); received.reject(error); }, 90_000);
   const chunks: { at: number; bytes: number }[] = [], delivery: number[] = [];
   let timerAt: number | null = null, timerConsumed: number | null = null, timer: NodeJS.Timeout | undefined;
+  let responseObservedAt: number | null = null;
   let db: Database.Database | undefined, initialRows = 0, initialBytes = 0;
   let failed = false, primary: unknown;
   f.consumed = 0; f.readBytes = 0; f.measuring = false; f.requests = []; f.responses = [];
@@ -109,6 +110,7 @@ const run = async (backlog: boolean, mode: "single" | "per-frame", sustained = f
     native.stdout!.on("data", bytes => { chunks.push({ at: now(), bytes: bytes.length }); f.readBytes += bytes.length; });
     client.child.on("message", (value: ClientResult) => {
       if (value.kind !== "response" && value.kind !== "failure") return;
+      responseObservedAt = now();
       if (sustained) native.send!({ kind: "stop-output" });
       received.resolve(value);
     });
@@ -164,8 +166,13 @@ const run = async (backlog: boolean, mode: "single" | "per-frame", sustained = f
     const remainingReadAtResponse = Math.min(final.produced, Math.floor(f.responses[0]!.readBytes / 95)) - f.responses[0]!.consumed;
     expect(remainingReadAtResponse).toBeGreaterThan(0);
     expect(timerConsumed).toBeGreaterThan(0); expect(timerConsumed).toBeLessThan(final.produced);
-    expect(delivery[0]).toBeLessThan(response.requestedAt);
-    expect(response.respondedAt).toBeLessThan(delivery.at(-1)!);
+    // Independent process time origins are not aligned precisely enough for
+    // sub-millisecond ordering. The first-frame message triggers the client;
+    // all ordering comparisons use observations on the Controller's clock.
+    expect(delivery[0]).toBeLessThan(f.requests[0]!.at);
+    expect(f.responses[0]!.at).toBeLessThan(delivery.at(-1)!);
+    expect(responseObservedAt).not.toBeNull();
+    expect(responseObservedAt!).toBeLessThan(delivery.at(-1)!);
     const entry = JSON.parse((db.prepare("SELECT value FROM timeline_entries WHERE id=?").get(activeId) as { value: string }).value) as { output: { type: string; text: string }[]; revision: string };
     const expected = "a".repeat(24750) + "0123456789".repeat(final.produced);
     expect(entry.output).toEqual([{ type: "text", text: expected }]);
@@ -180,7 +187,7 @@ const run = async (backlog: boolean, mode: "single" | "per-frame", sustained = f
     expect(index).toBe(final.produced + 1);
     const allChunks = chunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
     expect(allChunks).toBeGreaterThanOrEqual(final.produced * 95);
-    process.stdout.write(JSON.stringify({ kind: "output-responsiveness", platform: process.platform, nodeVersion: process.version, mode, sustained, producerPid: native.pid, clientPid: client.child.pid, initialRows, initialBytes, notifications: final.produced, notificationBytes: final.produced * 95, chunks, outputStartedAt: final.startedAt, firstConsumedAt: delivery[0], requestReadyAt: response.requestedAt, requestHandled: f.requests[0], responseWritten: f.responses[0], responseReceivedAt: response.respondedAt, lastConsumedAt: delivery.at(-1), remainingAtResponseWrite: final.produced - f.responses[0]!.consumed, timerAt, timerConsumed, responseMs: response.respondedAt - response.requestedAt, totalMs: finished - started, finalSha256: hash(expected), finalRows: finalTotals.rows, finalBytes: finalTotals.bytes, journalVersion: db.pragma("user_version", { simple: true }), acknowledgement: "none", sustainedNativeCreditWindow: sustained ? 64 : null, evidence: "synthetic native OS pipe -> CodexRpc -> CodexProjection -> full runtime timeline/journal; real authenticated runtime IPC; controlled provider and relay; no model" }) + "\n");
+    process.stdout.write(JSON.stringify({ kind: "output-responsiveness", platform: process.platform, nodeVersion: process.version, mode, sustained, producerPid: native.pid, clientPid: client.child.pid, initialRows, initialBytes, notifications: final.produced, notificationBytes: final.produced * 95, chunks, outputStartedAt: final.startedAt, firstConsumedAt: delivery[0], requestReadyAt: response.requestedAt, requestHandled: f.requests[0], responseWritten: f.responses[0], responseReceivedAt: response.respondedAt, parentResponseObservedAt: responseObservedAt, crossProcessTimestamps: "Client absolute timestamps are approximate; ordering uses the first-frame message barrier and Controller-local observations.", lastConsumedAt: delivery.at(-1), remainingAtResponseWrite: final.produced - f.responses[0]!.consumed, timerAt, timerConsumed, responseMs: response.respondedAt - response.requestedAt, totalMs: finished - started, finalSha256: hash(expected), finalRows: finalTotals.rows, finalBytes: finalTotals.bytes, journalVersion: db.pragma("user_version", { simple: true }), acknowledgement: "none", sustainedNativeCreditWindow: sustained ? 64 : null, evidence: "synthetic native OS pipe -> CodexRpc -> CodexProjection -> full runtime timeline/journal; real authenticated runtime IPC; controlled provider and relay; no model" }) + "\n");
   } catch (error) {
     failed = true; primary = error; throw error;
   } finally {

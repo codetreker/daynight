@@ -238,12 +238,12 @@ test("a late turn/start receipt does not resurrect a completed native turn", asy
   finally { await provider.close(); }
 });
 
-test("natural native exit preserves buffered terminal projection, turn completion and receipt before runtime shutdown", async () => {
+test.each(["notifications", "unsupported request", "foreign request", "invalid form"])("natural native exit drains %s and preserves terminal evidence before runtime shutdown", async mode => {
   const entries: Parameters<ProviderOptions["onTimeline"]>[0][] = [], events: string[] = [], states: ProviderState[] = [];
   const fatal = Promise.withResolvers<void>();
   let shutdown: Promise<void> | undefined;
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
-    env: { ...process.env, CODEX_TEST_EXIT_BURST: "1" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)),
+    env: { ...process.env, CODEX_TEST_EXIT_BURST: mode }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)),
     onTimeline: entry => { entries.push(entry); if (entry.kind === "assistant_message" && entry.content.some(part => part.type === "text" && part.text === "final answer before exit")) events.push("final projection"); },
     onState: state => states.push(state), onSpawn: () => {},
     onFatalError: () => { events.push("EOF"); shutdown = provider.close(); fatal.resolve(); },
@@ -255,6 +255,7 @@ test("natural native exit preserves buffered terminal projection, turn completio
     await fatal.promise; await shutdown;
     expect(events).toEqual(["final projection", "receipt", "EOF"]);
     expect(entries.filter(entry => entry.kind === "assistant_message")).toHaveLength(1001);
+    if (mode === "unsupported request") expect(entries).toContainEqual(expect.objectContaining({ kind: "error", code: "unsupported_interaction", message: "Unsupported native interaction: unsupported/request" }));
     expect(states.at(-1)).toMatchObject({ currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
   } finally { await provider.close(); }
 });

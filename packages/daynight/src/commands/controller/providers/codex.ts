@@ -65,9 +65,14 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const reportFatal = (error: Error) => { if (!closing && !fatalReported) { fatalReported = true; options.onFatalError?.(error); } };
   const showInteraction = (value: Pending) => options.onTimeline({ entryId: value.interaction.interactionId, revision: value.interaction.revision, kind: "interaction", interaction: value.interaction });
   const expire = () => { for (const p of pending.values()) { p.interaction = { ...p.interaction, state: "expired", revision: "2" }; showInteraction(p); p.rejected?.(new Error("Native interaction expired before confirmation.")); } pending.clear(); approvalItems.clear(); };
+  const rejectNativeRequest = (id: unknown, message: string) => {
+    // An exited peer cannot receive an automatic reply. Remaining stdout still
+    // owns terminal evidence, and no new native operation is being admitted.
+    if (!nativeClosed) rpc.reject(id, message);
+  };
   const request = (message: NativeObject) => {
     const params = record(message.params), method = string(message.method);
-    if (!nativeId || params.threadId !== nativeId) { rpc.reject(message.id, "The request does not belong to this session."); return; }
+    if (!nativeId || params.threadId !== nativeId) { rejectNativeRequest(message.id, "The request does not belong to this session."); return; }
     let interaction: SessionInteraction; let result: Pending["result"];
     const base = { interactionId: randomUUID(), revision: "1", state: "pending" as const };
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
@@ -81,9 +86,9 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       interaction = { ...base, kind: "question", title: "Agent question", canDismiss: false, questions: (Array.isArray(params.questions) ? params.questions : []).map(raw => { const q = record(raw); return { questionId: string(q.id), label: string(q.question), options: (Array.isArray(q.options) ? q.options : []).map(raw => { const o = record(raw); return { id: string(o.label), label: string(o.label) + (o.description ? ` — ${string(o.description)}` : "") }; }), multiple: false, allowCustom: q.isOther !== false, required: true, sensitive: q.isSecret === true }; }) };
       result = r => { if (r.kind !== "question") throw new Error("Expected question response."); return { answers: Object.fromEntries(r.answers.map(a => [a.questionId, { answers: [...a.optionIds, ...(a.text ? [a.text] : [])] }])) }; };
     } else if (method === "mcpServer/elicitation/request" && ["form", "openai/form", "openaiForm"].includes(string(params.mode))) {
-      try { interaction = formInteraction(string(params.message) || "Agent form", params.requestedSchema); } catch (error) { rpc.reject(message.id, String(error)); return; }
+      try { interaction = formInteraction(string(params.message) || "Agent form", params.requestedSchema); } catch (error) { rejectNativeRequest(message.id, String(error)); return; }
       result = r => ({ action: r.kind === "dismiss" ? "decline" : "accept", content: r.kind === "form" ? Object.fromEntries(r.values.map(v => [v.fieldId, v.value])) : null, _meta: null });
-    } else { rpc.reject(message.id, `Unsupported native interaction: ${method}`); options.onTimeline({ entryId: randomUUID(), revision: "1", kind: "error", code: "unsupported_interaction", message: `Unsupported native interaction: ${method}` }); return; }
+    } else { rejectNativeRequest(message.id, `Unsupported native interaction: ${method}`); options.onTimeline({ entryId: randomUUID(), revision: "1", kind: "error", code: "unsupported_interaction", message: `Unsupported native interaction: ${method}` }); return; }
     const p = { nativeId: message.id, interaction, result }; pending.set(interaction.interactionId, p); showInteraction(p); state();
   };
   const projectItem = (raw: unknown, completed: boolean, turnId = "") => {

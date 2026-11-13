@@ -89,6 +89,9 @@ for await (const line of createInterface({input:process.stdin})) {
   out({method:'turn/started',params:{threadId:'native-thread',turn}});
   if(process.env.CODEX_TEST_EXIT_BURST) {
    const messages=Array.from({length:1000},()=>({method:'item/agentMessage/delta',params:{threadId:'native-thread',turnId:turn.id,itemId:'final-answer',delta:'received output '}}));
+   if(process.env.CODEX_TEST_EXIT_BURST==='unsupported request')messages.push({id:42,method:'unsupported/request',params:{threadId:'native-thread'}});
+   if(process.env.CODEX_TEST_EXIT_BURST==='foreign request')messages.push({id:42,method:'unsupported/request',params:{threadId:'other-thread'}});
+   if(process.env.CODEX_TEST_EXIT_BURST==='invalid form')messages.push({id:42,method:'mcpServer/elicitation/request',params:{threadId:'native-thread',mode:'form',requestedSchema:{type:'array'}}});
    messages.push({method:'item/completed',params:{threadId:'native-thread',turnId:turn.id,item:{id:'final-answer',type:'agentMessage',text:'final answer before exit'}}});
    messages.push({method:'turn/completed',params:{threadId:'native-thread',turn:{...turn,status:'completed'}}});
    messages.push({id:m.id,result:{turn}});
