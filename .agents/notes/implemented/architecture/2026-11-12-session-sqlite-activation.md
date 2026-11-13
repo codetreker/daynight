@@ -50,13 +50,22 @@ references, recognized body retirement, in-place VACUUM, post-checkpoint physica
 verification, pending-clear readback and actual reservation settlement. A new
 writer commits no generation until maintenance and normal admission succeed.
 
-Active history sync and stopped archive work materialize timeline, resource descriptors
-and source cutoff in a short SQL snapshot. The snapshot ends before network work;
-frozen objects retain only materialized values and the resource-file read/lease
-subset. SQL-bound timeline, metadata and guarded deletion operations cannot be
-used after SQL close. A later local write reacquires the original ownership and
-checks current identity. The [current design](../../../../docs/design/session-sqlite-content.md)
-owns the detailed interfaces, ordering and failures.
+Active history sync and stopped archive work materialize timeline, resource
+descriptors and source cutoff in a short SQL snapshot. The resource owner validates
+available originals sequentially during construction in that snapshot. Frozen
+archive objects retain materialized values, cloned descriptors and only the
+dedicated file acquisition capability. Each resource obtains one lease lazily,
+compares its metadata and full length/SHA-256 with the frozen descriptor through
+the same held FD, and retains that FD through status, retries and chunk reads.
+A finally boundary closes it before the next resource. Acquisition does not
+establish a fresh SQL snapshot; existing pins and lifetimes, plus fresh SQL
+`assertFrozen()` checks, continue to protect the original source.
+
+The snapshot ends before network work. The mutable resource owner and SQL-bound
+timeline, metadata and guarded deletion operations do not enter the frozen object.
+A later local write reacquires the original ownership and checks current identity.
+The [current design](../../../../docs/design/session-sqlite-content.md) owns the
+detailed interfaces, ordering and failures.
 
 ## Alternatives
 
@@ -72,6 +81,13 @@ Persisting every cumulative revision retains the same space amplification.
 guards, inspection, archive and recovery share one journal. Partial activation
 would leave competing body authorities or an unreadable intermediate format.
 All consumers therefore adopt the same current-row owner together.
+
+**Pre-open every available resource FD while freezing.** Holding all originals
+would make open FD demand scale with the legal resource count and can exhaust
+process capacity. Lazy acquisition bounds that demand while verification against
+the original cloned descriptor through the retained FD preserves the frozen
+byte identity. It reuses existing resource pins, leases and source checks without
+adding another lifetime protocol.
 
 **Treat logical conversion as physical reclamation.** Existing free pages, WAL
 and retained source files still consume disk. Only reader-safe retirement,

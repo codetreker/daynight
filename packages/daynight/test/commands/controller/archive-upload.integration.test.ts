@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import sharp from "sharp";
 import { mkdtemp, mkdir, rm, unlink, stat, readFile, writeFile, open } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -476,7 +477,7 @@ test.each([0, 129])("all archive transport phases release local ownership with %
 });
 
 
-test.each(["none", "transport", "close"] as const)("resource transfers retain pre-frozen file leases after SQL closes and release them (failure: %s)", async failure => {
+test.each(["none", "transport", "close", "acquire", "descriptor", "verify", "read", "lease-close", "read-close", "response-loss"] as const)("resource transfers validate lazy leases after SQL closes and release them (failure: %s)", async failure => {
   const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const bytes = Buffer.from("frozen resource bytes"), resource = { resourceId: randomUUID(), status: "available" as const, name: "original.txt", mediaType: "text/plain", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
   store.saveResource(resource, bytes);
@@ -487,42 +488,104 @@ test.each(["none", "transport", "close"] as const)("resource transfers retain pr
     if (this.name === f.journalPath) connections.add(this);
     return prepare.call(this, sql);
   });
+  const acquireFailure = new Error("Resource acquire failed"), readFailure = new Error("Resource read failed"), leaseCloseFailure = new Error("Resource close failed");
   const leases: { closed: boolean }[] = [], openFiles = resourceFiles.openResourceFiles;
+  let validatedSnapshots = 0;
   vi.spyOn(resourceFiles, "openResourceFiles").mockImplementation((file, sessionId) => {
-    const files = openFiles(file, sessionId);
+    expect([...connections].some(connection => connection.open && connection.inTransaction)).toBe(true);
+    const files = openFiles(file, sessionId); validatedSnapshots++;
     return { ...files, get resources() { return files.resources; }, acquireResource: id => {
-      expect([...connections].some(connection => connection.open && connection.inTransaction)).toBe(true);
+      expect([...connections].every(connection => !connection.open)).toBe(true);
+      if (failure === "acquire") throw acquireFailure;
       const lease = files.acquireResource(id), state = { closed: false }; leases.push(state);
-      return { ...lease, close: () => { lease.close(); state.closed = true; } };
+      return { ...lease, resource: failure === "descriptor" ? { ...lease.resource, name: "changed-descriptor.txt" } : lease.resource, read: (offset, limit) => {
+        if (failure === "read" || failure === "read-close") throw readFailure;
+        const block = lease.read(offset, limit);
+        if (failure === "verify" && block.length > 0) block[0] = block[0]! ^ 1;
+        return block;
+      }, close: () => { lease.close(); state.closed = true; if (failure === "lease-close" || failure === "read-close") throw leaseCloseFailure; } };
     } };
   });
   const closeFailure = new Error("SQL close report lost"), close = sqliteAccess.closeSqliteDatabase;
   if (failure === "close") vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((db, options, outcome) => {
     close(db, options, outcome);
-    if (db.name === f.journalPath && leases.length > 0) throw closeFailure;
+    if (db.name === f.journalPath && validatedSnapshots > 0) throw closeFailure;
   });
   const receiver = archiveTestReceiver({ bodies: [], sourceThrough });
-  let requests = 0;
+  let requests = 0, resourceRetried = false;
   const request: typeof fetch = async (input, init) => {
     requests++;
     expect(connections.size).toBeGreaterThan(0);
     expect([...connections].every(connection => !connection.open)).toBe(true);
     const permit = acquireControllerStoragePermit(f.journalPath);
-    try { await Promise.resolve(); if (failure === "transport") throw new Error("Transport response lost"); return await receiver.request(input, init); }
-    finally { permit.release(); }
+    try {
+      await Promise.resolve();
+      const url = new URL(String(input));
+      if (failure === "transport" && url.pathname.includes("/files/")) throw new Error("Transport response lost");
+      if (!resourceRetried && init?.method === "PUT" && url.searchParams.get("purpose") === "resource") {
+        resourceRetried = true;
+        if (failure === "none") return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "0" } });
+        if (failure === "response-loss") { await receiver.request(input, init); throw new Error("Resource response lost after commit"); }
+      }
+      return await receiver.request(input, init);
+    } finally { permit.release(); }
   };
-  if (failure === "transport") await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("Transport response lost");
+  const upload = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  if (failure === "transport") await expect(upload).rejects.toThrow("Transport response lost");
   else if (failure === "close") {
-    await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ kind: "cleanup-failed", connectionClosed: true, cause: closeFailure });
+    await expect(upload).rejects.toMatchObject({ kind: "cleanup-failed", connectionClosed: true, cause: closeFailure });
     expect(requests).toBe(0);
-  } else {
-    expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).state).toBe("ready");
+  } else if (failure === "acquire") await expect(upload).rejects.toBe(acquireFailure);
+  else if (failure === "descriptor") await expect(upload).rejects.toThrow("original descriptor");
+  else if (failure === "verify") await expect(upload).rejects.toThrow("resource content changed");
+  else if (failure === "read") await expect(upload).rejects.toBe(readFailure);
+  else if (failure === "lease-close") await expect(upload).rejects.toBe(leaseCloseFailure);
+  else if (failure === "read-close") await expect(upload).rejects.toMatchObject({ cause: readFailure, errors: [readFailure, leaseCloseFailure] });
+  else {
+    expect((await upload).state).toBe("ready");
     expect(requests).toBeGreaterThan(5);
     expect([...receiver.files.values()].some(content => content.equals(bytes))).toBe(true);
+    expect(resourceRetried).toBe(true);
   }
-  expect(leases).toHaveLength(1);
+  expect(validatedSnapshots).toBeGreaterThan(0);
+  expect(leases).toHaveLength(failure === "close" || failure === "acquire" ? 0 : 1);
   expect(leases.every(lease => lease.closed)).toBe(true);
 });
+
+test("240 valid PNG resources archive with one controlled resource lease at a time", async () => {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWNgZGL+DwABFAEG9O6t0QAAAABJRU5ErkJggg==", "base64");
+  expect(png.length).toBe(91);
+  expect(await sharp(png).metadata()).toMatchObject({ format: "png", width: 1, height: 1 });
+  expect(await sharp(png).raw().toBuffer()).toEqual(Buffer.from([1, 2, 3, 255]));
+  const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  for (let group = 0; group < 30; group++) {
+    const content = [];
+    for (let index = 0; index < 8; index++) {
+      const resourceId = randomUUID();
+      store.saveResource({ resourceId, status: "available", name: "pixel.png", mediaType: "image/png", byteLength: String(png.length), sha256: createHash("sha256").update(png).digest("hex"), error: null }, png);
+      content.push({ type: "resource" as const, resourceId, label: "pixel.png" });
+    }
+    store.projectTimeline({ ...f.entry, entryId: group === 0 ? f.entry.entryId : randomUUID(), content });
+  }
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
+  const openFiles = resourceFiles.openResourceFiles;
+  let active = 0, peak = 0, acquired = 0;
+  vi.spyOn(resourceFiles, "openResourceFiles").mockImplementation((file, sessionId) => {
+    const files = openFiles(file, sessionId);
+    return { ...files, get resources() { return files.resources; }, acquireResource: id => {
+      const lease = files.acquireResource(id); acquired++; active++; peak = Math.max(peak, active);
+      let closed = false;
+      return { ...lease, close: () => { lease.close(); if (!closed) { active--; closed = true; } } };
+    } };
+  });
+  const bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough });
+  expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver.request })).state).toBe("ready");
+  expect(acquired).toBe(240);
+  expect(peak).toBe(1);
+  expect(active).toBe(0);
+  expect([...receiver.files.values()].filter(bytes => bytes.equals(png))).toHaveLength(240);
+  expect(receiver.entries(bodies[0]!)).toHaveLength(30);
+}, 30000);
 
 test("archive freeze validation rereads current SQL bodies after asynchronous status", async () => {
   const f = await fixture(), bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });

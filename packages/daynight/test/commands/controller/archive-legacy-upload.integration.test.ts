@@ -132,7 +132,7 @@ test("a legacy completion without a local receipt rejects resource bytes changed
     const file = path.join(directory, (await readdir(directory))[0]!); await writeFile(file, Buffer.alloc((await stat(file)).size));
     return Response.json({ archive: f.current });
   });
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("legacy resource content changed");
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("resource content changed");
   await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
   await expect(stat(`${f.journalPath}.archive-intent-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
 });

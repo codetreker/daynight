@@ -5,7 +5,7 @@ import { withStoppedControllerStorage } from "./stopped-storage.js";
 import { acquireControllerStoragePermit } from "./storage-lock.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { parseSessionResource, sessionBinding, type TimelineEntry } from "../../session/protocol.js";
+import { parseSessionResource, sessionBinding, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
 import { parseSessionArchive, parseSessionArchiveManifest, parseSessionArchivePreparation, parseSessionArchiveFileReceipt, parseSessionArchiveStatus, parseSessionArchiveTimeline, sessionArchiveReferences, SESSION_ARCHIVE_RESOURCE_MAX_BYTES, type SessionArchiveStatus, type SessionArchiveFileReceipt } from "../../session/archive.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerSnapshot } from "./lifecycle-store.js";
@@ -14,7 +14,7 @@ import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../
 import { closeSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { openSessionContent } from "./content/session-content.js";
-import type { ControlledResourceLease } from "./content/resource-files.js";
+import type { ControlledResourceLease, ResourceFiles } from "./content/resource-files.js";
 import { writeDurableJson } from "../../platform/durable-json.js";
 import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
 
@@ -64,6 +64,28 @@ type ArchiveIntent = {
   resources: { resourceId: string; fileId: string }[];
 };
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+const withFrozenResource = async <T>(source: Pick<ResourceFiles, "acquireResource">, expected: SessionResource, action: (lease: ControlledResourceLease) => T | Promise<T>): Promise<T> => {
+  const lease = source.acquireResource(expected.resourceId);
+  let failed = false, failure: unknown;
+  try {
+    if (JSON.stringify(parseSessionResource(lease.resource)) !== JSON.stringify(expected) || expected.status !== "available" || expected.byteLength === null || expected.sha256 === null) throw new Error("Frozen archive resource differs from its original descriptor.");
+    const hash = createHash("sha256"), length = BigInt(expected.byteLength);
+    let offset = 0n;
+    while (offset < length) {
+      const block = lease.read(String(offset), 524288);
+      if (block.length === 0 || offset + BigInt(block.length) > length) throw new Error("The original archive resource content changed.");
+      hash.update(block); offset += BigInt(block.length);
+    }
+    if (hash.digest("hex") !== expected.sha256) throw new Error("The original archive resource content changed.");
+    // The verified FD remains the source for this resource's status, retry and
+    // chunk sequence. Acquiring it does not establish a new SQL snapshot.
+    return await action(lease);
+  } catch (error) { failed = true; failure = error; throw error; }
+  finally {
+    try { lease.close(); }
+    catch (close) { throw failed ? new AggregateError([failure, close], "Archive resource operation and lease shutdown failed.", { cause: failure }) : close; }
+  }
+};
 const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<void> => {
   signal.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
@@ -150,154 +172,140 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     content.timeline.iterate(entry => { entries.push(entry); });
     return parseSessionArchiveTimeline({ entries });
   };
-  const resourceLeases = new Map<string, ControlledResourceLease>();
-  let transferFailed = false, transferFailure: unknown;
-  try {
-    const frozen = local(db => db.transaction(() => {
-      assertCurrentSqlite(db, controllerJournalFormat); assertOriginal(db); assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
-      const content = readContent(db);
-      const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sourceThrough,CAST(last_acknowledged AS TEXT) AS acknowledgedThrough,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { sourceThrough:string; acknowledgedThrough:string; projection_gap:string|null; archive_incomplete:number };
-      const repairCode = archiveRepairCode(source);
-      if (repairCode !== null) throw new ArchiveRepairRequiredError(repairCode);
-      const timeline = materializeTimeline(content);
-      const allResources = [...content.resourceFiles.resources.values()].map(value => parseSessionResource(JSON.parse(JSON.stringify(value.resource)))).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
-      const refs = sessionArchiveReferences(timeline.entries), resources = [...refs.resources].sort().map(id => { const resource = allResources.find(resource => resource.resourceId === id); if (!resource || resource.status === "pending") throw new Error("Pending archive resource is incomplete."); return resource; });
-      const epochRow = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as {value:string}|undefined;
-      // Open the immutable originals before leaving the SQL snapshot. A later
-      // pathname lookup cannot establish the identity of these frozen bytes.
-      for (const resource of allResources) if (resource.status === "available") resourceLeases.set(resource.resourceId, content.resourceFiles.acquireResource(resource.resourceId));
-      return { resourceLeases: resourceLeases as ReadonlyMap<string, ControlledResourceLease>, timeline, resources, allResources, refs, source, historyEpoch: epochRow ? JSON.parse(epochRow.value) as string : null };
-    }).deferred());
-    const assertFrozen = (requireAcknowledged = true): void => inspectOriginal(current => {
-      const source = current.prepare("SELECT CAST(last_sequence AS TEXT) AS through,CAST(last_acknowledged AS TEXT) AS acknowledged FROM execution WHERE id=1").get() as {through:string;acknowledged:string};
-      if (source.through !== frozen.source.sourceThrough || source.acknowledged !== (requireAcknowledged ? source.through : frozen.source.acknowledgedThrough)) throw new Error("The stopped source checkpoint was not completely acknowledged.");
-      const content = readContent(current), timeline = materializeTimeline(content);
-      const resources = [...content.resourceFiles.resources.values()].map(value => value.resource).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
-      if (JSON.stringify(timeline) !== JSON.stringify(frozen.timeline) || JSON.stringify(resources) !== JSON.stringify(frozen.allResources)) throw new Error("The stopped archive source changed during transfer.");
-    });
-    const intentPath = `${journalPath}.archive-intent-${ticket.executionGeneration}.json`;
-    const existing = await status();
-    if (existing.state === "ready" && existing.schemaVersion === 3 && existing.migration) {
-      // The old PUT could commit before its receipt reached the Controller. A
-      // reader may already have converted that exact source to a sealed bundle.
-      // Reconstruct the old wire document, including unreferenced artifacts,
-      // rather than competing with its deterministic migration file identities.
-      const resources = frozen.allResources.map(resource => ({ resource, data: null as string | null }));
-      const source = { schemaVersion: 1, ...fence, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, nativeSessionId: observed.nativeSessionId, entries: frozen.timeline.entries, resources };
-      let length = Buffer.byteLength(JSON.stringify(source));
-      for (const { resource } of resources) {
-        if (resource.status === "pending" || resource.status === "available" && BigInt(resource.byteLength!) > BigInt(SESSION_ARCHIVE_RESOURCE_MAX_BYTES)) throw new Error("Server archive migration differs from the original legacy source.");
-        if (resource.status === "available") length += Math.ceil(Number(resource.byteLength!) / 3) * 4 - 2;
-      }
-      // Check the bounded old representation before allocating any base64 copy.
-      if (String(length) !== existing.migration.sourceByteLength) throw new Error("Server archive migration differs from the original legacy source.");
-      for (const value of resources) {
-        if (value.resource.status !== "available") continue;
-        const lease = frozen.resourceLeases.get(value.resource.resourceId)!;
-        try {
-          const bytes = Buffer.alloc(Number(value.resource.byteLength!));
-          for (let offset = 0; offset < bytes.length;) { const block = lease.read(String(offset), 524288); block.copy(bytes, offset); offset += block.length; }
-          if (sha256(bytes) !== value.resource.sha256) throw new Error("The original legacy resource content changed.");
-          value.data = bytes.toString("base64");
-        } finally { lease.close(); }
-      }
-      const bytes = Buffer.from(JSON.stringify(parseSessionArchive(source)));
-      if (sha256(bytes) !== existing.migration.sourceSha256 || String(bytes.length) !== existing.migration.sourceByteLength) throw new Error("Server archive migration differs from the original legacy source.");
-      assertFrozen(false);
-      localFiles(() => writeDurableJson(receiptPath, existing));
-      return existing;
+  const frozen = local(db => db.transaction(() => {
+    assertCurrentSqlite(db, controllerJournalFormat); assertOriginal(db); assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
+    const content = readContent(db);
+    const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sourceThrough,CAST(last_acknowledged AS TEXT) AS acknowledgedThrough,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { sourceThrough:string; acknowledgedThrough:string; projection_gap:string|null; archive_incomplete:number };
+    const repairCode = archiveRepairCode(source);
+    if (repairCode !== null) throw new ArchiveRepairRequiredError(repairCode);
+    const timeline = materializeTimeline(content);
+    const allResources = [...content.resourceFiles.resources.values()].map(value => parseSessionResource(JSON.parse(JSON.stringify(value.resource)))).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
+    const refs = sessionArchiveReferences(timeline.entries), resources = [...refs.resources].sort().map(id => { const resource = allResources.find(resource => resource.resourceId === id); if (!resource || resource.status === "pending") throw new Error("Pending archive resource is incomplete."); return resource; });
+    const epochRow = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as {value:string}|undefined;
+    const resourceSource = { acquireResource: content.resourceFiles.acquireResource };
+    return { resourceSource, timeline, resources, allResources, refs, source, historyEpoch: epochRow ? JSON.parse(epochRow.value) as string : null };
+  }).deferred());
+  const assertFrozen = (requireAcknowledged = true): void => inspectOriginal(current => {
+    const source = current.prepare("SELECT CAST(last_sequence AS TEXT) AS through,CAST(last_acknowledged AS TEXT) AS acknowledged FROM execution WHERE id=1").get() as {through:string;acknowledged:string};
+    if (source.through !== frozen.source.sourceThrough || source.acknowledged !== (requireAcknowledged ? source.through : frozen.source.acknowledgedThrough)) throw new Error("The stopped source checkpoint was not completely acknowledged.");
+    const content = readContent(current), timeline = materializeTimeline(content);
+    const resources = [...content.resourceFiles.resources.values()].map(value => value.resource).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
+    if (JSON.stringify(timeline) !== JSON.stringify(frozen.timeline) || JSON.stringify(resources) !== JSON.stringify(frozen.allResources)) throw new Error("The stopped archive source changed during transfer.");
+  });
+  const intentPath = `${journalPath}.archive-intent-${ticket.executionGeneration}.json`;
+  const existing = await status();
+  if (existing.state === "ready" && existing.schemaVersion === 3 && existing.migration) {
+    // The old PUT could commit before its receipt reached the Controller. A
+    // reader may already have converted that exact source to a sealed bundle.
+    // Reconstruct the old wire document, including unreferenced artifacts,
+    // rather than competing with its deterministic migration file identities.
+    const resources = frozen.allResources.map(resource => ({ resource, data: null as string | null }));
+    const source = { schemaVersion: 1, ...fence, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, nativeSessionId: observed.nativeSessionId, entries: frozen.timeline.entries, resources };
+    let length = Buffer.byteLength(JSON.stringify(source));
+    for (const { resource } of resources) {
+      if (resource.status === "pending" || resource.status === "available" && BigInt(resource.byteLength!) > BigInt(SESSION_ARCHIVE_RESOURCE_MAX_BYTES)) throw new Error("Server archive migration differs from the original legacy source.");
+      if (resource.status === "available") length += Math.ceil(Number(resource.byteLength!) / 3) * 4 - 2;
     }
-    if (existing.state === "ready" && (existing.schemaVersion !== 3 || !existsSync(intentPath))) throw new Error("Server archive has no confirmed original source or upload intent.");
-    if (frozen.source.sourceThrough !== frozen.source.acknowledgedThrough) {
-      // The durable batch identity and bytes survive retries, including reconciliation after response loss.
-      await replayStoppedControllerHistory({ journalPath, ticket, ...(options.stateDirectory === undefined ? {} : { stateDirectory: options.stateDirectory }), signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
+    // Check the bounded old representation before allocating any base64 copy.
+    if (String(length) !== existing.migration.sourceByteLength) throw new Error("Server archive migration differs from the original legacy source.");
+    for (const value of resources) {
+      if (value.resource.status !== "available") continue;
+      await withFrozenResource(frozen.resourceSource, value.resource, lease => {
+        const bytes = Buffer.alloc(Number(value.resource.byteLength!));
+        for (let offset = 0; offset < bytes.length;) { const block = lease.read(String(offset), 524288); block.copy(bytes, offset); offset += block.length; }
+        if (sha256(bytes) !== value.resource.sha256) throw new Error("The original legacy resource content changed.");
+        value.data = bytes.toString("base64");
+      });
     }
-    assertFrozen();
-    // Only identity-preserving preparation is replayable; reset requests need their own policy.
-    const prepared = parseSessionArchivePreparation(await call("POST", "/prepare", true, JSON.stringify(identity)));
-    if (prepared.recordId !== ticket.sessionId || prepared.phase === "failed" || prepared.sourceThrough !== frozen.source.sourceThrough || frozen.historyEpoch !== null && frozen.historyEpoch !== prepared.historyEpoch) throw new Error("Archive source differs from the original service checkpoint.");
-    const timelineBytes = Buffer.from(JSON.stringify(frozen.timeline));
-    const historyBytes = Buffer.from(JSON.stringify({ historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
-    const intent = localFiles((): ArchiveIntent => {
-      let intent: ArchiveIntent;
-      if (existsSync(intentPath)) {
-        const value = JSON.parse(readFileSync(intentPath,"utf8")) as unknown;
-        const keys = (value: unknown, names: string): value is Record<string,unknown> => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === names;
-        const id = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
-        const file = (value: unknown, bytes: Uint8Array): boolean => keys(value,"byteLength,fileId,sha256") && id(value.fileId) && value.sha256 === sha256(bytes) && value.byteLength === String(bytes.length);
-        const expectedResources = frozen.resources.filter(resource=>resource.status === "available" && resource.revision === undefined).map(resource=>resource.resourceId).sort();
-        if (!keys(value,"controllerId,controllerInstanceId,fence,history,historyEpoch,resources,schemaVersion,sourceThrough,timeline") || value.schemaVersion !== 1 || JSON.stringify(value.fence) !== JSON.stringify(fence) || value.controllerId !== ticket.controllerId || value.controllerInstanceId !== ticket.controllerInstanceId || value.historyEpoch !== prepared.historyEpoch || value.sourceThrough !== prepared.sourceThrough || !file(value.history,historyBytes) || !file(value.timeline,timelineBytes) || !Array.isArray(value.resources) || !value.resources.every(resource=>keys(resource,"fileId,resourceId")&&id(resource.fileId)&&id(resource.resourceId)) || JSON.stringify(value.resources.map(resource=>resource.resourceId).sort())!==JSON.stringify(expectedResources)) throw new Error("Stopped archive intent cannot change identity.");
-        intent = value as ArchiveIntent;
-        const fileIds = [intent.history.fileId,intent.timeline.fileId,...intent.resources.map(resource=>resource.fileId)];
-        if (new Set(fileIds).size !== fileIds.length) throw new Error("Stopped archive file identities must be distinct.");
-      } else {
-        intent = { schemaVersion:1, ...identity, historyEpoch:prepared.historyEpoch,sourceThrough:prepared.sourceThrough,history:{fileId:randomUUID(),sha256:sha256(historyBytes),byteLength:String(historyBytes.length)},timeline:{fileId:randomUUID(),sha256:sha256(timelineBytes),byteLength:String(timelineBytes.length)},resources:frozen.resources.filter(resource => resource.status === "available" && resource.revision === undefined).map(resource => ({resourceId:resource.resourceId,fileId:randomUUID()})) };
-        writeDurableJson(intentPath,intent);
-      }
-      return intent;
-    });
-    let historyRevision: string | null = null;
-    const transfer = async (purpose:"history"|"timeline"|"resource", file:{fileId:string;sha256:string;byteLength:string}, read:(offset:string,limit:number)=>Uint8Array, descriptor?: unknown): Promise<void> => {
-      const path = purpose === "history" ? `/prepare/history/${file.fileId}` : `/files/${file.fileId}`;
-      const parse = (raw: unknown): SessionArchiveFileReceipt => {
-        if (purpose !== "history") return parseSessionArchiveFileReceipt(raw);
-        if (!raw || typeof raw !== "object") throw new Error("Invalid archive history receipt.");
-        const {syncId,timelineRevision,...rest} = raw as Record<string,unknown>;
-        if (Object.keys(raw).length !== 7 || rest.state === "complete" && (typeof timelineRevision !== "string" || !/^[1-9][0-9]*$/.test(timelineRevision)) || rest.state !== "complete" && timelineRevision !== null) throw new Error("Invalid archive history checkpoint.");
-        if (rest.state === "complete") historyRevision = timelineRevision as string;
-        return parseSessionArchiveFileReceipt({fileId:syncId,...rest});
-      };
-      let receipt: SessionArchiveFileReceipt | null = null;
-      try { receipt=parse(await call("GET",`${path}/status`,true)); } catch(error) { if (!(error && typeof error === "object" && "status" in error && error.status === 404)) throw error; }
-      const check = (receipt: SessionArchiveFileReceipt): void => { if (receipt.fileId !== file.fileId || receipt.byteLength !== file.byteLength || receipt.sha256 !== file.sha256 || receipt.state === "failed") throw new Error("Archive file differs from its original intent."); };
-      if (receipt) check(receipt);
-      while (receipt?.state !== "complete") {
-        roundSignal.throwIfAborted();
-        const offset=receipt?.acceptedOffset??"0";
-        // All bytes with a receiving receipt still require validation. An exact
-        // retry of the final original block asks the same writer to reconcile it.
-        const start=offset===file.byteLength && offset!=="0" ? String(Math.floor((Number(offset)-1)/524288)*524288) : offset;
-        const block=read(start,524288);
-        try { receipt=parse(await call("PUT",`${path}?offset=${start}${purpose==="resource"?"&purpose=resource&migrationOnly=true":""}`,true,block,{"Daynight-File-Byte-Length":file.byteLength,"Daynight-File-SHA256":file.sha256,"Daynight-Chunk-SHA256":sha256(block),...(descriptor===undefined?{}:{"Daynight-Resource-Descriptor":JSON.stringify(descriptor)})})); }
-        catch(error) { if (roundSignal.aborted || error instanceof ArchiveRequestError && error.busy) throw error; const current=parse(await call("GET",`${path}/status`,true));check(current);if (current.state!=="complete" && current.acceptedOffset===offset) throw error;receipt=current; }
-        check(receipt);
-      }
-    };
-    if (prepared.phase === "settling") {
-      await transfer("history",intent.history,(offset,limit)=>historyBytes.subarray(Number(offset),Number(offset)+limit));
-      assertFrozen();
-      local(checkpoint=>runSqliteImmediate(checkpoint,()=>{
-        assertCurrentSqlite(checkpoint,controllerJournalFormat);assertOriginal(checkpoint);
-        checkpoint.prepare("INSERT INTO image_runtime_state VALUES('archive_history_checkpoint',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({...identity,historyEpoch:intent.historyEpoch,sourceThrough:intent.sourceThrough,history:intent.history,timelineRevision:historyRevision}));
-      }));
-      for (const resourceIntent of intent.resources) {
-        const resource=frozen.resources.find(resource=>resource.resourceId===resourceIntent.resourceId)!;
-        const lease=frozen.resourceLeases.get(resource.resourceId)!;
-        try { await transfer("resource",{fileId:resourceIntent.fileId,sha256:resource.sha256!,byteLength:resource.byteLength!},(offset,limit)=>lease.read(offset,limit),resource); }
-        finally { lease.close(); }
-      }
-    }
-    const sealed=parseSessionArchivePreparation(await call("POST","/seal",true));
-    if (sealed.phase!=="sealed"||sealed.recordId!==ticket.sessionId||sealed.historyEpoch!==intent.historyEpoch||sealed.sourceThrough!==intent.sourceThrough) throw new Error("Archive seal was not confirmed.");
-    const partial=frozen.refs.unavailable||frozen.resources.some(resource=>resource.status!=="available");
-    const manifest=parseSessionArchiveManifest({schemaVersion:3,contentKind:"native_timeline",recordId:ticket.sessionId,...identity,provider:ticket.provider,nativeSessionId:observed.nativeSessionId,timeline:intent.timeline,resources:sealed.resources,completeness:partial?"partial":"complete"});
-    await transfer("timeline",intent.timeline,(offset,limit)=>timelineBytes.subarray(Number(offset),Number(offset)+limit));
-    const body=JSON.stringify(manifest),hash=sha256(Buffer.from(body)),length=String(Buffer.byteLength(body));
-    const matches=(value:SessionArchiveStatus)=>value.state==="ready"&&value.schemaVersion===3&&value.sha256===hash&&value.byteLength===length&&value.completeness===manifest.completeness;
-    let current=await status();
-    if (current.state!=="ready") {
-      assertFrozen();
-      try { current=parseSessionArchiveStatus((await call("PUT","/content",true,body) as {archive:unknown}).archive); }
-      catch(error) { if (roundSignal.aborted || error instanceof ArchiveRequestError && error.busy) throw error; current=await status();if(!matches(current))throw error; }
-    }
-    if(!matches(current))throw new Error("Session archive commit was not confirmed with matching integrity.");
-    assertFrozen();
-    localFiles(() => writeDurableJson(receiptPath,current));
-    return current;
-  } catch (error) { transferFailed = true; transferFailure = error; throw error; }
-  finally {
-    const failures: unknown[] = [];
-    for (const lease of resourceLeases.values()) try { lease.close(); } catch (error) { failures.push(error); }
-    if (failures.length > 0) throw new AggregateError(transferFailed ? [transferFailure, ...failures] : failures, "Frozen archive resource lease shutdown failed.", transferFailed ? { cause: transferFailure } : undefined);
+    const bytes = Buffer.from(JSON.stringify(parseSessionArchive(source)));
+    if (sha256(bytes) !== existing.migration.sourceSha256 || String(bytes.length) !== existing.migration.sourceByteLength) throw new Error("Server archive migration differs from the original legacy source.");
+    assertFrozen(false);
+    localFiles(() => writeDurableJson(receiptPath, existing));
+    return existing;
   }
+  if (existing.state === "ready" && (existing.schemaVersion !== 3 || !existsSync(intentPath))) throw new Error("Server archive has no confirmed original source or upload intent.");
+  if (frozen.source.sourceThrough !== frozen.source.acknowledgedThrough) {
+    // The durable batch identity and bytes survive retries, including reconciliation after response loss.
+    await replayStoppedControllerHistory({ journalPath, ticket, ...(options.stateDirectory === undefined ? {} : { stateDirectory: options.stateDirectory }), signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
+  }
+  assertFrozen();
+  // Only identity-preserving preparation is replayable; reset requests need their own policy.
+  const prepared = parseSessionArchivePreparation(await call("POST", "/prepare", true, JSON.stringify(identity)));
+  if (prepared.recordId !== ticket.sessionId || prepared.phase === "failed" || prepared.sourceThrough !== frozen.source.sourceThrough || frozen.historyEpoch !== null && frozen.historyEpoch !== prepared.historyEpoch) throw new Error("Archive source differs from the original service checkpoint.");
+  const timelineBytes = Buffer.from(JSON.stringify(frozen.timeline));
+  const historyBytes = Buffer.from(JSON.stringify({ historyEpoch: prepared.historyEpoch, sourceThrough: prepared.sourceThrough, entries: frozen.timeline.entries, resources: frozen.resources }));
+  const intent = localFiles((): ArchiveIntent => {
+    let intent: ArchiveIntent;
+    if (existsSync(intentPath)) {
+      const value = JSON.parse(readFileSync(intentPath,"utf8")) as unknown;
+      const keys = (value: unknown, names: string): value is Record<string,unknown> => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === names;
+      const id = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
+      const file = (value: unknown, bytes: Uint8Array): boolean => keys(value,"byteLength,fileId,sha256") && id(value.fileId) && value.sha256 === sha256(bytes) && value.byteLength === String(bytes.length);
+      const expectedResources = frozen.resources.filter(resource=>resource.status === "available" && resource.revision === undefined).map(resource=>resource.resourceId).sort();
+      if (!keys(value,"controllerId,controllerInstanceId,fence,history,historyEpoch,resources,schemaVersion,sourceThrough,timeline") || value.schemaVersion !== 1 || JSON.stringify(value.fence) !== JSON.stringify(fence) || value.controllerId !== ticket.controllerId || value.controllerInstanceId !== ticket.controllerInstanceId || value.historyEpoch !== prepared.historyEpoch || value.sourceThrough !== prepared.sourceThrough || !file(value.history,historyBytes) || !file(value.timeline,timelineBytes) || !Array.isArray(value.resources) || !value.resources.every(resource=>keys(resource,"fileId,resourceId")&&id(resource.fileId)&&id(resource.resourceId)) || JSON.stringify(value.resources.map(resource=>resource.resourceId).sort())!==JSON.stringify(expectedResources)) throw new Error("Stopped archive intent cannot change identity.");
+      intent = value as ArchiveIntent;
+      const fileIds = [intent.history.fileId,intent.timeline.fileId,...intent.resources.map(resource=>resource.fileId)];
+      if (new Set(fileIds).size !== fileIds.length) throw new Error("Stopped archive file identities must be distinct.");
+    } else {
+      intent = { schemaVersion:1, ...identity, historyEpoch:prepared.historyEpoch,sourceThrough:prepared.sourceThrough,history:{fileId:randomUUID(),sha256:sha256(historyBytes),byteLength:String(historyBytes.length)},timeline:{fileId:randomUUID(),sha256:sha256(timelineBytes),byteLength:String(timelineBytes.length)},resources:frozen.resources.filter(resource => resource.status === "available" && resource.revision === undefined).map(resource => ({resourceId:resource.resourceId,fileId:randomUUID()})) };
+      writeDurableJson(intentPath,intent);
+    }
+    return intent;
+  });
+  let historyRevision: string | null = null;
+  const transfer = async (purpose:"history"|"timeline"|"resource", file:{fileId:string;sha256:string;byteLength:string}, read:(offset:string,limit:number)=>Uint8Array, descriptor?: unknown): Promise<void> => {
+    const path = purpose === "history" ? `/prepare/history/${file.fileId}` : `/files/${file.fileId}`;
+    const parse = (raw: unknown): SessionArchiveFileReceipt => {
+      if (purpose !== "history") return parseSessionArchiveFileReceipt(raw);
+      if (!raw || typeof raw !== "object") throw new Error("Invalid archive history receipt.");
+      const {syncId,timelineRevision,...rest} = raw as Record<string,unknown>;
+      if (Object.keys(raw).length !== 7 || rest.state === "complete" && (typeof timelineRevision !== "string" || !/^[1-9][0-9]*$/.test(timelineRevision)) || rest.state !== "complete" && timelineRevision !== null) throw new Error("Invalid archive history checkpoint.");
+      if (rest.state === "complete") historyRevision = timelineRevision as string;
+      return parseSessionArchiveFileReceipt({fileId:syncId,...rest});
+    };
+    let receipt: SessionArchiveFileReceipt | null = null;
+    try { receipt=parse(await call("GET",`${path}/status`,true)); } catch(error) { if (!(error && typeof error === "object" && "status" in error && error.status === 404)) throw error; }
+    const check = (receipt: SessionArchiveFileReceipt): void => { if (receipt.fileId !== file.fileId || receipt.byteLength !== file.byteLength || receipt.sha256 !== file.sha256 || receipt.state === "failed") throw new Error("Archive file differs from its original intent."); };
+    if (receipt) check(receipt);
+    while (receipt?.state !== "complete") {
+      roundSignal.throwIfAborted();
+      const offset=receipt?.acceptedOffset??"0";
+      // All bytes with a receiving receipt still require validation. An exact
+      // retry of the final original block asks the same writer to reconcile it.
+      const start=offset===file.byteLength && offset!=="0" ? String(Math.floor((Number(offset)-1)/524288)*524288) : offset;
+      const block=read(start,524288);
+      try { receipt=parse(await call("PUT",`${path}?offset=${start}${purpose==="resource"?"&purpose=resource&migrationOnly=true":""}`,true,block,{"Daynight-File-Byte-Length":file.byteLength,"Daynight-File-SHA256":file.sha256,"Daynight-Chunk-SHA256":sha256(block),...(descriptor===undefined?{}:{"Daynight-Resource-Descriptor":JSON.stringify(descriptor)})})); }
+      catch(error) { if (roundSignal.aborted || error instanceof ArchiveRequestError && error.busy) throw error; const current=parse(await call("GET",`${path}/status`,true));check(current);if (current.state!=="complete" && current.acceptedOffset===offset) throw error;receipt=current; }
+      check(receipt);
+    }
+  };
+  if (prepared.phase === "settling") {
+    await transfer("history",intent.history,(offset,limit)=>historyBytes.subarray(Number(offset),Number(offset)+limit));
+    assertFrozen();
+    local(checkpoint=>runSqliteImmediate(checkpoint,()=>{
+      assertCurrentSqlite(checkpoint,controllerJournalFormat);assertOriginal(checkpoint);
+      checkpoint.prepare("INSERT INTO image_runtime_state VALUES('archive_history_checkpoint',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({...identity,historyEpoch:intent.historyEpoch,sourceThrough:intent.sourceThrough,history:intent.history,timelineRevision:historyRevision}));
+    }));
+    for (const resourceIntent of intent.resources) {
+      const resource=frozen.resources.find(resource=>resource.resourceId===resourceIntent.resourceId)!;
+      await withFrozenResource(frozen.resourceSource, resource, lease => transfer("resource",{fileId:resourceIntent.fileId,sha256:resource.sha256!,byteLength:resource.byteLength!},(offset,limit)=>lease.read(offset,limit),resource));
+    }
+  }
+  const sealed=parseSessionArchivePreparation(await call("POST","/seal",true));
+  if (sealed.phase!=="sealed"||sealed.recordId!==ticket.sessionId||sealed.historyEpoch!==intent.historyEpoch||sealed.sourceThrough!==intent.sourceThrough) throw new Error("Archive seal was not confirmed.");
+  const partial=frozen.refs.unavailable||frozen.resources.some(resource=>resource.status!=="available");
+  const manifest=parseSessionArchiveManifest({schemaVersion:3,contentKind:"native_timeline",recordId:ticket.sessionId,...identity,provider:ticket.provider,nativeSessionId:observed.nativeSessionId,timeline:intent.timeline,resources:sealed.resources,completeness:partial?"partial":"complete"});
+  await transfer("timeline",intent.timeline,(offset,limit)=>timelineBytes.subarray(Number(offset),Number(offset)+limit));
+  const body=JSON.stringify(manifest),hash=sha256(Buffer.from(body)),length=String(Buffer.byteLength(body));
+  const matches=(value:SessionArchiveStatus)=>value.state==="ready"&&value.schemaVersion===3&&value.sha256===hash&&value.byteLength===length&&value.completeness===manifest.completeness;
+  let current=await status();
+  if (current.state!=="ready") {
+    assertFrozen();
+    try { current=parseSessionArchiveStatus((await call("PUT","/content",true,body) as {archive:unknown}).archive); }
+    catch(error) { if (roundSignal.aborted || error instanceof ArchiveRequestError && error.busy) throw error; current=await status();if(!matches(current))throw error; }
+  }
+  if(!matches(current))throw new Error("Session archive commit was not confirmed with matching integrity.");
+  assertFrozen();
+  localFiles(() => writeDurableJson(receiptPath,current));
+  return current;
 };

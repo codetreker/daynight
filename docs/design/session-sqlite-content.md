@@ -68,7 +68,9 @@ checkpoint busy 返回 `waiting/reader_busy`，保留 pending、原文件与必�
 
 停止归档在精确原 stopped 身份下物化完整 timeline、descriptor 和引用。schema3 manifest/timeline、资源 hash、路径及 source-tail/旧 ready receipt 对账继续沿原格式。`assertFrozen()` 新开短只读连接，核对原身份、当前 SQL 正文和 source 截止点；后续本机写阶段重新取得 permit 和角色准入。
 
-冻结归档对象只保留物化条目与在快照内取得的资源文件 lease；lease 的 `read`/`close` 不访问 SQL，调用者仍须最终关闭。原文件拥有者的 `acquireResource` 本身也不访问 SQL，但不能将整个组合对象作为冻结读取 facade 保留。SQL 连接关闭后不得调用 `timeline.*`、`metadataBytes()`，也不得调用组合覆写的 `releaseResource`/`assertResourceReleasable`，这些操作均依赖当前 SQL 与引用保护。文件写入和 pin 变更不属于可跨网络等待的读取 facade。
+原资源拥有者在冻结 SQL 快照内逐项验证 available blob；冻结对象复制 descriptor，只保留物化条目与 `Pick<ResourceFiles, "acquireResource">` 文件读取能力。每次传输一个资源时才取得 lease，通过同一 FD 比较原冻结 descriptor、完整长度及 SHA-256，然后持有该 FD 完成本资源的 status、重试和块读取，在 finally 关闭。`acquireResource` 和 lease 的 `read`/`close` 不访问 SQL；这种后续文件取得不代表新的 SQL 快照，原 pin/生命周期及新连接的 `assertFrozen()` 仍保护冻结来源。
+
+冻结对象不能保留完整可变资源组合。SQL 连接关闭后不得调用 `timeline.*`、`metadataBytes()`，也不得调用组合覆写的 `releaseResource`/`assertResourceReleasable`，这些操作均依赖当前 SQL 与引用保护。文件写入和 pin 变更不属于可跨网络等待的读取 facade。
 
 ## 可观察结果与验证
 

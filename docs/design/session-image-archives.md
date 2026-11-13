@@ -41,7 +41,9 @@ Controller 媒体存储的 occurrence/journal 是 Controller 恢复来源，服�
 
 活动同步与停止归档的本机正文均来自 `content/session-content.ts`，分页显示结果不能替代完整 SQL 遍历。一个短同步 SQL 快照同时物化有序 entries、资源 descriptor/引用、historyEpoch 与 sourceThrough；活动同步以原写事务提交同步 intent 和固定字节，停止归档以原读事务取得最终内容，事务结束后才进行网络传输。同 syncId 的重试使用原冻结字节，不能将后续修订写入旧同步文件。
 
-停止入口先以原 ticket、完整停止证据和 permit 完成待处理的正文退休/压缩及正常准入。冻结后关闭本机 SQL，并释放该本机阶段的存储许可。上传对象仅保留物化 timeline 与在快照内取得的资源文件 lease；lease 的 `read`/`close` 可独立于 SQL，且必须在上传结束后关闭；SQL timeline、metadata 与检查当前引用的资源释放入口均不得在关闭后继续使用。`assertFrozen()` 以新短连接复核原 stopped 身份、当前 SQL 正文和 source 截止点；source-tail ACK、ready receipt 对账和后续本机写入重新取得原 permit，并使用当前 SQL guard。[SQL 正文设计](session-sqlite-content.md)拥有迁移、reader barrier 与物理维护顺序。
+停止入口先以原 ticket、完整停止证据和 permit 完成待处理的正文退休/压缩及正常准入。原资源拥有者在 SQL 快照内逐项验证 available 原件，冻结时复制资源 descriptor；随后关闭本机 SQL 并释放该本机阶段的存储许可。上传对象只保留物化 timeline、复制的 descriptor 与专用 `acquireResource` 文件读取能力，不保留完整可变资源拥有者或 SQL 引用 guard。
+
+每次处理一个资源时才取得其 lease，将 metadata 与原冻结 descriptor 比较，并经同一持有的 FD 完整核对长度和 SHA-256。该 FD 贯穿本资源的 HTTP status、重试及块读取，最终在 finally 关闭，资源数不会决定同时打开的 FD 数。后来取得 lease 不产生新 SQL 快照；原 pin/生命周期与 `assertFrozen()` 的新短连接继续核对原 stopped 身份、当前 SQL 正文和 source 截止点。SQL timeline、metadata 与检查当前引用的资源释放入口不得在 SQL 关闭后使用；source-tail ACK、ready receipt 对账和后续本机写入重新取得原 permit 并使用当前 SQL guard。[SQL 正文设计](session-sqlite-content.md)拥有迁移、reader barrier 与物理维护顺序。
 
 ### 新 Test Session 的原生历史恢复（消费者接入合同）
 
