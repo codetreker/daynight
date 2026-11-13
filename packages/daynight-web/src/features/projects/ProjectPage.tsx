@@ -201,9 +201,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const chainPagination = usePagination(rootIds.length);
   const standalonePagination = usePagination(standaloneIds.length);
   const goalPagination = usePagination(goals.length);
+  const skipTagPageReset = useRef(false);
   const resetTaskPages = useRef(() => {});
   resetTaskPages.current = () => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); goalPagination.onPageChange(1); };
   useEffect(() => {
+    if (skipTagPageReset.current) { skipTagPageReset.current = false; return; }
     resetTaskPages.current();
   }, [tagFilter.value, tagFilter.invalid]);
   const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1), 20);
@@ -386,6 +388,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       return;
     }
     const representative = snapshot.index.componentByTask.get(id)!;
+    const members = [...snapshot.index.components.get(representative)!.memberIds]
+      .map((member) => snapshot.index.nodes.get(member)!).filter((member) => member.parentId === null);
+    if (detailSelection !== null && (tagFilter.invalid || !members.some((member) => matchesTaskTags(snapshot, member, tagFilter.value)))) {
+      history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: detailSelection.insideProjectGraph && openGraphTarget !== null,
+        navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+        if (originalTrigger.current === null) originalTrigger.current = trigger;
+        setNotice(null);
+      });
+      return;
+    }
     const view = snapshot.index.components.get(representative)!.memberIds.size === 1 ? "standalone" : "chains";
     const commit = () => {
       if (detailSelection !== null) suppressRestore.current = true;
@@ -398,7 +410,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     };
     if (section === "tasks" && activeView === view && graphWitness === null && detailSelection === null) commit();
     else history.select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
-  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, section, saveSectionPosition, onSectionChange, onViewChange]);
+  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, tagFilter.value, tagFilter.invalid, section, saveSectionPosition, onSectionChange, onViewChange]);
 
   const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
@@ -462,7 +474,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           if (filters.assignee !== assigneeFilter) setAssigneeFilter(filters.assignee);
           setStatusFilter(filters.status);
         }
-        if (clearTags) tagFilter.update({ ...tagFilter.value, tagIds: [], untagged: false });
+        if (clearTags) {
+          skipTagPageReset.current = true;
+          if (view === "chains") standalonePagination.onPageChange(1); else chainPagination.onPageChange(1);
+          goalPagination.onPageChange(1);
+          tagFilter.update({ ...tagFilter.value, tagIds: [], untagged: false });
+        }
       }
       setListTarget(blocked ? null : target);
       if (view !== activeView) onViewChange(view);
@@ -491,7 +508,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (!verified && !missing) { setNotice({ kind: "overview-tag-check-failed" }); return; }
       navigateToTarget(verified, missing);
     })();
-  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
+  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
   useEffect(() => {
     if (snapshot === null || (!window.location.hash.startsWith("#task=") && !window.location.hash.startsWith("#chain="))) return;

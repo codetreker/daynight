@@ -19,6 +19,8 @@ import { projectChain, type GraphIndex } from "../src/features/task-graph/model"
 import * as TaskSearchModule from "../src/features/task-search/useTaskSearch";
 import { waitForState } from "./helpers/waitForState";
 import { createTaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
+import { ListPagination } from "../src/features/projects/ListPagination";
+import type { PaginationState } from "../src/features/projects/usePagination";
 
 const localeRender = createLocaleRender("zh-CN");
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
@@ -28,8 +30,8 @@ vi.mock("../src/api/task-tags", async (original) => ({ ...await original<typeof 
 vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
 vi.mock("../src/api/project-settings", async (original) => ({ ...await original<typeof import("../src/api/project-settings")>(), getProject: vi.fn() }));
 vi.mock("../src/api/auth", async (original) => ({ ...await original<typeof import("../src/api/auth")>(), getProjectAccess: vi.fn() }));
-vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openGraphTarget, onOpenChain, onCloseChain, onOpenTask, onOpenSession }: {
-  index: GraphIndex; representativeIds: readonly string[]; openGraphTarget: { kind: 'chain'; witnessTaskId: string; rootId: string } | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void;
+vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openGraphTarget, onOpenChain, onCloseChain, onOpenTask, onOpenSession, pagination }: {
+  index: GraphIndex; representativeIds: readonly string[]; openGraphTarget: { kind: 'chain'; witnessTaskId: string; rootId: string } | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void; pagination?: PaginationState;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
   <button onClick={(event) => onOpenSession?.(root, event.currentTarget)}>进入会话 {root}</button>
   <button id={`task-root-${root}`} aria-haspopup="dialog" onClick={(event) => onOpenChain(root, event.currentTarget)}>{index.nodes.get(root)!.titlePreview}</button>
@@ -37,7 +39,7 @@ vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, re
     <button className="task-chain-close" onClick={onCloseChain}>关闭依赖图</button>
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}
-</div>)}</div> }));
+</div>)}{pagination !== undefined && <ListPagination label="任务链列表" {...pagination} />}</div> }));
 vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
   projectId: string; taskId: string; snapshot: GraphSnapshot | null; observation: { kind: string }; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
 }) => {
@@ -395,6 +397,41 @@ describe("project dashboard", () => {
       await act(async () => { pending.resolve([{ id: E, name: "后端" }]); await pending.promise; });
       expect(sectionTabs().getByRole("tab", { name: "概览" })).toHaveAttribute("aria-selected", "true");
       selectTasks(); expect(screen.getByRole("button", { name: "移除 后端" })).toBeVisible();
+    } finally { HTMLElement.prototype.scrollIntoView = scroll; }
+  });
+
+  it("keeps the target page after overview navigation clears a blocking tag", async () => {
+    const tag = { id: E, name: "后端", projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 21, goals: 0 } };
+    vi.mocked(listProjectTags).mockResolvedValue({ items: [tag], catalogEpoch: A, nextCursor: null });
+    vi.mocked(resolveProjectTags).mockResolvedValue([{ id: E, name: "后端" }]);
+    const taskId = (i: number) => `30000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    const items: Seed[] = Array.from({ length: 22 }, (_, i) => [
+      { id: taskId(i * 2 + 1), title: `Chain ${i}`, status: "todo" as const, dependsOn: [] },
+      { id: taskId(i * 2 + 2), title: `Child ${i}`, status: "todo" as const, dependsOn: [taskId(i * 2 + 1)] },
+    ]).flat();
+    graphRequest.mockResolvedValue(graph(items));
+    vi.mocked(getTaskSync).mockImplementation(async (id, query) => {
+      const source = graph(items); servedGraphs.set(id, source);
+      const sync = syncFixture.toSync(source, query);
+      return taskSyncReadFixture({ ...sync, tasks: sync.tasks.map(task => ({ ...task, tags: task.id !== taskId(1) && task.id !== taskId(2) ? [{ id: E, name: "后端" }] : [] })) });
+    });
+    const scroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    try {
+      render(<ProjectPage projectId={projectId} />); selectTasks();
+      await findListButton("Chain 21");
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
+      const chainPagination = () => within(screen.getByRole("navigation", { name: "任务链列表分页" }));
+      fireEvent.click(chainPagination().getByRole("button", { name: "下一页" }));
+      expect(chainPagination().getByText(/第 2 \/ 2 页/)).toBeVisible();
+      fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
+      const overview = within(document.getElementById("project-overview-progress")!);
+      fireEvent.click(overview.getByRole("button", { name: "下一页" }));
+      fireEvent.click(overview.getByRole("button", { name: /Chain 0，/ }));
+      await waitFor(() => expect(listButton("Chain 0")).toHaveFocus());
+      expect(chainPagination().getByText(/第 2 \/ 2 页/)).toBeVisible();
+      expect(screen.queryByRole("button", { name: "移除 后端" })).toBeNull();
     } finally { HTMLElement.prototype.scrollIntoView = scroll; }
   });
 
