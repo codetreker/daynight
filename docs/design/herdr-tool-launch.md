@@ -92,6 +92,8 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 Windows 的最终独立清理检查重新观察原 PID 的出生身份，不能仅凭 `kill(pid, 0)` 判定原进程仍在。普通平台证据沿用 CIM `CreationDate` 的 UTC ticks，metadata oracle 沿用其原 `.NET Process.StartTime` UTC ticks；按各自来源完整比较，不混用精度。检查保留原标识、当前标识、观察来源及错误，区分原进程仍在、PID 已复用、缺失和未知。原停证完整且独立观察确认缺失或不同出生身份时，才可确认原进程不再存活；原进程仍在、缺原身份、查询失败或不完整输出均失败。观察器仅清理自己创建的查询进程，不向被检查 PID 发信号；endpoint、目录、查询进程及输出流关闭检查仍独立成立。
 
+Windows 清理策略单测执行真实检查器及文件操作，仅在 OS 查询边界控制观察结果；专用 native job 必须实际验证 PowerShell 5、同来源出生身份比较和脚本入口。一个 Windows 机制测试保留对存活 owned 进程的真实 .NET 读取；脚本退出码测试在检查器模块边界控制返回结果。POSIX 脚本入口及查询子进程超时后的真实关闭验证分别保留，不以策略模拟代替 native 验收。
+
 Windows 的独立 WMI/console 观察脚本使用观察器自己的执行环境：仅继承测试运行器的明确系统变量，用户目录与临时目录归属测试根目录，传入系统 PowerShell 5 的模块路径。Windows PowerShell 启动时可能扩展有效模块搜索路径；查询本体直接使用 .NET API，不依赖模块自动导入。查询子进程非 detached，且不通过 `windowsHide` 设置 `CREATE_NO_WINDOW`；输入流处理保持不变。PowerShell 直接通过 .NET `System.Management` 读取 `root\cimv2` 的 `Win32_Process`，只接受原 shell/helper/native 三个 PID 各一条的完整记录。固定字段包含 PID、父 PID、完整 executable、command line、原始 DMTF 出生时间及对应 UTC ticks；解码器核验字段和时间一致性，再与独立 inventory 的同精度 token 比较。WMI 微秒精度的出生时间不替代原生 readiness 的 100ns 精度要求。查询对象、枚举器、结果集合与 searcher 全部释放后才输出结果；任一释放失败均保留失败。
 
 console 观察通过 `Reflection.Emit` 在原 PowerShell 进程中定义并核验 P/Invoke 元数据，再调用 `FreeConsole`、`AttachConsole` 和 `GetConsoleProcessList`，不启动编译器或生成程序集文件。声明保留 Winapi、`SetLastError`、`PreserveSig`、BOOL 返回值与输出数组语义；附加后立即读取错误码，最终脱离控制台成功后才输出固定 ASCII 结果。结果必须包含完整、无重复且不超出 256 项缓冲区的进程列表，并继续核验原 shell/helper/native 三个进程同在该控制台。动态程序集随观察器进程关闭而释放。

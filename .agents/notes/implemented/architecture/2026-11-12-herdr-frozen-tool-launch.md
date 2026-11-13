@@ -230,6 +230,15 @@ Results retain both identities, their source and observation errors. The observe
 never signals inspected PIDs and still checks endpoints, directories and query
 resource closure.
 
+Windows cleanup policy tests execute the real checker and filesystem operations
+with controlled observations at the OS query boundary. Dedicated native jobs own
+the real PowerShell 5 query, same-source birth comparison and script entry point;
+their success remains mandatory. POSIX entry tests and the observer's real child
+timeout/close test retain their direct process coverage. One Windows mechanism
+test reads a live owned process through .NET; policy cases do not repeat that
+system query. Script exit-code tests control the checker result at its module
+boundary without starting another OS query.
+
 ## Alternatives
 
 **Add an executable RPC or modify Herdr.** This would require an upstream protocol
@@ -329,6 +338,15 @@ the original process exits. Treating every non-ESRCH error as live also loses th
 distinction between access failure and a successful query. The original process
 identity remains the cleanup subject; a fresh independent birth comparison keeps
 that distinction without trusting the fixture's exit report alone.
+
+**Repeat native Windows queries for every cleanup policy case.** Each policy
+fixture would create four processes and repeatedly launch PowerShell to establish
+births and check their absence. Those repetitions add system-query dependencies
+to assertions about metadata, directories and close evidence. Controlled query
+results preserve those policy boundaries, while the dedicated native job verifies
+the actual query and entry point. Query deadlines and unknown-result rejection
+remain unchanged; reducing repetitions does not establish the cause of an
+observed query timeout.
 
 **Compile the console interop type at query time.** The `Add-Type` query reached
 its entry checkpoint but did not return before the deadline. That interval

@@ -2,11 +2,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createServer } from "node:net";
-import { expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 const project = path.resolve(import.meta.dirname, "../../../../..");
 const cleanup = await import(new URL("../../../scripts/herdr-platform-cleanup.mjs", import.meta.url).href);
-const withCleanup = async (change: (evidence: Record<string, unknown>, directory: string) => Promise<void>, verify: (status: number | null, result: { failures: string[] }) => void) => {
+const withCleanup = async (change: (evidence: Record<string, unknown>, directory: string) => Promise<void>, verify: (result: { failures: string[] }, status?: number | null) => void, platform: NodeJS.Platform) => {
+  if (platform === "win32") return withControlledCleanup(change, verify);
   const scratch = path.join(project, ".tmp/herdr-tools/research-platform/cleanup-script-tests");
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, "checker-")), scripts = path.join(root, "packages/daynight/scripts"), directory = path.join(root, ".tmp/herdr-tools/research-platform");
@@ -17,15 +18,8 @@ const withCleanup = async (change: (evidence: Record<string, unknown>, directory
     await copyFile(path.join(project, "packages/daynight/scripts/herdr-platform-cleanup.mjs"), path.join(scripts, "herdr-platform-cleanup.mjs"));
     const children = Array.from({ length: 4 }, () => spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] }));
     const closed = children.map(child => new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("close", () => resolve()); }));
-    let originals = children.map(child => ({ pid: child.pid!, parentPid: process.pid, startToken: "639301558314541830" })), dotnetToken = "639301558314541837";
-    try {
-      if (process.platform === "win32") {
-        const observed = await cleanup.observeWindowsCleanup([...children.map(child => ({ pid: child.pid, source: "cim-creation-date-ticks" })), { pid: children[0]!.pid, source: "dotnet-start-time-ticks" }]);
-        expect(observed.error).toBeNull();
-        originals = originals.map(original => ({ ...original, startToken: observed.rows.find((row: { pid: number; source: string }) => row.pid === original.pid && row.source === "cim-creation-date-ticks").startToken }));
-        dotnetToken = observed.rows.find((row: { source: string }) => row.source === "dotnet-start-time-ticks").startToken;
-      }
-    } finally { children.forEach(child => child.stdin!.end()); await Promise.all(closed); }
+    const originals = children.map(child => ({ pid: child.pid!, parentPid: process.pid, startToken: "639301558314541830" })), dotnetToken = "639301558314541837";
+    children.forEach(child => child.stdin!.end()); await Promise.all(closed);
     const ids = originals.map(row => row.pid);
     const completed = JSON.stringify({ schemaVersion: 1, platform: process.platform, daemonPid: ids[0], shellPid: ids[1], receipt: { helperPid: ids[2], childPid: ids[3] }, cleanup: { workspaceClosed: true, instance: { ownedChildClosed: true, apiClosed: true, clientClosed: true }, runtimeDirectoryRemoved: true, processCapture: { stage: "before-stop", roots: ids, processes: originals }, originalProcesses: originals.map(row => ({ ...row, stage: "after-stop", observation: "exited" })) } });
     for (const name of ["codex", "copilot", "argv-codex"]) await writeFile(path.join(directory, `acceptance-${name}-fixture.json`), completed);
@@ -34,41 +28,40 @@ const withCleanup = async (change: (evidence: Record<string, unknown>, directory
     const record = path.join(directory, "acceptance-windows-metadata-fixture.json");
     await writeFile(record, JSON.stringify(evidence));
     const run = spawnSync(process.execPath, [script], { encoding: "utf8", timeout: 45_000 });
-    verify(run.status, JSON.parse(await readFile(path.join(directory, "cleanup.json"), "utf8")));
+    const diagnostic = JSON.stringify({ status: run.status, signal: run.signal, error: run.error, stderr: run.stderr });
+    expect(run.error, diagnostic).toBeUndefined();
+    try { verify(JSON.parse(await readFile(path.join(directory, "cleanup.json"), "utf8")), run.status); }
+    catch (cause) { throw new Error(`Independent cleanup entry failed: ${diagnostic}`, { cause }); }
   } finally { await rm(root, { recursive: true, force: true }); }
 };
 
-test("independently accepts a closed original oracle process and a removed private directory", async () => {
-  await withCleanup(async () => {}, (status, result) => { expect(status).toBe(0); expect(result.failures).toEqual([]); });
-}, 60_000);
+describe.each(process.platform === "win32" ? ["win32"] : [process.platform, "win32"])("independent cleanup gates (%s)", platform => {
+  test("accepts a closed original oracle process and a removed private directory", async () => {
+    await withCleanup(async () => {}, (result, status) => { expect(result.failures).toEqual([]); if (status !== undefined) expect(status).toBe(0); }, platform as NodeJS.Platform);
+  }, 60_000);
 
-test.each(["live", "close-unknown", "retained", "directory-present", "identity-missing", "birth-missing"])("fails independent cleanup for %s native metadata evidence", async kind => {
-  await withCleanup(async evidence => {
-    if (kind === "live") {
-      evidence.pid = process.pid;
-      if (process.platform === "win32") {
-        const observed = await cleanup.observeWindowsCleanup([{ pid: process.pid, source: "dotnet-start-time-ticks" }]);
-        expect(observed.error).toBeNull(); evidence.startToken = observed.rows[0].startToken;
-      }
-    }
-    if (kind === "close-unknown") evidence.closed = false;
-    if (kind === "retained") evidence.runtimeDirectoryRemoved = false;
-    if (kind === "directory-present") await mkdir(evidence.directory as string);
-    if (kind === "identity-missing") evidence.pid = null;
-    if (kind === "birth-missing") evidence.startToken = null;
-  }, (status, result) => { expect(status).not.toBe(0); expect(result.failures).toContain("acceptance-windows-metadata-fixture.json"); });
-}, 60_000);
+  test.each(["live", "close-unknown", "retained", "directory-present", "identity-missing", "birth-missing"])("fails for %s native metadata evidence", async kind => {
+    await withCleanup(async evidence => {
+      if (kind === "live") evidence.pid = process.pid;
+      if (kind === "close-unknown") evidence.closed = false;
+      if (kind === "retained") evidence.runtimeDirectoryRemoved = false;
+      if (kind === "directory-present") await mkdir(evidence.directory as string);
+      if (kind === "identity-missing") evidence.pid = null;
+      if (kind === "birth-missing") evidence.startToken = null;
+    }, (result, status) => { expect(result.failures).toContain("acceptance-windows-metadata-fixture.json"); if (status !== undefined) expect(status).not.toBe(0); }, platform as NodeJS.Platform);
+  }, 60_000);
 
-test.each(["closed", "close-unknown", "cleanup-unknown"])("independently checks %s query cleanup alongside formal resources", async kind => {
-  await withCleanup(async (_evidence, directory) => {
-    const file = path.join(directory, "acceptance-codex-fixture.json"), run = JSON.parse(await readFile(file, "utf8"));
-    run.cleanup.windowsQueries = [{ stage: "external-script", closed: kind !== "close-unknown", cleanupConfirmed: kind !== "cleanup-unknown" }];
-    await writeFile(file, JSON.stringify(run));
-  }, (status, result) => {
-    if (kind === "closed") { expect(status).toBe(0); expect(result.failures).toEqual([]); }
-    else { expect(status).not.toBe(0); expect(result.failures).toContain("acceptance-codex-fixture.json"); }
-  });
-}, 60_000);
+  test.each(["closed", "close-unknown", "cleanup-unknown"])("checks %s query cleanup alongside formal resources", async kind => {
+    await withCleanup(async (_evidence, directory) => {
+      const file = path.join(directory, "acceptance-codex-fixture.json"), run = JSON.parse(await readFile(file, "utf8"));
+      run.cleanup.windowsQueries = [{ stage: "external-script", closed: kind !== "close-unknown", cleanupConfirmed: kind !== "cleanup-unknown" }];
+      await writeFile(file, JSON.stringify(run));
+    }, (result, status) => {
+      if (kind === "closed") { expect(result.failures).toEqual([]); if (status !== undefined) expect(status).toBe(0); }
+      else { expect(result.failures).toContain("acceptance-codex-fixture.json"); if (status !== undefined) expect(status).not.toBe(0); }
+    }, platform as NodeJS.Platform);
+  }, 60_000);
+});
 
 const source = "cim-creation-date-ticks", startToken = "639301558314541830";
 const windowsFixture = async (action: (directory: string, run: any) => Promise<void>) => {
@@ -85,6 +78,35 @@ const windowsFixture = async (action: (directory: string, run: any) => Promise<v
 };
 const queryResult = (rows: unknown[]) => ({ pid: 900, code: 0, signal: null, closed: true, error: null, stdoutBytes: 100, stderrBytes: 0, stdout: JSON.stringify({ schemaVersion: 1, rows }) });
 const observing = (change: (rows: any[], targets: any[]) => any = rows => rows) => (targets: any[]) => cleanup.observeWindowsCleanup(targets, { systemRoot: "C:\\Windows", execute: async () => queryResult(change(targets.map(target => ({ ...target, state: "missing", startToken: null, error: null })), targets)) });
+
+// Policy and resource failures own real files and the checker, while native
+// PS5/CIM acquisition belongs to the dedicated platform acceptance job.
+const withControlledCleanup = async (change: (evidence: Record<string, unknown>, directory: string) => Promise<void>, verify: (result: { failures: string[] }) => void) => {
+  await windowsFixture(async directory => {
+    const file = path.join(directory, "acceptance-windows-metadata-fixture.json"), evidence = JSON.parse(await readFile(file, "utf8"));
+    await change(evidence, directory); await writeFile(file, JSON.stringify(evidence));
+    const observeWindows = observing(rows => rows.map(row => row.source === "dotnet-start-time-ticks" && row.pid === process.pid ? { ...row, state: "present", startToken: "639301558314541837" } : row));
+    const result = await cleanup.checkHerdrPlatformCleanup(directory, { platform: "win32", observeWindows });
+    expect(JSON.parse(await readFile(path.join(directory, "cleanup.json"), "utf8"))).toEqual(result);
+    verify(result);
+  });
+};
+
+test.each([{ failures: [] }, { failures: ["original-process-unconfirmed"] }])("the real wrapper exposes the checker outcome as its exit code: %j", async ({ failures }) => {
+  const base = path.join(project, ".tmp/herdr-tools/research-platform/cleanup-script-tests");
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(path.join(base, "entry-")), scripts = path.join(root, "packages/daynight/scripts"), directory = path.join(root, ".tmp/herdr-tools/research-platform");
+  try {
+    await mkdir(scripts, { recursive: true }); await mkdir(directory, { recursive: true });
+    const entry = path.join(scripts, "check-herdr-platform-cleanup.mjs");
+    await copyFile(path.join(project, "packages/daynight/scripts/check-herdr-platform-cleanup.mjs"), entry);
+    await writeFile(path.join(directory, "controlled-result.json"), JSON.stringify({ failures }));
+    await writeFile(path.join(scripts, "herdr-platform-cleanup.mjs"), `import { readFile } from "node:fs/promises"; import path from "node:path"; export const checkHerdrPlatformCleanup = async directory => JSON.parse(await readFile(path.join(directory, "controlled-result.json"), "utf8"));`);
+    const result = spawnSync(process.execPath, [entry], { encoding: "utf8", timeout: 5000 });
+    expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(failures.length ? 1 : 0);
+    if (failures.length) expect(result.stderr).toContain("Real Herdr cleanup is unconfirmed: original-process-unconfirmed");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test.each(["missing", "replaced", "same-original", "access-denied", "malformed", "timeout"])("independently classifies Windows original process evidence: %s", async kind => {
   await windowsFixture(async directory => {
@@ -157,6 +179,36 @@ test("joins a timed-out observer and its stdio before returning unknown", async 
   expect(result.pid).toBeGreaterThan(0);
   expect(result.signal).toBe("SIGKILL");
 });
+
+test.skipIf(process.platform !== "win32")("reads one live original through the independent .NET process object", async () => {
+  const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+  const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
+  let streamError: unknown;
+  child.stdin!.on("error", error => { streamError = error; });
+  const join = async (timeoutMs: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([closed, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`Original live-observer fixture ${child.pid} did not close.`)), timeoutMs); })]); }
+    finally { clearTimeout(timer); }
+  };
+  try {
+    await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+    // The policy matrix controls OS results; this single mechanism case keeps
+    // GetProcessById, SafeHandle and exact StartTime acquisition on a live child.
+    const observed = await cleanup.observeWindowsCleanup([{ pid: child.pid, source: "dotnet-start-time-ticks" }]);
+    const diagnostic = JSON.stringify(observed);
+    expect(observed.error, diagnostic).toBeNull();
+    expect(observed.query, diagnostic).toMatchObject({ closed: true, code: 0, signal: null, error: null });
+    expect(observed.rows, diagnostic).toEqual([{ pid: child.pid, source: "dotnet-start-time-ticks", state: "present", startToken: expect.stringMatching(/^[1-9][0-9]+$/), error: null }]);
+    expect(streamError).toBeUndefined();
+  } finally {
+    child.stdin!.end();
+    try { await join(2000); }
+    catch (error) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await join(2000); throw error;
+    }
+  }
+}, 20_000);
 
 test("rejects a live endpoint even when the process observation is missing", async () => {
   await windowsFixture(async (directory, run) => {
