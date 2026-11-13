@@ -18,6 +18,7 @@ import type { ResourceFiles, ControlledResourceLease } from "../content/resource
 import { writeDurableJson } from "../../../platform/durable-json.js";
 import type { NativeInput, NativeImagePart } from "../providers/types.js";
 import { bundledImageDecoder, type ImageDecoder } from "./image-decoder.js";
+import { controllerDecoderAdmission } from "./decoder-admission.js";
 
 type Preparation = { spec: ImageUploadSpec; filename: string; receipt: LocalImagePreparation; decoding: boolean };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
@@ -49,7 +50,8 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
   const ledger = openMediaBudgetLedger(stateDirectory, ticket.executionId);
   const metadataBudget = controllerMetadataBudget(file, db);
   const captureSource = createImageCaptureSource(db, transactions, snapshot, metadataBudget);
-  let closed = false, ledgerClosed = false, decoderCount = 0;
+  let closed = false, ledgerClosed = false;
+  const decoderAdmission = controllerDecoderAdmission();
   const inFlight = new Map<string, { controller: AbortController; promise: Promise<LocalImagePreparation> }>();
   const captureInFlight = new Map<string, { controller: AbortController; promise: Promise<ValidatedImage>; filename: string; byteLength: number }>();
   const reads = new Map<string, number>();
@@ -193,20 +195,23 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     if (p.spec.sha256 !== input.sha256 || p.spec.byteLength !== input.byteLength) throw new Error("Image preparation complete_conflict.");
     if (p.receipt.state === "validated") return p.receipt;
     if (p.receipt.state !== "receiving" || p.receipt.acceptedOffset !== p.spec.byteLength) throw new Error("Image preparation is incomplete.");
-    if (decoderCount >= 1) throw new Error("Controller image decoder capacity is unavailable.");
-    const controller = new AbortController(); p.decoding = true; put(p); decoderCount++;
+    const controller = new AbortController(), admitted = decoderAdmission.acquire(controller.signal);
     const promise = (async () => {
+      let releaseDecoder: (() => void) | undefined;
       try {
+        releaseDecoder = await admitted;
+        controller.signal.throwIfAborted(); checkOpen(); assertTarget(p.spec);
+        p.decoding = true; put(p);
         const validated = await decoder({ version: 1, policy: "image-validation-v1", inputPath: path.join(root, p.filename), expectedByteLength: p.spec.byteLength, expectedSha256: p.spec.sha256 }, controller.signal);
         if (validated.mediaType !== p.spec.mediaType || validated.byteLength !== p.spec.byteLength || validated.sha256 !== p.spec.sha256) throw new Error("Image validation differs from the declared original.");
-        if (controller.signal.aborted) throw controller.signal.reason;
+        controller.signal.throwIfAborted(); assertTarget(p.spec);
         // Windows FlushFileBuffers requires a handle opened for writing, even
         // after the file becomes read-only. Keep that handle only for sealing.
         const fd = openPreparation(p, true); try { chmodSync(path.join(root, p.filename), 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
         p.decoding = false; p.receipt = { ...p.receipt, state: "validated", validated, error: null }; put(p); return p.receipt;
       } catch (error) {
         p.decoding = false; p.receipt = { ...p.receipt, state: "failed", validated: null, error: { code: String(error).includes("component_unsupported") ? "component_unsupported" : "image_decode_failed", message: "The complete image could not be validated." } }; put(p); return p.receipt;
-      } finally { decoderCount--; inFlight.delete(input.uploadId); }
+      } finally { releaseDecoder?.(); inFlight.delete(input.uploadId); }
     })();
     inFlight.set(input.uploadId, { controller, promise }); return promise;
   };
@@ -266,13 +271,17 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     const old = transactions.read(() => db.prepare("SELECT image_id,validated FROM image_captures WHERE capture_id=?").get(captureKey) as { image_id: string; validated: string } | undefined);
     if (old) { const result = JSON.parse(old.validated) as ValidatedImage; if (old.image_id !== input.imageId || result.sha256 !== input.sha256 || result.byteLength !== input.byteLength || input.declaredMediaType != null && result.mediaType !== input.declaredMediaType) throw new Error("Image capture identity conflict."); return result; }
     const pending = captureInFlight.get(captureKey); if (pending) throw new Error("Image capture is already in progress; query the original capture.");
-    if (decoderCount >= 1) throw new Error("Controller image decoder capacity is unavailable.");
     const reservedStage = sourceReservations.stagePath(input.captureId, input.attemptId, input.inputPath);
     checkBudgets(reservedStage ? 0 : Number(input.byteLength));
-    const filename = reservedStage ? path.basename(reservedStage) : `${randomUUID()}.part`, targetPath = path.join(root, filename), controller = new AbortController(); decoderCount++;
+    const filename = reservedStage ? path.basename(reservedStage) : `${randomUUID()}.part`, targetPath = path.join(root, filename), controller = new AbortController();
+    const admitted = decoderAdmission.acquire(controller.signal);
     const promise = (async () => {
-      let retained = false;
+      let retained = false, releaseDecoder: (() => void) | undefined;
       try {
+        releaseDecoder = await admitted;
+        controller.signal.throwIfAborted(); checkOpen();
+        captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId, input.imageId);
+        sourceReservations.stagePath(input.captureId, input.attemptId, input.inputPath);
         const source = openSync(input.inputPath, constants.O_RDONLY | constants.O_NOFOLLOW);
         try {
           const before = fstatSync(source);
@@ -288,7 +297,10 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         const fd = openSync(targetPath, constants.O_RDWR | constants.O_NOFOLLOW); try { chmodSync(targetPath, 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
         transactions.write(() => { captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId, input.imageId); metadataBudget.assert(16384, true); db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(captureKey, input.imageId, filename, JSON.stringify(validated)); });
         retained = true; return validated;
-      } finally { if (!retained && existsSync(targetPath)) { unlinkSync(targetPath); syncDirectory(root); } decoderCount--; captureInFlight.delete(captureKey); }
+      } finally {
+        try { if (!retained && existsSync(targetPath)) { unlinkSync(targetPath); syncDirectory(root); } }
+        finally { releaseDecoder?.(); captureInFlight.delete(captureKey); }
+      }
     })();
     captureInFlight.set(captureKey, { controller, promise, filename: targetPath, byteLength: Number(input.byteLength) }); return promise;
   };

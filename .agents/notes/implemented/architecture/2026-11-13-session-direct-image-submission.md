@@ -46,7 +46,15 @@ repeat the network history barrier: a read admitted before disconnection can
 finish validation and retain its immutable bytes, while submission waits for a
 current connection and history. Treating disconnection during this local step
 as source validation failure would discard bytes that cannot safely be read
-again under the same attempt. The [image contract](../../../../docs/design/session-image-contracts.md)
+again under the same attempt. The media store admits upload completion, native
+staging and Markdown staging through one FIFO decoder queue. A busy decoder
+waits within the existing 32-descriptor bound; independent provider queues
+cannot turn a normal mixed-image turn into a terminal source-capacity failure.
+Queued work retains its original durable identity, files and media charge,
+without another copied body. It checks the current attempt and target before
+copying or decoding. Cancellation removes waiting work, while an active slot
+returns only after the actual decoder and its sealing or cleanup have finished.
+The [image contract](../../../../docs/design/session-image-contracts.md)
 owns the wire forms and recovery rules. Actual storage admission remains owned by
 the [content capacity decision](2026-11-13-session-actual-content-capacity.md).
 
@@ -85,6 +93,12 @@ strict bodies.
 source can produce different bytes and duplicate an operation that already
 committed. The original identity and frozen outcome must instead be observed and
 replayed only under the documented conditions.
+
+**Serialize each provider independently or refuse a busy decoder.** Native and
+Markdown output can overlap in one turn, and uploads use the same local media
+owner. Separate queues cannot enforce shared admission; an immediate refusal
+turns normal contention into a frozen source failure. A shared bounded queue
+preserves the single decoder limit without another source read.
 
 **Hold a relay source-send gate throughout history transfer.** Native events
 may continue to append while a frozen history file uploads; holding their send

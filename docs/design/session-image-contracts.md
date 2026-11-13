@@ -631,7 +631,7 @@ native accepted/confirmed、turn结束或进程停止都不证明未来不再读
 
 物理硬上限每execution2306867200 bytes（2200MiB），包括staging/objects/native/decoder临时输出、残留、图片增量journal页/WAL及目录元数据；各子预算不能同时取满。卷空闲≥512MiB；同stateDirectory媒体总量≤8GiB，通过独立 `controller/media/budget.sqlite` 的短immediate事务共享预留，不存资源授权。先全局reservation，再本地记录，再分配；崩溃须证明原writer停止并按文件/journal对账，不按TTL返额。
 
-每Controller最多2媒体块/1decoder，全局最多16媒体块/2decoder；decoder等待队列最多32项固定元数据，不排队保留块body。暂时容量拒绝保持原服务媒体请求pending，按同requestId及原bytes再次offer；不能永久缓存rate_limited而使原upload无法完成。来源retry的reserved状态和原retry_capture请求在同事务持久化。控制/原生回执优先，块间让出事件循环；断线撤销排队项，实际活跃工作退出后才返槽。ledger不可用则拒新媒体，已有安全结算与文字继续。长reader阻碍checkpoint时停止新媒体写入，留结算余量。
+每Controller最多2媒体块/1decoder，全局最多16媒体块/2decoder；Controller 媒体存储为 upload completion、native 与 Markdown staging 共用同一 FIFO decoder 准入，最多 32 项固定元数据等待，不排队保留块 body；单个 decoder 正忙时等待，队列满才拒绝新项。等待使用原有已持久 preparation/capture 身份与媒体预算，取得槽后才复制或解码，并复核当前 attempt、目标及原位置 ACK。取消移除尚未开始的项，活跃项必须等待实际 decoder 退出才归还槽；关闭媒体存储取消并 join 全部等待项、decoder 与来源 writer。暂时容量拒绝保持原服务媒体请求pending，按同requestId及原bytes再次offer；不能永久缓存rate_limited而使原upload无法完成。来源retry的reserved状态和原retry_capture请求在同事务持久化。控制/原生回执优先，块间让出事件循环；连接级请求失效时撤销其等待项，已经合法读取的本地封存可离线完成，提交仍等待当前连接与完整历史。实际活跃工作退出后才返槽。ledger不可用则拒新媒体，已有安全结算与文字继续。长reader阻碍checkpoint时停止新媒体写入，留结算余量。
 
 物理去重仅同origin/owner/Session、hash+length+MIME候选再核全bytes；不合并逻辑resource计费、imageId/uploadId/actor资格。带pin原件/native与未提交唯一来源不淘汰。服务已有原件且无pin的本地object可LRU，保服务descriptor与出现映射。
 
