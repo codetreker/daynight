@@ -1,3 +1,4 @@
+import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "../configuration-admission.js";
 import type { ArchiveProbeResult } from "../../controller/archive-error.js";
 import { parseStartupObservation, type SessionStartupReport, type StartupObservation } from "../../../session/startup.js";
 import { CLEANUP_OPERATION_MS, cleanupOperation } from "../../cleanup-operation.js";
@@ -47,7 +48,7 @@ export class WebRecoveryBlockedError extends Error {
   constructor(readonly reasonCode: NonNullable<RecoveryState["reasonCode"]>, message: string, options?: ErrorOptions) { super(message, options); }
 }
 export type WebCleanupOutcome = { task: LocalTask; complete: boolean };
-export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large" | "storage_maintenance";
+export type WebInputWaitingReason = "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending";
 export type WebAdvanceResult = { kind: "observed"; task: LocalTask } | { kind: "waiting_input"; reason: WebInputWaitingReason; task: LocalTask };
 class PromptUnknownError extends Error {}
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
@@ -180,9 +181,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       await options.launcher.refreshGrant(task, ticket, signal, () => { if (operationKey !== null) success(task, { kind: "execution", phase: "preparing" }, operationKey); }, () => { started = true; if (operationKey !== null) { phase(task, { kind: "execution", phase: "preparing" }, false, undefined, operationKey); backgroundRetry(task, true); } });
     } finally { if (started) backgroundRetry(task, false); }
   };
-  const prepareTicket = async (task: LocalTask, prompt: string | (() => string), signal: AbortSignal): Promise<ControllerLaunchTicket> => {
+  const prepareTicket = async (task: LocalTask, prompt: string | (() => string), signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<ControllerLaunchTicket> => {
     phase(task, { kind: "execution", phase: "agent-start" }, false, undefined, "web-ticket");
-    const ticket = await options.launcher.prepare(task, prompt, signal);
+    const ticket = await options.launcher.prepare(task, prompt, signal, canAdmitNewExecution);
     success(task, { kind: "execution", phase: "agent-start" }, "web-ticket");
     return ticket;
   };
@@ -374,9 +375,16 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   const backend = {
     observeStartupReport,
-    advance: async (input: LocalTask, signal: AbortSignal): Promise<LocalTask> => {
+    advance: async (input: LocalTask, signal: AbortSignal, admission?: () => boolean): Promise<LocalTask> => {
       let task = current(input);
       waiting.delete(task.claimId);
+      const canAdmitNewExecution = () => {
+        const latest = current(task), execution = latest.webExecution;
+        if (execution !== null && (execution.executionGeneration !== "1" || execution.launchSubmission !== "not-submitted"
+          || execution.controllerProcess !== null || execution.nativeProcesses.length > 0 || latest.resources.nativeSession !== null
+          || readControllerSnapshot(journal(latest)) !== null)) return true;
+        return admission?.() ?? true;
+      };
       if (task.cleanup !== null || task.control !== null || task.configuration === null) throw new Error("Ordinary Web execution is fenced by cleanup or management.");
       if (legacyBranchLatch(task)) {
         phase(task, { kind: "execution", phase: "preparing" }, false, undefined, "web-legacy-provenance");
@@ -462,6 +470,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           } catch (error) { signal.throwIfAborted(); return pause(error); }
         }
         task = await verifyWorktree(task, signal);
+        assertConfigurationAdmission(canAdmitNewExecution);
         task = options.store.initializeWebExecution(task, options.now());
         if (task.webExecution!.initialPrompt === null && options.promptSource !== undefined) {
           if (options.preparePromptSource !== undefined) {
@@ -486,12 +495,13 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           return result;
         };
         const prompt = task.webExecution!.initialPrompt ?? (options.promptSource === undefined ? makePrompt() : makePrompt);
-        let ticket = await prepareTicket(task, prompt, signal);
+        assertConfigurationAdmission(canAdmitNewExecution);
+        let ticket = await prepareTicket(task, prompt, signal, canAdmitNewExecution);
         rejected.delete(task.claimId);
         task = current(task);
         const wasUnsubmitted = task.webExecution?.launchSubmission === "not-submitted";
         phase(task, { kind: "execution", phase: "agent-start" });
-        await options.launcher.launch(task, ticket, signal);
+        await options.launcher.launch(task, ticket, signal, canAdmitNewExecution);
         task = current(task);
         if (wasUnsubmitted && task.webExecution?.launchSubmission !== "not-submitted") { success(task, { kind: "execution", phase: "agent-start" }); phase(task, { kind: "execution", phase: "agent-start" }, true); }
         let snapshot: ControllerSnapshot;
@@ -563,6 +573,11 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         options.emit({ kind: "web-observed", task, message: `Original ${ticket.provider} controller generation ${ticket.executionGeneration} is bound to session ${ticket.sessionId}.` });
         return current(task);
       } catch (error) {
+        if (!signal.aborted && error instanceof ConfigurationAdmissionWaiting) {
+          waiting.set(task.claimId, "configuration_pending");
+          phase(task, { kind: "execution", phase: "waiting" }, false);
+          return current(task);
+        }
         if (!signal.aborted && error instanceof ControllerStorageWaitingError) {
           waiting.set(task.claimId, "storage_maintenance");
           phase(task, { kind: "execution", phase: "waiting" }, false, undefined, "web-storage-maintenance");
@@ -867,9 +882,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         try { if (value.observeUnattributed(pending.identity, pending.operationKey, true)) pendingIdentities.delete(key); } catch { /* Retain the current unattributed state. */ }
       }
     },
-    advanceResult: async (task: LocalTask, signal: AbortSignal): Promise<WebAdvanceResult> => {
+    advanceResult: async (task: LocalTask, signal: AbortSignal, canAdmitNewExecution?: () => boolean): Promise<WebAdvanceResult> => {
       let result: LocalTask;
-      try { result = await backend.advance(task, signal); }
+      try { result = await backend.advance(task, signal, canAdmitNewExecution); }
       catch (cause) {
         if (signal.aborted || !(cause instanceof ControllerStorageWaitingError)) throw cause;
         result = current(task);

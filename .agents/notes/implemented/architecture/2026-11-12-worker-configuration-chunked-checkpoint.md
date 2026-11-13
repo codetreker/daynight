@@ -20,8 +20,10 @@ written completely in order, synced and closed before atomic replacement.
 The chunked codec originally replaced the whole-file schema 4 path. Schema 1–4
 now upgrade explicitly to schema 5 under the
 [fact separation decision](2026-11-12-worker-configuration-fact-separation.md),
-retaining the strict historical business validation and persistence failure
-semantics. The [Worker design](../../../../docs/design/daynight-worker.md) owns
+retaining strict historical business validation. The
+[storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
+owns the serialized readiness, retry and shutdown barrier using these same
+repeatable chunks and atomic replacement. The [Worker design](../../../../docs/design/daynight-worker.md) owns
 the current cache behavior.
 
 ## Alternatives
@@ -40,5 +42,5 @@ The codec and guard add a pinned dependency and incremental syntax state. A
 single token is still limited by the runtime, and retained objects require memory
 proportional to their facts. Strict validation remains necessary because the
 codec alone accepts duplicate keys and noncanonical numbers. Retrying transient
-storage failures is a separate concern; a fresh iterator can reproduce a frozen
-snapshot without repeating business updates.
+storage failures belongs to its separate persistence owner; a fresh iterator
+reproduces a frozen snapshot without repeating business updates or external effects.

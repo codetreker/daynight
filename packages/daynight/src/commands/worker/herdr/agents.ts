@@ -1,3 +1,4 @@
+import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "../configuration-admission.js";
 import { codexAgentCliOverrides } from "../../../cli/codex-agent-environment.js";
 import { readCodexConfiguration } from "./codex-config.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -29,7 +30,7 @@ export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | 
 export type HerdrPromptReceipt = { submission: "submitted"; observation: HerdrAgentObservation };
 export type HerdrPromptResult = HerdrPromptReceipt | { submission: "skipped"; observation: HerdrAgentObservation };
 export type HerdrPromptGuard = (operation: Operation) => Promise<boolean>;
-export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string; beforeStart?: (operation: Operation) => Promise<void> };
+export type HerdrAgentLaunchInput = { configuration: HerdrAgentConfiguration; resumeSessionId?: string; beforeStart?: (operation: Operation) => Promise<void>; canAdmitNewExecution?: () => boolean; onSubmitting?: () => void; onRejected?: (rejection: HerdrAgentActionError) => void };
 export type HerdrAgentStartInput = HerdrAgentLaunchInput & {
   prompt: string;
   /** Capture the current input immediately before the durable native launch. */
@@ -250,13 +251,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       return paneShellName(foreground.name) || paneShellName(argv[0]);
     });
   };
-  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, cwd: string, args: string[], operation: Operation, beforeStart?: HerdrAgentLaunchInput["beforeStart"]): Promise<HerdrRpcResult> => {
+  const startNative = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, cwd: string, args: string[], operation: Operation, input: HerdrAgentLaunchInput): Promise<HerdrRpcResult> => {
     let readiness: { deadline: number; rejection: HerdrAgentActionError } | undefined;
     while (true) {
       operation.check();
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
       // A definite rejection authorizes another attempt only after fresh caller admission.
-      if (beforeStart !== undefined) await beforeStart(operation);
+      if (input.beforeStart !== undefined) await input.beforeStart(operation);
       operation.check();
       try {
         const { pane } = await readOwned(context, binding, operation);
@@ -268,9 +269,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       if (readiness !== undefined && performance.now() >= readiness.deadline) throw readiness.rejection;
       const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
       if (timeout <= 3000) throw readiness === undefined ? new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted") : readiness.rejection;
+      assertConfigurationAdmission(input.canAdmitNewExecution);
+      input.onSubmitting?.();
       try { return await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation); }
       catch (error) {
         if (!(error instanceof HerdrAgentActionError) || error.submission !== "rejected" || !(error.cause instanceof HerdrRpcError) || error.cause.method !== "agent.start" || error.cause.code !== "agent_pane_busy") throw error;
+        try { input.onRejected?.(error); }
+        catch (cause) { throw new AggregateError([error, cause], "The definite native rejection could not be committed.", { cause: error }); }
         // A new shell can still be running its startup scripts. Herdr's CLI retries
         // this definite rejection with the same terminal and shell-process proof.
         // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/cli/agent.rs#L358-L403
@@ -329,7 +334,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const overrides = codexAgentCliOverrides({ ...workspaceEnvironment, PATH: workspaceEnvironment.PATH }, effective);
       for (const [key, value] of Object.entries(overrides)) args.push("-c", `${key}=${JSON.stringify(value)}`);
     }
-    const started = await startNative(context, binding, cwd, args, operation, input.beforeStart);
+    const started = await startNative(context, binding, cwd, args, operation, input);
     const acknowledged = object(started.agent, "Started native agent");
     const argv = array(started.argv, "Native launch arguments");
     const expectedArgv = [context.agent, ...args];
@@ -430,10 +435,10 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
       return result;
     },
-    prepareWorkspace: async (context: HerdrExecutionContext, title: string, operation: Operation, startup?: { shellNonce: string }): Promise<HerdrTaskBinding> => {
+    prepareWorkspace: async (context: HerdrExecutionContext, title: string, operation: Operation, startup?: { shellNonce?: string; canAdmitNewExecution?: () => boolean }): Promise<HerdrTaskBinding> => {
       stoppedRuns.delete(resourceOwnerKey(context));
       activeBindings.delete(resourceOwnerKey(context));
-      if (startup !== undefined && canonicalId(startup.shellNonce) !== startup.shellNonce) throw new TypeError("The managed shell startup nonce must be a canonical UUID.");
+      if (startup?.shellNonce !== undefined && canonicalId(startup.shellNonce) !== startup.shellNonce) throw new TypeError("The managed shell startup nonce must be a canonical UUID.");
       let createPossible = false;
       try {
         const label = herdrExecutionLabel(context, title);
@@ -450,8 +455,9 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           activeBindings.set(resourceOwnerKey(context), { binding, agent: context.agent });
           return binding;
         }
+        assertConfigurationAdmission(startup?.canAdmitNewExecution);
         createPossible = true;
-        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...nativeAgentPermissionEnvironment(context.agent), ...(startup === undefined ? {} : { DAYNIGHT_HERDR_SHELL_NONCE: startup.shellNonce }) } }, "workspace_created", operation);
+        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...nativeAgentPermissionEnvironment(context.agent), ...(startup?.shellNonce === undefined ? {} : { DAYNIGHT_HERDR_SHELL_NONCE: startup.shellNonce }) } }, "workspace_created", operation);
         const workspace = object(result.workspace, "Created workspace");
         const pane = object(result.root_pane, "Created task pane");
         const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
@@ -459,7 +465,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         activeBindings.set(resourceOwnerKey(context), { binding, agent: context.agent });
         return binding;
       } catch (cause) {
-        if (cause instanceof HerdrAgentActionError) throw cause;
+        if (cause instanceof ConfigurationAdmissionWaiting || cause instanceof HerdrAgentActionError) throw cause;
         throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The task workspace could not be prepared.", "workspace.create", createPossible ? "unknown" : "not-submitted", { cause });
       }
     },

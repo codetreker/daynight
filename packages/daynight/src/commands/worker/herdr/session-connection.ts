@@ -5,6 +5,7 @@ import type { ClaimIdentity } from "../types.js";
 import { herdrLedgerHash, herdrLedgerPayloadHash, type HerdrLifecycleStore } from "./lifecycle-store.js";
 import type { HerdrLedgerRequest, HerdrLifecycleRecord } from "./lifecycle-types.js";
 import { HerdrSessionHttpError, type HerdrSessionApi, type HerdrSessionState } from "./session-api.js";
+import { assertConfigurationAdmission } from "../configuration-admission.js";
 
 const same = (left: unknown, right: unknown): boolean => canonicalSessionJson(left) === canonicalSessionJson(right);
 const reject = (): never => { throw new Error("The original Herdr Session decision is unconfirmed or conflicts with service state; no replacement registration was submitted."); };
@@ -57,7 +58,7 @@ const reconcileLedger = async (store: HerdrLifecycleStore, record: HerdrLifecycl
 };
 
 /** A persisted pending request is read back, never automatically dispatched a second time. */
-export const connectHerdrSession = async (store: HerdrLifecycleStore, identity: ClaimIdentity, api: HerdrSessionApi, signal?: AbortSignal, capabilities = { observe: false, control: false, archive: false }): Promise<HerdrLifecycleRecord> => {
+export const connectHerdrSession = async (store: HerdrLifecycleStore, identity: ClaimIdentity, api: HerdrSessionApi, signal?: AbortSignal, capabilities = { observe: false, control: false, archive: false }, canAdmitNewExecution?: () => boolean): Promise<HerdrLifecycleRecord> => {
   let record = need(store, identity);
   if (record.ledgerRequest !== null) record = await reconcileLedger(store, record, api, signal);
   if (record.registrationRequest !== null) return reconcileRegistration(store, record, api, signal);
@@ -74,6 +75,7 @@ export const connectHerdrSession = async (store: HerdrLifecycleStore, identity: 
     // A prepared successor is granted by the ledger only after reconnecting the registered generation.
     generation = observed.executionGeneration; binding = observed.binding;
   }
+  if (record.connectionEpoch === null) assertConfigurationAdmission(canAdmitNewExecution);
   const request: Extract<SessionV2Message, { type: "registration" }> = { ...envelope(record, generation), type: "registration", payload: { registrationId: record.registrationId, mode: record.connectionEpoch === null ? "register" : "reconnect", connectionEpoch: record.connectionEpoch, owner: record.owner, binding, capabilities } };
   record = store.update(record, draft => { draft.registrationRequest = request; });
   let epoch: string;

@@ -51,6 +51,42 @@ test("does not spawn when durable submission fails", async () => {
   expect(native.spawn).not.toHaveBeenCalled();
 });
 
+test("keeps a synchronous submission check and spawn in the same event-loop turn", async () => {
+  const f = await fixture();
+  let admission = true, admittedAtSpawn = false;
+  native.spawn.mockImplementationOnce(() => {
+    admittedAtSpawn = admission;
+    f.order.push("spawn");
+    queueMicrotask(() => f.child.emit("spawn"));
+    return f.child;
+  });
+  await launchControllerProcess({ ...f.options, onSubmitting: () => {
+    expect(admission).toBe(true);
+    f.order.push("submitting");
+    queueMicrotask(() => { admission = false; });
+  } });
+  expect(admittedAtSpawn).toBe(true);
+  expect(admission).toBe(false);
+  expect(native.spawn).toHaveBeenCalledOnce();
+});
+
+test("awaits asynchronous durable submission before spawning", async () => {
+  const f = await fixture();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const committed = new Promise<void>(resolve => { release = resolve; });
+  const pending = launchControllerProcess({ ...f.options, onSubmitting: async () => {
+    enter();
+    await committed;
+    f.order.push("submitting");
+  } });
+  await entered;
+  expect(native.spawn).not.toHaveBeenCalled();
+  release();
+  await expect(pending).resolves.toBe(f.snapshot);
+  expect(f.order).toEqual(["prepare", "submitting", "spawn", "capture", "spawned", "observe", "observed"]);
+});
+
 test("keeps the original launch unsubmitted while another writer owns storage", async () => {
   const f = await fixture();
   const journal = path.join(controllerExecutionDirectory(f.options.homeDirectory, f.options.ticket.executionId), "journal.sqlite");

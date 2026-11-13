@@ -28,6 +28,7 @@ export const createWorkerBotHost = (options: {
   toolInspector?: ReturnType<typeof createWorkerToolInspector>;
   homeDirectory: string; packageDirectory: string; workingDirectory: string; paths: WorkerPaths;
   owner: BotOwner; serverToken: string; configuration(): ExecutionConfiguration | null;
+  canAdmitNewExecution(): boolean;
   pollIntervalMs(): number | null; recoveryLimit(): number | null; emit(event: WorkerEvent): void;
 }) => {
   const migration = { onMigration: (event: Parameters<typeof workerSqliteMigrationEvent>[0]): undefined => { options.emit(workerSqliteMigrationEvent(event)); } };
@@ -44,6 +45,7 @@ export const createWorkerBotHost = (options: {
     } });
     const deletion = createBotDeletion({ ...options, store, executions, process: botProcess, sessionApi, remote });
     const runtime = createManagedAssistantRuntime({ owner: options.owner, store, remote, sessionApi, process: botProcess, deletion,
+      canAdmitNewExecution: options.canAdmitNewExecution,
       pollIntervalMs: () => options.pollIntervalMs() ?? 1000,
       onError: (message, botId) => options.emit({ kind: "bot-unavailable", message: botId === null ? message : `Bot ${botId}: ${message}` }),
     });

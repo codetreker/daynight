@@ -5,11 +5,44 @@ import { connectHerdrSession, publishHerdrLedger } from "../../../src/commands/w
 import type { SessionV2Message } from "../../../src/session/v2/types.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { createHerdrSessionConnectionFixtures } from "./herdr-session-connection.fixtures.js";
+import { ConfigurationAdmissionWaiting } from "../../../src/commands/worker/configuration-admission.js";
 
 type Registration = Extract<SessionV2Message, { type: "registration" }>;
 type Ledger = Extract<SessionV2Message, { type: "generation_ledger" }>;
 
 const { uuid, requestFor, stateFor, fixture, stop } = createHerdrSessionConnectionFixtures("memory");
+
+it.each(["support", "current"] as const)("checks first registration admission after awaited %s", async stage => {
+  const f = await fixture(); let complete = true;
+  if (stage === "support") {
+    const verify = f.api.verifySupport;
+    f.api.verifySupport = async signal => { await verify(signal); complete = false; };
+  } else {
+    const current = f.api.current;
+    f.api.current = async (...args) => { const result = await current(...args); complete = false; return result; };
+  }
+  await expect(connectHerdrSession(f.store, f.identity, f.api, undefined, { observe: false, control: false, archive: false }, () => complete)).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+  expect(f.registrations).toEqual([]);
+  expect(f.store.get(f.identity)).toMatchObject({ connectionEpoch: null, registrationRequest: null });
+  complete = true; f.api.verifySupport = async () => {};
+  if (stage === "current") f.api.current = async () => ({ status: "not_registered", protocol: "daynight.session.v2", claimId: f.identity.claimId, agentControlMode: "herdr" });
+  await connectHerdrSession(f.store, f.identity, f.api, undefined, { observe: false, control: false, archive: false }, () => complete);
+  expect(f.registrations).toHaveLength(1);
+});
+
+it("keeps pending registration reconciliation and an existing reconnect available when admission closes", async () => {
+  const f = await fixture(); f.configure({ loseRegistration: true });
+  await connectHerdrSession(f.store, f.identity, f.api);
+  f.configure({ loseRegistration: false });
+  await connectHerdrSession(f.store, f.identity, f.api, undefined, { observe: false, control: false, archive: false }, () => false);
+  expect(f.registrations.map(value => value.payload.mode)).toEqual(["register", "reconnect"]);
+  const g = await fixture(); g.configure({ loseRegistration: true, commitRegistration: false });
+  await expect(connectHerdrSession(g.store, g.identity, g.api)).rejects.toThrow();
+  const original = g.store.get(g.identity)!.registrationRequest;
+  await expect(connectHerdrSession(g.store, g.identity, g.api, undefined, { observe: false, control: false, archive: false }, () => false)).rejects.not.toBeInstanceOf(ConfigurationAdmissionWaiting);
+  expect(g.registrations).toHaveLength(1);
+  expect(g.store.get(g.identity)!.registrationRequest).toEqual(original);
+});
 
 it("commits the exact registration before its first HTTP write", async () => {
     const f = await fixture(); let persisted: Registration | null = null;

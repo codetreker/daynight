@@ -33,6 +33,7 @@ import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } f
 import type { ManagedAssignment } from "./prompts.js";
 import type { WorkerPromptTuple } from "./prompt-source.js";
 import type { ExecutionAdvance } from "./execution.js";
+import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "./configuration-admission.js";
 import { isUnavailableProject } from "./remote.js";
 import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
@@ -44,7 +45,7 @@ import { createSelectedWorktrees } from "./monitoring/selected-worktrees.js";
 import type { FailureWorktree } from "./monitoring/types.js";
 
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
-export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" };
+export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" };
 export type WorkerCoordinatorOptions = {
   freezeConfiguration?: (configuration: ExecutionConfiguration, signal: AbortSignal) => Promise<ExecutionConfiguration>;
   hasHerdrJournal?: boolean;
@@ -985,28 +986,33 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let observed = false;
       let advancing = false;
       let waitingInput: WorkerInputWait | undefined;
+      const canAdmitNewExecution = () => options.configurationComplete?.() ?? true;
       try {
         if (record === null || record.recovery.pauseReason === null || record.recovery.retryAuthorized || legacyBranchLatch(record)) {
           requireImplementedWorkerBackend(configuration);
           await options.verifyWebServer?.(configuration.agent, signal);
           if (record === null) {
+            assertConfigurationAdmission(canAdmitNewExecution);
             if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
             await options.verifyWebUnregistered(task, signal);
             if (task.sessionId !== null || worker.nativeSessionId !== null) throw new Error("The original native identity has no local Web execution evidence.");
+            assertConfigurationAdmission(canAdmitNewExecution);
             if (options.freezeConfiguration !== undefined) configuration = await options.freezeConfiguration(configuration, signal);
+            assertConfigurationAdmission(canAdmitNewExecution);
           }
           record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: worker.userId, configuration }, now());
           if (record.cleanup !== null) record = await finishShutdown(record, signal);
           advancing = true;
           if (options.webBackend.advanceResult) {
-            const result = await options.webBackend.advanceResult(record, signal);
+            const result = await options.webBackend.advanceResult(record, signal, canAdmitNewExecution);
             record = result.task;
             if (result.kind === "waiting_input") waitingInput = { kind: "waiting_input", reason: result.reason };
-          } else record = await options.webBackend.advance(record, signal);
+          } else record = await options.webBackend.advance(record, signal, canAdmitNewExecution);
           observed = true;
         }
       } catch (error) {
         if (isWorkerCancellation(error, signal)) throw error;
+        if (error instanceof ConfigurationAdmissionWaiting) { waitingInput = { kind: "waiting_input", reason: "configuration_pending" }; return waitingInput; }
         record = options.webStore.getTask(task);
         if (record !== null && record.cleanup === null && record.recovery.pauseReason === null) {
           if (error instanceof WebRecoveryBlockedError) record = options.webStore.pauseRecovery(record, error.message, now(), error.reasonCode);
@@ -1017,7 +1023,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       } finally {
         // Summary transport is independent of native recovery and must remain live while paused.
         record = options.webStore.getTask(task);
-        if (!signal.aborted && (observed || !execute || record !== null)) {
+        if (!signal.aborted && (observed || !execute || record !== null || waitingInput !== undefined)) {
           const nativeSessionId = record?.resources.nativeSession?.sessionId ?? task.sessionId ?? worker.nativeSessionId;
           if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
           const phase = waitingInput !== undefined || (record !== null && options.webStore.getOrchestrationBlocker(record) !== null) || record?.recovery.pauseReason != null || record?.recovery.retryAuthorized
@@ -1070,9 +1076,27 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (!execute) return;
     let currentConfiguration = configurationFor(task);
     if (currentConfiguration === null) return;
+    const canAdmitNewExecution = () => options.configurationComplete?.() ?? true;
+    let observedOriginal = false;
+    const originallySubmitted = () => task.sessionId !== null || observedOriginal || options.herdr.lifecycle?.hasSubmittedExecution?.(owner) === true;
+    const observeOriginal = async () => {
+      if (originallySubmitted() || canAdmitNewExecution() || options.herdr.lifecycle !== undefined) return;
+      const pane = actualTaskPane(owner, await workerOperation(operation => options.herdr.tasks.listResources(operation), signal));
+      observedOriginal = pane !== undefined && liveAgent(pane);
+    };
+    const waitForConfiguration = async (): Promise<WorkerInputWait> => {
+      const activity = monitoringJobs.get(key(task));
+      if (activity !== undefined) observe(m => m.updateActivity(activity, { phase: "waiting", status: "waiting", waitReason: "initializing" }));
+      await publishSummary(task, { kind: "waiting_input", reason: "configuration_pending", observation: null }, remoteTask, signal);
+      return { kind: "waiting_input", reason: "configuration_pending" };
+    };
+    await observeOriginal();
+    if (!originallySubmitted() && !canAdmitNewExecution()) return waitForConfiguration();
     if (task.sessionId === null && options.store.getNativeConfiguration(task) === null && options.freezeConfiguration !== undefined) currentConfiguration = await options.freezeConfiguration(currentConfiguration, signal);
+    await observeOriginal();
+    if (!originallySubmitted() && !canAdmitNewExecution()) return waitForConfiguration();
     if (task.sessionId === null) options.store.freezeNativeConfiguration(task, currentConfiguration);
-    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration, freshClaim: freshClaims.has(key(owner)), onBeforeStart: () => freshClaims.delete(key(owner)) };
+    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: currentConfiguration, canAdmitNewExecution, freshClaim: freshClaims.has(key(owner)), onBeforeStart: () => freshClaims.delete(key(owner)) };
     const selectedBinding = await workerOperation(operation => options.git.resolveWorktreeBinding(input.project, owner, operation), signal);
     if (selectedBinding !== null || input.freshClaim) observe(() => selectWorktree(owner, input.project.localPath, selectedBinding?.worktreePath ?? newWorktreePath(input.project, owner)));
     const observed = await execution.advance(input, signal);

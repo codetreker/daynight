@@ -55,7 +55,10 @@ and [Worker design](../../../../docs/design/daynight-worker.md#云端接收与�
 own the detailed behavior. Non-null target revisions retain existing monotonic
 policy. The first synchronization installs its observation baseline; later
 non-null target observations only advance it, and null uses the canonical zero
-baseline. Persistence errors retain the manager's existing failure path.
+baseline. The [storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
+owns current transient-I/O recovery and readiness. The fact representation originally
+retained the earlier persistence-failure path; it still preserves actual values,
+original work and unconfirmed failures while a checkpoint waits for storage.
 
 This decision replaces the shared local/report collection in the
 [capacity decision](2026-11-07-worker-current-capacity.md) and extends the

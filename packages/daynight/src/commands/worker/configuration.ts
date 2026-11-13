@@ -1,15 +1,13 @@
-import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import { parseWorkerCloudReceipt, parseWorkerCloudRevision } from "../../api/worker-configuration.js";
 import { canonicalId } from "../../api/parse.js";
 import { ProtocolError } from "../../api/validation.js";
+import { OperationError } from "../../api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import type { AgentControlMode, WorkerReport } from "../../api/types.js";
 import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
-import { replaceFileAtomicallyFromChunks } from "../../platform/files.js";
 import { parseLocalToolPaths, type Tool, type ToolPaths } from "../../platform/tool-path-choice.js";
-import { configurationCacheChunks, createConfigurationCache, readConfigurationCache } from "./configuration-cache.js";
+import { createWorkerConfigurationPersistence, waitForConfigurationOperation, type ConfigurationPersistenceEvent } from "./configuration-persistence.js";
 import { configurationCapabilities as capabilities, configurationKey as keyOf, configurationRetryDelays as retryDelays, configurationSupportsMode as supportsMode, freezeConfiguration as freeze, parseConfigurationDesired as parseDesired, sameConfigurationValue as equal } from "./configuration-model.js";
 import type { ConfigurationProjection, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity, WorkerConfigurationSnapshot, WorkerConfigurationToolTargets, WorkerNativeProof } from "./configuration-model.js";
 import { acceptConfigurationProjection, allConfigurationItems, configurationHasUnfinishedRemoval as hasUnfinishedRemoval, configurationInheritanceSources, configurationSnapshot as snapshot, configurationTarget as target, configurationToolTargets as toolTargets, findConfigurationRecord as findRecord, findCurrentConfigurationItem as findItem, projectConfigurationReport, pruneConfigurationRetained, replaceConfigurationRecord as replaceItem, transitionConfigurationDesired as desiredTransition } from "./configuration-state.js";
@@ -42,6 +40,7 @@ export type WorkerConfigurationManagerOptions = {
   readonly onNativeApplication?: (event: WorkerNativeApplicationEvent) => void;
   readonly onError?: (error: unknown) => void;
   readonly onInvalidDesired?: (revision: string) => void;
+  readonly onStorageState?: (event: ConfigurationPersistenceEvent) => void;
   readonly now?: () => number;
   readonly persist?: (file: string, chunks: () => Iterable<string>) => Promise<void>;
 };
@@ -52,6 +51,13 @@ const nativeTools = (native: WorkerCloudNative, mode: AgentControlMode): readonl
 const nativeMode = (cache: WorkerConfigurationCache, key: WorkerCloudItemKey): AgentControlMode | null => findItem(cache, key)?.nativeMode ?? null;
 const isScalar = (key: WorkerCloudItemKey): boolean => key.kind === "maxConcurrent" || key.kind === "pollIntervalMs" || key.kind === "recoveryLimit" || key.kind === "preferPlatformSpecificTasks";
 const observedSource = (item: TrackedConfigurationItem): TrackedConfigurationItem["actualSource"] => ({ kind: "observed", recordId: item.recordId, generation: item.origin.generation, targetRevision: item.origin.targetRevision });
+const isJobCancellation = (error: unknown, signal: AbortSignal): boolean => {
+  if (!signal.aborted) return false;
+  if (error instanceof AggregateError) return error.errors.length > 0 && error.errors.every(cause => isJobCancellation(cause, signal))
+    && (error.cause === undefined || isJobCancellation(error.cause, signal));
+  return error === signal.reason || error instanceof OperationError && error.kind === "cancelled" && error.cause === signal.reason
+    || error instanceof Error && error.cause !== undefined && isJobCancellation(error.cause, signal);
+};
 export class WorkerConfigurationApplicationError extends Error {
   constructor(readonly diagnostic: Omit<WorkerCloudFailure, "occurredAt">, options?: ErrorOptions) {
     super("Worker configuration application failed.", options);
@@ -79,22 +85,20 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     mode != null && typeof value === "object" && value !== null && equal(proofFor(current, value, mode), proof);
   const intendedMode = (current: WorkerConfigurationCache): AgentControlMode => current.authority.desired?.value.agentControlMode ?? localMode;
   const projectMode = (current: WorkerConfigurationCache): AgentControlMode | null => current.authority.desired?.value.agentControlMode == null ? localMode : nativeMode(current, { kind: "native" });
-  const now = options.now ?? Date.now, persist = options.persist ?? ((file, chunks) => replaceFileAtomicallyFromChunks(file, chunks(), 0o600));
-  let cache: WorkerConfigurationCache, migrated = false;
-  try { ({ cache, migrated } = await readConfigurationCache(options.file, options.identity, options.signal)); }
-  catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    cache = createConfigurationCache(options.identity);
-  }
-  cache = freeze(cache);
-  await mkdir(path.dirname(options.file), { recursive: true, mode: 0o700 });
-  options.signal.throwIfAborted();
-  if (migrated) await persist(options.file, () => configurationCacheChunks(cache));
-  options.signal.throwIfAborted();
+  const now = options.now ?? Date.now;
+  let notifyStorage: (() => void) | undefined;
+  const storage = await createWorkerConfigurationPersistence({
+    file: options.file, identity: options.identity, signal: options.signal,
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.persist === undefined ? {} : { persist: options.persist }),
+    onState: event => { try { options.onStorageState?.(event); } finally { notifyStorage?.(); } },
+  });
+  let cache = storage.current();
   let validatedNative = new Map<string, WorkerNativeProof>();
   let synchronized = false, stopped = false, queued = false, applyingScalars = false;
   let deferredDesired: WorkerCloudDesired | null = null;
-  let tail = Promise.resolve(), fatal: { error: unknown } | undefined;
+  let fatal: { error: unknown } | undefined;
+  let stopping: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined, jobCursor: string | null = null;
   let adapters: WorkerConfigurationProjectAdapters = {};
   const jobs = new Map<string, Job>(), sentProjections = new WeakMap<WorkerCloudReport, ConfigurationProjection>(), deferred = new Set<string>();
@@ -130,18 +134,18 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     return next;
   };
   const kick = (): void => {
-    if (queued || stopped || fatal !== undefined || !synchronized) return;
+    if (queued || stopped || fatal !== undefined || !synchronized || !storage.isReady()) return;
     queued = true;
     queueMicrotask(() => { queued = false; pump(); });
   };
-  const commit = (update: (current: WorkerConfigurationCache) => WorkerConfigurationCache, confirm = false, proof?: WorkerNativeProof & { recordId: string; accepted: () => boolean }): Promise<void> => {
-    const operation = tail.then(async () => {
+  const commit = (update: (current: WorkerConfigurationCache) => WorkerConfigurationCache, confirm = false, proof?: WorkerNativeProof & { recordId: string; accepted: () => boolean }, affected: readonly string[] = []): Promise<void> =>
+    storage.commit(current => {
       check();
-      let next = update(cache);
-      const changedMode = nativeMode(cache, { kind: "native" }) !== nativeMode(next, { kind: "native" }) && supportsMode(next.authority.desired) && next.authority.desired?.value.agentControlMode != null;
+      let next = update(current);
+      const changedMode = nativeMode(current, { kind: "native" }) !== nativeMode(next, { kind: "native" }) && supportsMode(next.authority.desired) && next.authority.desired?.value.agentControlMode != null;
       const nextValidatedNative = new Map(validatedNative);
-      if (changedMode) for (const item of allConfigurationItems(cache)) if (item.value.key.kind === "projectNative") nextValidatedNative.delete(item.recordId);
-      const inherited = configurationInheritanceSources(cache);
+      if (changedMode) for (const item of allConfigurationItems(current)) if (item.value.key.kind === "projectNative") nextValidatedNative.delete(item.recordId);
+      const inherited = configurationInheritanceSources(current);
       for (const item of next.currentItems) {
         if (item.value.key.kind !== "native" && item.value.key.kind !== "projectNative") continue;
         if (nextValidatedNative.has(item.recordId)) continue;
@@ -162,20 +166,27 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       next = pruneConfigurationRetained(next, runningIds());
       const proofOwners = new Set(allConfigurationItems(next).map(item => item.recordId));
       for (const id of nextValidatedNative.keys()) if (!proofOwners.has(id)) nextValidatedNative.delete(id);
-      if (next !== cache) {
-        const frozen = freeze(next);
-        await persist(options.file, () => configurationCacheChunks(frozen));
-        cache = frozen;
-      }
-      if (changedMode) for (const job of jobs.values()) if (job.key.kind === "projectNative") job.controller.abort(new Error("Worker control mode changed."));
-      for (const job of jobs.values()) if (job.proof !== null && !equal(job.preparing ? job.proof.tools.map(({ tool, choice }) => ({ tool, choice })) : job.proof.tools, job.preparing ? proofFor(cache, job.proof.native, job.proof.mode).tools.map(({ tool, choice }) => ({ tool, choice })) : proofFor(cache, job.proof.native, job.proof.mode).tools)) job.controller.abort(new Error("Worker tool selection changed."));
-      validatedNative = nextValidatedNative;
-      if (confirm) synchronized = true;
-      options.onChange?.(snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode, localTools, proofFor));
-      kick();
+      const previous = new Map(allConfigurationItems(current).map(item => [item.recordId, item]));
+      const recordIds = new Set(affected);
+      for (const item of allConfigurationItems(next)) { if (previous.get(item.recordId) !== item) recordIds.add(item.recordId); previous.delete(item.recordId); }
+      for (const id of previous.keys()) recordIds.add(id);
+      return { cache: next, write: next !== current, recordIds: [...recordIds], publish: committed => {
+        cache = committed;
+        if (changedMode) for (const job of jobs.values()) if (job.key.kind === "projectNative") job.controller.abort(new Error("Worker control mode changed."));
+        for (const job of jobs.values()) if (job.proof !== null && !equal(job.preparing ? job.proof.tools.map(({ tool, choice }) => ({ tool, choice })) : job.proof.tools, job.preparing ? proofFor(cache, job.proof.native, job.proof.mode).tools.map(({ tool, choice }) => ({ tool, choice })) : proofFor(cache, job.proof.native, job.proof.mode).tools)) job.controller.abort(new Error("Worker tool selection changed."));
+        validatedNative = nextValidatedNative;
+        if (confirm && !stopped) synchronized = true;
+        options.onChange?.(snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode, localTools, proofFor));
+        kick();
+      } };
     });
-    tail = operation.then(() => undefined, () => undefined);
-    return operation;
+  notifyStorage = () => { options.onChange?.(snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode, localTools, proofFor)); kick(); };
+  const inputReady = async (signal: AbortSignal): Promise<void> => {
+    check(); signal.throwIfAborted();
+    if (stopped) throw new Error("Worker configuration manager is stopped.");
+    await storage.waitReady(signal);
+    check(); signal.throwIfAborted();
+    if (stopped) throw new Error("Worker configuration manager is stopped.");
   };
   const runnable = (item: TrackedConfigurationItem): boolean => {
     if (item.value.state === "applied" || item.value.state === "applying" || item.value.nextAttemptAt !== null && Date.parse(item.value.nextAttemptAt) > now()) return false;
@@ -250,9 +261,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       else if (key.kind === "projectPreparation") preparationDeferred = await prepare!(key.projectId, controller.signal) === false;
       else if (key.kind === "projectRemoval") await remove!(key.projectId, controller.signal);
     } catch (error) { outcome = { succeeded: false, error }; }
-    if (stopped) { notifyNative({ kind: "cancelled" }); return; }
-    if (controller.signal.aborted) { notifyNative({ kind: "cancelled" }); await resetCancelled(); return; }
-    if (!outcome.succeeded && (key.kind === "native" || key.kind === "projectNative")) {
+    const observedAt = now();
+    if (!outcome.succeeded && isJobCancellation(outcome.error, controller.signal)) {
+      notifyNative({ kind: "cancelled" }); if (!stopped) await resetCancelled(); return;
+    }
+    if (!stopped && !controller.signal.aborted && !outcome.succeeded && (key.kind === "native" || key.kind === "projectNative")) {
       const previous = findRecord(cache, recordId)?.value.appliedValue;
       const previousMode = findRecord(cache, recordId)?.nativeMode ?? localMode;
       if (typeof previous === "object" && previous !== null && !matchesProof(cache, previous, previousMode, validatedNative.get(recordId)) && (key.kind === "native" || previousMode === projectMode(cache))) {
@@ -266,8 +279,6 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         }
       }
     }
-    if (stopped) { notifyNative({ kind: "cancelled" }); return; }
-    if (controller.signal.aborted) { notifyNative({ kind: "cancelled" }); await resetCancelled(); return; }
     if (validated !== undefined && !equal(validated, proofFor(cache, validated.native, validated.mode))) { notifyNative({ kind: "cancelled" }); await resetCancelled(); return; }
     if (preparationDeferred) {
       await commit(current => {
@@ -283,12 +294,12 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       if (item === undefined || item.value.targetRevision !== revision || item.value.state !== "applying" || key.kind !== "projectRemoval" && (findItem(current, key)?.recordId !== recordId || !equal(target(current, key), intended)) || nativeKey !== null && intendedMode(current) !== mode || key.kind === "projectNative" && projectMode(current) !== effectiveProjectMode) return current;
       accepted = true;
       let next = current;
-      const diagnostic = outcome.succeeded ? null : failure(outcome.error, key, now());
+      const diagnostic = outcome.succeeded ? null : failure(outcome.error, key, observedAt);
       const complete = (source: TrackedConfigurationItem, appliedValue: WorkerCloudItem["appliedValue"], modeResult = false): TrackedConfigurationItem => {
         if (outcome.succeeded) return { ...source, backoffStep: 0, started: false, nativeMode: !modeResult && validated !== undefined ? validated.mode : source.nativeMode, actualSource: observedSource(source), value: { ...source.value, appliedValue, state: "applied", error: null, nextAttemptAt: null } };
         if (next.nextFailureId === Number.MAX_SAFE_INTEGER) throw new RangeError("Worker configuration failure sequence is exhausted.");
         const backoffStep = Math.min(source.backoffStep + 1, retryDelays.length);
-        retryAt = new Date(now() + retryDelays[backoffStep - 1]!).toISOString();
+        retryAt = new Date(observedAt + retryDelays[backoffStep - 1]!).toISOString();
         const failureId = next.nextFailureId;
         next = { ...next, nextFailureId: failureId + 1 };
         return { ...source, backoffStep, failureId, nativeMode: !modeResult && validated !== undefined ? validated.mode : source.nativeMode, value: { ...source.value, state: "error", error: diagnostic, lastFailure: diagnostic, nextAttemptAt: retryAt } };
@@ -301,9 +312,9 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         next = replaceItem(next, modeResult);
       }
       return next;
-    }, false, validated === undefined ? undefined : { recordId, ...validated, accepted: () => accepted }); }
+    }, false, validated === undefined || stopped || controller.signal.aborted ? undefined : { recordId, ...validated, accepted: () => accepted }); }
     catch (error) { notifyNative({ kind: "cancelled" }); throw error; }
-    if (!accepted) await resetCancelled();
+    if (!accepted && !stopped) await resetCancelled();
     if (nativeKey !== null) {
       if (!accepted || stopped || controller.signal.aborted) notifyNative({ kind: "cancelled" });
       else if (outcome.succeeded) notifyNative({ kind: "succeeded" });
@@ -311,7 +322,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     }
   };
   const pump = (): void => {
-    if (stopped || fatal !== undefined || !synchronized) return;
+    if (stopped || fatal !== undefined || !synchronized || !storage.isReady()) return;
     if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
     for (const job of jobs.values()) {
       const item = findRecord(cache, job.recordId);
@@ -342,6 +353,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   };
   const halt = (): void => {
     stopped = true;
+    storage.beginDrain();
     if (timer !== undefined) { clearTimeout(timer); timer = undefined; }
     for (const job of jobs.values()) job.controller.abort(options.signal.reason);
     options.signal.removeEventListener("abort", halt);
@@ -350,44 +362,50 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   if (options.signal.aborted) halt();
   return {
     current: (): WorkerConfigurationSnapshot => snapshot(cache, synchronized && deferredDesired === null, validatedNative, localMode, localTools, proofFor),
-    receive: async (desired: WorkerCloudDesired | null, observationRevision?: string): Promise<void> => {
+    isReady: (): boolean => !stopped && fatal === undefined && storage.isReady(),
+    waitReady: (signal: AbortSignal = options.signal): Promise<void> => inputReady(signal),
+    beginDrain: halt,
+    receive: async (desired: WorkerCloudDesired | null, observationRevision?: string, signal: AbortSignal = options.signal): Promise<void> => {
+      await inputReady(signal);
       const parsed = desired === null ? null : parseDesired(desired, false), revision = observationRevision === undefined ? undefined : parseWorkerCloudRevision(observationRevision, true);
-      await commit(current => {
-        if (stopped) throw new Error("Worker configuration manager is stopped.");
+      await waitForConfigurationOperation(commit(current => {
+        if (stopped) return current;
         const obsolete = synchronized && parsed !== null && current.authority.desired !== null && BigInt(parsed.revision) < BigInt(current.authority.desired.revision);
         let next = obsolete ? current : parsed === null ? desiredTransition(current, null, localMode, runningIds(), randomUUID) : transition(current, parsed);
         if (!synchronized && parsed !== null) next = { ...next, currentItems: next.currentItems.map(item => item.value.key.kind === "native" || item.value.key.kind === "projectNative" || item.value.key.kind === "projectPreparation"
           ? { ...item, value: { ...item.value, state: "pending", error: null, nextAttemptAt: null } } : item) };
         if (parsed !== null && revision !== undefined && (!synchronized || BigInt(revision) > BigInt(current.authority.observationRevision))) next = { ...next, authority: { ...next.authority, observationRevision: revision } };
         return next;
-      }, true);
+      }, true), signal);
     },
     report: (bootstrap: WorkerCloudValue | null = null, telemetry?: WorkerReport): WorkerCloudReport => {
       check();
       if (stopped) throw new Error("Worker configuration manager is stopped.");
+      if (!storage.isReady()) throw new Error("Worker configuration checkpoint is not ready; wait for persistence before capturing a report.");
       const projection = projectConfigurationReport(cache, { synchronized, localMode, localTools, bootstrap, ...(telemetry === undefined ? {} : { telemetry }) });
       sentProjections.set(projection.report, projection);
       return projection.report;
     },
-    acknowledge: async (sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<void> => {
-      if (stopped) throw new Error("Worker configuration manager is stopped.");
+    acknowledge: async (sent: WorkerCloudReport, receipt: WorkerCloudReceipt, signal: AbortSignal = options.signal): Promise<void> => {
+      if (stopping !== undefined) throw new Error("Worker configuration manager is stopped.");
       const parsed = parseWorkerCloudReceipt(receipt, capabilities(receipt.desired?.value)), captured = sentProjections.get(sent);
       if (captured === undefined) throw new Error("Worker configuration report was not captured by this manager.");
       if (parsed.observationAccepted && (sent.observation === null || BigInt(parsed.observationRevision) !== BigInt(sent.observation.baseRevision) + 1n || parsed.desired === null || BigInt(parsed.desired.revision) < BigInt(sent.observation.desiredRevision))) throw new Error("Worker configuration receipt does not acknowledge the submitted observation.");
-      await commit(current => {
+      const owned = commit(current => {
         let next = current;
         if (BigInt(parsed.observationRevision) > BigInt(next.authority.observationRevision)) next = { ...next, authority: { ...next.authority, observationRevision: parsed.observationRevision } };
         if (parsed.desired !== null) next = transition(next, parsed.desired);
         if (parsed.observationAccepted) next = acceptConfigurationProjection(next, captured, runningIds());
         return next;
-      }, true);
-      sentProjections.delete(sent);
+      }, true, undefined, [...captured.recordIds, ...captured.failures.map(item => item.sourceRecordId)]).then(() => { sentProjections.delete(sent); });
+      await waitForConfigurationOperation(owned, signal);
     },
-    ensureProjectRemoval: async (projectId: string): Promise<void> => {
+    ensureProjectRemoval: async (projectId: string, signal: AbortSignal = options.signal): Promise<void> => {
+      await inputReady(signal);
       const id = canonicalId(projectId);
       if (id === null) throw new TypeError("Project ID must be a UUID.");
-      await commit(current => {
-        if (stopped) throw new Error("Worker configuration manager is stopped.");
+      await waitForConfigurationOperation(commit(current => {
+        if (stopped) return current;
         if (!synchronized || current.authority.desired === null || current.authority.desired.value.projects.some(project => project.projectId === id)) return current;
         const key: WorkerCloudItemKey = { kind: "projectRemoval", projectId: id }, previous = findItem(current, key);
         // A cached result does not prove that the new coordinator observed stopped resources.
@@ -396,35 +414,43 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         const value: WorkerCloudItem = { key, targetRevision: current.authority.desired.revision, appliedValue: null, state: "pending", error: null, lastFailure: null, nextAttemptAt: null };
         const item: TrackedConfigurationItem = { recordId: randomUUID(), origin: { generation: current.authority.generation, targetRevision: value.targetRevision, source: "application" }, value, backoffStep: 0, failureId: null, started: false, nativeMode: null, actualSource: null, blockedByRemovalId: blocker?.recordId ?? null };
         return { ...current, currentItems: [...current.currentItems, item] };
-      });
+      }), signal);
     },
-    confirmProjectPrepared: async (projectId: string, revision: string): Promise<void> => {
-      if (stopped) throw new Error("Worker configuration manager is stopped.");
+    confirmProjectPrepared: async (projectId: string, revision: string, signal: AbortSignal = options.signal): Promise<void> => {
+      if (stopping !== undefined) throw new Error("Worker configuration manager is stopped.");
       parseWorkerCloudRevision(revision);
-      await commit(current => {
+      await waitForConfigurationOperation(commit(current => {
         const item = findItem(current, { kind: "projectPreparation", projectId });
         if (item === undefined || current.authority.desired?.revision !== revision || item.value.targetRevision !== revision || hasUnfinishedRemoval(current, projectId)) return current;
         return replaceItem(current, { ...item, backoffStep: 0, actualSource: observedSource(item), value: { ...item.value, appliedValue: true, state: "applied", error: null, nextAttemptAt: null } });
-      });
+      }), signal);
     },
-    refreshToolSelections: async (): Promise<void> => {
-      check();
-      if (stopped) throw new Error("Worker configuration manager is stopped.");
-      await commit(current => current);
+    refreshToolSelections: async (signal: AbortSignal = options.signal): Promise<void> => {
+      await inputReady(signal);
+      await waitForConfigurationOperation(commit(current => current), signal);
     },
-    configureProjectAdapters: async (next: WorkerConfigurationProjectAdapters): Promise<void> => { check(); if (stopped) throw new Error("Worker configuration manager is stopped."); adapters = next; deferred.clear(); kick(); },
-    settle: async (): Promise<void> => {
+    configureProjectAdapters: async (next: WorkerConfigurationProjectAdapters, signal: AbortSignal = options.signal): Promise<void> => { await inputReady(signal); adapters = next; deferred.clear(); kick(); },
+    settle: async (signal?: AbortSignal): Promise<void> => {
+      const join = <T>(owned: Promise<T>): Promise<T> => signal === undefined ? owned : waitForConfigurationOperation(owned, signal);
       for (;;) {
-        await tail;
+        await join(storage.whenIdle());
         await Promise.resolve();
         const pending = [...jobs.values()].map(job => job.promise);
-        if (pending.length !== 0) { await Promise.all(pending); continue; }
+        if (pending.length !== 0) { await join(Promise.all(pending)); continue; }
         if (queued || applyingScalars) continue;
         check();
         return;
       }
     },
-    stop: async (): Promise<void> => { halt(); await Promise.all([...jobs.values()].map(job => job.promise)); await tail; check(); },
+    stop: (): Promise<void> => stopping ??= (async () => {
+      halt();
+      const results = await Promise.allSettled([...jobs.values()].map(job => job.promise));
+      const failures = results.filter(result => result.status === "rejected").map(result => result.reason);
+      try { await storage.finish(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
+      try { check(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Worker configuration shutdown could not save every observed result.", { cause: failures[0] });
+    })(),
   };
 };
 export type WorkerConfigurationManager = Awaited<ReturnType<typeof createWorkerConfigurationManager>>;

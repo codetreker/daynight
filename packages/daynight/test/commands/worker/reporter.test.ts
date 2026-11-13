@@ -551,7 +551,7 @@ it("exchanges cloud configuration without a task inventory and acknowledges only
   pending.resolve({ observedAt: timestamp, lastReportedAt: timestamp, configuration: receipt });
   await settle();
   expect(accept.mock.calls[0]![0]).toBe(captureValue);
-  expect(accept).toHaveBeenCalledWith(captureValue, receipt);
+  expect(accept).toHaveBeenCalledWith(captureValue, receipt, send.mock.calls[0]![2]);
   await reporter.stop();
 });
 
@@ -570,7 +570,7 @@ it("captures current configuration after an unknown send outcome instead of repl
   expect(send.mock.calls.map(([, sent]) => sent.observation?.desiredRevision)).toEqual(["1", "2"]);
   expect(accept).toHaveBeenCalledOnce();
   expect(accept.mock.calls[0]![0]).toBe(capture.mock.results[1]!.value);
-  expect(accept).toHaveBeenCalledWith(capture.mock.results[1]!.value, receipt);
+  expect(accept).toHaveBeenCalledWith(capture.mock.results[1]!.value, receipt, send.mock.calls[1]![2]);
   await reporter.stop();
 });
 

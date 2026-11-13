@@ -70,18 +70,45 @@ describe.skipIf(process.platform !== "darwin")("retained-resource runtime author
     await expect(runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} })).rejects.toThrow("original claim is still active");
     expect(f.readTask).toHaveBeenCalledOnce(); expect(f.removeWorktree).not.toHaveBeenCalled(); expect(f.resource.resources()[0]!.disposition).toBeNull();
   });
-  it("retains diagnostic and metadata retirement failures together after disposal", async () => {
-    const f = fixture(), diagnosticPath = resolveWorkerPaths(f.homeDirectory).logsDirectory, retirement = new Error("metadata retirement failed"), teardown = new Error("Git disposal failed");
+  it.each([true, false])("retains independent disposal failures when diagnostic stderr is available=%s", async stderrAvailable => {
+    const f = fixture(), diagnosticPath = resolveWorkerPaths(f.homeDirectory).logsDirectory, retirement = new Error("metadata retirement failed"), teardown = new Error("Git disposal failed"), reporting = new Error("diagnostic stderr failed");
     writeFileSync(diagnosticPath, "not a directory");
     f.removeWorktree.mockImplementationOnce(async () => { rmSync(f.cwd, { force: true, recursive: true }); return { kind: "absent", effectErrors: [new Error("effect failed")] }; });
     f.retireWorktreeManifest.mockRejectedValueOnce(retirement);
     f.disposeGit.mockRejectedValueOnce(teardown);
-    const error = await runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} }).catch(value => value);
+    const notices: string[] = [];
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((...args) => {
+      notices.push(String(args[0]));
+      const callback = args.at(-1);
+      if (typeof callback === "function") callback(stderrAvailable ? null : reporting);
+      if (!stderrAvailable) queueMicrotask(() => { process.stderr.emit("error", reporting); });
+      return true;
+    });
+    let error: AggregateError;
+    try { error = await runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} }).catch(value => value); }
+    finally { stderr.mockRestore(); }
     expect(error).toBeInstanceOf(AggregateError);
-    expect(error.cause).toBeInstanceOf(AggregateError);
-    expect(error.cause.cause).toBe(retirement);
-    expect(error.cause.errors).toContain(retirement);
-    expect(error.cause.errors).toHaveLength(2);
+    expect(notices.join("")).toContain("diagnostic-sink-blocked");
+    if (stderrAvailable) {
+      expect(error.cause).toBe(retirement);
+      expect(error.errors).toContain(retirement);
+    } else {
+      expect(error.cause).toBeInstanceOf(AggregateError);
+      const combined = error.cause as AggregateError;
+      expect(combined.cause).toBe(retirement);
+      expect(combined.errors).toContain(retirement);
+      expect(combined.errors).toHaveLength(2);
+      expect(combined.errors[1]).toBeInstanceOf(AggregateError);
+      const causes = new Set<unknown>();
+      const include = (cause: unknown): void => {
+        if (causes.has(cause)) return;
+        causes.add(cause);
+        if (cause instanceof AggregateError) cause.errors.forEach(include);
+        if (cause instanceof Error && cause.cause !== undefined) include(cause.cause);
+      };
+      include(combined.errors[1]);
+      expect(causes.has(reporting)).toBe(true);
+    }
     expect(error.errors).toContain(teardown);
     expect(error.errors).toHaveLength(2);
     expect(f.resource.resources()[0]?.disposition?.completed).toBe(true);

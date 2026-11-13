@@ -29,10 +29,29 @@ import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isCo
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
 
+export class BotAdmissionBlockedError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("Bot initialization is waiting for Worker configuration.", options);
+    this.name = "BotAdmissionBlockedError";
+  }
+}
+
+const blockedAdmission = (cause: unknown): BotAdmissionBlockedError | undefined => {
+  const seen = new Set<unknown>();
+  let current = cause;
+  while (current instanceof Error && !(current instanceof AggregateError) && !seen.has(current)) {
+    if (current instanceof BotAdmissionBlockedError) return current;
+    seen.add(current);
+    current = current.cause;
+  }
+  return undefined;
+};
+
 /** Execution handles retain original identities; callers hold the Worker instance lock. */
 export const createBotProcess = (options: {
   homeDirectory: string; packageDirectory: string; store: BotStore; executions: BotExecutionStore;
   sessionApi: BotSessionApi; recoveryLimit: number | (() => number); now?: () => number;
+  canAdmitNewExecution(): boolean;
   selectToolLaunch?: (agent: "codex" | "copilot", signal: AbortSignal) => Promise<ResolvedToolLaunch>;
   jobLeases?: ControllerJobLeases;
   toolObservationFor?: (launch: ResolvedToolLaunch) => FrozenToolObservation | undefined;
@@ -62,6 +81,13 @@ export const createBotProcess = (options: {
     });
   };
   const pendingCleanup = new Map<string, BotEnvironmentCleanupError>();
+  const initialUnsubmitted = (record: BotRecord): boolean => {
+    const execution = record.intent === null ? null : options.executions.get(record);
+    return record.intent?.nativeSessionId == null && (execution === null || execution.launchSubmission === "not-submitted");
+  };
+  const checkAdmission = (input: BotRecord): void => {
+    if (initialUnsubmitted(current(input)) && !options.canAdmitNewExecution()) throw new BotAdmissionBlockedError();
+  };
   const environment = options.dependencies?.prepareEnvironment ?? prepareBotEnvironment;
   const launch = options.dependencies?.launch ?? launchControllerProcess, observe = options.dependencies?.observe ?? observeControllerProcess;
   const readSnapshot = options.dependencies?.readSnapshot ?? readControllerSnapshot;
@@ -149,10 +175,12 @@ export const createBotProcess = (options: {
       selected = record.intent!.toolLaunch ?? await options.selectToolLaunch?.(provider, signal);
       if (selected === undefined) throw missingSelection(record);
       signal.throwIfAborted(); assertUnsubmitted(record);
+      checkAdmission(record);
       if (ticket !== undefined) await writeLaunchToolSelection(options.homeDirectory, ticket, selected, () => { assertUnsubmitted(record); });
     }
     if (record.intent!.toolLaunch === undefined) {
       assertUnsubmitted(record);
+      checkAdmission(record);
       options.store.freezeToolLaunch(record, selected, options.toolObservationFor?.(selected));
       record = current(record);
     } else if (record.intent!.toolLaunch.selectionKey !== selected.selectionKey) throw new Error("The original Bot ticket tool selection differs from its frozen intent.");
@@ -187,6 +215,7 @@ export const createBotProcess = (options: {
     let record = current(input);
     const prior = record.intent === null ? null : options.executions.get(record);
     if (prior?.startup?.state === "failed" && prior.snapshot?.nativeSessionId == null && record.intent?.nativeSessionId == null) throw new ControllerStartupError(prior.startup, prior.lastError ?? "The original Bot initialization failed.");
+    checkAdmission(record);
     if (prior !== null && prior.launchSubmission !== "not-submitted") {
       const ticket = await checkedTicket(record);
       if (prior.controllerProcess === null) {
@@ -253,26 +282,31 @@ export const createBotProcess = (options: {
     // registration only once the initial environment is known to be usable.
     const prepared = await prepareEnvironment(record, signal);
     try {
+      checkAdmission(record);
       if (record.intent === null) {
         const provider = record.definition!.resolvedConfiguration.provider;
         const toolLaunch = provider === "claude" ? undefined : await options.selectToolLaunch?.(provider, signal);
         if (provider !== "claude" && toolLaunch === undefined) throw missingSelection(record);
         const toolObservation = toolLaunch === undefined ? undefined : options.toolObservationFor?.(toolLaunch);
         signal.throwIfAborted(); current(record);
+        checkAdmission(record);
         options.store.prepare(record.owner, record.botId, { homeDirectory: options.homeDirectory, recoveryLimit: typeof options.recoveryLimit === "function" ? options.recoveryLimit() : options.recoveryLimit,
           ...(toolLaunch === undefined ? {} : { toolLaunch }), ...(toolObservation === undefined ? {} : { toolObservation }) });
       }
       record = current(record);
       record = await freezePendingSelection(record, signal);
+      checkAdmission(record);
       options.store.freezeRole(record.owner, record.botId, selectBotRole({ serverRole: record.definition!.roleConfiguration, preparedRole: record.intent!.roleConfiguration }));
       record = current(record);
       options.executions.prepare(record);
       options.executions.update(record, { aliasDirectory: prepared.aliasDirectory });
       if (record.intent!.sessionId === null) {
+        checkAdmission(record);
         const registered = await options.sessionApi.register(record, signal);
         options.store.observe(record.owner, registered.bot, now());
         record = current(record);
       }
+      checkAdmission(record);
       let ticket: ControllerLaunchTicket;
       try { ticket = await checkedTicket(record); }
       catch (error) {
@@ -297,13 +331,17 @@ export const createBotProcess = (options: {
       }
       const previous = options.executions.get(current(record))!.previous;
       const stopProof = previous === null ? undefined : { generation: previous.generation, instanceId: previous.instanceId, recordId: previous.recordId, stoppedAt: previous.stoppedAt };
+      checkAdmission(record);
       const grant = await options.sessionApi.grant(sessionRecord(current(record)), signal, stopProof);
       current(record); signal.throwIfAborted();
+      checkAdmission(record);
       if (ticket.provider !== "claude" && (await readLaunchToolSelection(options.homeDirectory, ticket))?.selectionKey !== record.intent!.toolLaunch?.selectionKey) throw missingSelection(record);
+      checkAdmission(record);
       await writeControllerCredential(ticket.credentialFile, grant);
       record = current(record);
+      checkAdmission(record);
       return await launch({ homeDirectory: options.homeDirectory, packageDirectory: options.packageDirectory, ticket, env: prepared.environment, signal,
-        onSubmitting: () => { options.executions.update(current(record), { launchSubmission: "unknown" }); },
+        onSubmitting: () => { checkAdmission(record); options.executions.update(current(record), { launchSubmission: "unknown" }); },
         onSpawned: proof => { options.executions.update(current(record, true), { controllerProcess: proof }); },
         onObserved: async snapshot => {
           if (jobLeases.enabled) {
@@ -319,7 +357,8 @@ export const createBotProcess = (options: {
     } catch (error) {
       record = current(record, true);
       const execution = record.intent === null ? null : options.executions.get(record);
-      if (execution !== null) options.executions.update(record, {
+      const blocked = initialUnsubmitted(record) ? blockedAdmission(error) : undefined;
+      if (execution !== null && blocked === undefined) options.executions.update(record, {
         lastError: error instanceof Error ? error.message : "Bot launch outcome is unknown.",
         ...(error instanceof ControllerStartupError ? { startup: error.observation } : {}),
       });
@@ -327,7 +366,7 @@ export const createBotProcess = (options: {
         await prepared.release(); environments.delete(record.botId);
         if (execution !== null) options.executions.update(record, { aliasDirectory: null });
       }
-      throw error;
+      throw blocked === undefined || blocked === error ? error : new BotAdmissionBlockedError({ cause: error });
     }
   };
   const shutdown = async (input: BotRecord, signal: AbortSignal): Promise<void> => {
@@ -514,10 +553,11 @@ export const createBotProcess = (options: {
       try { return await advance(record, signal); }
       catch (cause) {
         const latest = options.store.get(record.owner, record.botId);
-        if (latest?.intent !== null && latest !== null && options.executions.get(latest) !== null) {
+        const blocked = latest !== null && initialUnsubmitted(latest) ? blockedAdmission(cause) : undefined;
+        if (blocked === undefined && latest?.intent !== null && latest !== null && options.executions.get(latest) !== null) {
           options.executions.update(latest, { lastError: cause instanceof Error ? cause.message : "Bot recovery is unavailable." });
         }
-        throw cause;
+        throw blocked === undefined || blocked === cause ? cause : new BotAdmissionBlockedError({ cause });
       }
     }),
     observe: (record: BotRecord, signal: AbortSignal) => serialize(record.botId, async () => remember(record, await observe(await checkedTicket(current(record)), signal))),

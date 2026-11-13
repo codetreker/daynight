@@ -4,6 +4,8 @@ Bot 执行层消费[持久库存](worker-bot-inventory.md)与[角色及环境](b
 
 ## 启动与身份
 
+新 Bot 初始化须使用独立的 `canAdmitNewExecution` 动态门禁，不能把能力采样 `configuration()` 的返回值当作准入。存储或当前配置不就绪时保持等待；异步环境/工具准备之后、首次持久 intent、注册以及初次 launch submission 前再次检查。初次 intent 或 Session 已固定但尚未提交原生 launch 时，仍须守住后续边界，不重新分配身份。已经提交或提交结果未知的原操作、拥有已知原生会话的冻结恢复及输入/停止仍遵守原归属，不被新初始化门禁误停或改称 environment failure。
+
 首次预检成功后，先持久化注册身份和角色全文、revision、digest，再提交 register。首次请求的版本、配置和角色不得因重试或 Worker 升级改变。服务端同一事务冻结角色并绑定 Session；响应未知后先读取原 Bot，已经绑定时核对原执行，尚未绑定时仅可重放同一注册身份和指纹。缺失本地身份的已绑定 Bot 不创建替代会话。
 
 Controller ticket 使用 `initialInput: "none"`、空 `initialPrompt` 及独立 `instructions`，保留原生权限、模型、args、真实 HOME 和 native home。环境使用目标 Worker 的 `DN_CONFIG_DIR`，普通 cwd 必须存在；不支持的 Provider 参数和配置错误明确失败。角色不成为用户 turn。

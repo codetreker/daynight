@@ -26,13 +26,17 @@ reporter 不拥有执行 backend，不调用 task/claim 更新。Herdr 观察器
 
 reporter 构造时立即触发，并设置独立 30 秒 interval。`running` 表示唯一进行中的循环，`pending` 合并期间的全部触发；一次尝试结束时最多接续一次新采集。期间若再次触发，仍只保留一个 pending，不保存旧请求正文。
 
-每次尝试新建总预算 15 秒、单请求 10 秒的 Operation。collector 从剩余预算派生最多 5 秒的 collection Operation，各字段并行观察。原生版本命令使用 `cleanupWithinDeadline` 模式，在执行预算中预留终止与 join 时间，Windows 的 taskkill 也受同一剩余预算约束。普通 preflight 继续拥有自己的命令清理策略。
+每次尝试新建总预算 15 秒、单请求 10 秒的 Operation。配置 exchange 的 `waitReady(operation)` 在普通采样前、同步读取/prepare 和捕获前接入 manager 共享存储屏障；阻塞期间不保留新的普通读取队列。collector 从剩余预算派生最多 5 秒的 collection Operation，各字段并行观察。原生版本命令使用 `cleanupWithinDeadline` 模式，在执行预算中预留终止与 join 时间，Windows 的 taskkill 也受同一剩余预算约束。普通 preflight 继续拥有自己的命令清理策略。
 
-runtime 根 signal 中止时，reporter 同步停止 interval、清除 pending 并取消当前 Operation；coordinator 的同一根信号监听同步关闭调度并中止全部 job controller，包括终止清理 job。取消阶段不等待 reporter.stop()，因此慢报告不能延后任务取消，终止清理也不能在报告 join 期间继续删除 worktree 或完成本机行。随后 runtime 等待 reporter.stop()，再进入 coordinator shutdown 等待所有 job，直接停止受管执行并保留未完成 claim、worktree、原生 session ID 及 active/pending 行；backend、存储、日志与实例锁最后收尾。普通报告失败不终止执行；探测进程收尾无法确认与诊断输出失败会由 stop() 保留并传递，其他资源清理仍继续。
+runtime 根 signal 中止时，reporter 同步停止 interval、清除 pending 并取消当前 Operation；coordinator 的同一根信号监听同步关闭调度并中止全部 job controller，包括终止清理 job。取消阶段不等待 reporter.stop()，因此慢报告不能延后任务取消，终止清理也不能在报告 join 期间继续删除 worktree 或完成本机行。runtime 同时先启动配置 `beginDrain()`，再 join reporter、初始化移除及其它完成结果生产者；`stop()` 等待原配置 job 和文件队列，之后进入执行资源 shutdown。五秒 drain 只限制继续调度写重试，不 detach 活动 read/write/rename，实例锁保留到实际 I/O 和执行资源结束。未保存结果仍失败；backend 与 stores 的最后事件结束后才 close 诊断 sink。未完成 claim、worktree、原生 session ID 及 active/pending 行继续保留。普通报告失败不终止执行；探测进程收尾无法确认与诊断输出失败会由 stop() 保留并传递，其他资源清理仍继续。
 
 reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发并 join 当前采集后，按原确认状态判断剩余责任。已确认的历史清理超时及 reporter 自身取消包装不再单独导致退出失败；混合 `AggregateError` 中仍未确认的清理、独立错误和诊断输出失败继续传播。已确认清理错误自身携带的原始命令失败仍属于历史上下文，不等同于聚合中独立的退出失败。此判断不清除历史错误分类，也不触发新探测；停止或取消的采集不会因晚到确认复活。
 
+可信配置报告响应之后，`accept` 使用同一 Operation 的 signal 作为等待者预算，将捕获及回执先交给 manager-owned 提交。取消/超时使调用者离开等待，不能取消该提交或清除其结果。周期调度仍单飞并合并触发；文件恢复按序发布后通过原唤醒机制产生新的尝试。该屏障不承担服务端权威版本策略，不把已知回执伪装成读取或远端未知结果。
+
 ## 当前运行监控
+
+配置持久化与诊断文件 sink 的真实 I/O 故障通过既有 runtime failure 观察呈现阶段、retryState 和 nextAttemptAt，恢复退休同一运行内的故障身份。监控不读 JSONL、不将日志当作恢复输入，也不从最近成功配置或报告推断当前存储准入；isReady/canAdmitNewExecution 仍由本机执行所有者判定。固定诊断类别沿原内容准入，不上传原始错误或增加快照字段。
 
 取得实例锁后建立本次运行的内存观测器和随机 runId。Coordinator 在实际调度、执行、等待与清理边界同步更新状态；容量与领取准入共享责任投影，详情截断不改变总数。观测器不读取日志或额外发现资源。失败按受控类型映射为固定摘要：实际 Herdr 命令错误的明确非零安全整数退出、Git 命令错误的明确正安全整数退出为 command-failed；Git 启动失败的负 errno、仅信号退出或未知退出结果保持 unknown。清理阶段仅拆开已知 WorkerCleanupError 包装，不检查任意错误链或从消息猜测；原始错误仍由本机诊断处理。claim 异常的工作区位置从原操作选定的项目 checkout 与工作树绑定计算，不读文件系统或解析错误文本；Web 历史归档使用冻结的绑定，Herdr 使用生命周期 cwd 和受保护的项目绑定。没有可信配对时省略字段。快照深拷贝位置，预算不足时优先将最大编码路径改为明确超限，保留原始内存记录。共享字段、编码预算与 CAS 合同由[运行监控规范](../spec/daynight-worker-monitoring.md)持有。
 

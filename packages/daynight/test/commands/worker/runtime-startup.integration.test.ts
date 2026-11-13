@@ -46,7 +46,7 @@ vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: m
 vi.mock("../../../src/commands/worker/remote.js", async original => ({ ...await original<object>(), createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/herdr/version-probe.js", async original => ({ ...await original<object>(), probeNativeAgentVersion: mocks.probe }));
 vi.mock("../../../src/commands/worker/diagnostics.js", async original => ({
-  ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, filename: "worker.jsonl" }),
+  ...await original<object>(), createWorkerDiagnostics: async () => ({ emit: mocks.emit, flush: async () => {}, close: async () => {}, filename: "worker.jsonl" }),
 }));
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
@@ -182,7 +182,9 @@ describe("worker cloud-first startup", () => {
             const sent = reporterOptions!.configuration!.capture(reportSample);
             expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
             for (const item of sent.observation!.items) if (item.key.kind === "projectRemoval" && item.state === "applied") acknowledged.add(item.key.projectId);
-            await reporterOptions!.configuration!.accept(sent, { desired: target, observationRevision: String(++revision), observationAccepted: true });
+            const operation = createOperation();
+            try { await reporterOptions!.configuration!.accept(sent, { desired: target, observationRevision: String(++revision), observationAccepted: true }, operation); }
+            finally { operation.dispose(); }
             const saved = observed.current();
             remaining = [...saved.currentItems, ...saved.retainedItems].filter(item => item.value.key.kind === "projectRemoval").length;
             if (remaining === 0) break;
@@ -235,7 +237,9 @@ describe("worker cloud-first startup", () => {
             expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
             expect(sent.observation?.desiredRevision).toBe("2");
             expect(sent.observation!.items.every(item => BigInt(item.targetRevision) <= 2n)).toBe(true);
-            await options.configuration!.accept(sent, { desired: next, observationRevision: String(BigInt(sent.observation!.baseRevision) + 1n), observationAccepted: true });
+            const operation = createOperation();
+            try { await options.configuration!.accept(sent, { desired: next, observationRevision: String(BigInt(sent.observation!.baseRevision) + 1n), observationAccepted: true }, operation); }
+            finally { operation.dispose(); }
             const saved = observed.current();
             expect(saved.authority.desired).toEqual(next);
             removed = ![...saved.currentItems, ...saved.retainedItems].some(entry => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === uuid(10));
@@ -446,7 +450,9 @@ describe("worker cloud-first startup", () => {
       await vi.waitFor(() => { expect(entered).toBe(true); expect(options).toBeDefined(); }, { timeout: 5000, interval: 10 });
       expect(options!.configurationComplete!()).toBe(false);
       if (initiallySelected) {
-        await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
+        const operation = createOperation();
+        try { await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false }, operation); }
+        finally { operation.dispose(); }
         expect(options!.configurationComplete!()).toBe(false);
       }
       release();
@@ -548,7 +554,7 @@ describe("worker cloud-first startup", () => {
       await vi.waitFor(() => expect(channel).toBeDefined());
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledOnce();
-      await channel!.accept(channel!.capture(reportSample), { desired: initial, observationRevision: "0", observationAccepted: false });
+      await channel!.accept(channel!.capture(reportSample), { desired: initial, observationRevision: "0", observationAccepted: false }, operation);
 
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledTimes(2);
@@ -556,7 +562,7 @@ describe("worker cloud-first startup", () => {
       expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).authority.desired).toEqual(upgraded);
       expect(channel!.capture(reportSample).toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
 
-      await channel!.accept(channel!.capture(reportSample), { desired: upgraded, observationRevision: "0", observationAccepted: false });
+      await channel!.accept(channel!.capture(reportSample), { desired: upgraded, observationRevision: "0", observationAccepted: false }, operation);
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledTimes(2);
       expect(remote.reportConfiguration).not.toHaveBeenCalled();
@@ -596,7 +602,8 @@ describe("worker cloud-first startup", () => {
       const sent = options.configuration!.capture(reportSample);
       expect(sent.bootstrap).toMatchObject({ maxConcurrent: 7, projects: [{ projectId: uuid(1), nativeOverrides: {} }] });
       expect(sent.observation).toBeNull();
-      accepted = options.configuration!.accept(sent, { desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false });
+      const operation = createOperation();
+      accepted = options.configuration!.accept(sent, { desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false }, operation).finally(() => operation.dispose());
       return reporter();
     });
     finishAtTick(cancellation, options => { expect(options.maxConcurrent).toBe(3); expect(options.globalConfiguration).not.toBeNull(); expect(options.globalConfiguration!.model).toBe("cloud-model"); }, options => options.globalConfiguration !== null && options.maxConcurrent === 3);
@@ -645,6 +652,7 @@ describe("worker cloud-first startup", () => {
     const inventory = { observedAt: "2026-11-04T00:00:00Z", claims: [] };
     let assertionFailure: unknown;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      const operation = createOperation();
       try {
         expect(options.store.getProject({ projectId: uuid(1) })).toBeNull();
         options.onInventory!(inventory);
@@ -652,11 +660,12 @@ describe("worker cloud-first startup", () => {
         const captured = channel!.capture(reportSample);
         expect(captured.observation).not.toBeNull();
         remote.project.mockResolvedValue({ id: uuid(1), repoUrl: remoteUrl });
-        await channel!.accept(captured, { desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false });
+        await channel!.accept(captured, { desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false }, operation);
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
-      } catch (error) { assertionFailure = error; } finally { controller.abort(); }
+      } catch (error) { assertionFailure = error; } finally { operation.dispose(); controller.abort(); }
     }));
     await runWorker({ ...f, signal: controller.signal });
     if (assertionFailure !== undefined) throw assertionFailure;
@@ -677,19 +686,21 @@ describe("worker cloud-first startup", () => {
     const inventory = { observedAt: "2026-11-04T00:00:00Z", claims: [] };
     let assertionFailure: unknown;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
+      const operation = createOperation();
       try {
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         const captured = channel!.capture(reportSample);
-        await channel!.accept(captured, { desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false });
+        await channel!.accept(captured, { desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false }, operation);
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
         await vi.waitFor(() => expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(2)}\"`) && event.message.includes('"state":"error"'))).toBe(true), { timeout: 5000, interval: 10 });
         secondAvailable = true;
-        await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false });
+        await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false }, operation);
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 5000, interval: 10 });
+        await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(inventory);
-      } catch (error) { assertionFailure = error; } finally { controller.abort(); }
+      } catch (error) { assertionFailure = error; } finally { operation.dispose(); controller.abort(); }
     }));
     await runWorker({ ...f, signal: controller.signal });
     if (assertionFailure !== undefined) throw assertionFailure;

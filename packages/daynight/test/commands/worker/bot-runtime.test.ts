@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createManagedAssistantRuntime } from "../../../src/commands/worker/bots/runtime.js";
+import { BotAdmissionBlockedError } from "../../../src/commands/worker/bots/process.js";
 import { ControllerStartupError } from "../../../src/commands/controller/startup.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
 vi.mock("node:timers/promises", () => ({ setTimeout: (ms: number, value: unknown, options?: {signal?: AbortSignal}) => new Promise((resolve, reject) => {
@@ -20,8 +21,9 @@ const fixture=(pollIntervalMs: number | (() => number) = 60000)=>{
   const remote={owner,list:vi.fn(async()=>records.map(r=>r.observed)),read:vi.fn(async(key:string)=>records.find(r=>r.botId===key)!.observed)};
   const reconcile=vi.fn(async()=>({observed:records.map(r=>r.botId),missing:[]})); const onError=vi.fn();
   const deletion={advance:vi.fn(async(_record:BotRecord,_signal:AbortSignal)=>{})};
-  const runtime=createManagedAssistantRuntime({owner,store:store as never,process:process as never,sessionApi:api as never,remote:remote as never,pollIntervalMs,onError,deletion,inventory:{reconcile}});
-  return {runtime,process,api,remote,records,reconcile,onError,deletion};
+  let admission = true;
+  const runtime=createManagedAssistantRuntime({owner,store:store as never,process:process as never,sessionApi:api as never,remote:remote as never,pollIntervalMs,onError,deletion,inventory:{reconcile},canAdmitNewExecution:()=>admission});
+  return {runtime,process,api,remote,records,reconcile,onError,deletion,setAdmission:(value:boolean)=>{admission=value;}};
 };
 
 test("isolates failed Bots and reports ready only after Controller observation",async()=>{
@@ -115,4 +117,44 @@ test("uses updated discovery intervals without replacing its runtime or stopping
   await vi.advanceTimersByTimeAsync(1); expect(f.reconcile).toHaveBeenCalledTimes(4);
   expect(f.process.shutdown).not.toHaveBeenCalled();
   cancellation.abort(); await running;
+});
+
+test("keeps new Bots waiting without a startup failure while admission is closed", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.setAdmission(false);
+  await f.runtime.tick(signal);
+  expect(f.process.advance).not.toHaveBeenCalled();
+  expect(f.api.report).not.toHaveBeenCalled();
+  expect(f.onError).not.toHaveBeenCalled();
+  expect(f.records.every(record => record.observed.deletion === null && record.observed.startupResult.state === "pending")).toBe(true);
+  f.setAdmission(true);
+  await f.runtime.tick(signal);
+  expect(f.process.advance).toHaveBeenCalledTimes(2);
+  expect(f.api.report).toHaveBeenCalledTimes(2);
+});
+
+test("does not turn a mid-preparation admission block into environment failure", async () => {
+  const f = fixture(); f.records.splice(1);
+  f.process.advance.mockRejectedValueOnce(new BotAdmissionBlockedError());
+  await f.runtime.tick(new AbortController().signal);
+  expect(f.api.report).not.toHaveBeenCalled();
+  expect(f.onError).not.toHaveBeenCalled();
+  const observed = f.records[0]!.observed;
+  expect(observed.deletion).toBeNull();
+  if (observed.deletion !== null) throw new Error("A waiting Bot must remain live.");
+  expect(observed.startupResult.state).toBe("pending");
+});
+
+test("continues original execution observation and deletion while new admission is closed", async () => {
+  const f = fixture(), signal = new AbortController().signal;
+  f.records[0]!.intent = { sessionId: id(8), nativeSessionId: id(9) } as never;
+  f.records[1]!.observed = { ...f.records[1]!.observed, deletion: { deletionId: id(80), requestedVersion: "1", workerCleanup: { state: "pending", code: null }, serverCleanup: { state: "pending", code: null } } };
+  f.setAdmission(false);
+  await f.runtime.tick(signal);
+  expect(f.process.advance).toHaveBeenCalledOnce();
+  expect(f.process.advance.mock.calls[0]![0].botId).toBe(id(3));
+  expect(f.deletion.advance).toHaveBeenCalledOnce();
+  expect(f.deletion.advance.mock.calls[0]![0].botId).toBe(id(4));
+  await f.runtime.shutdown();
+  expect(f.process.shutdown).toHaveBeenCalledTimes(2);
 });

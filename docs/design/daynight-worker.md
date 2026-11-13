@@ -151,7 +151,8 @@ configuration.json 使用 schemaVersion=5，保持单个 JSON 对象、原路径
 | configuration-cache.ts | 当前格式严格校验、版本 1–4 显式升级与冻结编码 factory |
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
-| configuration.ts | 串行提交、异步应用 job、原停止归属及当前进程证明 |
+| configuration-persistence.ts | 初始化读取、串行冻结检查点、存储 readiness、I/O 重试及关闭所有权 |
+| configuration.ts | 结果转换与发布、异步应用 job、原停止归属及当前进程证明 |
 
 authority 保存本机 generation UUID、已接纳的 desired 与 observationRevision；generation 不是服务端 epoch。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，表示当前目标的完整本机应用与核验；retainedItems 保存仍有工作、停止、未知结果、失败或必要实际值的原记录。两组 recordId 全局唯一。每项 origin 记录原 generation、targetRevision 与 application/schema4 来源，actualSource 单独表达实际值的本机观察出处；复用值只复制原来源元组，不修改旧历史。旧格式已经丢失的成功版本使用 schema4/successRevision:null 明确为未知，不能由新的目标版本推断。nativeMode 留在对应记录中，执行资格只由本次进程的 recordId 证明提供。blockedByRemovalId 必须指向同项目的移除记录且无环。
 
@@ -163,13 +164,25 @@ authority 保存本机 generation UUID、已接纳的 desired 与 observationRev
 
 每次启动保留 native 实际值供观察，但重建本次运行证明。全局与项目 native 优先验证当前目标；目标失败后才在兼容的原 mode 下验证历史元组。schema 1/2 没有历史模式证明，按本机兼容模式重新验证，不能将该模式当作旧成功出处。本次验证证明归属于实际接受验证结果的记录，后续目标从实际提供复用值的前一当前或保留记录继承匹配证明，actualSource 保持原实际值来源。证明只随仍存在的记录保留，历史来源引用不能延长证明寿命。全局 mode 变化在继承前撤销所有项目旧资格，包括本代将被退休的原记录；同模式全局 native 失败不阻止健康项目独立验证。历史恢复只取得本进程资格，保持失败目标的非 applied 状态；正在验证目标时，未经本进程验证的历史保持 unavailable。已验证实际值在后续目标应用期间继续可用，相关工具选择变化使对应 native 必须重验，无关 Provider 的健康证明保持。结果提交仍检查原记录绑定、目标内容、mode 与选择，取消或被取代的结果不能授予新执行资格。
 
-native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。native 应用显式接收目标 mode，在该模式下校验 native 及本地 model/effort，并在同一原生环境做纯版本探测；最低启动能力、integration、hook 和 task cwd 继续由原有 launch preflight 验证，配置成功不代替真实执行。应用单元为三个数值标量、preferPlatformSpecificTasks 布尔标量、mode 与完整全局 native 组合，以及独立项目项。mode/native 的验证结果经单一提交 owner 一次保存后发布；任何验证或持久化失败均保留旧有效组合。项目 native 验证记录绑定 {mode,native} 及接入工具管理器后提供的相关选择和 selectionKey，模式切换撤销旧资格并取消旧模式的项目 native 校验 job，随后独立重验项目。提交先计算模式撤销与本次已接纳验证结果形成的下一份进程内证明；当前选中的 native 应用项若仍为 applied 但缺少匹配有效模式和已应用值的证明，先归为 pending，保留历史值与未确认失败。应用状态原子保存成功后才一起发布缓存与证明，因此直接接收目标和报告确认回执都不会把尚待重验的重选项目报告为成功。未选中的历史项仍由原移除确认流程保留与收敛。提交再次核对目标 revision、mode 和 native，陈旧结果不能授予新 claim 资格。仓库准备与移除事实不因单独模式变化丢弃。独立成功值不因另一项失败回滚；从未成功的项保持 unavailable。失败按 5、10、20、40、60 秒退避，新目标替代旧应用重试。异步配置应用最多 16 个 job，按稳定 recordId 轮转；退避项让出槽位，原停止保有该次有界尝试的槽位。普通标量转换不占异步 job 槽。旧结果在队列内再次检查原记录是否适用。已经开始的项目移除保留原记录工作，后续重新选中不能抹掉它；当前停止核验独立报告自己的目标版本。runtime 只对已完成仓库准备的绑定确认 project ready；native 解析或能力检查本身不能证明项目可执行。没有对应副作用完成结果的项目项继续 pending。
+native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。native 应用显式接收目标 mode，在该模式下校验 native 及本地 model/effort，并在同一原生环境做纯版本探测；最低启动能力、integration、hook 和 task cwd 继续由原有 launch preflight 验证，配置成功不代替真实执行。应用单元为三个数值标量、preferPlatformSpecificTasks 布尔标量、mode 与完整全局 native 组合，以及独立项目项。mode/native 的验证结果经单一提交 owner 一次保存后发布；验证失败保留旧有效组合；未成功持久化的结果不发布，已完成应用的准确结果等待原检查点恢复。项目 native 验证记录绑定 {mode,native} 及接入工具管理器后提供的相关选择和 selectionKey，模式切换撤销旧资格并取消旧模式的项目 native 校验 job，随后独立重验项目。提交先计算模式撤销与本次已接纳验证结果形成的下一份进程内证明；当前选中的 native 应用项若仍为 applied 但缺少匹配有效模式和已应用值的证明，先归为 pending，保留历史值与未确认失败。应用状态原子保存成功后才一起发布缓存与证明，因此直接接收目标和报告确认回执都不会把尚待重验的重选项目报告为成功。未选中的历史项仍由原移除确认流程保留与收敛。提交再次核对目标 revision、mode 和 native，陈旧结果不能授予新 claim 资格。仓库准备与移除事实不因单独模式变化丢弃。独立成功值不因另一项失败回滚；从未成功的项保持 unavailable。失败按 5、10、20、40、60 秒退避，新目标替代旧应用重试。异步配置应用最多 16 个 job，按稳定 recordId 轮转；退避项让出槽位，原停止保有该次有界尝试的槽位。普通标量转换不占异步 job 槽。旧结果在队列内再次检查原记录是否适用。已经开始的项目移除保留原记录工作，后续重新选中不能抹掉它；当前停止核验独立报告自己的目标版本。runtime 只对已完成仓库准备的绑定确认 project ready；native 解析或能力检查本身不能证明项目可执行。没有对应副作用完成结果的项目项继续 pending。
 
 reporter 在发送前把同一份实际机器报告传给配置 capture 和 send；配置准备与本轮已有采样的顺序由[采集设计](daynight-worker-reporting.md#配置快照与回执)拥有。配置模块从完整事实投影本批当前项，同 key 的最近待确认失败可以来自 current 或 retained；捕获保存真实 sourceRecordId/failureId，不复制失败所有权。旧合同回执或明确的 400 invalid_input 使下一轮先 GET 重新协商能力，不重放旧请求。接纳仅清除实际发送且身份仍匹配的失败，飞行中的新失败保留；拒绝更新比较版本但不确认失败。
 
 projectionCursor 是持久化的 recordId 字典序位置。投影先固定一项真实未完成或失败移除核验，其优先级包含被阻塞的原停止错误；wire 仍表达当前核验的真实 pending/error 状态。其余合格项从游标后选择连续前缀，首个放不下的项是下批起点，不跳过大项填小项。每批同时满足 1025 个非 mode 项、协商后的 1026 个总项、Go HTML/U+2028/U+2029 转义加 512 字节存储包装余量的 4 MiB，以及实际整包 9 MiB。请求碰到预算时对实际候选报告重新准备可选工具/来源观测，完整配置项与必需清单不截断。结构合法但当前 wire 无法表示的历史值继续保留本机，错误结构仍明确失败。
 
 匹配且 observationAccepted=true 的回执才确认本批失败来源；游标仅在捕获 generation 等于当前代时前移。完成停止还须核对实际 job 结束及准确的 applied 本批确认后才能收敛。未发送失败、未知结果和仍有资源责任的记录保留。服务端整体替换最近接纳批次，不累积各批 items；遗漏表示本次未观察，消费者不能据此宣称已应用。配置错误仍是闭合 code/category/phase 与时刻，原生命令、参数、输出和凭据不进入公开诊断。心跳不等待应用 job，退出取消并 join 配置应用和报告，由 runtime 统一持有生命周期。
+
+### 临时存储恢复与准入
+
+`configuration-persistence.ts` 拥有一条 FIFO 检查点队列。初始化完整读取、配置目录创建及旧格式迁移写入遇到真实文件 I/O 错误时，在原实例所有权中按 5、10、20、40、60 秒封顶退避重试；格式、身份、解析/编码和其它确定失败仍传播原错误。合法缺失文件保留既有首次创建含义，不能以空状态替代损坏或无法读取的缓存。
+
+队首从最后已提交的状态调用 prepare 一次，冻结下一状态、记录身份和编码计划；每次实际写入重新创建 chunk iterator 与同目录临时文件。只有完整写入、同步、关闭和 rename 成功后才发布该头项。apply/stop 等外部副作用已完成时，原 job 持有准确结果等待检查点，不因写重试再次执行。后续有限完成结果继续排队，普通 receive、读取和工具刷新先等待共享 readiness，避免重复输入在故障期间持续积累。
+
+`isReady()` 只描述当前 manager 的存储准入，`waitReady(signal)` 让每个调用者在自己的 Operation 中等待。运行期 `current()` 仍提供最后已提交的目标、实际值和项目视图，不发布未保存的 applied，也不制造空项目目标。可信 POST 回执进入 manager-owned 提交后，等待者取消只结束它的等待；回执、状态转换与文件写入的归属不转移，后续不能把已知远端结果改成未知或重放原报告。恢复按队列顺序发布，原 onChange/唤醒机制继续触发最新工作。
+
+根取消或 `beginDrain()` 先关闭新 job 和输入准入，并启动独立五秒重试调度窗口，再 join reporter、初始化移除及其它可能等待检查点的生产者。`stop()` 等待原 job 和已拥有队列，最后封住完成结果入口。窗口到期不再调度新尝试，但不可取消的 read/write/rename 仍须 join，实例锁不能提前释放。未保存结果返回 `UnsavedConfigurationError` 的记录身份和原 I/O 错误；永久阻塞的系统 I/O 没有五秒内退出保证。重启只从已落盘 started 和原执行来源重查实际资源。
+
+coordinator 的 `configurationComplete` 同时包含存储就绪与已有项目映射条件。Bot host 向 runtime/process 提供独立 `canAdmitNewExecution()`；能力采样的 `configuration()` 不替代这个门禁。首次环境准备后、持久 intent、注册及初次 launch submission 前重新检查；初次意图已经冻结但未派发时仍须等待。已提交或可能提交的原执行、拥有已知原生会话的冻结恢复及输入/停止继续使用原配置、身份和证明；等待不报告环境初始化失败。[Bot 执行设计](worker-bot-runtime.md#启动与授权)拥有具体边界。
 
 ### 工具目标与验证接缝
 
@@ -467,6 +480,12 @@ Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active c
 沿用 stderr 与 JSONL，日志携带 workerId、实际平台、projectId/taskId/claimId、agent 和已知 sessionId。运行快照按字段和传输子系统输出清洗后的故障转换及恢复，原始采集错误只在内存保留，不进入日志；同类连续故障去重，详细规则由[上报设计](daynight-worker-reporting.md#失败与可观察性)拥有。RPC、并发 job 与清理显式传递取消和关联信息。记录认领、重连/恢复、NULL 新会话 info、资源错误、清理和人工操作结果，保留错误类型及 cause，脱敏凭据且不记录完整 prompt。
 
 诊断模块先对凭据脱敏，再统一渲染终端日志：上下文、消息及错误链中的完整连字符 GUID 仅显示首段 8 位十六进制字符，保留原大小写，非 GUID 文本原样保留。缩写只作用于终端输出，JSONL 的字段、消息和错误仍保留完整 ID，供精确检索。事件生产者、API、prompt 与持久化继续使用完整 ID。该 GUID 展示规则的历史取舍见[日志 GUID 缩写决策](../../.agents/notes/archived/bug-fix/2026-10-28-worker-log-guids.md)。
+
+`diagnostics.ts` 把格式化/终端通知与文件 sink 的故障归属分开。目录、segment 创建及 append 的真实文件 I/O 错误通过 stderr 与可用的 `onSinkState` 观察器呈现，按 5、10、20、40、60 秒封顶退避恢复；格式化、非 I/O 能力错误、stdout/stderr 和通知失败仍沿错误链传播。日志失败不改写已应用或已确认的业务事实。
+
+文件名为 `worker-YYYY-MM-DD-<32hex run id>-<segment>.jsonl`，日期取本次运行开始时间。每次运行先建立新的受限权限文件，恢复也只追加到新唯一段，当前 `filename` 是动态值。32 位 hex run id 不会被终端 GUID 缩写误改成不可用的路径。排队最多 256 条待派发记录及一个活动 writer，超出时累计 omittedRecords；append 被派发后失败累计 unknownAppends，可能已经写入部分字节，不声称记录一定缺失。恢复摘要包含当前路径、首个失败路径、计数及恢复状态；旧段可能有不完整尾行或结果未知的摘要，逐段检查，不能将这些记录用作恢复或精确丢失账本。
+
+`flush()` join 当前工作，已明确报告的可恢复文件故障不会经此旁路结束 Worker；`close()` 停止新的重试调度，并等待现有文件与通知工作。foreground、人工管理和一次性处置日志都在所有事件、stores 及清理回调结束后 close。独立致命错误仍返回，不能因日志或通知失败篡改原提交/清理结果。
 
 执行驱动按 projectId/taskId/claimId 在内存保留最近一次报告的观察：等待/执行阶段、Herdr session/workspace/pane/terminal、agent、已知原生 sessionId 和延后首次输入状态。首次连接及这些信息变化时才报告，忽略 idle/working 切换和序列计数变化。实际启动始终报告并建立同一观察基线，避免下一轮重复提示重连；忘记原 claim 时一并清除基线。资源发现按完整成功观察比较保留警告，稳定警告只报告一次，确认消失后再出现则重新报告；失败或不完整观察不能确认警告消失。真实操作与失败尝试继续报告。去重在事件来源完成，stderr 与 JSONL 共用结果；状态只存在当前进程，日志不参与恢复。选择依据见[日志决策](../../.agents/notes/archived/bug-fix/2026-10-27-worker-log-transitions.md)。
 

@@ -26,6 +26,17 @@ import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
 
+it("waits before initial Web intent when readiness changes during worktree preparation", async () => {
+  const f = await fixture(); let complete = true;
+  const prepare = vi.mocked(f.git.prepareWorktree).getMockImplementation()!;
+  vi.mocked(f.git.prepareWorktree).mockImplementation(async (...args) => { const worktree = await prepare(...args); complete = false; return worktree; });
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "linux", buildPrompt: () => "assignment", emit: () => {}, now: Date.now });
+  const result = await backend.advanceResult(f.store.getTask(f.identity)!, new AbortController().signal, () => complete);
+  expect(result).toMatchObject({ kind: "waiting_input", reason: "configuration_pending", task: { webExecution: null } });
+  expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
+});
+
 it.each(["lock_busy", "physical_capacity"] as const)("keeps the stopped generation and recovery allowance while storage waits (%s)", async reason => {
   const f = await recoveryFixture();
   f.store.pauseRecovery(f.task, "Original failure", 8);
@@ -37,7 +48,7 @@ it.each(["lock_busy", "physical_capacity"] as const)("keeps the stopped generati
   expect(waiting.webExecution).toMatchObject({ executionGeneration: "1", launchId: authorized.webExecution!.launchId });
   expect(waiting.recovery).toEqual(authorized.recovery);
   expect(f.launcher.launch).not.toHaveBeenCalled();
-  const observed = await f.backend.advanceResult(waiting, new AbortController().signal);
+  const observed = await f.backend.advanceResult(waiting, new AbortController().signal, () => false);
   expect(observed.kind).toBe("observed");
   expect(observed.task.webExecution!.executionGeneration).toBe("2");
   expect(f.launcher.launch).toHaveBeenCalledOnce();

@@ -3,7 +3,7 @@ import { maintainControllerGrants } from "../backends/grant-renewal.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import type { BotDeletionManager } from "./delete.js";
 import { createBotInventory } from "./inventory.js";
-import type { BotProcess } from "./process.js";
+import { BotAdmissionBlockedError, type BotProcess } from "./process.js";
 import type { BotRemote } from "./remote.js";
 import type { BotSessionApi, BotStartupResult } from "./session-api.js";
 import type { BotStore } from "./store.js";
@@ -17,6 +17,7 @@ import { parseBotOwner, type BotOwner, type BotRecord } from "./types.js";
 export const createManagedAssistantRuntime = (options: {
   owner: BotOwner; store: BotStore; remote: BotRemote; process: BotProcess; sessionApi: BotSessionApi;
   deletion: BotDeletionManager; pollIntervalMs: number | (() => number); now?: () => number; onError(message: string, botId: string | null): void;
+  canAdmitNewExecution(): boolean;
   inventory?: Pick<ReturnType<typeof createBotInventory>, "reconcile">;
 }) => {
   const owner = parseBotOwner(options.owner), now = options.now ?? Date.now;
@@ -73,6 +74,7 @@ export const createManagedAssistantRuntime = (options: {
       errors.delete(input.botId);
     } catch (cause) {
       if (signal.aborted) return;
+      if (cause instanceof BotAdmissionBlockedError) return;
       error(input.botId, cause);
       const latest = options.store.get(owner, input.botId);
       // Do not advance the registration's version after a possibly submitted
@@ -93,6 +95,7 @@ export const createManagedAssistantRuntime = (options: {
       if (record === null) continue;
       const previous = jobs.get(botId);
       if (previous !== undefined) { scheduled.push(previous); continue; }
+      if (record.observed.deletion === null && record.intent === null && !options.canAdmitNewExecution()) continue;
       const work = record.observed.deletion === null ? advance(record, signal)
         : options.deletion.advance(record, signal).then(() => { errors.delete(botId); }, cause => { if (!signal.aborted) error(botId, cause); });
       const job = work.finally(() => { if (jobs.get(botId) === job) jobs.delete(botId); });

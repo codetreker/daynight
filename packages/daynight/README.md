@@ -2302,17 +2302,32 @@ history with a lost successful revision remains explicitly unknown.
 Versions 1–4 upgrade through the strict migration owner, preserving original
 values, mode, backoff, failure identity, started removals and observation facts.
 Version 1 retains its platform-preference migration. Current-format missing
-fields, invalid scope, corrupt data and storage errors remain failures. Cache
+fields, invalid scope and corrupt data remain failures. Genuine file I/O failures
+wait in the original storage scope and recover automatically; they do not
+initialize an empty cache. Cache
 reads and atomic writes process JSON in chunks using the pinned
 `@discoveryjs/json-ext` dependency and a cache-specific syntax guard. Total file
 size is not limited by one JSON string; individual tokens and retained domain
 objects still consume their corresponding memory. Historical structurally valid
 values are read without applying newer per-item limits.
 
-One serialized commit owner merges target receives, application outcomes and
-acknowledgments from the last durable state. It freezes the next state and
-recreates its chunk iterator for atomic persistence before publishing the
-immutable effective view. Native qualification belongs to this process and its
+One FIFO persistence owner merges target receives, application outcomes and
+acknowledgments from the last durable state. It calculates and freezes each head
+once, then retries the same encoding plan with a fresh iterator and temporary
+file at 5, 10, 20, 40 and capped 60-second intervals. Only its successful atomic
+commit publishes the immutable effective view. Completed apply/stop effects and
+trusted receipts remain owned while persistence is unavailable; write retries
+do not execute their effects again. Ordinary receive/read operations wait on
+shared readiness, preventing duplicate inputs from accumulating while blocked. A cancelled or expired
+Operation removes its waiter without cancelling the owned result or reclassifying
+a known remote response. Closing begins manager drain before joining any reporter or initialization work
+that can wait for the checkpoint. Its five-second window stops further retry
+scheduling; an active read/write/rename still owns its file operation and the
+Worker instance lock until it actually ends. Unsaved results fail with original
+errors and record identities. Restart checks the durable started state and original
+resources; an unsaved side effect is not assumed absent.
+
+Native qualification belongs to this process and its
 record identity, mode and relevant tool selections. Matching proof follows the
 previous current or retained record supplying an inherited value when a target
 changes, independently of that value's historical source. Proof expires with its record owner; a mode change revokes every project
@@ -2334,7 +2349,12 @@ native and Project operations run outside the report and commit queues. At most
 transitions use no asynchronous job slot. Independent successful items stay applied
 when another item fails. Failed application attempts use 5, 10, 20, 40 and then
 60-second backoff. Storage failures retain the original error and do not publish
-uncommitted results.
+uncommitted results. The last committed target, effective values and Project view
+remain available; storage readiness closes new execution admission without
+manufacturing a removed-Project target. Task configurationComplete and Bot
+canAdmitNewExecution are checked after awaited preparation and before the first
+intent, registration and dispatch. Original submitted/unknown execution and
+frozen native recovery/input/stop keep their original identities and permissions.
 
 Each observation batch fits at most 1025 non-mode items and 1026 total items when
 mode is negotiated, the 4 MiB Go-encoded storage budget with 512 bytes reserved
@@ -2866,6 +2886,19 @@ input currently requires the validated Herdr 0.9.5 protocol profile.
 The [Herdr lifecycle design](../../docs/design/herdr-worker-lifecycle.md) defines
 the persisted identities, crash boundaries and supported macOS process scope;
 it does not promise to stop arbitrary detached background services.
+
+The diagnostic file sink uses fresh
+`worker-YYYY-MM-DD-<32hex run id>-<segment>.jsonl` files for each run and recovery;
+the date belongs to run startup and the current filename is exposed dynamically.
+Temporary directory/create/append failures are visible through stderr and
+available monitoring, then retried with capped backoff. Up to 256 records wait
+behind one active writer. Undispatched omissions and unknown append attempts have
+separate counters; a failed append can leave bytes in an older segment. Recovery
+writes a new valid summary linking paths and counts and never replays unknown
+records. Old partial tails remain inspectable and are not recovery inputs or an
+exact loss ledger. Periodic flush joins current work; final close stops retry
+scheduling and joins file/notification work after all emitters and stores finish.
+Formatting, stdout/stderr and independent notification errors retain their chains.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
 known session ID. After credential redaction, the terminal renderer shortens each

@@ -155,7 +155,7 @@ describe("synchronous worker source management", () => {
     expect(f.store.listTasks()).toHaveLength(1);
   });
 
-  it.each(["prompt_unknown", "prompt_too_large"] as const)("reports %s as unsubmitted input while retaining the original claim", async reason => {
+  it.each(["prompt_unknown", "prompt_too_large", "storage_maintenance", "configuration_pending"] as const)("reports %s as unsubmitted input while retaining the original claim", async reason => {
     const f = fixture();
     f.coordinator.advanceRetry.mockResolvedValue({ kind: "waiting_input", reason });
     const result = await f.submit({ kind: "retry", taskId, claimId });
@@ -164,6 +164,8 @@ describe("synchronous worker source management", () => {
     expect(result.task).toMatchObject({ ...f.identity, status: "active", sessionId: null });
     expect(f.remote.claim).not.toHaveBeenCalled();
     expect(f.remote.release).not.toHaveBeenCalled();
+    if (reason === "configuration_pending") expect(result.message).toContain("Worker configuration readiness");
+    if (reason === "storage_maintenance") expect(result.message).toContain("Controller storage maintenance");
   });
 
   it("does not grant a retry to an administrator or a pending local claim", async () => {

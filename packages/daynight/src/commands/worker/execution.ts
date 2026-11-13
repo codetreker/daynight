@@ -1,3 +1,4 @@
+import { ConfigurationAdmissionWaiting, assertConfigurationAdmission } from "./configuration-admission.js";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { readTaskPaused, readWorkerClaim } from "../../api/task-properties.js";
@@ -23,8 +24,8 @@ import { lstat } from "node:fs/promises";
 
 export type WorkerEvent = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
-export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration; freshClaim?: boolean; onBeforeStart?: () => void };
-export type ExecutionAdvance = { kind: "observed"; observation: HerdrAgentObservation } | { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large"; observation: HerdrAgentObservation | null };
+export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration; freshClaim?: boolean; canAdmitNewExecution?: () => boolean; onBeforeStart?: () => void };
+export type ExecutionAdvance = { kind: "observed"; observation: HerdrAgentObservation } | { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "configuration_pending"; observation: HerdrAgentObservation | null };
 export type WorkerObservedPhase =
   | { kind: "execution"; phase: "observation" | "worktree-preparation" | "agent-start" | "agent-observation" | "input-submission" | "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused" }
   | { kind: "cleanup"; phase: "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal" };
@@ -215,7 +216,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
   };
   return {
     forget: (task: LocalTask): void => { pendingInput.delete(key(task)); lastInput.delete(key(task)); observations.delete(key(task)); progressObservations.delete(key(task)); preparedWorktrees.delete(key(task)); rejected.delete(key(task)); },
-    advance: async (input: ExecutionInput, signal?: AbortSignal): Promise<ExecutionAdvance> => {
+    advance: (input: ExecutionInput, signal?: AbortSignal): Promise<ExecutionAdvance> => (async (): Promise<ExecutionAdvance> => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
       const identity = key(task);
@@ -231,6 +232,8 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       const cwd = await originalWorktreePath(input.project, input.owner, savedCwd);
       if (original !== null && !await sameWorktreeLocation(cwd, original.worktreePath)) throw new Error("The original execution path differs from its manifest.");
       const context = executionContext({ ...input, task }, cwd);
+      const originallySubmitted = task.sessionId !== null || deps.herdr.lifecycle?.hasSubmittedExecution?.(input.owner) === true || actual !== undefined && liveAgent(actual);
+      const canAdmitNewExecution = () => originallySubmitted || (input.canAdmitNewExecution?.() ?? true);
       deps.herdr.lifecycle?.assertCanAdvance(context);
       let checkoutMissing = false;
       let legacyStopped = false;
@@ -347,7 +350,8 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         success(input.owner, "observation", "resource-stop");
       }
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-start" }, false, undefined, "workspace-preparation");
-      const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, input.title, operation), signal);
+      assertConfigurationAdmission(canAdmitNewExecution);
+      const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, input.title, operation, { canAdmitNewExecution }), signal);
       success(input.owner, "agent-start", "workspace-preparation");
       if (deps.herdr.lifecycle === undefined) await prepareSource(task, signal);
       if (task.sessionId === null) deps.emit({ kind: "info", task, message: "Starting a new native conversation in the task worktree." });
@@ -369,9 +373,10 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       let startupTransportCompleted = false;
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "agent-start" }, false);
       try {
+        assertConfigurationAdmission(canAdmitNewExecution);
         input.onBeforeStart?.();
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
-          configuration: input.configuration, prompt,
+          configuration: input.configuration, prompt, canAdmitNewExecution,
           ...(deps.herdr.lifecycle === undefined ? {} : { preparePrompt: (recovery: boolean) => {
             return preparePrompt(task!, input.configuration, binding, recovery ? "recovery" : "startup", () => recovery ? workerContinuationPrompt(task!) : deps.buildPrompt(assignment, deps.platform));
           }, ...(deps.preparePromptSource === undefined ? {} : { preparePromptSource: (operation: Operation) => prepareSource(task!, operation.signal) }),
@@ -411,6 +416,11 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       reportObservation(task, observation, true);
       if (observation.status === "blocked") observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "waiting" }, false);
       return { kind: "observed", observation };
-    },
+    })().catch((error: unknown): ExecutionAdvance => {
+      if (!(error instanceof ConfigurationAdmissionWaiting) || signal?.aborted) throw error;
+      pendingInput.delete(key(input.task));
+      observeWorkerPhase(deps.observePhase, input.owner, { kind: "execution", phase: "waiting" }, false);
+      return { kind: "waiting_input", reason: "configuration_pending", observation: null };
+    }),
   };
 };

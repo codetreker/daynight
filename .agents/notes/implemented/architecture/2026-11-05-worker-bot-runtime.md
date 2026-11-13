@@ -36,6 +36,14 @@ serialization, grant-maintenance and shutdown-error aggregation mechanisms. Task
 remain in its backend. Bot readiness requires the matching local initialization
 and remote synchronized Session, including its native identity.
 
+New initialization consumes a separate dynamic admission callback. The
+configuration/capability sample retains its observation responsibility. Awaited preparation and the first intent,
+registration and launch submission recheck it; initial frozen-but-unsubmitted
+work still waits. Submitted or unknown original execution and frozen native
+recovery/control retain their identity and permissions. The
+[storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
+records this boundary and the Worker persistence readiness that supplies it.
+
 Discovery and credential maintenance run independently. Per-Bot jobs do not hold
 the discovery loop while starting a native provider or removing private sources.
 The runtime requires a deletion manager and dispatches authoritative deletion

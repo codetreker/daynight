@@ -1,3 +1,4 @@
+import { ConfigurationAdmissionWaiting } from "../../../src/commands/worker/configuration-admission.js";
 import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
@@ -298,6 +299,21 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual(["initial"]);
   });
 
+  it("rechecks new-launch readiness after awaited shell verification before dispatch", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let complete = true;
+    const submitting = vi.fn();
+    await expect(f.manager.launch(f.context, binding, {
+      configuration, canAdmitNewExecution: () => complete, onSubmitting: submitting,
+      beforeStart: async () => { await Promise.resolve(); complete = false; },
+    }, operation())).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+    expect(f.calls.filter(call => call.method === "agent.start")).toEqual([]);
+    expect(submitting).not.toHaveBeenCalled();
+    complete = true;
+    await f.manager.launch(f.context, binding, { configuration, canAdmitNewExecution: () => complete, onSubmitting: submitting }, operation());
+    expect(submitting).toHaveBeenCalledOnce();
+  });
+
   it("returns a launched process before its first input or native SessionStart", async () => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method, params) => {
@@ -585,6 +601,30 @@ describe("direct task resource management", () => {
 
   const busyShell = () => new HerdrRpcError("agent target pane is not an available shell", { method: "agent.start", requestId: "busy", code: "agent_pane_busy", submission: "unknown" });
   const shellProcesses = (binding: HerdrTaskBinding, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: [{ pid: 100, name: "/bin/bash", argv: ["-bash"] }, { pid: 101, name: "shell startup script" }], ...extra } });
+
+  it("reports a definite busy rejection before a retry loses configuration admission", async () => {
+    const f = await fixture(), binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    let complete = true;
+    const onRejected = vi.fn((error: HerdrAgentActionError) => { expect(error).toMatchObject({ submission: "rejected", cause: { method: "agent.start", code: "agent_pane_busy" } }); complete = false; });
+    f.hook(async method => {
+      if (method === "agent.start") throw busyShell();
+      if (method === "pane.process_info") return shellProcesses(binding);
+      return undefined;
+    });
+    await expect(f.manager.launch(f.context, binding, { configuration, canAdmitNewExecution: () => complete, onRejected }, operation())).rejects.toBeInstanceOf(ConfigurationAdmissionWaiting);
+    expect(onRejected).toHaveBeenCalledOnce();
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.prompts).toEqual([]);
+  });
+
+  it("does not report an unknown start response as a definite busy rejection", async () => {
+    const f = await fixture(), binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const onRejected = vi.fn(), unknown = new HerdrRpcError("Start result unknown.", { method: "agent.start", requestId: "unknown", submission: "unknown" });
+    f.hook(async method => { if (method === "agent.start") throw unknown; return undefined; });
+    await expect(f.manager.launch(f.context, binding, { configuration, onRejected }, operation())).rejects.toMatchObject({ submission: "unknown", cause: unknown });
+    expect(onRejected).not.toHaveBeenCalled();
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+  });
 
   it.each(["/bin/bash", "-zsh", "/usr/local/bin/fish", "C:\\shell\\pwsh.exe"])("retries a rejected launch while the original %s shell initializes", async (shell) => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
