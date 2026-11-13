@@ -10,7 +10,7 @@ import { getProject } from '../src/api/project-settings';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { ProjectAccessBoundary, ProjectAccessSession, useProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
-import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
+import { TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
 import { TestTaskCacheBoundary } from './helpers/taskCache';
@@ -763,4 +763,36 @@ it.each([['bound', 'network'], ['unbound', 'network'], ['bound', '404'], ['unbou
     online = true; fireEvent.click(retry);
     expect(await screen.findByRole('heading', { name: 'Private task' })).toBeVisible();
   } finally { observation.mockRestore(); }
+});
+
+it.each(['during verification', 'after failure'] as const)('recovers a Task opened %s in an unbound access check', async timing => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const peer = scope(); await admit(peer);
+  const sender = scope();
+  const ticket = await peer.beginSync(projectId, peer.signal);
+  const pending = Promise.withResolvers<ReturnType<typeof directAccessFixture>>(); let online = false;
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(() => online ? Promise.resolve(directAccessFixture(projectId)) : pending.promise);
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+  let sessions!: TaskDetailSessions;
+  const Capture = () => { sessions = useTaskDetailSessions(); return null; };
+  const events: { error?: unknown }[] = []; peer.subscribe(event => events.push(event));
+  try {
+    act(() => sender.reportUnboundProjectDenial(projectId));
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalled());
+    if (timing === 'after failure') {
+      await act(async () => pending.reject(new ApiError('network')));
+      await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ kind: 'network' }) })));
+    }
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
+      <TaskDetailSessionProvider><Capture /><TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} /></TaskDetailSessionProvider>
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).revision).toBe(1));
+    expect(observation).not.toHaveBeenCalled();
+    if (timing === 'during verification') await act(async () => pending.reject(new ApiError('network')));
+    const retry = await screen.findByRole('button', { name: 'Retry details' });
+    online = true; fireEvent.click(retry);
+    expect(await screen.findByRole('heading', { name: 'Private task' })).toBeVisible();
+  } finally { pending.reject(new ApiError('network')); observation.mockRestore(); }
 });

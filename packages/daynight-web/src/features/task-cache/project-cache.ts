@@ -104,7 +104,7 @@ export class TaskCacheScope {
   private readonly uncertainHistory = new Map<string, { readonly userFence: string; readonly cacheGeneration: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound: boolean; readonly revision: number; readonly allowedToken: string | null }>();
   private uncertaintyRevision = 0;
   private readonly suspendedProjects = new Set<string>();
-  private readonly unboundProjectDenials = new Map<string, { readonly revision: number; isolated: boolean; readonly direct: boolean; timer: ReturnType<typeof setTimeout> | null; retry: (() => void) | null; inFlight: boolean; retryRequested: boolean }>();
+  private readonly unboundProjectDenials = new Map<string, { readonly revision: number; isolated: boolean; direct: boolean; error: unknown; timer: ReturnType<typeof setTimeout> | null; retry: (() => void) | null; inFlight: boolean; retryRequested: boolean }>();
   private readonly readableProjects = new Map<string, number>();
   private readonly projectReadRevisions = new Map<string, number>();
   private readonly pendingUnknownProjects = new Map<string, { count: number; readonly baseRevision: number; readonly isolationRevision: number }>();
@@ -1586,6 +1586,16 @@ export class TaskCacheScope {
     if (this.isInvalidated || this.identityMismatch) return;
     this.channel?.postMessage({ userId: this.userId, projectId, unboundProjectDenial: true } satisfies Hint);
   }
+  enrollDirectProject(projectId: string): { readonly error: unknown } | null {
+    const denial = this.unboundProjectDenials.get(projectId);
+    if (denial === undefined) return null;
+    this.directProjects.add(projectId);
+    if (!denial.direct) {
+      denial.direct = true;
+      this.emit({ projectId, directAccessUncertain: true }, true, true);
+    }
+    return { error: denial.error };
+  }
   retryProjectVerification(projectId: string): void {
     const denial = this.unboundProjectDenials.get(projectId);
     if (denial !== undefined) {
@@ -1606,7 +1616,7 @@ export class TaskCacheScope {
     const direct = this.directProjects.has(projectId);
     const revision = this.getProjectRevision(projectId) + (isolated ? 1 : 0);
     const history = observed === null ? null : { ...observed, scopeRevision: revision };
-    const denial = { revision, isolated, direct, timer: null as ReturnType<typeof setTimeout> | null, retry: null as (() => void) | null, inFlight: false, retryRequested: false };
+    const denial = { revision, isolated, direct, error: null as unknown, timer: null as ReturnType<typeof setTimeout> | null, retry: null as (() => void) | null, inFlight: false, retryRequested: false };
     this.unboundProjectDenials.set(projectId, denial);
     if (isolated) {
       this.projectRevisions.set(projectId, revision);
@@ -1633,7 +1643,7 @@ export class TaskCacheScope {
         if (this.suspendedProjects.has(projectId) || this.pendingUnknownProjects.has(projectId) || this.getProjectRevision(projectId) !== revision || this.getAdmissionRevision(projectId) !== admission || !this.readableProjects.has(projectId) || this.readableProjects.get(projectId) === readable) return false;
         this.unboundProjectDenials.delete(projectId);
         this.projectRevisions.set(projectId, revision + 1);
-        this.emit({ projectId, accessRestored: true, ...(direct ? { directAccessRecheck: true as const } : {}) });
+        this.emit({ projectId, accessRestored: true, ...(denial.direct ? { directAccessRecheck: true as const } : {}) });
         return true;
       };
       void (async () => {
@@ -1690,13 +1700,14 @@ export class TaskCacheScope {
         this.unboundProjectDenials.delete(projectId);
         if (denial.isolated) {
           this.projectRevisions.set(projectId, revision + 1);
-          if (!this.isProjectSuspended(projectId)) this.emit({ projectId, accessRestored: true, ...(direct ? { directAccessRecheck: true as const } : {}) });
+          if (!this.isProjectSuspended(projectId)) this.emit({ projectId, accessRestored: true, ...(denial.direct ? { directAccessRecheck: true as const } : {}) });
         }
         this.requestDirectAccessRecheck(projectId);
       })().catch(error => {
         if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
         if (confirmedDenial) {
-          this.emit({ projectId, accessRevoked: true, scopeSuspended: true, error, ...(direct ? { directAccessRecheck: true as const } : {}) });
+          denial.error = error;
+          this.emit({ projectId, accessRevoked: true, scopeSuspended: true, error, ...(denial.direct ? { directAccessRecheck: true as const } : {}) });
           denial.timer = setTimeout(check, 30_000);
           return;
         }
@@ -1706,7 +1717,10 @@ export class TaskCacheScope {
           else this.receiveUnboundProjectDenial(projectId);
           return;
         }
-        if (!isAbortError(error)) this.emit(denial.isolated ? { projectId, accessRevoked: true, scopeSuspended: true, error, ...(direct ? { directAccessRecheck: true as const } : {}) } : { projectId, error });
+        if (!isAbortError(error)) {
+          denial.error = error;
+          this.emit(denial.isolated ? { projectId, accessRevoked: true, scopeSuspended: true, error, ...(denial.direct ? { directAccessRecheck: true as const } : {}) } : { projectId, error });
+        }
         denial.timer = setTimeout(check, 30_000);
       }).finally(() => {
         denial.inFlight = false;

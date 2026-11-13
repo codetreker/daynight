@@ -373,6 +373,12 @@ export class TaskDetailSessions {
     entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.historyHintRetry = false; entry.directAccessPending = false; entry.receipt = null; entry.admitted = true;
     entry.observedGeneration = this.entryGeneration(entry); entry.committedVersion = null; entry.deletedGeneration = null;
     entry.liveVersion = null; entry.pending = null; entry.mismatch = null;
+    const isolation = this.scope.enrollDirectProject(projectId);
+    if (isolation !== null) {
+      entry.directAccessPending = true; entry.admitted = false;
+      this.publish(entry, { ...initialState(), revision: 1, status: isolation.error === null ? "loading" : "error", error: isolation.error });
+      return;
+    }
     this.publish(entry, { ...initialState(), revision: 1 });
     this.load(projectId, taskId, 1, "open");
   }
