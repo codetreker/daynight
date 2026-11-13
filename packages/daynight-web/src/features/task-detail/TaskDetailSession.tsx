@@ -958,6 +958,9 @@ export class TaskDetailSessions {
       }
       const detail = await this.getParent(entry, ticket, signal);
       if (signal.aborted || generation !== entry.generation || this.disposed) return;
+      if (openingGeneration === entry.openingGeneration && entry.admitted && !this.scope.hasIdentityMismatch &&
+        entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
+        this.scope.canRevokeProject(ticket)) this.scope.markProjectReadable(projectId);
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
       if (signal.aborted || generation !== entry.generation || this.disposed || this.scope.hasIdentityMismatch || !retain && !reconciliation && isAbortError(error)) return;
@@ -1014,6 +1017,7 @@ export class TaskDetailSessions {
         throw new ApiError("protocol");
       }
       entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
+      this.scope.markProjectReadable(projectId);
       entry.historyRetry = false; entry.historyHintRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
       const currentMutation = entry.state.mutation;
       const receiptGeneration = currentMutation.operation === null ? undefined : this.receiptReadGenerations.get(currentMutation.operation);

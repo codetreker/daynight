@@ -21,6 +21,7 @@ export const useProjectPageRead = (projectId: string) => {
     const revision = session.scope.getProjectRevision(projectId);
     const admission = session.scope.getAdmissionRevision(projectId);
     let ticket = 0;
+    let projectReadRevision = session.scope.getProjectReadRevision(projectId);
     let projectRead: symbol | null = null;
     let deadline: ReturnType<typeof setTimeout> | null = null;
     const deadlineAbort = new AbortController();
@@ -37,6 +38,7 @@ export const useProjectPageRead = (projectId: string) => {
       if (!current()) return;
       historyTicket = session.scope.getObservedHistoryTicket(projectId);
       ticket = session.beginObservation();
+      projectReadRevision = session.scope.getProjectReadRevision(projectId);
       projectRead = session.beginProjectRead();
       let expire!: (error: unknown) => void;
       const timeout = new Promise<never>((_, reject) => { expire = reject; });
@@ -58,7 +60,7 @@ export const useProjectPageRead = (projectId: string) => {
         retrySuperseded(); return;
       }
       if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
-        if (!session.withdrawProjectRead(ticket, historyTicket, error)) {
+        if (projectReadRevision !== session.scope.getProjectReadRevision(projectId) || !session.withdrawProjectRead(ticket, historyTicket, error)) {
           session.requireProjectReadRecheck();
           retrySuperseded();
         }

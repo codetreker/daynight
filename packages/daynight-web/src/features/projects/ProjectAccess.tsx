@@ -88,7 +88,7 @@ export class ProjectAccessSession {
     } finally { this.publishingProjectReadDenial = false; }
     this.projectReadRecovery = { revision: this.scope.getProjectRevision(this.projectId), admission: this.scope.getAdmissionRevision(this.projectId),
       ...(history === null ? {} : { cleanupGeneration: history.cacheGeneration }) };
-    void this.revalidateAfterMutation();
+    void this.revalidateAfterMutation(true);
     return true;
   };
   publishSync = (ticket: number, access: ProjectAccess, automatic = false): boolean => {
@@ -148,7 +148,7 @@ export class ProjectAccessSession {
     }
     return null;
   };
-  private readAccess = (protectedRead: boolean): Promise<ProjectAccess | null> => {
+  private readAccess = (protectedRead: boolean, fromProjectDenial = false): Promise<ProjectAccess | null> => {
     if (this.read !== null) return this.read;
     if (!this.live()) return Promise.resolve(null);
     this.protectedRead = protectedRead;
@@ -158,12 +158,14 @@ export class ProjectAccessSession {
     this.readAbort = readAbort;
     const signal = AbortSignal.any([this.lifetime.signal, this.scope.signal, readAbort.signal]);
     let ticket = this.barrier;
+    let projectReadRevision = this.scope.getProjectReadRevision(this.projectId);
     let cacheTicket: SyncTicket | null = null;
     const pending = Promise.resolve().then(async () => {
       try {
         await this.scope.ready(signal);
         cacheTicket = await this.scope.beginSync(this.projectId, signal);
         ticket = this.beginObservation();
+        projectReadRevision = this.scope.getProjectReadRevision(this.projectId);
         const access = await getProjectAccess(this.projectId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
         await this.scope.ready(signal);
         if (!this.live() || ticket < this.barrier || cacheTicket.scopeRevision !== this.scope.getProjectRevision(this.projectId)) return null;
@@ -180,6 +182,10 @@ export class ProjectAccessSession {
         const denied = error instanceof ApiError && error.kind === 'server' && error.status === 404 && error.code === 'not_found';
         // A principal-bound denial withdraws its matching cache generation immediately;
         // the scope keeps persistent cleanup behind identity admission.
+        if (denied && projectReadRevision !== this.scope.getProjectReadRevision(this.projectId)) {
+          this.refreshAfterRead = true;
+          return this.state.access;
+        }
         const currentDenial = denied && cacheTicket !== null && this.scope.canRevokeProject(cacheTicket);
         if (!currentDenial) {
           try { await this.scope.ready(signal); } catch { return null; }
@@ -194,12 +200,14 @@ export class ProjectAccessSession {
         this.lastObservation = performance.now();
         if (denied && cacheTicket !== null) {
           const denialBarrier = this.barrier;
-          this.publishingProjectReadDenial = true;
+          this.publishingProjectReadDenial = fromProjectDenial;
           let cleanup: Promise<boolean>;
           try { cleanup = this.scope.revokeProject(cacheTicket, this.scope.signal, true, error as ApiError); }
           finally { this.publishingProjectReadDenial = false; }
           if (cacheTicket.scopeRevision === this.scope.getProjectRevision(this.projectId) &&
-            cacheTicket.admissionRevision === this.scope.getAdmissionRevision(this.projectId)) {
+            cacheTicket.admissionRevision === this.scope.getAdmissionRevision(this.projectId) &&
+            (this.projectReadRecovery?.revision !== cacheTicket.scopeRevision || this.projectReadRecovery.admission !== cacheTicket.admissionRevision ||
+              this.projectReadRecovery.cleanupGeneration !== cacheTicket.cacheGeneration)) {
             this.projectReadRecovery = { revision: cacheTicket.scopeRevision, admission: cacheTicket.admissionRevision, cleanupGeneration: cacheTicket.cacheGeneration };
           }
           // Scope listeners normally publish the withdrawal; avoid overwriting a newer observation.
@@ -232,12 +240,12 @@ export class ProjectAccessSession {
     this.read = pending;
     return pending;
   };
-  revalidateAfterMutation = (): Promise<ProjectAccess | null> => {
+  revalidateAfterMutation = (fromProjectDenial = false): Promise<ProjectAccess | null> => {
     this.readAbort?.abort();
     this.readAbort = null;
     this.read = null;
     this.refreshAfterRead = false;
-    return this.readAccess(true);
+    return this.readAccess(true, fromProjectDenial);
   };
   setActive = (active: boolean): void => {
     if (this.active === active) return;

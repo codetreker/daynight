@@ -26,8 +26,12 @@ access receipt during that check. Its dispatched request has a 60-second deadlin
 ordinary background Project reads leave task synchronization running. A
 captured cache generation permits fenced withdrawal and cleanup. Without one, a same-account hint causes peer scopes to verify access;
 peers with confirmed access retain their displayed content during the check,
-while cold peers are isolated. Only a peer's own current denial can retire its
-captured generation; the hint cannot permanently retire a guessed one. Background checks retain displayed facts; read errors
+while cold peers are isolated. A peer independently checks a read-based denial that cannot be ordered against
+its own Project observation. Confirmed deletion immediately withdraws peer
+content; an unordered transfer hint requires peer verification because access
+may have been restored. Within one scope, accepted Project, access, deletion
+preview, people, task detail and search observations fence older denials
+without weakening confirmed write cleanup. Background checks retain displayed facts; read errors
 remain recoverable. The task graph's loading and error presentation belongs to the
 Overview and Tasks panels, while both continue to share the task snapshot and
 its synchronization. The [Web design](../../../../docs/design/daynight-web.md)
