@@ -60,6 +60,7 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
   const write = useRef<{ dispatched: boolean } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   const permissionRevision = useRef(0);
+  const permissionLifetime = useRef<AbortController | null>(null);
   const retired = useRef(false);
   const activeRef = useRef(active); activeRef.current = active;
   const latest = useRef({ dialog, phase, error, checked, observed, missing, matches, attempted });
@@ -69,11 +70,11 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
     draftsFor(scope).delete(projectId);
     const unsubscribe = scope.subscribe((event) => {
       if (event.projectId !== projectId) return;
-      if (event.accessRevoked || event.directAccessUncertain) { ++permissionRevision.current; setCheckingPermission(false); lifetime.current?.abort(); dialogLifetime.current.abort(); write.current = null; retired.current = true; latest.current = { ...latest.current, dialog: null }; setDialog(null); }
-      else if (event.accessRestored) { ++permissionRevision.current; retired.current = false; lifetime.current = new AbortController(); setCheckingPermission(false); }
+      if (event.accessRevoked || event.directAccessUncertain) { ++permissionRevision.current; permissionLifetime.current?.abort(); permissionLifetime.current = null; setCheckingPermission(false); lifetime.current?.abort(); dialogLifetime.current.abort(); write.current = null; retired.current = true; latest.current = { ...latest.current, dialog: null }; setDialog(null); }
+      else if (event.accessRestored) { retired.current = false; lifetime.current = new AbortController(); }
     });
     return () => {
-      ++permissionRevision.current; lifetime.current?.abort(); dialogLifetime.current.abort(); unsubscribe(); lifetime.current = null;
+      ++permissionRevision.current; permissionLifetime.current?.abort(); permissionLifetime.current = null; lifetime.current?.abort(); dialogLifetime.current.abort(); unsubscribe(); lifetime.current = null;
       const snapshot = latest.current;
       if (!retired.current && snapshot.dialog !== null && !scope.isInvalidated && !scope.signal.aborted && !scope.isProjectSuspended(projectId)) {
         const pending = write.current;
@@ -84,27 +85,39 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
   }, [scope, projectId]);
   useEffect(() => {
     if (!active) {
-      ++permissionRevision.current; setCheckingPermission(false);
+      ++permissionRevision.current; permissionLifetime.current?.abort(); permissionLifetime.current = null; setCheckingPermission(false);
       dialogLifetime.current.abort();
       setReading(false);
       if (write.current !== null) { setPhase(write.current.dispatched ? 'unknown' : 'idle'); setChecked(false); write.current = null; }
     } else if (dialogLifetime.current.signal.aborted) dialogLifetime.current = new AbortController();
   }, [active]);
+  useEffect(() => {
+    const current = access.session.snapshot();
+    if (retired.current && current.status === 'ready' && current.access !== null && current.access === access.access && !scope.isInvalidated && !scope.isProjectSuspended(projectId)) {
+      retired.current = false;
+      lifetime.current = new AbortController();
+    }
+  }, [access.status, access.access, access.session, scope, projectId]);
   const signal = () => AbortSignal.any([scope.signal, lifetime.current!.signal, dialogLifetime.current.signal]);
   const admission = { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch };
   const checkPermission = async () => {
-    if (!activeRef.current || retired.current || scope.isInvalidated || lifetime.current === null) return;
+    if (!activeRef.current || scope.isInvalidated || lifetime.current === null) return;
     const revision = ++permissionRevision.current;
-    const signal = AbortSignal.any([scope.signal, lifetime.current.signal]);
+    permissionLifetime.current?.abort();
+    const controller = new AbortController(); permissionLifetime.current = controller;
+    const signal = AbortSignal.any([scope.signal, controller.signal]);
     setCheckingPermission(true); setPermissionCheckFailed(false);
     try {
       const result = await access.session.revalidateAfterMutation();
-      if (signal.aborted || revision !== permissionRevision.current || !activeRef.current || retired.current || scope.isInvalidated) return;
+      if (signal.aborted || revision !== permissionRevision.current || !activeRef.current || scope.isInvalidated) return;
       if (result === null || scope.isProjectSuspended(projectId)) { setPermissionCheckFailed(true); return; }
+      if (retired.current) { retired.current = false; lifetime.current = new AbortController(); }
       denialsFor(scope).delete(projectId); setPermissionDenied(false);
     } catch (failure) {
-      if (!signal.aborted && revision === permissionRevision.current && activeRef.current && !retired.current && !scope.isInvalidated && !isAbortError(failure)) setPermissionCheckFailed(true);
-    } finally { if (!signal.aborted && revision === permissionRevision.current && activeRef.current && !retired.current) setCheckingPermission(false); }
+      if (!signal.aborted && revision === permissionRevision.current && activeRef.current && !scope.isInvalidated && !isAbortError(failure)) setPermissionCheckFailed(true);
+    } finally {
+      if (!signal.aborted && revision === permissionRevision.current && activeRef.current) { permissionLifetime.current = null; setCheckingPermission(false); }
+    }
   };
   const canWrite = active && !permissionDenied && access.status === 'ready' && access.access !== null && !scope.isInvalidated && !scope.isProjectSuspended(projectId);
   const open = (next: Dialog) => { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; dialogLifetime.current.abort(); dialogLifetime.current = new AbortController(); setReading(false); setMatches(null); setDialog(next); setPhase('idle'); setError(null); setChecked(false); setObserved(null); setMissing(false); setAttempted(false); };
