@@ -23,6 +23,7 @@ import { createAssistantTaskRuntime } from "./assistant-tasks.js";
 import { createAssistantTaskSessionTransport } from "./assistant-task-session.js";
 import { prepareBotStateDirectory } from "./environment.js";
 import { ControllerIpcOutcomeUnknownError } from "../../controller/local-client.js";
+import { ASSISTANT_TASK_OPERATION_BYTES, ASSISTANT_TASK_RESPONSE_BYTES } from "./assistant-task-pages.js";
 
 /** The Worker lock protects both stores until all Bot jobs and writers have joined. */
 export const createWorkerBotHost = (options: {
@@ -63,7 +64,7 @@ export const createWorkerBotHost = (options: {
         return snapshot.synchronized && snapshot.connectionState === "connected" && snapshot.lifecycle === "active" && snapshot.activity === "idle" && snapshot.currentTurnId === null && snapshot.operations.canSend;
       },
       withApi: async (botId, signal, action) => {
-        const operation = createOperation({ signal, limits: { totalMs: 45_000, requestMs: 10_000, responseBytes: 2 * 1024 * 1024, totalBytes: 32 * 1024 * 1024 } });
+        const operation = createOperation({ signal, limits: { totalMs: 45_000, requestMs: 10_000, responseBytes: ASSISTANT_TASK_RESPONSE_BYTES, totalBytes: ASSISTANT_TASK_OPERATION_BYTES } });
         try { return await action(createAssistantTaskClient({ serverUrl: options.owner.serverOrigin, serverToken: options.serverToken, expectedUserId: options.owner.ownerUserId, operation, ...(botId === undefined ? {} : { botId }) })); }
         finally { operation.dispose(); }
       },

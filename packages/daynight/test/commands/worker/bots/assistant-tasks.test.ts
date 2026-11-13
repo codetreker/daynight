@@ -47,11 +47,17 @@ const fixture = async (botNumber = 3) => {
   await withClaimStorage(scope, async storage => { storage.state.credential = { claimToken: token, claimGeneration: "1", credentialOperationId: id(11), requiresRenew: false }; await storage.save(); });
   let events: AssistantTaskEvent[] = [];
   const claimResult = (kind: AssistantTaskClaimKind, input: AssistantTaskClaimInput, current: AssistantTask = task): AssistantTaskClaimResult => ({ operation: { operationId: input.operationId, kind, taskId: current.id, actorBotId: botId, requestFingerprint: assistantTaskClaimFingerprint({ ...input, kind, ownerUserId: owner.ownerUserId, taskId: current.id, actorBotId: botId }), admittedAt: new Date(clock.now()).toISOString(), resultingVersion: current.version, resultingGeneration: current.claimGeneration, holderBotId: current.holderBotId, credentialOperationId: current.credentialOperationId, leaseUntil: current.leaseUntil }, currentClaim: { ...current } });
-  const listTasks = vi.fn(async () => ({ items: [{ ...task }], nextCursor: null, observedAt: new Date(clock.now()).toISOString() }));
+  const listTasks = vi.fn<AssistantTaskClient["listTasks"]>(async () => ({ items: [{ ...task }], nextCursor: null, observedAt: new Date(clock.now()).toISOString() }));
   const getTask = vi.fn(async () => ({ ...task }));
   const claim = vi.fn(async (_taskId: string, kind: AssistantTaskClaimKind, input: AssistantTaskClaimInput) => claimResult(kind, input));
   const getClaimOperation = vi.fn<AssistantTaskClient["getClaimOperation"]>(async () => { throw new Error("Unexpected receipt recovery"); });
-  const listEvents = vi.fn<AssistantTaskClient["listEvents"]>(async (taskId, query) => ({ items: events.filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state)), nextCursor: null, observedAt: new Date(clock.now()).toISOString() }));
+  const listEvents = vi.fn<AssistantTaskClient["listEvents"]>(async (taskId, query) => {
+    const after = query?.cursor === undefined ? -1 : events.findIndex(event => event.id === query.cursor);
+    if (query?.cursor !== undefined && after < 0) throw new Error("Unexpected event cursor");
+    const matching = events.slice(after + 1).filter(event => (taskId === undefined || event.taskId === taskId) && (query?.state === undefined || event.state === query.state) && (query?.targetBotId === undefined || event.targetBotId === query.targetBotId));
+    const items = matching.slice(0, query?.limit ?? 200);
+    return { items, nextCursor: matching.length > items.length ? items.at(-1)!.id : null, observedAt: new Date(clock.now()).toISOString() };
+  });
   const ackEvent = vi.fn<AssistantTaskClient["ackEvent"]>(async (_taskId, eventId, input) => { const event = events.find(event => event.id === eventId)!; return { ...event, state: "delivered", ackOperationId: input.operationId }; });
   const addEvent = vi.fn<AssistantTaskClient["addEvent"]>(async (taskId, input) => ({ id: input.id, taskId, targetBotId: input.targetBotId, type: input.type, payload: input.payload ?? null, state: "pending", attention: false, createdAt: new Date(clock.now()).toISOString(), deliveredAt: null, seenAt: null, ackOperationId: null }));
   const api = { listTasks, getTask, claim, getClaimOperation, listEvents, ackEvent, addEvent } as unknown as AssistantTaskClient;
@@ -84,6 +90,50 @@ describe("assistant-task managed loops", () => {
     await vi.waitFor(() => expect(f.clock.pending.filter(entry => entry.due === start + 180_000)).toHaveLength(4));
     expect(f.claim).toHaveBeenCalledTimes(2);
     abort.abort(); await running;
+  });
+
+  it.each(["renew", "takeover", "trigger"] as const)("reads each %s task page through a separate API operation", async lane => {
+    const f = await fixture(), pageOperations: object[] = [];
+    if (lane === "trigger") { f.task.trigger = { kind: "interval", minutes: 1 }; f.clock.advance(60_000); }
+    if (lane === "takeover") {
+      f.task = { ...f.task, takeover: "auto", holderBotId: null, credentialOperationId: null, claimGeneration: "0", claimState: "unowned", leaseUntil: null };
+      await withClaimStorage(f.scope, async storage => { storage.state.credential = null; await storage.save(); });
+      f.claim.mockImplementation(async (_taskId, kind, input) => f.claimResult(kind, input, { ...f.task, holderBotId: f.bot.botId, credentialOperationId: input.operationId, claimState: "active", claimGeneration: "1", leaseUntil: new Date(start + 300_000).toISOString() }));
+    }
+    const other = { ...f.task, id: id(90), holderBotId: id(91), takeover: "manual" as const, trigger: null };
+    f.listTasks.mockImplementation(async query => ({ items: query?.cursor === undefined ? [{ ...f.task }] : [other], nextCursor: query?.cursor === undefined ? "second" : null, observedAt: new Date(f.clock.now()).toISOString() }));
+    f.options.withApi = async (_botId, _signal, action) => {
+      const operation = {};
+      return action({ ...f.api, listTasks: async query => { pageOperations.push(operation); return f.listTasks(query); } });
+    };
+    await f.create().tick(lane, signal());
+    expect(f.listTasks.mock.calls).toEqual([[{ limit: 1 }], [{ limit: 1, cursor: "second" }]]);
+    expect(pageOperations).toHaveLength(2); expect(new Set(pageOperations).size).toBe(2);
+    if (lane === "trigger") expect(f.addEvent).toHaveBeenCalledOnce();
+    else { expect(f.claim).toHaveBeenCalledOnce(); expect(f.claim.mock.calls[0]![1]).toBe(lane === "renew" ? "renew" : "claim"); }
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unread application after a task page fails and stops it only after a complete listing proves absence", async () => {
+    const f = await fixture(); f.task.application = "watchdog";
+    const runtime = f.create(), app = application(runtime);
+    await runtime.tick("renew", signal()); const context = await app.started;
+    const other = { ...f.task, id: id(90), holderBotId: id(91) };
+    const firstPage = { items: [other], nextCursor: "later", observedAt: new Date(start).toISOString() };
+    f.listTasks.mockResolvedValueOnce(firstPage).mockRejectedValueOnce(new Error("Later task page unavailable"));
+    await runtime.tick("renew", signal());
+    expect(context.signal.aborted).toBe(false); expect(f.claim).toHaveBeenCalledOnce();
+    expect(f.onError).toHaveBeenCalledWith("Later task page unavailable", f.bot.botId);
+
+    const readingLastPage = deferred(), finishListing = deferred();
+    f.listTasks.mockResolvedValueOnce(firstPage).mockImplementationOnce(async () => {
+      readingLastPage.resolve(); await finishListing.promise;
+      return { items: [], nextCursor: null, observedAt: new Date(start).toISOString() };
+    });
+    const renewal = runtime.tick("renew", signal()); await readingLastPage.promise;
+    try { expect(context.signal.aborted).toBe(false); } finally { finishListing.resolve(); }
+    await renewal; await app.stopped;
+    expect(context.signal.aborted).toBe(true); expect(f.claim).toHaveBeenCalledOnce();
   });
 
   it("queues each minute's trigger credential read behind the renewal's real private claim lock", async () => {
@@ -244,6 +294,64 @@ describe("assistant-task managed loops", () => {
     expect(actions).toEqual([`write:${original.operationId}`, `read:${original.operationId}`, `write:${f.claim.mock.calls[1]![2].operationId}`]);
   });
 
+  it("binds a later transferred generation after an old unknown renewal receipt returns 404", async () => {
+    const f = await fixture(), runtime = f.create(), factory = vi.fn(async (_context: AssistantApplicationContext) => {});
+    f.task.application = "watchdog"; runtime.registerApplication("watchdog", factory);
+    f.claim.mockRejectedValueOnce(new Error("renewal response unavailable"));
+    await runtime.tick("renew", signal());
+    const original = f.claim.mock.calls[0]![2];
+    expect(factory).not.toHaveBeenCalled();
+    await withClaimStorage(f.scope, async storage => expect(storage.state.pending).toBe(original.operationId));
+
+    f.task = { ...f.task, version: "4", claimGeneration: "3", claimState: "pending", credentialOperationId: null };
+    f.getClaimOperation.mockRejectedValue(new AssistantTaskApiError(false, "claim_operation_not_found", 404, true));
+    f.claim.mockImplementation(async (_taskId, kind, input) => {
+      if (kind === "bind") f.task = { ...f.task, claimState: "active", credentialOperationId: input.operationId };
+      return f.claimResult(kind, input);
+    });
+    f.onError.mockClear();
+    await runtime.tick("renew", signal());
+
+    expect(f.getClaimOperation).toHaveBeenCalledOnce();
+    expect(f.getClaimOperation).toHaveBeenCalledWith(f.task.id, original.operationId, expect.objectContaining({ kind: "renew", actorBotId: f.bot.botId }));
+    expect(f.claim.mock.calls.map(call => call[1])).toEqual(["renew", "bind", "renew"]);
+    const bound = f.claim.mock.calls[1]![2], renewed = f.claim.mock.calls[2]![2];
+    expect(bound).toMatchObject({ expectedGeneration: "3" });
+    expect(bound.operationId).not.toBe(original.operationId); expect(bound.claimToken).not.toBe(original.claimToken);
+    expect(renewed).toMatchObject({ claimGeneration: "3", claimToken: bound.claimToken });
+    expect(new Set(f.claim.mock.calls.map(call => call[2].operationId)).size).toBe(3);
+    await withClaimStorage(f.scope, async storage => {
+      expect(storage.state.pending).toBeNull();
+      expect(storage.state.credential).toMatchObject({ claimGeneration: "3", credentialOperationId: bound.operationId, requiresRenew: false });
+      expect((await storage.readOperation(original.operationId))?.input).toEqual(original);
+    });
+    expect(factory).toHaveBeenCalledOnce(); expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["active", "pending"] as const)("retains a same-generation unknown %s claim after receipt 404 without resubmitting", async claimState => {
+    const f = await fixture(), runtime = f.create(), factory = vi.fn(async (_context: AssistantApplicationContext) => {});
+    f.task = { ...f.task, application: "watchdog", claimState, ...(claimState === "pending" ? { credentialOperationId: null } : {}) };
+    if (claimState === "pending") await withClaimStorage(f.scope, async storage => { storage.state.credential = null; await storage.save(); });
+    runtime.registerApplication("watchdog", factory);
+    f.claim.mockRejectedValueOnce(new Error("claim response unavailable"));
+    await runtime.tick("renew", signal());
+    const original = f.claim.mock.calls[0]![2];
+    f.getClaimOperation.mockRejectedValue(new AssistantTaskApiError(false, "claim_operation_not_found", 404, true));
+    f.onError.mockClear();
+    await runtime.tick("renew", signal());
+
+    expect(f.claim).toHaveBeenCalledOnce();
+    expect(f.claim.mock.calls[0]![1]).toBe(claimState === "pending" ? "bind" : "renew");
+    expect(f.getClaimOperation).toHaveBeenCalledOnce();
+    expect(f.getClaimOperation.mock.calls[0]!.slice(0, 2)).toEqual([f.task.id, original.operationId]);
+    await withClaimStorage(f.scope, async storage => {
+      expect(storage.state.pending).toBe(original.operationId);
+      expect(await storage.readOperation(original.operationId)).toMatchObject({ input: original, phase: "prepared" });
+    });
+    expect(factory).not.toHaveBeenCalled();
+    expect(f.onError).toHaveBeenCalledWith(expect.stringContaining(`Claim operation ${original.operationId} is unconfirmed`), f.bot.botId);
+  });
+
   it("lets the service refusal settle simultaneous automatic takeover without retrying the loser", async () => {
     const a = await fixture(3), b = await fixture(4), arrived = deferred(); let calls = 0;
     for (const f of [a, b]) {
@@ -308,6 +416,42 @@ describe("assistant-task managed loops", () => {
     expect(Buffer.byteLength(input)).toBeLessThan(2 * 1024 * 1024);
   });
 
+  it("continues delivery and acknowledgment across batches whose event payloads exceed 32 MiB in total", async () => {
+    const f = await fixture(), runtime = f.create(), payload = { fact: "x".repeat(450 * 1024) };
+    f.events = Array.from({ length: 80 }, (_, index) => ({ ...f.event(100 + index), payload }));
+    expect(Buffer.byteLength(JSON.stringify(payload)) * f.events.length).toBeGreaterThan(32 * 1024 * 1024);
+    f.ackEvent.mockImplementation(async (_taskId, eventId, input) => {
+      const index = f.events.findIndex(event => event.id === eventId);
+      const delivered: AssistantTaskEvent = { ...f.events[index]!, state: "delivered", ackOperationId: input.operationId };
+      f.events[index] = delivered; return delivered;
+    });
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce();
+    expect(f.ackEvent.mock.calls.length).toBeGreaterThan(0); expect(f.ackEvent.mock.calls.length).toBeLessThan(80);
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledTimes(2); expect(f.ackEvent).toHaveBeenCalledTimes(80);
+    expect(new Set(f.ackEvent.mock.calls.map(call => call[1])).size).toBe(80);
+    expect(f.events.every(event => event.state === "delivered")).toBe(true);
+    expect(f.listEvents.mock.calls.every(([, query]) => query?.limit === 1 && query.state === "pending" && query.targetBotId === f.bot.botId)).toBe(true);
+    for (const [, command] of f.send.mock.calls) {
+      if (command.kind !== "send_message") throw new Error("Wrong notification kind");
+      expect(Buffer.byteLength(command.payload.content.filter(part => part.type === "text").map(part => part.text).join(""))).toBeLessThanOrEqual(512 * 1024);
+    }
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
+  it("queries and acknowledges only pending events for the local Bot", async () => {
+    const f = await fixture(), runtime = f.create();
+    f.events = [f.event(51), { ...f.event(52), targetBotId: id(90) }, { ...f.event(53), state: "delivered" }];
+    await runtime.tick("delivery", signal());
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.ackEvent).toHaveBeenCalledOnce();
+    expect(f.ackEvent.mock.calls[0]![1]).toBe(id(51));
+    expect(f.listEvents.mock.calls.every(([, query]) => query?.state === "pending" && query.targetBotId === f.bot.botId)).toBe(true);
+    const text = JSON.stringify(f.send.mock.calls[0]![1]);
+    expect(text).toContain(id(51)); expect(text).not.toContain(id(52)); expect(text).not.toContain(id(53));
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+
   it("keeps Unicode valid when the payload summary boundary intersects an emoji", async () => {
     const f = await fixture(), runtime = f.create(); f.events = [{ ...f.event(51), payload: { fact: `${"x".repeat(7990)}😀` } }];
     const send = f.send.getMockImplementation()!;
@@ -355,7 +499,9 @@ describe("assistant-task managed loops", () => {
     const f = await fixture(); f.task.trigger = kind === "interval" ? { kind, minutes: 1 } : { kind, time: "00:01", timeZone: "UTC" }; f.clock.advance(60_000);
     const first = f.create(); await first.tick("trigger", signal()); await first.shutdown();
     expect(f.addEvent).toHaveBeenCalledOnce();
+    f.listEvents.mockClear(); f.listEvents.mockRejectedValue(new Error("Confirmed trigger must not scan event history"));
     const second = f.create(); await second.tick("trigger", signal()); expect(f.addEvent).toHaveBeenCalledOnce();
+    expect(f.listEvents).not.toHaveBeenCalled(); expect(f.onError).not.toHaveBeenCalled();
     f.task.state = "paused"; f.clock.advance(60_000); await second.tick("trigger", signal()); expect(f.addEvent).toHaveBeenCalledOnce();
   });
 });

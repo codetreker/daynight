@@ -16,7 +16,10 @@ The [Bot runtime](../../../../docs/design/worker-bot-runtime.md#助手任务维�
 owns four independent minute loops for renewal, takeover, delivery and triggers.
 It shares the CLI's [claim state](2026-11-12-assistant-task-claim-contract.md),
 including its file lock, pre-generated secret and receipt-only recovery. A
-pending transfer binds and renews before application work starts. Healthy local
+pending transfer binds and renews before application work starts. A missing old
+receipt does not block a newer transfer forever: the shared claim state machine
+re-reads the generation and retires only an obsolete possible outcome, retaining
+an unknown operation while its possible generation remains active. Healthy local
 Controller observations gate maintenance; applications receive cancellation and
 a guard that verifies the original claim before external effects.
 
@@ -25,13 +28,24 @@ submission. Pending or ambiguous outcomes query that original operation.
 Provider acceptance precedes event acknowledgment. Definite HTTP admission
 refusals can be reconsidered; a stored receipt permits a new decision only for
 the service's explicit pre-dispatch refusal or expiry. A native rejection does
-not itself establish that input was never accepted.
+not itself establish that input was never accepted. The service persists a fixed
+refusal code only from its own pre-dispatch authorization check, so receipt reads
+after restart retain that proof. Arbitrary Controller errors remain redacted;
+a matching code from a Controller or an old reasonless rejection cannot create
+a safe-resend proof.
 
 Private journals use two alternating chunk banks with a hash-checked atomic
 manifest. This keeps the last complete intent through interrupted replacement
 without growing a new content file on every poll. Large event data becomes an
 explicitly marked summary with the original event and task identities. A bounded
 notification batch preserves excess pending events for the next idle turn.
+Task and event reads use single-item pages with independent operation budgets;
+the response budget covers JSON HTML escaping and task fields accumulated by
+separate edits. Each task claim action has a bounded cumulative budget for its
+finite authoritative reads. Delivery stops at its batch
+boundary, while ACK reconciliation excludes delivered history and stops when all
+remaining references are found. A confirmed local trigger occurrence avoids
+another history scan.
 
 Interval triggers use the task creation time; daily triggers use the configured
 IANA zone and local date. Stable occurrence IDs survive restart and takeover.
@@ -58,6 +72,15 @@ private state and operation recovery already describe the shared owner.
 the Provider. A fresh identity could start duplicate work and make later ACKs
 misleading. Uncertainty therefore retains the original command, even when that
 temporarily blocks newer notifications for the same Bot.
+
+**Treat every reasonless rejection as safe to resend.** Redaction also removes
+Controller-supplied errors, so a missing reason does not prove that native
+dispatch was prevented. A server-owned fixed proof preserves that distinction
+without retaining arbitrary error text.
+
+**Raise one history-wide response budget.** Count-based pages can contain many
+maximum-size events, and retained delivered history keeps growing. One-event
+pages and early stopping bound each response and permit incremental progress.
 
 **One immutable journal file for every content version.** It simplifies recovery
 but grows with each event and confirmation. Two banks retain crash-safe

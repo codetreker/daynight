@@ -466,7 +466,7 @@ func assertRejectedBegin(t *testing.T, f fixture, v sp.Snapshot, id string, over
 	f.SelectReceiptWrite(t)
 	selectContentHandle(t, f)
 	stored, err := fixtureOperation(f, context.Background(), v, id)
-	if err != nil || stored.State != "rejected" {
-		t.Fatal("rejection not durable", stored, err)
+	if err != nil || stored.State != "rejected" || stored.Error == nil || stored.Error.Code != "permission_or_state_changed" {
+		t.Fatal("rejection proof not durable", stored, err)
 	}
 }
