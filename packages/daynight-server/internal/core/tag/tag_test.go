@@ -37,10 +37,7 @@ func TestNameRules(t *testing.T) {
 }
 func TestCursorBindsEveryCatalogFact(t *testing.T) {
 	original := Cursor{Version: 1, ProjectID: "project", UserID: "user", CredentialID: "credential", Kind: model.PATCredential, Query: "a", Limit: 50, Epoch: "epoch", NameKey: "name", ID: "99b2ee65-c2b5-48a2-a0db-d6f8fab8a5ba"}
-	encoded, err := EncodeCursor(original)
-	if err != nil {
-		t.Fatal(err)
-	}
+	encoded := EncodeCursor(original)
 	position, err := DecodeCursor(encoded, original)
 	if err != nil || position.ID != original.ID || position.NameKey != original.NameKey {
 		t.Fatalf("%+v %v", position, err)

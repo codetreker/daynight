@@ -381,3 +381,33 @@ func TestOversizedRequestIsRejectedWithoutCall(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
 	}
 }
+
+func TestUnsupportedMethodsRequireAuthenticationAndAdvertiseAllowedMethods(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		path   string
+		allow  string
+	}{
+		{"PUT", collection, "GET, HEAD, POST"},
+		{"POST", collection + "/" + tagID, "GET, HEAD, PATCH, DELETE"},
+		{"PUT", collection + "/" + tagID, "GET, HEAD, PATCH, DELETE"},
+		{"GET", collection + "/resolve", "POST"},
+		{"PATCH", collection + "/resolve", "POST"},
+		{"DELETE", collection + "/resolve", "POST"},
+		{"PUT", collection + "/resolve", "POST"},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			f := newFixture(t)
+			unauthenticated := f.request(tc.method, tc.path, "", false)
+			failure := decode[api.ErrorResponse](t, unauthenticated, http.StatusUnauthorized)
+			if failure.Error.Code != "unauthenticated" || unauthenticated.Header().Get("Allow") != "" {
+				t.Fatalf("unauthenticated response=%+v headers=%v", failure, unauthenticated.Header())
+			}
+			w := f.request(tc.method, tc.path, "", true)
+			failure = decode[api.ErrorResponse](t, w, http.StatusMethodNotAllowed)
+			if failure.Error.Code != "method_not_allowed" || w.Header().Get("Allow") != tc.allow || w.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("method response=%+v headers=%v", failure, w.Header())
+			}
+		})
+	}
+}

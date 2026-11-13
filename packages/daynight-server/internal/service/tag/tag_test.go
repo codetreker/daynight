@@ -227,6 +227,7 @@ type readFixture struct {
 	store.TagReader
 	calls     []string
 	accessErr error
+	fail      map[string]error
 	epoch     string
 	page      store.TagPage
 	resolved  []model.Tag
@@ -249,20 +250,20 @@ func (f *readFixture) ProjectAccess(ctx context.Context, p model.Principal, id s
 }
 func (f *readFixture) TagCatalogEpoch(context.Context, string) (string, error) {
 	f.calls = append(f.calls, "epoch")
-	return f.epoch, nil
+	return f.epoch, f.fail["epoch"]
 }
 func (f *readFixture) Tags(ctx context.Context, id string, q store.TagQuery) (store.TagPage, error) {
 	f.calls = append(f.calls, "tags")
 	f.query = q
-	return f.page, nil
+	return f.page, f.fail["tags"]
 }
 func (f *readFixture) Tag(ctx context.Context, project, id string) (model.Tag, error) {
 	f.calls = append(f.calls, "tag")
-	return f.item, nil
+	return f.item, f.fail["tag"]
 }
 func (f *readFixture) TagUsage(ctx context.Context, project, id string) (model.TagUsage, error) {
 	f.calls = append(f.calls, "usage")
-	return model.TagUsage{Tasks: 2, Goals: 1}, nil
+	return model.TagUsage{Tasks: 2, Goals: 1}, f.fail["usage"]
 }
 func (f *readFixture) ResolveTags(ctx context.Context, project string, ids []string) ([]model.Tag, error) {
 	f.calls = append(f.calls, "resolve")
@@ -434,5 +435,70 @@ func TestNameConflictRetainsDatabaseAndRollbackEvidence(t *testing.T) {
 				t.Fatalf("result=%+v calls=%v err=%v", result, f.calls, err)
 			}
 		})
+	}
+}
+
+func TestCatalogReadFailuresDoNotReturnPartialResults(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want []string
+	}{
+		{"epoch", []string{"snapshot", "access", "epoch"}},
+		{"tags", []string{"snapshot", "access", "epoch", "tags"}},
+		{"usage", []string{"snapshot", "access", "epoch", "tags", "usage"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cause := errors.New("read failed")
+			f := &readFixture{epoch: "epoch", page: store.TagPage{Items: []model.Tag{{ID: tagIDValue}}}, fail: map[string]error{tc.name: cause}}
+			page, err := New(f).List(context.Background(), principal, projectID, ListInput{})
+			if !errors.Is(err, cause) || page.Items != nil || page.CatalogEpoch != "" || page.NextCursor != nil || !reflect.DeepEqual(f.calls, tc.want) {
+				t.Fatalf("page=%+v calls=%v err=%v", page, f.calls, err)
+			}
+		})
+	}
+	f := &readFixture{page: store.TagPage{HasMore: true}}
+	page, err := New(f).List(context.Background(), principal, projectID, ListInput{})
+	if err == nil || page.Items != nil || page.NextCursor != nil {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+func TestGetReadFailuresDoNotReturnPartialItem(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want []string
+	}{
+		{"tag", []string{"snapshot", "access", "tag"}},
+		{"usage", []string{"snapshot", "access", "tag", "usage"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cause := errors.New("read failed")
+			f := &readFixture{item: model.Tag{ID: tagIDValue}, fail: map[string]error{tc.name: cause}}
+			item, err := New(f).Get(context.Background(), principal, projectID, tagIDValue)
+			if !errors.Is(err, cause) || item.Tag.ID != "" || !reflect.DeepEqual(f.calls, tc.want) {
+				t.Fatalf("item=%+v calls=%v err=%v", item, f.calls, err)
+			}
+		})
+	}
+	f := &readFixture{fail: map[string]error{"tag": model.ErrNotFound}}
+	_, err := New(f).Get(context.Background(), principal, projectID, tagIDValue)
+	if faultCode(err) != "tag_not_found" {
+		t.Fatal(err)
+	}
+}
+func TestListInvalidInputDoesNotOpenSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		p       model.Principal
+		project string
+		input   ListInput
+	}{
+		{model.Principal{}, projectID, ListInput{}}, {principal, "bad", ListInput{}},
+		{principal, projectID, ListInput{Limit: -1}}, {principal, projectID, ListInput{Limit: 101}},
+		{principal, projectID, ListInput{Query: "a\x00b"}}, {principal, projectID, ListInput{Query: string([]byte{0xff})}},
+	} {
+		f := &readFixture{}
+		page, err := New(f).List(context.Background(), tc.p, tc.project, tc.input)
+		if err == nil || len(f.calls) != 0 || page.Items != nil {
+			t.Fatalf("page=%+v calls=%v err=%v", page, f.calls, err)
+		}
 	}
 }

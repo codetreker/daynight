@@ -83,12 +83,10 @@ type Cursor struct {
 	ID           string               `json:"i"`
 }
 
-func EncodeCursor(cursor Cursor) (string, error) {
-	raw, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
+// EncodeCursor serializes only strings and integers, which JSON can always encode.
+func EncodeCursor(cursor Cursor) string {
+	raw, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(raw)
 }
 func DecodeCursor(raw string, expected Cursor) (*store.TagPosition, error) {
 	invalid := func() (*store.TagPosition, error) {

@@ -143,10 +143,7 @@ func (s *Tags) List(ctx context.Context, p model.Principal, projectID string, in
 			}
 			last := page.Items[len(page.Items)-1]
 			cursor.NameKey, cursor.ID = last.NameKey, last.ID
-			encoded, err := core.EncodeCursor(cursor)
-			if err != nil {
-				return err
-			}
+			encoded := core.EncodeCursor(cursor)
 			result.NextCursor = &encoded
 		}
 		return nil
