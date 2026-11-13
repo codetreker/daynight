@@ -45,9 +45,15 @@ result and escalation. Escalation uses a separate persisted follow-up baseline
 recorded after submission returns. Recovery without that baseline starts it
 conservatively after observing the original operation, preserving the original
 intent time without counting preparation or transport delay as response time.
-Progress uses stable entry IDs and revisions independently of the history epoch:
-a Controller reconnect invalidates quiet evidence, but unchanged persisted
-entries do not discharge the follow-up obligation.
+Progress preserves the highest observed entry sequence, including headers whose
+input origin is unreadable. A later valid entry or a higher revision of the same
+known valid entry proves progress; falling back to an older readable entry does
+not. A Controller reconnect invalidates quiet evidence, but unchanged persisted
+entries do not discharge the follow-up obligation. Partial coverage or a later
+page failure does not erase positive evidence already read from consistent live
+pages. Completeness remains mandatory for quiet evidence and direct submission.
+Legacy attempts without sequence evidence establish a conservative baseline;
+where the original entry is identifiable, its revision remains comparable.
 
 ## Alternatives
 
@@ -79,6 +85,12 @@ producer supplies null timestamps, so this would permanently disable direct
 handling for ordinary conversations. Observed quiet intervals preserve the
 recent-input safeguard without inventing timestamps or expanding the shared
 history protocol.
+
+**Require complete history to recognize progress.** A truncated tool result can
+make global coverage partial even when a newer assistant message is fully
+readable. Rejecting that positive evidence would falsely escalate an execution
+that has responded. Ordered evidence avoids both that false escalation and the
+opposite error of treating an older fallback candidate as new activity.
 
 ## Consequences
 

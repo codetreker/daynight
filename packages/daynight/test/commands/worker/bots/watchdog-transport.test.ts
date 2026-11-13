@@ -7,7 +7,7 @@ import { createWatchdogSource, type WatchdogApiScope } from "../../../../src/com
 const signal = new AbortController().signal;
 const observation = { projectId: "project", taskId: "task", title: "Task", inScope: true, session: { sessionId: "session", claimId: "claim", executionGeneration: "2", currentTurnId: null, observation: "observed", error: null, freshUntil: "2099-01-01T00:00:00Z", registration: "registered", lifecycle: "active", connectionState: "connected", activity: "idle", indicator: "warning", reason: "idle", send: { allowed: true } } } as WatchdogObservation;
 const setup = (api: Partial<ApiClient>) => createWatchdogSource("owner", (async (_signal, action) => action(api as ApiClient)) as WatchdogApiScope);
-const message = (kind: string, entryId: string, timestamp: string | null, text = "") => ({ kind, entryId, revision: "1", timestamp, truncated: false, body: { kind, content: [{ type: "text", text }] } });
+const message = (kind: string, entryId: string, timestamp: string | null, text = "", entrySeq = "1") => ({ kind, entryId, entrySeq, revision: "1", timestamp, truncated: false, body: { kind, content: [{ type: "text", text }] } });
 const page = (items: unknown[], extra = {}) => ({ sessionId: "session", historyEpoch: "epoch", source: "live", items, coverage: { state: "complete" }, hasMoreBefore: false, beforeCursor: null, ...extra });
 
 describe("Watchdog production data adapter", () => {
@@ -30,10 +30,10 @@ describe("Watchdog production data adapter", () => {
   });
 
   it("reads older pages to find input and preserves non-input progress despite its own submitted message", async () => {
-    const own = message("user_message", "own", "2026-11-13T00:03:00Z");
-    const readTaskSession = vi.fn().mockResolvedValueOnce(page([message("tool_call", "tool", "2026-11-13T00:02:00Z"), { ...own, body: { ...own.body, origin: "daynight" } }], { hasMoreBefore: true, beforeCursor: "older" }))
+    const own = message("user_message", "own", "2026-11-13T00:03:00Z", "", "3");
+    const readTaskSession = vi.fn().mockResolvedValueOnce(page([message("tool_call", "tool", "2026-11-13T00:02:00Z", "", "2"), { ...own, body: { ...own.body, origin: "daynight" } }], { hasMoreBefore: true, beforeCursor: "older" }))
       .mockResolvedValueOnce(page([message("assistant_message", "assistant", "2026-11-13T00:01:00Z", "Please continue")]));
-    expect(await setup({ readTaskSession }).history(observation, signal)).toEqual({ complete: true, lastEntryId: "epoch/tool/1", lastProgressId: "tool/1", lastAssistantText: "Please continue", lastInputAt: Date.parse("2026-11-13T00:03:00Z") });
+    expect(await setup({ readTaskSession }).history(observation, signal)).toEqual({ complete: true, lastEntryId: "epoch/tool/1", lastProgressId: "tool/1", progress: { entryId: "tool", entrySeq: "2", revision: "1" }, headSeq: "3", lastAssistantText: "Please continue", lastInputAt: Date.parse("2026-11-13T00:03:00Z") });
     expect(readTaskSession).toHaveBeenLastCalledWith("project", "task", "session", { limit: 200, before: "older" });
   });
 
@@ -50,6 +50,25 @@ describe("Watchdog production data adapter", () => {
     const readTaskSession = vi.fn().mockResolvedValueOnce(page([message("tool_call", "tool", null)], { hasMoreBefore: true, beforeCursor: "older" }))
       .mockResolvedValueOnce(page([], { historyEpoch: "replacement" }));
     expect((await setup({ readTaskSession }).history(observation, signal)).complete).toBe(false);
+  });
+
+  it("retains positive live evidence from partial history without permitting a send", async () => {
+    const sendTaskSessionCommand = vi.fn();
+    const source = setup({ sendTaskSessionCommand,
+      getObservedTask: vi.fn().mockResolvedValue({ title: "Task", status: "in_progress", assignedTo: "owner", session: observation.session }),
+      readTaskSession: vi.fn().mockResolvedValue(page([message("assistant_message", "new", null, "Actual progress", "5")], { coverage: { state: "partial" } })),
+    });
+    expect(await source.history(observation, signal)).toMatchObject({ complete: false, progress: { entryId: "new", entrySeq: "5", revision: "1" }, headSeq: "5" });
+    expect(await source.send(observation, "operation", "Continue", signal)).toBe("rejected");
+    expect(sendTaskSessionCommand).not.toHaveBeenCalled();
+  });
+
+  it("finds positive evidence behind automatic inputs even when every page has global partial coverage", async () => {
+    const automatic = message("user_message", "automatic", null, "", "6");
+    const readTaskSession = vi.fn().mockResolvedValueOnce(page([{ ...automatic, body: { ...automatic.body, origin: "daynight" } }], { coverage: { state: "partial" }, hasMoreBefore: true, beforeCursor: "older" }))
+      .mockResolvedValueOnce(page([message("assistant_message", "progress", null, "Actual progress", "5")], { coverage: { state: "partial" } }));
+    expect(await setup({ readTaskSession }).history(observation, signal)).toMatchObject({ complete: false, progress: { entryId: "progress", entrySeq: "5", revision: "1" }, headSeq: "6" });
+    expect(readTaskSession).toHaveBeenCalledTimes(2);
   });
 
   it("requires a fresh matching quiet proof for untimed automatic input before submission", async () => {

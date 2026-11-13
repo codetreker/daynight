@@ -71,43 +71,51 @@ const source: WatchdogSource = {
   }),
   history: (observation, signal) => withApi(signal, async api => {
     const sessionId = observation.session.sessionId;
-    const result: WatchdogHistory = { complete: false, lastEntryId: null, lastProgressId: null, lastAssistantText: null, lastInputAt: null };
+    const result: WatchdogHistory = { complete: false, lastEntryId: null, lastProgressId: null, progress: null, headSeq: null, lastAssistantText: null, lastInputAt: null };
     if (sessionId === null) return result;
     let before: string | undefined, epoch: string | undefined, source: string | undefined;
-    let inputFound = false, assistantFound = false;
+    let inputFound = false, assistantFound = false, complete = true;
     const cursors = new Set<string>();
     // Bound a pathological history without interpreting an unread suffix as
     // evidence that no other input occurred. Read-only escalation can still use
     // the latest non-input activity watermark from an incomplete result.
     for (let pages = 0; pages < 100; pages++) {
-      const page = await api.readTaskSession(observation.projectId, observation.taskId, sessionId, { limit: 200, ...(before === undefined ? {} : { before }) });
+      let page;
+      try { page = await api.readTaskSession(observation.projectId, observation.taskId, sessionId, { limit: 200, ...(before === undefined ? {} : { before }) }); }
+      catch { signal.throwIfAborted(); return result; }
       if (epoch !== undefined && (epoch !== page.historyEpoch || source !== page.source)) return result;
       epoch = page.historyEpoch; source = page.source;
-      if (page.coverage.state !== "complete" || page.source !== "live") return result;
+      if (page.source !== "live") return result;
+      if (page.coverage.state !== "complete") complete = false;
+      result.headSeq ??= "0";
       for (const entry of [...page.items].reverse()) {
+        if (BigInt(entry.entrySeq) > BigInt(result.headSeq)) result.headSeq = entry.entrySeq;
         const automaticInput = entry.body?.kind === "user_message" && entry.body.origin === "daynight";
         // A projected input reference does not reveal its origin. It still
         // protects the quiet interval, but cannot prove progress after our send.
         const unreadableInput = entry.kind === "user_message" && (entry.truncated || entry.body?.kind !== "user_message");
-        if (!automaticInput && !unreadableInput && result.lastEntryId === null) {
+        if (!automaticInput && !unreadableInput && !entry.truncated && entry.body !== null && result.lastEntryId === null) {
           result.lastEntryId = `${epoch}/${entry.entryId}/${entry.revision}`;
           result.lastProgressId = `${entry.entryId}/${entry.revision}`;
+          result.progress = { entryId: entry.entryId, entrySeq: entry.entrySeq, revision: entry.revision };
         }
+      }
+      for (const entry of [...page.items].reverse()) {
         if (entry.kind === "user_message" && !inputFound) {
           inputFound = true;
           if (entry.timestamp === null) result.untimedInputId = `${epoch}/${entry.entryId}/${entry.revision}`;
           else {
             result.lastInputAt = Date.parse(entry.timestamp);
-            if (!Number.isFinite(result.lastInputAt)) return result;
+            if (!Number.isFinite(result.lastInputAt)) complete = false;
           }
         }
         if (entry.kind === "assistant_message" && !assistantFound) {
           assistantFound = true;
-          if (entry.truncated || entry.body?.kind !== "assistant_message") return result;
-          result.lastAssistantText = entry.body.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+          if (entry.truncated || entry.body?.kind !== "assistant_message") complete = false;
+          else result.lastAssistantText = entry.body.content.filter(part => part.type === "text").map(part => part.text).join("\n");
         }
       }
-      if (!page.hasMoreBefore || inputFound && assistantFound) { result.complete = true; return result; }
+      if (!page.hasMoreBefore || inputFound && assistantFound && result.progress !== null) { result.complete = complete; return result; }
       if (page.beforeCursor === null || cursors.has(page.beforeCursor)) return result;
       before = page.beforeCursor; cursors.add(before);
     }

@@ -10,6 +10,9 @@ import { createWatchdogSource, type WatchdogApiScope } from "../../../src/comman
 import { createWatchdogEvaluator, watchdogHistoryIdentity, type WatchdogObservation, type WatchdogState } from "../../../src/commands/worker/bots/apps/watchdog.js";
 import type { AssistantTask, AssistantTaskClient, AssistantTaskItem, JsonValue } from "../../../src/api/assistant-task.js";
 import type { AssistantApplicationContext } from "../../../src/commands/worker/bots/assistant-tasks.js";
+import { CodexImageProjection } from "../../../src/commands/controller/providers/codex-image-projection.js";
+import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import type { CodexImageInputs } from "../../../src/commands/controller/providers/codex-image-input.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -67,12 +70,14 @@ it("supplies stable untimed input evidence to Watchdog through the real inspecti
   } finally { store.close(); }
 });
 
-it.each(["reconnect", "entry", "revision", "legacy", "unknown-legacy", "empty-legacy"])("distinguishes durable progress from reconnect and unreadable automatic input (%s)", async change => {
+it.each(["reconnect", "entry", "revision", "legacy", "legacy-revision", "unknown-legacy", "empty-legacy", "partial-tool", "later-page-failure", "older-candidate", "newly-readable"])("distinguishes durable progress from reconnect and unreadable automatic input (%s)", async change => {
   const f = await fixture(), store = f.open(), assistantId = randomUUID(), inputId = randomUUID();
   let epoch = randomUUID();
+  let failOlder = false, overhead = change === "newly-readable" ? 40000 : 4096;
   let now = Date.parse("2026-11-14T00:00:00Z");
   try {
     store.projectTimeline({ entryId: assistantId, revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Please continue" }] });
+    if (["older-candidate", "newly-readable"].includes(change)) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "user_message", content: [{ type: "text", text: "h".repeat(240000) }] });
     store.projectTimeline({ entryId: inputId, revision: "1", kind: "user_message", origin: "daynight", content: [{ type: "text", text: "x".repeat(300 * 1024) }] });
     const projected = store.readInspection(query(epoch));
     expect(projected.coverage.state).toBe("complete");
@@ -81,14 +86,21 @@ it.each(["reconnect", "entry", "revision", "legacy", "unknown-legacy", "empty-le
       session: { sessionId: f.ticket.sessionId, observation: "observed", error: null, freshUntil: null, registration: "registered", lifecycle: "active", activity: "idle", indicator: "warning", reason: "idle", send: { allowed: true } },
     } as WatchdogObservation;
     const source = createWatchdogSource(f.ticket.userId, (async (_signal, action) => action({
-      readTaskSession: async () => ({ ...store.readInspection(query(epoch)), source: "live", sessionId: f.ticket.sessionId }),
+      readTaskSession: async (_project: string, _task: string, _session: string, request: { before?: string }) => {
+        if (failOlder && request.before !== undefined) throw new Error("Older live page unavailable");
+        return { ...store.readInspection({ ...query(epoch, request.before ?? null, failOlder ? 1 : 20), responseOverhead: overhead }), source: "live", sessionId: f.ticket.sessionId };
+      },
     } as never)) as WatchdogApiScope);
     const history = await source.history(observation, new AbortController().signal);
-    expect(history).toMatchObject({ complete: true, lastEntryId: `${epoch}/${assistantId}/1`, lastProgressId: `${assistantId}/1`, untimedInputId: `${epoch}/${inputId}/1`, lastInputAt: null });
+    expect(history).toMatchObject({ complete: true, untimedInputId: `${epoch}/${inputId}/1`, lastInputAt: null });
+    if (change !== "older-candidate") expect(history.lastProgressId).toBe(`${assistantId}/1`);
     const state: WatchdogState = { schemaVersion: 1, since: now - 600_000, reportedCategory: "stalled", reportedAt: now,
       closedAt: null, recurrence: false, observation, notices: [], attempt: { operationId: randomUUID(), ruleId: "continue", message: "Continue", at: now, followUpSince: now,
         historyId: `${epoch}/${assistantId}/1`, observation, result: "confirmed", notifiedResult: "confirmed", escalated: false, progressed: false } };
-    if (!["legacy", "unknown-legacy", "empty-legacy"].includes(change)) state.attempt!.progressId = history.lastProgressId!;
+    if (!["legacy", "legacy-revision", "unknown-legacy", "empty-legacy"].includes(change)) {
+      state.attempt!.progressId = history.lastProgressId!;
+      state.attempt!.progressBaseline = { headSeq: history.headSeq!, entry: history.progress };
+    }
     if (change === "unknown-legacy") state.attempt!.historyId = "unknown-old-watermark";
     if (change === "empty-legacy") state.attempt!.historyId = null;
     const originalHistoryId = state.attempt!.historyId, originalOperationId = state.attempt!.operationId;
@@ -110,10 +122,21 @@ it.each(["reconnect", "entry", "revision", "legacy", "unknown-legacy", "empty-le
     const reconnected = await source.history(observation, context.signal);
     expect(reconnected.lastProgressId).toBe(history.lastProgressId);
     expect(watchdogHistoryIdentity(observation, reconnected)).not.toBe(watchdogHistoryIdentity(observation, history));
+    if (change === "legacy-revision") store.projectTimeline({ entryId: assistantId, revision: "2", kind: "assistant_message", content: [{ type: "text", text: "New revision before legacy recovery" }] });
     now += 599_999; await evaluator.tick(); expect(events).toEqual([]);
-    if (change === "entry" || change === "revision") store.projectTimeline({ entryId: change === "entry" ? randomUUID() : assistantId, revision: change === "entry" ? "1" : "2", kind: "assistant_message", content: [{ type: "text", text: "Actual new progress" }] });
+    if (change === "partial-tool") {
+      const projection = new CodexImageProjection(f.ticket.sessionId, {} as ProviderOptions, {} as CodexImageInputs, { publish: entry => { store.projectTimeline(entry); } });
+      expect(projection.item({ id: "large-output", type: "functionCallOutput", output: "o".repeat(200001) }, true, "turn")).toBe(true);
+    }
+    if (["entry", "revision", "partial-tool", "later-page-failure"].includes(change)) store.projectTimeline({ entryId: change === "revision" ? assistantId : randomUUID(), revision: change === "revision" ? "2" : "1", kind: "assistant_message", content: [{ type: "text", text: "Actual new progress" }] });
+    if (change === "later-page-failure") failOlder = true;
+    if (change === "older-candidate") overhead = 40000;
+    if (change === "newly-readable") overhead = 4096;
+    if (["partial-tool", "later-page-failure"].includes(change)) expect(await source.history(observation, context.signal)).toMatchObject({ complete: false, progress: { revision: "1" }, lastAssistantText: "Actual new progress" });
+    if (change === "older-candidate") expect((await source.history(observation, context.signal)).progress?.entryId).toBe(assistantId);
     now += 1; await evaluator.tick(); await evaluator.tick();
-    const progressed = ["entry", "revision", "empty-legacy"].includes(change);
+    if (change === "older-candidate") { overhead = 4096; await evaluator.tick(); }
+    const progressed = ["entry", "revision", "legacy-revision", "partial-tool", "later-page-failure"].includes(change);
     expect((item.appState as unknown as WatchdogState).attempt).toMatchObject({ progressed, escalated: !progressed, historyId: originalHistoryId, operationId: originalOperationId });
     expect(events.map(event => event.type)).toEqual(progressed ? [] : ["escalation"]);
   } finally { store.close(); }
