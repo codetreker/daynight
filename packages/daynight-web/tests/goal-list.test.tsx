@@ -27,6 +27,42 @@ const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it('toggles from each part of the header and keeps detail and graph actions separate', () => {
+    const openGoal = vi.fn(); const openGraph = vi.fn();
+    const assigned = tasks.map(task => task.id === goal.id ? { ...task, assignedTo: '12345678-0000-4000-8000-000000000001' } : task);
+    createLocaleRender('en', { taskCache: true })(list(snapshot(assigned), openGoal, vi.fn(), vi.fn(), openGraph));
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    const detail = document.getElementById('project-goal-detail-goal')!;
+    const graph = document.getElementById('project-goal-graph-goal')!;
+    const content = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+    expect(toggle).toHaveAccessibleDescription(/Assignee: 12345678.*1 chains.*1 standalone tasks.*1\/2 ended.*0 completed.*1 cancelled.*To do/);
+    expect(content).not.toBeVisible();
+    expect(toggle.contains(detail)).toBe(false);
+    expect(toggle.contains(graph)).toBe(false);
+    for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status']) {
+      const target = toggle.querySelector(selector)!;
+      fireEvent.click(target);
+      expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
+      expect(content).toBeVisible();
+      fireEvent.click(target);
+      expect(toggle, selector).toHaveAttribute('aria-expanded', 'false');
+      expect(content).not.toBeVisible();
+    }
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    for (const expanded of [true, false]) {
+      fireEvent.click(detail);
+      expect(openGoal).toHaveBeenLastCalledWith(goal.id, detail);
+      fireEvent.click(graph);
+      expect(openGraph).toHaveBeenLastCalledWith(goal.id, graph);
+      expect(toggle).toHaveAttribute('aria-expanded', String(expanded));
+      if (expanded) fireEvent.click(toggle);
+    }
+    expect(openGoal).toHaveBeenCalledTimes(2);
+    expect(openGraph).toHaveBeenCalledTimes(2);
+  });
+
   it('opens the overall graph independently of the title and disclosure, including an empty Goal', () => {
     const openGoal = vi.fn(); const openGraph = vi.fn();
     createLocaleRender('en', { taskCache: true })(list(snapshot(tasks), openGoal, vi.fn(), vi.fn(), openGraph));
@@ -67,6 +103,7 @@ describe('Goal list', () => {
     const second = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
     const toggle = within(first).getByRole('button', { name: '展开 Goal：goal' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveAccessibleDescription(/负责人：未分配.*1 条任务链.*1 个独立任务.*1\/2 已结束.*0 完成.*1 取消.*待处理/);
     expect(first).toHaveTextContent('0 完成 · 1 取消');
     expect(first).toHaveTextContent('待处理');
     fireEvent.click(toggle);
@@ -86,8 +123,9 @@ describe('Goal list', () => {
     const graph = within(first).getByRole('button', { name: /root，查看依赖关系/ });
     fireEvent.click(graph);
     expect(openChain).toHaveBeenCalledWith('child', graph, goal.id);
-    const title = within(first).getByRole('button', { name: 'goal' });
-    fireEvent.click(title); expect(openGoal).toHaveBeenCalledWith('goal', title);
+    const detail = document.getElementById('project-goal-detail-goal')!;
+    fireEvent.click(detail); expect(openGoal).toHaveBeenCalledWith('goal', detail);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(toggle);
     expect(within(first).queryByText('child')).toBeNull();
     fireEvent.click(toggle);

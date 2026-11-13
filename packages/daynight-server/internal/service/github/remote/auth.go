@@ -75,7 +75,8 @@ func (s *tokenSource) token(ctx context.Context, installationID int64) (string, 
 				return "", ctx.Err()
 			case <-done:
 				if entry.err != nil {
-					if errors.Is(entry.err, context.Canceled) || errors.Is(entry.err, context.DeadlineExceeded) {
+					var checkpoint *checkpointError
+					if errors.As(entry.err, &checkpoint) || errors.Is(entry.err, context.Canceled) || errors.Is(entry.err, context.DeadlineExceeded) {
 						continue
 					}
 					return "", entry.err

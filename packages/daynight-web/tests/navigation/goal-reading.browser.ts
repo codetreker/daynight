@@ -294,7 +294,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   await check();
   await page.locator('.goal-detail-surface').getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
   await check();
@@ -328,7 +328,7 @@ test('Goal dialog retains statistics through a failed background graph refresh a
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const aside = page.getByRole('complementary', { name: 'Goal information' });
   const total = aside.locator('dt').filter({ hasText: /^Total tasks$/ }).locator('..').locator('dd');
   await expect(total).toHaveText('3');
@@ -351,7 +351,7 @@ for (const presentation of ['dialog', 'page'] as const) test(`restored Goal time
     await page.goto(`/projects/${projectId}`);
     await page.getByRole('tab', { name: 'Task list', exact: true }).click();
     await page.getByRole('tab', { name: /^Goal/ }).click();
-    await page.locator(`#project-goal-${goalId}`).click();
+    await page.locator(`#project-goal-detail-${goalId}`).click();
   } else await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const surface = page.locator('.goal-detail-surface');
   await restoreGoalGraph(page, surface);
@@ -747,7 +747,7 @@ test('Goal write errors identify refusals without exposing internal diagnostics'
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const dialog = page.getByRole('dialog', { name: 'Goal reading' });
   await dialog.locator('.task-status-trigger').click();
   await dialog.getByRole('menuitemradio', { name: 'In progress' }).click();
@@ -766,7 +766,7 @@ for (const mode of ['pending', 'conflict', 'unknown'] as const) test(`Goal editi
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   await page.getByRole('dialog', { name: 'Goal reading' }).getByRole('button', { name: 'Edit', exact: true }).click();
   const editor = page.getByRole('alertdialog', { name: 'Edit Goal' });
   const title = editor.getByLabel('Name', { exact: true });
@@ -802,7 +802,7 @@ test('a closed Goal editor retains an unknown draft and exposes read-only recove
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
   const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
   await edit.click();
@@ -834,7 +834,7 @@ for (const mode of ['pending', 'pending-conflict'] as const) test(`a closed Goal
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
   const edit = goalDialog.getByRole('button', { name: 'Edit', exact: true });
   await edit.click();
@@ -881,7 +881,7 @@ for (const width of [1440, 390]) test(`Goal status confirmations preserve childr
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   const status = goalDialog.locator('.task-status-trigger');
   const selectStatus = async (label: string) => {
@@ -986,7 +986,7 @@ test('a forbidden goal retires its attachment confirmation, while ordinary refre
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
   await goalDialog.getByRole('tab', { name: 'Attachments' }).click();
   await goalDialog.getByRole('button', { name: 'More actions: notes.txt' }).click();
@@ -1014,7 +1014,7 @@ for (const width of [1440, 390]) test(`Goal retains reading state and nested key
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  const entry = page.locator(`#project-goal-${goalId}`); await entry.click();
+  const entry = page.locator(`#project-goal-detail-${goalId}`); await entry.click();
   const goalDialog = page.locator('.goal-detail-surface'); await expect(goalDialog).toBeVisible();
   await expect(goalDialog.locator('[data-goal-task-id]')).toHaveCount(0);
   await goalDialog.getByRole('tab', { name: 'Description', exact: true }).click();
@@ -1086,7 +1086,7 @@ test('cross-goal graph navigation asks before discarding the goal draft', async 
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  const entry = page.locator(`#project-goal-${goalId}`); await expectHit(entry); await entry.click();
+  const entry = page.locator(`#project-goal-detail-${goalId}`); await expectHit(entry); await entry.click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await goalDialog.getByRole('tab', { name: 'Discussion' }).click();
   const draft = goalDialog.locator('.thread-composer textarea'); await draft.fill('Keep this Goal draft');
@@ -1112,7 +1112,7 @@ test('a changing chain keeps its open task draft, focus and modal isolation', as
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await restoreGoalGraph(page, goalDialog);
   const graphDialog = page.getByRole('dialog', { name: 'First task' });
@@ -1144,7 +1144,7 @@ test('a nested task and goal draft share one topmost leave confirmation', async 
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  const entry = page.locator(`#project-goal-${goalId}`); await expectHit(entry); await entry.click();
+  const entry = page.locator(`#project-goal-detail-${goalId}`); await expectHit(entry); await entry.click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await goalDialog.getByRole('tab', { name: 'Discussion' }).click();
   await goalDialog.locator('.thread-composer textarea').fill('Goal draft');
@@ -1221,7 +1221,7 @@ test('Project nested child retains its draft and closing replaces the parent sel
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.locator(`#project-goal-${goalId}`).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
   const goalDialog = page.getByRole('dialog', { name: 'Goal reading' });
   await restoreGoalGraph(page, goalDialog);
   const graphDialog = page.getByRole('dialog', { name: 'First task', exact: true });
@@ -1656,19 +1656,21 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   fixture.setGoalStatusFixture('cancelled', false);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(row).toHaveAttribute('data-task-status', 'cancelled');
-  const title = card.locator('.goal-list-title');
+  const detail = card.locator(`#project-goal-detail-${goalId}`);
   await card.locator('.goal-list-toggle').focus();
   await page.keyboard.press('Tab');
-  await expect(title).toBeFocused();
-  await expect(title).toHaveCSS('outline-color', 'rgb(140, 140, 240)');
+  await expect(detail).toBeFocused();
+  await expect(detail).toHaveCSS('outline-color', 'rgb(119, 119, 223)');
   await page.keyboard.press('Enter');
   await expect(page.locator('.goal-detail-surface')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(title).toBeFocused();
+  await expect(detail).toBeFocused();
   await page.keyboard.press('Space');
   await expect(page.locator('.goal-detail-surface')).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(title).toBeFocused();
+  await expect(detail).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(card.locator(`#project-goal-graph-${goalId}`)).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
 });
 
@@ -1698,6 +1700,56 @@ test('Goal and task-chain headers match with an assigned owner on desktop', asyn
   expect(Math.abs(cardHeight - chainCardHeight)).toBeLessThanOrEqual(1);
   await card.locator('.goal-list-toggle').click();
   expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(goalHeight);
+});
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale, 'Owner');
+  fixture.setGoalStatusFixture('todo', false);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  const detail = card.locator(`#project-goal-detail-${goalId}`);
+  const graph = card.locator(`#project-goal-graph-${goalId}`);
+  const content = card.locator(`#project-goal-children-${goalId}`);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(content).toBeHidden();
+  for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status']) {
+    const target = toggle.locator(selector);
+    await target.click();
+    await expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
+    await expect(content).toBeVisible();
+    await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+    await target.click();
+    await expect(toggle, selector).toHaveAttribute('aria-expanded', 'false');
+    await expect(content).toBeHidden();
+  }
+  const blank = await toggle.evaluate(element => {
+    const r = element.getBoundingClientRect();
+    for (let y = r.top + 2; y < r.bottom - 2; y += 3) for (let x = r.left + 2; x < r.right - 2; x += 3) {
+      if (document.elementFromPoint(x, y) === element) return { x, y };
+    }
+    return null;
+  });
+  expect(blank).not.toBeNull();
+  await page.mouse.click(blank!.x, blank!.y);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  for (const expanded of ['true', 'false'] as const) {
+    await detail.click();
+    await expect(page.locator('.goal-detail-surface')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(detail).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', expanded);
+    await graph.click();
+    await expect(page.locator(`#task-graph-${goalId}`)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(graph).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', expanded);
+    if (expanded === 'true') await toggle.click();
+  }
+  expect(await page.locator('button button, button a, a button').count()).toBe(0);
 });
 
 for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {
@@ -1758,7 +1810,7 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await page.keyboard.press('Escape');
   await expect(graphDialog).toHaveCount(0);
   await expect(graphButton).toBeFocused();
-  await firstGoal.locator(`#project-goal-${goalId}`).focus(); await page.keyboard.press('Enter');
+  await firstGoal.locator(`#project-goal-detail-${goalId}`).focus(); await page.keyboard.press('Enter');
   await expect(page.locator('.goal-detail-surface')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
@@ -1856,7 +1908,7 @@ test('Goal list retires an old epoch and rejects its late background result', as
   fixture.holdNextSync(); await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect.poll(fixture.syncHeld).toBe(true);
   fixture.advanceEpoch(); fixture.setGoalTitle('Replacement Goal');
-  await row.locator(`#project-goal-${goalId}`).click();
+  await row.locator(`#project-goal-detail-${goalId}`).click();
   await expect.poll(fixture.goalReads).toBeGreaterThan(0);
   await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
   await expect(page.locator(`#project-goal-${goalId}`)).toHaveText('Replacement Goal');
@@ -1913,14 +1965,14 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.locator('#project-section-tab-tasks').click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
-  const title = card.locator('.goal-list-title');
+  const detail = card.locator(`#project-goal-detail-${goalId}`);
   const label = card.locator('.goal-list-meta time');
   await expect(label).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
   await label.hover();
   await expect(card.getByRole('tooltip')).toBeVisible();
   await card.getByRole('tooltip').hover();
   await expect(card.getByRole('tooltip')).toBeVisible();
-  await title.focus();
+  await detail.focus();
   await expect(card.getByRole('tooltip')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(card.getByRole('tooltip')).toBeHidden();
@@ -1943,7 +1995,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await row.focus(); await expect(row.locator('..').getByRole('tooltip')).toBeVisible();
   await page.keyboard.press('Tab'); await expect(row).not.toBeFocused();
   expect(await page.locator('button button, button a, a button').count()).toBe(0);
-  await title.click();
+  await detail.click();
   const surface = page.locator('.goal-detail-surface');
   const check = async () => {
     const meta = surface.locator('.goal-detail-meta');
@@ -2008,7 +2060,7 @@ test('Goal list completion tick retains pinned hint and expansion while its deta
   expect(await time.evaluate((element, old) => element === old, node)).toBe(true);
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
   await page.keyboard.press('Escape');
-  await card.locator('.goal-list-title').click();
+  await card.locator(`#project-goal-detail-${goalId}`).click();
   const goalSurface = page.locator('.goal-detail-surface');
   await goalSurface.getByRole('tab', { name: 'Discussion' }).click();
   const draft = goalSurface.locator('.thread-composer textarea');

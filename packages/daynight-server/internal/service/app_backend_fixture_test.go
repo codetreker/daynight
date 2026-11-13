@@ -595,6 +595,9 @@ func (s unexpectedAppTransactions) WriteAttachmentMutation(context.Context, func
 	var value0 store.Completion
 	return value0, failure
 }
+func (s unexpectedAppTransactions) WriteAssistantTask(context.Context, func(store.AssistantTaskScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteAssistantTask")
+}
 func (s unexpectedAppTransactions) WriteAuthorizations(context.Context, func(store.AuthorizationScope) error) (store.Completion, error) {
 	failure := s.backend.unexpected("WriteAuthorizations")
 	var value0 store.Completion

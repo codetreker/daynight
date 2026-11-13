@@ -55,7 +55,7 @@ export const verifyCompletionFlow = async (page: Page, projectId: string, standa
   await expect(goalCard.locator(".goal-list-row time.completion-time-label")).toHaveAttribute("datetime", firstGoal.completedAt!);
   await goalCard.locator(".goal-list-toggle").click();
   await expect(goalCard.locator(`[data-chain-id="${rootId}"] .goal-header time.completion-time-label`)).toHaveAttribute("datetime", child.completedAt!);
-  await goalCard.locator(`#project-goal-${goalId}`).click();
+  await goalCard.locator(`#project-goal-detail-${goalId}`).click();
   const dialog = page.getByRole("dialog", { name: "Completion Goal", exact: true });
   await expect(dialog.locator(`.goal-detail-meta time[datetime="${firstGoal.completedAt}"]`)).toBeVisible();
   await expect(dialog.getByRole("tab")).toHaveText(["Description", "Attachments", "Discussion"]);
@@ -81,6 +81,6 @@ export const verifyCompletionFlow = async (page: Page, projectId: string, standa
   await expect(page.locator(`#standalone-task-${standaloneId} time.completion-time-label`)).toHaveAttribute("datetime", nextTask.completedAt!);
   await page.getByRole("tab", { name: "Goals", exact: true }).click();
   await expect(goalCard.locator(".goal-list-row time.completion-time-label")).toHaveAttribute("datetime", nextGoal.completedAt!);
-  await goalCard.locator(`#project-goal-${goalId}`).click();
+  await goalCard.locator(`#project-goal-detail-${goalId}`).click();
   await expect(page.getByRole("dialog", { name: "Completion Goal", exact: true }).locator(`.goal-detail-meta time[datetime="${nextGoal.completedAt}"]`)).toBeVisible();
 };

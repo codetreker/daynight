@@ -143,7 +143,7 @@ func microsoftIdentityOwnership(t *testing.T, pool *pgxpool.Pool) string {
 	if err := pool.QueryRow(t.Context(), `SELECT jsonb_build_object(
  'teams',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM teams t),
  'members',(SELECT jsonb_agg(to_jsonb(t) ORDER BY team_id,user_id) FROM team_members t),
- 'projects',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM projects t),
+ 'projects',(SELECT jsonb_agg(to_jsonb(t)-'tag_catalog_epoch' ORDER BY id) FROM projects t),
  'ownership',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id) FROM project_ownership t),
  'grants',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id,user_id) FROM project_grants t),
  'sessions',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM sessions t),

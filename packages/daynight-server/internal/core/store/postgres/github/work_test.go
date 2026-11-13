@@ -343,3 +343,69 @@ func TestGitHubSignalAndProjectInvalidationErrorsRollback(t *testing.T) {
 		t.Fatalf("invalidation: %+v %v", c, err)
 	}
 }
+
+func TestDuePendingAdmission(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	tx := begin(t, db, pgx.TxOptions{})
+	other := uuid.NewString()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	w := github.NewWriter(tx, id)
+	if due, err := w.HasDuePending(ctx, now); err != nil || due {
+		t.Fatalf("no connection: due=%v error=%v", due, err)
+	}
+	mustExec(t, tx, `INSERT INTO project_github(project_id,generation,enabled,app_id,installation_id,repository_id) VALUES($1,2,true,10,20,30),($2,2,true,10,20,30)`, id, other)
+	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES ($1,1,1,$3,'old',$4,$4),($1,2,2,$5,'future',$4,$6),($2,3,2,$7,'other',$4,$4)`, id, other, uuid.NewString(), now, uuid.NewString(), now.Add(time.Microsecond), uuid.NewString())
+	if due, err := w.HasDuePending(ctx, now); err != nil || due {
+		t.Fatalf("old generation, future and other Project: due=%v error=%v", due, err)
+	}
+	if due, err := w.HasDuePending(ctx, now.Add(time.Microsecond)); err != nil || !due {
+		t.Fatalf("inclusive due time: due=%v error=%v", due, err)
+	}
+}
+
+func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	setup := begin(t, db, pgx.TxOptions{})
+	mustExec(t, setup, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
+	mustExec(t, setup, `INSERT INTO project_github(project_id,generation,enabled,app_id,installation_id,repository_id) VALUES($1,1,true,10,20,30)`, id)
+	if err := setup.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	admission := begin(t, db, pgx.TxOptions{})
+	w := github.NewWriter(admission, id)
+	if due, err := w.HasDuePending(ctx, time.Now()); err != nil || due {
+		t.Fatalf("initial admission: due=%v error=%v", due, err)
+	}
+	signal := begin(t, db, pgx.TxOptions{})
+	var pid int
+	if err := signal.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	now := time.Now().UTC()
+	go func() {
+		_, err := github.NewSignalWriter(signal).SignalPullRequest(ctx, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: uuid.NewString(), DeliveryID: "signal", ReceivedAt: now, NextAttemptAt: now})
+		result <- err
+	}()
+	waitForLock(t, db, pid)
+	if err := admission.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("signal remained blocked after admission completed")
+	}
+	if err := signal.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	check := begin(t, db, pgx.TxOptions{})
+	if due, err := github.NewWriter(check, id).HasDuePending(ctx, now); err != nil || !due {
+		t.Fatalf("committed signal: due=%v error=%v", due, err)
+	}
+}

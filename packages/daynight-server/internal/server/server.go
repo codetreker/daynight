@@ -5,10 +5,12 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
+	assistanttaskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/assistanttask"
 	attachmenthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/attachment"
 	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
 	bothttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/bot"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/cors"
+	githubhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	mcphttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/mcp"
 	oauthhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth"
@@ -97,6 +99,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
+	githubhttp.RegisterReadRoutes(mux, app.GitHubRead, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	teamhttp.RegisterDirectMemberRoutes(mux, app.DirectMembers, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)
@@ -119,6 +122,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	sessions := app.Sessions
 	deletions := app.BotDeletions
 	relay := sessionhttp.NewRoutes(sessions, auth, logger, app.TaskHistory)
+	assistanttaskhttp.RegisterRoutes(mux, app.AssistantTasks, auth, logger)
 	bothttp.RegisterRoutes(mux, app.Bots, deletions, auth, logger)
 	bothttp.RegisterRuntimeRoutes(mux, sessions, deletions, auth, relay, logger)
 	relay.RegisterRoutes(mux)

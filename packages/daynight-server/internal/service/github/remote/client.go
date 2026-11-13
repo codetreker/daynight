@@ -52,7 +52,7 @@ func newClient(appID int64, key *rsa.PrivateKey, origin string, transport http.R
 		return nil, errors.New("invalid github API origin")
 	}
 	c := &Client{base: base}
-	c.http = &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	c.http = &http.Client{Transport: checkpointTransport{base: transport}, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 || !c.sameOrigin(req.URL) {
 			return errors.New("github redirect outside API origin or too many redirects")
 		}
@@ -76,10 +76,8 @@ func (c *Client) request(ctx context.Context, method string, target *url.URL, au
 	if !c.sameOrigin(target) {
 		return nil, errors.New("github URL outside API origin")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		cancel()
 		return nil, errors.New("invalid github request")
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -90,14 +88,18 @@ func (c *Client) request(ctx context.Context, method string, target *url.URL, au
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		cause := ctx.Err()
-		cancel()
-		if cause != nil {
+		var checkpoint *checkpointError
+		if errors.As(err, &checkpoint) {
+			return nil, checkpoint
+		}
+		if cause := ctx.Err(); cause != nil {
 			return nil, cause
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, context.DeadlineExceeded
 		}
 		return nil, errors.New("github request failed")
 	}
-	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
 }
 

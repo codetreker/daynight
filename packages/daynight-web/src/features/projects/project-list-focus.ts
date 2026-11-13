@@ -23,7 +23,7 @@ export const focusProjectList = (view: TaskView, origin: ProjectListOrigin | nul
   if (view === 'goals' && list !== null && sourceGoalId != null) {
     const goal = [...list.querySelectorAll<HTMLElement>('[data-goal-id]')].find((item) => item.dataset.goalId === sourceGoalId);
     if (target?.kind === 'goal' && focusVisible(goal?.querySelector<HTMLElement>('.goal-list-graph'))) return true;
-    if (focusVisible(goal?.querySelector<HTMLElement>('.goal-list-toggle')) || focusVisible(goal?.querySelector<HTMLElement>('.goal-list-title'))) return true;
+    if (focusVisible(goal?.querySelector<HTMLElement>('.goal-list-toggle')) || focusVisible(goal?.querySelector<HTMLElement>('.goal-list-detail'))) return true;
   }
   if (view === 'goals' && list !== null && witness !== null) {
     const representative = target?.kind === 'chain' && target.witnessTaskId === witness ? target.rootId : index?.componentByTask.get(witness);
