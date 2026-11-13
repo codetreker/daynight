@@ -201,6 +201,13 @@ Worker administrator checks consume access, while claim ownership and acquisitio
 assignment requirements retain their separate rules.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
+Project members manage the tag catalog through `/api/v1/projects/{projectId}/tags`:
+list, create, read, rename and confirmed deletion use stable IDs and original
+versions. List cursors bind the project, principal, query, page size and catalog
+epoch; `/tags/resolve` validates the complete selection within a bounded response.
+Visible Task and Goal usage counts are snapshot hints, while deletion removes all
+associations under the Project write lock. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
+and [server design](../../docs/design/daynight-server.md#领域模型与存储结构) describe the contract and implementation.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph, attachment and Worker route. The production Web entry separates
 the public introduction at `/`, the zero-API guide at `/setup`, and the existing
@@ -3610,3 +3617,7 @@ success, do not restore the old release writer. Existing Web readers accept a
 missing worker, but an old CLI cannot validate the new release response. The
 migration preserves task status, timing, ordinary materials and Session/archive
 history while updating affected task versions and project cache epochs.
+
+## Account in-progress Task reads
+
+`GET /api/v1/me/in-progress-tasks` returns a lightweight, authenticated cross-project page of the caller's in-progress ordinary Tasks, with complete project counts, actual Parent Goal context and existing Session observations. The [API contract](../../docs/spec/daynight-personal-in-progress-tasks.md) defines ordering, cursor, revision, errors and partial observation semantics. The [server design](../../docs/design/daynight-server.md#账号进行中任务读取) describes snapshot and authorization checks and the cost of aggregating all Task history in active projects.

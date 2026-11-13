@@ -121,7 +121,7 @@ func (s *Observations) ObserveGraph(ctx context.Context, principal model.Princip
 		return ObservedGraph{}, err
 	}
 	var result ObservedGraph
-	var tasks []model.Task
+	var tasks []executionIdentity
 	var selected store.SnapshotScope
 	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.authorizeObservation(ctx, snapshot, principal, projectID); err != nil {
@@ -143,17 +143,17 @@ func (s *Observations) ObserveGraph(ctx context.Context, principal model.Princip
 		if err != nil {
 			return err
 		}
-		tasks = make([]model.Task, len(graph.Tasks))
+		tasks = make([]executionIdentity, len(graph.Tasks))
 		for i, task := range graph.Tasks {
-			tasks[i] = model.Task{ID: task.ID, ProjectID: projectID, Version: task.Version, Status: task.Status}
+			tasks[i] = executionIdentity{ID: task.ID, Version: task.Version}
 		}
-		selected, err = loadSelectedSources(ctx, snapshot, projectID, tasks)
+		selected, err = loadSelectedExecutionSources(ctx, snapshot, projectID, tasks)
 		return err
 	})
 	if err != nil {
 		return ObservedGraph{}, fmt.Errorf("observe task graph: %w", err)
 	}
-	result.Sessions, result.Partial, err = s.observeBatch(ctx, selected, principal, projectID, tasks, result.ObservedAt)
+	result.Sessions, result.Partial, err = s.observeExecutionBatch(ctx, selected, principal, projectID, tasks, result.ObservedAt)
 	if err != nil {
 		return ObservedGraph{}, err
 	}

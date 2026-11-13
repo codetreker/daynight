@@ -2455,6 +2455,7 @@ func TestRootSharedAuthenticationAssembly(t *testing.T) {
 		"granthttp.RegisterRoutes":                2,
 		"projecthttp.NewMembershipRoutes":         1,
 		"projecthttp.RegisterRoutes":              2,
+		"taghttp.RegisterRoutes":                  2,
 		"teamhttp.RegisterRoutes":                 2,
 		"workerhttp.RegisterRoutes":               2,
 		"prompthttp.RegisterRoutes":               2,

@@ -7,7 +7,11 @@
 .goal-list-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 8px; background: #f4f3fd; color: #6b65bc; font-size: 20px; }
 .goal-list-main { flex: 1; min-width: 0; }
 .goal-list-title { display: block; max-width: 100%; font-size: 13px; font-weight: 650; line-height: 1.5; overflow-wrap: anywhere; }
+.goal-list-main .goal-title-line { align-items: baseline; }
+.goal-list-main .goal-list-title { min-width: 0; }
 .goal-list-meta { display: flex; gap: 6px 12px; flex-wrap: wrap; margin-top: 3px; font-size: 10px; color: var(--task-helper); }
+.goal-list-meta > span:empty { display: none; }
+.goal-list-meta > span { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .goal-list-meta .completion-time-label { margin-inline-start: 0; }
 .goal-list-progress { flex: none; width: 145px; font-size: 10px; color: var(--task-helper); text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
