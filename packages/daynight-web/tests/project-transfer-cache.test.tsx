@@ -487,3 +487,34 @@ it.each(["success", "cleanup failure"] as const)("keeps a later draft through ac
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
   } finally { admission.resolve(); storageFailure.mockRestore(); unsubscribe(); scope.dispose(); }
 }, 20000);
+
+it("retains transfer presentation after leaving and returning to its section", async () => {
+  window.history.replaceState(null, "", `/projects/${projectId}/settings`);
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const write = Promise.withResolvers<Response>(), transferred = vi.fn(), observe = vi.fn();
+  const fetcher = vi.fn(async (url: string) => {
+    if (url.endsWith("/access")) return json(access);
+    if (url.endsWith("/transfer-preview")) return json({ sourceTeam: source, targetTeam: { ...target, version: 1n }, ownership: access.ownership, actorRole: "admin" });
+    if (url.endsWith("/transfer")) return write.promise;
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher);
+  const subject = (active: boolean, generation: number) => <ProjectAccessBoundary projectId={projectId} initialRead><ProjectOwnership projectId={projectId} projectName="Project" active={active} onRoute presentationGeneration={generation} onStateChange={observe} onTransferred={transferred} /></ProjectAccessBoundary>;
+  try {
+    const view = createLocaleRender("en")(subject(true, 0), { taskCache: { scope } });
+    const opener = await screen.findByRole("button", { name: "Transfer project" }); await waitFor(() => expect(opener).toBeEnabled()); fireEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+    expect(observe).toHaveBeenLastCalledWith({ dirty: false, pending: false, needsAttention: false });
+    fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target.id } });
+    expect(observe).toHaveBeenLastCalledWith({ dirty: true, pending: false, needsAttention: false });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    const confirm = within(dialog).getByRole("button", { name: "Confirm transfer" }); await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1));
+    expect(observe).toHaveBeenLastCalledWith({ dirty: true, pending: true, needsAttention: false });
+    view.rerender(subject(false, 1)); view.rerender(subject(true, 1));
+    await act(async () => write.resolve(json({ projectId, changed: true, sourceTeam: source, ownerTeam: target, ownership: { teamId: target.id, version: 2n }, actorAccess: { ...access, ownerTeam: target, ownership: { teamId: target.id, version: 2n } } })));
+    await waitFor(() => expect(transferred).toHaveBeenCalledOnce());
+    expect(transferred.mock.calls[0]![1].ownsEditor()).toBe(false);
+    expect(screen.getByRole("dialog", { name: "Transfer project" })).toBeVisible();
+  } finally { scope.dispose(); }
+});

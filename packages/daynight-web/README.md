@@ -769,9 +769,9 @@ active Worker claims; those observations are not DELETE conditions. Names with
 control characters use reversible JSON escaping. A confirmed receipt is retained
 independently of local completion and preserves a success notice across navigation. During an admission pause, deletion settles
 locally without cleanup, automatic reads or navigation. On admission, cleanup
-uses the original cache generation. Withdrawal is not started, and navigation
-and dialog closure are skipped, when the submitted dialog, input or route has
-since changed. If persistent cleanup fails after withdrawal, retry targets the
+uses the original cache generation. A confirmed receipt withdraws only the original admitted cache generation.
+Navigation and dialog closure are skipped when the submitted dialog, input,
+section or route has since changed. If persistent cleanup fails after withdrawal, retry targets the
 matching user, Project, user fence and denied generation without broadcasting
 withdrawal again or resending DELETE. The denial may use a different ticket;
 a stale ticket cannot clear a newer generation. Cleanup and navigation

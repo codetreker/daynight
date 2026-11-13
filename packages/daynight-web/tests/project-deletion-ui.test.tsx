@@ -146,7 +146,7 @@ it("retains a confirmed receipt and the dialog during pause without cleanup or r
 it("does not clear a newer confirmation input when an older receipt is finalized", async () => {
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
   const pending = Promise.withResolvers<Response>();
-  const revoke = vi.spyOn(scope, "revokeProject");
+  const revoke = vi.spyOn(scope, "revokeProject").mockResolvedValue(false);
   const complete = vi.fn<(receipt: ProjectDeletionReceipt, finish: (signal?: AbortSignal) => Promise<void | "skipped">) => void>();
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
     if (url.endsWith("/access")) return Promise.resolve(json(access));
@@ -166,7 +166,7 @@ it("does not clear a newer confirmation input when an older receipt is finalized
     await waitFor(() => expect(input).toBeEnabled());
     fireEvent.change(input, { target: { value: "new input" } });
     await act(async () => { await complete.mock.calls[0]![1](); });
-    expect(revoke).not.toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledOnce();
     expect(screen.getByRole("dialog", { name: "Delete this project?" })).toBeVisible();
     expect(input).toHaveValue("new input");
   } finally { scope.dispose(); }
@@ -175,7 +175,7 @@ it("does not clear a newer confirmation input when an older receipt is finalized
 it("does not close a reopened dialog when the earlier deletion is finalized", async () => {
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
   const pending = Promise.withResolvers<Response>();
-  const revoke = vi.spyOn(scope, "revokeProject");
+  const revoke = vi.spyOn(scope, "revokeProject").mockResolvedValue(false);
   const complete = vi.fn<(receipt: ProjectDeletionReceipt, finish: (signal?: AbortSignal) => Promise<void | "skipped">) => void>();
   const fetcher = vi.fn((url: string, init?: RequestInit) => {
     if (url.endsWith("/access")) return Promise.resolve(json(access));
@@ -196,7 +196,7 @@ it("does not close a reopened dialog when the earlier deletion is finalized", as
     const input = within(second).getByLabelText("Enter the project name to confirm");
     fireEvent.change(input, { target: { value: "new input" } });
     await act(async () => { await complete.mock.calls[0]![1](); });
-    expect(revoke).not.toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledOnce();
     expect(screen.getByRole("dialog", { name: "Delete this project?" })).toBeVisible();
     expect(input).toHaveValue("new input");
   } finally { scope.dispose(); }
@@ -683,4 +683,37 @@ it('keeps an accepted deletion preview when an older Project read returns 404', 
     expect(revoke).not.toHaveBeenCalled();
     expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
   } finally { scope.dispose(); }
+});
+
+it("retains deletion confirmation after leaving and returning to its section", async () => {
+  browserNavigation().dispose(); window.history.replaceState(null, "", `/projects/${projectId}/settings`);
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const revoke = vi.spyOn(scope, "revokeProject").mockResolvedValue(true);
+  const write = Promise.withResolvers<Response>();
+  const complete = vi.fn<(receipt: ProjectDeletionReceipt, finish: (signal?: AbortSignal) => Promise<void | "skipped">, location: unknown, canFinalize: () => boolean) => void>(), observe = vi.fn();
+  const fetcher = vi.fn((url: string, init: RequestInit = {}) => {
+    if (url.endsWith("/access")) return Promise.resolve(json(access));
+    if (url.includes("/deletion-preview")) return Promise.resolve(json(preview));
+    if (url === `/api/v1/projects/${projectId}` && init.method === "DELETE") return write.promise;
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher);
+  const Subject = ({ active, generation }: { active: boolean; generation: number }) => {
+    const guard = useProjectManagementGuard();
+    return <ProjectAccessBoundary projectId={projectId} initialRead><ProjectDeletion projectId={projectId} active={active} onRoute unavailable={false} guard={guard} presentationGeneration={generation} onStateChange={observe} onDeleted={complete} /></ProjectAccessBoundary>;
+  };
+  const view = render(<Subject active generation={0} />, { taskCache: { scope } });
+  const dialog = await open();
+  expect(observe).toHaveBeenLastCalledWith({ dirty: false, pending: false, needsAttention: false });
+  confirm(dialog);
+  await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1));
+  expect(observe).toHaveBeenLastCalledWith({ dirty: true, pending: true, needsAttention: false });
+  view.rerender(<Subject active={false} generation={1} />); view.rerender(<Subject active generation={1} />);
+  await act(async () => write.resolve(json({ projectId, deleted: true })));
+  await waitFor(() => expect(complete).toHaveBeenCalledOnce());
+  expect(complete.mock.calls[0]![3]()).toBe(false);
+  await act(async () => { await complete.mock.calls[0]![1](); });
+  expect(revoke).toHaveBeenCalledOnce();
+  expect(screen.getByRole("dialog", { name: "Delete this project?" })).toBeVisible();
+  scope.dispose();
 });

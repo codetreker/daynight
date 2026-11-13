@@ -16,7 +16,7 @@ import { CredentialClockProvider } from "./CredentialLastUse";
 
 type AccountPageProps = { readonly user: CurrentUser; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly active?: boolean; readonly onRetentionChange?: (retain: boolean) => void };
 
-export const usePromptNavigation = (target: { readonly scope: 'user' } | { readonly scope: 'project'; readonly projectId: string }, state: { readonly dirty: boolean; readonly unavailable: boolean; readonly abandon: () => void }, options: { readonly visible?: boolean; readonly onContinueEditing?: () => void } = {}) => {
+export const usePromptNavigation = (target: { readonly scope: 'user' } | { readonly scope: 'project'; readonly projectId: string }, state: { readonly dirty: boolean; readonly unavailable: boolean; readonly abandon: () => void }, options: { readonly visible?: boolean; readonly onContinueEditing?: () => void; readonly survives?: (destination: URL) => boolean } = {}) => {
   const identity = useTaskCacheScope(), navigation = browserNavigation();
   const projectId = target.scope === 'project' ? target.projectId : null;
   const scope = useMemo<PromptDraftScope>(() => projectId === null ? { kind: 'user-prompt', identity } : { kind: 'project-prompt', identity, projectId }, [identity, projectId]);
@@ -27,10 +27,10 @@ export const usePromptNavigation = (target: { readonly scope: 'user' } | { reado
     const unregister = navigation.register({ scope, signal: identity.signal,
       isDirty: () => !identity.isInvalidated && !current.current.unavailable && current.current.dirty,
       discard: () => current.current.abandon(),
-      survives: url => { const route = parseAuthRoute(url.pathname, url.search); return projectId === null ? route.kind === 'account' : route.kind === 'settings' && route.projectId === projectId; },
+      survives: url => { if (options.survives) return options.survives(url); const route = parseAuthRoute(url.pathname, url.search); return projectId === null ? route.kind === 'account' : route.kind === 'settings' && route.projectId === projectId; },
     });
     return () => { if (current.current.unavailable) navigation.retireScope(scope); unregister(); };
-  }, [scope, identity, navigation, projectId, state.unavailable]);
+  }, [scope, identity, navigation, projectId, state.unavailable, options.survives]);
   const decision = useSyncExternalStore(navigation.subscribeDecision, navigation.decision);
   const confirming = decision?.drafts.some(draft => draft.scope === scope) === true;
   useLayoutEffect(() => {

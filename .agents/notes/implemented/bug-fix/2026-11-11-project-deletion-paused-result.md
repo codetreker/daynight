@@ -17,9 +17,9 @@ The existing deletion operation and result owners retain the original user,
 Project, operation, dispatch and receipt facts. They settle the local operation
 without waiting for presentation admission, preserving confirmed, rejected,
 undispatched and dispatched-but-unknown outcomes. Publication and cleanup
-remain subject to the original identity and resource admission. Withdrawal is
-not started, and dialog closure and navigation are skipped, when the submitted
-editor revision or location no longer matches. If persistent cleanup fails after
+remain subject to the original identity and resource admission. Withdrawal uses the original admitted cache generation even if the presentation
+has changed. Dialog closure and navigation still require the submitted editor
+revision and location to match. The [settings workspace decision](../architecture/2026-11-13-project-settings-workspace.md) separates section presentation from this security cleanup. If persistent cleanup fails after
 withdrawal, retry checks the original user, Project, user fence and denied
 generation without requiring the same ticket object or sending a second
 withdrawal notification; a stale ticket cannot clear a newer generation.
@@ -43,5 +43,5 @@ interfere with newer user activity.
 A confirmed receipt survives local publication or cleanup failure, and an
 unknown dispatched deletion is not replayed. A temporary pause can later release
 the same result; until admission returns, it does not start cleanup, reads or
-navigation. Generation and editor checks can leave newer state intact. This
+navigation. Generation checks leave newly admitted content intact, while editor checks protect newer presentation. This
 decision applies to Project deletion, not other operation owners.
