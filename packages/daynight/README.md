@@ -217,6 +217,8 @@ daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped
 daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
+daynight task tag add <task-id> <tag-id> [--if-version <version>] [--project <project-id>]
+daynight task tag remove <task-id> <tag-id> [--if-version <version>] [--project <project-id>]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--force] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--force] [--project <project-id>]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
@@ -880,7 +882,7 @@ Implement OAuth sign-in for the web workspace. Deliver the callback flow and
 visible failure recovery; preserve the existing session and provider rules.
 Complete when a valid login opens the workspace and a rejected login can retry.'
 daynight task create --title "Build the sign-in page" --depends-on <design-task-id> --external-depends-on <authentication-task-id>
-daynight task create --type goal --title "Improve installation"
+daynight task create --type goal --title "Improve installation" --tag <tag-id>
 daynight task create --type goal --title "Unassigned Goal" --clear-assigned-to
 daynight task create --title "Document prerequisites" --parent <goal-id> --status todo
 daynight task ready
@@ -903,6 +905,10 @@ daynight task remove-property <task-id> pullRequests --if-version <observed-vers
 daynight task update <task-id> --parent <goal-id> --if-version <version>
 daynight task update <task-id> --parent none --if-version <version>
 daynight task update <task-id> --description=
+daynight task update <task-id> --tag <tag-id> --tag <another-tag-id> --if-version <version>
+daynight task update <task-id> --clear-tags --if-version <version>
+daynight task tag add <task-id> <tag-id> --if-version <version>
+daynight task tag remove <task-id> <tag-id> --if-version <version>
 daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
 daynight task update <task-id> --required-platform macos --if-version <version>
@@ -917,6 +923,21 @@ daynight task graph <task-id> --json
 daynight task graph <task-id> --depends-only
 daynight task graph <task-id> --depends-only --json
 ```
+
+Task and Goal creation accepts repeated `--tag <UUID>` and writes the selected
+set atomically with the other fields; omission creates an entry without tags.
+Update accepts repeated `--tag` to replace the complete set, or `--clear-tags`
+to empty it. These options conflict; omitting both preserves the existing set.
+IDs are normalized, deduplicated and sorted. Tags belong to the selected Project;
+parent and child associations are independent.
+
+`task tag add` and `remove` read the current set and submit its replacement with
+the original Task version, even when the resulting set is unchanged. An explicit
+`--if-version` must match the read and is never replaced by a newer version;
+otherwise the read version is used. A conflict requires a fresh decision. If a
+write times out or its outcome is unknown, read the Task to inspect its current
+state; the command does not replay the write or assume rollback. Successful
+receipts are checked against the submitted tag IDs.
 
 `task graph` requires a task ID. It returns every member of that task's ordinary
 undirected dependency component, including completed tasks and sibling branches,

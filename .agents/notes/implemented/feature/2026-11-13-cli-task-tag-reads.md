@@ -27,5 +27,5 @@ are unnecessary because each Task response already includes the current names.
 ## Consequences
 
 Older responses without the required field fail explicitly. Search remains a
-lean projection, and paginated reads publish no partial results on failure. Tag
-association and filter commands remain separate capabilities.
+lean projection, and paginated reads publish no partial results on failure. Tag association writes use the [CLI association decision](2026-11-13-cli-task-tag-associations.md);
+filter commands remain a separate capability.
