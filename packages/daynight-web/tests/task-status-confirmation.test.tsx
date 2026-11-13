@@ -4,7 +4,7 @@ import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getTask, setTaskStatus } from '../src/api/client';
+import { ApiError, getTask, setTaskStatus } from '../src/api/client';
 import type { Project, TaskDetail, TaskGraph, TaskStatus, WorkerClaim } from '../src/api/types';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/task-detail/TaskDetailDialog';
@@ -15,6 +15,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskStatus: vi.fn() }; });
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({ TaskAttachmentsPanel: () => <section aria-label="Attachment materials"><input aria-label="Attachment draft" defaultValue="" /></section> }));
 vi.mock('../src/features/task-detail/attachments/useAttachments', () => ({ useAttachments: () => ({ select: vi.fn() }) }));
+vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onChange }: { value: readonly { id: string; name: string }[]; onChange: (value: readonly { id: string; name: string }[]) => void }) => <input aria-label="Tag draft" value={value[0]?.name ?? ''} onChange={(event) => onChange([{ id: '30000000-0000-4000-8000-000000000001', name: event.currentTarget.value }])} /> }));
 const projectId = '10000000-0000-4000-8000-000000000001'; const taskId = '20000000-0000-4000-8000-000000000001'; const dependencyId = '20000000-0000-4000-8000-000000000002';
 const time = '2026-10-22T00:00:00Z'; const later = '2026-10-22T00:01:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: 'Status project', repoUrl: 'https://example.com/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
@@ -44,6 +45,26 @@ const open = async (detail = source()) => {
 };
 const select = (dialog: HTMLElement, current: TaskStatus, target: TaskStatus) => { fireEvent.click(within(dialog).getByRole('button', { name: labels[current] })); fireEvent.click(within(dialog).getByRole('menuitemradio', { name: labels[target] })); return screen.getByRole('alertdialog', { name: 'Set task status' }); };
 describe('status menu and reviewed confirmation', () => {
+  it('keeps the tag draft during a refresh failure and discards it on confirmed Task access loss', () => {
+    const detail = source(); const noOp = vi.fn();
+    const state = { detail, status: 'ready', error: null, historyGeneration: 1, displayRequiresFreshRead: false,
+      mutation: { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null },
+      canSetTags: true, setTags: noOp, reconcile: noOp } as unknown as ReturnType<typeof taskDetailHook.useTaskDetail>;
+    const hook = vi.spyOn(taskDetailHook, 'useTaskDetail').mockReturnValue(state);
+    const reading = vi.spyOn(taskReading, 'TaskDetailReading').mockImplementation(({ overview }) => <>{overview(null)}</>);
+    const props: TaskDetailDialogProps = { projectId, taskId, snapshot: snapshot(detail), onClose: noOp, onRestoreFocus: noOp, onRefreshGraph: noOp, onSelectTask: noOp };
+    const view = renderWithLocale(<TaskDetailDialog {...props} />, { locale: 'en', container: root, taskCache: { scope: world.scope } });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Tag draft' }), { target: { value: 'Unsubmitted' } });
+    hook.mockReturnValue({ ...state, error: new ApiError('network') }); view.rerender(<TaskDetailDialog {...props} />);
+    expect(screen.getByRole('textbox', { name: 'Tag draft' })).toHaveValue('Unsubmitted');
+    hook.mockReturnValue({ ...state, error: new ApiError('server', 403, 'forbidden') }); view.rerender(<TaskDetailDialog {...props} />);
+    expect(screen.queryByRole('textbox', { name: 'Tag draft', hidden: true })).toBeNull();
+    hook.mockReturnValue(state); view.rerender(<TaskDetailDialog {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+    expect(screen.getByRole('textbox', { name: 'Tag draft' })).toHaveValue('');
+    hook.mockRestore(); reading.mockRestore();
+  });
   it('opens beside the platform selector on either tab and preserves attachment drafts through cancellation and Escape', async () => {
     const { dialog, props } = await open(); const opener = within(dialog).getByRole('button', { name: 'To do' });
     expect(opener.closest('.task-detail-header')).toBeNull();
@@ -79,8 +100,8 @@ describe('status menu and reviewed confirmation', () => {
       historyGeneration: 1, displayRequiresFreshRead: false, assignmentUncertain: false, sessionCurrent: false,
       canDisplayAssignee: true, canDisplayStatus: true, canDisplayDelete: true, canDisplayAgentPermission: true, canDisplayRequiredPlatform: true, canDisplayWithdrawClaim: false,
       canUnpause: false, canWithdrawClaim: false, canDelete: true, canSetAssignedTo: true, canSetRequiredPlatform: true, canSetAgentPermission: true, canSetStatus: true,
-      canSetParent: true, canEditGoal: false,
-      retry: noOp, unpause: noOp, deleteTask: noOp, withdrawClaim: noOp, setStatus, setAgentPermission: noOp, setAssignedTo: noOp, setRequiredPlatform: noOp, setParent: noOp, editGoal: noOp, reconcile: noOp,
+      canSetParent: true, canEditGoal: false, canSetTags: true,
+      retry: noOp, unpause: noOp, deleteTask: noOp, withdrawClaim: noOp, setStatus, setAgentPermission: noOp, setAssignedTo: noOp, setRequiredPlatform: noOp, setParent: noOp, editGoal: noOp, setTags: noOp, reconcile: noOp,
     } as const;
     vi.spyOn(taskDetailHook, 'useTaskDetail').mockReturnValue(state);
     vi.spyOn(taskReading, 'TaskDetailReading').mockReturnValue(<></>);

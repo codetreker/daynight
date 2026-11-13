@@ -6,6 +6,8 @@ import { canonicalId } from "../../api/parse.js";
 import { migratePendingContent, migratePendingEntryPointers } from "./pending-content.js";
 import { assertNoOrphanTimelineSource, importControllerTimeline } from "./content/migration.js";
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
+import { initializeOutboxAccounting } from "./outbox-migration.js";
+import { readControllerOutboxByteLength } from "./outbox-store.js";
 
 const steps = loadSqliteSequence(new URL("./sqlite/journal/", import.meta.url));
 const [baseline, ...upgrades] = steps;
@@ -19,6 +21,7 @@ const validateVersioned = (db: Database.Database, version: number): undefined =>
   if (expected === undefined) throw new Error("Unsupported Controller journal schema version.");
   const actual = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
   if (actual.length !== expected.length || actual.some((row, index) => row.type !== expected[index]!.type || row.name !== expected[index]!.name || row.sql === null || expected[index]!.sql === null || normalized(row.sql) !== normalized(expected[index]!.sql!))) throw new Error("Controller journal does not match its declared schema version.");
+  if (version >= 11) readControllerOutboxByteLength(db);
 };
 
 export type JournalMigrationContext = {
@@ -41,6 +44,7 @@ export const controllerJournalFormatForMigration = (context: (db: Database.Datab
     migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database, source: SqliteSource): undefined => {
       assertWrite(db, Buffer.byteLength(step.sql) + 16384);
       if (step.version === 10) return importControllerTimeline(db, context(db), step.sql);
+      if (step.version === 11) return initializeOutboxAccounting(db, step.sql);
       if (step.version !== 6 && step.version !== 8) { db.exec(step.sql); return; }
       const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
       if (row === undefined) {

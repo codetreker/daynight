@@ -24,7 +24,7 @@
 | Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
 | Worker 主索引与清理调度 | `commands/worker/sqlite/` | `005-baseline.sql`、`006-cleanup-schedules.sql`、`007-resource-cleanup-intent.sql` |
 | Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql`、`002-resource-observations.sql`、`003-orchestration-blockers.sql` |
-| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql` |
+| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql`、`006-pending-content.sql`、`007-image-input.sql`、`008-publication.sql`、`009-message-origins.sql`、`010-timeline-content.sql`、`011-outbox-accounting.sql` |
 | Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
 
 文件名遵守 `NNN-description.sql`：数字前缀至少三位，同一目录使用相同宽度的补零；版本数值为 1–2147483647；后缀是以小写 ASCII 字母开头、由小写字母或数字组成且可用单个 `-` 分段的名称，扩展名必须为小写 `.sql`。首版本可以大于 1，之后必须连续。顶层 SQL 候选中的非法名称、非普通文件、重复版本、宽度不一致、空 SQL 链和中间缺号都在用户库打开前失败；例如大写 `.SQL` 和名称以 `.sql` 结尾的目录会进入候选检查并被拒绝，而 `README.txt`、`.DS_Store` 及普通非 SQL 目录不进入主链。
@@ -41,7 +41,7 @@
 
 SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](../../.agents/notes/archived/architecture/2026-10-30-cli-sqlite-migrations.md)。
 
-Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。原 journal 格式拥有者构造完整 schema snapshots 并执行同一版本校验；010 的领域 callback 先完整验证并捕获原已提交指针，再在同一迁移事务执行包含旧索引删除的完整 DDL、重新核对文件、导入正文并核对统计。DDL 只执行一次；失败回滚恢复原索引。普通正文读写统一消费当前 SQL 行，旧文件解码器仅供编号迁移。当前行、历史源验证、局部峰值预留与停止维护由 [SQL 正文设计](session-sqlite-content.md)拥有。
+Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。原 journal 格式拥有者构造完整 schema snapshots 并执行同一版本校验；010 的领域 callback 先完整验证并捕获原已提交指针，再在同一迁移事务执行包含旧索引删除的完整 DDL、重新核对文件、导入正文并核对统计。DDL 只执行一次；失败回滚恢复原索引。普通正文读写统一消费当前 SQL 行，旧文件解码器仅供编号迁移。当前行、历史源验证、局部峰值预留与停止维护由 [SQL 正文设计](session-sqlite-content.md)拥有。011 在同一许可、预留和迁移事务中建立 `outbox_totals`，对旧 outbox 编码文本逐行计算 UTF-8 字节并一次初始化；版本和总量一起提交或回滚。正常重开不重复初始化。容量与 ACK 计量由 [Controller 协议](task-session-protocol.md)拥有。
 
 ## 独立版本与起点
 
@@ -50,7 +50,7 @@ Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。�
 | Worker | 七列 tasks 为基线 5；版本 6 增加独立 cleanup_schedules；版本 7 删除 notified/submitted，保留项目、任务、清理身份、期限与重试策略；非零旧详细库 1–4 拒绝 |
 | Review | 基线 1，原 1→2 增加 publication 并保留历史发布语义；当前仍为 2 |
 | Web 执行状态 | 基线 1；版本 2 移除 cleanup 的重复操作回执及资源完成标记，保留意图、期限和操作身份；版本 3 新增独立编排阻塞表 |
-| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换；版本 7 增加图片意图、出现及采集账本，版本 8 增加不可变内容指针与原生输入关联提交，版本 9 保存输入消息来源及原消息关联，版本 10 将当前正文与统计迁回 SQL 并登记旧文件待退休 |
+| Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换，以及正文导出到文件和内容索引的 5→6 转换；版本 7 增加图片意图、出现及采集账本，版本 8 增加不可变内容指针与原生输入关联提交，版本 9 保存输入消息来源及原消息关联，版本 10 将当前正文与统计迁回 SQL 并登记旧文件待退休；版本 11 建立 outbox UTF-8 字节累计值 |
 | Native resume lease | 基线及当前版本 1；任何保留 lease 阻止重置或迁移 |
 
 新库和版本 0 重置使用同一基线及后续步骤，避免另一套最新 DDL 漂移。版本 0 丢弃旧 schema 和数据；已有空版本 0 文件也通过这一路径初始化。文件创建许可 `allowCreate` 只作用于缺失文件，`inspectSqlite` 和 `upgradeSqlite` 没有空库许可参数。非零版本范围为正的 32 位有符号整数，负数、缺步、逆序、未知和较新版本均拒绝并保留原库。非零来源结构检查由本库维护，参考元数据来自上述实际 SQL 链，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局。

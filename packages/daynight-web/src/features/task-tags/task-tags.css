@@ -2,3 +2,14 @@
 .task-tag { min-width: 0; max-width: 100%; padding: 2px 7px; border: 1px solid #e4e7ee; border-radius: 5px; background: #f0f1f6; color: #566176; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .task-tag-empty { color: #556176; font-size: 11px; line-height: 1.4; }
 @media (max-width: 320px) { .task-tag, .task-tag-empty { font-size: 10px; } }
+.task-tags-editor, .tag-picker { min-width: 0; max-width: 100%; }
+.task-tags-editor { margin-top: 10px; }
+.tag-picker { padding: 12px; border: 1px solid #dce0e8; border-radius: 8px; }
+.tag-picker label { display: block; min-width: 0; overflow-wrap: anywhere; }
+.tag-picker input[type="search"], .tag-picker-create input { display: block; box-sizing: border-box; width: 100%; min-width: 0; margin: 5px 0 8px; }
+.tag-picker-options { max-height: 230px; overflow: auto; }
+.tag-picker-options label { padding: 5px 0; }
+.tag-picker-selected, .tag-picker-actions, .tag-picker-create { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 8px 0; }
+.tag-picker-selected button { border: 0; background: transparent; color: inherit; cursor: pointer; }
+.tag-picker-create label { flex: 1 1 130px; }
+.tag-picker p { overflow-wrap: anywhere; }

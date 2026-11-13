@@ -519,7 +519,7 @@ GET 通过原 Session 的历史读取 scope 复核认证、项目访问与 uploa
 
 ### 私有文件与 journal
 
-资源 descriptor、blob、pin 与 lease 由 `content/resource-files.ts` 统一拥有，路径不依赖正文表示。`content/session-content.ts` 组合这一文件拥有者与 journal v10 的 SQL 当前正文；释放资源前在原同步 SQL 读快照中核对当前正文和 `native_input_publication_images`，再由文件拥有者核对 pin/lease。[SQL 正文设计](session-sqlite-content.md)拥有当前行、编号转换、退休和压缩。
+资源 descriptor、blob、pin 与 lease 由 `content/resource-files.ts` 统一拥有，路径不依赖正文表示。`content/session-content.ts` 组合这一文件拥有者与 journal v11 的 SQL 当前正文；释放资源前在原同步 SQL 读快照中核对当前正文和 `native_input_publication_images`，再由文件拥有者核对 pin/lease。[SQL 正文设计](session-sqlite-content.md)拥有当前行、编号转换、退休和压缩。
 
 沿 `controllerExecutionDirectory`，媒体暂存与 pending-content 同属于原 execution，原件不写入 journal 的 Base64 字段。
 

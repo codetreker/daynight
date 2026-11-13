@@ -11,6 +11,7 @@ import { openTimelineStore } from "../../../src/commands/controller/content/time
 import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { observeNativeInput } from "../../../src/commands/controller/recovery.js";
 import type { NativeImageProjectionState, NativeInputPublicationRequest } from "../../../src/commands/controller/media/native-publication-types.js";
+import { nativeInputPublicationFailure } from "../../../src/commands/controller/media/native-publication.js";
 import { canonicalImageJson } from "../../../src/session/image-values.js";
 import { createMarkdownTimelinePipeline } from "../../../src/commands/controller/markdown/pipeline.js";
 import { createMarkdownImageProjector, type MarkdownProjectionState } from "../../../src/commands/controller/markdown/projection.js";
@@ -260,6 +261,40 @@ test("a SQL failure after updating a body rolls back aliases, current rows, tota
     expect(f.timeline()).toEqual(before); expect(f.journal.pendingEvents()).toEqual(events);
     expect(f.db.prepare("SELECT 1 FROM image_occurrences WHERE image_id=?").get(f.imageId)).toBeUndefined();
     expect(f.journal.queryNativeInputAssociation(f.request.identity)).toEqual({ state: "absent" });
+  } finally { f.journal.close(); }
+});
+
+test("an outbox invariant failure retains its rolled-back error outside the unchanged publication receipt", async () => {
+  const f = await fixture();
+  try {
+    f.publishNative();
+    const before = f.timeline(), events = f.journal.pendingEvents(), rows = timelineRows(f.db), totals = timelineTotals(f.db);
+    f.db.exec("DELETE FROM outbox_totals");
+    const result = f.journal.publishNativeInputAssociation(f.request);
+    expect(result).toMatchObject({ state: "not_committed", error: { code: "publication_unavailable" } });
+    expect(Object.keys(result).sort()).toEqual(["error", "state"]);
+    expect(nativeInputPublicationFailure(result)).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-read" }, outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } });
+    expect(timelineRows(f.db)).toEqual(rows); expect(timelineTotals(f.db)).toEqual(totals);
+    expect(f.timeline()).toEqual(before); expect(f.journal.pendingEvents()).toEqual(events);
+    expect(f.db.prepare("SELECT 1 FROM native_input_publications").get()).toBeUndefined();
+    expect(f.journal.queryNativeInputAssociation(f.request.identity)).toEqual({ state: "absent" });
+  } finally { f.journal.close(); }
+});
+
+test("a failed publication rollback retains the original accounting error with unknown outcome", async () => {
+  const f = await fixture();
+  try {
+    f.publishNative(); f.db.exec("DELETE FROM outbox_totals");
+    const exec = f.db.exec.bind(f.db), rollbackFailure = new Error("Controlled publication rollback failure");
+    const injected = vi.spyOn(f.db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw rollbackFailure; return exec(sql); });
+    let result;
+    try { result = f.journal.publishNativeInputAssociation(f.request); } finally { injected.mockRestore(); }
+    expect(result).toMatchObject({ state: "unknown", error: { code: "publication_unknown" } });
+    const failure = nativeInputPublicationFailure(result);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors[0]).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-read" }, outcome: "unknown" });
+    expect((failure as AggregateError).errors[1]).toBe(rollbackFailure);
+    expect(() => f.journal.assertUsable()).toThrow("unresolved transaction");
   } finally { f.journal.close(); }
 });
 

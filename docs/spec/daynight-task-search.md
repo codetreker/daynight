@@ -11,3 +11,5 @@
 每页的权限、标签资格、项目围栏、结果、总数、标签引用和真实上下文来自同一只读快照。续页先检查当前权限；关联标签改名或删除会更新受影响条目的版本；项目完整 typed 资源变化使围栏不同时返回 `409 search_changed`，调用者应重新开始查询。上下文批量读取本页实际父 Goal 的标题；原始表达式、筛选与请求分页限制继续适用。语法错误返回 `400 invalid_search_expression`，`details` 含 `reason`、`position`、`length`；位置从 1 开始按原始 Unicode 字符计数，EOF 长度为 0。`reason` 为 `empty_query`、`expected_operand`、`unexpected_token`、`unclosed_group`、`unexpected_closing_group`、`unclosed_quote`、`empty_phrase`、`invalid_escape`、`unknown_field`、`missing_field_value`、`field_group_not_supported`、`query_too_large`、`too_many_terms` 或 `nesting_too_deep`。未知游标及其绑定范围不一致返回 `400 invalid_input`。独立搜索业务期限为 5 秒，超时返回 `504 search_timeout`；调用方取消、底层故障和事务完成故障保留各自错误语义。
 
 [搜索设计](../design/daynight-task-search.md)说明快照、证据和游标机制。普通 Task 读取及写入仍遵循[服务需求](daynight-server.md)。
+
+MCP `task_search` 使用相同表达式、筛选、排序和续页规则，返回 `projectId`、`total`、`items` 和 `nextCursor`。每项包含 `id`、`type`、`parentId`、`projectId`、`title`、`status`、`context`、`match` 和 `tags`，不含完整描述及其他 Task 元数据。空表达式被拒绝；仅按标签查询使用 `task_list`。无效标签与变化围栏分别返回 `invalid_tag_filter` 和 `search_changed`。

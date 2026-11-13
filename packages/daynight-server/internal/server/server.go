@@ -225,6 +225,11 @@ func registerMCPTools(app *application.Application, entry *mcphttp.Entry, origin
 		func() error { return mcphttp.RegisterThreadTools(entry, app.TaskThreads) },
 		func() error { return mcphttp.RegisterTaskTools(entry, app.Tasks, app.TaskObservations) },
 		func() error { return mcphttp.RegisterTaskQueryTools(entry, app.Tasks, app.TaskObservations) },
+		func() error {
+			return mcphttp.RegisterTaskSearchTool(entry, func(ctx context.Context, principal model.Principal, projectID string, input tasksearch.Request) (tasksearch.Page, error) {
+				return tasksearch.Search(ctx, app.TaskSearch, principal, projectID, input)
+			})
+		},
 		func() error { return mcphttp.RegisterTaskWorkTools(entry, app.TaskObservations) },
 		func() error {
 			return mcphttp.RegisterSessionTools(entry, func(e *mcphttp.Entry) error {

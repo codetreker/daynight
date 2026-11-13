@@ -16,9 +16,10 @@ Admission and maintenance derive the current target from the canonical journal
 format. Stopped settlement retains the original source until opening succeeds,
 then observes the version of the admitted connection. Generic migration reports
 use `journal-migration` and preserve the underlying SQLite phase. Timeline
-retirement, compaction, and admission retain their distinct phases. The current
-format and historical 010 migration remain unchanged. The
-[content design](../../../docs/design/session-sqlite-content.md) owns the
+retirement, compaction, and admission retain their distinct phases. At adoption this did not change the format or historical 010 migration;
+[v11 outbox accounting](2026-11-13-outbox-byte-accounting.md) subsequently
+uses the canonical target and the same reporting. The
+[content design](../../../../docs/design/session-sqlite-content.md) owns the
 operational details.
 
 ## Alternatives
@@ -35,5 +36,5 @@ unknown migration commit would then be reported as a successful format change.
 Reports follow the canonical sequence without a separate version setting and
 preserve the distinction between an observed source and an admitted connection.
 The generic phase name changes for consumers of diagnostic records; the original
-SQLite phase and transaction outcome remain available. This decision does not
-introduce a new journal format or outbox accounting.
+SQLite phase and transaction outcome remain available. At adoption this decision
+did not introduce a new journal format or outbox accounting.

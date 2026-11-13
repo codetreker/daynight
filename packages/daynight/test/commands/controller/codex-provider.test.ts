@@ -41,6 +41,50 @@ test("Codex rejects an empty ordinary message before native dispatch", async () 
   } finally { await provider.close(); }
 });
 
+test("Codex preserves an accounting error raised at the native send boundary", async () => {
+  const log = join(nativeHome, "requests.jsonl");
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back" });
+  let fenced = false;
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {},
+    assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  try {
+    fenced = true;
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { await provider.close(); }
+});
+
+test.each([null, "native-thread"])("Codex startup does not start or resume a thread after its spawn callback fences dispatch (resume=%s)", async resumeNativeSessionId => {
+  const log = join(nativeHome, "requests.jsonl"), failure = new Error("accounting failure"); let fenced = false;
+  const opening = openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {},
+    onSpawn: () => { fenced = true; }, assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  await expect(opening).rejects.toBe(failure);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(requests.filter(request => ["thread/start", "thread/resume"].includes(request.method))).toEqual([]);
+});
+
+test("Codex startup does not persist settings after its seeded state fences dispatch", async () => {
+  const log = join(nativeHome, "requests.jsonl"), failure = new Error("accounting failure"); let fenced = false;
+  const opening = openCodexProvider({ cwd: process.cwd(), model: "selected-model", args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onSpawn: () => {},
+    onState: state => { if (state.nativeSessionId && state.controls) fenced = true; },
+    assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  await expect(opening).rejects.toBe(failure);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(requests.filter(request => request.method === "thread/start")).toHaveLength(1);
+  expect(requests.filter(request => request.method === "thread/settings/update")).toEqual([]);
+});
+
 test("Codex startup waits past an empty settings acknowledgement until the matching native record is complete", async () => {
   const log = join(nativeHome, "requests.jsonl"), rollout = join(nativeHome, "sessions", "rollout.jsonl"), states: ProviderState[] = [];
   let resolved = false, provider: Awaited<ReturnType<typeof openCodexProvider>> | undefined;

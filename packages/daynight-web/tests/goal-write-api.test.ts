@@ -35,3 +35,17 @@ it('reports a confirmed receipt even when a successful response body is invalid'
   await expect(createTask(project, { title: 'Child' }, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
   expect(admission.onWriteConfirmed).toHaveBeenCalledOnce();
 });
+
+it('PATCHes the complete tag set including an explicit empty set and qualifies receipts', async () => {
+  const tag = '40000000-0000-4000-8000-000000000001';
+  const saved = detailFixture(project, task, { version: 9007199254740994n, tags: [{ id: tag, name: 'Tag' }] });
+  const empty = detailFixture(project, task, { version: 9007199254740995n, tags: [] });
+  const fetcher = vi.fn().mockResolvedValueOnce(response(saved, 200)).mockResolvedValueOnce(response(empty, 200)).mockResolvedValueOnce(response(empty, 200)); vi.stubGlobal('fetch', fetcher);
+  await expect(updateTaskFields(project, task, { tagIds: [tag] }, 9007199254740993n, signal(), admission)).resolves.toMatchObject({ tags: [{ id: tag }] });
+  await expect(updateTaskFields(project, task, { tagIds: [] }, 9007199254740994n, signal(), admission)).resolves.toMatchObject({ tags: [] });
+  expect(fetcher.mock.calls[0]![1].body).toBe(`{"version":9007199254740993,"tagIds":["${tag}"]}`);
+  expect(fetcher.mock.calls[1]![1].body).toBe('{"version":9007199254740994,"tagIds":[]}');
+  await expect(updateTaskFields(project, task, { tagIds: [tag] }, 9007199254740994n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+  await expect(updateTaskFields(project, task, { tagIds: [tag, tag] }, 9007199254740994n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+  expect(fetcher).toHaveBeenCalledTimes(3);
+});

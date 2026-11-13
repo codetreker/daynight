@@ -1,12 +1,15 @@
 import { TaskTagList } from '../task-tags/TaskTagList';
+import type { ReactNode } from 'react';
 import type { TaskDetail, TaskTag } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { TaskCopyButton } from '../task-detail/TaskCopyButton';
 import { completionProgress } from '../task-graph/completion-progress';
 import type { TaskScope } from '../task-graph/scope';
 
-export const GoalInformation = ({ detail, tags, scope, graphError, onRefreshGraph }: {
-  readonly detail: Pick<TaskDetail, 'createdAt' | 'updatedAt' | 'tags'>;
+export const GoalInformation = ({ detail, tags, tagsEditor, scope, graphError, onRefreshGraph }: {
+  readonly detail: Pick<TaskDetail, 'id' | 'createdAt' | 'updatedAt' | 'tags'>;
   readonly tags?: readonly TaskTag[];
+  readonly tagsEditor?: ReactNode;
   readonly scope: TaskScope | null;
   readonly graphError?: unknown;
   readonly onRefreshGraph: () => void;
@@ -17,12 +20,13 @@ export const GoalInformation = ({ detail, tags, scope, graphError, onRefreshGrap
   return <aside className="goal-information" aria-label={zh ? 'Goal 信息' : 'Goal information'}>
     <section className="goal-information-section">
       <h3>{zh ? '常规信息' : 'General information'}</h3>
-      <dl className="goal-information-dates">
+      <dl className="goal-information-general">
+        <div><dt>{messages.inspection.detail.goalId}</dt><dd className="task-detail-full-id"><span>{detail.id}</span><TaskCopyButton key={detail.id} value={detail.id} label={messages.inspection.detail.copyGoalId} failure={messages.inspection.detail.copyGoalIdFailed} /></dd></div>
         <div><dt>{zh ? '创建时间' : 'Created'}</dt><dd><time dateTime={detail.createdAt}>{format.dateTime(detail.createdAt)}</time></dd></div>
         <div><dt>{zh ? '修改时间' : 'Modified'}</dt><dd><time dateTime={detail.updatedAt}>{format.dateTime(detail.updatedAt)}</time></dd></div>
       </dl>
     </section>
-    <section className="goal-information-section"><h3>{zh ? '标签' : 'Tags'}</h3><TaskTagList tags={tags ?? detail.tags} /></section>
+    <section className="goal-information-section"><h3>{zh ? '标签' : 'Tags'}</h3>{tagsEditor ?? <TaskTagList tags={tags ?? detail.tags} />}</section>
     <section className="goal-information-section">
       <h3>{zh ? '任务统计' : 'Task statistics'}</h3>
       {scope !== null && progress !== null && <>

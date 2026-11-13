@@ -816,6 +816,8 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
     await user.tab();
+    expect(screen.getByRole('button', { name: '编辑标签' })).toHaveFocus();
+    await user.tab();
     expect(links[0]).toHaveFocus();
     await user.tab();
     expect(links[1]).toHaveFocus();

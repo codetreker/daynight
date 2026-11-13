@@ -6,7 +6,7 @@ import type { CodexRpc } from "./codex-rpc.js";
 import type { NativeReadPolicy } from "./types.js";
 
 type Request = CodexRpc["request"];
-type AuthorityOptions = { cwd: string; request: Request; publish(policy: NativeReadPolicy | null): void; drain?(): Promise<void> };
+type AuthorityOptions = { cwd: string; request: Request; publish(policy: NativeReadPolicy | null): void; drain?(): Promise<void>; assertNativeDispatch?(): void };
 type Startup = { initialized: unknown; remoteControl: unknown; response: unknown; nativeSessionId: string; nativeCwd: string };
 type StartedReceipt = { responded: boolean; response: unknown; notified: boolean; notification: unknown };
 const forbidden = () => Object.assign(new Error("Native Codex local Read authority is unavailable."), { code: "source_forbidden" });
@@ -115,6 +115,7 @@ export class CodexReadAuthority {
     if (this.installed && !unchanged) {
       this.invalidate();
       await this.options.drain?.();
+      this.options.assertNativeDispatch?.();
     }
     let started: StartedReceipt | undefined;
     if (method === "thread/start" && !this.installed && !this.invalid) {

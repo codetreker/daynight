@@ -278,14 +278,43 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
   } };
 }
 
+async function copyGoalId(page: Page, locale: 'en' | 'zh-CN', keyboard = false) {
+  const surface = page.locator('.goal-detail-surface');
+  const aside = surface.getByRole('complementary', { name: locale === 'zh-CN' ? 'Goal 信息' : 'Goal information' });
+  const field = aside.locator('dl > div').first();
+  await expect(field.locator('dt')).toHaveText('Goal ID');
+  await expect(field.locator('dd > span')).toHaveText(goalId);
+  const button = field.getByRole('button', { name: locale === 'zh-CN' ? '复制 Goal ID' : 'Copy Goal ID', exact: true });
+  await expect(button).toHaveAttribute('title', locale === 'zh-CN' ? '复制 Goal ID' : 'Copy Goal ID');
+  await button.scrollIntoViewIfNeeded();
+  const before = await aside.boundingBox();
+  expect(await field.locator('dd > span').evaluate(element => {
+    const selection = window.getSelection()!;
+    const range = document.createRange(); range.selectNodeContents(element);
+    selection.removeAllRanges(); selection.addRange(range);
+    const text = selection.toString(); selection.removeAllRanges(); return text;
+  })).toBe(goalId);
+  await page.evaluate(() => navigator.clipboard.writeText('Before copying the Goal ID'));
+  if (keyboard) { await button.focus(); await page.keyboard.press('Enter'); }
+  else await button.click();
+  await expect(surface.locator('.task-detail-notifications').getByRole('status')).toHaveText(locale === 'zh-CN' ? '已复制' : 'Copied');
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(goalId);
+  expect(await aside.boundingBox()).toEqual(before);
+  expect(await button.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth;
+  })).toBe(true);
+}
+
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) for (const empty of [false, true]) test(`Goal information replaces the Task pane at ${width}px in ${locale}, empty=${empty}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width, height: 800 });
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   const fixture = await install(page, locale);
   if (empty) fixture.emptyGoal();
   const zh = locale === 'zh-CN';
   const writes: string[] = [];
   page.on('request', request => { if (request.url().includes('/api/v1/') && !['GET', 'HEAD'].includes(request.method())) writes.push(request.method()); });
-  const check = async () => {
+  const check = async (presentation: string) => {
     const surface = page.locator('.goal-detail-surface');
     await expect(surface.getByRole('tab')).toHaveText(zh ? ['描述', '附件', '讨论'] : ['Description', 'Attachments', 'Discussion']);
     await expect(surface.getByRole('tab').first()).toHaveAttribute('aria-selected', 'true');
@@ -307,6 +336,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     expect(geometry.overflow).toBe(false);
     if (width <= 740) expect(geometry.asideTop).toBeGreaterThanOrEqual(geometry.mainBottom);
     else expect(geometry.asideLeft).toBeGreaterThanOrEqual(geometry.mainRight);
+    await copyGoalId(page, locale, true);
+    await page.screenshot({ path: testInfo.outputPath(`goal-information-${presentation}.png`) });
     await surface.getByRole('tab', { name: zh ? '附件' : 'Attachments', exact: true }).click();
     await expect(aside).not.toBeVisible();
     await surface.getByRole('tab').first().click();
@@ -317,21 +348,22 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
   await page.locator(`#project-goal-detail-${goalId}`).click();
-  await check();
+  await check('dialog');
   await page.locator('.goal-detail-surface').getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
-  await check();
+  await check('fullscreen');
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
-  await check();
-  await page.screenshot({ path: testInfo.outputPath('goal-information.png') });
+  await check('page');
 });
 
 test('Goal statistics distinguish loading and failures from empty data and retain the last snapshot', async ({ page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   const fixture = await install(page); fixture.holdNextSync();
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const aside = page.getByRole('complementary', { name: 'Goal information' });
   await expect(aside).toBeVisible();
   await expect(aside.getByRole('status')).toBeVisible();
   await expect(aside.getByText('Total tasks', { exact: true })).toHaveCount(0);
+  await copyGoalId(page, 'en');
   await expect.poll(fixture.syncHeld).toBe(true);
   fixture.releaseSync();
   await expect(aside.getByText('Total tasks', { exact: true })).toBeVisible();
@@ -339,10 +371,42 @@ test('Goal statistics distinguish loading and failures from empty data and retai
   fixture.failNextSync();
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(aside.getByRole('alert')).toBeVisible();
+  await copyGoalId(page, 'en');
   await expect(aside.locator('dt').filter({ hasText: /^Total tasks$/ }).locator('..').locator('dd')).toHaveText('3');
   expect(await aside.evaluate((element, previous) => element === previous, original)).toBe(true);
   await aside.getByRole('button', { name: 'Retry refresh' }).click();
   await expect(aside.getByRole('alert')).toHaveCount(0);
+});
+
+test('Goal copy failure stays in its notification host and keyboard retry writes the full ID', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await install(page, 'zh-CN');
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const surface = page.locator('.goal-detail-surface');
+  const aside = surface.getByRole('complementary', { name: 'Goal 信息' });
+  const button = aside.getByRole('button', { name: '复制 Goal ID', exact: true });
+  await button.scrollIntoViewIfNeeded();
+  const before = await aside.boundingBox();
+  await page.evaluate(() => {
+    const write = navigator.clipboard.writeText.bind(navigator.clipboard);
+    let reject = true;
+    navigator.clipboard.writeText = (value) => {
+      if (reject) { reject = false; return Promise.reject(new DOMException('Denied', 'NotAllowedError')); }
+      return write(value);
+    };
+  });
+  await button.click();
+  const notice = surface.locator('.task-detail-notifications');
+  await expect(notice.getByRole('alert')).toHaveText('无法复制 Goal ID，请选中并手动复制。');
+  await expect(aside.locator('dd > span').first()).toHaveText(goalId);
+  expect(await aside.boundingBox()).toEqual(before);
+  await page.screenshot({ path: testInfo.outputPath('goal-copy-failure.png') });
+  await notice.getByRole('button', { name: '关闭提示' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(surface.locator('.task-detail-title')).toBeFocused();
+  await copyGoalId(page, 'zh-CN', true);
+  await expect(notice.getByRole('alert')).toHaveCount(0);
 });
 
 test('Goal dialog retains statistics through a failed background graph refresh and retries locally', async ({ page }) => {
@@ -2127,7 +2191,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const check = async () => {
     const meta = surface.locator('.goal-detail-meta');
     await expect(meta.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
-    await expect(surface.locator('.goal-information-dates time').nth(1)).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
+    await expect(surface.locator('.goal-information-general time').nth(1)).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
     await expect(meta).toContainText(zh ? '完成时间' : 'Completion time');
     await expect(meta.locator('time')).toContainText('2026');
     await expect(meta.locator('time')).toContainText('40');

@@ -9,6 +9,8 @@ import { parseTimelineEntry, type MessagePart, type TimelineEntry } from "../../
 import { runSqliteImmediate, sqliteTransactionOutcome } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
 import { controllerJournalFormat } from "../journal-format.js";
+import { isOutboxFailure } from "../outbox-diagnostic.js";
+import { withOutboxTransactionOutcome } from "../outbox-store.js";
 import { nativeEntryId } from "../native-identity.js";
 import type { controllerMetadataBudget } from "./metadata-budget.js";
 import { restoreCanonicalInputIntent } from "./input-intent.js";
@@ -51,6 +53,11 @@ const errorValue = (cause: unknown, unknown: boolean) => ({
   code: unknown ? "publication_unknown" as const : cause instanceof PublicationConflict ? "publication_conflict" as const : "publication_unavailable" as const,
   message: cause instanceof Error ? cause.message : "Native image publication did not complete.",
 });
+
+// Publication results remain serializable receipts. Runtime can synchronously
+// fence an accounting failure without changing the provider's receipt contract.
+const outboxFailures = new WeakMap<object, unknown>();
+export const nativeInputPublicationFailure = (result: NativeInputPublicationResult): unknown => outboxFailures.get(result);
 
 /** Native association facts and their visible content share the journal commit. */
 export const createNativeInputPublication = (context: Context) => {
@@ -196,7 +203,9 @@ export const createNativeInputPublication = (context: Context) => {
       } catch (cause) {
         const outcome = sqliteTransactionOutcome(cause), unknown = !["not-started", "rolled-back"].includes(outcome);
         if (unknown && db.open && db.inTransaction) context.quarantine(cause);
-        return { state: unknown ? "unknown" : "not_committed", error: errorValue(cause, unknown) };
+        const result: NativeInputPublicationResult = { state: unknown ? "unknown" : "not_committed", error: errorValue(cause, unknown) };
+        if (isOutboxFailure(cause)) outboxFailures.set(result, withOutboxTransactionOutcome(cause, outcome));
+        return result;
       }
     },
     queryNativeInputAssociation(identity: NativeInputPublicationIdentity): NativeInputPublicationQuery {

@@ -91,7 +91,7 @@ test.each([false, true])("reconciles a committed legacy completion without a loc
 
 test("a committed legacy completion without a local receipt preserves its original undrained source and existing intent", async () => {
   const f = await committedLegacySource(true), intentPath = `${f.journalPath}.archive-intent-1.json`, intent = "An earlier unconfirmed competing intent";
-  inspect(f.journalPath, db => db.exec("UPDATE execution SET last_acknowledged=0,source_floor=last_sequence; DELETE FROM outbox"));
+  inspect(f.journalPath, db => db.exec("UPDATE execution SET last_acknowledged=0,source_floor=last_sequence; DELETE FROM outbox; UPDATE outbox_totals SET byte_length=0"));
   await writeFile(intentPath, intent);
   const before = inspect(f.journalPath, db => db.prepare("SELECT snapshot,last_sequence,last_acknowledged,source_floor FROM execution").get());
   const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => { expect(init?.method).toBe("GET"); return Response.json({ archive: f.current }); });

@@ -53,6 +53,32 @@ it("retains unknown dispatch and committed events across restart without replayi
   store.acknowledgeEvents("1"); expect(store.pendingEvents(10)).toEqual([]);
   store.close();
 });
+it("retains the UTF-8 outbox total across a stopped generation and subsequent acknowledgement", async () => {
+  const { home, ticket } = await fixture(); const file = path.join(home, "state.sqlite");
+  const account = () => {
+    const db = new Database(file, { readonly: true });
+    try {
+      const values = db.prepare("SELECT value FROM outbox ORDER BY sequence").all() as { value: string }[];
+      const total = (db.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get() as { byte_length: number }).byte_length;
+      expect(total).toBe(values.reduce((sum, row) => sum + Buffer.byteLength(row.value, "utf8"), 0));
+      return total;
+    } finally { db.close(); }
+  };
+  let store = openControllerLifecycleStore(file, ticket);
+  store.appendEvent({ text: "中文 🐈\n\\\"" });
+  store.appendEvent({ text: "retained" });
+  const originalTotal = account();
+  const nativeId = randomUUID(); stageStoppedFixture(store, ticket, nativeId); store.close(); await commitStoppedFixture(file, ticket);
+  const resumed = { ...ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: nativeId };
+  store = openControllerLifecycleStore(file, resumed);
+  try {
+    expect(account()).toBe(originalTotal);
+    store.acknowledgeEvents("1");
+    expect(account()).toBeLessThan(originalTotal);
+    store.acknowledgeEvents("2");
+    expect(account()).toBe(0);
+  } finally { store.close(); }
+});
 it("persists projection revisions, deduplicates replay and keeps ACK watermark across restart", async () => {
   const { home, ticket } = await fixture(); const filename = path.join(home, "state.sqlite");
   let store = openControllerLifecycleStore(filename, ticket);

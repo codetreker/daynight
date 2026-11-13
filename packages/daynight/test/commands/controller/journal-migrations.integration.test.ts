@@ -314,6 +314,27 @@ test.each([1, 2, 3, 4])("readonly helpers upgrade journal v%s without claiming o
   } finally { db.close(); }
 });
 
+test.each(["UTF-8", "UTF-16le"] as const)("upgrades a nonempty v10 %s journal once and retains exact UTF-8 totals on reopen", async encoding => {
+  const f = await fixture(), db = new Database(f.file);
+  db.pragma(`encoding = '${encoding}'`);
+  for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 10)) db.exec(step.sql);
+  const snapshot = JSON.stringify({ executionId: f.ticket.executionId, ...sessionBinding(f.ticket), sessionId: f.ticket.sessionId, executionGeneration: "1", controllerInstanceId: f.ticket.controllerInstanceId, controllerProcess: null });
+  const values = ['{"text":"中文😀"}', '{"text":"\\n\\\""}', '{"value":"再见"}'];
+  db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot,last_sequence) VALUES(1,?,NULL,?,3)").run("old-ticket", snapshot);
+  values.forEach((value, index) => db.prepare("INSERT INTO outbox(sequence,value) VALUES(?,?)").run(index + 1, value));
+  db.pragma("user_version=10"); db.close();
+  expect(readControllerSnapshot(f.file)).toMatchObject({ executionId: f.ticket.executionId });
+  const check = new Database(f.file, { readonly: true });
+  expect(check.pragma("user_version", { simple: true })).toBe(11);
+  expect(String(check.pragma("encoding", { simple: true })).toLowerCase()).toBe(encoding.toLowerCase());
+  expect(check.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get()).toEqual({ byte_length: values.reduce((total, value) => total + Buffer.byteLength(value, "utf8"), 0) });
+  expect((check.prepare("SELECT value FROM outbox ORDER BY sequence").all() as { value: string }[]).map(row => row.value)).toEqual(values);
+  check.close();
+  const prepare = vi.spyOn(Database.prototype, "prepare");
+  expect(readControllerSnapshot(f.file)).toMatchObject({ executionId: f.ticket.executionId });
+  expect(prepare.mock.calls.some(([statement]) => /^SELECT value FROM outbox ORDER BY sequence$/i.test(statement))).toBe(false);
+});
+
 test("an active old journal writer blocks DDL while current-format reads stay available", async () => {
   const f = await fixture(); historical(f.file, 2, f.ticket, process.pid);
   expect(() => readControllerSnapshot(f.file)).toThrow("upgrade-blocked");

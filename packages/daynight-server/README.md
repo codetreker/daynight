@@ -645,6 +645,13 @@ To traverse all ready tasks, use `task_list` with `ready: true`; its full list
 projection omits descriptions. Read current complete Tasks separately through
 `task_show` with `view: full`. These separate reads do not share the list's fence.
 
+`task_search` applies a nonempty literal expression and optional tag and Task
+filters through the same ranked search as REST. Its lean page contains identity,
+membership, title, status, match evidence and tag references, without complete
+descriptions. The default limit is 50 (maximum 100). Repeat the expression and
+filters with `nextCursor`; a changed snapshot returns `search_changed`. Invalid
+tag selections return `invalid_tag_filter`. Use `task_list` for tag-only queries.
+
 OAuth grant families store only 32-byte SHA-256 hashes of canonical secrets with
 32 random bytes. MCP retains its actual client, `/mcp` resource, `daynight:mcp`
 scope and `dnmcp_` / `dnmcr_` prefixes. Its grant and refresh have an absolute

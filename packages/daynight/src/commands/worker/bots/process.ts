@@ -203,7 +203,7 @@ export const createBotProcess = (options: {
     const config = record.definition!.resolvedConfiguration;
     parseProviderArguments(config.provider, botNativeConfiguration(config).args, config.selection !== undefined);
     try {
-      const prepared = await environment({ homeDirectory: options.homeDirectory, cwd: config.cwd, workerPaths: resolveConfigurationPaths(options.homeDirectory), serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId, signal });
+      const prepared = await environment({ homeDirectory: options.homeDirectory, cwd: config.cwd, workerPaths: resolveConfigurationPaths(options.homeDirectory), serverOrigin: record.owner.serverOrigin, ownerUserId: record.owner.ownerUserId, botId: record.botId, signal });
       environments.set(record.botId, prepared);
       return prepared;
     } catch (error) {

@@ -1,6 +1,6 @@
 # 项目内 Task 搜索设计
 
-[搜索接口需求](../spec/daynight-task-search.md)定义表达式、投影和可观察结果。服务端是语法与匹配的唯一权威；CLI 和 Web 消费同一个只读接口。
+[搜索接口需求](../spec/daynight-task-search.md)定义表达式、投影和可观察结果。服务端是语法与匹配的唯一权威；CLI、Web 和 MCP 消费同一只读搜索业务。MCP `task_search` 适配输入并输出精简结果，保留身份、归属、匹配证据和标签引用，不物化完整 Task；仅按标签查询使用 `task_list`。
 
 `internal/core/model/tasksearch/` 定义共享的纯表达式数据合同；`internal/core/tasksearch/query/` 解析表达式，保存原始 Unicode 位置并将否定下推到叶节点，不展开 DNF。解析器、Go 证据计算与 PostgreSQL 编译器使用同一合同，store 根包不依赖搜索业务。搜索操作位于 `internal/core/tasksearch/`，通过 `internal/core/store/task_search.go` 的无驱动合同读取；PostgreSQL SQL 位于 `internal/core/store/postgres/task/`。HTTP 路由、专用 DTO 和服务组装分别由 `internal/server/task/`、`api/` 和 `internal/service/` 持有。
 

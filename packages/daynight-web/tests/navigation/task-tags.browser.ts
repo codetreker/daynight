@@ -17,7 +17,7 @@ const chained = detailFixture(projectId, id(14), { title: 'Chain child', parentI
 const time = '2026-10-22T10:00:00Z';
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], observedAt: time };
+  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], observedAt: time };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -30,18 +30,21 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/tags` && request.method() === 'GET') {
+    const catalogPath = `/api/v1/projects/${projectId}/tags`;
+    if (path === catalogPath && request.method() === 'GET') {
       if (state.holdCatalog) { state.holdCatalog = false; state.heldCatalog = true; await new Promise<void>(resolve => { state.releaseCatalog = resolve; }); state.heldCatalog = false; }
-      const query = (url.searchParams.get('query') ?? '').toLowerCase();
-      const all = [...new Map(state.tasks.flatMap(item => item.tags).map(item => [item.id, item])).values()];
-      return send({ items: all.filter(item => item.name.toLowerCase().includes(query)).map(item => ({ ...item, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: id(99), nextCursor: null });
+      const query = url.searchParams.get('query')?.toLowerCase() ?? '';
+      return send({ items: state.tags.filter(tag => tag.name.toLowerCase().includes(query)).map(tag => ({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: id(999), nextCursor: null });
     }
-    if (path === `/api/v1/projects/${projectId}/tags/resolve` && request.method() === 'POST') {
-      const ids = (request.postDataJSON() as { tagIds: string[] }).tagIds;
-      const all = [...new Map(state.tasks.flatMap(item => item.tags).map(item => [item.id, item])).values()];
-      return send({ items: all.filter(item => ids.includes(item.id)) });
+    if (path === `${catalogPath}/resolve` && request.method() === 'POST') {
+      const body = request.postDataJSON() as { tagIds: string[] };
+      return send({ items: state.tags.filter(tag => body.tagIds.includes(tag.id)) });
     }
-
+    if (path === catalogPath && request.method() === 'POST') {
+      const body = request.postDataJSON() as { name: string };
+      const tag = { id: id(96), name: body.name }; state.tags.push(tag);
+      return send({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }, 201);
+    }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (state.hold) { state.hold = false; state.held = true; await new Promise<void>(resolve => { state.release = resolve; }); state.held = false; }
       return send(taskSyncFixture(graph(), { query: taskSyncQuery(url), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties, tagsForTask: task => state.tasks.find(item => item.id === task.id)!.tags }));
@@ -50,6 +53,13 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
       if (detail && parts.length === 1) {
+        if (request.method() === 'PATCH') {
+          const body = request.postDataJSON() as { version: number; tagIds: string[] };
+          if (BigInt(body.version) !== detail.version) return send({ error: { code: 'version_conflict', message: 'Conflict', requestId: 'fixture' } }, 409);
+          const updated = { ...detail, version: detail.version + 1n, updatedAt: '2026-10-22T10:00:02Z', tags: state.tags.filter(tag => body.tagIds.includes(tag.id)) };
+          state.tasks = state.tasks.map(item => item.id === detail.id ? updated : item); state.observedAt = '2026-10-22T10:00:04Z';
+          return send(updated);
+        }
         if (state.holdDetail) { state.holdDetail = false; state.heldDetail = true; await new Promise<void>(resolve => { state.releaseDetail = resolve; }); state.heldDetail = false; }
         return send(state.tasks.find(item => item.id === detail.id)!, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
       }
@@ -249,6 +259,7 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const state = await install(page, locale);
   const childLongName = `${longName}X`;
   state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, tags: [{ id: id(93), name: childLongName }] } : item);
+  state.tags = state.tags.map(tag => tag.id === id(93) ? { ...tag, name: childLongName } : tag);
   await page.setViewportSize({ width, height: 700 });
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
@@ -285,4 +296,50 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
     await page.keyboard.press('Escape'); await expect(trigger).toBeFocused(); await expect(filter).not.toHaveAttribute('open', '');
   } finally { state.releaseCatalog(); }
+});
+
+for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`edit Task and Goal tags with keyboard and retain independently created tags at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale);
+  const zh = locale === 'zh-CN';
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  await page.locator(`#standalone-task-${standalone.id}`).click();
+  const taskDialog = page.locator('.task-detail-dialog');
+  const edit = taskDialog.getByRole('button', { name: zh ? '编辑标签' : 'Edit tags' });
+  await expect(edit).toBeEnabled(); await edit.focus(); await page.keyboard.press('Enter');
+  const editor = taskDialog.locator('.task-tags-editor');
+  const search = editor.getByRole('searchbox', { name: zh ? '搜索标签' : 'Search tags' });
+  await expect(search).toBeVisible(); await search.focus();
+  await expect(editor.getByRole('checkbox', { name: 'Goal label' })).toBeVisible();
+  await editor.getByRole('checkbox', { name: 'Goal label' }).focus(); await page.keyboard.press('Space');
+  await expect(editor.getByRole('checkbox', { name: 'Goal label' })).toBeChecked();
+  await page.keyboard.press('Escape');
+  await expect(editor).toHaveCount(0); await expect(edit).toBeFocused();
+  expect(state.tasks.find(item => item.id === standalone.id)!.tags).toEqual(standalone.tags);
+  await edit.click();
+  await editor.getByRole('textbox', { name: zh ? '名称' : 'Name', exact: true }).fill('Browser created');
+  await editor.getByRole('button', { name: zh ? '新建标签' : 'New tag' }).click();
+  await expect(editor.locator('.tag-picker-selected')).toContainText('Browser created');
+  await editor.getByRole('button', { name: zh ? '取消' : 'Cancel' }).click();
+  await expect(edit).toBeFocused();
+  expect(state.tags.some(tag => tag.name === 'Browser created')).toBe(true);
+  expect(state.tasks.find(item => item.id === standalone.id)!.tags).toEqual(standalone.tags);
+  expect(state.writes.filter(write => write.startsWith('PATCH '))).toEqual([]);
+  await taskDialog.locator('.task-detail-close').click();
+  await page.locator('#project-task-tab-goals').click();
+  await page.locator(`[data-goal-id="${goal.id}"] #project-goal-detail-${goal.id}`).click();
+  const goalDialog = page.locator('.goal-detail-surface');
+  const goalEdit = goalDialog.getByRole('button', { name: zh ? '编辑标签' : 'Edit tags' });
+  await expect(goalEdit).toBeEnabled(); await goalEdit.click();
+  const goalEditor = goalDialog.locator('.task-tags-editor');
+  const created = goalEditor.getByRole('checkbox', { name: 'Browser created' });
+  await expect(created).toBeVisible(); await created.check();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await goalEditor.getByRole('button', { name: zh ? '保存' : 'Save', exact: true }).click();
+  await expect(goalEditor).toHaveCount(0);
+  await expect(goalDialog.locator('.task-tag')).toHaveText(['Goal label', 'Browser created']);
+  expect(state.writes.filter(write => write.startsWith('PATCH '))).toEqual([`PATCH /api/v1/projects/${projectId}/tasks/${goal.id}`]);
+  expect(state.tasks.find(item => item.id === goal.id)!.tags.map(tag => tag.name)).toEqual(['Goal label', 'Browser created']);
 });

@@ -1,6 +1,6 @@
 # 助手任务服务端
 
-[CLI 设计](assistant-task-cli.md)定义命令、私有认领状态和只读恢复；Worker 持续执行另有独立职责。
+[CLI 设计](assistant-task-cli.md)定义命令、私有认领状态和只读恢复；[Worker 维护](worker-bot-runtime.md#助手任务维护)负责持续续约、接手、通知、定时触发和应用挂载。
 
 [规格](../spec/assistant-task.md)拥有通用行为，[认领合同](assistant-task-claims.md)拥有凭据状态、固定租期、操作指纹和未知结果恢复。助手任务使用独立的用户归属资源，不复用项目 Task、Worker 调度 claim 或 Thread。
 

@@ -1,6 +1,7 @@
 import { rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { ApiError, createApiClient } from "../../../api/client.js";
+import { canonicalId } from "../../../api/parse.js";
 import { createOperation, type Operation } from "../../../api/operation.js";
 import { prepareAgentCliAliases, type AgentCliAliasBinding, type PreparedAgentCliAliases } from "../../../cli/agent-cli-aliases.js";
 import { readAgentCliAliases } from "../../../config/agent-cli-aliases.js";
@@ -8,6 +9,7 @@ import { resolveConfigurationPaths, type ConfigurationPaths } from "../../../con
 import { loadServerConfiguration, normalizeServerUrl } from "../../../config/server.js";
 import type { HerdrCommand, HerdrCommandResult } from "../herdr/command.js";
 import { BotCliProbeCleanupError, createBotCliProbe, type BotCliProbe } from "./cli-probe.js";
+import { loadOperationFiles } from "../../task/session/private-files.js";
 
 export type BotEnvironmentOptions = {
   homeDirectory: string;
@@ -15,6 +17,7 @@ export type BotEnvironmentOptions = {
   workerPaths: ConfigurationPaths;
   serverOrigin: string;
   ownerUserId: string;
+  botId: string;
   signal: AbortSignal;
   environment?: NodeJS.ProcessEnv;
 };
@@ -47,6 +50,21 @@ export class BotEnvironmentCleanupError extends Error {
 
 const queries = ["project", "task", "bot", "worker"].flatMap(resource => ["list", "show"].map(action => [resource, action]));
 
+export const botStateDirectory = (workerPaths: Pick<ConfigurationPaths, "stateDirectory">, botId: string): string => {
+  if (canonicalId(botId) !== botId || botId === "00000000-0000-0000-0000-000000000000") throw new Error("Bot ID must be a nonzero canonical UUID.");
+  if (!path.isAbsolute(workerPaths.stateDirectory)) throw new Error("Bot state requires an absolute Worker configuration directory.");
+  return path.join(workerPaths.stateDirectory, "bots", botId, "state");
+};
+
+/** Durable claim state outlives Controller launches and temporary CLI aliases. */
+export const prepareBotStateDirectory = async (workerPaths: Pick<ConfigurationPaths, "stateDirectory">, botId: string): Promise<string> => {
+  const directory = botStateDirectory(workerPaths, botId);
+  const handle = await (await loadOperationFiles()).open(directory, true);
+  if (handle === undefined) throw new Error("Bot private state directory is unavailable.");
+  await handle.close();
+  return directory;
+};
+
 /**
  * Check the current CLI configuration and executable before a Bot launch or
  * resume. This is an observation, not a lock against later account changes.
@@ -57,6 +75,7 @@ export const prepareBotEnvironment = async (
   dependencies: BotEnvironmentDependencies = {},
 ): Promise<PreparedBotEnvironment> => {
   options.signal.throwIfAborted();
+  botStateDirectory(options.workerPaths, options.botId);
   const paths = resolveConfigurationPaths(options.homeDirectory, path, { DN_CONFIG_DIR: options.workerPaths.stateDirectory });
   if (paths.stateDirectory !== options.workerPaths.stateDirectory || paths.configFile !== options.workerPaths.configFile) {
     throw new Error("Bot CLI configuration paths must match the target Worker's configuration root.");
@@ -81,7 +100,9 @@ export const prepareBotEnvironment = async (
       throw new Error("Cannot verify the Bot CLI account against the target Worker's owner.");
     }
     const configuredAliases = await readAgentCliAliases(paths, operation.signal);
-    const environment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env), DN_CONFIG_DIR: paths.stateDirectory };
+    const stateDirectory = await prepareBotStateDirectory(paths, options.botId);
+    const environment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env), DN_CONFIG_DIR: paths.stateDirectory,
+      DAYNIGHT_BOT_ID: options.botId, DAYNIGHT_BOT_STATE_DIR: stateDirectory };
     // The Controller's relay credential authorizes its connection, not CLI API calls.
     delete environment.DAYNIGHT_CONTROLLER_TOKEN;
     aliases = await prepareAgentCliAliases({ aliases: configuredAliases, environment, stateDirectory: paths.stateDirectory });

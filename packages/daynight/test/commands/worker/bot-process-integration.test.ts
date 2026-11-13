@@ -668,6 +668,9 @@ test("runs the production Bot host through HTTP discovery, native recovery and p
       calls.push({ method: request.method!, path: pathname, body });
       expect(request.headers.authorization).toBe(`Bearer ${parentToken}`);
       const send = (value: unknown) => response.end(JSON.stringify(value));
+      if (request.method === "GET" && ["/api/v1/assistant-tasks", "/api/v1/assistant-task-events"].includes(pathname)) {
+        return send({ items: [], nextCursor: null, observedAt: new Date().toISOString() });
+      }
       if (request.method === "GET" && pathname.endsWith(`/workers/${f.owner.workerId}/bots`)) return send({ items: [deleted ?? f.getBot()], nextCursor: null });
       if (request.method === "GET" && pathname.endsWith(`/me/bots/${f.getBot().id}`)) return send(deleted ?? f.getBot());
       if (request.method === "POST" && pathname.endsWith("/register")) {
