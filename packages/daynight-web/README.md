@@ -747,6 +747,12 @@ while old-history ownership cannot carry forward. Clock-only responses retain th
 latest `GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings
 edit changes task time or graph geometry.
 
+## GitHub connection settings
+
+Project settings show GitHub connection and independent polling and Webhook status to all members. Administrators can discover the configured App's installation, connect or reconnect, set the polling interval and disconnect. Discovery checks the App's access to the Project repository, independently of the operator's GitHub account. Disconnect retains synchronized data; private repository data is shared with Project members. A connection schedules the first sync and does not imply it has completed.
+
+Management uses the independent GitHub resource's exact version and shares the synchronous Project management guard. A conflict or unknown write outcome retains the draft and holds the guard until an admitted read reconciles the state or the scope ends, without replaying the write. An existing binding can be disconnected even when the App is unavailable or unconfigured. The [runtime design](../../docs/design/github-connection-runtime.md) describes the server behavior.
+
 ## Project deletion
 
 Project Settings offers owner Team administrators a deletion preview and exact
@@ -763,7 +769,7 @@ withdrawal again or resending DELETE. The denial may use a different ticket;
 a stale ticket cannot clear a newer generation. Cleanup and navigation
 can be retried independently. A dispatched request
 with an unknown outcome is never replayed, and a later 404 does not prove that
-the deletion succeeded. Settings saves, ownership transfers and deletion share
+the deletion succeeded. Settings saves, GitHub management, ownership transfers and deletion share
 a synchronous management guard. The [Web design](../../docs/design/daynight-web.md#项目删除)
 owns the operation and identity boundaries.
 
