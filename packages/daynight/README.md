@@ -860,11 +860,11 @@ does not accept `--all`. Explicit `--project` searches that project directly;
 otherwise the current repository resolves the project.
 
 Search reads and validates every page before producing output, preserving the
-server's order. Text shows the full Task ID and title, type, parent, status, actual
+server's order. Text shows the full Task ID and title, type, parent, tags, status, actual
 parent Goal or `none`, positive match fields, and a description snippet when present. A
 negative-only match is identified as such; text escapes terminal controls.
 `--json` emits one newline-terminated array whose entries contain only `id`,
-`type`, `parentId`, `projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
+`type`, `parentId`, `projectId`, `title`, `tags`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
 assignee and update time; use `task show` for complete Task details. An empty
 result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
 expression syntax exit 2; read, permission, protocol, cancellation, budget and
@@ -1224,10 +1224,14 @@ traversal across all relevant projects provides ownership inventory; extra filte
 or incomplete pages cannot authorize cleanup. These filters are not public task
 CLI options.
 
-Human task lists use labeled blocks containing ID, project, title, complete
+Human task lists use labeled blocks containing ID, project, title, tags, complete
 properties, status, readiness, automatic-execution permission, required platform,
 assignee, dependencies, blocking and Session observations. Property rows are ordered by name and rendered as
 terminal-safe JSON; missing keys are not replaced with default values.
+Task and Goal text displays each own tag name on a separate line, or `Tags: none`.
+Their JSON includes `tags` as an array of `{id,name}` references; `[]` means no
+tags. The same references appear in details, ready results and Task receipts.
+Missing or invalid references are protocol errors. Graph nodes do not include tags.
 Description, version and Task timestamps
 remain available in show, ready, create and update output. Graph nodes include
 state, permission, required platform, assignee, dependencies, blocking and

@@ -96,7 +96,7 @@ it.each([false, true])("keeps retained Herdr and frozen Web execution responsibi
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite")); stores.add(webStore);
   const original = webStore.register({ projectId, taskId, claimId, worktreeId, project, serverOrigin, workerId, userId, configuration: frozen }, Date.now());
   const task: Task = { type: "task", parentId: null,
-    id: taskId, projectId, title: "Retained Web execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    id: taskId, projectId, title: "Retained Web execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
@@ -186,7 +186,7 @@ it.each(["null", "unread", "unsupported"] as const)("cold-resumes an original fr
   await seed.stop();
   const canonical = authority === "null" ? null : authority === "unsupported" ? { ...target, revision: "11", value: { ...target.value, maxConcurrent: 65, recoveryLimit: 1 } } : target;
   const task: Task = { type: "task", parentId: null,
-    id: taskId, projectId, title: "Retained Herdr execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    id: taskId, projectId, title: "Retained Herdr execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId, phase: "executing", herdr: null, nativeSessionId: localTask.sessionId, claimedAt: workerTelemetryTime } },
@@ -267,7 +267,7 @@ it("registers fresh stop verification after a failed startup read even when the 
   const saved = JSON.parse(await readFile(paths.configurationFile, "utf8")) as WorkerConfigurationCache;
   expect([...saved.currentItems, ...saved.retainedItems].some(item => "projectId" in item.value.key && item.value.key.projectId === projectId)).toBe(false);
   const task: Task = { type: "task", parentId: null,
-    id: taskId, projectId, title: "Retained Web execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    id: taskId, projectId, title: "Retained Web execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
@@ -376,7 +376,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
   const seedCache = JSON.parse(await readFile(paths.configurationFile, "utf8")) as WorkerConfigurationCache;
   expect([...seedCache.currentItems, ...seedCache.retainedItems].some(item => "projectId" in item.value.key && item.value.key.projectId === projectId)).toBe(false);
   const task: Task = { type: "task", parentId: null,
-    id: taskId, projectId, title: "Retained Web execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    id: taskId, projectId, title: "Retained Web execution", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
