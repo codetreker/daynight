@@ -602,3 +602,8 @@ func TestWorkerConfigurationAuthorityServiceReport(t *testing.T) {
 		})
 	}
 }
+
+func (s configurationReadScope) TagDAO() store.TagReader {
+	configurationUnexpected(s.calls.t, "TagDAO")
+	return nil
+}

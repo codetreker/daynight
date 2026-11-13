@@ -1095,3 +1095,8 @@ func TestApplicationBeginShutdownStopsWorkerReadOnlyAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func (s *httpTestSnapshot) TagDAO() store.TagReader {
+	unexpectedHTTPCall(s.t, "SnapshotScope.TagDAO")
+	return nil
+}

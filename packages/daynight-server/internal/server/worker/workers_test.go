@@ -760,3 +760,8 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 		t.Fatal("non-JSON report accepted")
 	}
 }
+
+func (s *workerHTTPReadScope) TagDAO() store.TagReader {
+	workerHTTPUnexpected(s.t, "TagDAO")
+	return nil
+}
