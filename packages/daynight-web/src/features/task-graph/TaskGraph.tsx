@@ -30,7 +30,8 @@ type CanvasProps = TaskGraphProps & { topologyKey: string; selectedTaskId: strin
 const TaskCanvas = ({ index, summaries, rootId, onOpenTask, onNavigateExternalTask = onOpenTask, fullscreen, direction = 'horizontal', onDirectionChange, directionIssue, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
   const { messages: { graph: m } } = useI18n();
   const resetButton = useRef<HTMLButtonElement>(null);
-  const { containerRef, onFocusCapture } = useGraphFocusRecovery(geometry, fullscreen?.buttonRef ?? resetButton, fullscreen);
+  const getFocusFallback = useCallback(() => fullscreen?.buttonRef.current ?? resetButton.current, [fullscreen]);
+  const { containerRef, onFocusCapture } = useGraphFocusRecovery(geometry, getFocusFallback);
   const highlightedIds = useMemo(() => selectedTaskId === null ? emptyHighlight : tracePrerequisites(index, selectedTaskId), [index, selectedTaskId]);
   const inspection = useMemo(() => ({ selectedTaskId, highlightedIds }), [selectedTaskId, highlightedIds]);
   const hiddenUpstreamCount = useMemo(() => [...highlightedIds].filter((id) => !visibleIds.has(id)).length, [highlightedIds, visibleIds]);

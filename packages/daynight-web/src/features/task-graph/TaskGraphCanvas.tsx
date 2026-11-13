@@ -1,4 +1,4 @@
-import { memo, useLayoutEffect, useMemo, useRef, type FocusEvent, type RefObject } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, type FocusEvent } from 'react';
 import { Background, BackgroundVariant, Controls, ReactFlow, useReactFlow, useStore, type Viewport } from '@xyflow/react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { DependencyEdges } from './DependencyEdges';
@@ -15,7 +15,7 @@ const InspectedEdges = memo(({ geometry }: { geometry: CanvasLayout }) => {
 
 // The graph owner supplies its preferred surviving control; detection remains
 // shared so removal of a node or toolbar control follows the same focus policy.
-export const useGraphFocusRecovery = (geometry: CanvasLayout, fallback: RefObject<HTMLButtonElement | null>, revision: unknown) => {
+export const useGraphFocusRecovery = (geometry: CanvasLayout, getFallback: () => HTMLElement | null) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -23,8 +23,8 @@ export const useGraphFocusRecovery = (geometry: CanvasLayout, fallback: RefObjec
     const removedNode = focusedNode != null && containerRef.current?.contains(focusedNode) &&
       !geometry.nodes.some((node) => node.id === focusedNode.dataset.id);
     const detachedControl = focusedControl.current !== null && !focusedControl.current.isConnected && document.activeElement === document.body;
-    if (removedNode || detachedControl) fallback.current?.focus({ preventScroll: true });
-  }, [geometry, fallback, revision]);
+    if (removedNode || detachedControl) getFallback()?.focus({ preventScroll: true });
+  }, [geometry, getFallback]);
   const onFocusCapture = (event: FocusEvent<HTMLDivElement>) => { focusedControl.current = event.target as HTMLElement; };
   return { containerRef, onFocusCapture };
 };
