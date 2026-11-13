@@ -39,7 +39,7 @@ function fixture() {
   const bots = [1, 2, 3, 4].map(n => botFixture(botBinding(n)));
   const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: binding => bots.find(bot => bot.binding.botId === binding.botId)!.api }); caches.push(cache);
   const view = render(<BotSessionHost cache={cache} displayBinding={botBinding(1)} actionBinding={botBinding(1)} />);
-  const select = async (n: number) => { view.rerender(<BotSessionHost cache={cache} displayBinding={botBinding(n)} actionBinding={botBinding(n)} />); await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()); };
+  const select = async (n: number) => { view.rerender(<BotSessionHost cache={cache} displayBinding={botBinding(n)} actionBinding={botBinding(n)} />); await waitFor(() => { const input = screen.getByRole('textbox', { name: 'Message' }); expect(input).toBeEnabled(); expect(input).not.toHaveAttribute('readonly'); }); };
   return { bots, cache, view, select };
 }
 it('retains the actual shared Session DOM and independent drafts across A/B/A and releases a fourth pane', async () => {
@@ -98,6 +98,7 @@ it.each(['deadline', 'buffer', 'transport'] as const)('retains the pane and clie
   const cache=new BotSessionCache({userId:botOwner,isCurrent:()=>true,isPaused:()=>paused,storage:null,onPrincipalMismatch:vi.fn(),createApi:()=>bot.api}); caches.push(cache);
   const view=render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
   const input=await screen.findByRole('textbox',{name:'Message'}); await waitFor(()=>expect(input).toBeEnabled());
+  await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
   const pane=cache.snapshot()[0]!, client=pane.client, timeline=view.container.querySelector('.session-timeline');
   fireEvent.change(input,{target:{value:'kept draft'}}); const firstGeneration=client.snapshot().connectionGeneration;
   const now=Date.now(); let clock: ReturnType<typeof vi.spyOn>|undefined;
@@ -412,6 +413,7 @@ it('preserves a nonfollowing reading anchor through details, fullscreen and resp
   try {
     const input = await screen.findByRole('textbox', { name: 'Message' });
     await waitFor(() => expect(input).toBeEnabled());
+    await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
     await screen.findByText('Retained reading message');
     fireEvent.change(input, { target: { value: 'Draft while reading earlier content' } });
     const cache = selections.mock.contexts.find(candidate => candidate instanceof BotSessionCache)!;

@@ -138,6 +138,7 @@ it.each(['default', 'assistant'] as const)('keeps approvals and timeline errors 
     const approval = await screen.findByRole('button', { name: 'Allow once' });
     await waitFor(() => expect(approval).toBeEnabled());
     const input = screen.getByRole('textbox', { name: 'Message' });
+    await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
     fireEvent.change(input, { target: { value: 'Draft beside approval' } });
     const timeline = view.container.querySelector('.session-timeline'), error = screen.getByText('Previous workspace write failed');
     expect(error).toBeVisible();

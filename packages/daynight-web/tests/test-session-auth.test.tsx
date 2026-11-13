@@ -50,6 +50,7 @@ it('renders the shared session after authentication and removes it on sign-out',
   expect(screen.getByRole('link', { name: 'Test Sessions' })).toHaveAttribute('aria-current', 'page');
   expect(screen.getByRole('link', { name: 'Projects' })).not.toHaveAttribute('aria-current');
   expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).not.toHaveAttribute('readonly'));
   fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Uncertain input' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   await screen.findByText('Unable to connect to the server. Please try again.');
@@ -124,6 +125,7 @@ it.each(['focus', 'focus-first', 'visibility-first'] as const)('retains a health
   const f = focusSession(); render(<AuthenticatedApp />);
   await screen.findByText('Private focus conversation');
   const textbox = screen.getByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(textbox).not.toHaveAttribute('readonly'));
   fireEvent.change(textbox, { target: { value: 'Unsent focus draft' } });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
   const timeline = document.querySelector('.session-timeline')!;
@@ -140,6 +142,7 @@ it.each(['00000019-1111-4111-8111-111111111111', null] as const)('retains the Te
   const f = focusSession(); render(<AuthenticatedApp />);
   const message = await screen.findByText('Private focus conversation');
   const textbox = screen.getByRole('textbox', { name: 'Message' });
+  await waitFor(() => expect(textbox).not.toHaveAttribute('readonly'));
   fireEvent.change(textbox, { target: { value: 'Private retained draft' } });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled());
   act(() => { localStorage.setItem('daynight.activeUser', JSON.stringify(next)); window.dispatchEvent(new StorageEvent('storage', { key: 'daynight.activeUser' })); });
