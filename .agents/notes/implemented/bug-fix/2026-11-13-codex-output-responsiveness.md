@@ -9,7 +9,9 @@ projection and journal work while ready sockets and timers wait. Awaiting an
 already-resolved Promise only runs microtasks, so an observation may depend on
 the native input ending. Adding I/O checkpoints also exposes a stale timer when
 a formerly partial frame finishes, and makes close and media ownership ordering
-observable between frames.
+observable between frames. A child's normal close event can run while the reader
+still owns received bytes, so treating that event as cancellation loses final
+notifications and successful responses.
 
 ## Decision
 
@@ -27,9 +29,19 @@ already-scheduled immediate settles normally and belongs to `rpc.stopped`;
 shutdown never clears an immediate while leaving its Promise unresolved. Final
 decoder disposal preserves independently retained consumer media references.
 
+Natural child closure closes outbound dispatch immediately, while the reader
+drains received stdout through its normal checkpoints and validates decoder EOF.
+The provider invalidates local read authority on physical exit and defers turn
+rejection and runtime shutdown until that reader stops, preserving buffered
+terminal evidence. Physical exit and reader completion are tracked separately so
+shutdown cannot wait for an already-consumed close event. Explicit disposal,
+genuine transport errors and frame deadline failures still cancel consumption
+immediately.
+
 The [Controller design](../../../../docs/design/task-session-protocol.md#codex-输出消费与-io)
 owns the execution contract and its limits. Ordinary regressions exercise real
-socket readiness, frame deadlines and shutdown. A separate local stress fixture
+socket readiness, frame deadlines, immediate cancellation and real-process exit
+with buffered notifications and responses. A separate local stress fixture
 retains native stdout pipes, tool projection, SQLite, authenticated runtime IPC
 and an independent client process, including combined persistent outbox accounting.
 
@@ -50,6 +62,11 @@ the opportunity for ready I/O must also exist within the chunk.
 **Cancel pending immediates during close.** Clearing an immediate without settling
 its awaited Promise can prevent the reader and media cleanup from terminating.
 Letting the existing immediate settle keeps a single joined asynchronous owner.
+
+**Finalize directly on child close.** OS stream closure does not mean that our
+asynchronous reader has consumed its current chunk. Both transport failure and
+provider shutdown can destroy that owned input; natural closure must join the
+reader before applying terminal effects.
 
 ## Consequences
 

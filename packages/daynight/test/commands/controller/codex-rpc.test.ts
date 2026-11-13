@@ -213,6 +213,21 @@ test("an awaited response can retain image media before frame cleanup", async ()
   } finally { rpc.dispose(); await rpc.stopped; }
 });
 
+test("natural close drains response media and preserves a consumer's retained lease after EOF cleanup", async () => {
+  const s = storage(), child = transport(), rpc = new CodexRpc(child, () => {}, { createSpool: s.createSpool });
+  let lease: ReturnType<NonNullable<ReturnType<typeof codexMedia>>["retain"]> | undefined;
+  try {
+    const pending = rpc.request("thread/items/list", {});
+    child.stdout.end(JSON.stringify({ id: 1, result: { data: [{ item: { id: "image", type: "imageGeneration", status: "completed", result: "YQ==" } }] } }) + "\n");
+    child.emit("close");
+    const result = await pending as any;
+    lease = codexMedia(result.data[0].item.result)!.retain();
+    await rpc.stopped;
+    expect(readFileSync(lease.path).toString()).toBe("a");
+    lease.release(); lease = undefined; expect(s.files.every(file => !existsSync(file))).toBe(true);
+  } finally { lease?.release(); rpc.dispose(); await rpc.stopped; }
+});
+
 test.each(["dispose", "error", "malformed"])("retained response media survives %s while later frames stop", async action => {
   const s = storage(), child = transport(), received: unknown[] = [], failures: Error[] = [], original = new Error("Original native failure.");
   const rpc = new CodexRpc(child, message => received.push(message), { createSpool: s.createSpool, onFatalError: error => failures.push(error) });

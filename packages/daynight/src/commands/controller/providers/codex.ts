@@ -43,7 +43,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   options.assertNativeDispatch?.();
   const child: ChildProcessWithoutNullStreams = spawn(command.file, command.args, { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
-  let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
+  let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", nativeClosed = false, closed = false, closing = false, sending = false;
   let projection: CodexProjection;
   let authority: CodexReadAuthority | undefined;
   let imageInputs: CodexImageInputs, imageProjection: CodexImageProjection;
@@ -61,7 +61,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const approvalItems = new Map<string, NativeObject>();
   const errors = new CodexErrors(options.onTimeline);
   const capabilities = { send: true, steer: true, cancel: true, respond: true };
-  const state = () => options.onState({ nativeSessionId: nativeId || null, activity: pending.size ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value, images: controls.imageCapabilities(!closed && !closing && !transportFailed ? imageProfile : null) } : {}), capabilities: closed || transportFailed ? { send: false, steer: false, cancel: false, respond: false } : capabilities });
+  const state = () => options.onState({ nativeSessionId: nativeId || null, activity: pending.size ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value, images: controls.imageCapabilities(!nativeClosed && !closed && !closing && !transportFailed ? imageProfile : null) } : {}), capabilities: nativeClosed || closed || transportFailed ? { send: false, steer: false, cancel: false, respond: false } : capabilities });
   const reportFatal = (error: Error) => { if (!closing && !fatalReported) { fatalReported = true; options.onFatalError?.(error); } };
   const showInteraction = (value: Pending) => options.onTimeline({ entryId: value.interaction.interactionId, revision: value.interaction.revision, kind: "interaction", interaction: value.interaction });
   const expire = () => { for (const p of pending.values()) { p.interaction = { ...p.interaction, state: "expired", revision: "2" }; showInteraction(p); p.rejected?.(new Error("Native interaction expired before confirmation.")); } pending.clear(); approvalItems.clear(); };
@@ -184,18 +184,23 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     ...(options.drainNativeReadPolicy ? { drain: options.drainNativeReadPolicy } : {}), ...(options.assertNativeDispatch ? { assertNativeDispatch: options.assertNativeDispatch } : {}) });
   controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor, options.assertNativeDispatch);
   child.once("close", () => {
+    nativeClosed = true;
     authority?.invalidate();
-    initialSettingsAbort.abort(new Error("Native Codex closed before initial settings persistence was confirmed."));
-    closed = true;
-    const error = new Error("Native Codex connection ended; pending operation results are unknown.");
-    if (currentTurnId) turns.complete(currentTurnId, error);
-    currentTurnId = null; activity = closing ? "stopped" : "unknown"; expire(); state();
-    reportFatal(error);
+    // Buffered responses and terminal notifications remain definitive evidence.
+    // Revoking read authority does not transfer ownership of the stdout reader.
+    void rpc.stopped.then(() => {
+      initialSettingsAbort.abort(new Error("Native Codex closed before initial settings persistence was confirmed."));
+      closed = true;
+      const error = new Error("Native Codex connection ended; pending operation results are unknown.");
+      if (currentTurnId) turns.complete(currentTurnId, error);
+      currentTurnId = null; activity = closing ? "stopped" : "unknown"; expire(); state();
+      reportFatal(error);
+    });
   });
   const stop = async () => {
     initialSettingsAbort.abort(new Error("Native Codex stopped before initial settings persistence was confirmed."));
     closing = true; controls.close();
-    if (closed) { rpc.dispose(); await rpc.stopped; await Promise.all(terminalProjections); await imageProjector.close(); return; }
+    if (nativeClosed || closed) { rpc.dispose(); await rpc.stopped; await Promise.all(terminalProjections); await imageProjector.close(); return; }
     const exited = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Native Codex stop is unconfirmed.")), 10_000); child.once("close", () => { clearTimeout(timer); resolve(); }); });
     child.stdin.end(); const kill = setTimeout(() => child.kill("SIGTERM"), 1_000); const force = setTimeout(() => child.kill("SIGKILL"), 5_000);
     try { await exited; } finally {
@@ -277,7 +282,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, skill?: { name: string; path: string }): Promise<ProviderReceipt> => {
       // A discovered skill supplies native input even when its text arguments are empty.
       const { text, images } = skill ? { text: nativeInputText(inputValue), images: [] } : validateNativeInput(inputValue);
-      if (closed || transportFailed || sending || pending.size || expectedTurnId !== currentTurnId) throw new NativeRpcError(-32602, "Native turn changed or interaction is pending.");
+      if (nativeClosed || closed || transportFailed || sending || pending.size || expectedTurnId !== currentTurnId) throw new NativeRpcError(-32602, "Native turn changed or interaction is pending.");
       sending = true;
       const revision = controls.store.value.revision;
       let dispatched = false;
@@ -287,7 +292,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         const capability = controls.imageCapabilities(imageProfile);
         if ((expectedTurnId ? capability.steer : capability.send) !== "supported") throw new NativeRpcError(-32602, "Native image capability is unknown or unsupported.");
         await verifyNativeImageFiles(images);
-        if (closed || closing || pending.size || currentTurnId !== expectedTurnId || revision !== controls.store.value.revision || (expectedTurnId ? controls.imageCapabilities(imageProfile).steer : controls.imageCapabilities(imageProfile).send) !== "supported") throw new NativeRpcError(-32602, "Native image admission changed before dispatch.");
+        if (nativeClosed || closed || closing || pending.size || currentTurnId !== expectedTurnId || revision !== controls.store.value.revision || (expectedTurnId ? controls.imageCapabilities(imageProfile).steer : controls.imageCapabilities(imageProfile).send) !== "supported") throw new NativeRpcError(-32602, "Native image admission changed before dispatch.");
         imageInputs.prepare(inputValue, operationId, expectedTurnId);
       } else interruptions.submitting(operationId, text, expectedTurnId);
       const observeReceipt = (value: unknown) => {
@@ -317,9 +322,9 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   return {
     nativeSessionId: nativeId, send, acknowledgeImageOccurrences: () => imageProjector.acknowledged(),
     async refreshControls() { await controls.refresh(); return { disposition: "handled" }; },
-    async setSetting(id, value, operationId, revision) { if (closed || sending) throw new NativeRpcError(-32602, "Native controls are busy."); await controls.set(id, value, operationId, revision); return { disposition: "handled" }; },
+    async setSetting(id, value, operationId, revision) { if (nativeClosed || closed || sending) throw new NativeRpcError(-32602, "Native controls are busy."); await controls.set(id, value, operationId, revision); return { disposition: "handled" }; },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
-      if (closed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
+      if (nativeClosed || closed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
       const command = controls.command(id, revision);
       if (command.kind === "compact") { if (args.trim()) throw new NativeRpcError(-32602, "Compact does not accept arguments."); options.assertNativeDispatch?.(); await rpc.request("thread/compact/start", { threadId: nativeId }); return { disposition: "handled" }; }
       if (command.kind === "skill") return send(textNativeInput(args), operationId, null, { name: command.name, path: command.path });
@@ -328,7 +333,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     },
     async cancel(expectedTurnId) { if (currentTurnId !== expectedTurnId) throw new NativeRpcError(-32602, "Native turn changed."); options.assertNativeDispatch?.(); await rpc.request("turn/interrupt", { threadId: nativeId, turnId: expectedTurnId }); await turns.wait(expectedTurnId, Date.now() + 30_000).catch(error => { if (!turns.isComplete(expectedTurnId)) throw error; }); return { disposition: "handled" }; },
     async respond(interactionId, revision, response): Promise<ProviderReceipt> {
-      const p = pending.get(interactionId); if (!p || revision !== p.interaction.revision || p.settled) throw new NativeRpcError(-32602, "Native interaction is stale."); validateResponse(p.interaction, response);
+      const p = pending.get(interactionId); if (nativeClosed || closed || transportFailed || !p || revision !== p.interaction.revision || p.settled) throw new NativeRpcError(-32602, "Native interaction is stale."); validateResponse(p.interaction, response);
       options.assertNativeDispatch?.();
       const confirmed = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Native interaction result is unknown.")), 30_000); p.settled = () => { clearTimeout(timer); resolve(); }; p.rejected = error => { clearTimeout(timer); reject(error); }; });
       rpc.respond(p.nativeId, p.result(response)); await confirmed; return { disposition: "handled" };

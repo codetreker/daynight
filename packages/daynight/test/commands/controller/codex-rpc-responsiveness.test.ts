@@ -1,4 +1,6 @@
 import { EventEmitter, once } from "node:events";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
 import { PassThrough, Readable } from "node:stream";
 import { setImmediate as nextIo } from "node:timers/promises";
@@ -94,7 +96,7 @@ test("successive partial slices retain the original absolute frame deadline and 
   } finally { rpc.dispose(); await rpc.stopped; }
 });
 
-test.each(["dispose", "error", "close"])("%s during an awaited immediate stops dispatch and joins reader cleanup", async action => {
+test.each(["dispose", "error"])("%s during an awaited immediate stops dispatch and joins reader cleanup", async action => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const child = transport(), failures: Error[] = [], received: unknown[] = [], nativeError = new Error("Original native error.");
   let stopped = false, stoppedAtClose: boolean | undefined;
@@ -103,8 +105,7 @@ test.each(["dispose", "error", "close"])("%s during an awaited immediate stops d
     setImmediate(() => {
       stoppedAtClose = stopped;
       if (action === "dispose") rpc.dispose();
-      else if (action === "error") child.emit("error", nativeError);
-      else child.emit("close");
+      else child.emit("error", nativeError);
     });
   }, { createSpool: noSpool, onFatalError: error => failures.push(error) });
   void rpc.stopped.then(() => { stopped = true; });
@@ -114,8 +115,56 @@ test.each(["dispose", "error", "close"])("%s during an awaited immediate stops d
     expect(stoppedAtClose).toBe(false); expect(received).toHaveLength(1); expect(vi.getTimerCount()).toBe(0);
     expect(child.stdout.destroyed).toBe(true);
     if (action === "dispose") expect(failures).toEqual([]);
-    else if (action === "error") expect(failures).toEqual([nativeError]);
-    else expect(failures[0]!.message).toContain("Native process closed");
+    else expect(failures).toEqual([nativeError]);
+  } finally { rpc.dispose(); await rpc.stopped; }
+});
+
+test("natural close blocks new writes while draining received notifications and a pending response", async () => {
+  const child = transport(), received: number[] = [], failures: Error[] = [], closed = Promise.withResolvers<void>();
+  const rpc = new CodexRpc(child, message => {
+    received.push((message.params as { index: number }).index);
+    if (received.length === 1) setImmediate(() => { child.emit("close"); closed.resolve(); });
+  }, { createSpool: noSpool, onFatalError: error => failures.push(error) });
+  try {
+    const response = rpc.request("finish", {});
+    void response.catch(() => {});
+    child.stdout.end(notification(0) + notification(1) + JSON.stringify({ id: 1, result: "confirmed" }) + "\n");
+    await closed.promise;
+    await expect(rpc.request("too-late", {})).rejects.toThrow("closed");
+    expect(() => rpc.notify("too-late")).toThrow("closed");
+    expect(child.stdin.read().toString()).toBe('{"id":1,"method":"finish","params":{}}\n');
+    expect(failures).toEqual([]);
+    expect(await response).toBe("confirmed");
+    await rpc.stopped;
+    expect(received).toEqual([0, 1]); expect(failures).toHaveLength(1);
+    expect(failures[0]!.message).toContain("Native transport ended");
+  } finally { rpc.dispose(); await rpc.stopped; }
+});
+
+test("a real subprocess exit drains every final notification and the successful response before reporting EOF", async () => {
+  const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/codex-rpc-exit.mjs", import.meta.url))], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  const received: number[] = [], events: string[] = [];
+  const rpc = new CodexRpc(child, message => { received.push((message.params as { index: number }).index); }, { createSpool: noSpool, onFatalError: () => events.push("EOF") });
+  try {
+    const response = await rpc.request("finish", {}).then(value => { events.push("response"); return value; });
+    expect(response).toEqual({ confirmed: true });
+    await rpc.stopped;
+    expect(received).toEqual(Array.from({ length: 1000 }, (_, index) => index));
+    expect(events).toEqual(["response", "EOF"]);
+  } finally { rpc.dispose(); child.kill(); await rpc.stopped; }
+});
+
+test.each(["", '{"id":1,"result":'])("natural close settles an unanswered operation after validating final bytes %j", async suffix => {
+  const child = transport(), received: unknown[] = [], failures: Error[] = [];
+  const rpc = new CodexRpc(child, message => {
+    received.push(message);
+    setImmediate(() => child.emit("close"));
+  }, { createSpool: noSpool, onFatalError: error => failures.push(error) });
+  try {
+    const pending = expect(rpc.request("unconfirmed", {})).rejects.toThrow(suffix ? "incomplete frame" : "Native transport ended");
+    child.stdout.end(notification(0) + suffix);
+    await pending; await rpc.stopped;
+    expect(received).toHaveLength(1); expect(failures).toHaveLength(1);
   } finally { rpc.dispose(); await rpc.stopped; }
 });
 

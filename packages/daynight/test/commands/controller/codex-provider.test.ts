@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
-import type { ProviderState } from "../../../src/commands/controller/providers/types.js";
+import type { ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 
 let nativeHome: string;
 beforeEach(async () => { const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true }); nativeHome = await mkdtemp(join(base, "codex-provider-home-")); vi.stubEnv("CODEX_HOME", nativeHome); });
@@ -236,6 +236,27 @@ test("a late turn/start receipt does not resurrect a completed native turn", asy
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: s => states.push(s), onSpawn: () => {} });
   try { const receipt = await provider.send(textNativeInput("test"), randomUUID(), null); await provider.waitForTurn(receipt.turnId!, Date.now() + 1000); expect(states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null }); }
   finally { await provider.close(); }
+});
+
+test("natural native exit preserves buffered terminal projection, turn completion and receipt before runtime shutdown", async () => {
+  const entries: Parameters<ProviderOptions["onTimeline"]>[0][] = [], events: string[] = [], states: ProviderState[] = [];
+  const fatal = Promise.withResolvers<void>();
+  let shutdown: Promise<void> | undefined;
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_EXIT_BURST: "1" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)),
+    onTimeline: entry => { entries.push(entry); if (entry.kind === "assistant_message" && entry.content.some(part => part.type === "text" && part.text === "final answer before exit")) events.push("final projection"); },
+    onState: state => states.push(state), onSpawn: () => {},
+    onFatalError: () => { events.push("EOF"); shutdown = provider.close(); fatal.resolve(); },
+  });
+  try {
+    const receipt = await provider.send(textNativeInput("exit after output"), randomUUID(), null).then(value => { events.push("receipt"); return value; });
+    expect(receipt).toEqual({ disposition: "started", turnId: "native-turn" });
+    await provider.waitForTurn("native-turn", Date.now() + 1000);
+    await fatal.promise; await shutdown;
+    expect(events).toEqual(["final projection", "receipt", "EOF"]);
+    expect(entries.filter(entry => entry.kind === "assistant_message")).toHaveLength(1001);
+    expect(states.at(-1)).toMatchObject({ currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
+  } finally { await provider.close(); }
 });
 
 test("concurrent idle sends cannot both pass native turn admission", async () => {
