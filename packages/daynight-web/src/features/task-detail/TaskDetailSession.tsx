@@ -207,11 +207,13 @@ export class TaskDetailSessions {
           continue;
         }
         if (entry.source === "direct" && event.directAccessRecheck && entry.directAccessPending) {
-          entry.directAccessPending = false; entry.admitted = true;
           if (event.error !== undefined) this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
-          else if (entry.listeners.size > 0) queueMicrotask(() => {
-            if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
-          });
+          else {
+            entry.directAccessPending = false; entry.admitted = true;
+            if (entry.listeners.size > 0) queueMicrotask(() => {
+              if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
+            });
+          }
           continue;
         }
         if (entry.source === "direct" && event.accessRevoked && entry.directAccessPending) {

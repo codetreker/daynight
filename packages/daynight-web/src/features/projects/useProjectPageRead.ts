@@ -11,7 +11,9 @@ export const useProjectPageRead = (projectId: string) => {
   const [state, setState] = useState<{ session: typeof session; projectId: string; project: Project | null; error: unknown }>({ session, projectId, project: null, error: null });
   const active = useRef<AbortController | null>(null);
   const sequence = useRef(0);
+  const directRecheck = useRef(false);
   const read = useCallback(async (retried = false, automatic = false): Promise<void> => {
+    if (directRecheck.current) return;
     if (automatic && active.current !== null && !active.current.signal.aborted) return;
     active.current?.abort();
     const controller = new AbortController();
@@ -77,7 +79,7 @@ export const useProjectPageRead = (projectId: string) => {
   useEffect(() => {
     void session.revalidate();
     void read();
-    const unsubscribeRetry = session.subscribeProjectReadRetry(automatic => { void read(false, automatic); });
+    const unsubscribeRetry = session.subscribeProjectReadRetry(automatic => { if (!automatic) session.scope.retryProjectVerification(projectId); void read(false, automatic); });
     const withdraw = (error: unknown) => {
       ++sequence.current; active.current?.abort();
       setState({ session, projectId, project: null, error });
@@ -85,6 +87,9 @@ export const useProjectPageRead = (projectId: string) => {
     const unsubscribeWithdrawal = session.subscribeProjectReadWithdrawal(() => withdraw(null));
     const unsubscribe = session.scope.subscribe(event => {
       if (event.projectId !== projectId) return;
+      if (event.directAccessUncertain) { directRecheck.current = true; withdraw(event.error ?? null); return; }
+      if (event.directAccessRecheck && event.error === undefined) { directRecheck.current = false; void read(false, true); }
+      else if (event.directAccessRecheck) setState({ session, projectId, project: null, error: event.error });
       if (event.accessRevoked && !session.isProjectReadCleanupFailure(event)) withdraw(event.error ?? null);
     });
     const refresh = () => { if (document.visibilityState !== "hidden") void read(false, true); };
@@ -100,7 +105,7 @@ export const useProjectPageRead = (projectId: string) => {
   useEffect(() => {
     if (access.status === "ready") void read(false, true);
   }, [access.status, read, session]);
-  const retry = useCallback(() => { void session.revalidate(); void read(); }, [session, read]);
+  const retry = useCallback(() => { session.scope.retryProjectVerification(projectId); void session.revalidate(); void read(); }, [session, projectId, read]);
   const currentState = state.session === session && state.projectId === projectId ? state : null;
   const project = session.canObserveProjectRead() && !session.scope.isInvalidated ? currentState?.project ?? null : null;
   return { project, error: currentState?.error ?? (access.status === "unavailable" || access.status === "error" && project === null ? access.error : null), retry };

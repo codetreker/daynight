@@ -4,11 +4,13 @@ import { openDB } from 'idb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiError, getTaskSync } from '../src/api/client';
+import * as client from '../src/api/client';
 import { getProjectAccess } from '../src/api/auth';
 import { getProject } from '../src/api/project-settings';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { ProjectAccessBoundary, ProjectAccessSession, useProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
+import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
 import { TestTaskCacheBoundary } from './helpers/taskCache';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
@@ -67,10 +69,9 @@ it('withdraws the observed generation in another scope even if access revalidati
   } finally { failure.mockRestore(); }
 });
 
-it('keeps a loaded peer on an unbound denial while its own access check fails and later succeeds', async () => {
+it('isolates a loaded peer on an unbound denial until its own access check succeeds', async () => {
   vi.stubGlobal('BroadcastChannel', Channel);
   const peer = scope(); await admit(peer);
-  const originalGeneration = peer.getAuthorizedProject(projectId)!.manifest.cacheGeneration;
   const cold = scope();
   vi.spyOn(cold, 'beginSync').mockRejectedValue(new Error('cache unavailable'));
   vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
@@ -82,16 +83,17 @@ it('keeps a loaded peer on an unbound denial while its own access check fails an
     <ProjectPage projectId={projectId} />
   </TestTaskCacheBoundary></LocaleProvider>);
   await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ kind: 'network' }) })));
-  expect(peer.isProjectSuspended(projectId)).toBe(false);
-  expect(peer.getAuthorizedProject(projectId)!.manifest.cacheGeneration).toBe(originalGeneration);
-  expect(events).not.toContainEqual(expect.objectContaining({ accessRevoked: true }));
+  expect(peer.isProjectSuspended(projectId)).toBe(true);
+  expect(peer.getAuthorizedProject(projectId)).toBeNull();
+  expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true }));
 
   vi.mocked(getProjectAccess).mockResolvedValue(directAccessFixture(projectId));
   const reads = vi.mocked(getProjectAccess).mock.calls.length;
   act(() => cold.reportUnboundProjectDenial(projectId));
   await waitFor(() => expect(vi.mocked(getProjectAccess).mock.calls.length).toBeGreaterThan(reads));
-  expect(peer.isProjectSuspended(projectId)).toBe(false);
-  expect(peer.getAuthorizedProject(projectId)!.manifest.cacheGeneration).toBe(originalGeneration);
+  await waitFor(() => expect(peer.isProjectSuspended(projectId)).toBe(false));
+  await admit(peer);
+  expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
 });
 
 
@@ -152,7 +154,8 @@ it('does not withdraw a peer when an older verification fails after newer projec
   const session = new ProjectAccessSession(projectId, peer);
   expect(session.publishProjectRead(session.beginObservation())).toBe(true);
   pending.reject(new ApiError('server', 404, 'not_found'));
-  await waitFor(() => expect(vi.mocked(getProjectAccess).mock.calls.length).toBeGreaterThan(1));
+  await waitFor(() => expect(peer.isProjectSuspended(projectId)).toBe(false));
+  await admit(peer);
   expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
   expect(peer.canPreviewProject(projectId)).toBe(true);
 });
@@ -215,7 +218,7 @@ it('retires old Project reads after an event-free transfer denial and reads the 
   vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project).mockReturnValueOnce(old.promise)
     .mockResolvedValue({ ...graph.project, name: 'Current project' });
   let access: ProjectAccessSession | null = null;
-  const Probe = () => { access = useProjectAccessSession(projectId); return null; };
+  const Probe = () => { access = useProjectAccessSession(projectId)!; return null; };
   render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
     <ProjectAccessBoundary projectId={projectId}><Probe /><ProjectPage projectId={projectId} /></ProjectAccessBoundary>
   </TestTaskCacheBoundary></LocaleProvider>);
@@ -384,23 +387,18 @@ it('keeps task data when an older task-sync 404 arrives after a newer Project re
   expect(current.getAuthorizedProject(projectId)).not.toBeNull();
 });
 
-it('rechecks a same-generation peer denial instead of erasing a newer readable Project', async () => {
+it('withdraws a same-generation peer denial despite a readable Project', async () => {
   vi.stubGlobal('BroadcastChannel', Channel);
   const sender = scope(); await admit(sender);
   const peer = scope(); await admit(peer);
   const ticket = await sender.beginSync(projectId, sender.signal);
   const session = new ProjectAccessSession(projectId, peer);
   expect(session.publishProjectRead(session.beginObservation())).toBe(true);
-  const held = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
-  vi.mocked(getProjectAccess).mockReset().mockReturnValue(held.promise);
   const events: { accessRevoked?: true }[] = [];
   peer.subscribe(event => events.push(event));
   await sender.revokeProject(ticket, sender.signal);
-  await waitFor(() => expect(getProjectAccess).toHaveBeenCalled());
-  expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
-  expect(events).not.toContainEqual(expect.objectContaining({ accessRevoked: true }));
-  await act(async () => held.resolve(directAccessFixture(projectId)));
-  expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
+  await waitFor(() => expect(peer.getAuthorizedProject(projectId)).toBeNull());
+  expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true }));
 });
 
 it('propagates a confirmed deletion despite a peer Project read', async () => {
@@ -414,19 +412,14 @@ it('propagates a confirmed deletion despite a peer Project read', async () => {
   await waitFor(() => expect(peer.getAuthorizedProject(projectId)).toBeNull());
 });
 
-it('withdraws a readable peer only after its own access check confirms a same-generation denial', async () => {
+it('withdraws a readable peer immediately for a same-generation denial', async () => {
   vi.stubGlobal('BroadcastChannel', Channel);
   const sender = scope(); await admit(sender);
   const peer = scope(); await admit(peer);
   const ticket = await sender.beginSync(projectId, sender.signal);
   const session = new ProjectAccessSession(projectId, peer);
   expect(session.publishProjectRead(session.beginObservation())).toBe(true);
-  const held = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
-  vi.mocked(getProjectAccess).mockReset().mockReturnValue(held.promise);
   await sender.revokeProject(ticket, sender.signal);
-  await waitFor(() => expect(getProjectAccess).toHaveBeenCalled());
-  expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
-  await act(async () => held.reject(new ApiError('server', 404, 'not_found')));
   await waitFor(() => expect(peer.getAuthorizedProject(projectId)).toBeNull());
 });
 
@@ -449,23 +442,76 @@ it('immediately withdraws a Project-only peer on a confirmed deletion without a 
   await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
 });
 
-it('independently checks a transfer denial and keeps a peer Project already observed as readable', async () => {
+it('isolates a Project-only peer during an identity mismatch when a bound denial arrives', async () => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const sender = scope(); await admit(sender);
+  const ticket = await sender.beginSync(projectId, sender.signal);
+  const peer = scope(); await peer.beginSync(projectId, peer.signal);
+  const session = new ProjectAccessSession(projectId, peer);
+  expect(session.publishProjectRead(session.beginObservation())).toBe(true);
+  const events: { accessRevoked?: true }[] = [];
+  peer.subscribe(event => events.push(event));
+  peer.principalMismatch();
+  await sender.revokeProject(ticket, sender.signal);
+  await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ accessRevoked: true })));
+  expect(peer.isProjectSuspended(projectId)).toBe(true);
+});
+
+it('isolates a Project-only peer on a transfer denial and independently rechecks it', async () => {
   vi.stubGlobal('BroadcastChannel', Channel);
   const sender = scope(); await admit(sender);
   const ticket = await sender.beginSync(projectId, sender.signal);
   const peer = scope(); vi.spyOn(peer, 'beginSync').mockRejectedValue(new Error('cache unavailable'));
   const accessCheck = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
-  vi.mocked(getProject).mockReset().mockResolvedValue(graph.project);
+  const projectCheck = Promise.withResolvers<typeof graph.project>();
+  vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project).mockReturnValue(projectCheck.promise);
   vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
   vi.mocked(getProjectAccess).mockReset().mockReturnValue(accessCheck.promise);
   render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
     <ProjectPage projectId={projectId} />
   </TestTaskCacheBoundary></LocaleProvider>);
-  const heading = await screen.findByRole('heading', { name: graph.project.name });
+  await screen.findByRole('heading', { name: graph.project.name });
   await sender.revokeProject(ticket, sender.signal);
   await waitFor(() => expect(vi.mocked(getProjectAccess).mock.calls.length).toBeGreaterThan(0));
-  expect(screen.getByRole('heading', { name: graph.project.name })).toBe(heading);
-  expect(peer.isProjectSuspended(projectId)).toBe(false);
+  expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
+  expect(peer.isProjectSuspended(projectId)).toBe(true);
   await act(async () => accessCheck.resolve(directAccessFixture(projectId)));
-  expect(screen.getByRole('heading', { name: graph.project.name })).toBe(heading);
+  await act(async () => projectCheck.resolve(graph.project));
+  expect(await screen.findByRole('heading', { name: graph.project.name })).toBeVisible();
+  expect(peer.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it.each(['bound', 'unbound'] as const)('isolates Project and direct detail on a %s denial until explicit verification succeeds', async kind => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const sender = scope(); await admit(sender);
+  const peer = scope(); await admit(peer);
+  const ticket = await sender.beginSync(projectId, sender.signal);
+  let online = true;
+  vi.mocked(getProject).mockReset().mockResolvedValue(graph.project);
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async () => {
+    if (!online) throw new ApiError('network');
+    return directAccessFixture(projectId);
+  });
+  vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  let access!: ProjectAccessSession;
+  const Probe = () => { access = useProjectAccessSession(projectId)!; return null; };
+  const sessions = new TaskDetailSessions(peer); sessions.subscribe(projectId, taskId, () => {});
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
+      <ProjectAccessBoundary projectId={projectId}><Probe /><ProjectPage projectId={projectId} /></ProjectAccessBoundary>
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: graph.project.name });
+    sessions.openDirect(projectId, taskId);
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    online = false;
+    if (kind === 'bound') await act(async () => { await sender.revokeProject(ticket, sender.signal); });
+    else act(() => sender.reportUnboundProjectDenial(projectId));
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId)).toMatchObject({ status: 'error', detail: null }));
+    expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
+    online = true;
+    act(() => access.retryProjectRead());
+    await screen.findByRole('heading', { name: graph.project.name });
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+  } finally { sessions.dispose(); }
 });

@@ -25,11 +25,11 @@ Project observation; already dispatched automatic sync cannot publish a competin
 access receipt during that check. Its dispatched request has a 60-second deadline;
 ordinary background Project reads leave task synchronization running. A
 captured cache generation permits fenced withdrawal and cleanup. Without one, a same-account hint causes peer scopes to verify access;
-peers with confirmed access retain their displayed content during the check,
-while cold peers are isolated. A peer independently checks a read-based denial that cannot be ordered against
-its own Project observation. Confirmed deletion immediately withdraws peer
-content; an unordered transfer hint requires peer verification because access
-may have been restored. Within one scope, accepted Project, access, deletion
+peers isolate their project and direct content during verification,
+and restore it only after an identity-bound read or recheck. Generation-bound hints retain the existing cache
+and direct-detail withdrawal and revalidation rules. A Project-only peer without
+a comparable cache fence or projection temporarily isolates the page and verifies
+access independently; confirmed deletion withdraws it immediately. Within one scope, accepted Project, access, deletion
 preview, people, task detail and search observations fence older denials
 without weakening confirmed write cleanup. Background checks retain displayed facts; read errors
 remain recoverable. The task graph's loading and error presentation belongs to the
@@ -51,8 +51,8 @@ task synchronization, even when Project access and metadata are available.
 
 **Permanently revoke an inferred generation for an unbound 404.** An older
 request can finish after a peer admits a new generation; inferring that the
-denial applies to it would erase current access. A fresh peer check preserves
-confirmed content and distinguishes an independently observed denial.
+denial applies to it would erase current access. A fresh peer check distinguishes an independently observed denial while
+isolating content during uncertainty.
 
 **Use the project directory as the page source.** The directory is paginated
 and filtered; direct entry can address a readable Project absent from the

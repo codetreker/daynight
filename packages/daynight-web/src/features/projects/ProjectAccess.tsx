@@ -289,8 +289,12 @@ export class ProjectAccessSession {
         queueMicrotask(() => { if (this.live()) this.recheckProjectRead(); });
         return;
       }
+      if (event.directAccessRecheck && event.error !== undefined) {
+        this.update({ ...this.state, status: 'error', error: event.error, projectReadAvailable: false });
+        return;
+      }
       if (event.taskNotFound) { void this.revalidateAfterMutation(); return; }
-      if (!event.accessRevoked) return;
+      if (!event.accessRevoked && !event.directAccessUncertain) return;
       if (this.isProjectReadCleanupFailure(event)) {
         this.update({ ...this.state, error: event.error });
         return;
@@ -303,7 +307,7 @@ export class ProjectAccessSession {
       const recovery = { revision: this.scope.getProjectRevision(this.projectId), admission: this.scope.getAdmissionRevision(this.projectId),
         ...(event.revokedGeneration === undefined ? {} : { cleanupGeneration: event.revokedGeneration }) };
       this.projectReadRecovery = recovery;
-      if (!this.publishingProjectReadDenial) queueMicrotask(() => {
+      if (!event.directAccessUncertain && !this.publishingProjectReadDenial) queueMicrotask(() => {
         if (this.projectReadRecovery === recovery && this.canObserveProjectRead()) this.recheckProjectRead();
       });
       const priorFailure = previous !== null && !(previous instanceof ApiError && previous.kind === 'server' && previous.status === 404 && previous.code === 'not_found');
