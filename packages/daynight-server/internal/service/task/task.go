@@ -121,7 +121,7 @@ func (s *Tasks) UpdatePartitionedDependencies(ctx context.Context, principal mod
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, _ model.Task) (taskcore.Mutation, error) {
+	return s.versionedWriteTagged(ctx, principal, projectID, id, input.Version, input.TagIDs, func(tx store.ProjectWriteScope, _ model.Task) (taskcore.Mutation, error) {
 		all, ext, err := PartitionDependencies(ordinary, external)
 		if err != nil {
 			return taskcore.Mutation{}, err
@@ -291,11 +291,15 @@ func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, proj
 }
 
 func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, projectID, id string, version int64, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
+	return s.versionedWriteTagged(ctx, principal, projectID, id, version, nil, prepare)
+}
+
+func (s *Tasks) versionedWriteTagged(ctx context.Context, principal model.Principal, projectID, id string, version int64, requested *[]string, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, version)
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+	return s.writeTagged(ctx, principal, projectID, requested, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
 		current, err := tx.TaskDAO().Task(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskcore.Mutation{}, taskcore.NotFound(err)

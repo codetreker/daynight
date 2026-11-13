@@ -95,6 +95,8 @@ Set an ordinary Task's `parentId` at creation or with `task_update`; it must nam
 
 New Tasks default to `proposed`, automatic execution disabled, and omitted assignee set to the current account. Explicit creation status supports proposed/todo; use todo when registering confirmed work. Registration does not start execution. `task_create` has no allowAgents input; later automatic permission requires its separate authorized update. Dependencies follow [Dependencies](daynight://manuals/dependencies.md).
 
+Task and Goal creation and updates accept `tagIds`, a complete array of Project tag UUIDs. Omitted on creation means no tags; omitted on update preserves the current set, and `[]` clears it. Task full and summary results include `tags` as `{id,name}` references, or `[]`. Read the current Task and version before deciding how to reconcile an unknown write outcome; do not blindly repeat it.
+
 | Ordinary Task status | Meaning |
 | --- | --- |
 | `proposed` | Unconfirmed suggestion; unfinished, never ready, excluded from automatic acquisition and prerequisite satisfaction |

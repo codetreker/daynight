@@ -3,7 +3,9 @@ package task_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 )
 
 type tagServiceScope struct {
@@ -308,6 +311,45 @@ func TestReplaceTagsCompletionAndAdmission(t *testing.T) {
 			}
 			assertTagEvents(t, f.events, tc.calls...)
 		})
+	}
+}
+
+func TestReplaceTagsMCPAdmissionUsesReservedTaggedReceipt(t *testing.T) {
+	const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	for _, full := range []bool{false, true} {
+		for _, overflow := range []bool{false, true} {
+			t.Run(fmt.Sprintf("full=%t/overflow=%t", full, overflow), func(t *testing.T) {
+				_, current, _ := taskMockModels()
+				current.Type = model.TaskTypeTask
+				f := newTagServiceFixture(t, current)
+				f.ids = []string{id}
+				f.resolved = []model.Tag{{ID: id, Name: "short"}}
+				f.after.Tags = []model.TagReference{{ID: id, Name: "short"}}
+				reserved := f.after
+				reserved.Tags = []model.TagReference{{ID: id, Name: strings.Repeat("&", 64)}}
+				reserved.Version = math.MaxInt64
+				reserved.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+				size, err := taskprotocol.EncodeMCPResponse(io.Discard, reserved, "request", "changed", "x", false, full, math.MaxInt64)
+				if err != nil {
+					t.Fatal(err)
+				}
+				length := taskcore.MaxTaskResponseJSONBytes - int(size) + 1
+				if overflow {
+					length++
+				}
+				f.ctx = taskservice.WithMCPTaskResponse(f.ctx, "request", strings.Repeat("x", length), false, false, full)
+				got, err := f.run(current.Version, &[]string{id})
+				if overflow {
+					assertTagFault(t, err, "resource_limit_exceeded")
+					if f.callbackErr == nil || !reflect.DeepEqual(got, model.Task{}) {
+						t.Fatalf("admission must abort the write callback: %#v %v", got, err)
+					}
+				} else if err != nil || !reflect.DeepEqual(got, f.after) {
+					t.Fatalf("exact reserved receipt: %#v %v", got, err)
+				}
+				assertTagEvents(t, f.events, "authorize", "task", "resolve", "clock", "replace", "touch", "task")
+			})
+		}
 	}
 }
 

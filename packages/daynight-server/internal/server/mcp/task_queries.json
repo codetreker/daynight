@@ -463,6 +463,26 @@
                           "null"
                         ],
                         "format": "uuid"
+                      },
+                      "tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "format": "uuid"
+                            },
+                            "name": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -480,7 +500,8 @@
                       "titleTruncated",
                       "blockedByCount",
                       "type",
-                      "parentId"
+                      "parentId",
+                      "tags"
                     ],
                     "additionalProperties": false,
                     "allOf": [
@@ -956,6 +977,26 @@
                           "unfinished"
                         ],
                         "additionalProperties": false
+                      },
+                      "tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "format": "uuid"
+                            },
+                            "name": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -980,7 +1021,8 @@
                       "externalDependsOn",
                       "blockedBy",
                       "type",
-                      "parentId"
+                      "parentId",
+                      "tags"
                     ],
                     "additionalProperties": false,
                     "allOf": [
@@ -1211,7 +1253,32 @@
             "items": {
               "type": "array",
               "items": {
-                "type": "object"
+                "type": "object",
+                "properties": {
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "tags"
+                ]
               }
             },
             "projection": {

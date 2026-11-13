@@ -580,6 +580,13 @@ summaries; request `full` for complete content. Task full and summary schemas
 require `type` and nullable `parentId`; the Goal full schema also describes
 `progress`. MCP creation accepts ordinary Tasks and Goals; Task list and ready
 filters select Goal membership, and Task updates can assign or clear a Parent.
+Task and Goal creation and updates accept `tagIds` as a complete set of Project
+tag UUIDs. Omission on creation selects none; omission on update preserves the
+set and `[]` clears it. Task full and summary results include `tags` references
+with stable IDs and current names, including an empty array when untagged. A
+tag-only update uses the dedicated association operation; mixed changes commit
+with metadata in one transaction. Unknown outcomes require a read before deciding
+what to do next.
 Step page cursors bind the parent version and reject
 continuation after a change. Step writes return confirmed version and change facts
 and preserve the original collection capacity. Discussion reads return complete

@@ -75,6 +75,33 @@ func TestRESTEmptyTagsAreAnArray(t *testing.T) {
 	}
 }
 
+func TestMCPTagProjections(t *testing.T) {
+	for _, tags := range [][]model.TagReference{nil, {}, {{ID: "id", Name: "<&标签"}}} {
+		task := model.Task{Tags: tags}
+		for name, value := range map[string]any{"full": MCPTask(task), "summary": MCPTaskSummary(task)} {
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := `"tags":[]`
+			if len(tags) > 0 {
+				want = `"tags":[{"id":"id","name":"\u003c\u0026标签"}]`
+			}
+			if !bytes.Contains(raw, []byte(want)) {
+				t.Fatalf("%s tags: %s", name, raw)
+			}
+		}
+		if len(tags) > 0 {
+			full, summary := MCPTask(task), MCPTaskSummary(task)
+			full.Tags[0].Name = "full changed"
+			summary.Tags[0].Name = "summary changed"
+			if task.Tags[0].Name != "<&标签" {
+				t.Fatal("MCP projection aliases task tags")
+			}
+		}
+	}
+}
+
 func TestRESTSyncTags(t *testing.T) {
 	for _, tags := range [][]model.TagReference{nil, {}, {{ID: "id", Name: "<&标签"}}} {
 		value := RESTSyncRecord(model.TaskViewRecord{Tags: tags})
