@@ -136,9 +136,9 @@ func TestCompleteLoginCoordinatesIndependentScopes(t *testing.T) {
 			} else {
 				f.plan = append(f.plan, "provider", "profile", "new-session", "write", "upsert")
 				if stage != "upsert" {
-					f.plan = append(f.plan, "bootstrap")
+					f.plan = append(f.plan, "admit-profile", "bootstrap")
 					if stage != "bootstrap" {
-						f.plan = append(f.plan, "session")
+						f.plan = append(f.plan, "lookup", "validate-team", "admit-response", "session")
 					}
 				}
 				f.plan = append(f.plan, "finish")
@@ -196,6 +196,29 @@ func TestCompleteLoginCoordinatesIndependentScopes(t *testing.T) {
 					return user, failure
 				}
 				return user, nil
+			}
+			f.identity.ops.admitCompleteUser = func(got model.User, response bool) error {
+				if response {
+					f.hit("admit-response")
+					want := user
+					want.PersonalTeam = ref
+					f.equal(got, want)
+				} else {
+					f.hit("admit-profile")
+					f.equal(got, user)
+				}
+				return nil
+			}
+			f.identity.ops.user = func(ctx context.Context, dao store.IdentityDAO, principal model.Principal) (model.User, store.PersonalTeamFacts, error) {
+				f.hit("lookup")
+				f.bound(ctx, dao)
+				f.equal(principal.UserID, user.ID)
+				return user, store.PersonalTeamFacts{ID: ref.ID, MemberCount: 1, OwnerAdminCount: 1}, nil
+			}
+			f.identity.ops.validatePersonalTeam = func(facts store.PersonalTeamFacts) error {
+				f.hit("validate-team")
+				f.equal(facts.ID, ref.ID)
+				return nil
 			}
 			f.identity.ops.bootstrapPersonalTeam = func(ctx context.Context, dao store.PersonalTeamDAO, id string, now time.Time) (model.TeamRef, error) {
 				f.hit("bootstrap")

@@ -282,9 +282,10 @@ callback 在同一事务验证绑定/state/provider/期限并消费 pending；�
 
 领取成功且 provider 匹配后，identity 领域校验外部 ID、姓名和邮箱各最多 1024 UTF-8 bytes，
 头像 URL 最多 524288 UTF-8 bytes；纯 profile codec 按实际规范化 JSON 编码计量完整对象，
-上限 1048576 bytes。转义可能使字段分别合规但整体超限。所有校验在本地用户、Personal Team
-和 session 的写事务之前完成；拒绝映射为 502 `identity_unavailable`，保留已经提交的 pending
-消费事实，旧资料不变。null、false 和头像 data URL 保持原值，不添加头像 scheme 限制。
+上限 1048576 bytes。转义可能使字段分别合规但整体超限。原始上游资料在本地用户、Personal Team
+和 session 的写事务之前准入；拒绝映射为 502 `identity_unavailable`，保留已经提交的 pending
+消费事实，旧资料不变。SDK 将 null 映射为 nil，非 null 字符串及 false 保持原值；身份响应省略必需字段
+仍是协议错误，头像 data URL 原样保存，不添加空白归一化或头像 scheme 限制。
 
 通过原始资料的字段与编码容量校验后，service 使用 identity 领域的 `CanonicalUniAuthID`
 统一外部身份键：`microsoft:<tid>:<oid>` 转换为 `msft:<oid>@<tid>`，标准格式保持原值，
@@ -302,11 +303,21 @@ callback 在同一事务验证绑定/state/provider/期限并消费 pending；�
 
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
 领取响应丢失都重新登录，不能重试可能已消费的 code。用户以规范化后的完整外部身份键唯一
-upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。规范用户 UPSERT 后，
-`initializePersonalTeam` 在同一事务建立唯一 Personal Team 与真实 owner admin 成员行，
-随后写 session。重复及并发首次登录复用该 Team；已有 Personal 缺少 owner admin 属于
+upsert，本地 UUID、createdAt 和关联不变，不按邮箱合并。首次插入保存原始 nullable 资料；冲突时
+单条 `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` 在用户行锁下合并，返回实际结果：name 和
+avatarUrl 只在本次非 null 时更新；email 为 null 时保留原 email 和 emailVerified，email 相同则仅在
+本次标记非 null 时更新标记，email 不同时保存新 email 和本次 nullable 标记。由当前冲突行计算避免
+预读快照覆盖并发 PATCH 的结果，也防止旧地址的验证状态转用于新地址。
+
+写事务对实际合并结果重新校验字段和规范化 profile JSON 容量；即使旧资料与上游资料分别合规，
+合并结果仍可能超限。`initializePersonalTeam` 在同一事务建立唯一 Personal Team 与真实 owner admin
+成员行，再校验实际用户公开表示的容量，随后写 session。严格事务完成机制使任一最终准入失败回滚
+用户和 Personal Team 的本次写入并停止创建 session，容量拒绝映射为 502 `identity_unavailable`，
+保留错误链；数据库、取消和未知提交结果沿用事务完成合同。pending 消费已独立提交，失败后仍须
+重新登录。重复及并发首次登录复用该 Team；已有 Personal 缺少 owner admin 属于
 完整性错误，不在 Authenticate 中补数据。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，包括独立 `/login`、`/auth/complete` 及实际 callback；
 无目标默认 `/projects`，不把已提供的非法目标替换成默认值。
+[登录资料合并决策](../../.agents/notes/implemented/bug-fix/2026-11-13-uniauth-login-profile-merge.md)记录合并与最终准入的取舍。
 
 ### 完整用户初始化与本人资料更新
 
@@ -346,7 +357,7 @@ PAT 管理的 `LockActivePAT` 和既有 Session 管理检查保持各自原锁�
 SQL 与清理失败保留原错误优先级。确认提交后的响应取消或写入失败记录 response unknown，
 不重做资料写入，也不在部分响应后补写错误正文。
 GET/HEAD `/api/v1/me` 继续使用原 read-committed 读取、完整 DTO 和 ETag；普通认证读取不改资料，
-后续原生 UniAuth 登录仍按上游姓名与头像覆盖本地两字段；API OAuth 使用同一本人更新用例。
+后续原生 UniAuth 登录仍可用非 null 上游姓名与头像覆盖本地两字段；API OAuth 使用同一本人更新用例。
 [用户初始化与资料更新决策](../../.agents/notes/implemented/feature/2026-11-12-user-profile-patch.md)记录事务与稀疏更新的取舍。
 
 ### 主站 session 与 PAT

@@ -125,17 +125,17 @@ func TestIdentityDAOLoginSessionPATAndPersonalFacts(t *testing.T) {
 		t.Fatalf("updated false-verified profile was not persisted: %+v %v", actual, err)
 	}
 	identityScopeTest(t, s, func(scope IdentityScope) error {
-		cleared, err := scope.IdentityDAO().UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: user.UniAuthID}, now.Add(3*time.Minute))
+		retained, err := scope.IdentityDAO().UpsertUser(ctx, model.User{ID: uuid.NewString(), UniAuthID: user.UniAuthID}, now.Add(3*time.Minute))
 		if err != nil {
 			return err
 		}
-		if cleared.ID != user.ID || !cleared.CreatedAt.Equal(user.CreatedAt) || cleared.Email != nil || cleared.EmailVerified != nil || cleared.Name != nil || cleared.AvatarURL != nil {
-			t.Fatalf("profile clear changed identity or retained nullable fields: %+v", cleared)
+		if retained.ID != user.ID || !retained.CreatedAt.Equal(user.CreatedAt) || retained.Email == nil || *retained.Email != updatedEmail || retained.EmailVerified == nil || *retained.EmailVerified || retained.Name == nil || *retained.Name != updatedName || retained.AvatarURL == nil || *retained.AvatarURL != updatedAvatar {
+			t.Fatalf("null login changed retained profile: %+v", retained)
 		}
 		return nil
 	})
-	if actual, _, err := testutil.IdentityUser(ctx, s, user.ID); err != nil || actual.ID != user.ID || actual.Email != nil || actual.EmailVerified != nil || actual.Name != nil || actual.AvatarURL != nil || !actual.UpdatedAt.Equal(now.Add(3*time.Minute)) {
-		t.Fatalf("cleared profile was not persisted: %+v %v", actual, err)
+	if actual, _, err := testutil.IdentityUser(ctx, s, user.ID); err != nil || actual.ID != user.ID || actual.Email == nil || *actual.Email != updatedEmail || actual.EmailVerified == nil || *actual.EmailVerified || actual.Name == nil || *actual.Name != updatedName || actual.AvatarURL == nil || *actual.AvatarURL != updatedAvatar || !actual.UpdatedAt.Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("retained profile was not persisted: %+v %v", actual, err)
 	}
 	if actual, _, err := testutil.IdentityUser(ctx, s, bob.ID); err != nil || !reflect.DeepEqual(actual, bob) {
 		t.Fatalf("other account changed after profile update: %+v %v", actual, err)
