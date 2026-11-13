@@ -623,6 +623,7 @@ export class TaskCacheScope {
             }
             this.directRecheckErrors.delete(projectId);
             if (accessible) this.emit({ projectId, accessRestored: true, directAccessRecheck: true }, true, true);
+            else this.emit({ projectId, directAccessRecheck: true, error: new ApiError("server", 404, "not_found") }, true, true);
             return;
           } catch (error) {
             if (!this.isInvalidated && (this.directHintCounts.has(projectId) || this.isProjectSuspended(projectId) || this.directRecheckPending.has(projectId))) {
@@ -1621,6 +1622,7 @@ export class TaskCacheScope {
       denial.timer = null;
       const admission = this.getAdmissionRevision(projectId);
       const readable = this.readableProjects.get(projectId);
+      let confirmedDenial = false;
       const unchanged = () => this.getProjectRevision(projectId) === revision && this.getAdmissionRevision(projectId) === admission && this.readableProjects.get(projectId) === readable;
       const superseded = () => {
         if (this.getProjectRevision(projectId) !== revision || this.getAdmissionRevision(projectId) !== admission || !this.readableProjects.has(projectId) || this.readableProjects.get(projectId) === readable) return false;
@@ -1650,8 +1652,12 @@ export class TaskCacheScope {
         } catch (error) {
           if (this.unboundProjectDenials.get(projectId) === denial && unchanged() && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
             if (captured !== null && this.canRevokeProject(captured)) {
+              confirmedDenial = true;
               void this.revokeProject(captured, this.signal, true, error).catch(() => {});
+            } else if (captured === null && denial.isolated) {
+              confirmedDenial = true;
             } else if (captured === null && !denial.isolated) {
+              confirmedDenial = true;
               denial.isolated = true;
               this.readableProjects.delete(projectId);
               this.projectRevisions.set(projectId, revision + 1);
@@ -1676,6 +1682,11 @@ export class TaskCacheScope {
         this.requestDirectAccessRecheck(projectId);
       })().catch(error => {
         if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+        if (confirmedDenial) {
+          this.emit({ projectId, accessRevoked: true, scopeSuspended: true, error, ...(direct ? { directAccessRecheck: true as const } : {}) });
+          denial.timer = setTimeout(check, 30_000);
+          return;
+        }
         if (!unchanged()) {
           if (superseded()) return;
           if (denial.isolated) denial.timer = setTimeout(() => this.receiveUnboundProjectDenial(projectId), 30_000);

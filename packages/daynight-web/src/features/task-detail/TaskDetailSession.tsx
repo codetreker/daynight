@@ -207,7 +207,10 @@ export class TaskDetailSessions {
           continue;
         }
         if (entry.source === "direct" && event.directAccessRecheck && entry.directAccessPending) {
-          if (event.error !== undefined) this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
+          if (event.error !== undefined) {
+            if (!event.scopeSuspended) { entry.directAccessPending = false; entry.admitted = true; }
+            this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
+          }
           else {
             entry.directAccessPending = false; entry.admitted = true;
             if (entry.listeners.size > 0) queueMicrotask(() => {
@@ -776,6 +779,10 @@ export class TaskDetailSessions {
   load(projectId: string, taskId: string, revision: number, mode: "open" | "refresh" | "automatic" = "refresh"): void {
     const entry = this.entry(projectId, taskId);
     if (authRequestsPaused()) return;
+    if (mode === "refresh" && entry.source === "direct" && entry.directAccessPending) {
+      this.scope.retryProjectVerification(projectId);
+      return;
+    }
     if (mode === "refresh") {
       for (const [operation, retired] of this.retiredMutations) if (retired.projectId === projectId && retired.taskId === taskId && retired.phase !== "pending" && !retired.reconciling) this.finishRetiredMutation(operation, retired.phase === "confirmed", retired.error);
     }

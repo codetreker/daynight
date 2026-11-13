@@ -11,6 +11,7 @@ import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { ProjectAccessBoundary, ProjectAccessSession, useProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
+import { TaskDetailPage } from '../src/features/task-detail/TaskDetailPage';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
 import { TestTaskCacheBoundary } from './helpers/taskCache';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
@@ -514,4 +515,106 @@ it.each(['bound', 'unbound'] as const)('isolates Project and direct detail on a 
     await screen.findByRole('heading', { name: graph.project.name });
     await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
   } finally { sessions.dispose(); }
+});
+
+it('clears direct verification state for a new identity on the same Project', async () => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const oldScope = scope(); await admit(oldScope);
+  await oldScope.beginTaskRead(projectId, taskId, 1, 1, oldScope.signal);
+  const sender = scope();
+  const newScope = createTaskCacheScope({ userId: '00000000-0000-4000-8000-000000000202', onIdentityMismatch: vi.fn() }); scopes.push(newScope);
+  const oldRead = Promise.withResolvers<typeof graph.project>(); let oldReads = 0; let oldSignal: AbortSignal | undefined;
+  const heldAccess = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  vi.mocked(getProjectAccess).mockReset().mockImplementation((_id, _signal, admission) => admission.userId === oldScope.userId ? heldAccess.promise : Promise.resolve(directAccessFixture(projectId, admission.userId)));
+  vi.mocked(getProject).mockReset().mockImplementation((_id, signal, admission) => {
+    if (admission?.userId !== oldScope.userId) return Promise.resolve({ ...graph.project, name: 'New identity project' });
+    if (++oldReads === 1) return Promise.resolve(graph.project);
+    oldSignal = signal; return oldRead.promise;
+  });
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  const page = (current: TaskCacheScope) => <LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}><ProjectPage projectId={projectId} /></TestTaskCacheBoundary></LocaleProvider>;
+  const view = render(page(oldScope));
+  try {
+    await screen.findByRole('heading', { name: graph.project.name });
+    act(() => fireEvent(window, new Event('focus')));
+    await waitFor(() => expect(oldReads).toBe(2));
+    act(() => sender.reportUnboundProjectDenial(projectId));
+    await waitFor(() => expect(oldScope.isProjectSuspended(projectId)).toBe(true));
+    expect(oldSignal?.aborted).toBe(true);
+    expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
+    view.rerender(page(newScope));
+    await screen.findByRole('heading', { name: 'New identity project' });
+    await act(async () => oldRead.resolve({ ...graph.project, name: 'Late old identity' }));
+    expect(screen.queryByRole('heading', { name: 'Late old identity' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'New identity project' })).toBeVisible();
+  } finally { heldAccess.resolve(directAccessFixture(projectId, oldScope.userId)); oldRead.resolve(graph.project); }
+});
+
+it.each(['bound', 'unbound'] as const)('recovers Project after a %s hint is independently confirmed as 404 and access is restored', async kind => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const sender = scope(); await admit(sender);
+  const peer = scope(); await admit(peer);
+  const ticket = await sender.beginSync(projectId, sender.signal);
+  let allowed = true;
+  vi.mocked(getProject).mockReset().mockImplementation(async () => {
+    if (!allowed) throw new ApiError('server', 404, 'not_found');
+    return graph.project;
+  });
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async () => {
+    if (!allowed) throw new ApiError('server', 404, 'not_found');
+    return directAccessFixture(projectId);
+  });
+  vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  let access!: ProjectAccessSession;
+  const Probe = () => { access = useProjectAccessSession(projectId)!; return null; };
+  const sessions = new TaskDetailSessions(peer); sessions.subscribe(projectId, taskId, () => {});
+  const events: { directAccessRecheck?: true; error?: unknown }[] = [];
+  peer.subscribe(event => events.push(event));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
+      <ProjectAccessBoundary projectId={projectId}><Probe /><ProjectPage projectId={projectId} /></ProjectAccessBoundary>
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: graph.project.name });
+    sessions.openDirect(projectId, taskId);
+    await waitFor(() => expect(sessions.snapshot(projectId, taskId).detail?.title).toBe('Private task'));
+    allowed = false;
+    if (kind === 'bound') await act(async () => { await sender.revokeProject(ticket, sender.signal); });
+    else act(() => sender.reportUnboundProjectDenial(projectId));
+    await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ directAccessRecheck: true, error: expect.objectContaining({ status: 404 }) })));
+    expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
+    expect(sessions.snapshot(projectId, taskId).detail).toBeNull();
+    allowed = true;
+    act(() => access.retryProjectRead());
+    expect(await screen.findByRole('heading', { name: graph.project.name })).toBeVisible();
+    expect(peer.getAuthorizedProject(projectId)).toBeNull();
+  } finally { sessions.dispose(); }
+});
+
+it.each([['bound', 'network'], ['unbound', 'network'], ['bound', '404'], ['unbound', '404']] as const)('recovers an independent Task route with Retry after a %s hint and %s verification', async (kind, failure) => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const sender = scope(); await admit(sender);
+  const peer = scope(); await admit(peer);
+  const ticket = await sender.beginSync(projectId, sender.signal);
+  let online = true;
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async () => {
+    if (!online) throw failure === '404' ? new ApiError('server', 404, 'not_found') : new ApiError('network');
+    return directAccessFixture(projectId);
+  });
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
+      <TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: 'Private task' });
+    online = false;
+    if (kind === 'bound') await act(async () => { await sender.revokeProject(ticket, sender.signal); });
+    else act(() => sender.reportUnboundProjectDenial(projectId));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Private task' })).toBeNull());
+    const retry = await screen.findByRole('button', { name: 'Retry details' });
+    online = true; fireEvent.click(retry);
+    expect(await screen.findByRole('heading', { name: 'Private task' })).toBeVisible();
+  } finally { observation.mockRestore(); }
 });

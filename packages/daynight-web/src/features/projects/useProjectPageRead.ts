@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, isAbortError } from "../../api/client";
 import { getProject } from "../../api/project-settings";
 import type { Project } from "../../api/types";
@@ -11,9 +11,9 @@ export const useProjectPageRead = (projectId: string) => {
   const [state, setState] = useState<{ session: typeof session; projectId: string; project: Project | null; error: unknown }>({ session, projectId, project: null, error: null });
   const active = useRef<AbortController | null>(null);
   const sequence = useRef(0);
-  const directRecheck = useRef(false);
+  const directRecheck = useMemo(() => ({ pending: false }), [session, projectId]);
   const read = useCallback(async (retried = false, automatic = false): Promise<void> => {
-    if (directRecheck.current) return;
+    if (directRecheck.pending) return;
     if (automatic && active.current !== null && !active.current.signal.aborted) return;
     active.current?.abort();
     const controller = new AbortController();
@@ -75,7 +75,7 @@ export const useProjectPageRead = (projectId: string) => {
       if (projectRead !== null) session.endProjectRead(projectRead);
       if (active.current === controller) active.current = null;
     }
-  }, [projectId, session]);
+  }, [projectId, session, directRecheck]);
   useEffect(() => {
     void session.revalidate();
     void read();
@@ -87,9 +87,12 @@ export const useProjectPageRead = (projectId: string) => {
     const unsubscribeWithdrawal = session.subscribeProjectReadWithdrawal(() => withdraw(null));
     const unsubscribe = session.scope.subscribe(event => {
       if (event.projectId !== projectId) return;
-      if (event.directAccessUncertain) { directRecheck.current = true; withdraw(event.error ?? null); return; }
-      if (event.directAccessRecheck && event.error === undefined) { directRecheck.current = false; void read(false, true); }
-      else if (event.directAccessRecheck) setState({ session, projectId, project: null, error: event.error });
+      if (event.directAccessUncertain) { directRecheck.pending = true; withdraw(event.error ?? null); return; }
+      if (event.directAccessRecheck && event.error === undefined) { directRecheck.pending = false; void read(false, true); }
+      else if (event.directAccessRecheck) {
+        if (event.error instanceof ApiError && event.error.kind === "server" && event.error.status === 404 && event.error.code === "not_found") directRecheck.pending = false;
+        setState({ session, projectId, project: null, error: event.error });
+      }
       if (event.accessRevoked && !session.isProjectReadCleanupFailure(event)) withdraw(event.error ?? null);
     });
     const refresh = () => { if (document.visibilityState !== "hidden") void read(false, true); };
@@ -101,7 +104,7 @@ export const useProjectPageRead = (projectId: string) => {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [projectId, session, read]);
+  }, [projectId, session, read, directRecheck]);
   useEffect(() => {
     if (access.status === "ready") void read(false, true);
   }, [access.status, read, session]);
