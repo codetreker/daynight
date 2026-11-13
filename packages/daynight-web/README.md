@@ -2023,7 +2023,7 @@ The shared Task and Goal preview header displays the selected attachment's creat
 and last-modified timestamps using the current locale and browser time zone, with
 seconds and semantic `time` values. It retains known metadata during refresh,
 preview errors and remote-operation pauses; confirmed removal or absence clears it.
-File information, timestamps and actions can wrap on narrow screens.
+On desktop, file information sizes to content up to 240px, followed by timestamps with a 16px gap and right-aligned actions. Both timestamp values share a left edge. Narrow screens wrap the groups; compact short screens retain aligned timestamps and accessible actions.
 
 The right preview has one vertical scroll owner. Markdown, text/JSON/source and
 large images use `attachment-preview-body`; their renderers have no nested

@@ -8,7 +8,7 @@ Readers need to distinguish the age and recent modification of an attachment whi
 
 ## Decision
 
-The shared Task and Goal attachment preview displays both attachment timestamps from the selected list metadata. It uses the existing locale and browser time-zone formatter with seconds and semantic `time` elements. The file information, timestamps and actions form responsive groups; known metadata stays with the selection through incomplete refreshes and preview failures.
+The shared Task and Goal attachment preview displays both attachment timestamps from the selected list metadata. It uses the existing locale and browser time-zone formatter with seconds and semantic `time` elements. The file information, timestamps and actions form responsive groups; the [compact header decision](../bug-fix/2026-11-13-compact-attachment-header.md) owns their current alignment and sizing; known metadata stays with the selection through incomplete refreshes and preview failures.
 
 ## Alternatives
 
