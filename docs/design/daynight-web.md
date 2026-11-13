@@ -23,7 +23,7 @@ SDK 提供 App-aware provider discovery；发现失败与用户会话失效分�
 [语言设计](daynight-web-i18n.md)拥有已实现的类型化目录、Intl 格式化器、首屏解析、常驻 Provider、共享选择器和全部现有第一方组件的双语呈现；[双语需求](../spec/daynight-web-i18n.md)拥有完整覆盖与验收。语言偏好使用独立的 origin-local 键，不改变本文的项目浏览记录、API、图或附件生命周期。
 
 [执行计时架构](daynight-task-timing.md)的起止字段与数据库 `observedAt` 已进入严格 API 读取器。
-`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB schema 11 typed 摘要及独立人员内容、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
+`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB typed 摘要及独立人员内容、完整属性同步、原子增量应用和身份生命周期；详情已在同一 scope 下按需持久化，以摘要业务版本和恢复需要驱动 GET。
 [外部依赖架构](daynight-external-dependencies.md)的存储及严格读取准备也已实现：
 GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去重及完整依赖的子集，
 摘要自身内容比较和详情描述符纳入该集合。buildGraphIndex 用普通依赖构造弱连通分量，
@@ -245,6 +245,12 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 - 详情继续 portal 到 body 并覆盖图浮层，沿用详情对应用根节点的隔离。图容器以 `tabIndex={-1}` 承接标题、图例和画布空白等非交互区域的点击焦点，避免焦点落回 body 后丢失局部键盘事件；容器自身不进入 Tab 顺序，从容器按 Tab 进入首个可见控件，Shift+Tab 进入末个。图的键盘处理保持局部，详情事件不经过图；Escape 每次只处理子菜单/确认、详情全屏、详情弹窗、图全屏或图浮层中的最顶层。详情位于图上方时，关闭优先回到仍有效的图内入口或图关闭按钮；图最终关闭后才恢复列表来源。其他详情关闭时回到原子任务行、Goal 详情入口或独立任务行，入口失效则使用当前任务区或项目回退。项目 owner 在 overlay 清理后统一协调焦点恢复，保留独立的列表来源与图内详情入口。图与详情共用引用计数滚动锁，任一卸载顺序都在最后一个持有者释放后恢复原值。机制取舍见[图浮层决策](../../.agents/notes/archived/feature/2026-10-26-task-chain-graph-dialog.md)，它保留[全屏查看决策](../../.agents/notes/archived/feature/2026-10-22-task-graph-fullscreen.md)的同画布与分层理由。
 - 保留 React Flow attribution；禁用节点拖动、连线、重连、删除，保留焦点与选择。
 - 页面展示最近一次成功快照的本机接收时间，不把 project.updatedAt 当作任务图更新时间。
+
+### Task 与 Goal 标签展示
+
+`TaskTagList` 接收条目自身的标签引用并以中性文字块展示名称；空集合显示当前语言的无标签文案。标签列表自然换行，长名称可在可用宽度内完整阅读。项目独立 Task、Goal 和 Goal 展开区域的直接子 Task 从 `snapshot.summaries` 按各自 ID 读取标签；链成员使用同一来源，不把标签加入 `GraphIndex` 或裁剪节点、边。Goal 展开与 Task 行保持原有按钮及焦点行为。
+
+Task 和 Goal 详情使用自身严格详情；同一 ID 的摘要版本较新时，展示摘要中的标签，以便普通同步后的改名与删除及时可见，同时保持详情和列表的现有交互状态。缓存准入、版本和普通增量的合同由[任务同步设计](daynight-task-sync.md)拥有，展示组件不新增读取或写入。取舍见[标签展示决策](../../.agents/notes/implemented/feature/2026-11-13-web-task-tag-display.md)。
 
 ### 居中任务详情
 

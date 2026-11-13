@@ -37,6 +37,7 @@ import { useProjectMembers } from '../projects/ProjectMembers';
 import { mayWithdrawClaim, matchesWithdrawalReview, TaskClaimSummary, TaskWithdrawalConfirmation, TaskWithdrawalFeedback, type WithdrawalConfirmation } from './TaskClaim';
 import { TaskCopyButton } from './TaskCopyButton';
 import { matchesDeletionReview, TaskDeletionConfirmation, TaskDeletionFeedback, type DeletionConfirmation } from './TaskDeletion';
+import { currentTaskTags, TaskTagList } from '../task-tags/TaskTagList';
 import { TaskPullRequests } from './TaskPullRequests';
 import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
 import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
@@ -120,7 +121,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
   const selection = navigation === undefined ? localNavigation.scope === scope ? localNavigation.value : { tab: 'overview', path: null } as const : navigation;
   const changeSelection = (next: TaskDetailNavigation) => { setLocalNavigation({ scope, value: next }); onNavigate?.(next); };
   const popout = detailUrl === undefined ? taskDetailUrl(projectId, taskId, selection) : detailUrl(taskId, selection);
-  const { messages, format } = useI18n();
+  const { locale, messages, format } = useI18n();
   const m = messages.inspection.detail;
   const input: TaskObservationInput = observation ?? (snapshot === null ? { kind: 'direct' } : { kind: 'project-summary', revision: snapshot.revision, task: snapshot.index.nodes.get(taskId) });
   const direct = input.kind === 'direct';
@@ -313,6 +314,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
                       })()}
                     </section>
                     {direct && relations.error !== null && <div role="alert"><ProjectGraphErrorDetail error={relations.error} /><button className="button" type="button" onClick={refreshRelations}>{m.retry}</button></div>}
+                    <section className="task-detail-section"><h4>{locale === 'zh-CN' ? '标签' : 'Tags'}</h4><TaskTagList tags={currentTaskTags(detail, snapshot?.summaries.get(taskId))} /></section>
                     <TaskPullRequests pullRequests={readPullRequests(detail.properties)} />
                     <section className="task-detail-section" aria-label={m.dependencies}>
                       <h4>{m.countedHeading({ label: m.dependencies, count: format.number(detail.dependsOn.length) })}</h4>

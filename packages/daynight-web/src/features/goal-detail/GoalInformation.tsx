@@ -1,10 +1,12 @@
-import type { TaskDetail } from '../../api/types';
+import { TaskTagList } from '../task-tags/TaskTagList';
+import type { TaskDetail, TaskTag } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { completionProgress } from '../task-graph/completion-progress';
 import type { TaskScope } from '../task-graph/scope';
 
-export const GoalInformation = ({ detail, scope, graphError, onRefreshGraph }: {
-  readonly detail: Pick<TaskDetail, 'createdAt' | 'updatedAt'>;
+export const GoalInformation = ({ detail, tags, scope, graphError, onRefreshGraph }: {
+  readonly detail: Pick<TaskDetail, 'createdAt' | 'updatedAt' | 'tags'>;
+  readonly tags?: readonly TaskTag[];
   readonly scope: TaskScope | null;
   readonly graphError?: unknown;
   readonly onRefreshGraph: () => void;
@@ -20,6 +22,7 @@ export const GoalInformation = ({ detail, scope, graphError, onRefreshGraph }: {
         <div><dt>{zh ? '修改时间' : 'Modified'}</dt><dd><time dateTime={detail.updatedAt}>{format.dateTime(detail.updatedAt)}</time></dd></div>
       </dl>
     </section>
+    <section className="goal-information-section"><h3>{zh ? '标签' : 'Tags'}</h3><TaskTagList tags={tags ?? detail.tags} /></section>
     <section className="goal-information-section">
       <h3>{zh ? '任务统计' : 'Task statistics'}</h3>
       {scope !== null && progress !== null && <>

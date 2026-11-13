@@ -559,7 +559,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
-              standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
+              standalone={{ projectId, summaries: snapshot.summaries, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
               goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onOpenGoalGraph, onOpenGoalGraphTask: onOpenTask, graphError: graph.error, onRefreshGraph: graph.refresh, pagination: goalPagination,
                 summaries: snapshot.summaries, openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
