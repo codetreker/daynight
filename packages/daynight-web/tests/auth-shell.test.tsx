@@ -9,8 +9,9 @@ import type { TaskGraph } from '../src/api/types';
 import { stringifyWireJson } from "./helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { waitForState } from "./helpers/waitForState";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as auth from "../src/api/auth";
+import { retryImageDraftScopeCleanup } from '../src/features/task-agent-session/drafts/draft-store-cleanup';
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import * as taskGraphHook from '../src/features/projects/useTaskGraph';
 import { navigate, parseRoute } from "../src/app/router";
@@ -20,6 +21,8 @@ import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/
 import { SIDEBAR_STORAGE_KEY } from "../src/app/useSidebarPreference";
 import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
 import { personalTeamPage } from "./helpers/team";
+
+afterEach(async () => { vi.restoreAllMocks(); await retryImageDraftScopeCleanup(); });
 
 const render = createLocaleRender("zh-CN");
 const tokenPanel = () => within(screen.getByRole("region", { name: "个人访问令牌" }));
@@ -681,6 +684,42 @@ describe("authenticated application shell", () => {
     expect(screen.getByText("登录状态已过期。重新登录后可继续访问项目。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "账户菜单：Alice" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "项目不存在" })).toBeNull();
+  });
+
+  it("reports failed image draft cleanup after logout and retries its original blocked records", async () => {
+    const { IDBObjectStore } = await import('fake-indexeddb');
+    const { SessionDraftStore } = await import('../src/features/task-agent-session/drafts/draft-store');
+    const drafts = new SessionDraftStore();
+    const identity = { target: { serverOrigin: window.location.origin, actorUserId: userId, fence: { sessionId: 'draft-session', claimId: 'draft-claim', executionGeneration: '1' }, expectedNativeSessionId: null }, resolver: { kind: 'task' as const, projectId, taskId: 'draft-task' } };
+    await drafts.openOwner(identity);
+    let failing = true; const remove = IDBObjectStore.prototype.delete;
+    vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(function (this: InstanceType<typeof IDBObjectStore>, ...args: Parameters<typeof remove>) { if (this.name === 'drafts' && failing) throw new DOMException('cleanup failed', 'UnknownError'); return remove.apply(this, args); });
+    install(url => url === '/api/v1/auth/logout' ? new Response(null, { status: 204 }) : defaults(url));
+    render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole('button', { name: '账户菜单：Alice' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '退出登录' }));
+    await screen.findByText('无法清理本地恢复记录。');
+    await expect(drafts.readExisting(identity)).rejects.toMatchObject({ code: 'blocked' });
+    failing = false; fireEvent.click(screen.getByRole('button', { name: '重试清理' }));
+    await waitFor(() => expect(screen.queryByText('无法清理本地恢复记录。')).toBeNull());
+    expect((await drafts.reauthorizeOwner(identity)).editable?.text).toBe(''); drafts.close();
+  });
+
+  it("shows a cold Session deletion cleanup failure through the existing retry notice", async () => {
+    const { IDBObjectStore } = await import('fake-indexeddb');
+    const { SessionDraftStore } = await import('../src/features/task-agent-session/drafts/draft-store');
+    const { clearBotStoredSessionState } = await import('../src/features/bots/session-cache');
+    const drafts = new SessionDraftStore();
+    const identity = { target: { serverOrigin: window.location.origin, actorUserId: userId, fence: { sessionId: 'cold-session', testExecutionId: 'cold-execution', executionGeneration: '1' }, expectedNativeSessionId: null }, resolver: { kind: 'session' as const, sessionId: 'cold-session', testExecutionId: 'cold-execution' } };
+    await drafts.openOwner(identity);
+    install(defaults); render(<AuthenticatedApp />); await screen.findByRole('button', { name: '账户菜单：Alice' });
+    let failing = true; const remove = IDBObjectStore.prototype.delete;
+    vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(function (this: InstanceType<typeof IDBObjectStore>, ...args: Parameters<typeof remove>) { if (this.name === 'drafts' && failing) throw new DOMException('cleanup failed', 'UnknownError'); return remove.apply(this, args); });
+    await act(async () => { expect(await clearBotStoredSessionState(userId, 'cold-bot', 'cold-session', null, 'deleted')).toBeInstanceOf(Error); });
+    expect(screen.getByText('无法清理本地恢复记录。')).toBeInTheDocument();
+    failing = false; fireEvent.click(screen.getByRole('button', { name: '重试清理' }));
+    await waitFor(() => expect(screen.queryByText('无法清理本地恢复记录。')).toBeNull());
+    await expect(drafts.reauthorizeOwner(identity)).rejects.toMatchObject({ code: 'blocked' }); drafts.close();
   });
 
   it("clears projects immediately when logout fails and offers an explicit retry", async () => {

@@ -1,4 +1,11 @@
 import type { SessionOperation } from '../../../../daynight/src/session/protocol';
+import { ApiError } from '../../api/client';
+
+/** The command service checks this revision before registering a new image intent.
+ * Existing operation IDs are reconciled first, so this exact authenticated
+ * response proves that the new command was not dispatched. Other errors do not. */
+export const imageCommandNotDispatched = (error: unknown): error is ApiError =>
+  error instanceof ApiError && error.kind === 'server' && error.status === 409 && error.code === 'capability_changed';
 
 /** Associates a local request failure with its original receipt without changing the ledger. */
 export class OperationRequestError extends Error {

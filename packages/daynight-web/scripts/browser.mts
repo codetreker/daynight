@@ -40,6 +40,7 @@ export const browserConfigs = [
   'graph-direction-browser-playwright.config.ts',
   'session-header-playwright.config.ts',
   'session-images-playwright.config.ts',
+  'session-drafts-playwright.config.ts',
   'session-column-playwright.config.ts',
   'session-keyboard-playwright.config.ts',
   'session-record-layout-playwright.config.ts',

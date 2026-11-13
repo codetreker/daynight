@@ -10,6 +10,7 @@ import { useSessionFullscreen } from './useSessionFullscreen';
 import { useSessionColumnLayout } from './useSessionColumnLayout';
 import { SessionDisplayMenu } from './SessionDisplayMenu';
 import { SessionComposer } from './SessionComposer';
+import type { ComposerAttachmentsBinding } from './ComposerAttachments';
 import { SessionTimeline, type SessionTimelineReading } from './SessionTimeline';
 import { matchingSessionHistoryPreview, selectSessionHistoryRows, type SessionHistoryPreview } from './history-preview';
 import { emptySessionState, sessionRespondGate } from './state';
@@ -22,11 +23,30 @@ import '../../styles/task-session.css';
 const emptyView: SessionViewState = { actionAdmitted: false, operationProgress: new Map(), environmentConnected: false, startupReport: null, errorCode: null, archiveState: null, settingIntents: new Map(), draft: { text: '', revision: '0', submission: null }, state: emptySessionState(), status: 'loading', connected: false, authPaused: false, error: null, hasOlder: false, loadingOlder: false, historyError: null, checking: new Set(), historyReady: false, historyLoaded: false, historySettled: false, historyCoverage: null, historyRevision: 0, connectionGeneration: 0 };
 const emptySubscribe = () => () => {};
 const emptySnapshot = () => emptyView;
+const emptyImageDraft = () => null;
 const noAction = async () => {};
 const noResource = async (): Promise<Blob> => { throw new Error('Historical resources are unavailable.'); };
 
 export function SessionView({ client, userId, active, current, reading, fullscreenBoundary, presentation: slots, historyPreview, pendingPhase, onRetry, error }: { readonly client: TaskSessionClient | null; readonly historyPreview?: SessionHistoryPreview; readonly pendingPhase?: 'binding' | 'snapshot' | 'history'; readonly onRetry?: () => void; readonly error?: string | null; readonly userId: string; readonly active: boolean; readonly current: boolean; readonly reading?: SessionTimelineReading; readonly fullscreenBoundary?: RefObject<HTMLElement | null>; readonly presentation?: SessionPresentationSlots }) {
   const view = useSyncExternalStore(client?.subscribe ?? emptySubscribe, client?.snapshot ?? emptySnapshot);
+  const imageDraft = useSyncExternalStore(client?.imageDrafts?.subscribe ?? emptySubscribe, client?.imageDrafts?.getSnapshot ?? emptyImageDraft);
+  useEffect(() => {
+    client?.setImageDraftAdmission?.(active, current);
+    return () => client?.setImageDraftAdmission?.(false, false);
+  }, [client, active, current]);
+  const attachments: ComposerAttachmentsBinding | undefined = imageDraft && client?.imageDrafts ? {
+    view: imageDraft,
+    addFiles: (files, text) => client.imageDrafts.addFiles(files, text), remove: id => client.imageDrafts.remove(id),
+    discardRejected: () => client.imageDrafts.discardRejected(), retrySave: () => client.imageDrafts.retrySave(),
+    retryUpload: id => client.imageDrafts.retryUpload(id), checkStatus: ref => client.imageDrafts.checkStatus(ref),
+    continueEditing: () => client.imageDrafts.continueEditing(), resolveConflict: choice => client.imageDrafts.resolveConflict(choice),
+    resolveFailure: (ref, choice) => client.imageDrafts.resolveFailure(ref, choice),
+    resumePrepared: () => client.imageDrafts.resumePrepared(),
+    cancelPrepared: ref => client.imageDrafts.cancelPrepared(ref),
+    restoreDetached: ref => client.imageDrafts.restoreDetached(ref),
+    retryDetachedSave: ref => client.imageDrafts.retryDetachedSave(ref),
+    resolveDetachedConflict: (ref, choice) => client.imageDrafts.resolveDetachedConflict(ref, choice),
+  } : undefined;
   const m = useSessionMessages();
   const statusId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -95,10 +115,10 @@ export function SessionView({ client, userId, active, current, reading, fullscre
     <svg className="session-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg>
     <span className="session-refresh-tooltip" aria-hidden="true">{m.refresh}</span>
   </button> : <button className="button" disabled={view.authPaused} onClick={refresh}>{m.refresh}</button>;
-  const emptyReady = !hasContent && canInteract && available && view.status === 'ready' && active && current && runtimeReady && !readOnly && view.historyReady && !view.hasOlder && !view.loadingOlder && !view.historyError && !view.error && !view.state.recoveryRequired && view.state.entries.length === 0 && s.activity === 'idle';
+  const emptyReady = !hasContent && canInteract && available && view.status === 'ready' && active && current && runtimeReady && !readOnly && !imageDraft?.loading && !(imageDraft?.active && imageDraft.readOnly) && view.historyReady && !view.hasOlder && !view.loadingOlder && !view.historyError && !view.error && !view.state.recoveryRequired && view.state.entries.length === 0 && s.activity === 'idle';
   const empty = emptyReady && slots?.renderEmpty ? slots.renderEmpty({ draft: view.draft, setDraftAndFocus: text => {
-    const latest = client?.snapshot();
-    if (!mounted.current || !admission.current.active || !admission.current.current || admission.current.userId !== userId || !inputRef.current || !latest || latest.status !== 'ready' || !latest.state.snapshot || !s || sessionFenceKey(latest.state.snapshot) !== sessionFenceKey(s) || latest.state.snapshot.lifecycle !== 'active') return;
+    const latest = client?.snapshot(), latestDraft = client?.imageDrafts?.getSnapshot();
+    if (!mounted.current || !admission.current.active || !admission.current.current || admission.current.userId !== userId || !inputRef.current || latestDraft?.loading || latestDraft?.active && latestDraft.readOnly || !latest || latest.status !== 'ready' || !latest.state.snapshot || !s || sessionFenceKey(latest.state.snapshot) !== sessionFenceKey(s) || latest.state.snapshot.lifecycle !== 'active') return;
     client?.setDraft(text); inputRef.current?.focus({ preventScroll: true });
   } }) : null;
   const timelineAllowed = available && (!readOnly || view.archiveState === 'ready') || preview !== undefined || !readOnly && (slots?.renderPending !== undefined || slots?.variant === 'assistant' || client === null);
@@ -129,7 +149,7 @@ export function SessionView({ client, userId, active, current, reading, fullscre
         {receipt === 'unknown' ? <button className="inline-link" disabled={view.authPaused || view.checking.has(operation.operationId)} onClick={() => { void client.checkOperation(operation.operationId).then(() => setCheckErrors(previous => { const next = new Map(previous); next.delete(operation.operationId); return next; }), (error: unknown) => setCheckErrors(previous => new Map(previous).set(operation.operationId, error instanceof Error ? error.message : m.failure))); }}>{view.checking.has(operation.operationId) ? m.checking : m.check}</button> : null}
       </div>;
     })}</div> : null}
-    {client && s && !readOnly ? <SessionComposer inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} canInteract={canInteract} actionAdmitted={view.actionAdmitted} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen || imagePreviewOpen} key={s ? sessionFenceKey(s) : undefined} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} operationProgress={view.operationProgress} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : assistantShell ? <SessionComposerPlaceholder /> : null}
+    {client && s && !readOnly ? <SessionComposer {...(attachments ? { attachments } : {})} inputRef={inputRef} {...(slots?.composer ? { presentation: slots.composer } : {})} canInteract={canInteract} actionAdmitted={view.actionAdmitted} sessionNoticeOwned={!presentation?.native} statusDescriptionId={statusId} suppressKeyboardHint={displayOpen || imagePreviewOpen} key={s ? sessionFenceKey(s) : undefined} state={view.state} connected={active && runtimeReady} authPaused={view.authPaused} active={active} draft={view.draft} onDraftChange={client.setDraft} onSend={client.send} onCancel={client.cancel} operationProgress={view.operationProgress} settingIntents={view.settingIntents} onUpdateSetting={client.updateSetting} onExecuteCommand={client.executeCommand} onRefreshControls={client.refreshControls} /> : assistantShell ? <SessionComposerPlaceholder /> : null}
     </>}
     </SessionImageScope>
   </section>;
