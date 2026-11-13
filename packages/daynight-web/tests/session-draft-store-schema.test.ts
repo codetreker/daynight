@@ -1,7 +1,10 @@
 import { Blob } from 'node:buffer';
 import { openDB } from 'idb';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { SessionDraftStore, SESSION_DRAFT_SCHEMA } from '../src/features/task-agent-session/drafts/draft-store';
+import { ImageDraftController } from '../src/features/task-agent-session/drafts/image-draft-controller';
+import type { LocalImageAssetAdapter } from '../src/features/task-agent-session/images/image-store';
+import type { SessionResourceClient } from '../../daynight/src/session/resource-client';
 import type { DraftOwnerIdentity } from '../src/features/task-agent-session/drafts/draft-types';
 
 const identity: DraftOwnerIdentity = { target: { serverOrigin: 'https://daynight.test', actorUserId: 'actor', fence: { sessionId: 'session', claimId: 'claim', executionGeneration: '2' }, expectedNativeSessionId: 'native' }, resolver: { kind: 'task', projectId: 'project', taskId: 'task' } };
@@ -53,4 +56,50 @@ it('refuses an unknown newer schema without modifying its records', async () => 
   await expect(current.readExisting(identity)).rejects.toMatchObject({ code: 'unavailable' });
   await expect(current.reauthorizeOwner(identity)).rejects.toMatchObject({ code: 'unavailable' });
   expect(await future.get('future', 'record')).toEqual({ schema: 'unknown', privateText: 'keep untouched' }); future.close();
+});
+
+
+it.each([1, 2, 3].flatMap(version => ['failed', 'expired', 'released'].map(state => ({ version, state }))))('retries a valid version-$version $state upload without editing the restored draft', async ({ version, state }) => {
+  const sourceName = `terminal-source-${version}-${state}`, legacyName = `terminal-legacy-${version}-${state}`;
+  const source = store(sourceName), initial = await source.openOwner(identity);
+  const metadata = { byteLength: 5, sha256: 'a'.repeat(64), mediaType: 'image/png' as const, width: 1, height: 1, frameCount: 1 };
+  const blob = { ...metadata, blobId: 'original-blob', blob: new Blob(['image']) as unknown as globalThis.Blob, byteRevision: '1' };
+  const saved = await source.saveDraft(initial.owner, { draftId: initial.editable!.draftId, expectedStoreVersion: initial.editable!.storeVersion, text: 'unchanged input', items: [{ draftImageId: 'item', imageId: 'image', byteRevision: '1', label: 'a.png', blobId: blob.blobId, validation: 'valid', error: null, uploadId: null }], rejectedCandidates: [], overflowRejectedCount: 0, blobs: [blob] });
+  const upload = await source.createUpload(saved.owner, { draftImageId: 'item', byteRevision: '1', blobId: blob.blobId, spec: { uploadId: 'original-upload', imageId: 'image', target: identity.target, name: 'a.png', mediaType: 'image/png', byteLength: '5', sha256: metadata.sha256 } });
+  const request = await source.beginUploadRequest(saved.owner, upload.uploadId, upload.storeVersion, { kind: 'prepare' });
+  await source.observeUpload(saved.owner, upload.uploadId, request.requestSequence, { uploadId: upload.uploadId, imageId: upload.spec.imageId, target: identity.target, state: state as 'failed' | 'expired' | 'released', acceptedOffset: '0', spec: { name: 'a.png', mediaType: 'image/png', byteLength: '5', sha256: metadata.sha256 }, resource: null, error: null, expiresAt: '2026-11-12T00:00:00Z' });
+  const inspect = await openDB(sourceName, SESSION_DRAFT_SCHEMA), rows = await Promise.all(names.map(name => inspect.getAll(name)));
+  inspect.close(); source.close();
+  for (const draft of rows[1]!) for (const item of draft.items) delete item.incarnation;
+  for (const original of rows[2]!) delete original.originalId;
+  const legacy = await openDB(legacyName, version, { upgrade(db) {
+    const owners = db.createObjectStore('owners', { keyPath: 'ownerKey' }); owners.createIndex('execution', 'executionKey'); owners.createIndex('account', 'accountKey');
+    for (const [name, id] of [['drafts', 'draftId'], ['blobs', 'blobId'], ['uploads', 'uploadId'], ['submissions', 'operationId']]) {
+      const object = db.createObjectStore(name!, { keyPath: ['ownerKey', id!] }); object.createIndex('owner', 'ownerKey');
+      if (name === 'submissions') object.createIndex('execution', 'executionKey');
+    }
+  } });
+  for (const [index, name] of names.entries()) for (const row of rows[index]!) await legacy.put(name, row);
+  legacy.close();
+  const upgraded = store(legacyName), original = (await upgraded.readExisting(identity))!, save = vi.spyOn(upgraded, 'saveDraft');
+  expect(original.editable!.items[0]).not.toHaveProperty('incarnation');
+  const controller = new ImageDraftController({ store: upgraded, locks: null,
+    getContext: () => ({ identity, target: identity.target, resources: {} as SessionResourceClient, capabilities: null, active: true, canEdit: true, canSend: true, mode: 'send', expectedTurnId: null, authorizationGeneration: '1' }),
+    dispatch: vi.fn(), query: vi.fn(),
+    // Schema compatibility owns byte retention and metadata; decoding is tested by ImageStore.
+    createAsset: (_bytes, id) => ({ key: id, resource: null, release() {}, validate: async () => metadata }) as unknown as LocalImageAssetAdapter,
+  });
+  try {
+    await controller.sync();
+    await controller.retryUpload('item');
+    const retried = (await upgraded.readExisting(identity))!, item = retried.editable!.items[0]!;
+    expect(save).not.toHaveBeenCalled();
+    expect(item.incarnation).toEqual(expect.any(String)); expect(item.incarnation).not.toBe('');
+    expect(retried.editable).toMatchObject({ draftId: original.editable!.draftId, revision: original.editable!.revision, text: 'unchanged input', storeVersion: original.editable!.storeVersion + 1 });
+    expect(item).toMatchObject({ draftImageId: 'item', blobId: blob.blobId, byteRevision: '1', validation: 'valid', label: 'a.png' });
+    expect(item.imageId).not.toBe('image'); expect(item.uploadId).not.toBe('original-upload');
+    expect(retried.uploads.find(candidate => candidate.uploadId === item.uploadId)?.spec.imageId).toBe(item.imageId);
+    expect(retried.uploads.find(candidate => candidate.uploadId === 'original-upload')).toMatchObject({ spec: upload.spec, releaseIntent: true });
+    expect(await (await upgraded.readBlob(retried.owner, blob.blobId))!.blob.text()).toBe('image');
+  } finally { await controller.close(); }
 });

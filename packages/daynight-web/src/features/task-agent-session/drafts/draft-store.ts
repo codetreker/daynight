@@ -124,7 +124,14 @@ export class SessionDraftStore {
     const submission = owner.unresolvedSubmissionId ? await tx.objectStore('submissions').get([owner.ownerKey, owner.unresolvedSubmissionId]) ?? null : null;
     const load = async (id: string | null): Promise<DraftRecord | null> => {
       if (!id) return null;
-      const draft = await tx.objectStore('drafts').get([owner.ownerKey, id]); if (!draft) return null;
+      let draft = await tx.objectStore('drafts').get([owner.ownerKey, id]); if (!draft) return null;
+      if (tx.mode === 'readwrite' && owner.editableDraftId === id && draft.state === 'editable' && draft.items.some(item => item.incarnation === undefined)) {
+        // Legacy validated items need stable CAS identity before the controller
+        // adopts them. Preserve content versions and wire bindings, including
+        // records already upgraded to schema 3 without this metadata.
+        draft = { ...draft, items: draft.items.map(item => item.incarnation === undefined ? { ...item, incarnation: crypto.randomUUID() } : item) };
+        await tx.objectStore('drafts').put(draft);
+      }
       const items = await Promise.all(draft.items.map(async (item) => {
         if (!item.blobId) return item;
         const blob = await tx.objectStore('blobs').get([owner.ownerKey, item.blobId]);

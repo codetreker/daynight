@@ -169,6 +169,16 @@ change closes older connections; reopening with version 1 or 2 fails instead of
 granting obsolete reads and writes. Blocked upgrades and unknown future
 versions remain visible storage failures without destructive reconstruction.
 
+Legacy editable items can lack an incarnation even after schema upgrade. An
+authorized readwrite snapshot initializes only missing incarnations on the
+current editable record before returning it, including records already at
+schema 3 and failed submissions restored to editing. Readonly reads and frozen
+snapshots stay unchanged. The transaction preserves content, original bytes,
+upload bindings, content and storage versions, and save time; it writes the raw
+record rather than persisting display-only validation projections. Existing
+terminal-retry CAS remains strict, and transaction failure or authorization
+loss rolls back the initialization.
+
 Saved-image scopes bind origin, actor, authorization generation and the actual
 Session fence/native identity or record namespace/revision. Cache previews retain
 only descriptors and explicitly deny resource reads and downloads. Complete byte,
@@ -235,6 +245,13 @@ not an exceptional result from reading the current draft.
 can ignore a new flag or reinterpret a blocked marker through their existing
 reauthorization path. The database version barrier prevents those clients from
 rewriting an owner under obsolete access rules while preserving stored content.
+
+**Initialize item incarnations only during a database version upgrade.**
+Already-upgraded databases can still contain legacy records without the field.
+Initializing during authorized editable access covers those records without
+rewriting frozen operation snapshots. Deferring initialization until terminal
+replacement would also change the token alongside wire IDs, preventing a
+concurrent local edit from recognizing the same item when merging upload state.
 
 **Mark the owner inside a shared legacy storage slot.** The marker prevents a
 reader from adopting another native target's text, but a new target still writes
