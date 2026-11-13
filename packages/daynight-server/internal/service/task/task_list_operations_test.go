@@ -501,3 +501,8 @@ func (c *listOperationCapability) GoalProgresses(context.Context, string, []stri
 func (c *listOperationCapability) TaskBodies(context.Context, string, []string) ([]model.Task, error) {
 	return nil, c.fail("TaskBodies")
 }
+
+func (s *listOperationScope) TagDAO() store.TagReader {
+	_ = s.fixture.unexpected("TagDAO")
+	return nil
+}

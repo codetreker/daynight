@@ -1,4 +1,4 @@
--- Schema snapshot version: 67
+-- Schema snapshot version: 68
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -329,6 +329,16 @@ CREATE TABLE "project_ownership" (
     CONSTRAINT "project_ownership_version_check" CHECK (("version" > 0))
 );
 
+CREATE TABLE "project_tags" (
+    "id" "uuid" NOT NULL,
+    "project_id" "uuid" NOT NULL,
+    "name" "text" NOT NULL,
+    "name_key" "text" NOT NULL COLLATE "pg_catalog"."C",
+    "version" bigint DEFAULT 1 NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "updated_at" timestamp with time zone NOT NULL
+);
+
 CREATE TABLE "projects" (
     "id" "uuid" NOT NULL,
     "name" "text" NOT NULL,
@@ -339,6 +349,7 @@ CREATE TABLE "projects" (
     "settings_version" bigint DEFAULT 1 NOT NULL,
     "task_cache_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     "deleted_at" timestamp with time zone,
+    "tag_catalog_epoch" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
     CONSTRAINT "projects_execution_warning_minutes_check" CHECK (("execution_warning_minutes" > 0)),
     CONSTRAINT "projects_name_check" CHECK (("btrim"("name") <> ''::"text")),
     CONSTRAINT "projects_repo_url_check" CHECK (("btrim"("repo_url") <> ''::"text")),
@@ -702,6 +713,12 @@ CREATE TABLE "task_steps" (
     CONSTRAINT "task_steps_id_check" CHECK (("id" ~ '^[0-9a-f]{8}$'::"text")),
     CONSTRAINT "task_steps_position_check" CHECK (("position" >= 0)),
     CONSTRAINT "task_steps_status_check" CHECK (("status" = ANY (ARRAY['todo'::"text", 'in_progress'::"text", 'done'::"text", 'skipped'::"text"])))
+);
+
+CREATE TABLE "task_tags" (
+    "project_id" "uuid" NOT NULL,
+    "task_id" "uuid" NOT NULL,
+    "tag_id" "uuid" NOT NULL
 );
 
 CREATE TABLE "task_thread_messages" (
@@ -1283,6 +1300,9 @@ ALTER TABLE ONLY "project_invitations"
 ALTER TABLE ONLY "project_ownership"
     ADD CONSTRAINT "project_ownership_pkey" PRIMARY KEY ("project_id");
 
+ALTER TABLE ONLY "project_tags"
+    ADD CONSTRAINT "project_tags_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "projects"
     ADD CONSTRAINT "projects_pkey" PRIMARY KEY ("id");
 
@@ -1405,6 +1425,9 @@ ALTER TABLE ONLY "task_steps"
 
 ALTER TABLE ONLY "task_steps"
     ADD CONSTRAINT "task_steps_task_id_position_key" UNIQUE ("task_id", "position") DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY "task_tags"
+    ADD CONSTRAINT "task_tags_pkey" PRIMARY KEY ("project_id", "task_id", "tag_id");
 
 ALTER TABLE ONLY "task_thread_messages"
     ADD CONSTRAINT "task_thread_messages_pkey" PRIMARY KEY ("task_id", "message_id");
@@ -1542,6 +1565,8 @@ CREATE INDEX "project_invitations_project" ON "project_invitations" USING "btree
 
 CREATE INDEX "project_ownership_team" ON "project_ownership" USING "btree" ("team_id", "project_id");
 
+CREATE UNIQUE INDEX "project_tags_project_name_key_idx" ON "project_tags" USING "btree" ("project_id", "name_key");
+
 CREATE INDEX "projects_created_id" ON "projects" USING "btree" ("created_at", "id");
 
 CREATE INDEX "projects_live_created_id_idx" ON "projects" USING "btree" ("created_at", "id") WHERE ("deleted_at" IS NULL);
@@ -1565,6 +1590,8 @@ CREATE INDEX "task_dependencies_predecessor" ON "task_dependencies" USING "btree
 CREATE INDEX "task_session_history" ON "task_sessions" USING "btree" ("project_id", "task_id", "created_at" DESC, "id" DESC) WHERE ("scope" = 'task'::"text");
 
 CREATE INDEX "task_sessions_project_id_id_task_idx" ON "task_sessions" USING "btree" ("project_id", "id") WHERE ("scope" = 'task'::"text");
+
+CREATE INDEX "task_tags_project_tag_task_idx" ON "task_tags" USING "btree" ("project_id", "tag_id", "task_id");
 
 CREATE INDEX "task_thread_messages_order" ON "task_thread_messages" USING "btree" ("task_id", "created_at", "message_id");
 

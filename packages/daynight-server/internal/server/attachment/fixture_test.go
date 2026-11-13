@@ -782,3 +782,5 @@ func (s *unexpectedTaskReader) TaskSyncDependencyStates(context.Context, string,
 	s.reject("TaskSyncDependencyStates")
 	panic("unreachable")
 }
+
+func (s *attachmentSnapshot) TagDAO() store.TagReader { s.reject("TagDAO"); return nil }

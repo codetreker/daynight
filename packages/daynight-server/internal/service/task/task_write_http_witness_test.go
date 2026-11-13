@@ -345,3 +345,9 @@ func (d *writeWitnessTaskDAO) GoalProgresses(context.Context, string, []string) 
 func (d *writeWitnessTaskDAO) ParentTask(context.Context, string) (model.Task, error) {
 	panic(d.f.unexpected("TaskWriteDAO.ParentTask"))
 }
+
+func (s *writeWitnessScope) TagDAO() store.TagWriteDAO         { panic(s.f.unexpected("TagDAO")) }
+func (s *writeWitnessScope) TaskTagDAO() store.TaskTagWriteDAO { panic(s.f.unexpected("TaskTagDAO")) }
+func (d *writeWitnessProjectDAO) RotateTagCatalogEpoch(context.Context) error {
+	panic(d.f.unexpected("RotateTagCatalogEpoch"))
+}

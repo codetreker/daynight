@@ -2846,3 +2846,23 @@ func startupTaskDocument(t *testing.T, value model.Task) api.Task {
 	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Status: string(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn, BlockedBy: value.BlockedBy, AssignedTo: value.AssignedTo, RequiredPlatform: platform, AllowAgents: value.AllowAgents, Ready: value.Ready}
 }
+
+func (mock *taskHTTPSnapshotScopeMock) TagDAO() store.TagReader {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectScopeMock) TagDAO() store.TagWriteDAO {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectScopeMock) TaskTagDAO() store.TaskTagWriteDAO {
+	mock.need("TaskTagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskHTTPProjectWriterMock) RotateTagCatalogEpoch(context.Context) error {
+	mock.need("RotateTagCatalogEpoch", false)
+	panic("unreachable")
+}

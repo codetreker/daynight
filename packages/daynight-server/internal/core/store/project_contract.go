@@ -38,12 +38,15 @@ type ProjectWriteScope interface {
 	EligibilityDAO() WebhookEligibilityDAO
 	CaptureDAO() WebhookCaptureDAO
 	ProjectDAO() ProjectWriteDAO
+	TagDAO() TagWriteDAO
+	TaskTagDAO() TaskTagWriteDAO
 	TaskDAO() TaskWriteDAO
 	SessionDAO() ProjectSessionDAO
 }
 
 type ProjectWriteDAO interface {
 	InvalidateTaskCache(context.Context) error
+	RotateTagCatalogEpoch(context.Context) error
 	Project(context.Context) (model.Project, error)
 	ProjectAccess(context.Context, model.Principal) (model.ProjectAccess, error)
 	UpdateProjectSettings(context.Context, int32) (model.Project, error)
