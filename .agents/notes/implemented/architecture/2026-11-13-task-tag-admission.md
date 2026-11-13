@@ -18,6 +18,10 @@ For a Task with tags, write admission uses the production bounded encoders on a 
 
 **Read and re-admit every associated Task on rename.** This makes catalog writes depend on reading all associated Task bodies and scales with their combined size.
 
+**Write metadata and tags separately.** Two transactions could expose half a request and increment the Task version twice; a shared project transaction preserves the caller's single version decision.
+
+**Load tags per Task.** A query per selected row grows with page size and can lose the snapshot guarantee if performed outside the original read scope.
+
 ## Consequences
 
-The reservation can reject a set whose current names fit, but every accepted association has room for legal renames and subsequent version/time touches. The existing limit remains the boundary; no tag-count quota is introduced. Batch and public association endpoints retain their separate owners.
+The reservation can reject a set whose current names fit, but every accepted association has room for legal renames and subsequent version/time touches. The existing limit remains the boundary; no tag-count quota is introduced. REST PATCH uses the dedicated operation for tag-only requests and combines metadata and associations under the same project transaction otherwise. Batch reads load references for the selected rows in the same snapshot.

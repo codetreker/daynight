@@ -19,6 +19,7 @@ export const browserConfigs = [
   'discussion-identity-playwright.config.ts',
   'team-management-identity-playwright.config.ts',
   'project-grants-playwright.config.ts',
+  'github-settings-playwright.config.ts',
   'project-transfer-playwright.config.ts',
   'project-withdrawal-playwright.config.ts',
   'project-deletion-layout-playwright.config.ts',

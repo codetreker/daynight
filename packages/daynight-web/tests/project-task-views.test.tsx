@@ -158,7 +158,7 @@ describe('project task views', () => {
     fireEvent.click(tab('standalone'));
     expect(row(singleId)).toBeNull();
     fireEvent.click(tab('goals'));
-    expect(document.getElementById(`project-goal-${goal}`)!.closest('.goal-list-row')).toHaveTextContent('1 完成 · 1 取消');
+    expect(document.getElementById(`project-goal-${goal}`)!.closest('.goal-list-row')).toHaveTextContent('1/1 已完成');
     expect(document.getElementById(`project-goal-${emptyGoal}`)!.closest('.goal-list-row')).toHaveTextContent('0/0 已完成');
   });
 
@@ -1614,7 +1614,7 @@ describe('status-first project presentation', () => {
 });
 
 
-it('filters cancelled membership without reducing the complete Goal progress denominator or hiding readable cancelled tasks', async () => {
+it('filters cancelled membership without hiding readable cancelled tasks or counting them in completion progress', async () => {
   const rootTask = seed(canonicalTask(1), 'done');
   const cancelled = { ...seed(canonicalTask(2), 'cancelled', [rootTask.id]), cancelledAt: timestamp };
   const standalone = { ...seed(canonicalTask(3), 'cancelled'), cancelledAt: timestamp };
@@ -1622,7 +1622,7 @@ it('filters cancelled membership without reducing the complete Goal progress den
   mount(); await findChainRow();
   fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'cancelled' } });
   expect(screen.getByRole('option', { name: '已取消' })).toBeInTheDocument();
-  expect(chainRow().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('2/2 已结束 · 1 完成 · 1 取消');
+  expect(chainRow().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
   fireEvent.click(tab('standalone')); await waitFor(() => expect(row(standalone.id)).toBeVisible());
   expect(row(rootTask.id)).toBeNull();
   await openStandalone(standalone.id);

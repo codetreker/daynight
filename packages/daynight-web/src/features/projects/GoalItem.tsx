@@ -3,6 +3,7 @@ import type { TaskSummary, WorkerClaim } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import type { GraphIndex } from '../task-graph/model';
+import { completionProgress } from '../task-graph/completion-progress';
 import { projectTaskScope } from '../task-graph/scope';
 import { ScopedTaskChainRow } from '../task-graph/ScopedTaskChainRow';
 import { ActiveWorkerIndicator } from '../task-graph/ActiveWorkerIndicator';
@@ -47,7 +48,8 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
   }, [contents.chains]);
   const title = `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}`;
   const childrenId = `project-goal-children-${goal.id}`;
-  const { total: count, done, cancelled } = scope.progress;
+  const { total: count } = scope.progress;
+  const progress = completionProgress(scope.progress);
   return <li className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status} ref={root}>
     <div className="goal-list-row task-status-surface" data-task-status={goal.status}>
       <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} aria-describedby={`project-goal-in-progress-${goal.id} project-goal-assignee-${goal.id} project-goal-worker-${goal.id} project-goal-composition-${goal.id} project-goal-progress-${goal.id} project-goal-status-${goal.id}`} onClick={() => {
@@ -57,7 +59,7 @@ export const GoalItem = ({ projectId, index, goal, workerMachines, openChainId, 
       <span className="goal-list-icon" aria-hidden="true">◎</span>
       <span className="goal-list-main"><span className="goal-title-line"><span className="goal-list-title" id={`project-goal-${goal.id}`}>{title}</span><span className="goal-in-progress" id={`project-goal-in-progress-${goal.id}`}>{graph.inProgressCount({ count: inProgressCount })}</span></span>
         <span className="goal-list-meta"><TaskAssigneeIdentity id={`project-goal-assignee-${goal.id}`} projectId={projectId} assignedTo={goal.assignedTo} /><span id={`project-goal-worker-${goal.id}`}><ActiveWorkerIndicator memberIds={memberIds} workerMachines={workerMachines} /></span><span id={`project-goal-composition-${goal.id}`}>{m.composition({ chains: scope.chains.length, standalone: scope.standaloneIds.length })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span></span>
-      <span className="goal-list-progress" id={`project-goal-progress-${goal.id}`}><span>{graph.progress({ done, cancelled, total: count })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${count === 0 ? 0 : done / count * 100}%` }} /><i className="goal-list-cancelled" style={{ width: `${count === 0 ? 0 : cancelled / count * 100}%` }} /></span></span>
+      <span className="goal-list-progress" id={`project-goal-progress-${goal.id}`}><span>{graph.progress({ done: progress.displayDone, total: progress.displayTotal })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${progress.widthPercent}%` }} /></span></span>
       <span className={`root-status graph-status-${goal.status}`} id={`project-goal-status-${goal.id}`}>{common.status[goal.status]}</span>
       </button>
       <button className="goal-list-detail" id={`project-goal-detail-${goal.id}`} type="button" aria-haspopup="dialog" aria-label={m.detailsLabel({ title })} title={m.details} ref={hint.triggerRef} {...hint.triggerEvents} aria-describedby={hint.descriptionId} onClick={(event) => { hint.triggerEvents.onClick(); onOpenGoal(goal.id, event.currentTarget); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5m0-8h.01" /></svg></button>

@@ -208,7 +208,12 @@ list, create, read, rename and confirmed deletion use stable IDs and original
 versions. List cursors bind the project, principal, query, page size and catalog
 epoch; `/tags/resolve` validates the complete selection within a bounded response.
 Visible Task and Goal usage counts are snapshot hints, while deletion removes all
-associations under the Project write lock. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
+associations under the Project write lock. Task and Goal PATCH accepts the complete
+`tagIds` set; omission preserves it and an empty array clears it. Mixed metadata
+and tag changes commit atomically with one version increment. Full, list, ready,
+search and sync results contain the current `tags` array, including `[]` when
+empty. Tag rename and deletion reach associated Tasks through ordinary sync
+without rotating the task cache epoch. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
 and [server design](../../docs/design/daynight-server.md#领域模型与存储结构) describe the contract and implementation.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph, attachment and Worker route. The production Web entry separates
@@ -262,7 +267,7 @@ watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
-one bulk `task_id = ANY(...)` property query share one repeatable-read snapshot.
+bulk property and tag-reference queries share one repeatable-read snapshot.
 The required `dependencyStates` map supplies each visible ordinary Task's exact
 version, retained unsatisfied prerequisites and ready state in snapshots; deltas
 patch owners whose own or direct prerequisite's update falls in the window.
@@ -843,8 +848,12 @@ resolve from the configuration root. The [remote design](../../docs/design/githu
 describes token handling and the read contract. When enabled, the server starts
 the bounded synchronization worker and exposes Project administrator connection
 and settings operations. Configure the GitHub App with Pull requests read access
-and install it on the target repository. The Webhook receiver is a separate
-integration; polling remains available without it.
+and install it on the target repository. Set the App's HTTPS webhook URL to
+`/api/v1/github/webhook`, configure the same webhook secret, and subscribe to
+pull request and installation lifecycle events. The reverse proxy must allow a
+26,214,400-byte request body. The receiver persists refresh hints before
+acknowledging relevant deliveries; polling repairs missed deliveries. See the
+[connection and scheduler design](../../docs/design/github-connection-runtime.md).
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII

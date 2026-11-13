@@ -30,18 +30,9 @@ func (s *Tasks) ReplaceTags(ctx context.Context, principal model.Principal, proj
 		if err != nil {
 			return err
 		}
-		ids, changed, err := taskcore.TagCandidate(current, version, requested)
+		ids, changed, err := prepareTagReplacement(ctx, tx, current, version, requested)
 		if err != nil {
 			return err
-		}
-		if requested != nil {
-			tags, err := tx.TagDAO().ResolveTags(ctx, ids)
-			if err != nil {
-				return err
-			}
-			if len(tags) != len(ids) {
-				return &model.Fault{Code: "tag_not_found", Message: "One or more tags were not found."}
-			}
 		}
 		result = current
 		if changed {
@@ -74,4 +65,19 @@ func (s *Tasks) ReplaceTags(ctx context.Context, principal model.Principal, proj
 		return model.Task{}, errors.New("replace task tags: transaction did not confirm commit")
 	}
 	return result, nil
+}
+
+func prepareTagReplacement(ctx context.Context, tx store.ProjectWriteScope, current model.Task, version int64, requested *[]string) ([]string, bool, error) {
+	ids, changed, err := taskcore.TagCandidate(current, version, requested)
+	if err != nil || requested == nil {
+		return ids, changed, err
+	}
+	tags, err := tx.TagDAO().ResolveTags(ctx, ids)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(tags) != len(ids) {
+		return nil, false, &model.Fault{Code: "tag_not_found", Message: "One or more tags were not found."}
+	}
+	return ids, changed, nil
 }

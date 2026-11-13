@@ -16,7 +16,6 @@
 .goal-list-progress { flex: none; width: 145px; font-size: 10px; color: var(--task-helper); text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
 .goal-list-track i { background: var(--task-done-ink); }
-.goal-list-track .goal-list-cancelled { background: var(--task-cancelled-ink); }
 .goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); padding: 16px 18px 18px 52px; }
 .goal-list-contents section + section { margin-top: 20px; }
 .goal-list-contents h3 { margin: 0 0 10px; font-size: 11px; font-weight: 500; color: var(--task-helper); }

@@ -166,5 +166,17 @@ func (s *searchSnapshot) Matches(ctx context.Context, projectID string, input st
 	if err := rows.Err(); err != nil {
 		return store.TaskSearchPage{}, searchError("read task search", err)
 	}
+	rows.Close()
+	ids := make([]string, len(result.Items))
+	for i := range result.Items {
+		ids[i] = result.Items[i].ID
+	}
+	tags, err := pg.LoadTaskTagsBatch(ctx, s.tx, projectID, ids)
+	if err != nil {
+		return store.TaskSearchPage{}, err
+	}
+	for i := range result.Items {
+		result.Items[i].Tags = tags[result.Items[i].ID]
+	}
 	return result, nil
 }

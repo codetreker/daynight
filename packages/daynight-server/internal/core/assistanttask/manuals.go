@@ -100,7 +100,7 @@ func (m *Module) UpdateAppendix(ctx context.Context, dao store.AssistantTaskDAO,
 	result.State = input.State
 	if input.State == "deleted" {
 		result.Text = ""
-		result.SourceRecords = nil
+		result.SourceRecords = []string{}
 	} else {
 		result.Text = input.Text
 		if input.SourceRecords != nil {

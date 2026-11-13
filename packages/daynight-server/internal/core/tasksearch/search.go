@@ -40,17 +40,18 @@ type Match struct {
 	DescriptionSnippet *string  `json:"descriptionSnippet"`
 }
 type Item struct {
-	ID          string           `json:"id"`
-	Type        model.TaskType   `json:"type"`
-	ParentID    *string          `json:"parentId"`
-	ProjectID   string           `json:"projectId"`
-	Title       string           `json:"title"`
-	Status      model.TaskStatus `json:"status"`
-	AssignedTo  *string          `json:"assignedTo"`
-	CancelledAt *time.Time       `json:"cancelledAt"`
-	UpdatedAt   time.Time        `json:"updatedAt"`
-	Context     *Context         `json:"context"`
-	Match       Match            `json:"match"`
+	Tags        []model.TagReference `json:"-"`
+	ID          string               `json:"id"`
+	Type        model.TaskType       `json:"type"`
+	ParentID    *string              `json:"parentId"`
+	ProjectID   string               `json:"projectId"`
+	Title       string               `json:"title"`
+	Status      model.TaskStatus     `json:"status"`
+	AssignedTo  *string              `json:"assignedTo"`
+	CancelledAt *time.Time           `json:"cancelledAt"`
+	UpdatedAt   time.Time            `json:"updatedAt"`
+	Context     *Context             `json:"context"`
+	Match       Match                `json:"match"`
 }
 type Page struct {
 	ProjectID  string  `json:"projectId"`
@@ -241,7 +242,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 			if err != nil {
 				return err
 			}
-			result.Items = append(result.Items, Item{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, CancelledAt: row.CancelledAt, UpdatedAt: row.UpdatedAt.UTC(), Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
+			result.Items = append(result.Items, Item{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: projectID, Title: row.Title, Status: row.Status, AssignedTo: row.AssignedTo, CancelledAt: row.CancelledAt, UpdatedAt: row.UpdatedAt.UTC(), Tags: row.Tags, Context: contexts[row.ID], Match: Match{Fields: fields, DescriptionSnippet: snippet}})
 		}
 		if rows.HasMore {
 			if len(rows.Items) == 0 {

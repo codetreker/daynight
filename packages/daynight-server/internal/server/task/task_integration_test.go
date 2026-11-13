@@ -165,6 +165,7 @@ func TestTaskHTTPStrictInputsDoNotCallService(t *testing.T) {
 		`{"version":1,"Title":"x"}`, `{"version":1,"version":1,"title":"x"}`, `{"version":1,"id":"readonly"}`, `{"version":1,"title":null}`, `{"version":1,"title":1}`,
 		`{"version":1,"description":null}`, `{"version":1,"description":false}`, `{"version":1,"status":null}`, `{"version":1,"status":[]}`, `{"version":1,"status":"blocked"}`, `{"version":1,"status":"todo"}`, `{"version":1,"status":"done","title":"Changed"}`,
 		`{"version":1,"dependsOn":null}`, `{"version":1,"dependsOn":true}`, `{"version":1,"dependsOn":[null]}`, `{"version":1,"unknown":"private-body-secret"}`,
+		`{"version":1,"tagIds":null}`, `{"version":1,"tagIds":"name"}`, `{"version":1,"tagIds":[null]}`, `{"version":1,"tagIds":[1]}`, `{"version":1,"tagIds":[],"tagIds":[]}`,
 		`{"version":1,"type":"goal"}`, `{"version":1,"title":"x","type":"task"}`, `{"version":1,"parentId":true}`, `{"version":1,"parentId":[]}`,
 	} {
 		t.Run("patch_"+body[:min(len(body), 70)], func(t *testing.T) {

@@ -14,6 +14,7 @@ async function install(page: Page, options: { nativeDefault?: boolean; hiddenDef
     if (path === '/api/v1/me') return send({ id: BOT_USER, personalTeam: personal, name: 'Creation fixture', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personal.id}`) return send({ ...personal, version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME, membership: { teamId: personal.id, userId: BOT_USER, role: 'admin', version: 1, createdAt: BOT_TIME, updatedAt: BOT_TIME } });
+    if (path === '/api/v1/assistant-tasks') return send({items:[],nextCursor:null,observedAt:BOT_TIME});
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/me/bots/defaults') {
       if (noWorker) return send({ ...botDefaults(), workerId: null, configuration: null, workers: [], reason: 'no_available_worker' });
