@@ -92,3 +92,32 @@ func TestPersonalTaskPaused(t *testing.T) {
 	}
 }
 func pointerString(v string) *string { return &v }
+
+func TestPersonalTaskCursorRejectsUnencodablePositions(t *testing.T) {
+	actor := "00000000-0000-4000-8000-000000000001"
+	selection, err := SelectPersonalTasks(actor, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := strings.Repeat("a", 64)
+	position := store.PersonalTaskPosition{ProjectName: "Project", OwnerTeamKind: "personal", OwnerTeamID: actor, ProjectID: actor, TaskID: actor}
+	if _, err := selection.CursorAfter("bad", position); err == nil {
+		t.Fatal("invalid revision encoded")
+	}
+	invalid := position
+	invalid.TaskID = "invalid"
+	if _, err := selection.CursorAfter(revision, invalid); err == nil {
+		t.Fatal("invalid position encoded")
+	}
+	tooLate := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	invalid = position
+	invalid.StartedAt = &tooLate
+	if _, err := selection.CursorAfter(revision, invalid); err == nil {
+		t.Fatal("unencodable time accepted")
+	}
+	invalid = position
+	invalid.ProjectName = strings.Repeat("x", transportLimitForTest())
+	if _, err := selection.CursorAfter(revision, invalid); err == nil {
+		t.Fatal("oversized cursor emitted")
+	}
+}
