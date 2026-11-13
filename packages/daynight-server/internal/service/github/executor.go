@@ -4,7 +4,6 @@ package github
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -260,4 +259,3 @@ func require(ok bool, err error) error {
 	}
 	return nil
 }
-func (r *run) String() string { return fmt.Sprintf("github sync %s", r.project) }

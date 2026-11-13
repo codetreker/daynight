@@ -92,6 +92,12 @@ func (d failureDAO) HasPending(ctx context.Context, l store.GitHubLease) (bool, 
 	}
 	return d.GitHubWriteDAO.HasPending(ctx, l)
 }
+func (d failureDAO) ReschedulePending(ctx context.Context, l store.GitHubLease, number int64, request string, next time.Time) (bool, error) {
+	if err := d.fail("reschedule"); err != nil {
+		return false, err
+	}
+	return d.GitHubWriteDAO.ReschedulePending(ctx, l, number, request, next)
+}
 
 func injectFailure(f *pollFixture, method string, nth int, cause error) {
 	write := f.db.write
@@ -321,5 +327,79 @@ func TestExecutorRateLimitedHintStopsRemainingRequests(t *testing.T) {
 	}
 	if !recorded || !f.runtimes[len(f.runtimes)-1].ReleaseClaim {
 		t.Fatalf("rate limit not recorded and released: %+v", f.runtimes)
+	}
+}
+
+type validLeaseDAO struct{ store.GitHubWriteDAO }
+
+func (d validLeaseDAO) ValidLease(context.Context, store.GitHubLease) (bool, error) {
+	return true, nil
+}
+
+func TestExecutorReschedulesHintsWhenRepositoryUnavailable(t *testing.T) {
+	for _, failReschedule := range []bool{false, true} {
+		t.Run(map[bool]string{false: "retry", true: "store failure"}[failReschedule], func(t *testing.T) {
+			f := newPollFixture(t)
+			f.workKind = "webhook"
+			f.connection.NextPollAt = nil
+			f.hints = []store.GitHubPendingPR{{Number: 4, Generation: 7, RequestID: "request"}}
+			cause := errors.New("repository temporarily unavailable")
+			storeErr := errors.New("reschedule failed")
+			write := f.db.write
+			count := 1
+			f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+				return write(ctx, id, func(s store.ProjectWriteScope) error {
+					var dao store.GitHubWriteDAO = validLeaseDAO{GitHubWriteDAO: s.GitHubDAO()}
+					if failReschedule {
+						dao = failureDAO{GitHubWriteDAO: dao, method: "reschedule", remaining: &count, cause: storeErr}
+					}
+					return work(failureScope{ProjectWriteScope: s, dao: dao})
+				})
+			}
+			r := f.remote()
+			r.verify = func(ctx context.Context, _ int64, _, _ string) (githubpr.RepositoryObservation, error) {
+				if err := remote.CheckpointRequest(ctx); err != nil {
+					return githubpr.RepositoryObservation{}, err
+				}
+				return githubpr.RepositoryObservation{}, cause
+			}
+			err := f.run(r)
+			if !errors.Is(err, cause) {
+				t.Fatalf("error = %v", err)
+			}
+			if failReschedule {
+				if !errors.Is(err, storeErr) || !errors.Is(err, errTransaction) || len(f.runtimes) != 0 {
+					t.Fatalf("failed reschedule: %v, runtimes %+v", err, f.runtimes)
+				}
+			} else {
+				if !errors.Is(err, errAccessStop) || len(f.rescheduled) != 1 || f.rescheduled[0] != "request" || len(f.runtimes) != 1 || !f.runtimes[0].ReleaseClaim {
+					t.Fatalf("retry: %v, rescheduled %v, runtimes %+v", err, f.rescheduled, f.runtimes)
+				}
+			}
+		})
+	}
+}
+
+func TestExecutorStopsWhenFailedHintCannotBeRescheduled(t *testing.T) {
+	f := newPollFixture(t)
+	f.workKind = "webhook"
+	f.connection.NextPollAt = nil
+	f.hints = []store.GitHubPendingPR{{Number: 4, Generation: 7, RequestID: "request"}}
+	storeErr := errors.New("retry write failed")
+	injectFailure(f, "reschedule", 1, storeErr)
+	upstreamErr := errors.New("PR read failed")
+	r := f.remote()
+	r.pull = func(ctx context.Context, _ int64, _, _ string, _ int64) (githubpr.Observation, error) {
+		if err := remote.CheckpointRequest(ctx); err != nil {
+			return githubpr.Observation{}, err
+		}
+		return githubpr.Observation{}, upstreamErr
+	}
+	err := f.run(r)
+	if !errors.Is(err, upstreamErr) || !errors.Is(err, storeErr) || !errors.Is(err, errTransaction) {
+		t.Fatalf("error = %v", err)
+	}
+	if len(f.runtimes) != 1 || f.runtimes[0].ReleaseClaim || len(f.publications) != 0 {
+		t.Fatalf("unexpected completion: %+v", f.runtimes)
 	}
 }

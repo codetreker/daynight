@@ -79,6 +79,9 @@ func TestCheckpointRefusalAndCancellationStopRequests(t *testing.T) {
 	if !errors.Is(err, refused) || requests.Load() != 2 || checkpoints != 3 {
 		t.Fatalf("error=%v requests=%d checkpoints=%d", err, requests.Load(), checkpoints)
 	}
+	if got := err.Error(); got != refused.Error() {
+		t.Fatalf("checkpoint error text = %q, want %q", got, refused.Error())
+	}
 	cancelled, cancel := context.WithCancel(context.Background())
 	ctx = WithRequestCheckpoint(cancelled, func(context.Context) error { cancel(); return nil })
 	_, err = c.Repository(ctx, 12, "a", "b")

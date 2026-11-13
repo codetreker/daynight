@@ -265,3 +265,27 @@ func TestAccessDatabaseFailuresPropagateWithoutCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestNewExecutorRejectsMissingDependencies(t *testing.T) {
+	db := &executorStore{t: t}
+	upstream := executorRemote{}
+	for _, tc := range []struct {
+		name   string
+		db     Store
+		remote Remote
+		app    int64
+	}{
+		{"missing store", nil, upstream, 10},
+		{"missing remote", db, nil, 10},
+		{"nonpositive app", db, upstream, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if exec, err := NewExecutor(tc.db, tc.remote, tc.app, nil); err == nil || exec != nil {
+				t.Fatalf("accepted dependencies: %+v %v", exec, err)
+			}
+		})
+	}
+	if exec, err := NewExecutor(db, upstream, 10, nil); err != nil || exec == nil || exec.log == nil {
+		t.Fatalf("default logger: %+v %v", exec, err)
+	}
+}

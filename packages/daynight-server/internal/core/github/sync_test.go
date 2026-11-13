@@ -183,3 +183,34 @@ func TestRemovedInstallationIgnoresDelayedAccessHint(t *testing.T) {
 		t.Fatalf("new connection did not recover: %q", got)
 	}
 }
+
+func TestFailureMessagesAndWebhookRateLimit(t *testing.T) {
+	for _, tc := range []struct{ code, want string }{
+		{"github_rate_limited", "GitHub rate limit reached"},
+		{"github_permission_denied", "GitHub access denied"},
+		{"github_installation_missing", "GitHub installation unavailable"},
+		{"github_repository_mismatch", "GitHub repository identity does not match"},
+		{"app_changed", "GitHub App changed; reconnect is required"},
+		{"github_unavailable", "GitHub synchronization failed"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			if got := (Failure{Code: tc.code}).Message(); got != tc.want {
+				t.Fatalf("message %q want %q", got, tc.want)
+			}
+		})
+	}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	pollError := "poll-error"
+	c := githubpr.Connection{PollErrorCode: &pollError}
+	r := Runtime(c)
+	retry := now.Add(2 * time.Minute)
+	WebhookFailure(&r, now, Failure{Code: "github_rate_limited", RetryAt: retry})
+	if r.WebhookErrorCode == nil || *r.WebhookErrorCode != "github_rate_limited" || r.NotBefore == nil || !r.NotBefore.Equal(retry) || r.PollErrorCode == nil || *r.PollErrorCode != pollError {
+		t.Fatalf("rate limit state: %+v", r)
+	}
+	r = Runtime(c)
+	WebhookFailure(&r, now, Failure{Code: "github_rate_limited", RetryAt: now.Add(time.Second)})
+	if r.NotBefore == nil || !r.NotBefore.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("minimum retry: %+v", r.NotBefore)
+	}
+}
