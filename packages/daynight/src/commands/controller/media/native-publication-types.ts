@@ -24,8 +24,9 @@ export type NativeImageProjectionState = {
   request: ImageCaptureRequest;
   index: number;
   waitingForSource: boolean;
-  phase: "new" | "query" | "reserved" | "commit" | "settled";
+  phase: "new" | "query" | "reserved" | "commit" | "failure" | "settled";
   unknownAction: "register" | "commit" | "failure" | null;
+  retryAt?: number;
   part: ImagePart | ImageUnavailablePart;
   validated: ValidatedImage | null;
 };

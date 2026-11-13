@@ -1,6 +1,12 @@
 import { expect, it } from 'vitest';
 import type { SessionOperation } from '../../daynight/src/session/protocol';
-import { OperationRequestError, operationErrorMessage, operationErrorText } from '../src/features/task-agent-session/operation-error';
+import { OperationRequestError, imageCommandNotDispatched, operationErrorMessage, operationErrorText } from '../src/features/task-agent-session/operation-error';
+import { ApiError } from '../src/api/client';
+
+it('requires the authenticated command admission refusal before allowing a new image intent', () => {
+  expect(imageCommandNotDispatched(new ApiError('server', 409, 'capability_changed'))).toBe(true);
+  for (const error of [new Error('capability_changed'), new ApiError('protocol', 409, 'capability_changed'), new ApiError('network', null, 'capability_changed'), new ApiError('server', 503, 'capability_changed'), new ApiError('server', 404, 'not_found'), new ApiError('server', 409, 'operation_conflict'), new ApiError('server', 409, 'quota_exceeded')]) expect(imageCommandNotDispatched(error)).toBe(false);
+});
 
 const operation = (kind: SessionOperation['kind'], state: SessionOperation['state'], error: SessionOperation['error'] = null): SessionOperation => ({ protocol: 'daynight.session.v1', sessionId: 'session', claimId: 'claim', executionGeneration: '1', operationId: 'original', kind, state, providerResult: null, error });
 

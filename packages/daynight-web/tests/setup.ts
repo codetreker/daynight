@@ -82,12 +82,17 @@ beforeEach(() => {
 
 afterEach(async () => {
   cleanup();
-  cleaningStorage = true;
-  for (const database of databaseHandles) database.close();
+  // Unmount starts account/session cleanup transactions. Drain them before
+  // closing their connections or replacing the next test's database factory.
   do {
-    await Promise.all([...pendingStorage]);
+    // fake-indexeddb schedules transactions with setImmediate, which some
+    // component clocks also replace. Let those tasks settle after unmount.
+    if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+    else await Promise.all([...pendingStorage]);
     await setImmediate();
   } while (pendingStorage.size !== 0);
+  cleaningStorage = true;
+  for (const database of databaseHandles) database.close();
   databaseHandles.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

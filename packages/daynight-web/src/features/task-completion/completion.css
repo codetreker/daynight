@@ -1,6 +1,6 @@
-.completion-time-label { color: #5c687b; font-size: 0.75rem; font-weight: 400; white-space: normal; margin-inline-start: 0.5rem; }
+.completion-time-label { color: var(--task-helper); font-size: 0.75rem; font-weight: 400; white-space: normal; margin-inline-start: 0.5rem; }
 .chain-completion-time { flex: 0 1 auto; min-width: 0; border: 0; border-radius: 4px; background: transparent; padding: 5px 7px; cursor: pointer; text-align: left; }
 .chain-completion-time .completion-time-label { margin-inline-start: 0; }
-.chain-completion-time:hover { background: #dcebe3; }
-.chain-completion-time:focus-visible { outline: 2px solid #305fa8; outline-offset: 1px; }
+.chain-completion-time:hover { background: var(--task-done-hover); }
+.chain-completion-time:focus-visible { outline: 2px solid var(--task-focus); outline-offset: 1px; }
 .completion-hint[popover] { position: fixed; inset: auto; margin: 0; max-width: min(320px, calc(100vw - 16px)); padding: 7px 10px; border: 1px solid #cad4e0; border-radius: 6px; background: #253247; color: white; font-size: 0.75rem; line-height: 1.4; overflow-wrap: anywhere; box-shadow: 0 4px 14px #17244733; }

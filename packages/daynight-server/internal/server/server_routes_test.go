@@ -1756,6 +1756,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"team_invitation_create": true, "team_invitation_list": true, "team_invitation_revoke": true,
 		"invitation_inspect": true, "invitation_accept": true,
 		"bot_list": true, "bot_show": true, "bot_create": true, "bot_delete": true,
+		"tag_list": true, "tag_show": true, "tag_create": true, "tag_rename": true, "tag_delete": true,
 		"task_session_send": true, "task_session_operation": true,
 		"task_thread_read": true, "task_thread_post": true,
 		"task_step_list": true, "task_step_show": true, "task_step_add": true, "task_step_update": true,

@@ -34,6 +34,19 @@ it.each(activities)('keeps header and visible footer %s labels English through l
   }
 });
 it.each([
+  ['working', true, 'connected', true, 'working'],
+  ['waiting_input', true, 'connected', true, 'waiting_input'],
+  ['working', false, 'connected', true, null],
+  ['waiting_input', true, 'disconnected', true, null],
+  ['working', true, 'synchronizing', true, null],
+  ['working', true, 'connected', false, null],
+] as const)('presents only synchronized connected activity (%s, %s, %s, %s)', (activity, connected, connectionState, synchronized, expected) => {
+  const s = snapshot({ activity, connectionState, synchronized, currentTurnId: 'native-turn', turnStartedAt: '2026-11-13T04:30:00Z' });
+  const view = render(<SessionActivity snapshot={s} connected={connected} active commandPending={false} interruptRequested={false} interruptPending={false} interruptAllowed onInterrupt={vi.fn()} />);
+  expect(view.container.querySelector('.session-activity-dot')!.getAttribute('data-activity')).toBe(expected);
+  expect(screen.getByRole('button', { name: 'Interrupt' })).toBeEnabled();
+});
+it.each([
   [{ connectionState: 'disconnected' }, true, '执行环境连接中断', 'Execution environment disconnected'],
   [{ connectionState: 'synchronizing' }, true, '正在同步会话', 'Synchronizing session'],
   [{ synchronized: false }, true, '正在同步会话', 'Synchronizing session'],

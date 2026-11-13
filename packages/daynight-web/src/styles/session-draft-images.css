@@ -1,0 +1,26 @@
+.session-draft-attachments { min-width: 0; max-width: 100%; max-height: min(36vh, 300px); overflow: auto; overscroll-behavior: contain; }
+.session-draft-attachments:empty { display: none; }
+.session-draft-items { display: flex; flex-wrap: wrap; gap: .5rem; padding: .25rem 0; }
+.session-draft-item { display: flex; flex-direction: column; width: min(128px, 100%); min-width: 0; gap: .2rem; }
+.session-draft-item .session-image-frame { width: 100%; max-width: 100%; }
+.session-draft-item .session-image-canvas { max-height: 100px; }
+.session-draft-item .session-image-caption { flex-wrap: wrap; }
+.session-draft-item .session-image-actions { flex-wrap: wrap; }
+.session-draft-item progress { max-width: 100%; width: 100%; }
+.session-draft-name, .session-draft-rejected, .session-draft-frozen-text { overflow-wrap: anywhere; white-space: pre-wrap; }
+.session-draft-recovery { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+.session-draft-recovery details { width: 100%; }
+.session-draft-recovery-content summary { overflow-wrap: anywhere; white-space: pre-wrap; }
+.session-draft-attachments .button, .session-add-images { min-height: 44px; min-width: 44px; }
+.session-draft-attachments .session-error { margin: .25rem 0; }
+.session-draft-saving, .session-draft-disabled { display: block; font-size: .85em; }
+.session-composer[data-image-drop=true] .session-composer-surface { outline: 2px solid currentColor; outline-offset: -2px; }
+.session-image-drop-hint { padding: .3rem; }
+.session-add-images { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; }
+.session-add-images svg { width: 18px; height: 18px; }
+.session-composer-footer-default:has(.session-add-images) { column-gap: 2px; }
+.session-composer-footer-default .session-controls-toolbar:has(.session-add-images) { flex-wrap: wrap; }
+.session-controls-toolbar:has(.session-add-images) .session-control-trigger { padding-inline: 4px; }
+.session-controls-toolbar:has(.session-add-images) .session-model-trigger { flex-basis: 44px; flex-grow: 1; }
+.session-image-file-input { display: none; }
+@media (prefers-reduced-motion: reduce) { .session-draft-attachments * { transition: none; animation: none; } }

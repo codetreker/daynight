@@ -1,3 +1,5 @@
+import { expectTextContrast, roleColors } from './color-roles';
+import type { TaskStep } from '../../src/api/task-steps';
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncFixture, taskSyncQuery, taskSyncEpoch, TEST_VIEWER_ID } from '../helpers/taskSync';
@@ -12,21 +14,22 @@ const time = '2026-10-20T09:00:00Z';
 const step = { id: '00000001', title: 'Review', description: 'Read this', status: 'todo', createdAt: time, updatedAt: time };
 const longName = 'Alexandra Person With A Very Long Name For Narrow Assignment Layout';
 
-type CancellationBehavior = {
+type FixtureOptions = {
+  readonly steps?: readonly TaskStep[];
   readonly outcome?: 'conflict' | 'lost' | 'malformed';
   readonly gate?: { readonly started: () => void; readonly wait: Promise<void> };
   readonly observe?: (before: TaskDetail, after: TaskDetail) => void;
   readonly exposeUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
 };
 
-async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, cancellation: CancellationBehavior = {}) {
+async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, options: FixtureOptions = {}) {
   const epoch = taskSyncEpoch(projectId);
   let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   const previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n });
   const graph = () => ({ ...graphFixture([task, previous]), observedAt: task.updatedAt });
   let statusRequests = 0;
-  cancellation.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
-  let steps = large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
+  options.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
+  let steps = options.steps ? [...options.steps] : large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
   const writes: string[] = [];
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
@@ -53,16 +56,16 @@ async function install(page: Page, running = false, linked = false, large = fals
       const input = request.postDataJSON();
       expect(input).toEqual({ version: Number(task.version), status: 'cancelled' });
       statusRequests++;
-      if (cancellation.outcome === 'conflict' && statusRequests === 1) {
+      if (options.outcome === 'conflict' && statusRequests === 1) {
         task = { ...task, version: task.version + 1n, updatedAt: '2026-10-22T10:01:00Z' };
         return send({ error: { code: 'version_conflict', message: 'Changed task', requestId: 'cancel-conflict' } }, 409);
       }
-      cancellation.gate?.started(); await cancellation.gate?.wait;
+      options.gate?.started(); await options.gate?.wait;
       const before = task;
       task = { ...task, status: 'cancelled', ready: false, cancelledAt: '2026-10-22T10:02:00Z', updatedAt: '2026-10-22T10:02:00Z', version: task.version + 1n };
-      cancellation.observe?.(before, task);
-      if (cancellation.outcome === 'lost') return route.abort('failed');
-      if (cancellation.outcome === 'malformed') return send({ ...task, cancelledAt: null });
+      options.observe?.(before, task);
+      if (options.outcome === 'lost') return route.abort('failed');
+      if (options.outcome === 'malformed') return send({ ...task, cancelledAt: null });
       return send(task);
     }
     if (path === `/api/v1/projects/${projectId}/tasks/${taskId}/steps/${step.id}/position` && request.method() === 'PUT') {
@@ -716,3 +719,49 @@ test('linked PR empty state survives relation errors and language changes in dir
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
   await expect(detail.getByRole('region', { name: '关联 PR' })).toContainText('暂无关联 PR');
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
+  test(`semantic detail and Step roles stay readable at ${width}px in ${locale}`, async ({ page }) => {
+    const stepStates = ['todo', 'in_progress', 'done', 'skipped'] as const;
+    const writes = await install(page, false, false, false, true, false, undefined, { status: 'proposed', ready: false }, {
+      steps: stepStates.map((status, index) => ({ ...step, id: (index + 1).toString(16).padStart(8, '0'), title: `Review ${status}`, status })),
+    });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    await page.locator(`#standalone-task-${taskId}`).click();
+    const dialog = page.locator('.task-detail-dialog');
+    await expect(dialog.locator('.task-status-trigger i')).toHaveCSS('background-color', roleColors.proposed[3]);
+    await dialog.locator('.task-status-trigger').click();
+    for (const status of ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const) {
+      const dot = page.locator(`.task-status-menu .task-detail-dot-${status}`);
+      await expect(dot).toHaveCSS('background-color', roleColors[status][3]);
+      await expectTextContrast(dot.locator('..'));
+    }
+    await page.getByRole('menuitemradio', { name: locale === 'en' ? 'Cancelled' : '已取消', exact: true }).click();
+    const confirmation = page.locator('.task-confirmation');
+    for (const status of ['proposed', 'cancelled'] as const) {
+      const chip = confirmation.locator(`.task-detail-status-${status}`);
+      await expect(chip).toHaveCSS('background-color', roleColors[status][0]);
+      await expect(chip).toHaveCSS('color', roleColors[status][3]);
+      await expectTextContrast(chip);
+    }
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('tab', { name: locale === 'en' ? 'Steps' : '步骤', exact: true }).click();
+    for (const status of stepStates) {
+      const chip = dialog.locator(`.step-status-${status}`);
+      const role = status === 'skipped' ? 'cancelled' : status;
+      await page.mouse.move(0, 0);
+      await expect(chip).toHaveCSS('background-color', roleColors[role][0]);
+      await expect(chip).toHaveCSS('color', roleColors[role][3]);
+      await expectTextContrast(chip);
+      await chip.hover();
+      await expect(chip).toHaveCSS('background-color', roleColors[role][1]);
+      await expectTextContrast(chip);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(writes).toEqual([]);
+  });
+}

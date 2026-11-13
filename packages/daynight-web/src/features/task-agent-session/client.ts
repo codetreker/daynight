@@ -1,17 +1,27 @@
-import { OperationRequestError } from './operation-error';
+import { OperationRequestError, imageCommandNotDispatched } from './operation-error';
 import { sameStartupReport, type SessionStartupReport } from '../../../../daynight/src/session/startup';
 import { liveHistoryAllowed } from './presentation';
 import { sessionArchiveReferences, type SessionArchiveStatus } from '../../../../daynight/src/session/archive';
 import type { SessionResourceClient } from '../../../../daynight/src/session/resource-client';
 import { ApiError, isAbortError, readAuthRequestGeneration } from '../../api/client';
 import { pageImageStore, type ImageScope } from './images/image-store';
+import { ImageDraftController, type ImageDraftContext } from './drafts/image-draft-controller';
+import { clearImageDraftScope } from './drafts/draft-store-cleanup';
+import { draftOwnerKey } from './drafts/draft-store-identity';
 import { IndependentSessionReadDenied, type BotSessionBinding, type SessionApi, type SessionChannel, type LoadedSessionArchive } from '../../api/sessions';
 import { clearSessionDisplayPreference } from './useSessionDisplayPreference';
-import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
+import { SESSION_PROTOCOL, assertSessionFence, sessionFence, sessionFenceKey, parseSessionOperation, type InteractionResponse, type SessionCommand, type SessionFence, type SessionInteraction, type SessionOperation, type SessionSnapshot } from '../../../../daynight/src/session/protocol';
 import type { BrowserMessage, TimelinePage } from '../../../../daynight/src/session/controller-protocol';
 import { applySessionEvent, emptySessionState, hydrateSession, mergeTimeline, hasPendingResponse, sessionCancelGate, sessionRespondGate, sessionSendGate, sessionControlGate, type SessionState } from './state';
 
 export type SessionDraft = { readonly text: string; readonly revision: string; readonly submission: { readonly operationId: string; readonly revision: string; readonly kind?: 'send_message' | 'execute_command' } | null };
+type LegacyDraftSource = { readonly key: string; readonly value: string };
+const parseStoredDraft = (stored: unknown): SessionDraft | null => {
+  if (!stored || typeof stored !== 'object' || !('text' in stored) || typeof stored.text !== 'string' || !('revision' in stored) || typeof stored.revision !== 'string' || !('submission' in stored)) return null;
+  const submission = stored.submission;
+  if (submission !== null && (typeof submission !== 'object' || !('operationId' in submission) || typeof submission.operationId !== 'string' || !('revision' in submission) || typeof submission.revision !== 'string')) return null;
+  return { text: stored.text, revision: stored.revision, submission: submission === null ? null : { operationId: submission.operationId as string, revision: submission.revision as string, ...('kind' in submission && (submission.kind === 'execute_command' || submission.kind === 'send_message') ? { kind: submission.kind } : {}) } };
+};
 const emptyDraft = (): SessionDraft => ({ text: '', revision: crypto.randomUUID(), submission: null });
 const draftPrefix = (userId: string) => `daynight:session-draft:${userId}:`;
 export function clearSessionDrafts(userId: string): void {
@@ -122,9 +132,96 @@ export class TaskSessionClient {
   private replayThrough = '0';
   private retries = 0;
   private draftKey: string | null = null;
+  private imageDraftProjected = false;
+  private legacyOwnerKey: string | null = null;
+  private legacySource: LegacyDraftSource | null = null;
+  private readonly legacyBindings = new Map<string, string>();
+  private readonly legacyCopies = new Map<string, { readonly draft: SessionDraft; readonly source: LegacyDraftSource | null; readonly unsaved: boolean }>();
   private operationPolls = new Set<ReturnType<typeof setTimeout>>();
   private progressTimers = new Map<string, readonly ReturnType<typeof setTimeout>[]>();
-  constructor(private readonly options: Options) { this.view = { ...this.view, actionAdmitted: options.initialActionAdmitted ?? true }; }
+  private draftAdmission = { active: false, current: false };
+  private imageOperationIds = new Set<string>();
+  readonly imageDrafts: ImageDraftController;
+  constructor(private readonly options: Options) {
+    this.view = { ...this.view, actionAdmitted: options.initialActionAdmitted ?? true };
+    this.imageDrafts = new ImageDraftController({
+      getContext: this.imageDraftContext,
+      dispatch: command => this.dispatchFrozenDraft(command),
+      query: (fence, id, signal) => this.observeImageOperation(fence, id, signal),
+      createAsset: (blob, id, byteRevision) => {
+        const scope = this.imageScope();
+        if (!scope) throw new Error('Image access has ended.');
+        return pageImageStore.createLocalAsset(scope, { key: JSON.stringify([id, byteRevision]), blob });
+      },
+      isDefinitiveNotDispatched: imageCommandNotDispatched,
+      commandIssue: payload => {
+        const s = this.view.state.snapshot, command = s?.controls?.commands.find(candidate => candidate.id === payload.commandId);
+        return !this.canInteract() || !this.live() || !this.view.actionAdmitted || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== payload.expectedControlsRevision || s.currentTurnId !== payload.expectedTurnId || !command?.available ? 'image_command_unavailable' : null;
+      },
+      legacy: () => {
+        const key = this.draftKey, draft = this.view.draft, ownerKey = this.legacyOwnerKey, source = this.legacySource;
+        return key && !this.imageDraftProjected && ownerKey ? { ...draft, ownerKey, onImported: () => {
+          const storage = this.options.storage, raw = storage?.getItem(key), stored: unknown = JSON.parse(raw ?? 'null');
+          if (stored && typeof stored === 'object' && 'ownerKey' in stored && stored.ownerKey === ownerKey && JSON.stringify(parseStoredDraft(stored)) === JSON.stringify(draft)) storage?.removeItem(key);
+          if (source && this.legacyBindings.get(source.key) === ownerKey && storage?.getItem(source.key) === source.value) storage.removeItem(source.key);
+          this.legacyCopies.delete(key);
+          if (this.draftKey === key) this.legacySource = null;
+        } } : null;
+      },
+    });
+    this.imageDrafts.subscribe(() => {
+      if (this.lifetime.signal.aborted) return;
+      const draft = this.imageDrafts.getSnapshot();
+      if (draft.submission && !this.imageOperationIds.has(draft.submission.operationId)) {
+        this.imageOperationIds.add(draft.submission.operationId);
+        // Migration removes the old draft key only after adoption. Persist its
+        // receipt routing now so a reload cannot query it as an unrelated operation.
+        this.persist();
+      }
+      if (draft.active) {
+        this.imageDraftProjected = true;
+        this.view = { ...this.view, draft: { text: draft.text, revision: draft.revision, submission: draft.submission ? { operationId: draft.submission.operationId, revision: draft.submission.draftRevision, kind: draft.submission.kind } : null } };
+      } else if (this.imageDraftProjected) {
+        this.imageDraftProjected = false;
+        this.view = { ...this.view, draft: emptyDraft() };
+      }
+      for (const listener of this.listeners) listener();
+    });
+  }
+  setImageDraftAdmission = (active: boolean, current: boolean): void => {
+    if (this.draftAdmission.active === active && this.draftAdmission.current === current) return;
+    this.draftAdmission = { active, current };
+    void this.imageDrafts.sync();
+  };
+  private imageDraftContext = (): ImageDraftContext | null => {
+    const snapshot = this.view.state.snapshot;
+    if (!snapshot || snapshot.lifecycle !== 'active' || this.lifetime.signal.aborted || (!this.accountStopped && !this.owned()) || this.invalidated || !this.canInteract()) return null;
+    const target = { serverOrigin: window.location.origin, actorUserId: this.options.userId, fence: sessionFence(snapshot), expectedNativeSessionId: snapshot.identity.nativeSessionId };
+    const resolver = this.options.testSessionId !== undefined
+      ? { kind: 'session' as const, sessionId: snapshot.sessionId, testExecutionId: snapshot.testExecutionId! }
+      : { kind: 'task' as const, projectId: this.options.projectId, taskId: this.options.taskId };
+    const self = this;
+    return {
+      identity: { target, resolver }, target,
+      get resources() { return self.resourceClient(snapshot); },
+      capabilities: snapshot.capabilities.images ?? null,
+      active: this.draftAdmission.active && this.draftAdmission.current && this.live(),
+      // Account refresh stops remote work without locking this retained local draft.
+      canEdit: this.canInteract() && (this.accountStopped || this.owned() && !this.paused() && !this.view.authPaused),
+      canAuthorize: !this.accountStopped,
+      canSend: this.draftAdmission.active && this.draftAdmission.current && this.live() && !this.view.authPaused && this.view.actionAdmitted && sessionSendGate(this.view.state, this.view.connected),
+      mode: snapshot.activity === 'working' ? 'steer' : 'send', expectedTurnId: snapshot.activity === 'working' ? snapshot.currentTurnId : null,
+      authorizationGeneration: String(readAuthRequestGeneration()),
+    };
+  };
+  private resourceClient(snapshot: SessionSnapshot): SessionResourceClient {
+    const key = JSON.stringify([sessionFenceKey(snapshot), readAuthRequestGeneration()]);
+    if (this.media?.key !== key) {
+      void this.media?.client.close();
+      this.media = { key, client: this.options.api.resources(sessionFence(snapshot), () => this.owned() && this.sameSession(snapshot)) };
+    }
+    return this.media.client;
+  }
   snapshot = (): SessionViewState => this.view;
   /** One authenticated resource scope follows this retained client, independent of presentation. */
   imageScope = (): ImageScope | null => {
@@ -172,6 +269,7 @@ export class TaskSessionClient {
   private live = (): boolean => this.owned() && !this.paused();
   syncAvailability = (): void => {
     if (this.lifetime.signal.aborted || this.accountStopped) return;
+    if (this.draftAdmission.active || this.imageDrafts.getSnapshot().active) void this.imageDrafts.sync();
     if (!this.owned()) { if (this.availabilityRunning || this.view.authPaused) this.pause(); return; }
     if (this.paused()) { this.suspend(); return; }
     if (this.view.authPaused) {
@@ -267,6 +365,9 @@ export class TaskSessionClient {
     const previous = this.view.state.snapshot, next = change.state?.snapshot;
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.identity.nativeSessionId !== next.identity.nativeSessionId)) {
       void this.images?.scope.invalidate(); this.images = null;
+      // The visible text belongs to the same exact owner as its image items.
+      // Retire that projection before publishing a different native target.
+      this.imageDraftProjected = false; this.legacyOwnerKey = null; change = { ...change, draft: emptyDraft() };
     }
     if (previous && change.state && (!next || sessionFenceKey(previous) !== sessionFenceKey(next) || previous.historyEpoch !== next.historyEpoch)) {
       this.cancelOlder(); this.cancelHydration(); this.before = null; this.beforeCursors.clear();
@@ -306,48 +407,79 @@ export class TaskSessionClient {
     const snapshot = this.view.state.snapshot;
     if (snapshot) this.bindDraft(snapshot);
     const draft = this.view.draft, operation = draft.submission && this.view.state.operations.get(draft.submission.operationId);
-    if (operation && ['send_message', 'execute_command'].includes(operation.kind) && (accepted(operation) || terminalFailure(operation))) {
+    if (!this.imageDrafts.getSnapshot().active && operation && ['send_message', 'execute_command'].includes(operation.kind) && (accepted(operation) || terminalFailure(operation))) {
       this.view = { ...this.view, draft: accepted(operation) && draft.revision === draft.submission!.revision ? emptyDraft() : { ...draft, submission: null } };
       this.persistDraft();
     }
+    if (this.draftAdmission.active || this.imageDrafts.getSnapshot().active) void this.imageDrafts.sync();
     for (const listener of this.listeners) listener();
   }
   private draftScopePrefix(): string {
     return `${draftPrefix(this.options.userId)}${this.options.bot ? `bot:${this.options.bot.botId}:${this.options.bot.sessionId}` : this.options.testSessionId !== undefined ? `test:${this.options.testSessionId}` : `task:${this.options.projectId}:${this.options.taskId}`}:`;
   }
   private bindDraft(snapshot: SessionSnapshot) {
-    const prefix = this.draftScopePrefix();
-    const key = `${prefix}${sessionFenceKey(snapshot)}`;
-    if (key === this.draftKey) return;
-    this.draftKey = key;
+    const baseKey = `${this.draftScopePrefix()}${sessionFenceKey(snapshot)}`;
+    const context = this.imageDraftContext(), ownerKey = context ? draftOwnerKey(context.identity) : null;
+    const key = ownerKey ? `${baseKey}:owner:${encodeURIComponent(ownerKey)}` : baseKey;
+    if (key === this.draftKey && ownerKey === this.legacyOwnerKey) return;
+    this.draftKey = key; this.legacyOwnerKey = ownerKey; this.legacySource = null;
+    this.imageDraftProjected = false;
     this.view = { ...this.view, settingIntents: new Map() };
-    let draft = emptyDraft();
+    const retained = this.legacyCopies.get(key);
+    let draft = retained?.draft ?? emptyDraft(); this.legacySource = retained?.source ?? null;
     try {
       const storage = this.options.storage;
-      // An authenticated current snapshot selects the execution; obsolete generations
-      // cannot be revived by navigating back to a previously mounted composer.
-      if (storage) for (let i = storage.length - 1; i >= 0; i--) { const previous = storage.key(i); if (previous?.startsWith(prefix) && previous !== key) storage.removeItem(previous); }
-      // Cold Bot panes retain only lightweight state for the authenticated fence.
-      // A new generation must not accumulate or restore obsolete uncertain inputs.
-      if (storage && this.options.bot) {
-        const operationPrefix = `daynight:session-operations:${this.options.userId}:${snapshot.sessionId}:`;
-        const currentOperationKey = this.storageKey(snapshot);
-        for (let i = storage.length - 1; i >= 0; i--) { const previous = storage.key(i); if (previous?.startsWith(operationPrefix) && previous !== currentOperationKey) storage.removeItem(previous); }
-      }
       const stored: unknown = JSON.parse(storage?.getItem(key) ?? 'null');
-      if (stored && typeof stored === 'object' && 'text' in stored && typeof stored.text === 'string' && 'revision' in stored && typeof stored.revision === 'string' && 'submission' in stored) {
-        const submission = stored.submission;
-        if (submission === null || typeof submission === 'object' && 'operationId' in submission && typeof submission.operationId === 'string' && 'revision' in submission && typeof submission.revision === 'string') draft = { text: stored.text, revision: stored.revision, submission: submission === null ? null : { operationId: submission.operationId as string, revision: submission.revision as string, ...('kind' in submission && submission.kind === 'execute_command' ? { kind: 'execute_command' as const } : {}) } };
+      const exact = parseStoredDraft(stored);
+      if (!retained?.unsaved && exact && stored && typeof stored === 'object' && 'ownerKey' in stored && stored.ownerKey === ownerKey) {
+        draft = exact;
+        const source = 'legacySource' in stored ? stored.legacySource : null;
+        if (source && typeof source === 'object' && 'key' in source && source.key === baseKey && 'value' in source && typeof source.value === 'string') {
+          this.legacySource = { key: baseKey, value: source.value }; this.legacyBindings.set(baseKey, ownerKey!);
+        }
+      } else if (!retained && ownerKey) {
+        const raw = storage?.getItem(baseKey), legacy: unknown = JSON.parse(raw ?? 'null'), original = parseStoredDraft(legacy);
+        let marker = legacy && typeof legacy === 'object' && 'ownerKey' in legacy ? legacy.ownerKey : this.legacyBindings.get(baseKey);
+        if (!marker && storage) for (let index = 0; index < storage.length; index++) {
+          const slot = storage.key(index); if (!slot?.startsWith(`${baseKey}:owner:`)) continue;
+          const saved: unknown = JSON.parse(storage.getItem(slot) ?? 'null');
+          if (saved && typeof saved === 'object' && 'ownerKey' in saved && typeof saved.ownerKey === 'string' && 'legacySource' in saved && saved.legacySource && typeof saved.legacySource === 'object' && 'key' in saved.legacySource && saved.legacySource.key === baseKey && 'value' in saved.legacySource && saved.legacySource.value === raw) { marker = saved.ownerKey; break; }
+        }
+        if (original && raw && (!marker || marker === ownerKey)) {
+          // Bind old fence-only records without changing their content or send
+          // correlation. New edits always use the exact owner's separate slot.
+          this.legacyBindings.set(baseKey, ownerKey); draft = original;
+          this.legacySource = { key: baseKey, value: raw };
+          if (!marker && context?.canEdit) {
+            const bound = JSON.stringify({ ...legacy as object, ownerKey });
+            try { storage!.setItem(baseKey, bound); this.legacySource = { key: baseKey, value: bound }; }
+            catch {
+              // A separate exact-owner copy can retain attribution when updating
+              // the old key fails. Neither path removes the original source.
+              try { storage!.setItem(key, JSON.stringify({ ...original, ownerKey, legacySource: this.legacySource })); }
+              catch { /* No durable attribution was possible; retain it in this page. */ }
+            }
+          }
+        }
       }
-    } catch { /* A missing or malformed saved draft never authorizes a send. */ }
+    } catch { /* Keep the original in memory when legacy storage is unavailable. */ }
+    if (ownerKey) this.legacyCopies.set(key, { draft, source: this.legacySource, unsaved: retained?.unsaved ?? false });
     this.view = { ...this.view, draft };
   }
   private persistDraft() {
-    if (!this.draftKey) return;
-    try { if (this.view.draft.text || this.view.draft.submission) this.options.storage?.setItem(this.draftKey, JSON.stringify(this.view.draft)); else this.options.storage?.removeItem(this.draftKey); } catch { /* Keep editable text in memory if storage is unavailable. */ }
+    if (this.imageDrafts.getSnapshot().active || !this.draftKey || !this.legacyOwnerKey) return;
+    this.legacyCopies.set(this.draftKey, { draft: this.view.draft, source: this.legacySource, unsaved: true });
+    try {
+      if (this.view.draft.text || this.view.draft.submission || this.legacySource) this.options.storage?.setItem(this.draftKey, JSON.stringify({ ...this.view.draft, ownerKey: this.legacyOwnerKey, ...(this.legacySource ? { legacySource: this.legacySource } : {}) }));
+      else this.options.storage?.removeItem(this.draftKey);
+      if (this.options.storage) this.legacyCopies.set(this.draftKey, { draft: this.view.draft, source: this.legacySource, unsaved: false });
+    } catch { /* Keep editable text and its source when storage is unavailable. */ }
   }
   setDraft = (text: string): void => {
+    if (this.imageDrafts.getSnapshot().loading) return;
+    if (this.imageDrafts.getSnapshot().active) { this.imageDrafts.setText(text); return; }
     if (!this.canInteract() || this.lifetime.signal.aborted || !this.view.state.snapshot || this.view.draft.text === text) return;
+    const context = this.imageDraftContext(); this.legacyOwnerKey = context ? draftOwnerKey(context.identity) : null;
     this.publish({ draft: { ...this.view.draft, text, revision: crypto.randomUUID() } }); this.persistDraft();
   };
   private matches(s: SessionSnapshot): boolean {
@@ -365,7 +497,7 @@ export class TaskSessionClient {
   private storageKey(s: SessionSnapshot) { return `daynight:session-operations:${this.options.userId}:${s.sessionId}:${s.claimId ?? `test:${s.testExecutionId}`}:${s.executionGeneration}`; }
   private persist() {
     const s = this.view.state.snapshot; if (!s) return;
-    try { this.options.storage?.setItem(this.storageKey(s), JSON.stringify([...this.view.state.operations.values()].filter(uncertain).slice(-200).map(operation => ({ operation, interaction: this.view.state.responseTargets.get(operation.operationId), setting: [...this.view.settingIntents.values()].find(intent => intent.operationId === operation.operationId) })))); } catch { /* The in-memory receipt remains usable when browser storage is unavailable. */ }
+    try { this.options.storage?.setItem(this.storageKey(s), JSON.stringify([...this.view.state.operations.values()].filter(uncertain).slice(-200).map(operation => ({ operation, imageDraft: this.imageOperationIds.has(operation.operationId), interaction: this.view.state.responseTargets.get(operation.operationId), setting: [...this.view.settingIntents.values()].find(intent => intent.operationId === operation.operationId) })))); } catch { /* The in-memory receipt remains usable when browser storage is unavailable. */ }
   }
   private restore() {
     const s = this.view.state.snapshot; if (!s) return;
@@ -377,6 +509,7 @@ export class TaskSessionClient {
         const wrapped = value !== null && typeof value === 'object' && 'operation' in value;
         const operation = parseSessionOperation(wrapped ? value.operation : value);
         assertSessionFence(operation, sessionFence(s)); operations.set(operation.operationId, operation);
+        if (wrapped && 'imageDraft' in value && value.imageDraft === true && ['send_message', 'execute_command'].includes(operation.kind)) this.imageOperationIds.add(operation.operationId);
         const setting = wrapped && 'setting' in value ? value.setting : undefined;
         if (operation.kind === 'update_setting' && setting && typeof setting === 'object' && 'settingId' in setting && typeof setting.settingId === 'string' && setting.settingId.length <= 256 && 'value' in setting && typeof setting.value === 'string' && setting.value.length <= 4096 && 'confirmedValue' in setting && (setting.confirmedValue === null || typeof setting.confirmedValue === 'string')) settingIntents.set(setting.settingId, { operationId: operation.operationId, settingId: setting.settingId, value: setting.value, confirmedValue: setting.confirmedValue });
         const target = wrapped && 'interaction' in value ? value.interaction : undefined;
@@ -745,7 +878,32 @@ export class TaskSessionClient {
     } finally { if (this.olderRequest === request) { this.olderRequest = null; this.publish({ loadingOlder: false }); } }
   }
   canInteract = (): boolean => this.options.testSessionId !== undefined || this.options.ownerUserId === this.options.userId;
-  send = (text: string): Promise<void> => {
+  private async prepareDraftInput(): Promise<() => void> {
+    if (!this.draftAdmission.active) return () => {};
+    const original = this.imageDraftContext();
+    if (!original || !original.canEdit) throw new Error('image_access_unavailable');
+    const contentKey = () => {
+      const draft = this.imageDrafts.getSnapshot();
+      return draft.active ? JSON.stringify([draft.draftId, draft.text, draft.items.map(item => [item.draftImageId, item.imageId, item.byteRevision, item.label]), draft.rejectedCandidates, draft.overflowRejectedCount, draft.submission?.operationId]) : null;
+    };
+    const content = contentKey();
+    await this.imageDrafts.refreshForSend();
+    // The caller asserts after its own await, with no asynchronous gap between
+    // checking the clicked content and handing it to the current send path.
+    return () => {
+      if (!this.view.actionAdmitted) throw new Error('Session actions are not currently admitted.');
+      const current = this.imageDraftContext();
+      if (!current || !current.canEdit || !this.draftAdmission.active || !this.draftAdmission.current || this.imageDrafts.getSnapshot().loading || draftOwnerKey(original.identity) !== draftOwnerKey(current.identity) || original.authorizationGeneration !== current.authorizationGeneration) throw new Error('image_access_unavailable');
+      if (original.mode !== current.mode || original.expectedTurnId !== current.expectedTurnId || JSON.stringify(original.capabilities) !== JSON.stringify(current.capabilities)) throw new Error('image_capability_changed');
+      if (content !== contentKey()) throw new Error('image_draft_restored');
+    };
+  }
+  send = async (text: string): Promise<void> => {
+    this.admitted();
+    if (!this.view.actionAdmitted) throw new Error('Session actions are not currently admitted.');
+    if (this.imageDrafts.getSnapshot().loading) throw new Error('image_draft_loading');
+    if (this.draftAdmission.active) (await this.prepareDraftInput())();
+    if (this.imageDrafts.getSnapshot().active) { this.imageDrafts.setText(text); return this.imageDrafts.send(); }
     this.admitted();
     if (!this.canInteract() || !this.live() || !text.trim() || !sessionSendGate(this.view.state, this.view.connected)) return Promise.reject(new Error('Sending is not currently allowed.'));
     return this.execute({ kind: 'send_message', payload: { content: [{ type: 'text', text }], expectedTurnId: this.view.state.snapshot!.activity === 'working' ? this.view.state.snapshot!.currentTurnId : null } });
@@ -756,10 +914,21 @@ export class TaskSessionClient {
     if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || controls?.revision !== revision || !setting?.mutable || !setting.options.some(option => option.value === value)) return Promise.reject(new Error('This setting changed or is unavailable. Refresh the controls.'));
     return this.execute({ kind: 'update_setting', payload: { settingId, value, expectedControlsRevision: revision } });
   };
-  executeCommand = (commandId: string, args: string, revision: string, draftText?: string): Promise<void> => {
+  executeCommand = async (commandId: string, args: string, revision: string, draftText?: string): Promise<void> => {
+    this.admitted();
+    if (!this.view.actionAdmitted) throw new Error('Session actions are not currently admitted.');
+    if (this.imageDrafts.getSnapshot().loading) throw new Error('image_draft_loading');
+    if (this.draftAdmission.active) (await this.prepareDraftInput())();
+    const images = this.imageDrafts.getSnapshot();
+    if (images.loading || images.executionBlocked || images.active && (images.readOnly || images.items.length || images.rejectedCandidates.length || images.overflowRejectedCount)) return Promise.reject(new Error('Resolve the saved image draft before executing a command.'));
     this.admitted();
     const s = this.view.state.snapshot, command = s?.controls?.commands.find(command => command.id === commandId);
     if (!this.canInteract() || !this.live() || !sessionControlGate(this.view.state, this.view.connected) || s?.controls?.revision !== revision || !command?.available) return Promise.reject(new Error('This command changed or is unavailable. Refresh the commands.'));
+    if (images.active && draftText !== undefined) {
+      const parsed = /^\/([^\s]+)(?:\s([\s\S]*))?$/u.exec(draftText.trimStart());
+      if (images.text !== draftText || parsed?.[1] !== command.name || (parsed[2] ?? '') !== args || s.controls.commands.filter(candidate => candidate.name === command.name).length !== 1) throw new Error('image_command_unavailable');
+      return this.imageDrafts.executeCommand({ commandId, arguments: args, expectedControlsRevision: revision, expectedTurnId: s.currentTurnId, draftText, commandName: command.name });
+    }
     return this.execute({ kind: 'execute_command', payload: { commandId, arguments: args, expectedControlsRevision: revision, expectedTurnId: s.currentTurnId } }, draftText);
   };
   refreshControls = (): Promise<void> => {
@@ -818,19 +987,7 @@ export class TaskSessionClient {
     }
     this.beginOperationProgress(command.operationId);
     this.putOperation(pending, command.kind === 'interaction_response' ? { interactionId: command.payload.interactionId, revision: command.payload.interactionRevision } : undefined);
-    try {
-      const receipt = await this.options.api.command(s.sessionId, command, this.network.signal);
-      if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(s)) throw new Error('The active session changed.');
-      assertSessionFence(receipt, sessionFence(s));
-      if (receipt.state === 'unknown') this.endOperationProgress(command.operationId);
-      this.putOperation(receipt);
-    } catch (error) {
-      this.endOperationProgress(command.operationId);
-      if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
-      if (!(this.paused() ? await this.admit() : this.admitted())) throw new OperationRequestError(command.operationId, error);
-      if (this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
-      throw new OperationRequestError(command.operationId, error);
-    }
+    await this.dispatchCommand(command, s, false);
     const deadline = Date.now() + 30_000;
     while ((this.paused() ? await this.admit() : this.admitted()) && this.sameSession(s)) {
       const operation = this.view.state.operations.get(command.operationId)!;
@@ -843,6 +1000,65 @@ export class TaskSessionClient {
     }
     throw new OperationRequestError(command.operationId, new Error('The active session changed.'));
   }
+  private async dispatchCommand(command: SessionCommand, s: SessionSnapshot, imageSubmission: boolean): Promise<SessionOperation> {
+    const pending: SessionOperation = { protocol: SESSION_PROTOCOL, ...sessionFence(s), operationId: command.operationId, kind: command.kind, state: 'unknown', providerResult: null, error: null };
+    try {
+      const receipt = await this.options.api.command(s.sessionId, command, this.network.signal);
+      if (!(this.paused() ? await this.admit() : this.admitted()) || !this.sameSession(s)) throw new Error('The active session changed.');
+      assertSessionFence(receipt, sessionFence(s));
+      if (imageSubmission && (receipt.operationId !== command.operationId || receipt.kind !== command.kind)) throw new Error('The image receipt does not match the original operation.');
+      if (receipt.state === 'unknown') this.endOperationProgress(command.operationId);
+      this.putOperation(receipt);
+      return receipt;
+    } catch (error) {
+      this.endOperationProgress(command.operationId);
+      if (!imageSubmission && this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
+      if (imageSubmission) {
+        if (this.owned() && this.sameSession(s) && imageCommandNotDispatched(error)) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
+        throw error;
+      }
+      if (!(this.paused() ? await this.admit() : this.admitted())) throw new OperationRequestError(command.operationId, error);
+      if (!imageSubmission && this.sameSession(s) && error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status < 500) this.putOperation({ ...pending, state: 'rejected', error: { code: error.code, message: error.message } });
+      throw new OperationRequestError(command.operationId, error);
+    }
+  }
+  /** Consumes the exact immutable command whose dispatch claim is already committed. */
+  private async dispatchFrozenDraft(command: SessionCommand): Promise<SessionOperation> {
+    const s = this.view.state.snapshot, context = this.imageDraftContext();
+    if (!s || !context || !context.canEdit || !context.active || command.kind !== 'send_message' && command.kind !== 'execute_command') throw new Error('Image sending is unavailable.');
+    assertSessionFence(command, sessionFence(s));
+    if (command.kind === 'send_message') {
+      if (!context.canSend) throw new Error('Image sending is unavailable.');
+      const target = command.payload.target;
+      if (command.payload.content.some(part => part.type === 'image') && (!target || !command.payload.draftId || !command.payload.draftRevision)) throw new Error('The saved image submission is incomplete.');
+      if (target && (target.serverOrigin !== context.target.serverOrigin || target.actorUserId !== context.target.actorUserId || target.expectedNativeSessionId !== s.identity.nativeSessionId || command.payload.expectedTurnId !== context.expectedTurnId)) throw new Error('The active image target changed.');
+      if (target) assertSessionFence(target.fence, sessionFence(s));
+    } else {
+      const native = s.controls?.commands.find(candidate => candidate.id === command.payload.commandId);
+      if (!sessionControlGate(this.view.state, this.view.connected) || !this.view.actionAdmitted || s.controls?.revision !== command.payload.expectedControlsRevision || s.currentTurnId !== command.payload.expectedTurnId || !native?.available) throw new Error('image_command_unavailable');
+    }
+    this.imageOperationIds.add(command.operationId);
+    this.beginOperationProgress(command.operationId);
+    this.putOperation({ protocol: SESSION_PROTOCOL, ...sessionFence(s), operationId: command.operationId, kind: command.kind, state: 'unknown', providerResult: null, error: null });
+    return this.dispatchCommand(command, s, true);
+  }
+  /** Missing receipts do not revoke access or erase an unresolved original intent. */
+  observeImageOperation = async (fence: SessionFence, operationId: string, signal?: AbortSignal): Promise<SessionOperation> => {
+    const requestSignal = signal ? AbortSignal.any([this.network.signal, signal]) : this.network.signal;
+    requestSignal.throwIfAborted();
+    if (!(this.paused() ? await this.admit(requestSignal) : this.admitted())) throw new Error('Session access is unavailable.');
+    const operation = parseSessionOperation(await this.options.api.operation(fence.sessionId, operationId, requestSignal));
+    requestSignal.throwIfAborted();
+    if (!(this.paused() ? await this.admit(requestSignal) : this.admitted())) throw new Error('Session access is unavailable.');
+    assertSessionFence(operation, sessionFence(fence));
+    if (operation.operationId !== operationId) throw new Error('The original operation does not match.');
+    const snapshot = this.view.state.snapshot;
+    if (snapshot && sessionFenceKey(snapshot) === sessionFenceKey(fence) && this.imageOperationIds.has(operationId)) {
+      this.endOperationProgress(operationId);
+      this.putOperation(operation);
+    }
+    return operation;
+  };
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => {
       if (this.network.signal.aborted) { resolve(); return; }
@@ -851,6 +1067,7 @@ export class TaskSessionClient {
     });
   }
   checkOperation = async (id: string): Promise<void> => {
+    if (this.imageOperationIds.has(id)) { await this.imageDrafts.checkStatus(); return; }
     const snapshot = this.view.state.snapshot;
     if (!snapshot || !this.live() || this.view.checking.has(id)) return;
     const checking = new Set(this.view.checking).add(id); this.publish({ checking });
@@ -861,12 +1078,15 @@ export class TaskSessionClient {
       if (operation.state === 'unknown') this.endOperationProgress(id);
       this.putOperation(operation);
     } catch (error) {
-      if (this.owned() && this.sameSession(snapshot) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
+      const original = this.view.state.operations.get(id);
+      const knownInput = this.view.draft.submission?.operationId === id || [...this.legacyCopies.values()].some(entry => entry.draft.submission?.operationId === id) || original && uncertain(original) && ['send_message', 'execute_command'].includes(original.kind);
+      const missingDraftReceipt = error instanceof ApiError && error.status === 404 && knownInput;
+      if (!missingDraftReceipt && this.owned() && this.sameSession(snapshot) && error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) this.invalidate(error);
       await this.admit();
       throw error;
     } finally { if (!this.accountStopped) this.publish({ checking: new Set([...this.view.checking].filter((value) => value !== id)) }); }
   };
-  private reconcile() { for (const operation of this.view.state.operations.values()) if (uncertain(operation)) void this.checkOperation(operation.operationId).catch(() => {}); }
+  private reconcile() { for (const operation of this.view.state.operations.values()) if (uncertain(operation) && !this.imageOperationIds.has(operation.operationId)) void this.checkOperation(operation.operationId).catch(() => {}); }
   resource = async (id: string, signal: AbortSignal, onProgress?: () => void): Promise<Blob> => {
     const s = this.view.state.snapshot;
     if (!this.live() || !s || this.view.state.resources.get(id)?.status !== 'available') throw new Error('Resource unavailable.');
@@ -884,12 +1104,7 @@ export class TaskSessionClient {
     const progress = () => { if (!combinedSignal.aborted && this.live()) onProgress?.(); };
     const load = async (): Promise<Blob> => {
       if (s.lifecycle === 'active' && !Object.hasOwn(descriptor, 'revision')) return this.options.api.resource(s.sessionId, id, combinedSignal, progress);
-      const key = sessionFenceKey(s);
-      if (this.media?.key !== key) {
-        void this.media?.client.close();
-        this.media = { key, client: this.options.api.resources(sessionFence(s), () => this.owned() && this.sameSession(s)) };
-      }
-      return new Blob([await this.media.client.readResource(descriptor, combinedSignal, progress)], { type: descriptor.mediaType ?? 'application/octet-stream' });
+      return new Blob([await this.resourceClient(s).readResource(descriptor, combinedSignal, progress)], { type: descriptor.mediaType ?? 'application/octet-stream' });
     };
     const blob = await load().catch((error: unknown) => {
       if (this.owned() && this.sameSession(s) && error instanceof ApiError && [401, 403, 404, 410].includes(error.status ?? 0)) this.invalidate(error);
@@ -930,7 +1145,9 @@ export class TaskSessionClient {
   invalidate = (error?: unknown): void => {
     if (this.invalidated || this.lifetime.signal.aborted) return;
     this.invalidated = true;
+    void this.imageDrafts.revoke('revoked');
     const sessionId = this.view.state.snapshot?.sessionId ?? this.options.testSessionId;
+    if (sessionId) void clearImageDraftScope({ origin: window.location.origin, actorUserId: this.options.userId, sessionId, reason: 'revoked' });
     if (sessionId) clearSessionDisplayPreference({ userId: this.options.userId, sessionId });
     try {
       const storage = this.options.storage;
@@ -940,9 +1157,10 @@ export class TaskSessionClient {
         if (key && (operationPrefix !== null && key.startsWith(operationPrefix) || key.startsWith(this.draftScopePrefix()))) storage.removeItem(key);
       }
     } catch { /* Identity isolation remains enforced in memory. */ }
+    this.legacyCopies.clear(); this.legacyBindings.clear(); this.legacySource = null; this.legacyOwnerKey = null;
     this.draftKey = null; this.view = { ...this.view, draft: emptyDraft(), error: error === undefined ? null : message(error), errorCode: error === undefined ? null : errorCode(error) };
     this.close();
     this.options.onInvalidate?.();
   };
-  close = (): void => { void this.images?.scope.invalidate(); this.images = null; void this.media?.client.close(); this.media = null; this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.network.abort(); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
+  close = (): void => { void this.imageDrafts.close(); void this.images?.scope.invalidate(); this.images = null; void this.media?.client.close(); this.media = null; this.lastStartupReport = null; this.currentReadFailure = null; this.archive = null; this.disconnect(); this.clearSuspensionTimer(); this.publish({ startupReport: null, error: this.invalidated ? this.view.error : null, errorCode: this.invalidated ? this.view.errorCode : null, archiveState: null, settingIntents: new Map(), state: emptySessionState(), connected: false, status: 'unavailable' }); this.network.abort(); this.lifetime.abort(); for (const timer of this.operationPolls) clearTimeout(timer); this.operationPolls.clear(); this.listeners.clear(); };
 }

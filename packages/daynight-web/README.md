@@ -2231,7 +2231,7 @@ build context. It starts no service or database and does not run Go validation.
 Vitest suppresses console output from passing tests, including diagnostics from
 expected failure scenarios, and retains console output from failing tests.
 `test:coverage` runs the ordinary Vitest suite with V8 coverage and then the exact statement gate. Full-scale graph,
-model and geometry workloads live in `.stress.ts` files and run only through
+model, geometry and original-image byte workloads live in `.stress.ts` files and run only through
 `pnpm test:stress` from this package (`pnpm web:test:stress` from the repository
 root). Its dedicated `vitest.stress.config.ts` refuses CI; ordinary discovery
 excludes those files while retaining compact correctness and boundary cases. Either command can be
@@ -2245,6 +2245,23 @@ and isolated browser profiles, and reports cleanup failures. If a forced stop
 leaves ownership uncertain, the command fails without claiming cleanup. Windows
 uses its process-tree terminator; orphaned browsers whose identity cannot be
 verified are reported rather than terminated.
+
+The Session draft browser fixture uses the production composer, Session client,
+image store and IndexedDB draft storage with controlled HTTP/WebSocket responses.
+It checks Blob restoration after refresh and tab closure, native cross-tab locks
+and conflicts, input ordering, undo, preview focus, and reconciliation of unknown
+sends. Its ordinary configuration runs through `web:test:browser` and the Web
+browser CI job. The 8/9-image and 10/20 MiB capacity cases run separately from this
+package and refuse CI:
+
+```bash
+pnpm exec playwright test --config tests/navigation/session-drafts-stress.config.ts
+```
+
+Set `DAYNIGHT_BROWSER_CHANNEL=chrome` to use an installed Chrome. Ordinary results
+are written to `.tmp/session-drafts-browser/`; capacity results use
+`.tmp/session-drafts-capacity/`. These tests prove browser behavior with controlled
+API results, without establishing live Worker or Provider image support.
 
 The attachment and task-reading fixtures exercise native frames, relative HTML
 resources, PDF page pixels, selection, focus and narrow reading layouts. Graph
@@ -2399,7 +2416,7 @@ has a 30-minute limit, and final `checks` requires it to succeed when selected.
 It runs full typechecking, the harness, the Docker Web build, Vitest/V8 collection
 and coverage checking serially with bounded stages and uploads coverage evidence.
 The separate [`shell and browser acceptance` workflow](../../.github/workflows/shell-browser.yml)
-runs the assistant suite below on `main` pushes and manual dispatch. Its browser
+runs the assistant and ordinary Session draft suites below on `main` pushes and manual dispatch. Its browser
 job has a 20-minute limit and prepares its own runner without a quality artifact
 or result dependency. Ordinary Web unit and quality commands do not launch
 browser fixtures. The explicit module browser entry separately runs the
@@ -2494,6 +2511,11 @@ runs the same suite in `verify-web-browser` on every `main` push and through
 Chromium, then the Playwright configuration starts its
 own Vite host. It uploads `daynight-web-assistant-browser` with JUnit results and
 browser captures, including available evidence after a failed browser run.
+The same job then runs the ordinary Session draft configuration and uploads
+`daynight-web-session-drafts-browser` with its JSON report and failure captures.
+The separate capacity configuration remains local-only. The
+[draft acceptance decision](../../.agents/notes/implemented/testing/2026-11-13-session-draft-browser-acceptance.md)
+owns this suite's evidence and scheduling boundaries.
 The ordinary PR `checks` workflow neither invokes nor waits for this job. A
 successful PR gate does not establish a hosted assistant-browser result; a
 main-push or manually dispatched result belongs to that run's checked-out

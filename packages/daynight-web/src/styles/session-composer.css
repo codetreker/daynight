@@ -30,7 +30,8 @@
 .session-activity-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
 .session-composer-activity time { font-variant-numeric: tabular-nums; color: var(--muted, #72717e); }
 .session-activity-dot { width: 7px; height: 7px; border-radius: 50%; background: #81818b; flex: none; }
-.session-activity-dot.working { background: #7764ca; box-shadow: 0 0 0 3px #7764ca18; }
+.session-activity-dot[data-activity="working"] { background: var(--task-in_progress-ink); }
+.session-activity-dot[data-activity="waiting_input"] { background: var(--task-attention-ink); }
 .session-interrupt { max-width: 100%; white-space: normal; border: 1px solid var(--border, #dddde7); border-radius: 6px; padding: 4px 8px; background: transparent; color: inherit; cursor: pointer; }
 .session-composer-keyboard { position: absolute; z-index: 2; right: 0; bottom: calc(100% + 8px); width: max-content; max-width: min(280px, calc(100cqi - 24px)); box-sizing: border-box; margin: 0; padding: 7px 10px; border: 1px solid #d9deea; border-radius: 6px; background: #fff; box-shadow: 0 3px 12px #24304a18; overflow-wrap: anywhere; visibility: hidden; }
 .session-composer-keyboard::after { content: ''; position: absolute; left: 0; right: 0; bottom: -8px; height: 8px; }

@@ -158,3 +158,18 @@ func TestTokenWaiterRetriesAfterLeaderCheckpointFailure(t *testing.T) {
 		t.Fatalf("requests=%d waiter checkpoints=%d", requests.Load(), waiterCheckpoints.Load())
 	}
 }
+
+type idleClosingTransport struct{ closed bool }
+
+func (t *idleClosingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("not called")
+}
+func (t *idleClosingTransport) CloseIdleConnections() { t.closed = true }
+func TestCheckpointTransportClosesItsUnderlyingConnections(t *testing.T) {
+	transport := &idleClosingTransport{}
+	client := &http.Client{Transport: checkpointTransport{base: transport}}
+	client.CloseIdleConnections()
+	if !transport.closed {
+		t.Fatal("underlying transport was not closed")
+	}
+}

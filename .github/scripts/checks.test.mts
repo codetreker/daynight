@@ -392,19 +392,22 @@ test("Web quality owns types, production build, harness, coverage and evidence",
   assert.match(uploads[0]!, /^          if-no-files-found: error$/m);
 });
 
-test("Web browser owns the unchanged frontend Playwright regressions and evidence", () => {
+test("Web browser owns frontend Playwright regressions and evidence without capacity workloads", () => {
   const steps = [...webBrowser.matchAll(/^      - [\s\S]*?(?=^      - |$(?![\s\S]))/gm)].map((match) => match[0]);
   const install = steps.find((step) => step.includes("playwright install"))!;
   const browser = steps.find((step) => step.includes("id: web-browser"))!;
+  const drafts = steps.find((step) => step.includes("id: session-drafts-browser"))!;
   const uploads = uploadSteps(webBrowser);
-  const upload = uploads[0]!;
-  assert.ok(install); assert.ok(browser); assert.ok(upload);
-  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser"]);
+  const upload = uploads.find((step) => artifactName(step) === "daynight-web-assistant-browser")!;
+  const draftUpload = uploads.find((step) => artifactName(step) === "daynight-web-session-drafts-browser")!;
+  assert.ok(install); assert.ok(browser); assert.ok(drafts); assert.ok(upload); assert.ok(draftUpload);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser", "daynight-web-session-drafts-browser"]);
   assert.doesNotMatch(webBrowser, /ci\.mts quality|id: web-quality|\.tmp\/coverage/);
   assert.match(webBrowser, /PLAYWRIGHT_BROWSERS_PATH: \$\{\{ github.workspace \}\}\/\.tmp\/playwright-browsers/);
   assert.match(install, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright install --with-deps chromium$/m);
   assert.match(browser, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright test --config tests\/navigation\/bots-viewport-playwright.config.ts --reporter=line,junit$/m);
   assert.match(browser, /PLAYWRIGHT_JUNIT_OUTPUT_FILE: \$\{\{ github.workspace \}\}\/packages\/daynight-web\/\.tmp\/acceptance\/bots-viewport-results.xml/);
+  assert.match(drafts, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright test --config tests\/navigation\/session-drafts-playwright.config.ts$/m);
   assert.ok(webBrowser.indexOf(install) < webBrowser.indexOf(browser));
   assert.ok(webBrowser.indexOf(browser) < webBrowser.indexOf(upload));
   assert.doesNotMatch(browser, /continue-on-error|passWithNoTests|--grep|--shard|--update-snapshots|if:/);
@@ -412,6 +415,14 @@ test("Web browser owns the unchanged frontend Playwright regressions and evidenc
   assert.deepEqual(artifactPaths(upload), ["packages/daynight-web/.tmp/acceptance/bots-viewport-results.xml", "packages/daynight-web/.tmp/acceptance/bots-viewport/"]);
   assert.match(upload, /^          include-hidden-files: true$/m);
   assert.match(upload, /^          if-no-files-found: error$/m);
+  assert.ok(webBrowser.indexOf(install) < webBrowser.indexOf(drafts));
+  assert.ok(webBrowser.indexOf(drafts) < webBrowser.indexOf(draftUpload));
+  assert.doesNotMatch(drafts, /continue-on-error|passWithNoTests|--grep|--shard|--update-snapshots|if:/);
+  assert.doesNotMatch(webBrowser, /session-drafts-stress|@capacity/);
+  assert.match(draftUpload, /^        if: \$\{\{ always\(\) && steps.session-drafts-browser.outcome != 'skipped' \}\}$/m);
+  assert.deepEqual(artifactPaths(draftUpload), ["packages/daynight-web/.tmp/session-drafts-browser/results.json", "packages/daynight-web/.tmp/session-drafts-browser/results/"]);
+  assert.match(draftUpload, /^          include-hidden-files: true$/m);
+  assert.match(draftUpload, /^          if-no-files-found: error$/m);
 });
 
 test("selected Web validation requires actual quality success", () => {

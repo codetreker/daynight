@@ -136,6 +136,7 @@ describe('Session fullscreen inside task details', () => {
   it.each([{ modal: true, outer: false }, { modal: true, outer: true }, { modal: false, outer: false }, { modal: false, outer: true }])('restores the original task surface (modal=$modal, fullscreen=$outer)', async ({ modal, outer }) => {
     const f = await fixture(modal, outer);
     const input = screen.getByRole('textbox', { name: 'Message' }), message = screen.getByText('Retained message');
+    await waitFor(() => expect(input).not.toHaveAttribute('readonly'));
     fireEvent.change(input, { target: { value: 'Unsent draft' } });
     const toggle = screen.getByRole('button', { name: 'Enter Session fullscreen' }); fireEvent.click(toggle);
     expect(f.surface).toHaveClass('task-detail-session-fullscreen');

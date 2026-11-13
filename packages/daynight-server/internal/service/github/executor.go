@@ -65,12 +65,18 @@ type run struct {
 // Execute attempts one bounded access or hint job, or one complete poll. The
 // caller owns its context and may call it again after the persisted next time.
 func (e *Executor) Execute(ctx context.Context, project string) error {
+	return e.ExecuteWithClaimContext(ctx, ctx, project)
+}
+
+// ExecuteWithClaimContext cancels admission independently from already claimed
+// work, allowing shutdown to stop new claims before draining existing work.
+func (e *Executor) ExecuteWithClaimContext(ctx, claimCtx context.Context, project string) error {
 	if project == "" {
 		return errors.New("github project ID is required")
 	}
 	r := &run{e: e, project: project, lease: store.GitHubLease{Token: uuid.NewString()}}
 	r.log = e.log.With("component", "github_sync", "project_id", project, "sync_id", r.lease.Token)
-	claimed, err := r.claim(ctx)
+	claimed, err := r.claim(claimCtx)
 	if err != nil || !claimed {
 		return err
 	}

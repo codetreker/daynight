@@ -1,3 +1,4 @@
+import { imageDraftCleanupFailures, subscribeImageDraftCleanup } from '../features/task-agent-session/drafts/draft-store-cleanup';
 import { BotsPage } from '../features/bots/BotsPage';
 import '../styles/assistant-workspace.css';
 import { useBotMessages } from '../features/bots/messages';
@@ -11,7 +12,7 @@ import { TestSessionListPage } from '../features/task-agent-session/TestSessionL
 import { useTestSessionListMessages } from '../features/task-agent-session/test-session-list-messages';
 import { createPortal } from "react-dom";
 import { TaskCacheProvider, type TaskCacheScope } from "../features/task-cache/TaskCacheProvider";
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 import type { AuthProvider, CurrentUser } from "../api/auth-types";
 import { ApiError } from "../api/client";
 import type { Project } from "../api/types";
@@ -237,6 +238,7 @@ const AuthenticatedAppContent = ({ navigateToLogin = assignLogin }: { readonly n
   const [invitationRevision, setInvitationRevision] = useState(0);
   const invitationLifetime = useRef(new AbortController());
   const { session, scope, requiresRefresh, sync, retryInitialization, retryPublication, requireAccountRefresh: invalidateIdentity, signOut: ownerSignOut, logoutPending, logoutFailed, privateCleanup, retryPrivateCleanup } = useAccountSession();
+  const imageCleanupIssues = useSyncExternalStore(subscribeImageDraftCleanup, imageDraftCleanupFailures);
   const [standaloneSlot, setStandaloneSlot] = useState<HTMLDivElement | null>(null);
   const sessionRef = useRef(session); sessionRef.current = session;
   const logoutContinuation = useRef<string | null>(null);
@@ -333,7 +335,7 @@ const AuthenticatedAppContent = ({ navigateToLogin = assignLogin }: { readonly n
     navigateToLogin(`/api/v1/auth/login?${parameters}`);
   };
   const refreshHeader = requiresRefresh ? <header className="topbar"><AccountRefreshNotice /></header> : null;
-  const cleanupWarning = <>{sync.status === "error" && <div className="notice warning" role="alert"><p>{syncMessages.error}</p><button className="button" type="button" onClick={retryPublication}>{syncMessages.retry}</button></div>}{(cleanupFailed || invitation.cleanupFailed) && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{privateCleanup.size > 0 && <div className="notice warning" role="alert"><p>{locale === "zh-CN" ? "无法清理本地恢复记录。" : "Local recovery records could not be cleared."}</p><button className="button" type="button" onClick={retryPrivateCleanup}>{locale === "zh-CN" ? "重试清理" : "Retry cleanup"}</button></div>}</>;
+  const cleanupWarning = <>{sync.status === "error" && <div className="notice warning" role="alert"><p>{syncMessages.error}</p><button className="button" type="button" onClick={retryPublication}>{syncMessages.retry}</button></div>}{(cleanupFailed || invitation.cleanupFailed) && <div className="notice warning" role="alert">{m.invitationCleanupError}</div>}{(privateCleanup.size > 0 || imageCleanupIssues.length > 0) && <div className="notice warning" role="alert"><p>{locale === "zh-CN" ? "无法清理本地恢复记录。" : "Local recovery records could not be cleared."}</p><button className="button" type="button" onClick={retryPrivateCleanup}>{locale === "zh-CN" ? "重试清理" : "Retry cleanup"}</button></div>}</>;
   const invalidTarget = <>{cleanupWarning}{refreshHeader}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
   const notFound = <>{cleanupWarning}{refreshHeader}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
   const identityLoading = <>{cleanupWarning}{refreshHeader}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;

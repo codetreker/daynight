@@ -1,6 +1,7 @@
 import type { ImageCaptureReceipt, ValidatedImage } from "../../session/image-values.js";
 import type { CaptureReadPolicy, ControllerMediaBlockLease } from "./media/preparations.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./media/release-error.js";
+import { ImageCaptureNotDispatchedError, ImageCaptureRequestError } from "./media/capture-error.js";
 import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import { sessionFence, sessionBinding } from "../../session/protocol.js";
 import { readFile, lstat } from "node:fs/promises";
@@ -155,7 +156,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
             if (!pending) return;
             if (pending.action !== message.action || message.result && (message.result.captureId !== pending.captureId || pending.attemptId !== null && message.result.attemptId !== pending.attemptId)) throw new Error("Image capture result identity mismatch.");
             captureRequests.delete(message.requestId); clearTimeout(pending.timer);
-            if (message.error) pending.reject(Object.assign(new Error(message.error.message), { code: message.error.code }));
+            if (message.error) pending.reject(new ImageCaptureRequestError(message.error));
             else pending.resolve(message.result!);
           } else if (message.type === "image_request") {
             handleImage(message, ws);
@@ -244,8 +245,8 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     currentFence: (): ControllerFence | null => fence ? { ...fence } : null,
     imageHistorySupported: (): boolean => supportsImageHistory && fence !== null,
     capture: <K extends ImageCaptureAction>(action: K, body: ImageCaptureBody[K]): Promise<ImageCaptureReceipt> => new Promise((resolve, reject) => {
-      if (!synchronized || !supportsImageHistory) { reject(new Error("Image capture relay is unavailable; query the original capture when synchronized.")); return; }
-      if (captureRequests.size >= 2) { reject(new Error("Controller image capture request capacity is unavailable.")); return; }
+      if (!synchronized || !supportsImageHistory) { reject(new ImageCaptureNotDispatchedError("Image capture relay is unavailable.")); return; }
+      if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
       const requestId = randomUUID();
       const timer = setTimeout(() => { captureRequests.delete(requestId); reject(new Error("Image capture outcome is unknown; query the original capture.")); }, 15_000);
       captureRequests.set(requestId, { action, captureId: body.captureId, attemptId: "attemptId" in body ? body.attemptId : null, resolve, reject, timer });
