@@ -19,6 +19,7 @@ var principal = model.Principal{UserID: "22222222-2222-4222-8222-222222222222", 
 type fixture struct {
 	store.SnapshotScope
 	store.ProjectReader
+	store.GitHubReadDAO
 	trace                                                                  []string
 	accessErr, connectionErr, countsErr, listErr, detailErr, completionErr error
 	page                                                                   store.GitHubPRPage
