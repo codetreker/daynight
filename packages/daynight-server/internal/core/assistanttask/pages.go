@@ -171,13 +171,48 @@ func (m *Module) ListRecords(ctx context.Context, dao store.AssistantTaskDAO, ac
 	})
 }
 func (m *Module) ListInquiries(ctx context.Context, dao store.AssistantTaskDAO, actor Actor, taskID string, input PageInput) (model.AssistantTaskPage[model.AssistantTaskInquiry], error) {
-	if _, _, err := pageQuery(actor, taskID, "inquiries", input); err != nil {
-		return model.AssistantTaskPage[model.AssistantTaskInquiry]{}, err
+	var result model.AssistantTaskPage[model.AssistantTaskInquiry]
+	query, c, err := pageQuery(actor, taskID, "inquiries", input)
+	if err != nil {
+		return result, err
 	}
-	if err := m.expireInquiries(ctx, dao, actor, taskID, ""); err != nil {
-		return model.AssistantTaskPage[model.AssistantTaskInquiry]{}, err
+	// Keep bounded background progress even when the requested state excludes
+	// expired questions, so open-only polling still produces timeout notices.
+	if err = m.expireInquiries(ctx, dao, actor, taskID, ""); err != nil {
+		return result, err
 	}
-	return readPage(ctx, dao, actor, taskID, "inquiries", input, dao.Inquiries, func(v model.AssistantTaskInquiry) store.AssistantTaskPosition {
+	task, err := loadTask(ctx, dao, actor, taskID, true)
+	if err != nil {
+		return result, err
+	}
+	now, err := dao.Now(ctx)
+	if err != nil {
+		return result, err
+	}
+	// Select by the state effective at this observation before applying the
+	// cursor and limit. An unrelated timeout backlog cannot displace this page.
+	switch input.State {
+	case "open":
+		query.DeadlineAfter = &now
+	case "timed_out":
+		query.IncludeExpiredOpen = &now
+	}
+	items, err := dao.Inquiries(ctx, query)
+	if err != nil {
+		return result, err
+	}
+	for i, inquiry := range items {
+		if inquiry.State == "open" && !now.Before(inquiry.Deadline) {
+			items[i], task, err = m.expireInquiry(ctx, dao, task, inquiry, now)
+			if err != nil {
+				return result, err
+			}
+		}
+	}
+	if _, err = finish(ctx, dao, actor, nil); err != nil {
+		return result, err
+	}
+	return makePage(items, query.Limit, c, now, func(v model.AssistantTaskInquiry) store.AssistantTaskPosition {
 		return store.AssistantTaskPosition{CreatedAt: v.CreatedAt, ID: v.ID}
 	})
 }

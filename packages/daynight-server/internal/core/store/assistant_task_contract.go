@@ -26,9 +26,13 @@ type AssistantTaskQuery struct {
 	OwnerUserID, TaskID, State, ItemID, TargetBotID string
 	InquiryBotID                                    string
 	DeadlineBefore                                  *time.Time
-	RulesEqual                                      json.RawMessage
-	Limit                                           int
-	After                                           *AssistantTaskPosition
+	DeadlineAfter                                   *time.Time
+	// IncludeExpiredOpen adds open inquiries due at this time to State matches.
+	// It selects candidates only; core owns their timed_out transition.
+	IncludeExpiredOpen *time.Time
+	RulesEqual         json.RawMessage
+	Limit              int
+	After              *AssistantTaskPosition
 }
 
 // AssistantTaskCondition contains the actual write predicates chosen by core.

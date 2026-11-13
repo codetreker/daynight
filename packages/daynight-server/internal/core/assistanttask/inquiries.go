@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -222,21 +223,7 @@ func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO
 		if inquiry.State != "open" || now.Before(inquiry.Deadline) {
 			continue
 		}
-		inquiry.State = "timed_out"
-		ok, err = dao.SaveInquiry(ctx, inquiry, "open")
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return conflict()
-		}
-		if _, err = m.systemRecord(ctx, dao, task, "unknown", "The assistant inquiry reached its deadline without an answer.", inquiry.ItemID, map[string]any{"inquiryId": inquiry.ID}, now); err != nil {
-			return err
-		}
-		if _, err = m.systemEvent(ctx, dao, task, inquiry.FromBotID, "inquiry_timed_out", map[string]any{"inquiryId": inquiry.ID}, now); err != nil {
-			return err
-		}
-		task, err = saveTask(ctx, dao, task, store.AssistantTaskCondition{Version: task.Version}, now)
+		_, task, err = m.expireInquiry(ctx, dao, task, inquiry, now)
 		if err != nil {
 			return err
 		}
@@ -244,4 +231,25 @@ func (m *Module) expireInquiries(ctx context.Context, dao store.AssistantTaskDAO
 	}
 	_, err = finish(ctx, dao, actor, nil)
 	return err
+}
+
+// expireInquiry shares the task barrier with answers and preserves the inquiry's
+// pagination position while committing its timeout, record and notification.
+func (m *Module) expireInquiry(ctx context.Context, dao store.AssistantTaskDAO, task model.AssistantTask, inquiry model.AssistantTaskInquiry, now time.Time) (model.AssistantTaskInquiry, model.AssistantTask, error) {
+	inquiry.State = "timed_out"
+	ok, err := dao.SaveInquiry(ctx, inquiry, "open")
+	if err != nil {
+		return inquiry, task, err
+	}
+	if !ok {
+		return inquiry, task, conflict()
+	}
+	if _, err = m.systemRecord(ctx, dao, task, "unknown", "The assistant inquiry reached its deadline without an answer.", inquiry.ItemID, map[string]any{"inquiryId": inquiry.ID}, now); err != nil {
+		return inquiry, task, err
+	}
+	if _, err = m.systemEvent(ctx, dao, task, inquiry.FromBotID, "inquiry_timed_out", map[string]any{"inquiryId": inquiry.ID}, now); err != nil {
+		return inquiry, task, err
+	}
+	task, err = saveTask(ctx, dao, task, store.AssistantTaskCondition{Version: task.Version}, now)
+	return inquiry, task, err
 }

@@ -172,15 +172,17 @@ func TestCredentialExpiryRechecksAfterShareLockWait(t *testing.T) {
 	_, principal := f.bot(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	var expiry time.Time
-	if err := f.db.Pool.QueryRow(ctx, `UPDATE sessions SET expires_at=clock_timestamp()+interval '300 milliseconds' WHERE id=$1 RETURNING expires_at`, principal.CredentialID).Scan(&expiry); err != nil {
-		t.Fatal(err)
-	}
 	blocker, err := f.db.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rollbackDatabase(t, blocker)
+	// Leave enough time to enter the observed lock wait on a cold runner.
+	// The blocker never updates this row: only natural expiry may invalidate it.
+	var expiry time.Time
+	if err := f.db.Pool.QueryRow(ctx, `UPDATE sessions SET expires_at=clock_timestamp()+interval '2 seconds' WHERE id=$1 RETURNING expires_at`, principal.CredentialID).Scan(&expiry); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := blocker.Exec(ctx, `SELECT id FROM sessions WHERE id=$1 FOR UPDATE`, principal.CredentialID); err != nil {
 		t.Fatal(err)
 	}

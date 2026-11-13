@@ -215,6 +215,15 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		t.Fatal(err)
 	}
 	mutableTables := []string{
+		"assistant_task_appendix",
+		"assistant_task_claim_operations",
+		"assistant_task_events",
+		"assistant_task_inquiries",
+		"assistant_task_items",
+		"assistant_task_manual_versions",
+		"assistant_task_proposals",
+		"assistant_task_records",
+		"assistant_tasks",
 		"bot_configuration_preferences",
 		"bot_effort_preferences",
 		"bot_model_preferences",

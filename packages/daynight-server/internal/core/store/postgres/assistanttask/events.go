@@ -58,7 +58,7 @@ func (d *DAO) Inquiry(ctx context.Context, owner, task, id string) (model.Assist
 }
 func (d *DAO) Inquiries(ctx context.Context, q store.AssistantTaskQuery) ([]model.AssistantTaskInquiry, error) {
 	after, id, limit := page(q)
-	return many(ctx, d.tx, "list assistant inquiries", `SELECT `+inquiryColumns+` FROM assistant_task_inquiries WHERE owner_user_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND ($3='' OR state=$3) AND ($4::uuid IS NULL OR from_bot_id=$4) AND ($5::timestamptz IS NULL OR deadline<=$5) AND ($6::timestamptz IS NULL OR (created_at,id)>($6,$7::uuid)) AND ($9::uuid IS NULL OR item_id=$9) ORDER BY created_at,id LIMIT $8`, scanInquiry, q.OwnerUserID, nullableID(q.TaskID), q.State, nullableID(q.InquiryBotID), q.DeadlineBefore, after, id, limit, nullableID(q.ItemID))
+	return many(ctx, d.tx, "list assistant inquiries", `SELECT `+inquiryColumns+` FROM assistant_task_inquiries WHERE owner_user_id=$1 AND ($2::uuid IS NULL OR task_id=$2) AND ($3='' OR state=$3 OR ($10::timestamptz IS NOT NULL AND state='open' AND deadline<=$10)) AND ($11::timestamptz IS NULL OR deadline>$11) AND ($4::uuid IS NULL OR from_bot_id=$4) AND ($5::timestamptz IS NULL OR deadline<=$5) AND ($6::timestamptz IS NULL OR (created_at,id)>($6,$7::uuid)) AND ($9::uuid IS NULL OR item_id=$9) ORDER BY created_at,id LIMIT $8`, scanInquiry, q.OwnerUserID, nullableID(q.TaskID), q.State, nullableID(q.InquiryBotID), q.DeadlineBefore, after, id, limit, nullableID(q.ItemID), q.IncludeExpiredOpen, q.DeadlineAfter)
 }
 func inquiryValues(v model.AssistantTaskInquiry) []any {
 	return []any{v.ID, v.OwnerUserID, v.TaskID, v.FromBotID, v.ToBotID, v.Question, v.Answer, v.State, v.RequestFingerprint, v.ItemID, v.CreatedAt, v.Deadline, v.AnsweredAt, v.AnswerBotID}

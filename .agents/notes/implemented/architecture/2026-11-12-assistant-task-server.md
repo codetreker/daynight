@@ -58,6 +58,12 @@ retain explicit expected-value admission.
 derived from a stored deadline during the reads consumers already perform.
 Lazy completion avoids adding leader election and service lifetime work, while
 database state filters and conditional transitions prevent repeated notices.
+A bounded maintenance batch alone cannot determine a requested page: older
+questions outside its item filter or cursor may consume the batch. Inquiry
+pages therefore select effective states at one database observation time and
+persist timeout transitions for their bounded candidates under the task lock.
+Open-only reads still advance bounded maintenance so excluded expired questions
+eventually produce their notices.
 
 ## Consequences
 
@@ -74,5 +80,8 @@ pull and are not a proactive server push.
 
 HTTP and service tests establish protocol and coordination behavior. Real
 PostgreSQL tests own locks, time and persistence, and API integration owns the
-normally assembled request chain. These do not establish cross-Worker token
+normally assembled request chain. The credential-expiry witness observes the
+shared-lock wait before waiting for database time to cross the deadline; it
+allows cold-runner setup time without updating the blocked row, which would
+exercise row-change rechecks instead of natural expiry. These do not establish cross-Worker token
 files, native assistant execution or the Watchdog evaluator.
