@@ -44,6 +44,8 @@ import type { WorkerCoordinatorConfiguration, WorkerRepositoryAssignment } from 
 import { submitWorkerControl } from "./control.js";
 import type { WorkerControlRequest } from "./control.js";
 import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnosticSinkEvent } from "./diagnostics.js";
+import { createWorkerConfigurationDiagnostics } from "./configuration-diagnostics.js";
+import { ConfigurationFileOperationError } from "./configuration-failure.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
 import { isWorkerCancellation } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
@@ -57,7 +59,7 @@ import { buildWorkerPrompt } from "./prompts.js";
 import { createWorkerPromptSource } from "./prompt-source.js";
 import { createWorkerRemote } from "./remote.js";
 import { createWorkerReporter } from "./reporter.js";
-import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce } from "./configuration-exchange.js";
+import { createWorkerConfigurationExchange, failedConfigurationRequestOutcome, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, workerConfigurationRequestId, type WorkerConfigurationExchangeEvent } from "./configuration-exchange.js";
 import { createWorkerConfigurationBootstrap } from "./configuration-bootstrap.js";
 import { createWorkerRepositoryAdmission, prepareWorkerWorktreeFormat } from "./repository-admission.js";
 import { createWorkerTelemetryCollector } from "./telemetry.js";
@@ -136,6 +138,8 @@ const throwFailures = (failures: readonly unknown[]): void => {
 };
 
 const projectUnavailable = (error: unknown): boolean => error instanceof ApiError && error.phase === "response" && error.status === 404 && error.code === "not_found";
+const configurationPreparationFailure = (error: unknown): unknown => error instanceof Error && "errno" in error && typeof error.errno === "number" && "syscall" in error && typeof error.syscall === "string"
+  ? new ConfigurationFileOperationError("directory", error) : error;
 
 const transientAuthorityFailure = (error: unknown): boolean => {
   if (error instanceof OperationError) return error.kind === "deadline" || error.kind === "request_timeout";
@@ -147,16 +151,20 @@ const transientAuthorityFailure = (error: unknown): boolean => {
   return error.status < 400 && error.code === undefined && !(error.cause instanceof OperationError && !transientAuthorityFailure(error.cause));
 };
 
-const verifyWorkerPrincipal = async (read: () => Promise<string>, signal: AbortSignal, emit: (event: WorkerEvent) => void): Promise<string> => {
+const verifyWorkerPrincipal = async (read: () => Promise<string>, signal: AbortSignal, observe: (event: WorkerConfigurationExchangeEvent) => void): Promise<string> => {
   const delays = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
   let attempt = 0;
   for (;;) {
     signal.throwIfAborted();
-    try { return await read(); }
+    const syncId = randomUUID();
+    observe({ syncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
+    try { const userId = await read(); observe({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: "not_attempted" }); return userId; }
     catch (error) {
-      if (signal.aborted || !transientAuthorityFailure(error)) throw error;
-      const retryMs = delays[Math.min(attempt++, delays.length - 1)]!;
-      emit({ kind: "worker-configuration-authority-retry", component: "configuration", phase: "authority-read", message: JSON.stringify({ attempt, nextAttemptAt: new Date(Date.now() + retryMs).toISOString() }), error });
+      const retryMs = signal.aborted || !transientAuthorityFailure(error) ? undefined : delays[Math.min(attempt++, delays.length - 1)]!;
+      const requestId = workerConfigurationRequestId(error);
+      observe({ syncId, phase: "authority-read", status: signal.aborted ? "discarded" : "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(retryMs === undefined ? {} : { backoffStep: Math.min(attempt, delays.length) }), nextAttemptAt: retryMs === undefined ? null : new Date(Date.now() + retryMs).toISOString(), error,
+        ...(requestId === undefined ? {} : { requestId }) });
+      if (retryMs === undefined) throw error;
       await delay(retryMs, undefined, { signal });
     }
   }
@@ -281,6 +289,7 @@ export const runWorker = async (options: {
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
   let herdr: WorkerHerdrAdapter | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
+  let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
   let configuration: WorkerConfigurationManager | undefined;
   let configurationBootstrap: ReturnType<typeof createWorkerConfigurationBootstrap> | undefined;
   let renewal: Promise<void> | undefined;
@@ -323,6 +332,7 @@ export const runWorker = async (options: {
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken], onSinkState: observeDiagnosticSink });
     const emit = diagnostics.emit;
+    configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit });
     const remote = createWorkerRemote({ serverUrl, serverToken });
     const invalidateUnavailable = (projectId?: string): void => {
       reporter?.publishInventory(null);
@@ -335,7 +345,7 @@ export const runWorker = async (options: {
         throw error;
       }
     };
-    const userId = await verifyWorkerPrincipal(() => remote.currentUserId(signal), signal, emit);
+    const userId = await verifyWorkerPrincipal(() => remote.currentUserId(signal), signal, configurationDiagnostics.exchange);
     const observer = monitoring;
     monitoringSender = createMonitoringSender({ runId: observer.runId, capture: observer.capture,
       read: (operation, requestId) => remote.readMonitoring(workerId, operation, requestId),
@@ -352,14 +362,20 @@ export const runWorker = async (options: {
       }
     };
     let resource: WorkerCloudResource | undefined;
-    try { resource = await readCloudConfiguration(signal); }
+    const initialSyncId = randomUUID();
+    configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
+    try {
+      resource = await readCloudConfiguration(signal);
+      configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: "pending", received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
+    }
     catch (error) {
+      const requestId = workerConfigurationRequestId(error);
+      configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(requestId === undefined ? {} : { requestId }), error });
       if (!isWorkerCancellation(error, signal)) observeMonitoring(m => {
         m.setAdmission("partial", [{ code: "configuration-unavailable", scope: { kind: "worker" }, observedAt: new Date().toISOString(), nextAttemptAt: null }]);
         m.fail({ operationId: randomUUID(), component: "configuration", phase: "configuration", scope: { kind: "worker" }, error });
       });
       if (signal.aborted || !transientAuthorityFailure(error)) throw error;
-      emit({ kind: "worker-configuration-authority-retry", component: "configuration", phase: "authority-read", message: "Worker configuration is unread; the next report cycle will retry the authenticated read.", error });
     }
     const machine = machineDescription(platform);
     const prepared = new Map<string, WorkerProject>();
@@ -473,6 +489,7 @@ export const runWorker = async (options: {
     configuration = await createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
       ...toolRuntime.configurationOptions, applyNative: nativeApplication.apply,
+      onApplication: configurationDiagnostics.application,
       onStorageState: event => {
         const observedAt = new Date().toISOString();
         observeMonitoring(m => {
@@ -481,14 +498,12 @@ export const runWorker = async (options: {
             configurationStorageFailure = undefined;
           } else {
             configurationStorageFailure ??= randomUUID();
-            m.fail({ operationId: configurationStorageFailure, component: "configuration", phase: `cache-${event.phase}`, scope: { kind: "worker" }, error: event.error,
+            m.fail({ operationId: configurationStorageFailure, component: "configuration", phase: `cache-${event.phase}`, scope: { kind: "worker" }, error: new ConfigurationFileOperationError(event.phase, event.error),
               retryState: event.nextAttemptAt === null ? "none" : "scheduled", nextAttemptAt: event.nextAttemptAt });
             m.setAdmission("partial", [{ code: "configuration-unavailable", scope: { kind: "worker" }, observedAt, nextAttemptAt: event.nextAttemptAt }]);
           }
         });
-        emit({ kind: `worker-configuration-storage-${event.kind}`, component: "configuration", phase: `cache-${event.phase}`,
-          message: JSON.stringify({ file: paths.configurationFile, recordIds: event.recordIds, attempts: event.attempts, nextAttemptAt: event.nextAttemptAt }),
-          ...(event.error === undefined ? {} : { error: event.error }) });
+        configurationDiagnostics!.storage(event);
         if (event.kind === "recovered") { reporter?.trigger(); reconcileWake.request(); }
       },
       onNativeApplication: event => {
@@ -580,7 +595,15 @@ export const runWorker = async (options: {
       onError: error => { failures.push(error); cancellation.controller.abort(error); },
       onInvalidDesired: revision => emit({ kind: "warning", message: `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
-    if (resource !== undefined) await configuration.receive(resource.desired, resource.observationRevision, signal);
+    if (resource !== undefined) {
+      const previous = configuration.current();
+      await configuration.receive(resource.desired, resource.observationRevision, signal, initialSyncId);
+      const current = configuration.current();
+      configurationDiagnostics.exchange({ syncId: initialSyncId, phase: "authority-read", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted",
+        source: { state: current.desired === null ? "uninitialized" : "initialized", generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision },
+        previousSource: { state: "unread", generation: previous.generation, desiredRevision: previous.desired?.revision ?? null, observationRevision: previous.observationRevision },
+        received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
+    }
     const manager = configuration;
     const proofSignature = () => JSON.stringify([toolRuntime.manager.currentSelection("codex", "web")?.selectionKey, toolRuntime.manager.currentSelection("copilot", "web")?.selectionKey]);
     let observedToolProof = proofSignature();
@@ -723,6 +746,7 @@ export const runWorker = async (options: {
     botRun = bots.run(signal).catch(error => { failures.push(error); cancellation.controller.abort(error); });
     configurationBootstrap = createWorkerConfigurationBootstrap({ paths, identity: { serverOrigin: serverUrl, userId, workerId }, signal, resolveProject });
     const exchange = createWorkerConfigurationExchange({ manager, needsRead: resource === undefined, bootstrap: configurationBootstrap, prompts: currentPromptSource,
+      onStage: configurationDiagnostics.exchange,
       read: operation => readCloudConfiguration(operation.signal, operation),
       send: (report, captured, operation, selectors) => remote.reportConfiguration(workerId, report, captured, operation, selectors),
     });
@@ -808,6 +832,7 @@ export const runWorker = async (options: {
         if (failure !== undefined && revision !== undefined && !applicationSignal.aborted) failure.successRevision = revision;
         if (activityId !== undefined && !applicationSignal.aborted) observeMonitoring(m => m.updateActivity(activityId!, { progress: true }));
       } catch (error) {
+        const reported = applicationSignal.aborted ? error : configurationPreparationFailure(error);
         const current = manager.current();
         const item = current.items.find(value => value.key.kind === "projectPreparation" && value.key.projectId === projectId);
         if (applicationSignal.aborted) {
@@ -818,11 +843,11 @@ export const runWorker = async (options: {
           const observedAt = new Date().toISOString(), operationId = preparationFailures.get(projectId)?.operationId ?? randomUUID();
           preparationFailures.set(projectId, { operationId, observedAt, revision, successRevision: null });
           observeMonitoring(m => {
-            m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId }, error });
+            m.fail({ operationId, component: "project", phase: "project-preparation", scope: { kind: "project", projectId }, error: reported });
             m.setProjectPreparationReason(projectId, { observedAt, nextAttemptAt: null });
           });
         }
-        throw error;
+        throw reported;
       } finally {
         if (applicationSignal.aborted) {
           const failure = preparationFailures.get(projectId);
@@ -922,6 +947,7 @@ export const runWorker = async (options: {
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
+    failures.push(...configurationDiagnostics?.errors() ?? []);
     try { await lock?.release(); } catch (error) { failures.push(error); }
     cancellation.dispose();
   }
@@ -943,6 +969,8 @@ export const runWorkerControl = async (options: {
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let actualHerdr: WorkerHerdrAdapter | undefined;
+  let configurationDiagnostics: ReturnType<typeof createWorkerConfigurationDiagnostics> | undefined;
+  const configurationExchanges: ReturnType<typeof createWorkerConfigurationExchange>[] = [];
   let configurationManager: WorkerConfigurationManager | undefined;
   let configurationInitialization: Promise<WorkerConfigurationManager> | undefined;
   let controlPromptSource: ReturnType<typeof createWorkerPromptSource> | undefined;
@@ -962,6 +990,7 @@ export const runWorkerControl = async (options: {
     const remote = createWorkerRemote({ serverUrl, serverToken });
     const userId = await remote.currentUserId(signal);
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
+    configurationDiagnostics = createWorkerConfigurationDiagnostics({ emit: diagnostics.emit });
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     let getControlHerdr: () => WorkerHerdrAdapter;
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory, reportPending: gitPendingReporter(diagnostics.emit), reportSettled: gitSettledReporter(diagnostics.emit),
@@ -974,9 +1003,8 @@ export const runWorkerControl = async (options: {
     const initializeConfiguration = (): Promise<WorkerConfigurationManager> => configurationInitialization ??= createWorkerConfigurationManager({
       file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
       ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply,
-      onStorageState: event => diagnostics!.emit({ kind: `worker-configuration-storage-${event.kind}`, component: "configuration", phase: `cache-${event.phase}`,
-        message: JSON.stringify({ file: paths.configurationFile, recordIds: event.recordIds, attempts: event.attempts, nextAttemptAt: event.nextAttemptAt }),
-        ...(event.error === undefined ? {} : { error: event.error }) }),
+      onApplication: configurationDiagnostics!.application,
+      onStorageState: configurationDiagnostics!.storage,
     }).then(manager => { configurationManager = manager; return manager; });
     let coordinatorConfiguration: WorkerCoordinatorConfiguration = { repositories: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     const sources = store.listTasks().filter(task => task.taskId === options.request.taskId && task.claimId === options.request.claimId && (options.request.projectId === undefined || task.projectId === options.request.projectId));
@@ -986,11 +1014,18 @@ export const runWorkerControl = async (options: {
     const frozenRetry = options.request.kind === "retry" && sources.length === 1 && sources[0]!.agentControlMode === "web";
     if (options.request.kind !== "release" && !frozenRetry) {
       let resource: WorkerCloudResource;
+      const syncId = randomUUID();
+      configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "started", source: null, remoteOutcome: "not_sent", localOutcome: "not_attempted" });
       try { resource = await remote.configuration(workerId, signal); }
       catch (error) {
-        if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) throw error;
+        if (!(error instanceof ApiError && error.status === 404 && error.code === "not_found")) {
+          const requestId = workerConfigurationRequestId(error);
+          configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "failed", source: null, remoteOutcome: failedConfigurationRequestOutcome(error), localOutcome: "not_attempted", ...(requestId === undefined ? {} : { requestId }), error });
+          throw error;
+        }
         resource = { desired: null, observationRevision: "0", observation: null };
       }
+      configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", source: null, remoteOutcome: "success", localOutcome: resource.desired === null ? "not_attempted" : "pending", received: { desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision } });
       controlResource = resource;
       if (resource.desired === null) {
         const initial = await validateWorkerConfigurationSource(local.source === undefined ? "{}" : local.source, paths, signal);
@@ -1010,7 +1045,13 @@ export const runWorkerControl = async (options: {
         coordinatorConfiguration = { repositories, globalConfiguration: initial, maxConcurrent: initial.maxConcurrent, preferPlatformSpecificTasks: initial.preferPlatformSpecificTasks };
       } else {
         configurationManager = await initializeConfiguration();
-        await configurationManager.receive(resource.desired, resource.observationRevision, signal);
+        const previous = configurationManager.current();
+        await configurationManager.receive(resource.desired, resource.observationRevision, signal, syncId);
+        const current = configurationManager.current();
+        configurationDiagnostics.exchange({ syncId, phase: "authority-read", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted",
+          source: { state: "initialized", generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision },
+          previousSource: { state: "unread", generation: previous.generation, desiredRevision: previous.desired?.revision ?? null, observationRevision: previous.observationRevision },
+          received: { desiredRevision: resource.desired.revision, observationRevision: resource.observationRevision } });
         await configurationManager.settle(signal);
         const effective = configurationManager.current().effective;
         if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.preferPlatformSpecificTasks === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
@@ -1041,6 +1082,7 @@ export const runWorkerControl = async (options: {
         if (controlResource !== undefined && !manager.current().synchronized) await manager.receive(controlResource.desired, controlResource.observationRevision, operation.signal);
         controlBootstrap ??= createWorkerConfigurationBootstrap({ paths, identity: { serverOrigin: serverUrl, userId, workerId }, signal, resolveProject: remote.resolveProject });
         const exchange = createWorkerConfigurationExchange({ manager, needsRead: controlResource === undefined, bootstrap: controlBootstrap, prompts: retryPromptSource,
+          onStage: configurationDiagnostics!.exchange,
           read: async current => {
             try { return await remote.configuration(workerId, current.signal, current); }
             catch (error) {
@@ -1050,6 +1092,7 @@ export const runWorkerControl = async (options: {
           },
           send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),
         });
+        configurationExchanges.push(exchange);
         const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => manager.current().effective.agentControlMode ?? local.agentControlMode, snapshot: () => toolRuntime.manager.snapshot() } });
         const outcome = await syncWorkerConfigurationOnce({ operation, configuration: exchange, report: async () => {
           const sample = await telemetry.collect(operation);
@@ -1116,6 +1159,8 @@ export const runWorkerControl = async (options: {
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
+    failures.push(...(configurationDiagnostics?.errors() ?? []));
+    for (const exchange of configurationExchanges) failures.push(...workerConfigurationDiagnosticFailures(exchange));
     try { await lock?.release(); } catch (error) { failures.push(error); }
     cancellation.dispose();
   }

@@ -126,5 +126,7 @@ A report's cancellation bounds its wait rather than the shared candidate or a
 manager-owned checkpoint. Shutdown must join those owners before releasing the
 instance lock. Permanent storage failure can still prevent new facts from
 becoming durable, and active system I/O retains the existing shutdown limits.
-The exchange exposes actual stages and source/certainty context for diagnostics;
-it does not turn logging into recovery state or change public error DTOs.
+The exchange exposes actual stages and source/certainty context for the
+[configuration diagnostics decision](2026-11-12-worker-configuration-diagnostics.md),
+which owns fixed classification, correlation and same-cause summaries. This
+projection does not turn logging into recovery state or change public error DTOs.

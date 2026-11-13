@@ -60,7 +60,10 @@ Recovery creates a new segment with a path/count summary and leaves old partial
 tails untouched. stderr and available monitoring report file outages. Formatting,
 stdout/stderr and independent notification failures preserve their error chains.
 Final close joins file/notification work after emitters and stores end; logs never
-supply recovery state.
+supply recovery state. The
+[configuration diagnostics decision](2026-11-12-worker-configuration-diagnostics.md)
+owns the explicit source, phase, certainty and actual-occurrence projection plus
+five-minute summaries layered on these unchanged file and result owners.
 
 The [Worker design](../../../../docs/design/daynight-worker.md#临时存储恢复与准入)
 owns the full mechanism. The

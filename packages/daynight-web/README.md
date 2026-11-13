@@ -1626,7 +1626,9 @@ Outer Overview switching retains the visited task subtree and its disclosure
 choices. No disclosure state is stored in browser preferences. The [Goal-list
 decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) records the rationale for this interaction.
 
-The typed Goal category also expands each Goal in place. Its independent title
+The typed Goal category also expands each Goal in place. On desktop its header
+matches the task-chain header height for equivalent unwrapped content in the
+same font; wrapped content grows naturally, including on narrow screens. Its independent title
 opens Goal details, while the disclosure shows all direct standalone tasks and
 scoped chains. Classification uses the complete ordinary graph before selecting
 the Goal, so a scoped single member of a larger component remains a chain.
