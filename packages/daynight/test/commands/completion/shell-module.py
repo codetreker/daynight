@@ -701,7 +701,8 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
         ]:
             actual, cursor, output = shell.complete(line + "\t\t")
             if name == "ambiguous root tag and task prefix":
-                missing = [candidate for candidate in candidates if re.search(r"(?<![\w/-])" + re.escape(candidate) + r"(?![\w/-])", output) is None]
+                display = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+                missing = [candidate for candidate in candidates if re.search(r"(?<![\w/-])" + re.escape(candidate) + r"(?![\w/-])", display) is None]
             else:
                 missing = [candidate for candidate in candidates if candidate not in output]
             removed_setup = name in ["empty root prefix", "empty short root prefix"] and re.search(r"(?<![\w-])setup(?![\w-])", output) is not None
