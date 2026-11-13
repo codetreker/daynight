@@ -9,7 +9,7 @@ import type { ChildProcess } from "node:child_process";
 import type { ProcessProof } from "../process-proof.js";
 import type { InteractionResponse, SessionCapabilities, SessionSnapshot, TimelineEntry, TextPart } from "../../../session/protocol.js";
 /** Private immutable files are supplied only by the Controller's input lease. */
-export type NativeImagePart = { readonly type: "image"; readonly imageId: string; readonly resourceId: string; readonly mediaType: string; readonly byteLength: string; readonly sha256: string; readonly localPath: string };
+export type NativeImagePart = { readonly type: "image"; readonly imageId: string; readonly resourceId: string; readonly mediaType: string; readonly byteLength: string; readonly sha256: string; readonly localPath: string; readonly validated?: ValidatedImage };
 export type NativeInput = { readonly content: readonly (TextPart | NativeImagePart)[] };
 export type NativeImageFile = { kind: "file"; path: string; byteLength: string; sha256: string; release(): void };
 export type ProviderEntry = TimelineEntry extends infer T ? T extends TimelineEntry ? Omit<T, "entrySeq"> : never : never;

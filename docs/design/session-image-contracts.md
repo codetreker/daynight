@@ -80,7 +80,11 @@ ImageTarget 只接受当前请求 origin/认证 actor 与真实 SessionFence 的
 
 ProviderImageCapabilities.revision 是 Controller 持久单调正整数，绑定其原生模型、权限设置、身份与结构化send能力；服务不原样复用它作为有效revision。ImageCapabilities.revision 则是服务为该Session持久分配的单调revision，providerRevision记录参与合成的原生报告revision。服务根据原生报告、协议模式、上传/持久化/归档链路及策略计算最终能力；任一影响资格的输入变化都推进有效revision，同revision绝不对应不同能力。已提交资源变化更新 imageBudget；实际内容超限在发布事务中拒绝，不制造模型能力变化。重复读取及无变化权限复核均不推进revision。恢复不得在旧revision下发布新值。
 
-Controller 接收 operation_authorized 后，在标记 dispatching 之前使用已冻结的 command intent、服务 effective capability revision 与本地持久 providerRevision 重新核对整组资格。服务生成授权前重新校验自身最终能力；Controller紧接原生调用前校验自己的providerRevision。已经发出的授权如遇服务策略撤销，使用既有原子授权边界结算已授权操作，不能声称撤销可以取消已经原生派发的输入；尚未授权者必须拒绝。服务每次授权也复核真实访问权限，revision不是权限凭据。modelId=null 表示有效模型无法确定，send/steer 均不能 supported。原生 default 选择值与已经确认的 effective model 不同；只有实际有效模型及其 profile 已获证实时才能宣布支持。controlsRevision=null表示原生未提供，不跳过能力校验。
+含图操作的私有 `operation_authorized` 回执携带 `imageAuthorization:ImageCapabilities`，由服务在原 operation、fence 与连接代次的授权事务内完成重新校验后取得；纯文字回执省略该字段。它复用有效能力 DTO，不修改已冻结的 command intent 或 canonical hash。Controller 分别比较 `imageAuthorization.revision` 与 intent 的 `expectedImageCapabilityRevision`、`imageAuthorization.providerRevision` 与本地持久 Provider revision，两种独立计数不要求相等。缺少授权快照、native/model/controls 身份不匹配或动作不支持时，含图操作不能进入原生调用。
+
+Controller 在标记 dispatching 前以及异步文件读取、编码结束后的原生调用前复核原授权和当前 Provider 资格，并按二者限制检查整组图片。服务在输入上传完整解码后核验实际 MIME、单图字节数和宽高/像素/帧数；operation 授权重新核验每件描述符，并检查整条消息的字节总量与张数。Controller 的 lease 保留与原 bytes/hash 绑定的完整解码结果，无需再次解码。任一图片失败整条拒绝，不能退化为文字或剩余图片。这些输入限额不限制合法已存原件的历史读取或 Markdown 显示采集。
+
+已经发出的授权如遇服务策略撤销，使用既有原子授权边界结算已授权操作，不能声称撤销可以取消已经原生派发的输入；尚未授权者必须拒绝。服务每次授权也复核真实访问权限，revision不是权限凭据。modelId=null 表示有效模型无法确定，send/steer 均不能 supported。原生 default 选择值与已经确认的 effective model 不同；只有实际有效模型及其 profile 已获证实时才能宣布支持。controlsRevision=null表示原生未提供，不跳过能力校验。
 
 支持状态是**已验证的原生能力与所有中间层能力的交集**。send 和 steer 分开；文字 steer=true 不推出图片 steer=true。未知和不支持都禁止对应图片输入，reasonCode 必填；完全支持时可 null。reasonCode 取 `model_unsupported|capability_unknown|provider_unsupported|component_unsupported|policy_restricted`。inputMediaTypes 为去重数组且为输入白名单的子集。任一 supported 时数组非空、数值为正，maxImagesPerMessage 为 1..8；均不支持时数组可为空、上限全部为 `"0"`/0。上限不大于 10485760、20971520、8，已知 Provider 更小限制向下取交集，浏览器和 Controller 必须使用同一个最终值。解码器等尚不可用时不得先宣布支持。
 

@@ -1,3 +1,4 @@
+import { assertNativeImageAdmission } from "./image-admission.js";
 import { createOperation } from "../../../api/operation.js";
 import { isOutboxFailure } from "../outbox-diagnostic.js";
 import { toolCommand, verifyToolLaunch } from "../../../platform/tool-executables.js";
@@ -298,6 +299,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         if ((expectedTurnId ? capability.steer : capability.send) !== "supported") throw new NativeRpcError(-32602, "Native image capability is unknown or unsupported.");
         await verifyNativeImageFiles(images);
         if (nativeClosed || closed || closing || pending.size || currentTurnId !== expectedTurnId || revision !== controls.store.value.revision || (expectedTurnId ? controls.imageCapabilities(imageProfile).steer : controls.imageCapabilities(imageProfile).send) !== "supported") throw new NativeRpcError(-32602, "Native image admission changed before dispatch.");
+        assertNativeImageAdmission(inputValue, controls.imageCapabilities(imageProfile), expectedTurnId);
         imageInputs.prepare(inputValue, operationId, expectedTurnId);
       } else interruptions.submitting(operationId, text, expectedTurnId);
       const observeReceipt = (value: unknown) => {

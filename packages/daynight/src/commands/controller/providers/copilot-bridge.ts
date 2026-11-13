@@ -11,7 +11,7 @@ export type CopilotBridgeMediaOptions = { createSpool(maxBytes: number): Copilot
 export type CopilotBridgeImage = Readonly<{ kind: "copilot_bridge_image"; path: string; byteLength: string; sha256: string; mediaType: string }>;
 type ImageOwnership = { spool: CopilotBridgeSpool; owner: boolean; readers: number; removed: boolean; retired(): void };
 const images = new WeakMap<object, ImageOwnership>();
-const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput) => Promise<string>>();
+const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput, verify: () => void) => Promise<string>>();
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const retire = (entry: ImageOwnership) => { if (!entry.owner && !entry.readers && !entry.removed) { entry.spool.remove(); entry.removed = true; entry.retired(); } };
 export const isCopilotBridgeImage = (value: unknown): value is CopilotBridgeImage => value !== null && typeof value === "object" && images.has(value) && !images.get(value)!.removed;
@@ -22,8 +22,8 @@ export const retainCopilotBridgeImage = (image: CopilotBridgeImage): (() => void
   return () => { if (!released) { released = true; entry.readers--; } retire(entry); };
 };
 export const releaseCopilotBridgeImage = (image: CopilotBridgeImage): void => { const entry = images.get(image); if (!entry) throw new Error("Copilot image has no controlled bridge lease."); entry.owner = false; retire(entry); };
-export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput): Promise<string> => {
-  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input);
+export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput, verify: () => void): Promise<string> => {
+  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input, verify);
 };
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
 const remoteError = (raw: unknown): Error => {
@@ -42,6 +42,7 @@ export const startCopilotBridge = (options: {
   const child = spawn(process.execPath, ["--max-old-space-size=512", fileURLToPath(new URL("./copilot-bridge-worker.js", import.meta.url))], { cwd: options.cwd, env: options.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   let closing = false, failed = false, closed = false, peakRss = 0, peakHeap = 0, peakExternal = 0, peakArrayBuffers = 0, samples = 0;
   const waiters = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+  const admissions = new Map<string, { sessionId: string; verify(): void; consumed: boolean; error: Error | undefined }>();
   const callbacks = new Map<string, Callbacks>(), transfers = new Map<string, Transfer>();
   const permissions = new Map<string, { sessionId: string; request: object; serialized: string }>();
   const owned = new Set<CopilotBridgeImage>();
@@ -152,6 +153,13 @@ export const startCopilotBridge = (options: {
     }
     if (message.type !== "request" || typeof message.id !== "string") throw new Error("Invalid Copilot bridge message.");
     try {
+      if (message.method === "image_admission") {
+        const admission = typeof message.admissionId === "string" ? admissions.get(message.admissionId) : undefined;
+        if (closed || closing || failed || !admission || admission.consumed || admission.sessionId !== message.sessionId) throw new Error("Copilot image admission is no longer current.");
+        admission.consumed = true;
+        try { admission.verify(); } catch (error) { admission.error = error instanceof Error ? error : new Error(String(error)); throw error; }
+        await respond(message.id, true); return;
+      }
       if (message.method === "media") { await respond(message.id, media(object(message.args))); return; }
       if (message.method !== "callback" || typeof message.sessionId !== "string" || typeof message.callback !== "string" || !Array.isArray(message.args)) throw new Error("Invalid Copilot bridge callback.");
       const callback = callbacks.get(message.sessionId)?.[message.callback];
@@ -184,7 +192,14 @@ export const startCopilotBridge = (options: {
       };
       return (...args: unknown[]) => request("call", [sessionId, [name], args]);
     } }) as CopilotSession;
-    imageSessions.set(value, async input => await request("sendImages", [sessionId, input]) as string);
+    imageSessions.set(value, async (input, verify) => {
+      if (closed || closing || failed || admissions.size) throw new Error("Copilot image admission is unavailable.");
+      const admissionId = randomUUID(), admission = { sessionId, verify, consumed: false, error: undefined as Error | undefined };
+      admissions.set(admissionId, admission);
+      try { return await request("sendImages", [sessionId, input, admissionId]) as string; }
+      catch (error) { throw admission.error ?? error; }
+      finally { admissions.delete(admissionId); }
+    });
     sessions.set(sessionId, value); return value;
   };
   const open = async (method: "createSession" | "resumeSession", sessionId: string, config: SessionConfig): Promise<CopilotSession> => {
@@ -245,7 +260,7 @@ export const startCopilotBridge = (options: {
         catch (error) { errors.push(error); }
       }
       for (const image of owned) try { releaseCopilotBridgeImage(image); } catch (error) { errors.push(error); }
-      callbacks.clear(); subscriptions.clear(); permissions.clear();
+      admissions.clear(); callbacks.clear(); subscriptions.clear(); permissions.clear();
       if (errors.length === 1) throw errors[0];
       if (errors.length) throw new AggregateError(errors, "Copilot bridge cleanup did not release every retained transfer.");
     })();

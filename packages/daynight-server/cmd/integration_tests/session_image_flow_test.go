@@ -36,7 +36,16 @@ func sessionImageHTTP(t *testing.T, f *fixture, method, path, contentType string
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	resp, err := f.client.Do(req)
+	client := f.client
+	if headers["Authorization"] != "" {
+		// Active history uses the original Controller grant, not the browser PAT.
+		selected := *client
+		workerTransport := client.Transport.(sessionWorkerTransport)
+		workerTransport.next = workerTransport.next.(tokenTransport).next
+		selected.Transport = workerTransport
+		client = &selected
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +73,7 @@ func imageDigest(b []byte) string { digest := sha256.Sum256(b); return hex.Encod
 
 func sessionImageController(ctx context.Context, connection *websocket.Conn, fence sp.ControllerFence, spec sp.ImageUploadSpec, original []byte) error {
 	validated := &sp.ValidatedImage{MediaType: spec.MediaType, ByteLength: spec.ByteLength, SHA256: spec.SHA256, Width: 3, Height: 2, FrameCount: 1}
-	for _, expected := range []string{"prepare", "write", "complete"} {
+	for _, expected := range []string{"prepare", "write", "complete", "release"} {
 		kind, data, err := connection.Read(ctx)
 		if err != nil {
 			return err
@@ -86,7 +95,7 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 			if json.Unmarshal(request.Body, &chunk) != nil || chunk.UploadID != spec.UploadID || chunk.Offset != "0" || chunk.SHA256 != spec.SHA256 || chunk.Data != base64.StdEncoding.EncodeToString(original) {
 				return fmt.Errorf("Controller chunk differs: %s", request.Body)
 			}
-		} else {
+		} else if expected == "complete" {
 			var completion struct {
 				UploadID   string `json:"uploadId"`
 				SHA256     string `json:"sha256"`
@@ -94,6 +103,13 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 			}
 			if json.Unmarshal(request.Body, &completion) != nil || completion.UploadID != spec.UploadID || completion.SHA256 != spec.SHA256 || completion.ByteLength != spec.ByteLength {
 				return fmt.Errorf("Controller completion differs: %s", request.Body)
+			}
+		} else {
+			var release struct {
+				UploadID string `json:"uploadId"`
+			}
+			if json.Unmarshal(request.Body, &release) != nil || release.UploadID != spec.UploadID {
+				return fmt.Errorf("Controller release identity differs: %s", request.Body)
 			}
 		}
 		state, offset := "receiving", "0"
@@ -103,6 +119,9 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 		}
 		if expected == "complete" {
 			state, offset, image = "validated", spec.ByteLength, validated
+		}
+		if expected == "release" {
+			state = "released"
 		}
 		result, err := sp.MarshalWire(sp.LocalImagePreparation{UploadID: spec.UploadID, ImageID: spec.ImageID, Target: spec.Target, State: state, AcceptedOffset: offset, Validated: image})
 		if err != nil {
@@ -119,7 +138,55 @@ func sessionImageController(ctx context.Context, connection *websocket.Conn, fen
 	return nil
 }
 
-// sessionDirectImageFlow uses the public upload and archive routes against the
+func sessionCapturedOriginal(t *testing.T, f *fixture, controller *websocket.Conn, fence sp.ControllerFence, capture sp.ImageCaptureRequest, validated sp.ValidatedImage, original []byte) sp.Resource {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(f.context, 15*time.Second)
+	defer cancel()
+	for {
+		kind, raw, err := controller.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frame struct {
+			Type, Action, RequestID string
+			Body                    json.RawMessage
+			Result                  sp.ImageCaptureReceipt
+			Error                   *sp.ImageError
+		}
+		if kind != websocket.MessageText || json.Unmarshal(raw, &frame) != nil {
+			t.Fatalf("invalid capture frame: %s", raw)
+		}
+		if frame.Type == "image_request" && frame.Action == "read_capture" {
+			var request struct {
+				CaptureID, AttemptID, SHA256, ByteLength, Offset string
+				Limit                                            int
+			}
+			if json.Unmarshal(frame.Body, &request) != nil || request.CaptureID != capture.CaptureID || request.AttemptID != capture.AttemptID || request.SHA256 != validated.SHA256 || request.ByteLength != validated.ByteLength || request.Offset != "0" || request.Limit < len(original) {
+				t.Fatalf("capture source identity differs: %s", frame.Body)
+			}
+			chunk := sp.PreparedImageChunk{PreparationID: capture.AttemptID, Offset: "0", ByteLength: validated.ByteLength, SHA256: validated.SHA256, Data: base64.StdEncoding.EncodeToString(original), EOF: true}
+			sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "image_response", Protocol: sp.Protocol, ControllerFence: fence, RequestID: frame.RequestID, Action: frame.Action, MediaResult: imageWire(t, chunk)})
+			continue
+		}
+		if frame.Type != "image_capture_result" || frame.Error != nil || frame.Result.CaptureID != capture.CaptureID || frame.Result.AttemptID != capture.AttemptID {
+			t.Fatalf("capture failed: %s", raw)
+		}
+		if frame.Result.State == "committed" && frame.Result.Resource != nil {
+			return *frame.Result.Resource
+		}
+		if frame.Result.State != "copying" {
+			t.Fatalf("unexpected capture state: %s", raw)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+		sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "image_capture", Protocol: sp.Protocol, ControllerFence: fence, RequestID: uuid.NewString(), Action: "query", MediaBody: imageWire(t, map[string]string{"captureId": capture.CaptureID})})
+	}
+}
+
+// sessionDirectImageFlow uses the public upload, capture and archive routes against the
 // assembled Server, its real decoder, and an isolated PostgreSQL instance.
 func sessionDirectImageFlow(t *testing.T, f *fixture) {
 	t.Helper()
@@ -173,7 +240,6 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 	if replay.AcceptedOffset != size || replay.UploadID != spec.UploadID {
 		t.Fatalf("first chunk replay: %+v", replay)
 	}
-	var completed sp.ImageUploadReceipt
 	controllerContext, cancelController := context.WithTimeout(f.context, 30*time.Second)
 	defer cancelController()
 	controllerResult := make(chan error, 1)
@@ -181,24 +247,58 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 		controllerResult <- sessionImageController(controllerContext, controller, connected.ControllerFence, spec, original)
 	}()
 	f.client.Timeout = 30 * time.Second
-	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodPost, upload+"/complete", "application/json", imageWire(t, sp.ImageUploadComplete{SHA256: hash, ByteLength: size}), nil, http.StatusOK), &completed); err != nil {
+	var refusal struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodPost, upload+"/complete", "application/json", imageWire(t, sp.ImageUploadComplete{SHA256: hash, ByteLength: size}), nil, http.StatusConflict), &refusal); err != nil {
+		t.Fatal(err)
+	}
+	if refusal.Error.Code != "component_unsupported" {
+		t.Fatalf("unqualified input was not refused: %+v", refusal)
+	}
+	var released sp.ImageUploadReceipt
+	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodDelete, upload, "", nil, nil, http.StatusOK), &released); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-controllerResult; err != nil {
 		t.Fatalf("Controller image exchange: %v", err)
 	}
-	if completed.State != "complete" || completed.Resource == nil {
-		t.Fatalf("upload not complete: %+v", completed)
+	if released.State != "released" || released.UploadID != spec.UploadID {
+		t.Fatalf("rejected upload was not released: %+v", released)
 	}
-	resource := *completed.Resource
+	var observed sp.ImageUploadReceipt
+	if err := json.Unmarshal(sessionImageHTTP(t, f, http.MethodGet, upload, "", nil, nil, http.StatusOK), &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.State != "released" || observed.UploadID != spec.UploadID {
+		t.Fatalf("released upload readback differs: %+v", observed)
+	}
+	// Display capture remains available while native input profiles are closed.
+	imageID := uuid.NewString()
+	entry := sp.TimelineEntry{EntryID: uuid.NewString(), EntrySeq: "1", Revision: "1", Kind: "assistant_message", Data: map[string]json.RawMessage{"content": imageWire(t, []map[string]any{{"type": "image_unavailable", "imageId": imageID, "label": "original.png", "error": sp.ImageError{Code: "source_unavailable", Message: "Original is being saved."}}})}}
+	entry.Data["imageProjectionError"] = json.RawMessage(`null`)
+	if _, err := sp.DecodeSourceTimeline(imageWire(t, entry)); err != nil {
+		t.Fatalf("capture source projection is invalid: %v", err)
+	}
+	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: imageWire(t, entry)}}})
+	sessionFlowKind(t, sessionFlowRead(t, f, controller), "events_ack")
+	checkpoint := imageWire(t, sp.ArchiveHistoryContent{HistoryEpoch: connected.HistoryEpoch, SourceThrough: "1", Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{}})
+	checkpointDigest := imageDigest(checkpoint)
+	sessionImageHTTP(t, f, http.MethodPut, base+"/image-history-ledger/"+uuid.NewString()+"?offset=0", "application/octet-stream", checkpoint, map[string]string{"Authorization": "Bearer " + grant.Token, "Daynight-Controller-Fence": string(imageWire(t, connected.ControllerFence)), "Daynight-File-Byte-Length": strconv.Itoa(len(checkpoint)), "Daynight-File-SHA256": checkpointDigest, "Daynight-Chunk-SHA256": checkpointDigest}, http.StatusOK)
+	capture := sp.ImageCaptureRequest{CaptureID: uuid.NewString(), AttemptID: uuid.NewString(), Occurrence: sp.ImageOccurrence{ImageID: imageID, EntryID: entry.EntryID, Container: "content", SourceKey: "original"}, Locator: sp.ImageLocator{Kind: "external", URL: "https://images.example/original.png"}}
+	validated := sp.ValidatedImage{MediaType: spec.MediaType, ByteLength: size, SHA256: hash, Width: 3, Height: 2, FrameCount: 1}
+	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "image_capture", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, RequestID: uuid.NewString(), Action: "submit", MediaBody: imageWire(t, sp.DirectCaptureSubmission{Request: capture, AttemptID: capture.AttemptID, Outcome: sp.DirectCaptureOutcome{Kind: "validated", Validated: &validated}})})
+	resource := sessionCapturedOriginal(t, f, controller, connected.ControllerFence, capture, validated, original)
 	resourcePath := base + "/resources/" + resource.ResourceID + "/content"
 	if actual := sessionImageHTTP(t, f, http.MethodGet, resourcePath, "", nil, nil, http.StatusOK); !bytes.Equal(actual, original) {
-		t.Fatal("uploaded resource bytes differ")
+		t.Fatal("captured resource bytes differ")
 	}
 
 	content := imageWire(t, []map[string]string{{"type": "resource", "resourceId": resource.ResourceID, "label": "original.png"}})
-	entry := sp.TimelineEntry{EntryID: uuid.NewString(), Revision: "1", Kind: "assistant_message", Data: map[string]json.RawMessage{"content": content}}
-	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: imageWire(t, entry)}}})
+	entry.Revision, entry.Data["content"] = "2", content
+	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "2", Kind: "timeline_upsert", Payload: imageWire(t, entry)}}})
 	sessionFlowKind(t, sessionFlowRead(t, f, controller), "events_ack")
 	if err := controller.Close(websocket.StatusNormalClosure, "integration controller stopped"); err != nil {
 		t.Fatal(err)
