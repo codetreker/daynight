@@ -1967,10 +1967,12 @@ defines its freshness, permissions and retention.
 Snapshots include actual OS, logical CPU count and utilization, memory usage,
 and available/total space for the filesystem containing the directory where
 `worker run` started. They also include the running Daynight version, a read-only
-private Herdr version observation, and Codex/Copilot installation and versions.
-Native CLI results are cached for at most 60 seconds with their original check
-time. Reporting does not run launch preflight or repair integrations; a pure-Web
-worker does not start Herdr to collect its version. Unknown task inventory and
+private Herdr version observation, and observed Codex/Copilot tool versions.
+An unchecked tool is not reported as installed or missing. Standalone native CLI
+results are cached for at most 60 seconds with their original check time; the
+composed Worker reads the tool manager snapshot without another version probe.
+Reporting does not run launch preflight or repair integrations; a pure-Web worker
+does not start Herdr to collect its version. Unknown task inventory and
 observed idleness remain distinct, and individual probe errors remain explicit.
 The [reporting requirements](../../docs/spec/daynight-worker-reporting.md) and
 [design](../../docs/design/daynight-worker-reporting.md) define sampling,
@@ -2247,9 +2249,18 @@ worker:
 Cloud configuration exchanges these choices when the server negotiates tool-path
 support. Web Codex/Copilot Task and Bot launches, version/host checks and model
 discovery consume one verified selection; saving a target does not establish that
-it is applied. Explicit Herdr targets are rejected until its instance mapping
-supports them; all-automatic Herdr keeps its existing behavior. Explicit paths must be absolute on
-the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
+it is applied. Background Copilot preparation runs when the effective global or
+any Project agent is Copilot, or this Worker has a non-deleted Copilot Bot
+definition, including pending, failed and recoverable definitions. With no such
+demand, background cycles do not resolve or probe Copilot; an existing successful
+selection and inspection proof may still be read for the complete assistant-host report. Without
+that proof, the Copilot entry is unavailable without an issue. Explicit Copilot
+model discovery and execution continue to prepare it on demand. A tool path or
+previous success alone does not create background demand.
+
+Explicit Herdr targets are rejected until its instance mapping supports them;
+all-automatic Herdr keeps its existing behavior. Explicit paths must be absolute
+on the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
 characters. Windows paths need a drive or complete UNC share. Values retain all
 spaces and punctuation: the parser does not trim, normalize, expand `~` or
 environment variables, split arguments, or access the filesystem. Provide one
@@ -2953,6 +2964,34 @@ records. Old partial tails remain inspectable and are not recovery inputs or an
 exact loss ledger. Periodic flush joins current work; final close stops retry
 scheduling and joins file/notification work after all emitters and stores finish.
 Formatting, stdout/stderr and independent notification errors retain their chains.
+
+Configuration diagnostics preserve the actual authority read, bootstrap
+preparation, telemetry collection, observation capture, report send, receipt
+acceptance, cache persistence and application stage. Queryable `configuration`
+metadata includes the original item target and record, the current authority
+generation and baseline, report/sync IDs and an available HTTP request ID. A
+bounded, valid response `X-Request-ID` takes precedence over a body ID and remains
+available when the response body is malformed; a body ID is used only when the
+header is absent. Unread
+authority, initialized authority and an uninitialized service are distinct;
+`"0"` remains a valid initial observation baseline. Typed tool failures and
+controlled file errors retain fixed reasons without recording native arguments,
+command output or credentials. Malformed YAML and invalid local fields are
+classified as invalid configuration without copying newly edited credentials;
+authentication and permission refusals remain visible terminal authority-read
+failures. A configuration POST cancelled before its queued transport dispatch
+remains unsent. Remote confirmation stays confirmed while its
+local checkpoint is pending, including after the report waiter ends. Diagnostic
+failures do not change application or receipt outcomes.
+
+The first failure, changed reason or target, and genuine recovery are emitted
+immediately. Continuing failures produce at most one summary per five minutes
+through existing cycles. `occurrences` counts actual failures in this run;
+`backoffStep` describes the separately capped retry delay. Dynamic request IDs and
+timestamps do not split the same cause into new groups. The
+[configuration diagnostics design](../../docs/design/daynight-worker-reporting.md#失败与可观察性)
+defines the complete fields, certainty values, `jq` filters by Worker/key/target,
+sync ID or request ID, and the limits of querying an older partial segment.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
 known session ID. After credential redaction, the terminal renderer shortens each

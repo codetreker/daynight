@@ -35,7 +35,9 @@ arrow with the same symmetric SVG shape used by the adjacent assignee picker.
 The icon does not intercept pointer input and the select reserves space for it.
 
 The full index continues to own chain progress, readiness, dependencies,
-statistics and graph context. The [recent browsing decision](../../archived/feature/2026-10-27-recent-task-pages.md)
+overview statistics and graph context. The [assignee-scoped tab count decision](../bug-fix/2026-11-13-assignee-scoped-tab-counts.md)
+uses the same assignee condition for tab counts while keeping their status scope
+independent of list filtering. The [recent browsing decision](../../archived/feature/2026-10-27-recent-task-pages.md)
 retains the seven-local-day Overview projection and pagination rationale, but
 its former task-list window and independent Show all preferences are replaced.
 The [assignee preference decision](2026-11-09-project-assignee-filter-preference.md)

@@ -233,20 +233,47 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	now := s.now().UTC()
 	session, value := s.ops.newSession(now)
 	result := core.LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath, Secret: value, Session: session}
-	err = s.run(ctx, func(scope store.IdentityScope) error {
+	var admissionError error
+	err = s.strict(ctx, func(scope store.IdentityScope) error {
 		var err error
 		result.User, err = s.ops.completeLogin(ctx, scope.IdentityDAO(), user, now)
 		if err != nil {
+			return err
+		}
+		if err := s.ops.admitCompleteUser(result.User, false); err != nil {
+			admissionError = err
 			return err
 		}
 		result.User.PersonalTeam, err = s.ops.bootstrapPersonalTeam(ctx, scope.PersonalTeamDAO(), result.User.ID, now)
 		if err != nil {
 			return err
 		}
+		var facts store.PersonalTeamFacts
+		result.User, facts, err = s.ops.user(ctx, scope.IdentityDAO(), model.Principal{UserID: result.User.ID})
+		if err != nil {
+			return err
+		}
+		if err := s.ops.validatePersonalTeam(facts); err != nil {
+			return err
+		}
+		result.User.PersonalTeam.ID, result.User.PersonalTeam.Kind = facts.ID, "personal"
+		if err := s.ops.admitCompleteUser(result.User, true); err != nil {
+			admissionError = err
+			return err
+		}
 		result.Session.UserID = result.User.ID
 		return s.ops.createSession(ctx, scope.IdentityDAO(), result.Session)
 	})
 	if err != nil {
+		// Only a cleanly rolled-back admission refusal is an upstream profile
+		// error. Preserve transaction and cleanup failures as separate facts.
+		if admissionError != nil && errors.Is(err, admissionError) {
+			var transaction *store.TransactionError
+			databaseFailure, _ := store.DatabaseErrorFacts(err)
+			if !databaseFailure && (!errors.As(err, &transaction) || (transaction.Phase == "operation" && transaction.Outcome == store.TransactionNotCommitted && !transaction.CleanupFailed && !transaction.CommitAttempted)) {
+				return partial, &model.IdentityProviderError{Code: "identity_unavailable", Cause: err}
+			}
+		}
 		return partial, err
 	}
 	return result, nil

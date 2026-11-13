@@ -6,12 +6,15 @@ import type { WorkerCloudDesired, WorkerCloudReceipt, WorkerCloudReport, WorkerC
 import type { WorkerReport } from "../../api/types.js";
 import type { WorkerPromptSource } from "./prompt-source.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
+import type { WorkerConfigurationReportContext } from "./configuration-model.js";
 
 export type WorkerConfigurationExchangeSource = {
+  readonly state: "unread" | "initialized" | "uninitialized";
   readonly generation: string;
   readonly desiredRevision: string | null;
   readonly observationRevision: string;
 };
+export type WorkerConfigurationReceivedAuthority = { readonly desiredRevision: string | null; readonly observationRevision: string };
 export type WorkerConfigurationExchangePhase = "authority-read" | "bootstrap-prepare" | "telemetry-collect" | "observation-capture" | "report-send" | "receipt-accept";
 export type WorkerConfigurationExchangeEvent = {
   readonly syncId: string;
@@ -19,7 +22,14 @@ export type WorkerConfigurationExchangeEvent = {
   readonly status: "started" | "succeeded" | "failed" | "discarded";
   readonly source: WorkerConfigurationExchangeSource | null;
   readonly remoteOutcome: "not_sent" | "success" | "rejected" | "unknown";
-  readonly localOutcome: "not_attempted" | "pending" | "persisted";
+  readonly localOutcome: "not_attempted" | "pending" | "persisted" | "ignored";
+  readonly previousSource?: WorkerConfigurationExchangeSource;
+  readonly received?: WorkerConfigurationReceivedAuthority;
+  readonly report?: WorkerConfigurationReportContext;
+  readonly observationAccepted?: boolean;
+  readonly requestId?: string;
+  readonly nextAttemptAt?: string | null;
+  readonly backoffStep?: number;
   readonly error?: unknown;
 };
 
@@ -28,9 +38,11 @@ export type WorkerConfigurationExchange = {
   prepare?(operation: Operation, syncId?: string): Promise<void>;
   source?(): WorkerConfigurationExchangeSource;
   capture(report: WorkerReport): WorkerCloudReport;
+  reportContext?(report: WorkerCloudReport): WorkerConfigurationReportContext | undefined;
   isCurrent?(report: WorkerCloudReport): boolean;
   send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
-  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt, operation: Operation): Promise<void>;
+  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt, operation: Operation, syncId?: string): Promise<"persisted" | "ignored" | void>;
+  acceptanceOutcome?(sent: WorkerCloudReport): "persisted" | "ignored" | undefined;
   markNeedsRead?(): void;
   observe?(event: WorkerConfigurationExchangeEvent): void;
   prompts?: WorkerPromptSource;
@@ -38,17 +50,45 @@ export type WorkerConfigurationExchange = {
 
 type ExchangeManager = {
   current(): { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly synchronized: boolean };
+  hasAuthority(): boolean;
   waitReady(signal?: AbortSignal): Promise<void>;
-  receive(desired: WorkerCloudDesired | null, revision?: string, signal?: AbortSignal): Promise<void>;
+  receive(desired: WorkerCloudDesired | null, revision?: string, signal?: AbortSignal, syncId?: string): Promise<void>;
   report(bootstrap?: WorkerCloudValue | null, report?: WorkerReport): WorkerCloudReport;
   isCurrentReport(report: WorkerCloudReport): boolean;
-  acknowledge(report: WorkerCloudReport, receipt: WorkerCloudReceipt, signal?: AbortSignal): Promise<void>;
+  reportContext(report: WorkerCloudReport): WorkerConfigurationReportContext | undefined;
+  acknowledge(report: WorkerCloudReport, receipt: WorkerCloudReceipt, signal?: AbortSignal, syncId?: string): Promise<"persisted" | "ignored">;
 };
 
 export type WorkerConfigurationBootstrapProvider = {
   prepare(operation: Operation): Promise<WorkerCloudValue | null>;
   invalidate(): void;
   clear(): Promise<void>;
+};
+
+const diagnosticFailures = new WeakMap<WorkerConfigurationExchange, unknown[]>();
+const observe = (configuration: WorkerConfigurationExchange, event: WorkerConfigurationExchangeEvent): void => {
+  try { configuration.observe?.(event); }
+  catch (error) {
+    const failures = diagnosticFailures.get(configuration);
+    if (failures === undefined) diagnosticFailures.set(configuration, [error]);
+    else if (!failures.includes(error)) failures.push(error);
+  }
+};
+export const workerConfigurationDiagnosticFailures = (configuration: WorkerConfigurationExchange): readonly unknown[] => Object.freeze([...(diagnosticFailures.get(configuration) ?? [])]);
+export const workerConfigurationRequestId = (error: unknown): string | undefined => {
+  if (!(error instanceof ApiError)) return undefined;
+  const requestId = error.responseRequestId === undefined ? error.requestId : error.responseRequestId;
+  return requestId !== undefined && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(requestId) ? requestId : undefined;
+};
+
+export const failedConfigurationRequestOutcome = (error: unknown): WorkerConfigurationExchangeEvent["remoteOutcome"] => {
+  if (!(error instanceof ApiError) || error.outcomeUnconfirmed) return "unknown";
+  if (error.confirmedRefusal) return "rejected";
+  if (error.phase === "prepare") return "not_sent";
+  // This mutation's client flag distinguishes a queued cancellation from dispatched I/O; GETs do not provide that fact.
+  if (error.operation === "worker.configuration.report" && error.phase === "request" && error.confirmedMutationId === undefined) return "not_sent";
+  if (error.phase === "response" && error.status !== undefined && error.status >= 400 && error.status <= 599) return "rejected";
+  return "unknown";
 };
 
 const requiresAuthorityRead = (error: unknown): boolean => !(error instanceof ApiError) || error.outcomeUnconfirmed || error.status === 400 || error.phase === "protocol";
@@ -70,17 +110,24 @@ export const createWorkerConfigurationExchange = (options: {
   const { manager } = options;
   let needsRead = options.needsRead ?? true;
   let bootstrap: WorkerCloudValue | null = null;
+  const acknowledgements = new WeakMap<WorkerCloudReport, "persisted" | "ignored">();
   const source = (): WorkerConfigurationExchangeSource => {
     const current = manager.current();
-    return { generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision };
+    return Object.freeze({ state: !manager.hasAuthority() ? "unread" : current.desired === null ? "uninitialized" : "initialized", generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision });
   };
-  const prepareStage = async (syncId: string, phase: WorkerConfigurationExchangePhase, action: () => Promise<void>): Promise<void> => {
-    const event = (status: WorkerConfigurationExchangeEvent["status"], error?: unknown): void => options.onStage?.({ syncId, phase, status, source: source(), remoteOutcome: "not_sent", localOutcome: "not_attempted", ...(error === undefined ? {} : { error }) });
+  const prepareStage = async (syncId: string, phase: WorkerConfigurationExchangePhase, action: () => Promise<void>, received?: () => WorkerConfigurationReceivedAuthority | undefined): Promise<void> => {
+    const previousSource = source();
+    const event = (status: WorkerConfigurationExchangeEvent["status"], error?: unknown): void => {
+      const requestId = workerConfigurationRequestId(error), authority = received?.();
+      const localOutcome = phase === "authority-read" && authority !== undefined ? status === "succeeded" ? "persisted" : "pending" : "not_attempted";
+      const remoteOutcome = phase !== "authority-read" ? "not_sent" : authority !== undefined ? "success" : status === "failed" ? failedConfigurationRequestOutcome(error) : "not_sent";
+      observe(exchange, { syncId, phase, status, source: source(), previousSource, ...(authority === undefined ? {} : { received: authority }), remoteOutcome, localOutcome, ...(requestId === undefined ? {} : { requestId }), ...(error === undefined ? {} : { error }) });
+    };
     event("started");
     try { await action(); event("succeeded"); }
     catch (error) { event("failed", error); throw error; }
   };
-  return {
+  const exchange: WorkerConfigurationExchange & { markNeedsRead(): void; close(): Promise<void> } = {
     ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
     ...(options.onStage === undefined ? {} : { observe: options.onStage }),
     source,
@@ -88,11 +135,13 @@ export const createWorkerConfigurationExchange = (options: {
     prepare: async (operation, syncId = randomUUID()) => {
       if (needsRead || !manager.current().synchronized || manager.current().desired === null) {
         needsRead = true;
+        let received: WorkerConfigurationReceivedAuthority | undefined;
         await prepareStage(syncId, "authority-read", async () => {
           const resource = await options.read(operation);
-          await manager.receive(resource.desired, resource.observationRevision, operation.signal);
+          received = Object.freeze({ desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision });
+          await manager.receive(resource.desired, resource.observationRevision, operation.signal, syncId);
           needsRead = false;
-        });
+        }, () => received);
       }
       if (manager.current().desired !== null) {
         bootstrap = null;
@@ -102,6 +151,7 @@ export const createWorkerConfigurationExchange = (options: {
       }
     },
     capture: report => manager.report(manager.current().desired === null ? bootstrap : null, report),
+    reportContext: report => manager.reportContext(report),
     isCurrent: report => manager.isCurrentReport(report),
     send: async (report, captured, operation, selectors) => {
       try { return await options.send(report, captured, operation, selectors); }
@@ -111,8 +161,9 @@ export const createWorkerConfigurationExchange = (options: {
         throw error;
       }
     },
-    accept: async (captured, receipt, operation) => {
-      try { await manager.acknowledge(captured, receipt, operation.signal); }
+    accept: async (captured, receipt, operation, syncId) => {
+      let outcome: "persisted" | "ignored";
+      try { outcome = await manager.acknowledge(captured, receipt, operation.signal, syncId); acknowledgements.set(captured, outcome); }
       catch (error) { if (requiresAuthorityRead(error)) needsRead = true; throw error; }
       const current = manager.current();
       if (current.desired !== null) {
@@ -120,10 +171,19 @@ export const createWorkerConfigurationExchange = (options: {
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
       }
       if (current.desired?.value.agentControlMode === undefined || current.desired?.value.toolPaths === undefined) needsRead = true;
+      return outcome;
     },
+    acceptanceOutcome: sent => acknowledgements.get(sent),
     markNeedsRead: () => { needsRead = true; },
-    close: async () => { bootstrap = null; await options.bootstrap?.clear(); },
+    close: async () => {
+      bootstrap = null;
+      const errors = [...workerConfigurationDiagnosticFailures(exchange)];
+      try { await options.bootstrap?.clear(); } catch (error) { errors.push(error); }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Worker configuration exchange diagnostics and shutdown failed.", { cause: errors[0] });
+    },
   };
+  return exchange;
 };
 
 export const syncWorkerConfigurationOnce = async (options: {
@@ -138,7 +198,13 @@ export const syncWorkerConfigurationOnce = async (options: {
   let exchangeSource: WorkerConfigurationExchangeSource | null = null;
   let remoteOutcome: WorkerConfigurationExchangeEvent["remoteOutcome"] = "not_sent";
   let localOutcome: WorkerConfigurationExchangeEvent["localOutcome"] = "not_attempted";
-  const emit = (status: WorkerConfigurationExchangeEvent["status"], error?: unknown): void => configuration.observe?.({ syncId, phase, status, source: exchangeSource ?? configuration.source?.() ?? null, remoteOutcome, localOutcome, ...(error === undefined ? {} : { error }) });
+  let capturedContext: WorkerConfigurationReportContext | undefined, observationAccepted: boolean | undefined, received: WorkerConfigurationReceivedAuthority | undefined;
+  const emit = (status: WorkerConfigurationExchangeEvent["status"], error?: unknown): void => {
+    const requestId = workerConfigurationRequestId(error);
+    observe(configuration, { syncId, phase, status, source: exchangeSource ?? configuration.source?.() ?? null, remoteOutcome, localOutcome,
+      ...(capturedContext === undefined ? {} : { report: capturedContext }), ...(received === undefined ? {} : { received }), ...(observationAccepted === undefined ? {} : { observationAccepted }),
+      ...(requestId === undefined ? {} : { requestId }), ...(error === undefined ? {} : { error }) });
+  };
   const dropped = (): { more: false; promptError: false; stopCatchup: true; dropped: true } => {
     emit("discarded");
     return { more: false, promptError: false, stopCatchup: true, dropped: true };
@@ -156,6 +222,7 @@ export const syncWorkerConfigurationOnce = async (options: {
     if (preparedGeneration !== configuration.source?.().generation) return dropped();
     phase = "observation-capture"; emit("started");
     const captured = configuration.capture(report);
+    capturedContext = configuration.reportContext?.(captured);
     let sent: WorkerCloudReport;
     try { sent = immutable(parseWorkerCloudReport(captured, { controlMode: Object.hasOwn(captured, "controlModeBootstrap"), toolPaths: Object.hasOwn(captured, "toolPathsBootstrap") })); }
     catch (error) { configuration.markNeedsRead?.(); throw error; }
@@ -169,13 +236,17 @@ export const syncWorkerConfigurationOnce = async (options: {
     let receipt: WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults };
     try { receipt = await configuration.send(report, sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []); }
     catch (error) {
-      remoteOutcome = !(error instanceof ApiError) || error.outcomeUnconfirmed ? "unknown" : error.phase === "response" ? "rejected" : "not_sent";
+      remoteOutcome = failedConfigurationRequestOutcome(error);
       throw error;
     }
-    remoteOutcome = "success"; emit("succeeded");
+    remoteOutcome = "success"; observationAccepted = receipt.configuration.observationAccepted;
+    received = Object.freeze({ desiredRevision: receipt.configuration.desired?.revision ?? null, observationRevision: receipt.configuration.observationRevision }); emit("succeeded");
     phase = "receipt-accept"; localOutcome = "pending"; emit("started");
-    await configuration.accept(captured, receipt.configuration, operation);
-    localOutcome = "persisted"; emit("succeeded");
+    let acceptance: "persisted" | "ignored" | void;
+    try { acceptance = await configuration.accept(captured, receipt.configuration, operation, syncId); }
+    catch (error) { localOutcome = configuration.acceptanceOutcome?.(captured) ?? localOutcome; throw error; }
+    if (acceptance !== undefined) localOutcome = acceptance;
+    emit("succeeded");
     if (source === undefined) return { more: false, promptError: false, stopCatchup: false };
     if (receipt.prompts === undefined || !receipt.prompts.ok) {
       source.failCycle();

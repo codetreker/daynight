@@ -16,7 +16,7 @@
 |---|---|
 | `schemaVersion:1` | 模型结果版本，与通道版本独立 |
 | `provider`、`cwd` | 实际 Provider 和规范化工作目录 |
-| `configurationGeneration` | 有效配置、Provider、cwd 和显式模型的 SHA-256 指纹 |
+| `configurationGeneration` | 有效配置、工具目标与检查后的选择身份、Provider、cwd 和显式模型的 SHA-256 指纹 |
 | `catalogGeneration` | 本次原生目录快照 UUID |
 | `models` | 当前页的模型记录 |
 | `defaults` | model 和 reasoningEffort 的 `{value,source}` |
@@ -31,7 +31,7 @@ defaults 的 source 为 explicit/local/cloud/native/unknown。explicit/local/clo
 
 Worker runtime 从同一有效配置组合应用本地覆盖并保留来源。切换 Provider 时使用该 Provider 自己的原生配置，不复制另一 Provider 参数。明确选择模型不清空 Worker 的明确 effort。
 
-每个无游标请求先准备相关 Provider 的工具选择，再捕获配置与 selectionKey，并重新发现能力，不用持久缓存掩盖能力变化。准备期间目标变化使本轮重新取值；目录完成前选择或 cleanup generation 改变则拒绝陈旧结果。只为后续页保留至多 8 个、30 秒的内存快照。游标用实例密钥签名，绑定目录快照和偏移；快照同时绑定查询参数、页大小及配置。配置变化返回 stale_configuration；过期、篡改、参数变化或新实例返回 invalid_cursor。完整目录先解析默认并校验组合，再过滤隐藏模型，避免隐藏默认被错误替换。
+每个无游标请求先准备相关 Provider 的工具选择，再捕获有效配置、工具目标与 `selectionKey`，并重新发现能力，不用持久缓存掩盖能力变化。只读通道以配置和工具目标维持连接，不把新取得的检查证明当作配置变化；模型请求自身在准备后绑定选择身份。准备完成后捕获当时目标；若原连接已失效，请求随之取消。目录完成前或分页期间选择、目标或 cleanup generation 改变则拒绝陈旧结果。只为后续页保留至多 8 个、30 秒的内存快照。游标用实例密钥签名，绑定目录快照和偏移；快照同时绑定查询参数、页大小及配置。仍在原连接上发现身份或配置变化时返回 stale_configuration，通道配置变化也可能先使连接失效；过期、篡改、参数变化或新实例返回 invalid_cursor。完整目录先解析默认并校验组合，再过滤隐藏模型，避免隐藏默认被错误替换。
 
 Go broker 记录每个连接声明的操作和每个待处理请求的操作及 Provider，再按对应 schema 验证结果。旧 Worker 仅声明 directory.list 时，模型查询返回 unsupported。Web 的 `discoverWorkerModels` 返回完整身份信封并校验 Provider，不自行推断目标 Worker 或默认模型。
 

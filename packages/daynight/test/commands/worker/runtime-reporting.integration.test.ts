@@ -24,14 +24,18 @@ import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/insta
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
-vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
-  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
-}));
-vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
+  const fixture = await import("../../helpers/worker-tool-runtime-fixture.js");
+  return { createWorkerToolSelectionRuntime: (options: Parameters<typeof fixture.createWorkerToolSelectionFixture>[0]) => ({
+    ...fixture.createWorkerToolSelectionFixture(options), prepareWebCandidates: mocks.prepareCandidates,
+  }) };
+});
+vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: (options: { copilotRequired: () => boolean }) => ({
+  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: mocks.botRequiresCopilot, activeToolSelections: () => [], close: () => {},
+  ...mocks.captureBotOptions(options),
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn(), exchangeStage: vi.fn(), createdConfiguration: vi.fn(), createdReporter: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn(), exchangeStage: vi.fn(), createdConfiguration: vi.fn(), createdReporter: vi.fn(), prepareCandidates: vi.fn(async (_signal: AbortSignal, _required: boolean) => false), botRequiresCopilot: vi.fn(() => false), captureBotOptions: vi.fn((_options: { copilotRequired: () => boolean }) => ({})) }));
 vi.mock("../../../src/commands/worker/configuration.js", async original => {
   const actual = await original<typeof import("../../../src/commands/worker/configuration.js")>();
   return { ...actual, createWorkerConfigurationManager: async (...args: Parameters<typeof actual.createWorkerConfigurationManager>) => {
@@ -129,6 +133,7 @@ let dispose: ReturnType<typeof vi.fn>;
 let update: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.botRequiresCopilot.mockReturnValue(false);
   mocks.cachePersist.mockReset();
   mocks.durable.mockReset();
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
@@ -162,6 +167,78 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("keeps reconciliation running when Bot demand cannot be read", async () => {
+    const failure = new Error("Bot inventory unavailable");
+    mocks.botRequiresCopilot.mockImplementation(() => { throw failure; });
+    const f = await fixture();
+    const running = start(f);
+    await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", error: failure })));
+    await eventually(() => expect(mocks.coordinator).toHaveBeenCalled());
+    expect(mocks.prepareCandidates).not.toHaveBeenCalled();
+    f.signal.abort(); await running;
+  });
+
+  it("shares current effective Copilot demand with preparation and assistant collection", async () => {
+    const f = await fixture();
+    const running = start(f);
+    await eventually(() => expect(mocks.captureBotOptions).toHaveBeenCalledOnce());
+    const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+    await manager.settle();
+    const required = mocks.captureBotOptions.mock.calls[0]![0].copilotRequired;
+    await eventually(() => expect(mocks.prepareCandidates).toHaveBeenCalled());
+    expect(mocks.prepareCandidates.mock.calls[0]![1]).toBe(false);
+    expect(required()).toBe(false);
+
+    target = { ...target, revision: "2", value: { ...target.value, native: { agent: "copilot", model: null, args: [] } } };
+    await manager.receive(target, "0"); await manager.settle();
+    expect(required()).toBe(true);
+
+    target = { ...target, revision: "3", value: { ...target.value, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: { agent: "copilot" } }] } };
+    await manager.receive(target, "0"); await manager.settle();
+    expect(manager.current().effective.projects[0]?.native?.agent).toBe("copilot");
+    expect(required()).toBe(true);
+
+    target = { ...target, revision: "4", value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
+    await manager.receive(target, "0"); await manager.settle();
+    expect(required()).toBe(false);
+    mocks.botRequiresCopilot.mockReturnValue(true);
+    expect(required()).toBe(true);
+    mocks.botRequiresCopilot.mockReturnValue(false);
+    expect(required()).toBe(false);
+    f.signal.abort(); await running;
+  });
+  it("classifies a real filesystem failure at the owned project-preparation boundary", async () => {
+    const f = await fixture();
+    prepare.mockImplementation(async () => { await readFile(f.homeDirectory, "utf8"); });
+    const running = start(f);
+    await eventually(() => expect(mocks.createdConfiguration).toHaveBeenCalledOnce());
+    const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+    await eventually(() => expect(manager.current().items).toContainEqual(expect.objectContaining({ key: { kind: "projectPreparation", projectId: uuid(1) }, state: "error", error: expect.objectContaining({ code: "io_error", phase: "prepare" }) })));
+    expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({ phase: "prepare", reason: "io_error", details: expect.objectContaining({ systemCode: "EISDIR" }) }) }));
+    expect(manager.current().effective.projects.find(project => project.projectId === uuid(1))?.ready).toBe(false);
+    f.signal.abort(); await running;
+  });
+
+  it("persists a confirmed receipt when its diagnostic notification throws and retains that original error for shutdown", async () => {
+    const f = await fixture(), original = new Error("configuration diagnostic formatter failed", { cause: new Error("original diagnostic cause") });
+    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(observationRevision), observation: null }));
+    let failed = false;
+    mocks.emit.mockImplementation(event => {
+      if (!failed && event.configuration?.phase === "report-send" && event.configuration.status === "succeeded") { failed = true; throw original; }
+    });
+    const running = start(f);
+    await eventually(() => expect(mocks.createdConfiguration).toHaveBeenCalledOnce());
+    const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+    await eventually(() => { expect(failed).toBe(true); expect(observationRevision).toBeGreaterThan(0n); expect(manager.current().observationRevision).toBe(String(observationRevision)); });
+    expect(report.mock.calls.map(([, , captured]) => captured.observation?.baseRevision)).toEqual([...new Set(report.mock.calls.map(([, , captured]) => captured.observation?.baseRevision))]);
+    f.signal.abort(); await expect(running).rejects.toBe(original);
+    const persisted = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } };
+    expect(persisted.authority.observationRevision).toBe(String(observationRevision));
+    expect(original.cause).toBeInstanceOf(Error);
+  });
+
   it.each(["lower", "same-revision"] as const)("reconciles a restarted %s target and cursor from the authenticated service", async scenario => {
     const f = await fixture();
     const cached: WorkerCloudDesired = { ...target, revision: "10", value: { ...target.value, projects: [], maxConcurrent: 8, native: { ...target.value.native, model: "cached-model" } } };
@@ -338,7 +415,7 @@ describe("worker runtime configuration reporting", () => {
     await eventually(() => expect(accepted.some(configuration => configuration.observation?.items.some(item => item.key.kind === "native" && item.state === "applied"))).toBe(true));
     const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
     const acknowledgement = manager.acknowledge, committed = deferred<void>();
-    const observeAcknowledgement = vi.spyOn(manager, "acknowledge").mockImplementation(async (...args) => { await acknowledgement(...args); committed.resolve(); });
+    const observeAcknowledgement = vi.spyOn(manager, "acknowledge").mockImplementation(async (...args) => { const outcome = await acknowledgement(...args); committed.resolve(); return outcome; });
     const reporter = mocks.createdReporter.mock.calls[0]![0] as ReturnType<typeof createWorkerReporter>;
     reporter.trigger(); await committed.promise;
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -673,6 +750,7 @@ describe("worker runtime configuration reporting", () => {
       const fourth = sends[3]!;
       const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
       expect(fourth.source).toMatchObject({ generation: manager.current().generation, desiredRevision: "2", observationRevision: "7" });
+      expect(fourth.report).toMatchObject({ reportId: expect.any(String), generation: fourth.source!.generation, baseRevision: "7" });
       if (scenario === "stale-generation") {
         await manager.receive(target, "7");
         expect(manager.current().generation).not.toBe(fourth.source!.generation);
@@ -682,7 +760,8 @@ describe("worker runtime configuration reporting", () => {
       const stages = () => (mocks.exchangeStage.mock.calls.map(([event]) => event) as WorkerConfigurationExchangeEvent[]).filter(event => event.syncId === fourth.syncId);
       const evidence = () => JSON.stringify({ scenario, order, syncId: fourth.syncId, captured: fourth.source, current: { generation: manager.current().generation, observationRevision: manager.current().observationRevision }, receipt: fourthReceipt?.configuration, stages: stages(), checkpoint: checkpoint === undefined ? null : { generation: checkpoint.generation, state: checkpoint.state, error: String(checkpoint.error ?? "") }, attempts: checkpointAttempts.length });
       if (scenario === "stale-generation") {
-        await eventuallyWithoutAdvancingTime(() => expect({ receipt: fourthReceipt?.configuration, stages: stages() }, evidence()).toMatchObject({ receipt: { observationRevision: "8", observationAccepted: true }, stages: expect.arrayContaining([expect.objectContaining({ phase: "receipt-accept", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted", source: fourth.source })]) }));
+        await eventuallyWithoutAdvancingTime(() => expect({ receipt: fourthReceipt?.configuration, stages: stages() }, evidence()).toMatchObject({ receipt: { observationRevision: "8", observationAccepted: true }, stages: expect.arrayContaining([expect.objectContaining({ phase: "receipt-accept", status: "succeeded", remoteOutcome: "success", localOutcome: "ignored", source: fourth.source, report: fourth.report })]) }));
+        expect(mocks.emit, evidence()).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-stage", configuration: expect.objectContaining({ phase: "receipt-accept", status: "succeeded", syncId: fourth.syncId, reportId: fourth.report!.reportId, remote: "confirmed", local: "ignored", observationAccepted: true, received: { desiredRevision: "2", observationRevision: "8" } }) }));
         const cache = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { generation: string; observationRevision: string } };
         expect(cache.authority).toMatchObject({ generation: manager.current().generation, observationRevision: "7" });
         expect(cache.authority.generation).not.toBe(fourth.source!.generation);
@@ -695,21 +774,22 @@ describe("worker runtime configuration reporting", () => {
       if (scenario === "io-retry") {
         await eventuallyWithoutAdvancingTime(() => {
           expect({ receipt: fourthReceipt?.configuration, checkpoint }, evidence()).toMatchObject({ receipt: { observationRevision: "8", observationAccepted: true }, checkpoint: { state: "blocked", error: ioFailure } });
-          expect(mocks.emit, evidence()).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked", error: ioFailure }));
+          expect(mocks.emit, evidence()).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked", configuration: expect.objectContaining({ phase: "cache-persist", storagePhase: "persist", syncId: fourth.syncId, reportId: fourth.report!.reportId, remote: "confirmed", local: "pending", reason: "io_error", details: expect.objectContaining({ systemCode: "EBUSY" }) }) }));
         });
         expect((JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision).toBe("7");
         expect(stages().some(event => event.phase === "receipt-accept" && event.status === "succeeded")).toBe(false);
         await vi.advanceTimersByTimeAsync(5_000);
       }
       await eventuallyWithoutAdvancingTime(() => expect({ receipt: fourthReceipt?.configuration, checkpoint }, evidence()).toMatchObject({ receipt: { observationRevision: "8", observationAccepted: true }, checkpoint: { state: "started" } }));
-      expect(stages()).toContainEqual(expect.objectContaining({ phase: "receipt-accept", status: "started", remoteOutcome: "success", localOutcome: "pending", source: fourth.source }));
+      expect(stages()).toContainEqual(expect.objectContaining({ phase: "receipt-accept", status: "started", remoteOutcome: "success", localOutcome: "pending", source: fourth.source, report: fourth.report, observationAccepted: true, received: { desiredRevision: "2", observationRevision: "8" } }));
       expect(stages().some(event => event.phase === "receipt-accept" && event.status === "succeeded")).toBe(false);
       expect(manager.current().generation).toBe(fourth.source!.generation);
       expect((JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision).toBe("7");
       releaseCheckpoint.resolve();
       await eventuallyWithoutAdvancingTime(() => {
-        expect({ checkpoint, stages: stages() }, evidence()).toMatchObject({ checkpoint: { state: "completed" }, stages: expect.arrayContaining([expect.objectContaining({ phase: "receipt-accept", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted", source: fourth.source })]) });
+        expect({ checkpoint, stages: stages() }, evidence()).toMatchObject({ checkpoint: { state: "completed" }, stages: expect.arrayContaining([expect.objectContaining({ phase: "receipt-accept", status: "succeeded", remoteOutcome: "success", localOutcome: "persisted", source: fourth.source, report: fourth.report })]) });
       });
+      expect(mocks.emit, evidence()).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-stage", configuration: expect.objectContaining({ phase: "receipt-accept", status: "succeeded", syncId: fourth.syncId, reportId: fourth.report!.reportId, remote: "confirmed", local: "persisted", observationAccepted: true, received: { desiredRevision: "2", observationRevision: "8" } }) }));
       expect(checkpoint!.generation).not.toBe(fourth.source!.generation);
       expect(manager.current().generation).toBe(checkpoint!.generation);
       expect(checkpointAttempts).toEqual(scenario === "io-retry" ? [checkpoint!.text, checkpoint!.text] : [checkpoint!.text]);
@@ -1113,6 +1193,14 @@ describe("worker runtime configuration reporting", () => {
       const expectedReceipt = String(BigInt(baseline) + 1n);
       releaseReceipt.resolve();
       await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked" })));
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked", configuration: expect.objectContaining({
+        phase: "cache-persist", storagePhase: "persist", remote: "confirmed", local: "pending", syncId: expect.any(String), reportId: expect.any(String),
+        source: expect.objectContaining({ observationRevision: baseline }),
+      }) }));
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({
+        phase: "receipt-accept", status: "started", remote: "confirmed", local: "pending", observationAccepted: true,
+        received: expect.objectContaining({ observationRevision: expectedReceipt }), source: expect.objectContaining({ observationRevision: baseline }),
+      }) }));
       expect(mocks.coordinator.mock.calls[0]![0].configurationComplete()).toBe(false);
       await vi.advanceTimersByTimeAsync(5_000);
       await writing.promise;

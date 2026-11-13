@@ -19,6 +19,7 @@ import { resolveWorkerRepositoryPath, validateWorkerRepositoryLocations, workerC
 import type { WorkerPaths } from "./paths.js";
 import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
 import type { WorkerConfigurationIdentity } from "./configuration-model.js";
+import { ConfigurationFileOperationError, WorkerConfigurationSourceError } from "./configuration-failure.js";
 
 export { resolveCloudNative } from "./config.js";
 
@@ -43,16 +44,28 @@ const text = (value: unknown, field: string): string => {
   if (typeof value !== "string" || value.trim() === "" || !value.isWellFormed() || /\p{Cc}/u.test(value)) throw new TypeError(`${field} must be nonempty text without control characters.`);
   return value;
 };
+const validateSource = <T>(validate: () => T): T => {
+  try { return validate(); }
+  catch (error) {
+    if (error instanceof WorkerConfigurationSourceError || !(error instanceof Error)) throw error;
+    throw new WorkerConfigurationSourceError(error.message, { cause: error });
+  }
+};
 const sourceMapping = (source: string | undefined, paths: WorkerPaths): Record<string, unknown> =>
-  parseConfigurationDocument(source === undefined ? "{}" : source, paths).mapping;
+  validateSource(() => parseConfigurationDocument(source === undefined ? "{}" : source, paths).mapping);
 const workerMapping = (root: Record<string, unknown>): Record<string, unknown> => Object.hasOwn(root, "worker") ? mapping(root.worker, "worker") : {};
 
 const readSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {
   try { return await readConfigurationSource(paths, signal); }
-  catch (error) { if (error instanceof MissingConfigurationFileError) return undefined; throw error; }
+  catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    if (error instanceof MissingConfigurationFileError) return undefined;
+    // The configuration reader wraps its direct readFile failure with an actionable message.
+    throw new ConfigurationFileOperationError("read", error, error instanceof Error ? error.cause : error);
+  }
 };
 
-export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths, pathApi: PathApi = path): WorkerLocalConfiguration => {
+export const parseWorkerLocalConfiguration = (source: string | undefined, paths: WorkerPaths, pathApi: PathApi = path): WorkerLocalConfiguration => validateSource(() => {
   const worker = workerMapping(sourceMapping(source, paths));
   const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
   if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
@@ -60,14 +73,14 @@ export const parseWorkerLocalConfiguration = (source: string | undefined, paths:
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
   return { source, ...parseServerConfiguration(source === undefined ? "{}" : source, paths), repositoryRoot, toolPaths: parseLocalToolPaths(worker.toolPaths, pathApi), agentControlMode, ...parseWorkerLocalNativeOverrides(worker) };
-};
+});
 
 export const readWorkerLocalConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerLocalConfiguration> => {
   signal?.throwIfAborted();
   return parseWorkerLocalConfiguration(await readSource(paths, signal), paths);
 };
 
-export class WorkerBootstrapIdentityError extends Error {
+export class WorkerBootstrapIdentityError extends WorkerConfigurationSourceError {
   constructor(readonly field: "serverUrl" | "workerId") {
     super(`The local bootstrap ${field} does not match the running Worker's identity.`);
     this.name = "WorkerBootstrapIdentityError";
@@ -81,7 +94,7 @@ export const validateWorkerBootstrapIdentity = (
   const root = sourceMapping(local.source, paths);
   if (!Object.hasOwn(root, "workerId")) return;
   const workerId = typeof root.workerId === "string" ? canonicalId(root.workerId) : null;
-  if (workerId === null) throw new TypeError("Configuration workerId must be a hyphenated UUID.");
+  if (workerId === null) throw new WorkerConfigurationSourceError("Configuration workerId must be a hyphenated UUID.");
   if (workerId !== identity.workerId) throw new WorkerBootstrapIdentityError("workerId");
 };
 

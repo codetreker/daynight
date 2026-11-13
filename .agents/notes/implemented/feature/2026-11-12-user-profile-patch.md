@@ -20,8 +20,8 @@ then an exact-key SELECT in the next statement on conflict. Both branches return
 the actual user. The inserted flag describes only the current transaction's
 candidate, while the service returns a complete account only after confirmed
 commit. User, Personal Team and owner admin initialization share that transaction.
-Existing profile fields are preserved and native UniAuth login keeps its upstream
-profile replacement behavior.
+Existing profile fields are preserved. Native UniAuth login synchronizes upstream
+profile fields under the [login merge decision](../bug-fix/2026-11-13-uniauth-login-profile-merge.md).
 
 PATCH /api/v1/me carries field presence separately from nullable string values.
 The DAO updates only submitted profile columns and updated_at; its natural row
@@ -45,8 +45,8 @@ expiry, contention, capacity and completion failures.
 
 ## Alternatives
 
-**Reuse native login upsert for initialization.** It would replace stored name,
-avatar and email from a caller whose purpose is only to ensure account existence.
+**Reuse native login upsert for initialization.** It would synchronize supplied
+name, avatar and email from a caller whose purpose is only to ensure account existence.
 The exact external key must identify the account without changing existing data.
 
 **Read the profile and write its complete replacement.** Independent updates
@@ -71,6 +71,5 @@ outcomes stop successor work. Profile updates retain nullable values and the
 existing user representation. An extra credential check prevents expiry during
 user-row waits from committing the update, while the API family accessor remains
 bound to the transaction that updates the user. Row contention and the final
-profile encoding remain within the operation deadline. Native login remains the
-authoritative source of upstream profile replacement, so a later login can
-replace locally edited name and avatar values.
+profile encoding remain within the operation deadline. A later native login can
+replace locally edited name and avatar values when the upstream values are non-null.

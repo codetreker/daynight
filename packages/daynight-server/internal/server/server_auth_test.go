@@ -281,12 +281,11 @@ func identityHTTPUser(persona string) model.User {
 		user.Email = text("shared@example.test")
 		user.EmailVerified = boolean(true)
 		user.AvatarURL = text("https://images.example.test/alice.png")
-	case "alice-updated":
+	case "alice-updated", "alice-null":
 		user.Name = text("Alice Updated")
 		user.Email = text("refreshed@example.test")
 		user.EmailVerified = boolean(false)
 		user.AvatarURL = text("https://images.example.test/alice-updated.png")
-	case "alice-null":
 	case "bob":
 		user.ID = "bf84dd53-62bf-4b7e-8476-51c16bbabbd2"
 		user.PersonalTeam.ID = "b7fdd87c-b68e-4fe6-9fe4-29e93e3af813"
@@ -307,6 +306,9 @@ func (p *identityHTTPPlan) complete(persona string) {
 		draft := args[1].(model.User)
 		identityHTTPNow(p.t, args[2].(time.Time))
 		actual, want := profileprotocol.FromUser(draft), profileprotocol.FromUser(user)
+		if persona == "alice-null" {
+			want.Email, want.EmailVerified, want.Name, want.AvatarURL = nil, nil, nil, nil
+		}
 		actual.ID = ""
 		want.ID = ""
 		_, err := uuid.Parse(draft.ID)
@@ -329,6 +331,9 @@ func (p *identityHTTPPlan) complete(persona string) {
 		_, err := uuid.Parse(teamID)
 		identityHTTPCheck(p.t, err == nil && args[2].(string) == user.ID, "personal team write owner")
 		identityHTTPNow(p.t, args[3].(time.Time))
+		if persona == "alice" || persona == "bob" {
+			user.PersonalTeam.ID = teamID
+		}
 		return persona == "alice" || persona == "bob"
 	}}}
 	if persona == "alice" || persona == "bob" {
@@ -343,6 +348,10 @@ func (p *identityHTTPPlan) complete(persona string) {
 			return store.PersonalTeamFacts{ID: user.PersonalTeam.ID, MemberCount: 1, OwnerAdminCount: 1}
 		}})
 	}
+	calls = append(calls, identityHTTPCall{"IdentityUser", func(args []any) any {
+		identityHTTPCheck(p.t, args[1].(string) == user.ID, "login identity read actor")
+		return user
+	}})
 	calls = append(calls, identityHTTPCall{"InsertSession", func(args []any) any {
 		session := args[1].(model.Session)
 		_, err := uuid.Parse(session.ID)

@@ -64,11 +64,11 @@ Windows bare Codex 探测先按 Node 字母序选择第一个大小写不敏感 
 | 磁盘 | 启动目录文件系统的 `blocks*bsize` 总量和 `bavail*bsize` 可用量，单位为 bytes；可用量表示调用身份可用空间 |
 | Daynight | 当前运行 CLI 包注入的版本 |
 | Herdr | 当前 Worker 与服务所属私有 daemon 的只读 ping 版本；macOS 使用原始 run 身份验证后的端点，多个存活 daemon 必须版本一致；不确定或混合版本为 error/unavailable，确证无存活 daemon 为 not_running |
-| Codex、Copilot | Worker 原生环境中纯 `--version` 的版本；仅确证 executable 不存在为 not_installed，权限、命令、输出或超时故障为 error |
+| Codex、Copilot | 已观察到的原生版本；仅确证 executable 不存在为 not_installed，权限、命令、输出或超时故障为 error，未检查不能冒充已安装或未安装 |
 
 资源计数必须是非负安全整数，容量关系和 CPU 差分必须有效。越界、未推进或不一致的采样明确失败，不使用截断值。磁盘计算先使用 bigint，再验证可精确表示范围。底层 statfs 无法取消；某次超时后最多保留一个未完成调用，之后的磁盘探测在其完成前报告 timeout，不继续排队 I/O 或追加等待监听。
 
-Codex/Copilot 的成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。清理未确认期间的替代探测禁令不随缓存到期解除；取得可靠清理确认后，按原生只读探测恢复规则绕过对应旧失败缓存。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。Herdr 每次报告重新观察，不复用旧实例版本。
+独立版本采集的 Codex/Copilot 成功、缺失及失败结果在进程内最多缓存 60 秒，并保留原 checkedAt；到期探测失败替换旧成功。接入工具管理器时版本报告只读所选工具快照，不为报告重新探测；Copilot 后台需求由[助手托管预检](daynight-worker-snapshots.md#助手托管预检)定义。清理未确认期间的替代探测禁令不随缓存到期解除；取得可靠清理确认后，按原生只读探测恢复规则绕过对应旧失败缓存。版本展示不执行启动 preflight 的最低版本或功能要求，已安装但版本较旧的 CLI 仍报告实际版本。Herdr 每次报告重新观察，不复用旧实例版本。
 
 macOS 存在 durable journal 时，只读其原有格式，按当前 workerId 和 serverOrigin 选择执行记录；不迁移、恢复或修改 journal、claim 与控制状态，也不回退到遗留共享端点。忽略 stopped_confirmed run 与已确认退出的原始 daemon；stop_unknown 仍可报告经过验证的存活 daemon 版本，但不因此改变执行或停止结论。准备阶段已记录 daemon 身份时也观察它；已请求启动而尚无身份、进程身份未知或变化、端点被替换或仍存活进程的端点缺失均为 error/unavailable。每次 ping 前后核对端点的原始进程与 audit 身份；所有存活 daemon 的版本一致才为 ok。journal 读取、权限及协议错误保留字段错误。
 
@@ -92,7 +92,13 @@ macOS 存在 durable journal 时，只读其原有格式，按当前 workerId �
 
 捕获绑定本机 reportId、generation、精确基线、实际观察及 recordId/failureId。只有当前 generation 的匹配接纳确认该份已发送失败与游标；发送期间新增的失败以及被拒绝观测中的失败继续保留，报告前已恢复时仍携带 lastFailure。当前捕获被拒绝时采用回执完整规范状态，再生成最新报告；observation:null 对应的 false 是正常未提交观察。旧代回执不能改变当前目标、基线、失败或游标；响应未知不能确认失败或重放旧报告。配置读取、缓存与报告不依赖 taskInventory 已知或业务执行准备成功。
 
-日志对采集字段和传输分别记录故障状态转换及恢复；连续相同故障不重复输出。诊断只暴露清洗后的阶段、子系统、闭合 code 和错误类别，不记录原生命令、stdout/stderr、环境变量、完整遥测或凭据。原始错误仅在内存保留，供清理失败传递，不参与日志或跨进程恢复。
+配置诊断区分 authority-read、bootstrap-prepare、telemetry-collect、observation-capture、report-send、receipt-accept、cache-persist，以及应用 validate、prepare、apply、stop。每轮 syncId 关联真实配置 key、本机 generation、reportId、recordId、原项 targetRevision、当前权威目标与观测基线，以及已取得的 HTTP requestId。请求关联仅来自实际 ApiError，优先保留合法 X-Request-ID；只有头缺席时才采用合法错误正文 ID，正文损坏不抹去已取得的头关联。不合法头与伪造对象均不进入关联字段，所选值遵守既有 64 字符安全格式。权威未读取、已读取但未初始化、有效初始观测基线 "0" 分别表达；不能用伪造的 0 或当前目标改写原项来源。
+
+诊断只从实际 ToolSelectionError、OperationError、本地来源校验及受控文件边界取得固定原因和允许的 tool/context/stage/code；云端应用观测、运行监控及本地日志各自使用所属闭合词汇。缺工具、权限、超时、不兼容配置、无效输出和持久化错误保持可区分，非法 YAML、顶层结构或本地字段明确归为 invalid_configuration。取消与清理未确认保留原语义。任意对象的 .code、消息或未经验证的 cause 不能成为分类证据；不记录原生命令、stdout/stderr、环境变量、完整遥测或凭据，包括候选文件中刚修改的凭据。身份认证的 401/403 必须留下 authority-read 的终止失败及已有请求关联，本地原因分别为 authentication_required/permission_denied，保持原拒绝与重试规则。
+
+远端请求尚未派发为 remote=not_sent，可信响应确认结果为 confirmed，明确拒绝为 rejected，派发后未获可信响应为 unknown。配置 POST 在 ApiClient 排队期间取消、尚未调用传输时保持 not_sent；GET 不能仅从没有未确认变更标记推断未派发。source 保留操作捕获的本机状态，received 单独保留可信 GET/回执已返回的目标与观测基线；不能在本机落盘前把较低的服务版本冒充已提交本机状态。observationAccepted 保留实际布尔值，可信 HTTP 200 的 false 仍为报告结果已确认，不能解释为应用确认。cache-persist 的 storagePhase 区分 read、directory、persist。已确认远端但检查点仍等待持久化时保留 remote=confirmed/local=pending，旧代回执被忽略时记录 local=ignored；不能把本地等待超时、formatter 或通知失败改写成远端未知、重放依据或 lastFailure 确认。持久化成功后才能记录 local=persisted。
+
+首次失败、原因或相关目标变化，以及真实恢复立即记录。同因故障在现有周期中每五分钟最多输出一次摘要，包含本次运行中实际发生次数；退避档位单列为 backoffStep，不能冒充次数。分组按组件、实际阶段、key、固定原因和相关目标判断；原生相关目标包含当次 native 元组、实际模式与相关工具的配置选择，同规范版本的模式/选择变化仍须区分，只有匹配配方的成功才能记录恢复。requestId、syncId、generation、selectionKey、时间、次数与 nextAttemptAt 不使同因故障分裂，内部比较配方不进入日志正文。采集字段和普通传输继续分别报告故障及恢复。诊断失败保留独立错误链，不改变应用、确认、重试或恢复职责；日志不参与跨进程恢复。
 
 ## 工具路径事实
 

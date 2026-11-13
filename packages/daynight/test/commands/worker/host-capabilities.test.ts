@@ -308,3 +308,65 @@ it("does not fall back to another executable when a configured Worker selection 
   expect(sample.assistantHost.providers.filter(provider => provider.provider !== "claude").every(provider => !provider.available)).toBe(true);
   expect(runCommand.mock.calls.every(([command]) => command.file === "claude")).toBe(true);
 });
+
+it("does not inspect unused Copilot across collections, even when the startup directory is invalid", async () => {
+  const resolveExecutable = vi.fn((provider: string) => { if (provider === "copilot") throw new Error("unexpected Copilot resolution"); return provider; });
+  const runCommand = vi.fn(output);
+  const selectToolLaunch = vi.fn(async (provider: string) => { if (provider === "copilot") throw new Error("unexpected Copilot selection"); return undefined; });
+  const operation = createOperation();
+  const collector = createAssistantHostCollector({ workingDirectory: path.join(root, "missing"), configuration: { ...configuration, agent: "codex" },
+    environment: {}, copilotRequired: () => false, resolveExecutable, runCommand, selectToolLaunch });
+  try {
+    for (let i = 0; i < 3; i++) {
+      const sample = await collector.collect(operation);
+      expect(sample.assistantHost.providers).toHaveLength(3);
+      expect(sample.assistantHost.providers[2]).toEqual({ provider: "copilot", available: false, reason: "unavailable", model: null, args: [] });
+      expect(sample.issues.some(issue => issue.provider === "copilot")).toBe(false);
+    }
+    expect(resolveExecutable).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(selectToolLaunch).not.toHaveBeenCalled();
+  } finally { await collector.close(); operation.dispose(); }
+});
+
+it("resumes real Copilot failure reporting when required and stops again when unused", async () => {
+  let required = false;
+  const failure = Object.assign(new Error("inaccessible"), { code: "EACCES" });
+  const resolveExecutable = vi.fn((provider: string) => { if (provider === "copilot") throw failure; return provider; });
+  const runCommand = vi.fn(output);
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { ...configuration, agent: "codex", model: null, args: [] },
+    environment: {}, copilotRequired: () => required, resolveExecutable, runCommand });
+  const operation = createOperation();
+  try {
+    expect((await collector.collect(operation)).issues.some(issue => issue.provider === "copilot")).toBe(false);
+    required = true;
+    const active = await collector.collect(operation);
+    expect(active.assistantHost.providers[2]).toMatchObject({ available: false, reason: "permission_denied" });
+    expect(active.issues.find(issue => issue.provider === "copilot")?.error).toBe(failure);
+    required = false;
+    const inactive = await collector.collect(operation);
+    expect(inactive.assistantHost.providers[2]).toMatchObject({ available: false, reason: "unavailable" });
+    expect(inactive.issues.some(issue => issue.provider === "copilot")).toBe(false);
+    expect(resolveExecutable.mock.calls.filter(([provider]) => provider === "copilot")).toHaveLength(1);
+    expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+  } finally { await collector.close(); operation.dispose(); }
+});
+
+it("reads an existing Copilot selection proof when background demand is absent", async () => {
+  const launches = new Map(["codex", "copilot"].map(tool => [tool, { tool, context: "web" } as import("../../../src/platform/tool-executables.js").ResolvedToolLaunch]));
+  const check = vi.fn(async () => ({ version: "1.0.105", checkedAt: new Date().toISOString() }));
+  const inspector = { check, close: vi.fn(async () => {}), reconcile: vi.fn(async () => 1), admit() {}, assertAvailable() {}, revision: () => 0, discover: vi.fn(), verify: vi.fn() };
+  const runCommand = vi.fn(output), resolveExecutable = vi.fn((provider: string) => provider);
+  const collector = createAssistantHostCollector({ workingDirectory: root, configuration: { ...configuration, agent: "codex", model: null, args: [] },
+    environment: {}, copilotRequired: () => false, hasCopilotProof: () => true,
+    selectToolLaunch: async provider => launches.get(provider), toolInspector: inspector, resolveExecutable, runCommand });
+  const operation = createOperation();
+  try {
+    const sample = await collector.collect(operation);
+    expect(sample.assistantHost.providers[2]).toEqual({ provider: "copilot", available: true, reason: null, model: null, args: [] });
+    expect(sample.issues).toEqual([]);
+    expect(check.mock.calls).toHaveLength(1);
+    expect(resolveExecutable.mock.calls.some(([provider]) => provider === "copilot")).toBe(false);
+    expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+  } finally { await collector.close(); operation.dispose(); }
+});

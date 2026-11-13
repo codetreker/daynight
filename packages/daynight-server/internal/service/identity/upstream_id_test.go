@@ -24,10 +24,12 @@ func TestCompleteLoginCanonicalizesMicrosoftIdentityBeforePersistence(t *testing
 			f.replies["profile"] = identityReply{200, identityProfile(input)}
 			f.transaction()
 			f.transaction()
-			f.plan = []string{"validate-callback", "write", "consume", "finish", "write", "upsert", "bootstrap", "session", "finish"}
+			f.plan = []string{"validate-callback", "write", "consume", "finish", "write", "upsert", "bootstrap", "lookup", "session", "finish"}
 			f.identity.ops.validateProvider = core.ValidateProvider
 			f.identity.ops.admitProfileFields = core.AdmitProfileFields
 			f.identity.ops.newSession = core.NewIdentity(f.identity.CallbackURL()).NewSession
+			f.identity.ops.admitCompleteUser = core.AdmitCompleteUser
+			var actual model.User
 			f.identity.ops.completeLogin = func(ctx context.Context, dao store.IdentityDAO, user model.User, now time.Time) (model.User, error) {
 				f.hit("upsert")
 				f.bound(ctx, dao)
@@ -35,6 +37,7 @@ func TestCompleteLoginCanonicalizesMicrosoftIdentityBeforePersistence(t *testing
 					t.Fatalf("canonical user profile = %+v", user)
 				}
 				user.ID = "existing-user"
+				actual = user
 				return user, nil
 			}
 			f.identity.ops.bootstrapPersonalTeam = func(ctx context.Context, dao store.PersonalTeamDAO, id string, now time.Time) (model.TeamRef, error) {
@@ -44,6 +47,15 @@ func TestCompleteLoginCanonicalizesMicrosoftIdentityBeforePersistence(t *testing
 				}
 				return model.TeamRef{ID: "existing-team", Kind: "personal"}, nil
 			}
+			f.identity.ops.user = func(ctx context.Context, dao store.IdentityDAO, principal model.Principal) (model.User, store.PersonalTeamFacts, error) {
+				f.hit("lookup")
+				f.bound(ctx, dao)
+				if principal.UserID != "existing-user" {
+					t.Fatalf("principal = %+v", principal)
+				}
+				return actual, store.PersonalTeamFacts{ID: "existing-team", MemberCount: 1, OwnerAdminCount: 1}, nil
+			}
+			f.identity.ops.validatePersonalTeam = func(facts store.PersonalTeamFacts) error { return nil }
 			f.identity.ops.createSession = func(ctx context.Context, dao store.IdentityDAO, session model.Session) error {
 				f.hit("session")
 				f.bound(ctx, dao)

@@ -28,6 +28,7 @@ export const createWorkerBotHost = (options: {
   toolInspector?: ReturnType<typeof createWorkerToolInspector>;
   homeDirectory: string; packageDirectory: string; workingDirectory: string; paths: WorkerPaths;
   owner: BotOwner; serverToken: string; configuration(): ExecutionConfiguration | null;
+  copilotRequired?: () => boolean;
   canAdmitNewExecution(): boolean;
   pollIntervalMs(): number | null; recoveryLimit(): number | null; emit(event: WorkerEvent): void;
 }) => {
@@ -55,6 +56,12 @@ export const createWorkerBotHost = (options: {
       return current;
     };
     const collector = createAssistantHostCollector({ workingDirectory: options.workingDirectory, configuration,
+      ...(options.copilotRequired === undefined ? {} : { copilotRequired: options.copilotRequired }),
+      hasCopilotProof: () => {
+        if (!options.toolLaunchForHost || !options.toolObservationFor || !options.toolInspector) return false;
+        const launch = options.toolLaunchForHost("copilot");
+        return launch?.tool === "copilot" && launch.context === "web" && options.toolObservationFor(launch) !== undefined;
+      },
       ...(options.toolRuntimeRoot === undefined ? {} : { toolRuntimeRoot: options.toolRuntimeRoot }),
       ...(options.toolInspector === undefined ? {} : { toolInspector: options.toolInspector }),
       ...(options.toolLaunchForHost === undefined ? {} : { selectToolLaunch: async provider => provider === "claude" ? undefined : options.toolLaunchForHost!(provider) }),
@@ -63,6 +70,7 @@ export const createWorkerBotHost = (options: {
     return {
       run: runtime.run,
       shutdown: runtime.shutdown,
+      requiresCopilot: (): boolean => store.list(options.owner).some(record => record.observed.deletion === null && record.definition?.resolvedConfiguration.provider === "copilot"),
       collect: async (operation: Operation, codexProbes?: CodexProbeOwner): Promise<AssistantHostSample | undefined> => {
         const current = options.configuration();
         if (closed || current === null) return undefined;

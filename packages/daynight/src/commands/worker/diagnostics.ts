@@ -8,8 +8,9 @@ import type { TaskPlatform } from "../../api/types.js";
 import type { WorkerPaths } from "./paths.js";
 import type { LocalTask } from "./types.js";
 import type { CleanupTarget } from "./execution-stop.js";
+import type { WorkerConfigurationDiagnosticMetadata } from "./configuration-diagnostics.js";
 
-export type WorkerDiagnostic = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown; sqlite?: SqliteMigrationEvent; sink?: WorkerDiagnosticSinkMetadata };
+export type WorkerDiagnostic = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown; sqlite?: SqliteMigrationEvent; sink?: WorkerDiagnosticSinkMetadata; configuration?: WorkerConfigurationDiagnosticMetadata };
 
 const sqliteMetadata = (event: SqliteMigrationEvent): SqliteMigrationEvent => ({
   migrationId: event.migrationId, database: event.database, file: event.file,
@@ -58,6 +59,53 @@ const sinkMetadata = (event: WorkerDiagnosticSinkMetadata): WorkerDiagnosticSink
   filename: event.filename, previousFilename: event.previousFilename, omittedRecords: event.omittedRecords,
   unknownAppends: event.unknownAppends, nextAttemptAt: event.nextAttemptAt,
 });
+const configurationSource = (source: WorkerConfigurationDiagnosticMetadata["source"]): WorkerConfigurationDiagnosticMetadata["source"] => ({
+  state: source.state, generation: source.generation, desiredRevision: source.desiredRevision, observationRevision: source.observationRevision,
+});
+const configurationMetadata = (event: WorkerConfigurationDiagnosticMetadata): WorkerConfigurationDiagnosticMetadata => ({
+  phase: event.phase, status: event.status, source: configurationSource(event.source),
+  ...(event.reason === undefined ? {} : { reason: event.reason }),
+  ...(event.key === undefined ? {} : { key: event.key.kind === "projectNative" || event.key.kind === "projectPreparation" || event.key.kind === "projectRemoval" ? { kind: event.key.kind, projectId: event.key.projectId } : { kind: event.key.kind } }),
+  ...(event.previousSource === undefined ? {} : { previousSource: configurationSource(event.previousSource) }),
+  ...(event.received === undefined ? {} : { received: { desiredRevision: event.received.desiredRevision, observationRevision: event.received.observationRevision } }),
+  ...(event.observationAccepted === undefined ? {} : { observationAccepted: event.observationAccepted }),
+  ...(event.storagePhase === undefined ? {} : { storagePhase: event.storagePhase }),
+  ...(event.reportId === undefined ? {} : { reportId: event.reportId }),
+  ...(event.targetRevision === undefined ? {} : { targetRevision: event.targetRevision }),
+  ...(event.generation === undefined ? {} : { generation: event.generation }),
+  ...(event.recordId === undefined ? {} : { recordId: event.recordId }),
+  ...(event.recordIds === undefined ? {} : { recordIds: [...event.recordIds] }),
+  ...(event.syncId === undefined ? {} : { syncId: event.syncId }),
+  ...(event.requestId === undefined ? {} : { requestId: event.requestId }),
+  remote: event.remote, local: event.local, occurrences: event.occurrences,
+  ...(event.backoffStep === undefined ? {} : { backoffStep: event.backoffStep }),
+  nextAttemptAt: event.nextAttemptAt,
+  ...(event.details === undefined ? {} : { details: {
+    ...(event.details.tool === undefined ? {} : { tool: event.details.tool }),
+    ...(event.details.context === undefined ? {} : { context: event.details.context }),
+    ...(event.details.stage === undefined ? {} : { stage: event.details.stage }),
+    ...(event.details.systemCode === undefined ? {} : { systemCode: event.details.systemCode }),
+    ...(event.details.operationKind === undefined ? {} : { operationKind: event.details.operationKind }),
+  } }),
+});
+const configurationForeground = (event: WorkerConfigurationDiagnosticMetadata) => ({
+  phase: event.phase, status: event.status,
+  ...(event.reason === undefined ? {} : { reason: event.reason }),
+  ...(event.key === undefined ? {} : { key: event.key }),
+  ...(event.targetRevision === undefined ? {} : { targetRevision: event.targetRevision }),
+  source: event.source,
+  ...(event.received === undefined ? {} : { received: event.received }),
+  ...(event.observationAccepted === undefined ? {} : { observationAccepted: event.observationAccepted }),
+  ...(event.storagePhase === undefined ? {} : { storagePhase: event.storagePhase }),
+  ...(event.generation === undefined ? {} : { generation: event.generation }),
+  ...(event.recordId === undefined ? {} : { recordId: event.recordId }),
+  ...(event.syncId === undefined ? {} : { syncId: event.syncId }),
+  ...(event.requestId === undefined ? {} : { requestId: event.requestId }),
+  ...(event.reportId === undefined ? {} : { reportId: event.reportId }),
+  remote: event.remote, local: event.local, occurrences: event.occurrences,
+  ...(event.backoffStep === undefined ? {} : { backoffStep: event.backoffStep }),
+  nextAttemptAt: event.nextAttemptAt,
+});
 
 export const createWorkerDiagnostics = async (options: {
   paths: WorkerPaths; workerId: string; platform: TaskPlatform;
@@ -92,6 +140,7 @@ export const createWorkerDiagnostics = async (options: {
       kind: event.kind, message: redact(event.message),
       ...(event.sqlite === undefined ? {} : { sqlite: sqliteMetadata(event.sqlite) }),
       ...(event.sink === undefined ? {} : { sink: sinkMetadata(event.sink) }),
+      ...(event.configuration === undefined ? {} : { configuration: configurationMetadata(event.configuration) }),
       ...(identity === undefined ? {} : { projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId }),
       ...(identity === undefined && event.projectId !== undefined ? { projectId: event.projectId } : {}),
       ...(event.identity?.worktreeId === undefined ? {} : { worktreeId: event.identity.worktreeId }),
@@ -104,7 +153,8 @@ export const createWorkerDiagnostics = async (options: {
     };
     const line = JSON.stringify(record, (_key, value: unknown) => typeof value === "string" ? redact(value) : value) + "\n";
     const reference = identity === undefined ? "" : " " + identity.projectId + "/" + identity.taskId + "/" + identity.claimId + (task === undefined ? "" : " " + task.status);
-    const foreground = abbreviateGuids(redact(record.timestamp + " " + record.kind + reference + " " + record.message + (record.error === undefined ? "" : " " + JSON.stringify(record.error)) + "\n"));
+    const configuration = record.configuration === undefined ? "" : " " + JSON.stringify(configurationForeground(record.configuration));
+    const foreground = abbreviateGuids(redact(record.timestamp + " " + record.kind + reference + " " + record.message + configuration + (record.error === undefined ? "" : " " + JSON.stringify(record.error)) + "\n"));
     return { line, foreground };
   };
   let fatal: { error: unknown } | undefined, closing = false, closed = false;

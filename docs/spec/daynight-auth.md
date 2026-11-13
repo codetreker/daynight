@@ -54,7 +54,12 @@ Personal 初始化和存量归属迁移遵守下述原子性与数据完整性�
 已有 Personal 关系损坏明确失败。身份领取的实际解压响应最多 2097152 bytes，期限为 15 秒。
 外部身份 ID、姓名和邮箱各最多 1024 UTF-8 bytes，头像 URL 最多 524288 UTF-8 bytes；
 完整规范化 profile JSON 还须不超过 1048576 bytes，字段上限与整体上限同时生效。
-可空字段保持原值；头像 data URL 原样保存，不增加 scheme 限制。上游响应协议错误（含读取、
+首次登录保存准入后的原始可空资料。已有用户登录时，上游 name 和 avatarUrl 为 null 则保留已有值，
+非 null 字符串原样更新，包括头像 data URL；不增加空白归一化或头像 scheme 限制。email 为 null 时
+保留原 email 和 emailVerified；email 与原值完全相同时，非 null 的 emailVerified 更新原标记（包括
+false），null 保留原标记；email 与原值不同时保存新 email 及本次 nullable emailVerified，不能把旧
+地址的验证状态用于新地址。上游身份响应的字段必须存在，省略仍是协议错误。合并后的实际资料也须
+满足字段和完整 profile 容量限制，实际用户公开表示须满足其容量限制。上游响应协议错误（含读取、
 关闭失败）或 profile 准入失败时，可响应的请求返回 502 `identity_unavailable`，不提交新用户、
 资料、Personal Team 或 session，既有资料不变。
 已消费的一次性登录事务保持消费，必须重新登录，不能重试同一 code。
@@ -192,7 +197,7 @@ emailVerified 均拒绝。解码字段或完整候选资料超过容量时返回
 整体成功后返回 `200` 原完整 `api.User`，包含 id 及 nullable email/emailVerified/name/avatarUrl 的原表示和
 personalTeam，并保留 `Daynight-User-ID`、no-store。失败不能提交部分资料；未知提交结果不得自动重放。
 身份 ID、email、验证状态及 Personal Team 不可由此接口修改；普通认证读取不覆盖资料，后续原生
-UniAuth 登录仍可按上游值覆盖姓名和头像。GET/HEAD 继续遵循既有条件读取合同。
+UniAuth 登录仍可按非 null 上游值覆盖姓名和头像。GET/HEAD 继续遵循既有条件读取合同。
 
 后端完整用户初始化按规范化后的完整外部身份键复用账号，已有资料不覆盖，不按邮箱或姓名合并。
 新账号的省略或 null 姓名、头像及 email/emailVerified 为 null；用户、Personal Team 和唯一 owner admin

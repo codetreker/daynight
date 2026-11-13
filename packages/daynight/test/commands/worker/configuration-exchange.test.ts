@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { ApiError } from "../../../src/api/client.js";
+import { ApiError, createApiClient } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
-import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce } from "../../../src/commands/worker/configuration-exchange.js";
+import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, workerConfigurationRequestId } from "../../../src/commands/worker/configuration-exchange.js";
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
 import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-source.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
@@ -22,27 +22,73 @@ const operations: Operation[] = [];
 const operation = (): Operation => { const current = createOperation({ limits: { totalMs: 10_000 } }); operations.push(current); return current; };
 afterEach(() => { for (const current of operations.splice(0)) current.dispose(); });
 
+it("keeps the actual HTTP request ID when a dispatched report response has invalid JSON", async () => {
+  const current = operation(), requestId = "configuration-response-1";
+  const fetch = vi.fn(async () => new Response("{", { status: 200, headers: {
+    "Content-Type": "application/json", "X-Request-ID": requestId,
+    "Daynight-User-ID": "22222222-2222-4222-8222-222222222222", "Daynight-Worker-Configuration": "1",
+  } }));
+  const client = createApiClient({ serverUrl: "http://127.0.0.1:19099", operation: current, fetch });
+  const events: WorkerConfigurationExchangeEvent[] = [], accept = vi.fn(async () => {});
+  await expect(syncWorkerConfigurationOnce({ operation: current, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
+    capture: () => ({ bootstrap: null, observation: null }),
+    send: (sample, body) => client.reportWorkerConfiguration("33333333-3333-4333-8333-333333333333", sample, body), accept,
+    observe: event => { events.push(event); },
+  } })).rejects.toMatchObject({ name: "ApiError", phase: "protocol", responseRequestId: requestId, outcomeUnconfirmed: true });
+  expect(fetch).toHaveBeenCalledOnce(); expect(accept).not.toHaveBeenCalled();
+  expect(events.at(-1)).toMatchObject({ phase: "report-send", status: "failed", remoteOutcome: "unknown", localOutcome: "not_attempted", requestId });
+});
+
+it("projects only bounded typed HTTP identity and prefers the actual response header", () => {
+  const error = (responseRequestId?: string) => new ApiError({ operation: "worker.configuration.report" }, "protocol", { cause: new Error("withheld"), ...(responseRequestId === undefined ? {} : { responseRequestId }),
+    serverError: { code: "server_error", message: "private response", requestId: "body-request-1" } });
+  expect(workerConfigurationRequestId(error("header-request-1"))).toBe("header-request-1");
+  expect(workerConfigurationRequestId(error())).toBe("body-request-1");
+  for (const invalid of ["bad\nrequest", "bad request", "x".repeat(65)]) expect(workerConfigurationRequestId(error(invalid))).toBeUndefined();
+  expect(workerConfigurationRequestId({ responseRequestId: "spoofed-request" })).toBeUndefined();
+});
+
+it("uses actual ApiClient dispatch evidence when root cancellation wins before the queued fetch", async () => {
+  const root = new AbortController(), current = createOperation({ signal: root.signal }); operations.push(current);
+  const fetch = vi.fn(async () => { throw new Error("An undispatched report must not invoke fetch."); });
+  const client = createApiClient({ serverUrl: "http://127.0.0.1:19099", operation: current, fetch });
+  const events: WorkerConfigurationExchangeEvent[] = [], accept = vi.fn(async () => {});
+  const captured: WorkerCloudReport = { bootstrap: null, observation: null };
+  await expect(syncWorkerConfigurationOnce({ operation: current, report: () => ({ ...workerTelemetry, taskInventory: null }), configuration: {
+    capture: () => captured,
+    send: (sample, body) => client.reportWorkerConfiguration("33333333-3333-4333-8333-333333333333", sample, body), accept,
+    observe: event => { events.push(event); if (event.phase === "report-send" && event.status === "started") queueMicrotask(() => root.abort(new Error("Root closes before the queued fetch."))); },
+  } })).rejects.toMatchObject({ name: "ApiError", phase: "request", outcomeUnconfirmed: false });
+  expect(fetch).not.toHaveBeenCalled(); expect(accept).not.toHaveBeenCalled();
+  expect(events.at(-1)).toMatchObject({ phase: "report-send", status: "failed", remoteOutcome: "not_sent", localOutcome: "not_attempted" });
+});
+
 const fixture = () => {
   const order: string[] = [];
   let state = { generation: "original", desired: target() as WorkerCloudDesired | null, observationRevision: "5", synchronized: true };
   const captures = new WeakMap<WorkerCloudReport, string>();
+  const contexts = new WeakMap<WorkerCloudReport, { reportId: string; generation: string; baseRevision: string; recordIds: readonly string[]; failures: readonly { sourceRecordId: string; failureId: number }[]; items: readonly [] }>();
+  let authorityRead = true, nextReportId = 0;
   const manager = {
     current: () => state,
+    hasAuthority: () => authorityRead,
     waitReady: vi.fn(async () => { order.push("ready"); }),
-    receive: vi.fn(async (desired: WorkerCloudDesired | null, revision = "0") => { state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
+    receive: vi.fn(async (desired: WorkerCloudDesired | null, revision = "0") => { authorityRead = true; state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
     report: vi.fn((bootstrap: WorkerCloudReport["bootstrap"] = null): WorkerCloudReport => {
       order.push("capture");
       const report: WorkerCloudReport = { controlModeBootstrap: "web", toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, ...(state.desired === null ? { bootstrap, observation: null } : { bootstrap: null, observation: { baseRevision: state.observationRevision, desiredRevision: state.desired.revision, items: [] } }) };
       captures.set(report, state.generation);
+      contexts.set(report, { reportId: `report-${++nextReportId}`, generation: state.generation, baseRevision: state.observationRevision, recordIds: [], failures: [], items: [] });
       return report;
     }),
     isCurrentReport: (report: WorkerCloudReport) => captures.get(report) === state.generation,
-    acknowledge: vi.fn(async (_sent: WorkerCloudReport, receipt: WorkerCloudReceipt) => { state = { generation: state.generation, desired: receipt.desired, observationRevision: receipt.observationRevision, synchronized: true }; order.push("accept"); }),
+    reportContext: (report: WorkerCloudReport) => contexts.get(report),
+    acknowledge: vi.fn(async (sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<"persisted" | "ignored"> => { if (captures.get(sent) !== state.generation) return "ignored"; state = { generation: state.generation, desired: receipt.desired, observationRevision: receipt.observationRevision, synchronized: true }; order.push("accept"); return "persisted"; }),
   };
   const read = vi.fn(async (_operation: Operation): Promise<WorkerCloudResource> => { order.push("read"); return { desired: state.desired, observationRevision: state.observationRevision, observation: null }; });
   const send = vi.fn(async (): Promise<WorkerCloudReportReceipt> => { order.push("send"); return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: state.desired, observationRevision: String(Number(state.observationRevision) + 1), observationAccepted: state.desired !== null } }; });
   const collect = vi.fn(async () => { order.push("collect"); return { ...workerTelemetry, taskInventory: null }; });
-  return { manager, read, send, collect, order, replace: (value: Partial<typeof state>) => { state = { ...state, ...value }; } };
+  return { manager, read, send, collect, order, setAuthority: (read: boolean) => { authorityRead = read; }, replace: (value: Partial<typeof state>) => { state = { ...state, ...value }; } };
 };
 
 it("prepares authority before collecting a fresh sample and avoids reads on a synchronized normal cycle", async () => {
@@ -160,4 +206,153 @@ it("separates a successful remote receipt from its still-pending local acceptanc
   expect(events.at(-1)).toMatchObject({ phase: "receipt-accept", status: "failed", remoteOutcome: "success", localOutcome: "pending", error: failure, source: { generation: "original", desiredRevision: "1", observationRevision: "5" } });
   expect(new Set(events.map(event => event.syncId)).size).toBe(1);
   expect(events.filter(event => event.phase === "receipt-accept" && event.status === "succeeded")).toHaveLength(0);
+});
+
+
+it("distinguishes unread cached authority from an authenticated null target and its valid zero baseline", async () => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
+  f.setAuthority(false);
+  f.read.mockResolvedValueOnce({ desired: null, observationRevision: "0", observation: null });
+  const exchange = createWorkerConfigurationExchange({ ...f, onStage: event => events.push(event) });
+  await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
+  expect(events.find(event => event.phase === "authority-read" && event.status === "started")).toMatchObject({
+    source: { state: "unread", desiredRevision: "1", observationRevision: "5" },
+  });
+  expect(events.find(event => event.phase === "authority-read" && event.status === "succeeded")).toMatchObject({
+    source: { state: "uninitialized", desiredRevision: null, observationRevision: "0" },
+    remoteOutcome: "success", localOutcome: "persisted",
+    previousSource: { state: "unread", desiredRevision: "1", observationRevision: "5" },
+    received: { desiredRevision: null, observationRevision: "0" },
+  });
+  expect(events.find(event => event.phase === "report-send" && event.status === "succeeded")).toMatchObject({
+    remoteOutcome: "success", observationAccepted: false, report: { reportId: "report-1", baseRevision: "0" },
+  });
+  await exchange.close();
+});
+
+it("retains the captured token and reports an ignored stale receipt without claiming a local update", async () => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
+  f.send.mockImplementationOnce(async () => {
+    f.replace({ generation: "replacement", desired: target("2"), observationRevision: "9" });
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target(), observationRevision: "6", observationAccepted: true } };
+  });
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false, onStage: event => events.push(event) });
+  await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
+  expect(f.manager.current()).toMatchObject({ generation: "replacement", observationRevision: "9" });
+  expect(events.at(-1)).toMatchObject({ phase: "receipt-accept", status: "succeeded", remoteOutcome: "success", localOutcome: "ignored",
+    source: { generation: "original", observationRevision: "5" }, report: { reportId: "report-1", generation: "original", baseRevision: "5" } });
+  await exchange.close();
+});
+
+it("preserves successful send and acceptance when diagnostic callbacks fail and exposes their original errors at close", async () => {
+  const f = fixture(), sentFailure = new Error("send formatter failed"), acceptFailure = new Error("accept formatter failed");
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false, onStage: event => {
+    if (event.status === "succeeded" && event.phase === "report-send") throw sentFailure;
+    if (event.status === "succeeded" && event.phase === "receipt-accept") throw acceptFailure;
+  } });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).resolves.toMatchObject({ promptError: false });
+  expect(f.send).toHaveBeenCalledOnce(); expect(f.manager.acknowledge).toHaveBeenCalledOnce();
+  expect(f.manager.current().observationRevision).toBe("6");
+  expect(workerConfigurationDiagnosticFailures(exchange)).toEqual([sentFailure, acceptFailure]);
+  await expect(exchange.close()).rejects.toMatchObject({ errors: [sentFailure, acceptFailure], cause: sentFailure });
+});
+
+it("keeps authority preparation outcomes independent of its failing diagnostic notification", async () => {
+  const f = fixture(), notification = new Error("authority formatter failed");
+  const exchange = createWorkerConfigurationExchange({ ...f, onStage: event => { if (event.phase === "authority-read") throw notification; } });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).resolves.toMatchObject({ promptError: false });
+  expect(f.read).toHaveBeenCalledOnce(); expect(f.send).toHaveBeenCalledOnce(); expect(f.manager.acknowledge).toHaveBeenCalledOnce();
+  await expect(exchange.close()).rejects.toBe(notification);
+});
+
+
+it("retains known local persistence when later bootstrap cleanup fails", async () => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [], failure = new Error("bootstrap cleanup failed");
+  const bootstrap = { prepare: vi.fn(async () => null), invalidate: vi.fn(), clear: vi.fn(async () => {}) };
+  bootstrap.clear.mockReset().mockResolvedValueOnce(undefined).mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false, bootstrap, onStage: event => events.push(event) });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).rejects.toBe(failure);
+  expect(f.manager.current().observationRevision).toBe("6");
+  expect(f.manager.acknowledge).toHaveBeenCalledOnce();
+  expect(events.at(-1)).toMatchObject({ phase: "receipt-accept", status: "failed", remoteOutcome: "success", localOutcome: "persisted", error: failure });
+  await exchange.close();
+});
+
+
+it.each(["authority-read", "bootstrap-prepare", "telemetry-collect", "observation-capture"] as const)("records a failure at its actual %s phase before dispatch", async phase => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [], failure = phase === "authority-read"
+    ? new ApiError({ operation: "worker.configuration" }, "prepare", { cause: new Error("controlled preparation failure") }) : new Error("controlled failure");
+  const bootstrap = { prepare: vi.fn(async () => null), invalidate: vi.fn(), clear: vi.fn(async () => {}) };
+  if (phase === "authority-read") f.read.mockRejectedValueOnce(failure);
+  else if (phase === "bootstrap-prepare") { f.replace({ desired: null, observationRevision: "0" }); bootstrap.prepare.mockRejectedValueOnce(failure); }
+  else if (phase === "telemetry-collect") f.collect.mockRejectedValueOnce(failure);
+  else f.manager.report.mockImplementationOnce(() => { throw failure; });
+  const exchange = createWorkerConfigurationExchange({ ...f, bootstrap, onStage: event => events.push(event) });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).rejects.toBe(failure);
+  expect(events.at(-1)).toMatchObject({ phase, status: "failed", remoteOutcome: "not_sent", localOutcome: "not_attempted", error: failure });
+  expect(f.send).not.toHaveBeenCalled(); expect(f.manager.acknowledge).not.toHaveBeenCalled();
+  await exchange.close();
+});
+
+it.each([
+  [new ApiError({ operation: "worker.configuration.report" }, "prepare", { cause: new Error("not dispatched") }), "not_sent"],
+  [new ApiError({ operation: "worker.configuration.report" }, "request", { cause: new Error("lost response"), outcomeUnconfirmed: true }), "unknown"],
+  [new ApiError({ operation: "worker.configuration.report" }, "protocol", { cause: new Error("invalid response"), outcomeUnconfirmed: true }), "unknown"],
+  [new ApiError({ operation: "worker.configuration.report" }, "protocol", { cause: new Error("invalid response") }), "unknown"],
+  [new ApiError({ operation: "worker.configuration.report" }, "request", { cause: new Error("request cancelled before dispatch") }), "not_sent"],
+  [new ApiError({ operation: "worker.configuration.report" }, "response", { cause: new Error("refused"), status: 403, confirmedRefusal: true,
+    serverError: { code: "forbidden", requestId: "request-correlated", message: "private response" } }), "rejected"],
+] as const)("retains report dispatch certainty and available request identity (%s)", async (failure, outcome) => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
+  f.send.mockRejectedValueOnce(failure);
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false, onStage: event => events.push(event) });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).rejects.toBe(failure);
+  expect(events.at(-1)).toMatchObject({ phase: "report-send", status: "failed", remoteOutcome: outcome, localOutcome: "not_attempted", report: { reportId: "report-1", baseRevision: "5" } });
+  if (outcome === "rejected") expect(events.at(-1)?.requestId).toBe("request-correlated");
+  expect(f.manager.acknowledge).not.toHaveBeenCalled();
+  await exchange.close();
+});
+
+it("records a rejected nonempty observation as a confirmed report before canonical local persistence", async () => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
+  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime,
+    configuration: { desired: target("2"), observationRevision: "1", observationAccepted: false } });
+  const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false, onStage: event => events.push(event) });
+  await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
+  expect(events.find(event => event.phase === "report-send" && event.status === "succeeded")).toMatchObject({ remoteOutcome: "success", observationAccepted: false, localOutcome: "not_attempted" });
+  expect(events.at(-1)).toMatchObject({ phase: "receipt-accept", status: "succeeded", remoteOutcome: "success", observationAccepted: false, localOutcome: "persisted", received: { desiredRevision: "2", observationRevision: "1" } });
+  expect(f.manager.current()).toMatchObject({ desired: target("2"), observationRevision: "1" });
+  await exchange.close();
+});
+
+
+it("retains received canonical authority while its local installation is still pending", async () => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [], failure = new Error("local acceptance pending");
+  f.read.mockResolvedValueOnce({ desired: target("2"), observationRevision: "1", observation: null });
+  f.manager.receive.mockRejectedValueOnce(failure);
+  const exchange = createWorkerConfigurationExchange({ ...f, onStage: event => events.push(event) });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).rejects.toBe(failure);
+  expect(events.at(-1)).toMatchObject({ phase: "authority-read", status: "failed", remoteOutcome: "success", localOutcome: "pending", received: { desiredRevision: "2", observationRevision: "1" },
+    previousSource: { generation: "original", desiredRevision: "1", observationRevision: "5" }, source: { generation: "original", desiredRevision: "1", observationRevision: "5" } });
+  expect(f.collect).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+  await exchange.close();
+});
+
+
+it.each([
+  [new ApiError({ operation: "worker.configuration" }, "prepare", { cause: new Error("preparation failed") }), "not_sent"],
+  [new ApiError({ operation: "worker.configuration" }, "request", { cause: new Error("request failed") }), "unknown"],
+  [new ApiError({ operation: "worker.configuration" }, "protocol", { cause: new Error("untrusted response") }), "unknown"],
+  [new ApiError({ operation: "worker.configuration" }, "response", { cause: new Error("refused"), status: 403, confirmedRefusal: true }), "rejected"],
+  [new ApiError({ operation: "worker.configuration" }, "response", { cause: new Error("unavailable"), status: 503 }), "rejected"],
+  [new ApiError({ operation: "worker.configuration" }, "response", { cause: new Error("unconfirmed"), status: 503, outcomeUnconfirmed: true }), "unknown"],
+] as const)("records failed authority-read request certainty (%s)", async (failure, outcome) => {
+  const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
+  f.read.mockRejectedValueOnce(failure);
+  const exchange = createWorkerConfigurationExchange({ ...f, onStage: event => events.push(event) });
+  await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).rejects.toBe(failure);
+  expect(events.at(-1)).toMatchObject({ phase: "authority-read", status: "failed", remoteOutcome: outcome, localOutcome: "not_attempted" });
+  expect(events.at(-1)).not.toHaveProperty("received");
+  expect(f.manager.receive).not.toHaveBeenCalled(); expect(f.collect).not.toHaveBeenCalled(); expect(f.send).not.toHaveBeenCalled();
+  await exchange.close();
 });

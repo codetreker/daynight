@@ -19,6 +19,7 @@ export const createWorkerToolSelectionRuntime = (options: {
   const manager = new ToolSelectionManager({ ...options, probe: { ...inspector, cacheToken: inspector.revision }, prepareLaunch: materializer.prepare,
     verify: (launch, operation) => verifyToolLaunch(launch, operation, { trustedRuntimeRoot: toolRuntimeRoot }) });
   let targetSignature = "", nextPreparationAt = 0, preparing: Promise<boolean> | undefined;
+  let lastCopilotRequired: boolean | undefined;
   const setTargets = (targets: ToolSelectionTargets | null): void => {
     if (targets === null) { manager.suspendTargets(); targetSignature = ""; nextPreparationAt = 0; return; }
     const signature = JSON.stringify(targets.choices);
@@ -42,11 +43,13 @@ export const createWorkerToolSelectionRuntime = (options: {
       if (observation === undefined) throw new Error("The selected tool has no current inspection proof.");
       return observation;
     } },
-    prepareWebCandidates: (signal: AbortSignal): Promise<boolean> => {
+    prepareWebCandidates: (signal: AbortSignal, copilotRequired: boolean): Promise<boolean> => {
+      if (copilotRequired !== lastCopilotRequired) { lastCopilotRequired = copilotRequired; nextPreparationAt = 0; }
       if (preparing !== undefined) return Promise.resolve(false);
       if (Date.now() < nextPreparationAt || signal.aborted) return Promise.resolve(false);
       nextPreparationAt = Date.now() + 60_000;
-      const job = Promise.allSettled((["codex", "copilot"] as const).map(tool => withOperation(signal, async operation => {
+      const tools = copilotRequired ? ["codex", "copilot"] as const : ["codex"] as const;
+      const job = Promise.allSettled(tools.map(tool => withOperation(signal, async operation => {
         try { await manager.prepare(tool, "web", operation); }
         catch (error) {
           if (!(error instanceof ToolSelectionError) || error.code !== "tool_identity_changed") throw error;

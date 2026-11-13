@@ -70,6 +70,12 @@ const filter = async (label: string | RegExp) => {
 const status = (value: string) => fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value } });
 const chains = () => screen.getByRole('tab', { name: '任务链' });
 const standalone = () => screen.getByRole('tab', { name: '独立任务' });
+const goals = () => screen.getByRole('tab', { name: 'Goal' });
+const expectCounts = (standaloneCount: number, chainCount: number, goalCount: number) => {
+  for (const [tab, count] of [[standalone(), standaloneCount], [chains(), chainCount], [goals(), goalCount]] as const) {
+    expect(tab.querySelector('.graph-count-pill')).toHaveTextContent(new RegExp(`^${count}$`));
+  }
+};
 const row = (value: number) => document.getElementById(`standalone-task-${id(value)}`);
 const chain = (value: number) => document.getElementById(`task-root-${id(value)}`);
 const pagination = (name: string) => screen.getByRole('navigation', { name: `${name}分页` });
@@ -86,6 +92,7 @@ describe('project assignee filtering', () => {
       task(11, TEST_VIEWER_ID), task(12, TEST_VIEWER_ID, { dependsOn: [id(11)] }),
       task(21, null), task(22, null, { dependsOn: [id(21)] }),
       task(31, formerUser), task(32, formerUser, { dependsOn: [id(31)] }),
+      task(101, TEST_VIEWER_ID, { type: 'goal' }), task(102, null, { type: 'goal' }), task(103, formerUser, { type: 'goal' }),
     ]);
     const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
     const matchingIds = new Set<number>(matching);
@@ -93,6 +100,7 @@ describe('project assignee filtering', () => {
     const view = await mount();
     await waitFor(() => expect(chain(matching[0]! * 10 + 1)).toBeVisible());
     await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
+    expectCounts(matching.length, matching.length * 2, matching.length);
     for (const n of [1, 2, 3]) {
       if (matchingIds.has(n)) expect(chain(n * 10 + 1)).toBeVisible();
       else expect(chain(n * 10 + 1)).toBeNull();
@@ -106,7 +114,44 @@ describe('project assignee filtering', () => {
     await mount();
     await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
     await waitFor(() => expect(row(matching[0]!)).toBeVisible());
+    expectCounts(matching.length, matching.length * 2, matching.length);
     for (const n of [1, 2, 3]) if (!matchingIds.has(n)) expect(row(n)).toBeNull();
+  });
+
+  it('counts matching unfinished members and Goal owners independently of list status and scope', async () => {
+    const finishedAt = '2026-10-22T10:00:00Z';
+    install([
+      task(1, TEST_VIEWER_ID, { status: 'proposed' }), task(2, null), task(3, formerUser, { status: 'in_progress', startedAt: finishedAt }),
+      task(4, TEST_VIEWER_ID, { status: 'done', completedAt: finishedAt }), task(5, otherUser, { status: 'cancelled', cancelledAt: finishedAt }),
+      task(6, TEST_VIEWER_ID, { dependsOn: [id(2)], externalDependsOn: [id(2)] }),
+      task(11, TEST_VIEWER_ID, { status: 'done', completedAt: finishedAt }), task(12, otherUser, { dependsOn: [id(11)] }),
+      task(13, TEST_VIEWER_ID, { status: 'proposed', dependsOn: [id(11)] }), task(14, null, { dependsOn: [id(11)] }),
+      task(15, formerUser, { dependsOn: [id(12), id(13)] }),
+      task(16, TEST_VIEWER_ID, { status: 'cancelled', cancelledAt: finishedAt, dependsOn: [id(15)] }),
+      task(21, TEST_VIEWER_ID, { parentId: id(500) }), task(22, otherUser, { dependsOn: [id(21)] }),
+      task(23, TEST_VIEWER_ID, { parentId: id(500) }),
+      task(500, otherUser, { type: 'goal', status: 'done', completedAt: finishedAt }),
+      task(501, TEST_VIEWER_ID, { type: 'goal', status: 'cancelled', cancelledAt: finishedAt }),
+      task(502, null, { type: 'goal' }), task(503, formerUser, { type: 'goal', status: 'done', completedAt: finishedAt }),
+    ]);
+    await mount();
+    expectCounts(4, 5, 4);
+    await filter('分配给我');
+    expectCounts(2, 1, 1);
+    expect(chain(11)).toBeVisible();
+    fireEvent.click(chain(11)!);
+    expect(document.getElementById(`goal-children-${id(11)}`)!.querySelectorAll('.goal-task-row')).toHaveLength(5);
+    status('todo');
+    expect(chain(11)).toBeNull(); // The viewer's unfinished member is proposed, not todo.
+    expectCounts(2, 1, 1);
+    fireEvent.click(goals());
+    expect(document.querySelector(`[data-goal-id="${id(500)}"]`)).toBeNull();
+    expectCounts(2, 1, 1);
+    status('all');
+    expect(document.querySelector(`[data-goal-id="${id(501)}"]`)).toBeVisible();
+    await filter('未分配'); expectCounts(1, 1, 1);
+    await filter(/^Former person/); expectCounts(1, 1, 1);
+    await filter('所有负责人'); expectCounts(4, 5, 4);
   });
 
   it('persists each selection made through the control and restores it on reopening', async () => {

@@ -520,6 +520,40 @@ describe('project task views', () => {
     expectUnfinishedCounts(3, 0);
   });
 
+  it('updates assignee counts after a topology and ownership refresh while retaining the last snapshot on failure', async () => {
+    const goal = canonicalTask(500), first = canonicalTask(1), second = canonicalTask(2), third = canonicalTask(3), fourth = canonicalTask(4);
+    const other = canonicalTask(900);
+    const initial = snapshot([
+      { ...seed(goal, 'done'), type: 'goal', assignedTo: TEST_VIEWER_ID },
+      { ...seed(first, 'done'), assignedTo: TEST_VIEWER_ID }, { ...seed(second, 'todo', [first]), assignedTo: other },
+      { ...seed(third), assignedTo: TEST_VIEWER_ID }, { ...seed(fourth), assignedTo: other },
+    ]);
+    const changed = snapshot([
+      { ...seed(goal, 'done'), type: 'goal', assignedTo: other },
+      { ...seed(first, 'done'), assignedTo: TEST_VIEWER_ID }, { ...seed(second, 'todo', [first]), parentId: goal, assignedTo: TEST_VIEWER_ID },
+      { ...seed(third, 'todo', [first]), assignedTo: TEST_VIEWER_ID }, { ...seed(fourth), assignedTo: TEST_VIEWER_ID },
+    ]);
+    let resolve!: (value: TaskGraph) => void;
+    const pending = new Promise<TaskGraph>((done) => { resolve = done; });
+    graphRequest.mockResolvedValueOnce(initial).mockReturnValueOnce(pending).mockRejectedValueOnce(new Error('Refresh failed')).mockResolvedValue(changed);
+    let changeAssignee!: Parameters<typeof TaskAssigneeFilterModule.TaskAssigneeFilter>[0]['onChange'];
+    const ActualFilter = TaskAssigneeFilterModule.TaskAssigneeFilter;
+    vi.spyOn(TaskAssigneeFilterModule, 'TaskAssigneeFilter').mockImplementation((props) => { changeAssignee = props.onChange; return <ActualFilter {...props} />; });
+    mount(); await findTab('chains'); act(() => changeAssignee({ kind: 'me' }));
+    const goalCount = () => tab('goals').querySelector('.graph-count-pill');
+    expectUnfinishedCounts(0, 1); expect(goalCount()).toHaveTextContent(/^1$/);
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    expectUnfinishedCounts(0, 1); expect(goalCount()).toHaveTextContent(/^1$/);
+    await act(async () => { resolve(initial); });
+    await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await screen.findByRole('heading', { name: '刷新失败' });
+    expectUnfinishedCounts(0, 1); expect(goalCount()).toHaveTextContent(/^1$/);
+    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
+    await waitFor(() => expectUnfinishedCounts(1, 1));
+    expect(goalCount()).toHaveTextContent(/^0$/);
+  });
+
   it('opens the real dialog directly and returns focus to its standalone row', async () => {
     graphRequest.mockResolvedValue(snapshot([seed(canonicalTask(3))]));
     mount(); await findTab('standalone');

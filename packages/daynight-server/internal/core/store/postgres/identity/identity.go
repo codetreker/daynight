@@ -82,7 +82,14 @@ func (s *scope) ConsumeLogin(ctx context.Context, stateHash, bindingHash []byte,
 	return p, nil
 }
 func (s *scope) UpsertUser(ctx context.Context, user model.User, now time.Time) (model.User, error) {
-	user, err := scanUser(s.tx.QueryRow(ctx, `INSERT INTO users (id,uniauth_id,email,email_verified,name,avatar_url,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7) ON CONFLICT (uniauth_id) DO UPDATE SET email=EXCLUDED.email,email_verified=EXCLUDED.email_verified,name=EXCLUDED.name,avatar_url=EXCLUDED.avatar_url,updated_at=EXCLUDED.updated_at RETURNING id::text,uniauth_id,email,email_verified,name,avatar_url,created_at,updated_at`, user.ID, user.UniAuthID, user.Email, user.EmailVerified, user.Name, user.AvatarURL, now))
+	user, err := scanUser(s.tx.QueryRow(ctx, `INSERT INTO users (id,uniauth_id,email,email_verified,name,avatar_url,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+ ON CONFLICT (uniauth_id) DO UPDATE SET
+ email=COALESCE(EXCLUDED.email,users.email),
+ email_verified=CASE WHEN EXCLUDED.email IS NULL THEN users.email_verified
+   WHEN EXCLUDED.email=users.email THEN COALESCE(EXCLUDED.email_verified,users.email_verified)
+   ELSE EXCLUDED.email_verified END,
+ name=COALESCE(EXCLUDED.name,users.name),avatar_url=COALESCE(EXCLUDED.avatar_url,users.avatar_url),updated_at=EXCLUDED.updated_at
+ RETURNING id::text,uniauth_id,email,email_verified,name,avatar_url,created_at,updated_at`, user.ID, user.UniAuthID, user.Email, user.EmailVerified, user.Name, user.AvatarURL, now))
 	return user, pg.AuthQueryError("upsert user", err)
 }
 func (s *scope) InsertSession(ctx context.Context, session model.Session) error {
