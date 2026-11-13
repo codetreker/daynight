@@ -36,6 +36,49 @@ beforeEach(() => {
 afterEach(() => { operations.splice(0).forEach((value) => value.dispose()); vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("Worker telemetry", () => {
+  it("keeps unused Copilot out of repeated telemetry and reporter failure cycles", async () => {
+    mocks.access.mockResolvedValue(undefined);
+    let required = false;
+    const resolveExecutable = vi.fn((provider: string) => {
+      if (provider === "copilot") throw Object.assign(new Error("unavailable"), { code: "EACCES" });
+      return provider;
+    });
+    const runCommand = vi.fn(async (command: import("../../../src/commands/worker/herdr/command.js").HerdrCommand) => ({ stderr: "", stdout: command.args.includes("--version")
+      ? command.file === "codex" ? "codex-cli 0.1.0" : "2.1.247 (Claude Code)"
+      : command.file === "codex" ? "app-server --stdio" : "--input-format --output-format --include-partial-messages" }));
+    const assistantHost = createAssistantHostCollector({ workingDirectory: process.cwd(), environment: {},
+      configuration: { agent: "codex", agentControlMode: "web", args: [], model: null, recoveryLimit: 3 },
+      copilotRequired: () => required, resolveExecutable, runCommand });
+    const instance = createWorkerTelemetryCollector({ paths: resolveWorkerPaths(path.resolve("fixture-home")), homeDirectory: path.resolve("fixture-home"), version: "1.2.3", workingDirectory: process.cwd(), machine: { id: "host-1", name: "Fixture" }, platform: "linux", workerId: "fixture-worker", serverOrigin: "https://daynight.example", assistantHost,
+      toolPaths: { context: "web", snapshot: () => ({ schemaVersion: 1, observedAt: new Date().toISOString(), entries: [] }) } });
+    const emit = vi.fn(), send = vi.fn(async (_report: import("../../../src/api/types.js").WorkerReport) => ({ observedAt: new Date().toISOString(), lastReportedAt: new Date().toISOString() }));
+    const reporter = createWorkerReporter({ signal: new AbortController().signal, collect: instance.collect, send, emit });
+    const next = async () => { reporter.trigger(); await vi.advanceTimersByTimeAsync(210); };
+    const copilotEvents = () => emit.mock.calls.map(([event]) => event).filter(event => event.message.includes("assistantHost_copilot"));
+    try {
+      await vi.advanceTimersByTimeAsync(210);
+      await next(); await next();
+      expect(send).toHaveBeenCalledTimes(3);
+      for (const [report] of send.mock.calls) {
+        expect(report.assistantHost?.providers).toHaveLength(3);
+        expect(report.assistantHost?.providers[2]).toEqual({ provider: "copilot", available: false, reason: "unavailable", model: null, args: [] });
+        expect(report.versions.copilot).toMatchObject({ state: "error", code: "unavailable" });
+      }
+      expect(copilotEvents()).toEqual([]);
+      expect(resolveExecutable.mock.calls.some(([provider]) => provider === "copilot")).toBe(false);
+      expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+      expect(mocks.version).not.toHaveBeenCalled();
+      required = true;
+      await next();
+      expect(copilotEvents().map(event => event.kind)).toEqual(["worker_report_failed"]);
+      required = false;
+      await next(); await next(); await next();
+      expect(copilotEvents().map(event => event.kind)).toEqual(["worker_report_failed", "worker_report_recovered"]);
+      expect(resolveExecutable.mock.calls.filter(([provider]) => provider === "copilot")).toHaveLength(1);
+      expect(runCommand.mock.calls.some(([command]) => command.file === "copilot")).toBe(false);
+    } finally { await reporter.stop(); await assistantHost.close(); }
+  });
+
   it("reports only explicitly supplied tool facts without deriving paths from legacy versions", async () => {
     expect((await finish(collector().collect(operation()))).telemetry).not.toHaveProperty("toolPaths");
     const facts = { schemaVersion: 1 as const, observedAt: "2026-11-04T00:00:00Z", entries: [] };

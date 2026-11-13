@@ -1,6 +1,6 @@
 import path from "node:path";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerToolSelectionRuntime } from "../../../src/commands/worker/tool-selection-runtime.js";
 
@@ -14,7 +14,7 @@ test("runtime freezes inspected facts and host snapshots do no process work", as
     localToolPaths: { codex: { kind: "path", path: entry }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
   try {
-    await runtime.prepareWebCandidates(operation.signal);
+    await runtime.prepareWebCandidates(operation.signal, false);
     const configuration = await runtime.freezeConfiguration({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, operation.signal);
     expect(configuration.toolObservation).toMatchObject({ version: "1.0.0" }); expect(configuration.toolLaunch?.entryPath).toBe(entry);
     const before = await readFile(receipt, "utf8");
@@ -27,4 +27,49 @@ test("runtime freezes inspected facts and host snapshots do no process work", as
     await expect(runtime.hostInspector.check(configuration.toolLaunch!, operation)).rejects.toThrow("no current inspection proof");
     expect(await runtime.freezeConfiguration(configuration, operation.signal)).toBe(configuration);
   } finally { try { await runtime.close(); } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); } }
+});
+
+test("background preparation follows Copilot demand on each refresh", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "demand-"));
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
+    localToolPaths: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
+  const operation = createOperation({ limits: { totalMs: 20_000 } });
+  const prepare = vi.spyOn(runtime.manager, "prepare");
+  let now = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const copilot = () => runtime.manager.snapshot().entries.find(entry => entry.tool === "copilot" && entry.context === "web")!;
+  try {
+    await runtime.prepareWebCandidates(operation.signal, false);
+    now += 60_001;
+    await runtime.prepareWebCandidates(operation.signal, false);
+    expect(prepare.mock.calls.map(([tool]) => tool)).toEqual(["codex", "codex"]);
+    expect(copilot()).toMatchObject({ state: "not_checked", actual: null, error: null });
+
+    // Demand changes bypass the preceding refresh window in both directions.
+    await runtime.prepareWebCandidates(operation.signal, true);
+    expect(prepare.mock.calls.map(([tool]) => tool)).toEqual(["codex", "codex", "codex", "copilot"]);
+    expect(copilot()).toMatchObject({ state: "error", error: { code: "not_found" } });
+    await runtime.prepareWebCandidates(operation.signal, false);
+    now += 60_001;
+    await runtime.prepareWebCandidates(operation.signal, false);
+    expect(prepare.mock.calls.map(([tool]) => tool)).toEqual(["codex", "codex", "codex", "copilot", "codex", "codex"]);
+  } finally { clock.mockRestore(); prepare.mockRestore(); try { await runtime.close(); } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); } }
+});
+
+test("demand changes during a refresh take effect after the current preparation settles", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "pending-"));
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
+    localToolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
+  const operation = createOperation({ limits: { totalMs: 20_000 } });
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const prepare = vi.spyOn(runtime.manager, "prepare").mockImplementation(async tool => { if (tool === "codex" && prepare.mock.calls.length === 1) await pending; });
+  try {
+    const first = runtime.prepareWebCandidates(operation.signal, false);
+    expect(await runtime.prepareWebCandidates(operation.signal, true)).toBe(false);
+    release(); await first;
+    expect(await runtime.prepareWebCandidates(operation.signal, true)).toBe(true);
+    expect(prepare.mock.calls.map(([tool]) => tool)).toEqual(["codex", "codex", "copilot"]);
+  } finally { release(); prepare.mockRestore(); try { await runtime.close(); } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); } }
 });

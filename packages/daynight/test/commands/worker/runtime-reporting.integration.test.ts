@@ -23,14 +23,18 @@ import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/insta
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 // These Task/configuration fixtures do not own a Bot service or native execution.
-vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => ({
-  createWorkerToolSelectionRuntime: (await import("../../helpers/worker-tool-runtime-fixture.js")).createWorkerToolSelectionFixture,
-}));
-vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: () => ({
-  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
+vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
+  const fixture = await import("../../helpers/worker-tool-runtime-fixture.js");
+  return { createWorkerToolSelectionRuntime: (options: Parameters<typeof fixture.createWorkerToolSelectionFixture>[0]) => ({
+    ...fixture.createWorkerToolSelectionFixture(options), prepareWebCandidates: mocks.prepareCandidates,
+  }) };
+});
+vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHost: (options: { copilotRequired: () => boolean }) => ({
+  run: async () => {}, shutdown: async () => {}, collect: async () => undefined, requiresCopilot: mocks.botRequiresCopilot, activeToolSelections: () => [], close: () => {},
+  ...mocks.captureBotOptions(options),
 }) }));
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn(), createdConfiguration: vi.fn(), createdReporter: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webOpen: vi.fn(), webClose: vi.fn(), webBackend: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), archiveProbe: vi.fn(), ticket: vi.fn(), delay: vi.fn(), probe: vi.fn(), cachePersist: vi.fn(), createdConfiguration: vi.fn(), createdReporter: vi.fn(), prepareCandidates: vi.fn(async (_signal: AbortSignal, _required: boolean) => false), botRequiresCopilot: vi.fn(() => false), captureBotOptions: vi.fn((_options: { copilotRequired: () => boolean }) => ({})) }));
 vi.mock("../../../src/commands/worker/configuration.js", async original => {
   const actual = await original<typeof import("../../../src/commands/worker/configuration.js")>();
   return { ...actual, createWorkerConfigurationManager: async (...args: Parameters<typeof actual.createWorkerConfigurationManager>) => {
@@ -122,6 +126,7 @@ let dispose: ReturnType<typeof vi.fn>;
 let update: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.botRequiresCopilot.mockReturnValue(false);
   mocks.cachePersist.mockReset();
   mocks.durable.mockReset();
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
@@ -155,6 +160,46 @@ afterEach(async () => {
 });
 
 describe("worker runtime configuration reporting", () => {
+  it("keeps reconciliation running when Bot demand cannot be read", async () => {
+    const failure = new Error("Bot inventory unavailable");
+    mocks.botRequiresCopilot.mockImplementation(() => { throw failure; });
+    const f = await fixture();
+    const running = start(f);
+    await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", error: failure })));
+    await eventually(() => expect(mocks.coordinator).toHaveBeenCalled());
+    expect(mocks.prepareCandidates).not.toHaveBeenCalled();
+    f.signal.abort(); await running;
+  });
+
+  it("shares current effective Copilot demand with preparation and assistant collection", async () => {
+    const f = await fixture();
+    const running = start(f);
+    await eventually(() => expect(mocks.captureBotOptions).toHaveBeenCalledOnce());
+    const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+    await manager.settle();
+    const required = mocks.captureBotOptions.mock.calls[0]![0].copilotRequired;
+    await eventually(() => expect(mocks.prepareCandidates).toHaveBeenCalled());
+    expect(mocks.prepareCandidates.mock.calls[0]![1]).toBe(false);
+    expect(required()).toBe(false);
+
+    target = { ...target, revision: "2", value: { ...target.value, native: { agent: "copilot", model: null, args: [] } } };
+    await manager.receive(target, "0"); await manager.settle();
+    expect(required()).toBe(true);
+
+    target = { ...target, revision: "3", value: { ...target.value, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: { agent: "copilot" } }] } };
+    await manager.receive(target, "0"); await manager.settle();
+    expect(manager.current().effective.projects[0]?.native?.agent).toBe("copilot");
+    expect(required()).toBe(true);
+
+    target = { ...target, revision: "4", value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
+    await manager.receive(target, "0"); await manager.settle();
+    expect(required()).toBe(false);
+    mocks.botRequiresCopilot.mockReturnValue(true);
+    expect(required()).toBe(true);
+    mocks.botRequiresCopilot.mockReturnValue(false);
+    expect(required()).toBe(false);
+    f.signal.abort(); await running;
+  });
   it.each(["lower", "same-revision"] as const)("reconciles a restarted %s target and cursor from the authenticated service", async scenario => {
     const f = await fixture();
     const cached: WorkerCloudDesired = { ...target, revision: "10", value: { ...target.value, projects: [], maxConcurrent: 8, native: { ...target.value.native, model: "cached-model" } } };
