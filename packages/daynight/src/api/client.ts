@@ -1,3 +1,4 @@
+import { normalizeTaskTagFilter } from "./task-tag-filter.js";
 import { confirmTaskTagIds, normalizeTaskTagIds } from "./task-tags.js";
 import { normalizedTagName, parseTag, parseTagDeletionReceipt, parseTagPage } from "./tags.js";
 import type { Tag, TagDeletionReceipt, TagListQuery, TagPage } from "./tags.js";
@@ -637,7 +638,8 @@ export const createApiClient = (options: {
       workerId = parsed;
     }
     const assignedTo = taskAssignmentFilter(filters.assignedTo);
-    return { ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }) };
+    const tags = normalizeTaskTagFilter(filters);
+    return { ...(tags.tagIds === undefined ? {} : { tagIds: tags.tagIds.join(",") }), ...(tags.tagMatch === undefined ? {} : { tagMatch: tags.tagMatch }), ...(tags.untagged === undefined ? {} : { untagged: String(tags.untagged) }), ...(filters.type === undefined ? {} : { type: filters.type }), ...(parentId === undefined ? {} : { parentId: parentId ?? "none" }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(filters.platformSpecific === undefined ? {} : { platformSpecific: String(filters.platformSpecific) }), ...(filters.automaticCandidate === undefined ? {} : { automaticCandidate: String(filters.automaticCandidate) }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
@@ -1442,7 +1444,9 @@ export const createApiClient = (options: {
       if (!isNonemptyText(input.query)) throw new Error("Search query must be nonempty text without NUL characters.");
       const normalized = taskFilterQuery(input);
       const parentId = taskParentInput(input.parentId);
+      const tags = normalizeTaskTagFilter(input);
       const filters = {
+        ...tags,
         ...(input.type === undefined ? {} : { type: input.type }),
         ...(parentId === undefined ? {} : { parentId }),
         ...(normalized.assignedTo === undefined ? {} : { assignedTo: normalized.assignedTo }),
@@ -1471,7 +1475,7 @@ export const createApiClient = (options: {
                 if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get("total") ?? "")) throw new ProtocolError("Search total must be an integer.");
               } else {
                 const error = parseServerError(value);
-                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
+                const expectedStatus: Record<string, number> = { invalid_input: 400, invalid_tag_filter: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
                 if (expectedStatus[error.code] !== undefined && expectedStatus[error.code] !== metadata.status) throw new ProtocolError("Search error status is invalid.");
                 // Search-specific refusals originate after authentication. Generic
                 // authentication failures can precede the principal header.

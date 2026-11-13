@@ -423,6 +423,9 @@ export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claim
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };
 export type WithdrawWorkerClaimInput = CompleteWorkerTaskInput;
 export type TaskFilters = {
+  readonly tagIds?: readonly string[];
+  readonly tagMatch?: "all" | "any";
+  readonly untagged?: boolean;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
   readonly assignedTo?: string;
@@ -450,7 +453,7 @@ export type TaskSearchItem = {
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
-export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform">;
+export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform" | "tagIds" | "tagMatch" | "untagged">;
 export type ErrorDetails = {
   readonly writeOutcome?: "not_committed";
   readonly reason?: string;
