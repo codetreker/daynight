@@ -82,7 +82,7 @@ const posixTree = async (proofs: processProofs.MappingProcessProof[], rows = pro
 const controlledReceipt = (f: Awaited<ReturnType<typeof fixture>>, helperPid: number, childPid: number) => ({ schemaVersion: 1 as const, owner, nonce: f.mapping.nonce, selectionKey: f.mapping.selectionKey, logicalArgvDigest: "b".repeat(64), file: f.launch.command.file, prefixArgs: [...f.launch.command.prefixArgs], helperPid, childPid });
 
 describe("owned Herdr launch mapping", () => {
-  it("retains unknown POSIX foreground responsibility across failed cleanup and PID reuse", async () => {
+  it.skipIf(platformDescriptor.value === "win32")("retains unknown POSIX foreground responsibility across failed cleanup and PID reuse", async () => {
     const f = await fixture(), root = { ...windowsProof(501, 1, "original-root"), processGroupId: 501 }, child = { ...windowsProof(502, 501, "original-child"), processGroupId: 502 };
     Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
     const journal = path.join(path.dirname(f.mapping.manifestPath), "processes.json");
@@ -123,14 +123,14 @@ describe("owned Herdr launch mapping", () => {
     await expect(readFile(path.join(path.dirname(journal), "retired.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("does not invent a POSIX cleanup root from foreground PIDs without a prepared journal", async () => {
+  it.skipIf(platformDescriptor.value === "win32")("does not invent a POSIX cleanup root from foreground PIDs without a prepared journal", async () => {
     const root = posixProof(501, 1), f = await posixTree([root]);
     await expect(f.mapping.captureProcesses([root.pid], operation(), true)).rejects.toThrow(/root.*journal/);
     expect(f.capture).not.toHaveBeenCalled(); expect(f.signal).not.toHaveBeenCalled();
     await expect(readFile(f.journal, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.each(["parent", "group"] as const)("does not enroll POSIX descendants using a stopped original %s anchor", async relation => {
+  it.skipIf(platformDescriptor.value === "win32").each(["parent", "group"] as const)("does not enroll POSIX descendants using a stopped original %s anchor", async relation => {
     const root = posixProof(501, 1), child = posixProof(502, relation === "parent" ? root.pid : 999, relation === "group" ? root.processGroupId! : 502), f = await posixTree([root, child], [child]);
     await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
     f.inspect.mockResolvedValue("stopped");
@@ -139,7 +139,7 @@ describe("owned Herdr launch mapping", () => {
     expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
   });
 
-  it("rejects a registered POSIX root replaced after the initial cleanup check", async () => {
+  it.skipIf(platformDescriptor.value === "win32")("rejects a registered POSIX root replaced after the initial cleanup check", async () => {
     const root = posixProof(501, 1), f = await posixTree([root]);
     await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
     f.inspect.mockImplementation(async () => f.query.mock.calls.length === 0 ? "running" : "replaced");
@@ -148,7 +148,7 @@ describe("owned Herdr launch mapping", () => {
     expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
   });
 
-  it.each(["parent", "group"].flatMap(relation => ["before-stopped", "after-stopped", "before-replaced", "after-replaced"].map(transition => ({ relation, transition }))))("rechecks the original POSIX $relation anchor when it is $transition during capture", async ({ relation, transition }) => {
+  it.skipIf(platformDescriptor.value === "win32").each(["parent", "group"].flatMap(relation => ["before-stopped", "after-stopped", "before-replaced", "after-replaced"].map(transition => ({ relation, transition }))))("rechecks the original POSIX $relation anchor when it is $transition during capture", async ({ relation, transition }) => {
     const root = posixProof(501, 1), child = posixProof(502, relation === "parent" ? root.pid : 999, relation === "group" ? root.processGroupId! : 502), f = await posixTree([root, child]);
     await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
     let observations = 0;
@@ -162,7 +162,7 @@ describe("owned Herdr launch mapping", () => {
     expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
   });
 
-  it.each(["parent", "group"] as const)("registers POSIX descendants through a live original %s anchor with reversed inventory", async relation => {
+  it.skipIf(platformDescriptor.value === "win32").each(["parent", "group"] as const)("registers POSIX descendants through a live original %s anchor with reversed inventory", async relation => {
     const root = posixProof(501, 1), child = posixProof(502, relation === "parent" ? root.pid : 999, relation === "group" ? root.processGroupId! : 502), grandchild = posixProof(503, child.pid), f = await posixTree([root, child, grandchild], [grandchild, child, root]);
     expect(await f.mapping.captureProcesses([root.pid, grandchild.pid, child.pid], operation())).toEqual([root.pid, child.pid, grandchild.pid]);
     expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root, child, grandchild]);

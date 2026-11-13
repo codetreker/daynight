@@ -30,7 +30,7 @@ test.skipIf(process.platform !== "win32")("matches a live isolated PS5 object's 
     finally { clearTimeout(timer); }
   };
   const operation = createOperation({ limits: { totalMs: 20_000, requestMs: 2000 } });
-  const evidence = { schemaVersion: 1, source: "isolated-ps5-dotnet-oracle", platform: process.platform, pid: child.pid ?? null, directory, closed: false, runtimeDirectoryRemoved: false };
+  const evidence = { schemaVersion: 1, source: "isolated-ps5-dotnet-oracle", platform: process.platform, pid: child.pid ?? null, startToken: null as string | null, directory, closed: false, runtimeDirectoryRemoved: false };
   let failure: unknown, failed = false;
   try {
     await writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`);
@@ -57,6 +57,8 @@ test.skipIf(process.platform !== "win32")("matches a live isolated PS5 object's 
     expect(oracle).toHaveLength(3);
     expect(oracle[0]).toBe(String(child.pid)); expect(oracle[1]?.toLowerCase()).toBe(executable.toLowerCase());
     expect(oracle[2]).toMatch(/^\d+$/);
+    evidence.startToken = oracle[2]!;
+    await writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`);
     expect(await readWindowsProcessMetadata(child.pid!, operation)).toEqual({ executable: oracle[1], startToken: oracle[2] });
     expect((await captureWindowsProcessInventory(operation)).find(row => row.pid === child.pid)).toEqual({ pid: child.pid, parentPid: process.pid, group: null });
     child.stdin!.end("\n");

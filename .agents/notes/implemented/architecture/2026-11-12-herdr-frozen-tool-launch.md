@@ -221,6 +221,15 @@ child or assembly file; its dynamic assembly ends with the original PowerShell
 process. The original shell, helper and native PIDs must all appear in the same
 console result.
 
+Final Windows acceptance cleanup independently rereads each original process birth.
+CIM CreationDate and the metadata oracle's .NET StartTime keep their respective
+original token sources and precision. Missing or replaced identities can confirm
+original absence only alongside complete original stop evidence; a live original,
+missing original identity, failed query or incomplete output fails validation.
+Results retain both identities, their source and observation errors. The observer
+never signals inspected PIDs and still checks endpoints, directories and query
+resource closure.
+
 ## Alternatives
 
 **Add an executable RPC or modify Herdr.** This would require an upstream protocol
@@ -314,6 +323,12 @@ deadline; projection and JSON serialization had not started. Direct
 `System.Management` retains an independent OS/WMI observation without that cmdlet
 dependency. This does not identify the internal cause of its stall or relax the
 deadline and required identity fields.
+
+**Use PID-only liveness for final independent cleanup.** A PID can be reused after
+the original process exits. Treating every non-ESRCH error as live also loses the
+distinction between access failure and a successful query. The original process
+identity remains the cleanup subject; a fresh independent birth comparison keeps
+that distinction without trusting the fixture's exit report alone.
 
 **Compile the console interop type at query time.** The `Add-Type` query reached
 its entry checkpoint but did not return before the deadline. That interval
