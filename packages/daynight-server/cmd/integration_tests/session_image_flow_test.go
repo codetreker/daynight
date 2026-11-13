@@ -252,6 +252,10 @@ func sessionDirectImageFlow(t *testing.T, f *fixture) {
 	// Display capture remains available while native input profiles are closed.
 	imageID := uuid.NewString()
 	entry := sp.TimelineEntry{EntryID: uuid.NewString(), EntrySeq: "1", Revision: "1", Kind: "assistant_message", Data: map[string]json.RawMessage{"content": imageWire(t, []map[string]any{{"type": "image_unavailable", "imageId": imageID, "label": "original.png", "error": sp.ImageError{Code: "source_unavailable", Message: "Original is being saved."}}})}}
+	entry.Data["imageProjectionError"] = json.RawMessage(`null`)
+	if _, err := sp.DecodeSourceTimeline(imageWire(t, entry)); err != nil {
+		t.Fatalf("capture source projection is invalid: %v", err)
+	}
 	sessionFlowWrite(t, f, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: imageWire(t, entry)}}})
 	sessionFlowKind(t, sessionFlowRead(t, f, controller), "events_ack")
 	checkpoint := imageWire(t, sp.ArchiveHistoryContent{HistoryEpoch: connected.HistoryEpoch, SourceThrough: "1", Entries: []sp.TimelineEntry{entry}, Resources: []sp.Resource{}})

@@ -146,6 +146,29 @@ func TestServiceImageCapacityFailureRetainsTransactionEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// An admitted input profile lets the real publication transaction reach
+			// the exhausted storage budget whose completion outcome is controlled.
+			modelID := "capacity-fixture-model"
+			v.Capabilities.Images = &sp.ImageCapabilities{
+				Revision: "1", ProviderRevision: "1", ExpectedNativeSessionID: v.Identity.NativeSessionID, ModelID: &modelID,
+				Send: "supported", Steer: "unsupported", InputMediaTypes: []string{"image/png"},
+				MaxImageBytes: "5", MaxMessageImageBytes: "5", MaxImagesPerMessage: 1,
+				Geometry: sp.ImageGeometry{Version: 1, Known: true, MaxWidth: 2, MaxHeight: 3, MaxPixels: 6, MaxFrames: 1},
+			}
+			snapshot, err := json.Marshal(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = sp.DecodeSnapshot(snapshot); err != nil {
+				t.Fatal("invalid capacity fixture snapshot", err)
+			}
+			capabilities, err := json.Marshal(v.Capabilities.Images)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = f.db.Pool.Exec(t.Context(), `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{capabilities,images}',$2::jsonb) WHERE id=$1`, v.SessionID, capabilities); err != nil {
+				t.Fatal(err)
+			}
 			raw := []byte("image")
 			hash := sha256.Sum256(raw)
 			digest := hex.EncodeToString(hash[:])
