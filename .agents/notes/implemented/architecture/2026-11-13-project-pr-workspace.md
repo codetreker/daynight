@@ -8,7 +8,7 @@ Project members need to browse all retained pull requests without task graph fai
 
 ## Decision
 
-The Project has an independent, persistently mounted PR workspace with a six-item cursor list and the existing PR detail reader. Section types, preference and history decoders, responsive keyboard navigation and reading positions share the overview/tasks/prs order. List and synchronization status use separate reads and errors, exact decimal revisions and request generations. Hidden workspaces cancel reads while retaining authorized in-memory selections.
+The Project has an independent, persistently mounted PR workspace with a six-item cursor list and the existing PR detail reader. Section types, preference and history decoders, responsive keyboard navigation and reading positions share the overview/tasks/prs/tags order. List and synchronization status use separate reads and errors, exact decimal revisions and request generations. Hidden workspaces cancel reads while retaining authorized in-memory selections.
 
 Background reconciliation retains the initial upper bound and current page anchor. A separate first-page probe only announces records above the bound; explicit refresh establishes a new bound. The initial page uses the documented upper-plus-one next cursor, including its scope and query, to preserve its bound. Only this synthetic read's artificial previous cursor is suppressed. Navigation responses retain both server cursors regardless of the displayed page number: records re-entering the filter can create an earlier page within the retained bound. The [read design](../../../../docs/design/github-pr-reading.md) owns the protocol and lifecycle details.
 

@@ -37,7 +37,7 @@ export const workspace: WorkspaceMessages = {
     label: ({ list }) => `${list}分页`, range: ({ start, end, total }) => `第 ${number(start)}–${number(end)} 条，共 ${number(total)} 条`,
     page: ({ page, pages }) => `第 ${number(page)} / ${number(pages)} 页`, previous: "上一页", next: "下一页",
   },
-  sections: { label: "项目视图", overview: "概览", tasks: "任务列表", prs: "PR 列表", overviewDescription: "查看项目整体进展与当前任务状态。", tasksDescription: "浏览独立任务与按依赖关联的任务链。" },
+  sections: { tags: "标签", label: "项目视图", overview: "概览", tasks: "任务列表", prs: "PR 列表", overviewDescription: "查看项目整体进展与当前任务状态。", tasksDescription: "浏览独立任务与按依赖关联的任务链。" },
   tabs: { label: "项目任务视图", standalone: "独立任务", chains: "任务链", goals: "Goal", unfinishedCount: "未完成任务数" },
   goals: { details: "Goal 详情", detailsLabel: ({ title }) => `${title}，Goal 详情`, toggle: ({ title, expanded }) => `${expanded ? "收起" : "展开"} Goal：${title}`, standalone: "独立任务", chains: "任务链", emptyTasks: "此 Goal 暂无子任务。", list: "Goal", empty: "暂无 Goal", emptyDetail: "Goal 将显示在这里。", summary: ({ shown, total }) => `${number(shown)} / ${number(total)} 个 Goal`, composition: ({ chains, standalone }) => `${number(chains)} 条任务链 · ${number(standalone)} 个独立任务` },
   preferences: {

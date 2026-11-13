@@ -17,6 +17,13 @@ visible usage, then confirms removal of all associations. An explicit version
 remains the caller's original condition; an omitted version uses the preview.
 Unknown mutations are not replayed.
 
+The Web exposes the catalog as a member-accessible project section. It holds a
+single scope-owned page and checks the first page's epoch before retaining a
+later cursor, while refreshing usage separately because associations do not
+rotate the catalog epoch. Delete reads the current tag before confirmation;
+conflict and unknown outcomes keep the draft for explicit observation. A write
+interrupted after dispatch remains unknown when the user returns to the section.
+
 ## Alternatives
 
 **Store names on each association.** Rewriting copies on rename would increase write cost and permit identity and display names to diverge.
@@ -27,6 +34,10 @@ Unknown mutations are not replayed.
 
 **Resolve targets by name.** A rename or deletion followed by recreation could
 make the same name identify a different Tag, so writes use stable UUIDs instead.
+
+**Persist or accumulate the whole Web catalog.** Catalogs can be large and
+access can change independently of Task cache lifetime. A bounded page and batch
+ID resolution preserve selection without storing private names indefinitely.
 
 ## Consequences
 

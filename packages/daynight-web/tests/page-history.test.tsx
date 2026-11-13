@@ -212,6 +212,8 @@ describe('Project reading history', () => {
   it('validates matching selections and isolates identity and project', () => {
     const state = projectHistory(user, project, selection);
     expect(readProjectHistory(state, user, project)).toEqual(selection);
+    const tags = { ...selection, section: 'tags', projectGraphWitness: null, detail: null } as const;
+    expect(readProjectHistory(projectHistory(user, project, tags), user, project)).toEqual(tags);
     expect(readProjectHistory(state, other, project)).toBeNull();
     expect(readProjectHistory(state, user, root)).toBeNull();
     const prs = { ...selection, section: 'prs', projectGraphWitness: null, detail: null } as const;
@@ -247,6 +249,11 @@ describe('Project reading history', () => {
       arrival(source, path); expect(result.current.selection).toEqual(initial);
       arrival(destination, path); expect(result.current.selection).toEqual(selection);
       expect(committed).toHaveBeenCalledTimes(1);
+      const tags = { ...selection, section: 'tags', projectGraphWitness: null, detail: null } as const;
+      act(() => result.current.select(tags));
+      const tagsDestination = history.state;
+      arrival(destination, path); expect(result.current.selection).toEqual(selection);
+      arrival(tagsDestination, path); expect(result.current.selection).toEqual(tags);
       act(() => result.current.select({ ...selection, detail: null }));
       act(() => scope.suspendProject(project));
       expect(result.current.selection.detail).toBeNull();

@@ -37,6 +37,7 @@ export const installPrList = async (page: Page) => {
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: at, updatedAt: at, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: at, updatedAt: at } });
     if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
+    if (path === `/api/v1/projects/${projectId}/tags`) return send({ items: [], catalogEpoch: '00000000-0000-4000-8000-000000000062', nextCursor: null });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return state.graphFailure ? send(fault(), 500) : send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 1n }));
     if (path === `/api/v1/projects/${projectId}/github`) {
       state.statusReads++;

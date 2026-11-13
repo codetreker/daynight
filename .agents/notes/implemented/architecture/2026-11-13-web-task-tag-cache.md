@@ -35,5 +35,5 @@ and refetchable Session history for a normal rename or deletion.
 
 The server must provide the required field before deploying this reader. An
 upgrade rebuilds derived Task projections from a snapshot, while ordinary tag
-changes preserve unrelated cached entries. The separate project tag catalogue
-and editing interface remain outside this reader's responsibility.
+changes preserve unrelated cached entries. The separate project tag catalogue and editing interface use their own
+project-scoped, in-memory reads; they do not extend the Task cache.

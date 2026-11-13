@@ -40,7 +40,8 @@ for (const width of [1440, 800, 390, 320]) test(`production project navigation, 
   await page.keyboard.press('Home'); await expect(overview).toBeFocused();
   await page.keyboard.press(width > 740 ? 'ArrowDown' : 'ArrowRight'); await expect(tasks).toBeFocused();
   await expect(page.locator('#project-section-panel-tasks')).toContainText('pr-list-fixture');
-  await page.keyboard.press('End'); await expect(prs).toBeFocused();
+  await page.keyboard.press('End'); await expect(page.locator('#project-section-tab-tags')).toBeFocused();
+  await page.keyboard.press(width > 740 ? 'ArrowUp' : 'ArrowLeft'); await expect(prs).toBeFocused();
   await expect(page.locator('.pr-row')).toHaveCount(6);
   await expect(page.locator('#project-section-panel-prs').getByRole('alert')).toHaveCount(0);
   await expect(page.locator('.pr-row').filter({ hasText: 'Draft' })).toHaveCount(2);

@@ -26,10 +26,12 @@ describe("project section navigation", () => {
     const tabs = screen.getByRole("tablist", { name: "项目视图" });
     const overview = screen.getByRole("tab", { name: "概览" });
     const tasks = screen.getByRole("tab", { name: "任务列表" });
+    const tags = screen.getByRole("tab", { name: "标签" });
     const prs = screen.getByRole("tab", { name: "PR 列表" });
     expect(tabs).toHaveAttribute("aria-orientation", "vertical");
     expect(overview).toHaveAttribute("aria-controls", "project-section-panel-overview");
     expect(tasks).toHaveAttribute("aria-controls", "project-section-panel-tasks");
+    expect(tags).toHaveAttribute("aria-controls", "project-section-panel-tags");
     expect(prs).toHaveAttribute("aria-controls", "project-section-panel-prs");
     expect(overview).toHaveAttribute("tabindex", "0");
     expect(tasks).toHaveAttribute("tabindex", "-1");
@@ -41,13 +43,15 @@ describe("project section navigation", () => {
     fireEvent.keyDown(tasks, { key: "ArrowDown" });
     expect(prs).toHaveFocus();
     fireEvent.keyDown(prs, { key: "ArrowDown" });
+    expect(tags).toHaveFocus();
+    fireEvent.keyDown(tags, { key: "ArrowDown" });
     expect(overview).toHaveFocus();
     fireEvent.keyDown(overview, { key: "ArrowUp" });
-    expect(prs).toHaveFocus();
-    fireEvent.keyDown(prs, { key: "Home" });
+    expect(tags).toHaveFocus();
+    fireEvent.keyDown(tags, { key: "Home" });
     expect(overview).toHaveFocus();
     fireEvent.keyDown(overview, { key: "End" });
-    expect(prs).toHaveFocus();
+    expect(tags).toHaveFocus();
     fireEvent.click(overview);
     expect(overview).toHaveAttribute("aria-selected", "true");
   });
@@ -60,6 +64,7 @@ describe("project section navigation", () => {
     const view = render(<Tabs changed={changed} />);
     const overview = screen.getByRole("tab", { name: "概览" });
     const tasks = screen.getByRole("tab", { name: "任务列表" });
+    const tags = screen.getByRole("tab", { name: "标签" });
     expect(screen.getByRole("tablist")).toHaveAttribute("aria-orientation", "horizontal");
     fireEvent.keyDown(overview, { key: "ArrowDown" });
     expect(changed).not.toHaveBeenCalled();
@@ -70,7 +75,7 @@ describe("project section navigation", () => {
     viewport(741);
     expect(screen.getByRole("tablist")).toHaveAttribute("aria-orientation", "vertical");
     fireEvent.keyDown(overview, { key: "ArrowUp" });
-    expect(screen.getByRole("tab", { name: "PR 列表" })).toHaveFocus();
+    expect(tags).toHaveFocus();
     const listener = added.mock.calls.find(([event]) => event === "resize")![1];
     view.unmount();
     expect(removed).toHaveBeenCalledWith("resize", listener);
@@ -81,6 +86,7 @@ describe("project section navigation", () => {
     expect(screen.getByRole("tablist", { name: "Project views" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Task list" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("tab", { name: "Tags" })).toHaveAttribute("aria-selected", "false");
     expect(screen.getByRole("tab", { name: "PR list" })).toHaveAttribute("aria-selected", "false");
   });
 });
