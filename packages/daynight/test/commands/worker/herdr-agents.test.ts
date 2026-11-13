@@ -418,6 +418,43 @@ describe("native argument ownership", () => {
     expect(f.prompts).toEqual(["once"]);
   });
 
+  it("does not reserve mapped initial input when its final guard skips submission", async () => {
+    const f = await mappedFixture(), completed = vi.fn();
+    await f.manager.launch(f.context, f.binding, { configuration: f.config }, operation());
+    const verify = vi.fn(async () => {}); f.mapping.verifyProcesses = verify;
+    const guard = vi.fn(async () => { expect(verify).toHaveBeenCalledOnce(); return false; });
+    await expect(f.manager.submitInitialPrompt(f.context, f.binding, "once", operation(), guard, completed)).resolves.toMatchObject({ submission: "skipped" });
+    expect(guard).toHaveBeenCalledOnce(); expect(completed).not.toHaveBeenCalled(); expect(f.prompts).toEqual([]);
+    await expect(readFile(mappingFiles(f.mapping.manifestPath).initialInput)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(f.manager.submitInitialPrompt(f.context, f.binding, "once", operation(), async () => true, completed)).resolves.toMatchObject({ submission: "submitted" });
+    const reservation = await readFile(mappingFiles(f.mapping.manifestPath).initialInput, "utf8");
+    await expect(f.manager.submitInitialPrompt(f.context, f.binding, "must not repeat", operation(), async () => true, completed)).rejects.toMatchObject({ promptSubmission: "unknown" });
+    expect(await readFile(mappingFiles(f.mapping.manifestPath).initialInput, "utf8")).toBe(reservation);
+    expect(completed).toHaveBeenCalledOnce(); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["submitted", "cancelled", "unknown"] as const)("keeps mapped continuation admission at dispatch for a %s outcome", async outcome => {
+    const f = await mappedFixture(), completed = vi.fn();
+    await f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "initial" }, operation());
+    const reservation = await readFile(mappingFiles(f.mapping.manifestPath).initialInput, "utf8"), order: string[] = [];
+    f.mapping.verifyProcesses = async () => { order.push("process-proof"); };
+    const failure = new HerdrRpcError("prompt response lost", { method: "agent.prompt", requestId: "lost", submission: "unknown" });
+    f.hook(async method => { order.push(method); if (method === "agent.prompt" && outcome === "unknown") throw failure; return undefined; });
+    const abort = new AbortController(), active = createOperation({ signal: abort.signal }); operations.push(active);
+    const guard = vi.fn(async () => { expect(order).toContain("process-proof"); order.push("guard"); if (outcome === "cancelled") abort.abort(); return true; });
+    const pending = f.manager.submitPrompt(f.context, f.binding, "continuation", active, guard, completed);
+    if (outcome === "submitted") {
+      await expect(pending).resolves.toMatchObject({ submission: "submitted" });
+      expect(f.prompts).toEqual(["initial", "continuation"]); expect(completed).toHaveBeenCalledOnce();
+    } else {
+      await expect(pending).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: outcome === "cancelled" ? "not-submitted" : "unknown", cause: outcome === "cancelled" ? expect.objectContaining({ kind: "cancelled" }) : failure });
+      expect(f.prompts).toEqual(["initial"]); expect(completed).not.toHaveBeenCalled();
+    }
+    expect(guard).toHaveBeenCalledOnce();
+    expect(order.slice(outcome === "cancelled" ? -1 : -2)).toEqual(outcome === "cancelled" ? ["guard"] : ["guard", "agent.prompt"]);
+    expect(await readFile(mappingFiles(f.mapping.manifestPath).initialInput, "utf8")).toBe(reservation);
+  });
+
   it("retains submitted input as unknown when blocked before the official Session confirmation", async () => {
     const f = await mappedFixture();
     f.hook(async (method, params) => {

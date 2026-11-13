@@ -46,6 +46,8 @@ manager 在 `agent.start` RPC 前持久保存原 request、binding、逻辑 argv
 
 输入前必须同时核实原 workspace/pane/terminal、Herdr kind/readiness、逻辑 argv 回执、manifest/nonce、实际 launch receipt、原 shell 和完整 shell→helper→loader/native 归属。`tool-launch-lifecycle.ts` 保存原进程证明并沿已证实的父子关系追加后代。helper 名称不伪装成原生工具，不设置假的进程名，不调用 `pane.report_agent` 补造识别结果；Herdr 必须识别真正 native。
 
+Linux/Windows legacy manager 在全部映射与 readiness 异步检查完成后，才调用本次输入已有的 guard。自动 continuation 因而在最终提交边界重读暂停与原 active claim；拒绝返回 `skipped`，读取失败或取消保留错误，均不发送 `agent.prompt`。continuation 在 guard 后只做同步取消检查并派发 RPC，不重新异步读取 mapping。首次输入若提供 guard，其拒绝也不发布 create-only intent；准入后仍按原规则持久保存 intent。调用方没有提供 guard 的首次或待递交 assignment 保持原准入策略；macOS 持久路径仍由仲裁器的 `beforeWrite` 核验。
+
 Windows 的 `ParentProcessId` 可能保留已退出父进程的编号，并指向后来复用该编号的无关进程。因此新后代登记同时核验原父进程实例和父子出生顺序；调用方直接提供的 PID 与清单发现的 PID 使用同一规则。子进程的精确出生时间必须严格晚于原父进程；相同时间不能证明先后，保持未知。登记前后父进程必须仍匹配原出生证明，候选按父子顺序建立完整链。显式 mapping 清理和恢复必须先核验原 journal 的出生链，才可终止 Job 或进程；缺证或矛盾不能靠删除旧记录、重新采样或改认新根进程消除。清理阶段缺少原 journal 时，不得从当前 foreground PID 新建根进程归属。
 
 新会话的官方 integration 可能直到首次输入触发 SessionStart 才报告 ID。因此初始输入最多提交一次，递交前持久保存原 intent；macOS 继续使用原输入 journal 与仲裁器。启动成功必须等待同 pane 的官方 integration 报告符合原 kind 的合法 native Session UUID，并再次核验原进程归属。已知 ID 必须精确相同。缺失事件、不同 Session、进程变化及未知输入结果均保持未确认，不重放初始输入、不换会话、不人工补报。普通自动输入不能越过 frozen 执行的未知 native Session。

@@ -410,6 +410,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
     let before: HerdrAgentObservation;
+    let mapping: HerdrToolLaunchMapping | null;
     const verifyInputAgent = (current: HerdrAgentObservation): void => {
       const knownAgent = current.kind === context.agent || current.nativeSession?.agent === context.agent || (initialPrompt && current.name === herdrExecutionAgentName(context));
       if (!knownAgent || current.launchPending || ((initialPrompt || current.nativeSession === null) && !current.interactiveReady) || current.status === "blocked") throw new Error("The original native agent is not ready for input.");
@@ -428,8 +429,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         verifyInputAgent(before);
         if (blocker !== null) throw new HerdrInputBlockedError(blocker);
       }
-      if (beforeSubmit !== undefined && !await beforeSubmit(operation)) return { submission: "skipped", observation: before };
-      const mapping = await mappingFor(context, operation);
+      mapping = await mappingFor(context, operation);
       if (mapping !== null) {
         if (before.kind !== context.agent || !before.interactiveReady || !initialPrompt && before.nativeSession === null) throw new Error("The original mapped native agent has no confirmed official Session and readiness for this input.");
         const receipt = await mapping.readReceipt(operation);
@@ -439,12 +439,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         verifyInputAgent(before);
         if (before.kind !== context.agent || !initialPrompt && before.nativeSession === null) throw new Error("The original official native identity changed before input.");
       }
+      // Recheck task authority after the asynchronous native ownership checks.
+      if (beforeSubmit !== undefined && !await beforeSubmit(operation)) return { submission: "skipped", observation: before };
       operation.check();
     } catch (cause) {
       if (cause instanceof HerdrInputBlockedError) throw cause;
       throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native agent input readiness could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
     }
-    const mapping = await mappingFor(context, operation);
     if (initialPrompt && mapping !== null) {
       try { await publishOwnedJson(mappingFiles(mapping.manifestPath).initialInput, { nonce: mapping.nonce, selectionKey: mapping.selectionKey, binding }); }
       catch (cause) { throw new HerdrAgentActionError("The original mapped initial input has already been reserved or its durable outcome is unknown; it cannot be repeated.", "agent.prompt", "unknown", { cause, promptSubmission: "unknown" }); }

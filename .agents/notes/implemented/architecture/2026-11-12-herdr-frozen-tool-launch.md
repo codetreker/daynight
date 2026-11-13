@@ -136,6 +136,17 @@ requires the subsequent official same-pane Session report and original-process
 verification. Unknown input or missing Session evidence never permits replay or
 a replacement conversation.
 
+Legacy Linux/Windows input runs its caller-supplied admission guard after all
+asynchronous mapping and readiness verification. The verified mapping remains
+local through the synchronous cancellation check and continuation dispatch.
+Initial input still publishes its create-only intent after admission and before
+dispatch. Reading pause and claim before mapping proof
+would let a change during that proof authorize a stale continuation. A denied
+guard returns skipped without a prompt or initial intent; a failed read or
+cancellation remains an error. Initial assignment without a caller guard keeps
+its existing policy, and macOS durable input retains the arbiter's beforeWrite
+checks.
+
 After submitted input, a direct Windows command-line proof failure with
 `STATUS_PROCESS_IS_TERMINATING` permits another complete observation within the
 original operation budget. The first valid official Session and receipt remain

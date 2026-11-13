@@ -641,6 +641,37 @@ describe("execution from current Herdr resources", () => {
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
   });
 
+  it.each(["paused", "claim changed", "read failure"] as const)("keeps mapped continuation unsent when task authority becomes %s during process verification", async change => {
+    let mapping: HerdrToolLaunchMapping;
+    const f = await fixture("copilot", staleId, { toolMapping: async () => mapping });
+    const launch = frozenToolLaunch("copilot", "herdr"), nonce = uuid(20), manifestPath = path.join(f.root, "manifest.json");
+    const receipt = { schemaVersion: 1 as const, owner: f.input.owner, nonce, selectionKey: launch.selectionKey, logicalArgvDigest: "a".repeat(64), file: launch.command.file, prefixArgs: [], helperPid: 101, childPid: 102 };
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const verifyProcesses = vi.fn(async () => { await gate; });
+    mapping = { manifestPath, nonce, selectionKey: launch.selectionKey, environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: manifestPath }, verifyReady: async () => {}, verifyReceipt: async () => receipt, readReceipt: async () => receipt, captureProcesses: async pids => [...pids], verifyProcesses, confirmStopped: async () => true, stopProcesses: async () => {}, releaseFrozen: async () => {}, retire: async () => {} };
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const original = readWorkerClaim(f.remoteTask.properties)!, failure = new Error("current task authority unavailable");
+    const pending = f.driver.advance(f.input);
+    try {
+      await vi.waitFor(() => expect(verifyProcesses).toHaveBeenCalledOnce());
+      if (change === "paused") f.remoteTask.properties.paused = true;
+      else if (change === "claim changed") f.remoteTask.properties.worker = { ...original, claimId: uuid(21) };
+      else f.readTask.mockRejectedValueOnce(failure);
+      release();
+      if (change === "read failure") await expect(pending).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
+      else await pending;
+      expect(f.calls.filter(call => call.method === "agent.prompt")).toEqual([]);
+      expect(f.store.getTask(f.input.task)).toEqual(f.input.task);
+      expect(f.launches).toEqual([]);
+    } finally { release(); await pending.catch(() => {}); }
+    delete f.remoteTask.properties.paused; f.remoteTask.properties.worker = { ...original };
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    expect(f.calls.filter(call => ["workspace.close", "workspace.create", "agent.start"].includes(call.method))).toEqual([]);
+  });
+
   it("checks fresh pause state after visible input inspection", async () => {
     const f = await fixture("codex", staleId);
     f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
