@@ -269,6 +269,12 @@ func TestConfigurationCancellationDuringLockWait(t *testing.T) {
 	if err := db.Pool.QueryRow(ctx, `SELECT version FROM project_github WHERE project_id=$1`, id).Scan(&version); err != nil || version != 2 {
 		t.Fatalf("pool recovery or cancelled write: version=%d, error=%v", version, err)
 	}
+	clockTx := begin(t, db, pgx.TxOptions{})
+	cancelled, cancelClock := context.WithCancel(ctx)
+	cancelClock()
+	if _, err := github.NewWriter(clockTx, id).ObservedAt(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled database clock: %v", err)
+	}
 }
 
 func TestManagementReadSerializesBroadcast(t *testing.T) {
