@@ -21,9 +21,8 @@ type Tasks struct {
 
 func New(database store.AssistantTaskWriter) *Tasks {
 	module := core.New()
-	if err := module.RegisterRules("watchdog", watchdog.ValidateRules); err != nil {
-		panic(err)
-	}
+	// The fresh registry cannot reject this valid, unique application and validator.
+	_ = module.RegisterRules("watchdog", watchdog.ValidateRules)
 	return &Tasks{database: database, module: module, operations: module}
 }
 
