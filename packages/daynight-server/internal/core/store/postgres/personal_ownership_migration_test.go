@@ -57,9 +57,9 @@ func ownershipMigrationFacts(t *testing.T, s *Store, grants string) map[string]s
 			projection = `(to_jsonb(t)-'last_used_at')`
 		}
 		if table == "projects" {
-			// Later lifecycle migrations add a nullable field; compare all original
-			// columns while checking that field separately after the full upgrade.
-			projection = `(to_jsonb(t)-'deleted_at')`
+			// Later migrations add lifecycle and catalog fields. Compare every
+			// original column and check the lifecycle field after the full upgrade.
+			projection = `(to_jsonb(t)-'deleted_at'-'tag_catalog_epoch')`
 		}
 		if err := s.Pool.QueryRow(context.Background(), `SELECT coalesce(jsonb_agg(`+projection+` ORDER BY `+projection+`::text),'[]'::jsonb)::text FROM `+table+` t`).Scan(&value); err != nil {
 			t.Fatal(err)

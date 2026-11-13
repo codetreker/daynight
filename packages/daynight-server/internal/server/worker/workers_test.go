@@ -761,4 +761,9 @@ func TestWorkerSnapshotsHTTPRejectsInvalidInputsAndMethods(t *testing.T) {
 	}
 }
 
+func (s *workerHTTPReadScope) TagDAO() store.TagReader {
+	workerHTTPUnexpected(s.t, "TagDAO")
+	return nil
+}
+
 func (s *workerHTTPReadScope) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
