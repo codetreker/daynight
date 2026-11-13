@@ -265,7 +265,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			w.Header().Set("Retry-After", "60")
 		case "task_deleted":
 			status = http.StatusGone
-		case "not_found", "message_not_found", "invitation_unavailable":
+		case "not_found", "tag_not_found", "message_not_found", "invitation_unavailable":
 			status = http.StatusNotFound
 		case "media_outcome_unknown", "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			status = http.StatusServiceUnavailable

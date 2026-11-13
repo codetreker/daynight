@@ -189,7 +189,7 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `070_task_tags.sql` 为 Project 增加独立的 `tag_catalog_epoch`，并建立标签库 `project_tags` 与关联表 `task_tags`。标签名称键按 `C` 排序，同一 Project 内由唯一索引保证唯一；关联以 `(project_id, task_id, tag_id)` 为主键，反向索引支持标签到条目的集合操作。两表不复制名称，也不引入外键或触发器。旧 Task 自然拥有空关联。标签目录在同一读取快照按名称键和 ID 分页、按字面子串查询及批量解析；使用计数通过有效删除视图统计可见 Task 和 Goal，包含终态。项目写事务提供原始版本条件写、关联集合替换、关联条目版本与时间的集合 touch，以及包含已删除保留条目的关联清理。独立 epoch 旋转不修改 Project 元数据或 `task_cache_epoch`。`core/tag` 拥有名称、版本与标签库规则；`service/tag` 在同一项目写作用域核验权限、原始版本并协调关联 touch 与删除，读取在同一快照核验权限和计数；`server/tag` 负责 REST 解析、认证接入、编码与错误映射。创建、实际改名和删除仅旋转标签目录 epoch；改名和删除集合 touch 关联条目，删除清除包括已删除保留条目的全部关联，不读取所有条目正文或失效任务缓存。目录 cursor 绑定项目、principal、查询、limit、epoch 和排序位置；批量解析以实际编码限制输出并拒绝任何失效 ID。设计取舍见[标签存储决策](../../.agents/notes/implemented/architecture/2026-11-13-project-tag-storage.md)与[标签目录决策](../../.agents/notes/implemented/feature/2026-11-13-project-tag-catalog.md)。
 
-`core/task` 规范化并排序标签集合，省略保留、空集合清除，即使无变化也检查原始版本。`service/task` 的独立关联操作在项目锁内检查成员、有效 Task/Goal 和全部本项目标签；实际变化替换关联并使用锁后数据库时间 touch 一次，不改变执行归属或冻结 Session。单资源读取及完整写回执在同一事务加载真实标签引用；公共标签写入及批量读取由各自入口接入。关联变化不旋转任务缓存 epoch。
+`core/task` 规范化并排序标签集合，省略保留、空集合清除，即使无变化也检查原始版本。`service/task` 的独立关联操作在项目锁内检查成员、有效 Task/Goal 和全部本项目标签；实际变化替换关联并使用锁后数据库时间 touch 一次，不改变执行归属或冻结 Session。PATCH 仅提交 `tagIds` 时使用独立关联操作；混合 metadata 时在原写事务校验最终集合，关联替换与 metadata 写入、响应准入共同提交或回滚，最多推进一次版本。单资源读取及完整写回执在同一事务加载真实标签引用；列表、ready、搜索和同步在截取选定页后批量加载引用，与任务行共享快照。关联变化不旋转任务缓存 epoch。
 
 有标签的完整 Task 写入在提交前对准入副本保留实际 ID，将名称设为 64 个 `&`，并预留最大版本和最长 UTC 更新时间，再用与实际输出相同的有界 REST 编码器及当前 MCP envelope 检查预算。实际输出保留真实值；此上界使合法改名无需逐条读取大正文。无标签仍按实际值准入，超限回滚整个事务。详见[关联容量决策](../../.agents/notes/implemented/architecture/2026-11-13-task-tag-admission.md)。
 

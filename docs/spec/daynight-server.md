@@ -133,7 +133,7 @@ Task 包含以下持久化字段：
 | `startedAt`、`completedAt`、`cancelledAt` | 只读UTC执行起止与取消时间，字段必填但允许`null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
 
-完整 REST Task 包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。单条读取及完整写回执包含当前真实标签引用；当前公开写入口不接受 `tagIds`，批量读取尚未加载关联。
+完整 REST Task、列表、ready、搜索结果和同步摘要包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联。PATCH 可用 `tagIds` 指定完整标签 ID 集合：省略保留，`[]` 清空；失效或跨项目 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。创建入口不接受 `tagIds`。标签改名或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
 
 完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。现有公开写入口不接受 `type` 或 `parentId`，不产生 Goal。
 

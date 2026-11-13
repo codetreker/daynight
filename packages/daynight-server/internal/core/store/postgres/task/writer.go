@@ -67,6 +67,9 @@ func (tx *Writer) tasks(ctx context.Context, condition string, value any, phase 
 	if err := pg.AttachTaskProperties(ctx, tx.tx, tasks); err != nil {
 		return nil, err
 	}
+	if err := pg.AttachTaskTags(ctx, tx.tx, tx.projectID, tasks); err != nil {
+		return nil, err
+	}
 	return tasks, nil
 }
 

@@ -95,6 +95,7 @@ type taskServiceMock struct {
 	*serviceCalls
 	CreateFunc         func(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
 	UpdateFunc         func(context.Context, model.Principal, string, string, taskcore.UpdateTask) (model.Task, error)
+	ReplaceTagsFunc    func(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error)
 	DeleteFunc         func(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetStatusFunc      func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	GetFunc            func(context.Context, model.Principal, string, string) (model.Task, error)
@@ -124,6 +125,13 @@ func (mock *taskServiceMock) Update(arg0 context.Context, arg1 model.Principal, 
 		return result, err
 	}
 	return mock.UpdateFunc(arg0, arg1, arg2, arg3, arg4)
+}
+
+func (mock *taskServiceMock) ReplaceTags(ctx context.Context, principal model.Principal, projectID, id string, version int64, tags *[]string) (model.Task, error) {
+	if err := mock.check("ReplaceTags", mock.ReplaceTagsFunc != nil); err != nil {
+		return model.Task{}, err
+	}
+	return mock.ReplaceTagsFunc(ctx, principal, projectID, id, version, tags)
 }
 
 func (mock *taskServiceMock) Delete(arg0 context.Context, arg1 model.Principal, arg2 string, arg3 string, arg4 taskcore.DeleteTask) error {
@@ -332,6 +340,9 @@ func newTaskServiceMock(t *testing.T) *taskServiceMock {
 		}
 		if mock.UpdateFunc != nil {
 			methods = append(methods, "Update")
+		}
+		if mock.ReplaceTagsFunc != nil {
+			methods = append(methods, "ReplaceTags")
 		}
 		if mock.DeleteFunc != nil {
 			methods = append(methods, "Delete")

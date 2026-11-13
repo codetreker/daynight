@@ -136,5 +136,8 @@ func (s *Reader) Tasks(ctx context.Context, projectID string, query store.TaskQu
 	if err := pg.AttachTaskProperties(ctx, s.tx, items); err != nil {
 		return store.TaskPage{}, err
 	}
+	if err := pg.AttachTaskTags(ctx, s.tx, projectID, items); err != nil {
+		return store.TaskPage{}, err
+	}
 	return store.TaskPage{Items: items, HasMore: hasMore}, nil
 }
