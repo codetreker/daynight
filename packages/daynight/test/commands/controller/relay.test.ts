@@ -356,6 +356,25 @@ test("capture RPC binds request, action, attempt and current connection while di
   expect(callbacks.onCommand).not.toHaveBeenCalled(); expect(journal.markOperationAcknowledged).not.toHaveBeenCalled();
 });
 
+test("capture refusal rejects only its request and a following query consumes the failed original", async () => {
+  const { relay, socket, emit, frame, callbacks } = await setup([], false, true);
+  emit(frame("reconcile_result", { operations: [] }));
+  const captureId = randomUUID(), attemptId = randomUUID(), occurrence = { imageId: randomUUID(), entryId: randomUUID(), container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-part" };
+  const request = { captureId, attemptId, occurrence, nativeSource: null, locator: { kind: "external", url: "https://example.test/original.png" } } as const;
+  const refused = relay.capture("register", request);
+  const failure = expect(refused).rejects.toMatchObject({ code: "quota_exceeded", message: "Capture capacity is exhausted." });
+  const wire = socket.sent.find(m => m.type === "image_capture")!;
+  emit(frame("image_capture_result", { requestId: wire.requestId, action: "register", result: null, error: { code: "quota_exceeded", message: "Capture capacity is exhausted." } }));
+  await failure;
+  expect(relay.connected()).toBe(true); expect(callbacks.onError).not.toHaveBeenCalled();
+  const query = relay.capture("query", { captureId });
+  const queryWire = socket.sent.filter(m => m.type === "image_capture").at(-1)!;
+  const receipt = { captureId, attemptId, revision: "1", occurrence, state: "failed", resourceId: null, resource: null, error: { code: "quota_exceeded", message: "Capture capacity is exhausted." } };
+  emit(frame("image_capture_result", { requestId: queryWire.requestId, action: "query", result: receipt, error: null }));
+  expect(await query).toEqual(receipt); expect(relay.connected()).toBe(true);
+  await relay.close();
+});
+
 test("retry_capture consumes the source hook separately from native commands and aborts on connection loss", async () => {
   const { relay, journal, socket, emit, frame, callbacks } = await setup([], false, true);
   Object.assign(journal, { media: () => ({}) }); emit(frame("reconcile_result", { operations: [] }));

@@ -15,7 +15,7 @@ func captureCanRetry(ctx context.Context, d store.SessionResourceDAO, c store.Se
 		return false, nil
 	}
 	switch c.Receipt.Error.Code {
-	case "invalid_image", "unsupported_media_type", "decode_failed", "image_decode_failed",
+	case "invalid_image", "unsupported_media_type", "decode_failed", "image_decode_failed", "quota_exceeded", "storage_unavailable",
 		"source_not_found", "source_timeout", "source_changed", "source_busy", "source_rate_limited", "source_capacity", "source_queue_timeout":
 	default:
 		return false, nil

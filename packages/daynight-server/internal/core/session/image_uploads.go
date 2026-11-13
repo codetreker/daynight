@@ -35,6 +35,7 @@ func sameNative(a, b *string) bool { return a == nil && b == nil || a != nil && 
 func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, project, taskID, id string, spec sp.ImageUploadSpec, remote bool, desiredBlob ...string) (sp.ImageUploadReceipt, bool, error) {
 	var out sp.ImageUploadReceipt
 	created := false
+	var copyAdmission error
 	validate := sp.DecodeImageUploadSpec
 	if !remote {
 		validate = sp.DecodeImageDisplayUploadSpec
@@ -109,9 +110,18 @@ func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, projec
 			usage.GlobalReservedBytes -= 2 * number(capture.Validated.ByteLength)
 		}
 		if usage.UploadIdentities >= sp.MaxUploadIdentities {
-			return fault("quota_exceeded", "Session image upload identity capacity is exhausted.")
+			e := fault("quota_exceeded", "Session image upload identity capacity is exhausted.")
+			if !remote && len(desiredBlob) > 0 {
+				copyAdmission = e
+			}
+			return e
 		}
 		if e = s.admitImageResource(ctx, usage, size); e != nil {
+			if !remote && len(desiredBlob) > 0 {
+				if f, ok := e.(*model.Fault); ok && (f.Code == "quota_exceeded" || f.Code == "component_unsupported") {
+					copyAdmission = e
+				}
+			}
 			return e
 		}
 		expires := s.now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
@@ -123,6 +133,10 @@ func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, projec
 		}
 		return s.saveImageUpload(ctx, tx, r, store.SessionUploadRecord{SessionID: id, ActorID: p.UserID, BlobID: blob, Spec: spec, Receipt: out, ExpiresAt: expires})
 	})
+	if copyAdmission != nil && err == copyAdmission {
+		f := copyAdmission.(*model.Fault)
+		err = &definiteImageError{image: sp.ImageError{Code: f.Code, Message: f.Message}, cause: err, expectAbsent: true}
+	}
 	return out, created, err
 }
 func (s *Execution) upload(ctx context.Context, tx *operationTx, r *record, p model.Principal, id string) (store.SessionResourceDAO, store.SessionUploadRecord, error) {
@@ -281,6 +295,9 @@ func (s *Execution) writeUploadChunk(ctx context.Context, p model.Principal, pro
 	}
 	defer func() { result = errors.Join(result, s.releaseImageLease(ctx, p, project, taskID, id, lease)) }()
 	if e = s.publishImageBytes(ctx, path, bytes.NewReader(chunk), int64(len(chunk)), input.SHA256); e != nil {
+		if failure := definiteImageFailure(e); failure != nil {
+			e = &definiteImageError{image: *failure, cause: e, expectedUpload: &previousUpload}
+		}
 		return out, e
 	}
 	e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
@@ -331,8 +348,12 @@ func (s *Execution) publishImageBytes(ctx context.Context, path string, input io
 		return err
 	}
 	h := sha256.New()
-	info, err := s.files.Put(ctx, sessionresource.Bucket, path, io.TeeReader(io.LimitReader(input, size+1), h))
+	reader := &imageSourceReader{reader: input}
+	info, err := s.files.Put(ctx, sessionresource.Bucket, path, io.TeeReader(io.LimitReader(reader, size+1), h))
 	if err != nil {
+		if reader.err == nil && filestorage.PublicationOutcome(err) == filestorage.NotPublished && singleImageCause(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return &definiteImageError{image: sp.ImageError{Code: "storage_unavailable", Message: "Image storage could not publish the original."}, cause: err}
+		}
 		return err
 	}
 	if info.Size != size || hex.EncodeToString(h.Sum(nil)) != digest {
@@ -340,6 +361,20 @@ func (s *Execution) publishImageBytes(ctx context.Context, path string, input io
 	}
 	return nil
 }
+
+type imageSourceReader struct {
+	reader io.Reader
+	err    error
+}
+
+func (r *imageSourceReader) Read(data []byte) (int, error) {
+	n, err := r.reader.Read(data)
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
+}
+
 func (s *Execution) completeUpload(ctx context.Context, p model.Principal, project, taskID, id, uploadID string, input sp.ImageUploadComplete, remote bool) (out sp.ImageUploadReceipt, result error) {
 	if _, err := sp.DecodeImageUploadComplete(encode(input)); err != nil {
 		return out, fault("invalid_input", "Invalid image upload completion.")
@@ -352,6 +387,42 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		return out, e
 	}
 	defer func() { result = errors.Join(result, gate.Close()) }()
+	settlementReady := false
+	// Settle only after transfer cleanup while the original upload gate still
+	// excludes a concurrent writer. A later gate-close failure is reconciled
+	// from the persisted failed upload under the same gate on retry.
+	defer func() {
+		if !settlementReady {
+			return
+		}
+		imageError := definiteImageFailure(result)
+		if imageError == nil {
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		var settled *store.SessionUploadRecord
+		e := s.browser(cleanup, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
+			_, current, e := s.upload(cleanup, tx, r, p, uploadID)
+			if e != nil {
+				return e
+			}
+			if current.Receipt.State != "verifying" {
+				return nil
+			}
+			current.Receipt.State, current.Receipt.Error = "failed", imageError
+			out = current.Receipt
+			if e = s.saveImageUpload(cleanup, tx, r, current); e != nil {
+				return e
+			}
+			settled = &current
+			return nil
+		})
+		result = errors.Join(result, e)
+		if e == nil && settled != nil {
+			result = &definiteImageError{image: *imageError, cause: result, expectedUpload: settled}
+		}
+	}()
 	var upload store.SessionUploadRecord
 	var chunks []store.SessionUploadChunk
 	var path string
@@ -364,6 +435,7 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	ctx = ioContext
 	defer func() { result = joinImageCleanup(result, finishIO) }()
 	completed := false
+	failed := false
 	e = s.browser(ctx, p, project, taskID, id, func(tx *operationTx, r *record, _ task, write bool) error {
 		if !write {
 			return denied()
@@ -396,6 +468,12 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		if e = s.imageTarget(p, r, u.Spec.Target); e != nil {
 			return e
 		}
+		if !remote && u.Receipt.State == "failed" && u.Receipt.Error != nil {
+			out = u.Receipt
+			upload = u
+			failed = true
+			return nil
+		}
 		if !s.now().Before(u.ExpiresAt) || (u.Receipt.State != "receiving" && u.Receipt.State != "verifying") || u.Receipt.AcceptedOffset != u.Spec.ByteLength {
 			return fault("resource_conflict", "Upload is incomplete or no longer accepts completion.")
 		}
@@ -422,6 +500,9 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 	if e != nil {
 		return out, e
 	}
+	if failed {
+		return out, &definiteImageError{image: *out.Error, cause: fault(out.Error.Code, out.Error.Message), expectedUpload: &upload}
+	}
 	if completed {
 		if !upload.StorageReleased {
 			if e = s.cleanupUploadFiles(ctx, p, project, taskID, id, uploadID); e != nil {
@@ -431,29 +512,7 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 		return out, nil
 	}
 	defer func() { result = errors.Join(result, s.releaseImageLease(ctx, p, project, taskID, id, lease)) }()
-	// Only an explicit validation rejection establishes failure. Timeouts,
-	// cancellation, storage/DB errors and component loss retain verifying identity.
-	defer func() {
-		imageError := definiteImageFailure(result)
-		if imageError == nil {
-			return
-		}
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		e := s.browser(cleanup, p, project, taskID, id, func(tx *operationTx, r *record, _ task, _ bool) error {
-			_, current, e := s.upload(cleanup, tx, r, p, uploadID)
-			if e != nil {
-				return e
-			}
-			if current.Receipt.State != "verifying" {
-				return nil
-			}
-			current.Receipt.State, current.Receipt.Error = "failed", imageError
-			out = current.Receipt
-			return s.saveImageUpload(cleanup, tx, r, current)
-		})
-		result = errors.Join(result, e)
-	}()
+	settlementReady = true
 	// Chunk metadata and files form one bounded sequence. Every reader is closed
 	// before lease release, including decoder errors and request cancellation.
 	open := func() (io.Reader, func() error, error) {
@@ -780,16 +839,81 @@ func (s *Execution) releaseControllerPreparationWithAccess(ctx context.Context, 
 	return nil
 }
 
-func definiteImageFailure(err error) *sp.ImageError {
-	var f *model.Fault
-	if !errors.As(err, &f) {
+type definiteImageError struct {
+	image          sp.ImageError
+	cause          error
+	expectedUpload *store.SessionUploadRecord
+	expectAbsent   bool
+}
+
+func (e *definiteImageError) Error() string { return e.cause.Error() }
+func (e *definiteImageError) Unwrap() error { return e.cause }
+
+func imageFailureEvidence(err error) *definiteImageError {
+	if definiteImageFailure(err) == nil {
 		return nil
 	}
-	switch f.Code {
-	case "invalid_image", "image_integrity", "image_decode_failed":
-		return &sp.ImageError{Code: f.Code, Message: f.Message}
+	for err != nil {
+		if failure, ok := err.(*definiteImageError); ok && (failure.expectAbsent || failure.expectedUpload != nil) {
+			return failure
+		}
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			children := joined.Unwrap()
+			if len(children) != 1 {
+				return nil
+			}
+			err = children[0]
+		} else {
+			err = errors.Unwrap(err)
+		}
 	}
 	return nil
+}
+
+func singleImageCause(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		return len(children) == 1 && singleImageCause(children[0])
+	}
+	if next := errors.Unwrap(err); next != nil {
+		return singleImageCause(next)
+	}
+	return true
+}
+
+// A joined cleanup or transaction failure must not be hidden by an earlier
+// refusal: its outcome may retain the original file or database responsibility.
+func definiteImageFailure(err error) *sp.ImageError {
+	if err == nil {
+		return nil
+	}
+	if tx, ok := err.(*store.TransactionError); ok {
+		if tx.Outcome != store.TransactionNotCommitted || tx.CommitAttempted || tx.CleanupFailed {
+			return nil
+		}
+		return definiteImageFailure(tx.Cause)
+	}
+	if f, ok := err.(*definiteImageError); ok {
+		return &f.image
+	}
+	if f, ok := err.(*model.Fault); ok {
+		switch f.Code {
+		case "invalid_image", "image_integrity", "image_decode_failed":
+			return &sp.ImageError{Code: f.Code, Message: f.Message}
+		}
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) != 1 {
+			return nil
+		}
+		return definiteImageFailure(children[0])
+	}
+	return definiteImageFailure(errors.Unwrap(err))
 }
 
 func (s *Execution) admitImageResource(ctx context.Context, usage store.SessionResourceUsage, size int64) error {

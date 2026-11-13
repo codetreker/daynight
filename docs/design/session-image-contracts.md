@@ -327,10 +327,14 @@ type ImageCaptureReceipt = {
 | --- | --- | --- |
 | `register` | ImageCaptureRequest | ImageCaptureReceipt；先核验消息关联/locator来源并预留容量。无法预留返回failed、resourceId=null，生成ImageUnavailablePart |
 | `commit` | `{captureId,attemptId,validated:ValidatedImage}` | receipt进入copying。服务对MIME/尺寸/限额再次校验，Controller须保留本地准备直到提交或释放 |
-| `query` | `{captureId}` | 原receipt；404不证明先前register未发生，原身份先观察再决策 |
+| `query` | `{captureId}` | 原receipt；缺失的 capture 返回 `capture_not_found`，不证明先前 register 未发生，原身份先观察再决策 |
 | `failed` | `{captureId,attemptId,error:ImageError}` | 尚未committed者进入failed并释放预留，保留ImageUnavailablePart；committed者拒绝回退 |
 
 reserved/copying时resourceId非null、resource=null、error=null；committed时resource非null且available、ID相同、error=null；failed时resource=null、error非null，已分配的resourceId可以保留作诊断但不归档为资源。revision 是服务单调正 Decimal。服务复制时通过image_request的 `read_capture` action发 `{captureId,attemptId,sha256,byteLength,offset,limit}`，Controller回PreparedImageChunk，preparationId 精确等于 attemptId。摘要和长度绑定原 attempt 的 validated 结果，offset 小于总长，其他块规则与 read_prepared 相同，支持 DisplayMime 五种格式。每个准备对象严格区分 upload/capture 命名空间，capture 文件按 attempt 隔离，旧 attempt 的块不能混入新准备。
+
+当前 fence 下的确定图片业务拒绝以同一请求的 `image_capture_result` 返回，不关闭 Session 通道。可以保存控制身份时，register 的确定拒绝保留原 capture 和 attempt 的 failed receipt，resourceId 为 null；已有身份的确定失败也保留原身份。身份或失败回执未能保存时如实返回存储错误，不伪造登记。连接失权、非法帧和 fence 冲突仍按连接错误处理。文件已发布而数据库提交结果未知时，保留原文件和身份并协调原操作；不能将其当作确定失败或删除可能已被引用的内容。清理失败保留清理责任与错误。
+
+账户媒体速率准入在读取或登记 capture 身份之前执行，`rate_limited` 表示该请求未通过准入；Controller 保留原 register 请求，限速后以同一身份重试。已发送请求的结果未知时，后续查询得到 `capture_not_found` 仍不能证明该请求未提交，继续协调原身份。
 
 服务取得字节后核验摘要/长度并原子提交blob、资源预算、occurrence快照关联，receipt变committed，公开available；未成功的状态只产生pending或ImageUnavailablePart。首次成功后captureId查询始终对应同bytes；同captureId的原register请求、occurrence和locator不可改变。copying/committed及同一attempt中已确认的validated摘要不可替换，变化返回capture_conflict。只有从未committed、已进入failed、旧writer实际停止且旧staging和预留已释放后，唯一来源重试端点才可在原captureId/locator/occurrence下分配新attemptId、内部upload/chunk身份和reserved准备，接受改变后的源摘要；旧attempt迟到commit/failed/read均拒绝。精确重放原register只观察当前receipt，不触发重取源。query只需captureId，结果未知时不要求调用方猜测新的attemptId。服务提交回执丢失时Controller只query，不能另分配resource或更换已采集字节。提交后重新获取必须新captureId/resourceId/imageId及显式的新记录关联。
 

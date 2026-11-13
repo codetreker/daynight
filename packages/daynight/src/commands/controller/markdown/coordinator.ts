@@ -6,6 +6,7 @@ import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { NativeReadPolicy, ProviderOptions } from "../providers/types.js";
 import type { CaptureReadPolicy, CaptureSourceLease } from "../media/preparations.js";
+import { ImageCaptureRequestError } from "../media/capture-error.js";
 import { copyLocalImage, createLocalImageContext, parseLocalImagePath } from "./local-source.js";
 import type { LocalImageCheckpoint } from "./local-source-proof.js";
 import type { ExternalImagePolicyLease } from "./external-policy.js";
@@ -22,6 +23,7 @@ export type MarkdownCaptureRecord = {
   started: boolean; awaitingRetry: boolean; queuedAt: number; receipt: ImageCaptureReceipt | null; error: ImageError | null; cooldownUntil: number;
   sourceAdmission?: { attemptId: string; policyRevision: string | null; sourceProofSha256: string | null; validated: ValidatedImage } | null;
   sourceCleanup?: { captureId: string; attemptId: string; pending: boolean; error: ImageError | null } | null;
+  observeOnly?: boolean;
 };
 type Hooks = Required<Pick<ProviderOptions, "registerImageCapture" | "queryImageCapture" | "commitImageCapture" | "failImageCapture">>;
 const failure = (code: string): ImageError => ({ code, message: "The original image source could not be captured." });
@@ -155,7 +157,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     if (receipt.attemptId !== record.request.attemptId) {
       // Only the original control request may start a service retry. Persist
       // that boundary with its identity before receipt projection can fail.
-      record.awaitingRetry = true; record.started = false; record.error = null; record.phase = "unknown";
+      record.awaitingRetry = true; record.started = false; record.error = null; record.observeOnly = false; record.phase = "unknown";
     }
     record.request = { ...record.request, attemptId: receipt.attemptId };
     record.receipt = receipt;
@@ -170,10 +172,19 @@ export const createMarkdownCaptureCoordinator = (options: {
     options.onReceipt(record.request, receipt);
     if (terminal) { record.phase = "settled"; saved(record); }
   };
+  const settleRefusal = (record: MarkdownCaptureRecord, error: unknown): boolean => {
+    if (!(error instanceof ImageCaptureRequestError)) return false;
+    // The local projection records the refusal, not a fabricated service receipt.
+    record.error = { code: error.code, message: error.message }; record.receipt = null; record.phase = "settled";
+    saved(record); options.onFailure?.(record.occurrence, record.error);
+    return true;
+  };
   const settleFailure = async (record: MarkdownCaptureRecord, error: ImageError): Promise<void> => {
     record.error = error; record.phase = "unknown"; saved(record);
     try { observe(record, await hooks.failImageCapture(record.request!.captureId, record.request!.attemptId, error)); }
-    catch { /* The original service identity remains query-only. */ }
+    catch (cause) {
+      if (cause instanceof ImageCaptureRequestError) { record.observeOnly = true; saved(record); }
+    }
   };
   const decode = async <T>(action: () => Promise<T>): Promise<T> => {
     const previous = decodeTail; let release!: () => void;
@@ -244,9 +255,16 @@ export const createMarkdownCaptureCoordinator = (options: {
     let request = record.request;
     let receipt: ImageCaptureReceipt;
     if (record.phase === "waiting") {
+      if (Date.now() < record.cooldownUntil) return;
       journal.registerImageCaptureRequest(request);
       record.phase = "unknown"; saved(record);
-      try { receipt = await hooks.registerImageCapture(request); } catch { return; }
+      try { receipt = await hooks.registerImageCapture(request); }
+      catch (error) {
+        if (error instanceof ImageCaptureRequestError && error.code === "rate_limited") {
+          record.phase = "waiting"; record.cooldownUntil = Date.now() + 1000; saved(record);
+        } else settleRefusal(record, error);
+        return;
+      }
     } else {
       try { receipt = await hooks.queryImageCapture(request.captureId); } catch { return; }
     }
@@ -255,6 +273,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     if (receipt.state === "committed" || receipt.state === "failed") return;
     if (receipt.state === "copying") { record.phase = "unknown"; saved(record); return; }
     if (record.awaitingRetry) return;
+    if (record.observeOnly) return;
     // An unknown failure response cannot turn its admitted stage into a commit.
     if (record.error) { await settleFailure(record, record.error); return; }
     let validated = journal.media().captureStatus(request.captureId, request.attemptId);
@@ -269,7 +288,8 @@ export const createMarkdownCaptureCoordinator = (options: {
       }
     }
     record.phase = "unknown"; saved(record);
-    try { observe(record, await hooks.commitImageCapture(request.captureId, request.attemptId, validated)); } catch { /* Query the original commit. */ }
+    try { observe(record, await hooks.commitImageCapture(request.captureId, request.attemptId, validated)); }
+    catch { record.observeOnly = true; saved(record); }
   };
   const track = <T>(id: string, run: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> => {
     if (active.has(id)) return active.get(id)!.work as Promise<T>;
@@ -319,7 +339,7 @@ export const createMarkdownCaptureCoordinator = (options: {
         joined.throwIfAborted(); checkContext(old.context, request.locator.kind === "local");
         await new Promise<void>(resolve => setTimeout(resolve, Math.min(100, until - performance.now())));
       }
-      const record = saved({ ...old, request, phase: "registered", started: false, awaitingRetry: false, error: null, sourceAdmission: null, queuedAt: Date.now() });
+      const record = saved({ ...old, request, phase: "registered", started: false, awaitingRetry: false, observeOnly: false, error: null, sourceAdmission: null, queuedAt: Date.now() });
       try { const result = await copy(record, joined); record.phase = "unknown"; saved(record); return result; }
       catch (error) { await settleFailure(record, record.error ?? sourceError(error)); throw error; }
     }, signal);

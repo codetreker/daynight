@@ -640,6 +640,14 @@ func (h *Routes) controllerChannel(w http.ResponseWriter, r *http.Request) {
 			}
 			response, err := h.service.Handle(ctx, input.message)
 			if err != nil {
+				var refusal *sessioncore.CaptureRequestError
+				if input.message.Type == "image_capture" && errors.As(err, &refusal) {
+					response := sp.BindingFields(fence.Fence, map[string]any{"type": "image_capture_result", "protocol": sp.Protocol, "sessionId": fence.SessionID, "claimId": fence.ClaimID, "executionGeneration": fence.ExecutionGeneration, "connectionEpoch": fence.ConnectionEpoch, "requestId": input.message.RequestID, "action": input.message.Action, "result": nil, "error": sp.ImageError{Code: refusal.Code, Message: refusal.Message}})
+					if err = relayWrite(ctx, conn, response); err != nil {
+						return
+					}
+					continue
+				}
 				h.channelFailure(ctx, conn, fence, err)
 				return
 			}

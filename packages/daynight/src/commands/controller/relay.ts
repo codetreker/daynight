@@ -1,6 +1,7 @@
 import type { ImageCaptureReceipt, ValidatedImage } from "../../session/image-values.js";
 import type { CaptureReadPolicy, ControllerMediaBlockLease } from "./media/preparations.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./media/release-error.js";
+import { ImageCaptureRequestError } from "./media/capture-error.js";
 import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import { sessionFence, sessionBinding } from "../../session/protocol.js";
 import { readFile, lstat } from "node:fs/promises";
@@ -155,7 +156,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
             if (!pending) return;
             if (pending.action !== message.action || message.result && (message.result.captureId !== pending.captureId || pending.attemptId !== null && message.result.attemptId !== pending.attemptId)) throw new Error("Image capture result identity mismatch.");
             captureRequests.delete(message.requestId); clearTimeout(pending.timer);
-            if (message.error) pending.reject(Object.assign(new Error(message.error.message), { code: message.error.code }));
+            if (message.error) pending.reject(new ImageCaptureRequestError(message.error));
             else pending.resolve(message.result!);
           } else if (message.type === "image_request") {
             handleImage(message, ws);

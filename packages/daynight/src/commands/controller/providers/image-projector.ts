@@ -2,6 +2,7 @@ import { canonicalImageJson, type ImageCaptureRequest, type ImageCaptureReceipt,
 import type { MarkdownTimelineMetadata, NativeImageFile, ProviderEntry, ProviderOptions } from "./types.js";
 import { nativeEntryId } from "./projection.js";
 import type { NativeImageProjectionState, NativeInputPublicationView } from "../media/native-publication-types.js";
+import { ImageCaptureRequestError } from "../media/capture-error.js";
 
 export type NativeImagePayload =
   | { kind: "resource"; resourceId: string }
@@ -30,6 +31,7 @@ const contentOf = (entry: ProviderEntry) => entry.kind === "tool_call" ? entry.o
 export class ProviderImageProjector {
   private readonly pending = new Map<string, Pending>();
   private readonly cleanup = new Set<NativeImagePayload>();
+  private readonly registerRetryAt = new Map<string, number>();
   private work: Promise<void> = Promise.resolve();
   private scheduled = false;
   private requested = false;
@@ -247,10 +249,13 @@ export class ProviderImageProjector {
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "component_unsupported", message: "The native image capture component is unavailable." });
       this.emitPart(pending); this.release(pending); this.pending.delete(request.occurrence.imageId); return;
     }
+    let registerRefusal = false;
     try {
       if (pending.saved.phase === "new") {
+        if (Date.now() < (this.registerRetryAt.get(request.captureId) ?? 0)) { this.scheduleQuery(); return; }
+        this.registerRetryAt.delete(request.captureId);
         pending.saved.phase = "query"; pending.saved.unknownAction = "register"; this.save(pending);
-        const receipt = await options.registerImageCapture(request);
+        const receipt = await options.registerImageCapture(request).catch(error => { registerRefusal = error instanceof ImageCaptureRequestError; throw error; });
         if (this.applyReceipt(pending, receipt)) return;
         pending.saved.phase = receipt.state === "reserved" ? "reserved" : "query"; pending.saved.unknownAction = null; this.save(pending);
       } else if (pending.saved.phase === "query") {
@@ -303,8 +308,22 @@ export class ProviderImageProjector {
         if (this.applyReceipt(pending, await options.commitImageCapture(request.captureId, request.attemptId, validated))) return;
       }
       this.scheduleQuery();
-    } catch {
+    } catch (error) {
       if ((pending.saved as Saved).phase === "settled") { this.scheduleQuery(); return; }
+      if (registerRefusal && error instanceof ImageCaptureRequestError && error.code === "rate_limited") {
+        // Admission preceded registration, so the same frozen request remains eligible.
+        pending.saved.phase = "new"; pending.saved.unknownAction = null;
+        this.registerRetryAt.set(request.captureId, Date.now() + 1000);
+        this.save(pending); this.scheduleQuery(); return;
+      }
+      if (registerRefusal && error instanceof ImageCaptureRequestError) {
+        // A correlated refusal is a known request result, not a lost receipt.
+        // Keep the original identity without inventing a service receipt.
+        pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: error.code, message: error.message });
+        pending.saved.phase = "settled"; pending.saved.unknownAction = null;
+        try { this.save(pending); this.emitPart(pending); this.retire(pending); } catch { this.scheduleQuery(); }
+        return;
+      }
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: "capture_unknown", message: "The original image capture result is unknown." });
       // Reconciliation retains the same capture and attempt. It never repeats
       // register or commit after a response with an unknown outcome.
