@@ -976,7 +976,7 @@ full-scale evidence is needed:
 
 | Workload | Repository-root command | Prerequisites |
 |---|---|---|
-| CLI rendering and Session-v2 archives | `pnpm test:stress` | Builds the CLI and selects `.stress.ts` files |
+| CLI rendering, Session-v2 archives and Controller capacity/transport | `pnpm test:stress` | Builds the CLI and selects `.stress.ts` files |
 | Go query, archive and repeated-write checks | `pnpm server:test:stress` | Isolated PostgreSQL and server test environment |
 | Web graph, model and geometry checks | `pnpm web:test:stress` | Web workspace dependencies |
 
@@ -984,6 +984,24 @@ Stress configurations and Go stress entrypoints refuse a nonempty `CI`
 environment. Ordinary Go discovery omits the `stress` build tag and ordinary
 Vitest discovery omits `.stress.ts` files. Local measurements establish only
 their recorded source and host.
+
+For Codex output fairness, run
+`pnpm test:stress test/commands/controller/output-responsiveness.stress.ts`.
+It uses a synthetic native stdout producer and an independent authenticated IPC
+client against the assembled Controller runtime, with real tool projection and
+SQLite. Finite cases use 400 ten-character deltas (38,000 notification bytes),
+both without backlog and with approximately 2,200 events / 55 MB retained without
+ACK, using single and per-frame producer writes. A separate sustained case keeps
+producing until the observation response. The output records actual pipe chunks,
+consumption/request/response timing, remaining input, ordered content hash and
+independently checked outbox byte totals. Native Windows and Node 24 evidence is
+required for the original pipe scenario; controlled provider/relay behavior does
+not establish real model or service performance. Client response latency uses
+the client's own clock; causal handoff and parent-local observations prove that
+output consumption precedes the request while input remains. Absolute timestamps
+from different processes are diagnostic, since their clock origins may differ.
+The existing Codex media-stream stress suite retains its separate resource
+responsibility.
 
 ## Package versions
 

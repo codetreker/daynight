@@ -213,6 +213,53 @@ test("an awaited response can retain image media before frame cleanup", async ()
   } finally { rpc.dispose(); await rpc.stopped; }
 });
 
+test("natural close drains response media and preserves a consumer's retained lease after EOF cleanup", async () => {
+  const s = storage(), child = transport(), rpc = new CodexRpc(child, () => {}, { createSpool: s.createSpool });
+  let lease: ReturnType<NonNullable<ReturnType<typeof codexMedia>>["retain"]> | undefined;
+  try {
+    const pending = rpc.request("thread/items/list", {});
+    child.stdout.end(JSON.stringify({ id: 1, result: { data: [{ item: { id: "image", type: "imageGeneration", status: "completed", result: "YQ==" } }] } }) + "\n");
+    child.emit("close");
+    const result = await pending as any;
+    lease = codexMedia(result.data[0].item.result)!.retain();
+    await rpc.stopped;
+    expect(readFileSync(lease.path).toString()).toBe("a");
+    lease.release(); lease = undefined; expect(s.files.every(file => !existsSync(file))).toBe(true);
+  } finally { lease?.release(); rpc.dispose(); await rpc.stopped; }
+});
+
+test.each(["dispose", "error", "malformed"])("retained response media survives %s while later frames stop", async action => {
+  const s = storage(), child = transport(), received: unknown[] = [], failures: Error[] = [], original = new Error("Original native failure.");
+  const rpc = new CodexRpc(child, message => received.push(message), { createSpool: s.createSpool, onFatalError: error => failures.push(error) });
+  let lease: ReturnType<NonNullable<ReturnType<typeof codexMedia>>["retain"]> | undefined;
+  try {
+    const pending = rpc.request("thread/items/list", {});
+    child.stdout.write(JSON.stringify({ id: 1, result: { data: [{ item: { id: "image", type: "imageGeneration", status: "completed", result: "YQ==" } }] } }) + "\n");
+    const result = await pending as any;
+    lease = codexMedia(result.data[0].item.result)!.retain();
+    if (action === "dispose") rpc.dispose();
+    else if (action === "error") child.emit("error", original);
+    else child.stdout.write('{"bad":}\n{"method":"late"}\n');
+    await rpc.stopped;
+    expect(received).toEqual([]); expect(readFileSync(lease.path).toString()).toBe("a");
+    if (action === "dispose") expect(failures).toEqual([]);
+    else if (action === "error") expect(failures).toEqual([original]);
+    else expect(failures[0]!.message).toContain("Invalid native protocol");
+    lease.release(); lease = undefined; expect(s.files.every(file => !existsSync(file))).toBe(true);
+  } finally { lease?.release(); rpc.dispose(); await rpc.stopped; }
+});
+
+test("a throwing media consumer releases its frame and stops subsequent dispatch", async () => {
+  const s = storage(), child = transport(), original = new Error("Consumer failed."), failures: Error[] = [];
+  let delivered = 0;
+  const rpc = new CodexRpc(child, () => { delivered += 1; throw original; }, { createSpool: s.createSpool, onFatalError: error => failures.push(error) });
+  try {
+    child.stdout.write(imageFrame("YQ==") + imageFrame("Yg=="));
+    await rpc.stopped;
+    expect(delivered).toBe(1); expect(failures).toEqual([original]); expect(s.files.every(file => !existsSync(file))).toBe(true);
+  } finally { rpc.dispose(); await rpc.stopped; }
+});
+
 test("request timeouts remain unknown and malformed input terminates pending requests", async () => {
   const s = storage(), child = transport(), failures: Error[] = [], rpc = new CodexRpc(child, () => {}, { createSpool: s.createSpool, timeoutMs: 20, onFatalError: error => failures.push(error) });
   try {

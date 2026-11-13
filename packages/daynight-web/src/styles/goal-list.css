@@ -16,24 +16,16 @@
 .goal-list-progress { flex: none; width: 145px; font-size: 10px; color: var(--task-helper); text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
 .goal-list-track i { background: var(--task-done-ink); }
-.goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); padding: 16px 18px 18px 52px; }
-.goal-list-contents section + section { margin-top: 20px; }
-.goal-list-contents h3 { margin: 0 0 10px; font-size: 11px; font-weight: 500; color: var(--task-helper); }
-.goal-list-contents h3 span { margin-left: 4px; padding: 2px 5px; border-radius: 3px; background: #f0f1f5; }
-.goal-list-empty { margin: 0; font-size: 12px; color: var(--task-helper); }
+.goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); background: #fcfcfe; }
+.goal-list-contents .goal-task-list { container-type: inline-size; }
+.goal-list-empty { margin: 0; padding: 16px 18px; font-size: 12px; color: var(--task-helper); }
 @media (max-width: 740px) {
   .goal-list-row { padding-right: 12px; gap: 6px; }
   .goal-list-toggle { flex-wrap: wrap; gap: 10px; padding: 11px 4px 11px 12px; }
   .goal-list-main { flex-basis: calc(100% - 76px); }
   .goal-list-progress { margin-left: 66px; width: auto; flex: 1; text-align: left; }
-  .goal-list-contents:not([hidden]) { padding: 14px 8px; }
 }
 
-@container standalone-list (max-width: 250px) {
-  .goal-list-contents .standalone-row { flex-wrap: wrap; }
-  .goal-list-contents .standalone-row .root-heading { flex-basis: 100%; }
-  .goal-list-contents .task-row-status { flex: 1 1 100%; min-width: 0; max-width: 100%; flex-direction: row; flex-wrap: wrap; justify-content: flex-start; }
-}
 @container (max-width: 250px) {
   .goal-list-contents .goal-task-row { flex-wrap: wrap; }
   .goal-list-contents .goal-task-main { flex-basis: 100%; }

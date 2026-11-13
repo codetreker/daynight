@@ -16,7 +16,7 @@ the private test home and parent/child protection of real Daynight state
 (`~/.daynight` and the inherited `DN_CONFIG_DIR`) against writes and cleanup,
 including symbolic-link aliases. Ordinary test and installed acceptance suites exclude stress
 workloads. From this package, `pnpm test:stress` builds the CLI and runs the
-rendering and full Session-v2 `.stress.ts` suites. The command is local-only
+rendering, Session-v2 archive and Controller capacity/transport `.stress.ts` suites. The command is local-only
 and refuses CI. The [local stress guide](../../docs/development.md#local-stress-validation) owns
 selection and evidence interpretation. Each command's `--help` owns its exact
 usage. Review execution additionally requires Git, an authenticated
@@ -3114,6 +3114,16 @@ the Herdr execution backend. Codex uses a private app-server over stdio, Claude
 uses the bundled Agent SDK, and Copilot uses the bundled SDK with
 its own headless runtime. Provider arguments are checked for that backend before
 claiming. The service must advertise the matching Session protocol and provider.
+Codex stdout consumption yields to ready I/O after each complete frame and each
+bounded decoder input slice. Output remains ordered and complete, media leases
+retain their existing ownership, and partial frames keep their original absolute
+deadline. The Worker IPC observation timeout remains 2,000 ms. This cooperative
+scheduling cannot preempt a single synchronous decoder or storage operation.
+The [Controller design](../../docs/design/task-session-protocol.md#codex-输出消费与-io)
+owns the mechanism; the separate local stress entry can run
+`pnpm test:stress test/commands/controller/output-responsiveness.stress.ts`
+for native stdout, authenticated IPC, content and outbox accounting evidence.
+
 Keep authentication in the native provider profile; credentials never enter a
 Session URL. Project members can read the task's Session tab for messages and tools.
 Only the persisted Session owner can send input, change model or permission

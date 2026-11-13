@@ -11,9 +11,9 @@ children have their own Parent scope and do not determine their Goal's tags.
 ## Decision
 
 The project workspace shares a tag condition between local browsing and remote
-search. Each expanded Goal owns an independent child condition. Local matching
-uses each summary's tags over the complete graph; a chain remains visible when a
-member in its scope matches. Search sends canonical IDs, mode and type on every
+search. Each expanded Goal owns an independent condition for its flat direct-child
+rows. Local matching uses each summary's tags over the complete graph; a top-level
+chain remains visible when a member in its scope matches. Search sends canonical IDs, mode and type on every
 page and checks returned qualifications. Selected names survive catalog paging;
 resolve and server errors identify invalid conditions that remain until removed.
 Explicit overview navigation validates and clears a valid tag condition when it

@@ -10,7 +10,7 @@
 
 ## 数据与控制流
 
-浏览器先持久保存原始 Blob 和有序草稿，再按目标上传。服务登记原上传身份，将有界块暂存并转给 Controller；双方完整验证后，服务持久保存原件并确认 complete。发送另行冻结原操作，整组校验和 pin 后只调用一次原生入口。原生接受由精确证据结算；unknown 只查询。可信历史出现先登记位置，再采集；成功后读取原件，永不重取变化来源来替换原图。
+浏览器先持久保存原始 Blob 和有序草稿，再按目标上传。服务以真实首块或兼容准备入口登记原上传身份，将有界块暂存并转给 Controller；双方完整验证后，服务持久保存原件并确认 complete。发送另行冻结原操作，整组校验和 pin 后只调用一次原生入口。原生接受由精确证据结算；unknown 只查询。可信历史出现先登记位置，再采集；成功后读取原件，永不重取变化来源来替换原图。
 
 身份有不同用途：origin/account/Session 决定归属；完整 fence/native/capability revision 决定发送目标；imageId 是一次出现、resourceId 是不可变原件、uploadId 是准备、operationId 是发送。相同 SHA、路径、显示名、botId 或 native ID 均不等于同一授权。Task fence 使用 sessionId/claimId/executionGeneration，Test/Bot 使用 sessionId/testExecutionId/executionGeneration；Controller 传输再绑定 connectionEpoch、controller/instance。
 
@@ -155,15 +155,26 @@ type ImageUploadReceipt = {
   expiresAt: Timestamp;
   error: ImageError | null;
 };
+type DirectImageContent = {
+  spec: ImageUploadSpec;
+  offset: "0";
+  sha256: SHA256;
+  data: string; // 首块原字节的标准 Base64
+};
 ```
 
 | 交换 | 请求 | 成功结果与约束 |
 | --- | --- | --- |
-| 创建准备 | `PUT {base}/image-uploads/{uploadId}`，body ImageUploadSpec，path/body ID 必须一致 | 201 新建或 200 同 identity/spec 已存在，返回完整 receipt。不同内容复用 ID 为 409 upload_conflict，不追加 bytes。登记原身份后返回 receiving；该兼容状态不预留未来容量。 |
+| 真实首块 | `PUT {base}/image-uploads/{uploadId}/content`，JSON body DirectImageContent，path/spec ID 必须一致 | 同一原身份登记并实际写入首块，201 新建或 200 精确重放，返回完整 receipt，acceptedOffset 是持久确认的前缀。首块解码后 1..524288 bytes、不得超过 spec.byteLength；块摘要与 spec 的整图摘要分别核验。完整 JSON 请求不超过 1 MiB，必要时缩小首块。 |
+| 兼容准备 | `PUT {base}/image-uploads/{uploadId}`，body ImageUploadSpec，path/body ID 必须一致 | 201 新建或 200 同 identity/spec 已存在，返回完整 receipt。不同内容复用 ID 为 409 upload_conflict，不追加 bytes。登记原身份后返回 receiving；该兼容状态不预留未来容量。 |
 | 写块 | `PUT .../{uploadId}/chunks?offset=<Decimal>`，二进制 body，`Content-Type: application/octet-stream`，`Daynight-Chunk-SHA256` 为本块摘要 | 200 receipt。块原字节 1..524288；offset 必须等于已确认偏移或精确重传已确认相同块；服务验证块 digest。重复相同块不增加偏移，不同块或跳跃偏移为409。 |
 | 查询 | `GET .../{uploadId}` | 200 当前 receipt；未知ID为404。读取失败不证明上传失败。 |
 | 完成 | `POST .../{uploadId}/complete`，body `{sha256,byteLength}` | 200 complete，或202 verifying；必须与 spec 一致。服务和 Controller 完成真实格式/可解码性/完整摘要校验及服务持久化后才能 complete。 |
 | 释放 | `DELETE .../{uploadId}`，无body | 200 receipt state=released；只撤销未发送准备引用。原发送已占用或未知时返回409 upload_in_use，不能删消息引用。 |
+
+首块精确重放须匹配完整 spec、offset、块摘要和原字节，不再次建立身份或确认未持久化的偏移。结果未知时先查询原 uploadId：确认不存在后可重发冻结的首块，receiving 按已确认前缀续传，complete 复用原资源，failed 按原失败规则处理；不能更换 ID 绕过未知结果。旧准备与直接首块共享身份、授权和真实内容发布规则，但直接入口不调用兼容准备处理器或容量申请。首块的身份与块意图在同一事务登记，实际文件发布前 acceptedOffset 保持 0；备份校验允许这一未确认意图的文件缺失，但文件存在时仍核验其长度和摘要。恢复后 receiving 沿原身份重传冻结首块，failed/expired/released 按原终态处理与清理；已确认块始终是必需的备份对象。
+
+服务在成功的 `GET .../image-capabilities` 和 Controller WebSocket 升级响应中提供可忽略的 `Daynight-Session-Direct-Upload-Version: 1`，跨源响应公开该 header，原响应 body 不增加必填字段。新消费者须在现有能力发现或握手中检查此版本；无支持时报告 `upgrade_required`，不发新 submit 或回退容量申请。当前 Server 已提供直接入口，现有 Controller 仍使用 register/commit 兼容流程，尚未采用 submit。
 
 receipt 中 complete 必须 resource.status=available、offset=spec.byteLength，资源 MIME/长度/摘要与 spec 完全一致，error=null。其他状态 resource=null；failed/expired 必须 error，receiving/verifying/released 的 error=null。verifying 已接收全部 bytes；receiving 的 offset 从0到长度；已失败/过期/释放保留最后确认偏移用于诊断，不允许继续。expiresAt 为未占用上传资格到期时间，初始创建后24小时，不由查询或精确重传自动延长。complete 仍可能过期；已占用发送、未知发送和消息引用不按上传到期清理。过期可保留本地原图显式重新准备新 uploadId，不能偷换旧 operation 的 intent。
 
@@ -325,12 +336,17 @@ type ImageCaptureReceipt = {
 
 | action | 请求body | 成功result |
 | --- | --- | --- |
+| `submit` | `{request:ImageCaptureRequest,attemptId:UUID,outcome}`；outcome 为 `{kind:"validated",validated:ValidatedImage}`、`{kind:"resource"}` 或 `{kind:"failed",error:ImageError}` | validated 登记 copying 并由现有 writer 读取封存原件；resource 关联同 Session 已存且未回收的原件；failed 保存真实失败。均返回原 ImageCaptureReceipt，不调用兼容 register/commit。 |
 | `register` | ImageCaptureRequest | ImageCaptureReceipt；先核验消息关联/locator 来源并登记原身份；兼容 reserved 不代表容量预留 |
 | `commit` | `{captureId,attemptId,validated:ValidatedImage}` | receipt进入copying。服务对MIME/尺寸/限额再次校验，Controller须保留本地准备直到提交或释放 |
 | `query` | `{captureId}` | 原receipt；缺失的 capture 返回 `capture_not_found`，不证明先前 register 未发生，原身份先观察再决策 |
 | `failed` | `{captureId,attemptId,error:ImageError}` | 尚未committed者进入failed并保留原清理责任，保留ImageUnavailablePart；committed者拒绝回退 |
 
-reserved/copying时resourceId非null、resource=null、error=null；committed时resource非null且available、ID相同、error=null；failed时resource=null、error非null，已分配的resourceId可以保留作诊断但不归档为资源。revision 是服务单调正 Decimal。服务复制时通过image_request的 `read_capture` action发 `{captureId,attemptId,sha256,byteLength,offset,limit}`，Controller回PreparedImageChunk，preparationId 精确等于 attemptId。摘要和长度绑定原 attempt 的 validated 结果，offset 小于总长，其他块规则与 read_prepared 相同，支持 DisplayMime 五种格式。每个准备对象严格区分 upload/capture 命名空间，capture 文件按 attempt 隔离，旧 attempt 的块不能混入新准备。
+reserved/copying时resourceId非null、resource=null、error=null；committed时resource非null且available、ID相同、error=null；failed时resourceId和resource均为null、error非null。revision 是服务单调正 Decimal。服务复制时通过image_request的 `read_capture` action发 `{captureId,attemptId,sha256,byteLength,offset,limit}`，Controller回PreparedImageChunk，preparationId 精确等于 attemptId。摘要和长度绑定原 attempt 的 validated 结果，offset 小于总长，其他块规则与 read_prepared 相同，支持 DisplayMime 五种格式。每个准备对象严格区分 upload/capture 命名空间，capture 文件按 attempt 隔离，旧 attempt 的块不能混入新准备。
+
+submit 首次提交的顶层 attemptId 必须等于 request.attemptId；已有 capture 的完整 request 不变，顶层 attemptId 必须等于当前 receipt.attemptId。相同 attempt 的精确重放须保留原 occurrence、locator 和 outcome 内容；已 copying 的原 validated 不可替换，已 committed 或 failed 返回该 attempt 的真实结果，迟到旧 attempt 拒绝且不修改当前状态。resource 仅接受 resource locator 并在同一事务中取得消息引用；资源正在回收或引用冲突时不确认 committed。validated 的原件按现有完整读取、解码和实际容量发布后才变为 available。
+
+提交前调用方冻结原 request、当前 attemptId、outcome 和封存 bytes 关联；重连时传输 requestId 和 connectionEpoch 可更新，业务身份不能变。响应未知先查询原 capture；copying 继续观察，committed/failed 采用原结果。当前授权、Session 和 fence 有效且明确 `capture_not_found` 时，可重放同一冻结内容和封存 bytes；普通 Session 404、撤权或未知传输结果不能证明未登记，也不能重新抓取来源或换身份。
 
 当前 fence 下的确定图片业务拒绝以同一请求的 `image_capture_result` 返回，不关闭 Session 通道。可以保存控制身份时，register 的确定拒绝保留原 capture 和 attempt 的 failed receipt，resourceId 为 null；已有身份的确定失败也保留原身份。身份或失败回执未能保存时如实返回存储错误，不伪造登记。连接失权、非法帧和 fence 冲突仍按连接错误处理。文件已发布而数据库提交结果未知时，保留原文件和身份并协调原操作；不能将其当作确定失败或删除可能已被引用的内容。清理失败保留清理责任与错误。
 

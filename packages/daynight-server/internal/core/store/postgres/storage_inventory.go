@@ -2,11 +2,21 @@ package postgres
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -121,7 +131,7 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 			if err != nil {
 				return err
 			}
-			objects, err := tx.Query(ctx, `SELECT 'session-archives',c.object_path,c.sha256,c.byte_length FROM session_archive_chunks c JOIN session_archive_files f USING(session_id,file_id) WHERE c.session_id=$1 AND NOT f.staging_released UNION ALL SELECT 'session-archives',object_path||'/content',sha256,byte_length FROM session_archive_files WHERE session_id=$1 AND state='complete' AND purpose='timeline' UNION ALL SELECT 'session-resources',c.blob_path,c.sha256,c.byte_length FROM session_image_chunks c JOIN session_image_uploads u USING(session_id,upload_id) WHERE c.session_id=$1 AND NOT u.storage_released`, v.SessionID)
+			objects, err := tx.Query(ctx, `SELECT 'session-archives',c.object_path,c.sha256,c.byte_length FROM session_archive_chunks c JOIN session_archive_files f USING(session_id,file_id) WHERE c.session_id=$1 AND NOT f.staging_released UNION ALL SELECT 'session-archives',object_path||'/content',sha256,byte_length FROM session_archive_files WHERE session_id=$1 AND state='complete' AND purpose='timeline'`, v.SessionID)
 			if err != nil {
 				return err
 			}
@@ -138,6 +148,28 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 			if err != nil {
 				return err
 			}
+			images, err := tx.Query(ctx, `SELECT c.blob_path,c.sha256,c.byte_length,c.chunk_offset,u.upload_id::text,u.image_id::text,u.actor_id::text,u.spec,u.receipt,u.expires_at FROM session_image_chunks c JOIN session_image_uploads u USING(session_id,upload_id) WHERE c.session_id=$1 AND NOT u.storage_released`, v.SessionID)
+			if err != nil {
+				return err
+			}
+			for images.Next() {
+				o := store.StorageObject{Bucket: sessionresource.Bucket}
+				var offset int64
+				var upload, image, actor string
+				var spec, receipt []byte
+				var expiry time.Time
+				if err = images.Scan(&o.Path, &o.SHA256, &o.ByteLength, &offset, &upload, &image, &actor, &spec, &receipt, &expiry); err != nil {
+					images.Close()
+					return err
+				}
+				o.Optional = pendingImageChunk(v, o, offset, upload, image, actor, spec, receipt, expiry)
+				v.Objects = append(v.Objects, o)
+			}
+			err = images.Err()
+			images.Close()
+			if err != nil {
+				return err
+			}
 			if err = verify(v); err != nil {
 				return fmt.Errorf("Session %s storage closure: %w", v.SessionID, err)
 			}
@@ -145,4 +177,62 @@ func (s *Store) VerifyStorageInventory(ctx context.Context, verify func(store.St
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func pendingImageChunk(v store.StorageInventory, object store.StorageObject, offset int64, upload, image, actor string, rawSpec, rawReceipt []byte, expiry time.Time) bool {
+	if offset != 0 || object.ByteLength < 1 || object.ByteLength > sp.MaxContentChunkBytes {
+		return false
+	}
+	decoded, err := hex.DecodeString(object.SHA256)
+	if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != object.SHA256 {
+		return false
+	}
+	namespace, err := sessionresource.NewNamespace(v.ProjectID, v.OwnerID, v.SessionID)
+	if err != nil {
+		return false
+	}
+	path, err := namespace.ChunkPath(upload, 0)
+	if err != nil || object.Path != path {
+		return false
+	}
+	spec, err := sp.DecodeImageUploadSpec(rawSpec)
+	if err != nil || actor != v.OwnerID || spec.UploadID != upload || spec.ImageID != image || spec.Target.ActorUserID != actor || spec.Target.Fence.SessionID != v.SessionID {
+		return false
+	}
+	length, err := strconv.ParseInt(spec.ByteLength, 10, 64)
+	if err != nil || object.ByteLength > length {
+		return false
+	}
+	fields, err := jsonobject.Decode(rawReceipt, "image upload receipt", "uploadId", "imageId", "target", "state", "acceptedOffset", "spec", "resource", "expiresAt", "error")
+	if err != nil || len(fields) != 9 || string(fields["acceptedOffset"]) != `"0"` || string(fields["resource"]) != "null" {
+		return false
+	}
+	metadata, err := jsonobject.Decode(fields["spec"], "image upload metadata", "name", "mediaType", "byteLength", "sha256")
+	if err != nil || len(metadata) != 4 {
+		return false
+	}
+	var receipt sp.ImageUploadReceipt
+	if json.Unmarshal(rawReceipt, &receipt) != nil || receipt.UploadID != upload || receipt.ImageID != image || !reflect.DeepEqual(receipt.Target, spec.Target) || receipt.Spec != (sp.ImageUploadMetadata{Name: spec.Name, MediaType: spec.MediaType, ByteLength: spec.ByteLength, SHA256: spec.SHA256}) {
+		return false
+	}
+	var receiptTarget, specTarget any
+	var specFields map[string]json.RawMessage
+	if json.Unmarshal(rawSpec, &specFields) != nil || json.Unmarshal(fields["target"], &receiptTarget) != nil || json.Unmarshal(specFields["target"], &specTarget) != nil || !reflect.DeepEqual(receiptTarget, specTarget) {
+		return false
+	}
+	observedExpiry, err := time.Parse(time.RFC3339Nano, receipt.ExpiresAt)
+	if err != nil || !observedExpiry.Equal(expiry) {
+		return false
+	}
+	switch receipt.State {
+	case "receiving", "released":
+		return string(fields["error"]) == "null"
+	case "failed", "expired":
+		errorFields, err := jsonobject.Decode(fields["error"], "image error", "code", "message")
+		validText := func(value string) bool {
+			return utf8.ValidString(value) && len(value) <= 256 && strings.TrimFunc(value, unicode.IsSpace) != "" && !strings.ContainsRune(value, 0)
+		}
+		return err == nil && len(errorFields) == 2 && receipt.Error != nil && validText(receipt.Error.Code) && validText(receipt.Error.Message)
+	}
+	return false
 }

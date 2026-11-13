@@ -118,6 +118,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const lastGraphResource = useRef<string | null>(null);
   const restoreRequested = useRef(false);
   const previousDetail = useRef(detailSelection);
+  const closedDetail = useRef(detailSelection);
   const pendingRetirement = useRef<{ summaryId: string | null } | null>(null);
   const currentSelection = useRef(selection);
   currentSelection.current = selection;
@@ -127,11 +128,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (event.historyChanged && (currentSelection.current.detail !== null || currentSelection.current.projectGraphWitness !== null)) {
       const detail = currentSelection.current.detail;
       pendingRetirement.current = { summaryId: detail?.source === "summary" ? detail.id : null };
-      listOrigin.current = null; originalTrigger.current = null; lastGraphResource.current = null;
+      listOrigin.current = null; originalTrigger.current = null; lastGraphResource.current = null; closedDetail.current = null;
     }
   }), [viewer, projectId]);
   const suppressRestore = useRef(false);
   if (previousDetail.current !== null && detailSelection === null) {
+    closedDetail.current = previousDetail.current;
     if (!suppressRestore.current) restoreRequested.current = true;
     suppressRestore.current = false;
   }
@@ -305,7 +307,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       }
       if (fromSearch && (focusVisible(trigger) || focusVisible(searchInput.current))) return true;
       if (origin === null && focusVisible(trigger)) return true;
-      if (focusProjectList(currentView.current, origin, resolveProjectGraphTarget(lastGraphResource.current, indexForFocus.current, summariesForFocus.current), indexForFocus.current, lastGraphResource.current)) return true;
+      const detailWitness = !fromSearch && closedDetail.current?.source === "summary" && !closedDetail.current.insideProjectGraph ? closedDetail.current.id : null;
+      if (focusProjectList(currentView.current, origin, resolveProjectGraphTarget(lastGraphResource.current, indexForFocus.current, summariesForFocus.current), indexForFocus.current, lastGraphResource.current, detailWitness)) return true;
       if (focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return true;
       if (focusVisible(document.getElementById(`project-section-tab-${currentSection.current}`))) return true;
       return focusVisible(heading.current);

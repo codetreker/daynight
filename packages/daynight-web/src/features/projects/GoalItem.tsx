@@ -1,33 +1,31 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { TaskSummary, WorkerClaim } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import type { GraphIndex } from '../task-graph/model';
 import { completionProgress } from '../task-graph/completion-progress';
 import { projectTaskScope } from '../task-graph/scope';
-import { ScopedTaskChainRow } from '../task-graph/ScopedTaskChainRow';
+import { TaskMemberRow } from '../task-graph/TaskMemberRow';
+import { useSessionChainVisibility } from '../task-session-summary/TaskSessionSummaryProvider';
+import { compareTaskMembers } from './task-order';
 import { ActiveWorkerIndicator } from '../task-graph/ActiveWorkerIndicator';
-import { goalListContents } from './goal-list-model';
 import { TaskTagList } from '../task-tags/TaskTagList';
 import { TagFilter, useTagFilter, matchesTagFilter } from '../task-tags/TagFilter';
-import { StandaloneTaskRow } from './StandaloneTaskRow';
 import { completedAtFor } from '../task-completion/model';
 import { useCompletionTime } from '../task-completion/useCompletionTime';
 import { useCompletionHint } from '../task-completion/useCompletionHint';
 import { CompletionTimeLabel } from '../task-completion/CompletionTimeLabel';
 import '../../styles/task-status-rows.css';
 
-export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, openChainId, onOpenGoal, onOpenGoalGraph, onOpenListTask, onOpenListChain, onOpenSession }: {
+export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, onOpenGoal, onOpenGoalGraph, onOpenListTask, onOpenSession }: {
   readonly projectId: string;
   readonly index: GraphIndex;
   readonly goal: TaskSummary;
   readonly summaries?: ReadonlyMap<string, TaskSummary>;
   readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, 'state' | 'machine'>>;
-  readonly openChainId: string | null;
   readonly onOpenGoal: (id: string, trigger: HTMLElement) => void;
   readonly onOpenGoalGraph: (id: string, trigger: HTMLElement) => void;
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
-  readonly onOpenListChain: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => {
   const { messages: { workspace: { goals: m }, graph, common, assignment } } = useI18n();
@@ -36,31 +34,20 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, op
   const scope = useMemo(() => projectTaskScope(index, goal.id), [index, goal.id]);
   const memberIds = useMemo(() => new Set(scope.taskIds), [scope]);
   const inProgressCount = scope.taskIds.filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
+  const tasks = useMemo(() => scope.taskIds.map((id) => index.nodes.get(id)!).toSorted(compareTaskMembers), [scope, index]);
+  const visibilityRef = useSessionChainVisibility(`goal-members-${goal.id}`, scope.taskIds);
   const [expanded, setExpanded] = useState(false);
   const filter = useTagFilter(projectId, expanded);
-  const contents = useMemo(() => goalListContents(scope, index), [scope, index]);
-  const visibleContents = useMemo(() => {
-    const matches = (id: string) => !filter.invalid && (summaries?.has(id)
-      ? matchesTagFilter(summaries.get(id)!.tags, filter.value)
-      : filter.value.tagIds.length === 0 && !filter.value.untagged);
-    return { standaloneIds: contents.standaloneIds.filter(matches), chains: contents.chains.filter(chain => chain.memberIds.some(matches)) };
-  }, [contents, summaries, filter.value, filter.invalid]);
-  const [expandedChainIds, setExpandedChainIds] = useState<ReadonlySet<string>>(() => new Set());
+  const visibleTasks = useMemo(() => tasks.filter((task) => !filter.invalid && (summaries?.has(task.id)
+      ? matchesTagFilter(summaries.get(task.id)!.tags, filter.value)
+      : filter.value.tagIds.length === 0 && !filter.value.untagged)), [tasks, summaries, filter.value, filter.invalid]);
   const content = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
-  const root = useRef<HTMLLIElement>(null);
-  useLayoutEffect(() => {
-    const valid = new Set(contents.chains.map((chain) => chain.representativeId));
-    setExpandedChainIds((current) => {
-      if ([...current].every((id) => valid.has(id))) return current;
-      return new Set([...current].filter((id) => valid.has(id)));
-    });
-  }, [contents.chains]);
   const title = `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}`;
   const childrenId = `project-goal-children-${goal.id}`;
   const { total: count } = scope.progress;
   const progress = completionProgress(scope.progress);
-  return <li className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status} ref={root}>
+  return <li className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status}>
     <div className="goal-list-row task-status-surface" data-task-status={goal.status}>
       <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} aria-describedby={`project-goal-in-progress-${goal.id} project-goal-assignee-${goal.id} project-goal-worker-${goal.id} project-goal-composition-${goal.id} project-goal-progress-${goal.id} project-goal-status-${goal.id} project-goal-tags-${goal.id}`} onClick={() => {
         if (expanded && content.current?.contains(document.activeElement)) toggle.current?.focus({ preventScroll: true });
@@ -68,7 +55,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, op
       }}><svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
       <span className="goal-list-icon" aria-hidden="true">◎</span>
       <span className="goal-list-main"><span className="goal-title-line"><span className="goal-list-title" id={`project-goal-${goal.id}`}>{title}</span><span className="goal-in-progress" id={`project-goal-in-progress-${goal.id}`}>{graph.inProgressCount({ count: inProgressCount })}</span></span>
-        <TaskTagList id={`project-goal-tags-${goal.id}`} tags={goal.tags} /><span className="goal-list-meta"><TaskAssigneeIdentity id={`project-goal-assignee-${goal.id}`} projectId={projectId} assignedTo={goal.assignedTo} /><span id={`project-goal-worker-${goal.id}`}><ActiveWorkerIndicator memberIds={memberIds} workerMachines={workerMachines} /></span><span id={`project-goal-composition-${goal.id}`}>{m.composition({ chains: scope.chains.length, standalone: scope.standaloneIds.length })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span></span>
+        <TaskTagList id={`project-goal-tags-${goal.id}`} tags={goal.tags} /><span className="goal-list-meta"><TaskAssigneeIdentity id={`project-goal-assignee-${goal.id}`} projectId={projectId} assignedTo={goal.assignedTo} /><span id={`project-goal-worker-${goal.id}`}><ActiveWorkerIndicator memberIds={memberIds} workerMachines={workerMachines} /></span><span id={`project-goal-composition-${goal.id}`}>{m.composition({ count })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span></span>
       <span className="goal-list-progress" id={`project-goal-progress-${goal.id}`}><span>{graph.progress({ done: progress.displayDone, total: progress.displayTotal })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${progress.widthPercent}%` }} /></span></span>
       <span className={`root-status graph-status-${goal.status}`} id={`project-goal-status-${goal.id}`}>{common.status[goal.status]}</span>
       </button>
@@ -79,18 +66,8 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, op
     <div id={childrenId} ref={content} hidden={!expanded} className="goal-list-contents">{expanded && <>
       <TagFilter controller={filter} child />
       {count === 0 && <p className="goal-list-empty">{m.emptyTasks}</p>}
-      {count > 0 && !filter.invalid && visibleContents.standaloneIds.length === 0 && visibleContents.chains.length === 0 && <p className="goal-list-empty">{assignment.noMatches}</p>}
-      {visibleContents.standaloneIds.length > 0 && <section aria-label={m.standalone}><h3>{m.standalone} <span>{visibleContents.standaloneIds.length}</span></h3><ul className="standalone-list">{visibleContents.standaloneIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} {...(summaries?.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`goal-${goal.id}-task-${id}`} onSelectTask={(taskId, trigger) => onOpenListTask(taskId, trigger, goal.id)} />)}</ul></section>}
-      {visibleContents.chains.length > 0 && <section aria-label={m.chains}><h3>{m.chains} <span>{visibleContents.chains.length}</span></h3><ul className="root-list">{visibleContents.chains.map((chain) => {
-        const instanceId = `goal-${goal.id}-chain-${chain.representativeId}`;
-        return <ScopedTaskChainRow key={chain.representativeId} projectId={projectId} index={index} {...(summaries === undefined ? {} : { summaries })} rootId={chain.representativeId} memberIds={chain.memberIds} progress={chain.progress} workerMachines={workerMachines} instanceId={instanceId} expanded={expandedChainIds.has(chain.representativeId)} onExpandedChange={(value) => {
-          if (!value) {
-            const children = root.current?.querySelector<HTMLElement>(`[id="goal-children-${instanceId}"]`);
-            if (children?.contains(document.activeElement)) root.current?.querySelector<HTMLElement>(`[id="task-root-${instanceId}"]`)?.focus({ preventScroll: true });
-          }
-          setExpandedChainIds((current) => { const next = new Set(current); if (value) next.add(chain.representativeId); else next.delete(chain.representativeId); return next; });
-        }} open={openChainId === chain.representativeId} onOpenChain={(id, trigger) => onOpenListChain(id, trigger, goal.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />;
-      })}</ul></section>}
+      {count > 0 && !filter.invalid && visibleTasks.length === 0 && <p className="goal-list-empty">{assignment.noMatches}</p>}
+      {visibleTasks.length > 0 && <ul className="goal-task-list" ref={visibilityRef}>{visibleTasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} {...(summaries?.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={`goal-${goal.id}`} workerMachine={workerMachines.get(task.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     </>}</div>
   </li>;
 };
