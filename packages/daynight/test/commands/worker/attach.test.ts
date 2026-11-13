@@ -3,21 +3,26 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HerdrLifecycleRecord, MacProcessIdentity } from "../../../src/commands/worker/herdr/lifecycle-types.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
 import { attachWorker } from "../../../src/commands/worker/attach.js";
 
-const mocks = vi.hoisted(() => ({ connect: vi.fn(), instance: vi.fn(), spawn: vi.fn(), stat: vi.fn(), records: vi.fn(), peer: vi.fn(), observe: vi.fn(), select: vi.fn() }));
+const mocks = vi.hoisted(() => ({ connect: vi.fn(), instance: vi.fn(), spawn: vi.fn(), stat: vi.fn(), records: vi.fn(), peer: vi.fn(), observe: vi.fn(), select: vi.fn(), verifyLaunch: vi.fn(), shared: vi.fn(), inspectSharedDaemon: vi.fn() }));
 vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrInstance: mocks.instance }));
 vi.mock("../../../src/commands/worker/herdr/command.js", async original => ({ ...await original<object>(), spawnHerdrProcess: mocks.spawn }));
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>(), statSync: mocks.stat }));
 vi.mock("../../../src/commands/worker/herdr/lifecycle-store.js", () => ({ readHerdrLifecycleRecords: mocks.records }));
 vi.mock("../../../src/commands/worker/herdr/native-macos.js", () => ({ createMacProcessControl: () => ({ peer: mocks.peer, observe: mocks.observe }) }));
+vi.mock("../../../src/platform/tool-executables.js", async original => ({ ...await original<object>(), verifyToolLaunch: mocks.verifyLaunch }));
+vi.mock("../../../src/commands/worker/herdr/shared-instance-store.js", () => ({ readHerdrSharedInstance: mocks.shared }));
+vi.mock("../../../src/commands/controller/process-proof.js", () => ({ inspectProcessProof: mocks.inspectSharedDaemon }));
 vi.mock("@inquirer/prompts", () => ({ select: mocks.select }));
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const proof: MacProcessIdentity = { role: "daemon", pid: 123, birthToken: "birth", bootId: "boot", auditToken: [0, 0, 0, 0, 0, 123, 0, 5], ppid: 1, pgid: 123, sid: 123 };
+const sharedProof = { pid: 321, parentPid: 1, processGroupId: 321, startedAt: "original-birth", commandHash: "a".repeat(64) };
 const record = (suffix = "one"): HerdrLifecycleRecord => ({
   owner: { projectId: "project", taskId: `task-${suffix}`, workerId: "worker", worktreeId: "worktree", ownerUserId: "owner", serverOrigin: "https://daynight.example", provider: "codex" },
   claimId: `claim-${suffix}`, cwd: "/worktree", sessionId: `session-${suffix}`, registrationId: "registration", connectionEpoch: "1", registrationRequest: null, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "3", initialAssignment: "transport_completed", initialPrompt: "assignment", automationBlocked: true, preparation: null, segments: [], version: 3,
-  runs: [{ run: { executionGeneration: "1", owner: { projectId: "project", taskId: `task-${suffix}`, workerId: "worker", worktreeId: "worktree", ownerUserId: "owner", serverOrigin: "https://daynight.example", provider: "codex" }, binding: { instanceId: suffix, sessionId: "w", workspaceId: "workspace", paneId: "1", terminalId: "terminal", nativeSessionId: "native" }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "active", nativeLaunch: "observed", instanceDirectory: `/worker/h/r/${suffix}`, daemon: proof, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
+  runs: [{ run: { executionGeneration: "1", owner: { projectId: "project", taskId: `task-${suffix}`, workerId: "worker", worktreeId: "worktree", ownerUserId: "owner", serverOrigin: "https://daynight.example", provider: "codex" }, binding: { instanceId: suffix, sessionId: "w", workspaceId: "workspace", paneId: "1", terminalId: "terminal", nativeSessionId: "native" }, startedAt: "2026-11-04T00:00:00.000Z", stoppedAt: null, stopProof: null, segmentIds: [] }, phase: "active", nativeLaunch: "observed", launches: recordedHerdrTools(), instanceDirectory: `/worker/h/r/${suffix}`, daemon: proof, processes: [], stopOperationId: null, stopReason: null, error: null, admission: null }],
 });
 const durableRecords = (...records: HerdrLifecycleRecord[]): void => {
   Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
@@ -36,7 +41,7 @@ const attachment = {
 };
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.clearAllMocks(); mocks.verifyLaunch.mockResolvedValue(undefined); mocks.shared.mockReturnValue({ current: { launch: recordedHerdrTools().herdr, daemon: sharedProof, phase: "ready" }, pending: null }); mocks.inspectSharedDaemon.mockResolvedValue("running");
   mocks.stat.mockImplementation(() => { throw Object.assign(new Error("Missing journal"), { code: "ENOENT" }); }); mocks.records.mockReturnValue([]); mocks.peer.mockResolvedValue(proof); mocks.observe.mockResolvedValue("same");
   Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
   Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
@@ -63,6 +68,58 @@ describe("worker terminal attachment", () => {
     expect(mocks.peer).toHaveBeenCalledWith("/run/api.sock"); expect(mocks.peer).toHaveBeenCalledWith("/run/client.sock");
     expect(mocks.observe).toHaveBeenCalledWith(proof);
     client.emit("close", 0, null); await pending;
+  });
+
+  it("spawns the original frozen client and never resolves a replacement from PATH", async () => {
+    durableRecords(record());
+    const pending = attachWorker({ homeDirectory: "/worker" }); await spawned();
+    expect(mocks.verifyLaunch).toHaveBeenCalledWith(record().runs[0]!.launches!.herdr, expect.anything());
+    expect(mocks.spawn.mock.calls[0]!.slice(0, 2)).toEqual([record().runs[0]!.launches!.herdr!.command.file, ["--session", "w", "client"]]);
+    client.emit("close", 0, null); await pending;
+  });
+
+  it("keeps an unpinned original runtime without spawning a new client", async () => {
+    const original = record(); delete original.runs[0]!.launches; durableRecords(original);
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toMatchObject({ code: "legacy_tool_identity_missing" });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("retains a changed original executable without substituting a new client", async () => {
+    durableRecords(record());
+    const failure = Object.assign(new Error("Original client changed"), { code: "tool_identity_changed" }); mocks.verifyLaunch.mockRejectedValue(failure);
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toBe(failure);
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it.each(["stopped", "replaced"])("retains the shared runtime when its original daemon is %s", async status => {
+    mocks.inspectSharedDaemon.mockResolvedValue(status);
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toThrow(/original.*daemon/i);
+    expect(mocks.inspectSharedDaemon).toHaveBeenCalledWith(sharedProof);
+    expect(mocks.connect).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a shared replacement after connection without spawning a client", async () => {
+    mocks.inspectSharedDaemon.mockResolvedValueOnce("running").mockResolvedValue("replaced");
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toThrow(/original.*daemon/i);
+    expect(mocks.connect).toHaveBeenCalledOnce(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unjournaled shared daemon without resolving a client from current targets", async () => {
+    mocks.shared.mockReturnValue(null);
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toMatchObject({ code: "legacy_tool_identity_missing" });
+    expect(mocks.connect).toHaveBeenCalledOnce(); expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it("reports missing tool identity for a recorded legacy shared daemon without spawning a client", async () => {
+    mocks.shared.mockReturnValue({ current: { launch: null, daemon: null, phase: "ready" }, pending: null });
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toMatchObject({ code: "legacy_tool_identity_missing" });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "starting", "stopping", "stopped"])("does not attach while the shared daemon state is %s", async phase => {
+    mocks.shared.mockReturnValue({ current: phase === null ? null : { launch: recordedHerdrTools().herdr, daemon: sharedProof, phase }, pending: null });
+    await expect(attachWorker({ homeDirectory: "/worker" })).rejects.toThrow(/original.*daemon/i);
+    expect(mocks.connect).not.toHaveBeenCalled(); expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
   it("selects among unfinished original runtimes without offering confirmed stopped runs", async () => {
@@ -113,7 +170,7 @@ describe("worker terminal attachment", () => {
     await spawned();
     expect(mocks.connect).toHaveBeenCalledOnce();
     const [executable, args, options] = mocks.spawn.mock.calls[0]!;
-    expect(executable).toBe("herdr"); expect(args).toEqual(["--session", "w", "client"]);
+    expect(executable).toBe(record().runs[0]!.launches!.herdr!.command.file); expect(args).toEqual(["--session", "w", "client"]);
     expect(options).toMatchObject({ stdio: "inherit", detached: false, windowsHide: false, env: { ...attachment.environment, CODEX_HOME: "/native-home" } });
     for (const key of attachment.unsetEnvironment) expect(options.env).not.toHaveProperty(key);
     expect(process.env.HERDR_SESSION).toBe("human");

@@ -152,7 +152,7 @@ export const inspectWorkerEnvironment = async (
     }, {
       label: "Private Herdr endpoint", remedy: "Use an OS account whose home path fits the private Herdr socket or named-pipe limit.",
       verify: async () => { const paths = resolveHerdrInstancePaths(options.paths, platform); return paths.apiEndpoint; },
-    }, ...nativeHookRuntimeChecks({ environment, cwd: options.workingDirectory, platform, runCommand })];
+    }, ...nativeHookRuntimeChecks({ environment, cwd: options.workingDirectory, platform, ...(dependencies.runCommand === undefined ? {} : { runCommand: dependencies.runCommand }) })];
     for (const agent of ["codex", "copilot", "claude"] as const) {
       const [, version] = createNativePrerequisiteChecks({ homeDirectory: options.homeDirectory, environment, platform, runCommand }, {
         context: { cwd: options.workingDirectory }, configuration: { agent, model: null, args: [] },

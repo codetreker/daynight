@@ -3,26 +3,46 @@ import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter, 
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { workerStoreFormat } from "./store-format.js";
 import { canonicalId } from "../../api/parse.js";
-import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
+import { readWorkerClaim } from "../../api/task-properties.js";
+import type { AgentControlMode, Task, WorkerAgent } from "../../api/types.js";
 import type { ArchiveBackfillIdentity, ArchiveBackfillSchedule, ArchiveBackfillScheduleRecord, ClaimIdentity, CleanupSchedule, CleanupScheduleRecord, LocalTask, ProjectIdentity, ResourceOwner, WorkerProject } from "./types.js";
 import { parseWorkerCloudNative, type WorkerCloudNative } from "../../api/worker-configuration.js";
 import { parseResolvedToolLaunch } from "../../platform/tool-launch-record.js";
 import type { ResolvedToolLaunch } from "../../platform/tool-executables.js";
 import { parseFrozenToolObservation } from "./tool-observation.js";
 import type { FrozenToolObservation } from "./types.js";
-type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation };
+export type FrozenNativeConfiguration = WorkerCloudNative & { validateNativeSelection?: true; toolLaunch?: ResolvedToolLaunch; toolObservation?: FrozenToolObservation; herdrLaunch?: ResolvedToolLaunch; herdrObservation?: FrozenToolObservation };
 const parseFrozenNative = (value: unknown): FrozenNativeConfiguration => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Invalid frozen native configuration.");
   const data = value as Record<string, unknown>, selection = Object.hasOwn(data, "validateNativeSelection");
   if (selection && data.validateNativeSelection !== true) throw new Error("Invalid frozen native validation policy.");
-  const { validateNativeSelection: _selection, toolLaunch, toolObservation, ...native } = data;
+  const { validateNativeSelection: _selection, toolLaunch, toolObservation, herdrLaunch, herdrObservation, ...native } = data;
   const configuration = parseWorkerCloudNative(native);
   if (Object.hasOwn(data, "toolLaunch") && configuration.agent === "claude") throw new Error("Claude cannot acquire a Worker tool launch.");
   if (Object.hasOwn(data, "toolObservation") && !Object.hasOwn(data, "toolLaunch")) throw new Error("Frozen tool observation requires its original recipe.");
+  if (Object.hasOwn(data, "herdrObservation") && !Object.hasOwn(data, "herdrLaunch")) throw new Error("Frozen Herdr observation requires its original recipe.");
   return { ...configuration, ...(selection ? { validateNativeSelection: true as const } : {}),
     ...(Object.hasOwn(data, "toolLaunch") ? { toolLaunch: parseResolvedToolLaunch(toolLaunch, { tool: configuration.agent as "codex" | "copilot" }) } : {}),
-    ...(Object.hasOwn(data, "toolObservation") ? { toolObservation: parseFrozenToolObservation(toolObservation) } : {}) };
+    ...(Object.hasOwn(data, "toolObservation") ? { toolObservation: parseFrozenToolObservation(toolObservation) } : {}),
+    ...(Object.hasOwn(data, "herdrLaunch") ? { herdrLaunch: parseResolvedToolLaunch(herdrLaunch, { tool: "herdr", context: "herdr" }) } : {}),
+    ...(Object.hasOwn(data, "herdrObservation") ? { herdrObservation: parseFrozenToolObservation(herdrObservation) } : {}) };
 };
+
+export type ClaimToolReservation = ResourceOwner & {
+  workerId: string;
+  version: bigint;
+  agentControlMode: AgentControlMode;
+  nativeConfiguration: FrozenNativeConfiguration;
+};
+// Recovery policy remains live; only the native selection belongs to a claim.
+const canonicalFrozenNative = (input: FrozenNativeConfiguration): FrozenNativeConfiguration => parseFrozenNative({
+  agent: input.agent, model: input.model, args: input.args,
+  ...(input.validateNativeSelection === undefined ? {} : { validateNativeSelection: input.validateNativeSelection }),
+  ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }),
+  ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }),
+  ...(input.herdrLaunch === undefined ? {} : { herdrLaunch: input.herdrLaunch }),
+  ...(input.herdrObservation === undefined ? {} : { herdrObservation: input.herdrObservation }),
+});
 
 const text = (value: unknown, name: string): string => {
   if (typeof value !== "string" || value.trim().length === 0) throw new TypeError(`${name} must be a nonempty string.`);
@@ -77,6 +97,27 @@ const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
   return { ...claimKey(row), status: row.status, agent: agent(row.agent), agentControlMode: mode(row.agentControlMode), sessionId: row.sessionId === null ? null : id(row.sessionId, "Native session ID") };
 };
+const taskVersion = (value: unknown): bigint => {
+  if (typeof value !== "bigint" || value < 1n || value > 9_223_372_036_854_775_807n) throw new TypeError("Claim reservation task version must be a positive int64 BigInt.");
+  return value;
+};
+const asClaimToolReservation = (input: ClaimToolReservation): ClaimToolReservation => {
+  const configuration = canonicalFrozenNative(input.nativeConfiguration), controlMode = mode(input.agentControlMode);
+  if (configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== controlMode) throw new Error("Reserved native tools differ from the requested control mode.");
+  if (configuration.herdrLaunch !== undefined && controlMode !== "herdr") throw new Error("Web claim reservations cannot acquire a Herdr launch.");
+  return { ...claimKey(input), worktreeId: id(input.worktreeId, "Worktree ID"), workerId: id(input.workerId, "Worker ID"), version: taskVersion(input.version), agentControlMode: controlMode, nativeConfiguration: configuration };
+};
+const sameClaimToolReservation = (left: ClaimToolReservation, right: ClaimToolReservation): boolean =>
+  left.projectId === right.projectId && left.taskId === right.taskId && left.claimId === right.claimId
+  && left.worktreeId === right.worktreeId && left.workerId === right.workerId && left.version === right.version
+  && left.agentControlMode === right.agentControlMode && JSON.stringify(left.nativeConfiguration) === JSON.stringify(right.nativeConfiguration);
+const reservationColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, worktree_id AS worktreeId, worker_id AS workerId, task_version AS version, agent_control_mode AS agentControlMode, configuration";
+type ReservationRow = Omit<ClaimToolReservation, "version" | "nativeConfiguration"> & { version: string; configuration: string };
+const asReservationRow = (row: ReservationRow): ClaimToolReservation => {
+  if (typeof row.version !== "string" || !/^[1-9][0-9]{0,18}$/.test(row.version)) throw new TypeError("The original claim reservation version is invalid.");
+  return asClaimToolReservation({ ...row, version: BigInt(row.version), nativeConfiguration: parseFrozenNative(JSON.parse(row.configuration)) });
+};
+
 export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
   if (typeof databaseFile === "string") absolutePath(databaseFile, "The SQLite database path");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
@@ -132,12 +173,14 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     if (row === undefined) return null;
     const configuration = parseFrozenNative(JSON.parse(row.configuration)), task = needTask(identity);
     if (configuration.agent !== task.agent || configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== mode(task.agentControlMode)) throw new Error("Frozen native configuration differs from its original claim.");
+    if (configuration.herdrLaunch !== undefined && mode(task.agentControlMode) !== "herdr") throw new Error("Web claims cannot acquire a Herdr launch.");
     return configuration;
   });
   const freezeNativeConfiguration = (identity: ClaimIdentity, input: FrozenNativeConfiguration): FrozenNativeConfiguration => atomic(() => {
-    const task = needTask(identity), configuration = parseFrozenNative({ agent: input.agent, model: input.model, args: input.args, ...(input.validateNativeSelection === undefined ? {} : { validateNativeSelection: input.validateNativeSelection }), ...(input.toolLaunch === undefined ? {} : { toolLaunch: input.toolLaunch }), ...(input.toolObservation === undefined ? {} : { toolObservation: input.toolObservation }) }), previous = getNativeConfiguration(identity);
+    const task = needTask(identity), configuration = canonicalFrozenNative(input), previous = getNativeConfiguration(identity);
     if (task.agent !== configuration.agent) throw new Error("Frozen configuration does not match the claimed agent.");
     if (configuration.toolLaunch !== undefined && configuration.toolLaunch.context !== mode(task.agentControlMode)) throw new Error("Frozen tool launch does not match the claimed control mode.");
+    if (configuration.herdrLaunch !== undefined && mode(task.agentControlMode) !== "herdr") throw new Error("Web claims cannot acquire a Herdr launch.");
     if (previous !== null) {
       if (JSON.stringify(previous) !== JSON.stringify(configuration)) throw new Error("The claim's native configuration is already frozen.");
       return previous;
@@ -147,8 +190,72 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     db.prepare("INSERT INTO claim_native_configurations(project_id, task_id, claim_id, configuration) VALUES (@projectId, @taskId, @claimId, @configuration)").run({ ...claimKey(identity), configuration: JSON.stringify(configuration) });
     return configuration;
   });
+  const reservationForTask = (identity: { projectId: string; taskId: string }): ClaimToolReservation | null => read(() => {
+    const row = db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations WHERE project_id = @projectId AND task_id = @taskId`)
+      .get({ ...projectKey(identity), taskId: id(identity.taskId, "Task ID") }) as ReservationRow | undefined;
+    return row === undefined ? null : asReservationRow(row);
+  });
+  const getClaimToolReservation = (identity: ClaimIdentity): ClaimToolReservation | null => read(() => {
+    const key = claimKey(identity), reservation = reservationForTask(key);
+    if (reservation !== null && reservation.claimId !== key.claimId) throw new Error("The task has an unresolved reservation for another claim.");
+    return reservation;
+  });
+  const registerPending = (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null; nativeConfiguration?: FrozenNativeConfiguration }): LocalTask => atomic(() => {
+    const key = claimKey(input), tool = agent(input.agent);
+    const sessionId = input.sessionId === undefined || input.sessionId === null ? null : id(input.sessionId, "Native session ID");
+    if (getProject(key) === null) throw new Error("The project repository binding must be registered before its claimed tasks.");
+    const existing = getTask(key);
+    if (existing !== null) {
+      if (existing.agent !== tool || (input.agentControlMode !== undefined && existing.agentControlMode !== mode(input.agentControlMode))) throw new Error("The claimed task is already registered for a different agent.");
+      return existing;
+    }
+    db.prepare(`INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode)
+      VALUES (@projectId, @taskId, @claimId, 'pending', @agent, @sessionId, @agentControlMode)`).run({ ...key, agent: tool, sessionId, agentControlMode: mode(input.agentControlMode) });
+    if (input.nativeConfiguration !== undefined) freezeNativeConfiguration(key, input.nativeConfiguration);
+    return needTask(key);
+  });
+  const deleteClaimToolReservation = (reservation: ClaimToolReservation): void => {
+    db.prepare("DELETE FROM claim_tool_reservations WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId").run(claimKey(reservation));
+  };
+
   return {
     close: (): void => { closeSqliteDatabase(db, { file: typeof databaseFile === "string" ? databaseFile : databaseFile.name, format: workerStoreFormat }); },
+    getClaimToolReservation,
+    listClaimToolReservations: (): ClaimToolReservation[] => read(() => (db.prepare(`SELECT ${reservationColumns} FROM claim_tool_reservations ORDER BY project_id, task_id`).all() as ReservationRow[]).map(asReservationRow)),
+    reserveClaimTools: (input: ClaimToolReservation): ClaimToolReservation => atomic(() => {
+      const reservation = asClaimToolReservation(input), previous = reservationForTask(reservation);
+      if (previous !== null) {
+        if (!sameClaimToolReservation(previous, reservation)) throw new Error("The claim tool reservation is already frozen for its original request.");
+        return previous;
+      }
+      if (getProject(reservation) === null) throw new Error("The project repository binding must be registered before reserving claim tools.");
+      if (getTask(reservation) !== null) throw new Error("A registered claim cannot acquire a pre-grant tool reservation.");
+      db.prepare(`INSERT INTO claim_tool_reservations(project_id, task_id, claim_id, worktree_id, worker_id, task_version, agent_control_mode, configuration)
+        VALUES (@projectId, @taskId, @claimId, @worktreeId, @workerId, @version, @agentControlMode, @configuration)`)
+        .run({ ...claimKey(reservation), worktreeId: reservation.worktreeId, workerId: reservation.workerId, version: reservation.version.toString(), agentControlMode: reservation.agentControlMode, configuration: JSON.stringify(reservation.nativeConfiguration) });
+      return getClaimToolReservation(reservation)!;
+    }),
+    acceptClaimToolReservation: (task: Task, workerId: string): LocalTask | null => atomic(() => {
+      const reservation = reservationForTask({ projectId: task.projectId, taskId: task.id });
+      if (reservation === null) return null;
+      const claim = readWorkerClaim(task.properties);
+      if (task.status !== "in_progress" || taskVersion(task.version) <= reservation.version || claim === undefined || claim.state !== "active"
+        || claim.claimId !== reservation.claimId || claim.worktreeId !== reservation.worktreeId || claim.workerId !== reservation.workerId || id(workerId, "Worker ID") !== reservation.workerId
+        || claim.agent !== reservation.nativeConfiguration.agent || claim.agentControlMode !== reservation.agentControlMode) throw new Error("The granted claim differs from its original tool reservation.");
+      if (getTask(reservation) !== null) throw new Error("A pre-grant reservation cannot replace an already registered claim.");
+      const local = registerPending({ ...claimKey(reservation), agent: reservation.nativeConfiguration.agent, agentControlMode: reservation.agentControlMode, nativeConfiguration: reservation.nativeConfiguration });
+      deleteClaimToolReservation(reservation);
+      return local;
+    }),
+    // The caller must prove a definite rejection, a later authoritative task
+    // version, or a confirmed deletion of the original task.
+    releaseClaimToolReservation: (input: ClaimToolReservation): boolean => atomic(() => {
+      const expected = asClaimToolReservation(input), previous = reservationForTask(expected);
+      if (previous === null) return false;
+      if (!sameClaimToolReservation(previous, expected)) throw new Error("The claim tool reservation changed before release.");
+      deleteClaimToolReservation(previous);
+      return true;
+    }),
     getProject,
     listProjects: (): WorkerProject[] => read(() => (db.prepare(`SELECT ${projectColumns} FROM projects ORDER BY project_id`).all() as WorkerProject[]).map(asProject)),
     registerProject: (input: WorkerProject): WorkerProject => atomic(() => {
@@ -157,6 +264,7 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
       if (existing !== null && (existing.repoUrl !== project.repoUrl || existing.localPath !== project.localPath)) {
         const unfinished = db.prepare("SELECT 1 FROM tasks WHERE project_id = @projectId AND status <> 'done' LIMIT 1").get(project);
         if (unfinished !== undefined) throw new Error("An unfinished execution prevents changing its project repository binding.");
+        if (db.prepare("SELECT 1 FROM claim_tool_reservations WHERE project_id = @projectId LIMIT 1").get(project) !== undefined) throw new Error("An unresolved claim request prevents changing its project repository binding.");
         if (db.prepare("SELECT 1 FROM cleanup_schedules WHERE project_id = @projectId LIMIT 1").get(project) !== undefined) throw new Error("Outstanding cleanup prevents changing its project repository binding.");
       }
       db.prepare(`INSERT INTO projects(project_id, repo_url, local_path) VALUES (@projectId, @repoUrl, @localPath)
@@ -199,21 +307,7 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     freezeNativeConfiguration,
     listTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
     listUnfinishedTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
-    registerPending: (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null; nativeConfiguration?: FrozenNativeConfiguration }): LocalTask => atomic(() => {
-      const key = claimKey(input);
-      const tool = agent(input.agent);
-      const sessionId = input.sessionId === undefined || input.sessionId === null ? null : id(input.sessionId, "Native session ID");
-      if (getProject(key) === null) throw new Error("The project repository binding must be registered before its claimed tasks.");
-      const existing = getTask(key);
-      if (existing !== null) {
-        if (existing.agent !== tool || (input.agentControlMode !== undefined && existing.agentControlMode !== mode(input.agentControlMode))) throw new Error("The claimed task is already registered for a different agent.");
-        return existing;
-      }
-      db.prepare(`INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode)
-        VALUES (@projectId, @taskId, @claimId, 'pending', @agent, @sessionId, @agentControlMode)`).run({ ...key, agent: tool, sessionId, agentControlMode: mode(input.agentControlMode) });
-      if (input.nativeConfiguration !== undefined) freezeNativeConfiguration(key, input.nativeConfiguration);
-      return needTask(key);
-    }),
+    registerPending,
     activateTask: (identity: ClaimIdentity): LocalTask => atomic(() => {
       const task = needTask(identity);
       if (task.status === "done") throw new Error("The local execution is already done.");

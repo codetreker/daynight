@@ -133,7 +133,8 @@ unless separately recorded by the resolver.
 The [runtime integration decision](2026-11-12-worker-frozen-tool-runtime.md)
 adds Web Task/Bot launch consumers, shared probes and a bounded Copilot authority
 profile. That profile freezes its known preload closure and a complete private
-distribution manifest in addition to the plain resolver dependencies. Herdr
-instance mapping remains separate. A successful parse alone still does not prove
+distribution manifest in addition to the plain resolver dependencies. The
+[Herdr launch decision](2026-11-12-herdr-frozen-tool-launch.md) owns controlled
+pane mapping and frozen instance selection. A successful parse alone still does not prove
 that a file exists, that a tool can run, that its protocol is compatible, or that
 the Worker has applied the selection.

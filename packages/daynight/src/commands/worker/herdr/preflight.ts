@@ -4,7 +4,7 @@ import { open, realpath } from "node:fs/promises";
 import { gte } from "semver";
 import type { Operation } from "../../../api/operation.js";
 import { codexConfigurationArguments, codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
-import { runHerdrCommand } from "./command.js";
+import { runHerdrCommand, spawnHerdrProcess } from "./command.js";
 import type { HerdrCommand, HerdrCommandResult } from "./command.js";
 import { probeNativeAgentVersion } from "./version-probe.js";
 import type { HerdrRpcClient } from "./rpc.js";
@@ -128,7 +128,12 @@ export const nativeHookRuntimeChecks = (options: {
   platform: NodeJS.Platform;
   runCommand?: NativePrerequisiteCommandRunner;
 }): readonly NativePrerequisiteCheck[] => {
-  const runCommand = options.runCommand === undefined ? runHerdrCommand : options.runCommand;
+  // Windows PowerShell can exit zero without redirected output when detached.
+  // Keep the official hook's command/PATH and the runner's budget/tree-close owner.
+  const runCommand = options.runCommand ?? (options.platform === "win32"
+    ? (command: HerdrCommand, operation: Operation) => runHerdrCommand(command, operation,
+      (file, args, spawnOptions) => spawnHerdrProcess(file, args, { ...spawnOptions, detached: false }))
+    : runHerdrCommand);
   const runtimes = options.platform === "win32"
     ? [{ file: "powershell", args: ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], version: /^\d+\.\d+/m }]
     : [{ file: "bash", args: ["--version"], version: /^GNU bash, version /m }, { file: "python3", args: ["--version"], version: /^Python 3\./m }];
@@ -162,7 +167,7 @@ export const createNativePrerequisiteChecks = (options: {
   if (launch && (launch.tool !== agent || launch.context !== "herdr")) throw new Error("Native prerequisite tool differs from its Herdr request.");
   const invoke = async (args: readonly string[], directory: string, operation: Operation) => {
     if (launch) await verifyToolLaunch(launch, operation);
-    const command = launch ? toolCommand(launch, args) : { file: agent, args };
+    const command = launch ? toolCommand(launch, agent === "copilot" ? ["--no-auto-update", ...args] : args) : { file: agent, args };
     return runCommand({ ...command, environment, cwd: directory }, operation);
   };
   if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new Error("The native agent must be codex, claude or copilot.");
@@ -190,7 +195,7 @@ export const createNativePrerequisiteChecks = (options: {
       if (agent === "codex" && !gte(version, "0.135.0")) throw new Error("Codex 0.135.0 or newer is required to bypass startup hook trust review.");
       return version;
     },
-  }, ...nativeHookRuntimeChecks({ environment, cwd, platform, runCommand }), {
+  }, ...nativeHookRuntimeChecks({ environment, cwd, platform, ...(options.runCommand === undefined ? {} : { runCommand: options.runCommand }) }), {
     kind: "configuration", label: `${agent} official hook asset`,
     remedy: `Run herdr integration install ${agent}, then inspect herdr integration status.`,
     verify: async (operation) => { const file = asset(); await readMetadata(file, operation); return file; },
