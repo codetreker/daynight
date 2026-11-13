@@ -1,4 +1,3 @@
-import { parseTagFilter } from "./tag-filter.js";
 import type { CreateTaskInput, Project, Task, TaskFilters, TaskPlatform, UpdateTaskInput } from "../../api/types.js";
 import { UsageError } from "../../cli/context.js";
 import type { CliContext } from "../../cli/context.js";
@@ -167,7 +166,7 @@ export const runTaskCommand = async (
   if (title !== undefined && !isNonemptyText(title)) throw new UsageError("Task title must be nonempty UTF-8 text without NUL characters.", help);
   if (description !== undefined && !isText(description)) throw new UsageError("Task description must be UTF-8 text without NUL characters.", help);
   const dependencyFields = await compileDependencies(dependsOn, externalDependsOn, clearDependencies, help);
-  const filterTags = name === "list" || name === "ready" ? parseTagFilter(command, help) : {};
+  const filterTags = name === "list" || name === "ready" ? (await import("./tag-filter.js")).parseTagFilter(command, help) : {};
   const rawTagIds = name === "list" || name === "ready" ? undefined : command.options.get("--tag") as readonly string[] | undefined;
   const clearTags = command.options.has("--clear-tags");
   if (clearTags && rawTagIds !== undefined) throw new UsageError("--clear-tags conflicts with --tag.", help);
