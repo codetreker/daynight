@@ -556,6 +556,76 @@ it.each(['ordinary', 'unknown-dialog', 'unknown-callback'] as const)('does not w
   } finally { scope.dispose(); }
 });
 
+it.each(['ordinary', 'unknown-dialog', 'unknown-callback'] as const)('accepts a slow %s preview after a newer positive task sync', async mode => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const graph = graphFixture([detailFixture(projectId, '00000000-0000-4000-8000-000000000005')]);
+  const seed = await scope.beginSync(projectId, scope.signal);
+  await scope.applySync(seed, taskSyncFromGraph(graph, { versionForTask: () => 1n }), scope.signal);
+  const slow = Promise.withResolvers<Response>(); let previews = 0, session!: ProjectAccessSession;
+  let check: (() => Promise<'available' | 'unavailable'>) | undefined;
+  const Capture = () => { session = useProjectAccess(projectId).session; return null; };
+  const Subject = () => { const guard = useProjectManagementGuard(); return <ProjectAccessBoundary projectId={projectId} initialRead><Capture /><ProjectDeletion projectId={projectId} active onRoute unavailable={false} guard={guard} onOutcome={(_kind, _error, retry) => { check = retry; }} /></ProjectAccessBoundary>; };
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    if (url.endsWith('/access')) return Promise.resolve(json(access));
+    if (url.includes('/deletion-preview')) { previews++; return mode === 'ordinary' || previews > 1 ? slow.promise : Promise.resolve(json(preview)); }
+    if (url === `/api/v1/projects/${projectId}` && init.method === 'DELETE') return Promise.reject(new TypeError('lost response'));
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  try {
+    render(<Subject />, { taskCache: { scope } });
+    const button = await screen.findByRole('button', { name: 'Delete project' });
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    const dialog = screen.getByRole('dialog', { name: 'Delete this project?' });
+    if (mode !== 'ordinary') {
+      await within(dialog).findByText('https://example.com/repo'); confirm(dialog);
+      await within(dialog).findByRole('alert'); await waitFor(() => expect(check).toBeDefined());
+      if (mode === 'unknown-dialog') fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' }));
+    }
+    const checked = mode === 'unknown-callback' ? check!() : undefined;
+    await waitFor(() => expect(previews).toBe(mode === 'ordinary' ? 1 : 2));
+    const ticket = await scope.beginSync(projectId, scope.signal);
+    const observation = session.beginObservation();
+    await scope.applySync(ticket, taskSyncFromGraph(graph, { query: { epoch: ticket.epoch! }, versionForTask: () => 1n }), scope.signal);
+    expect(session.publishSync(observation, access)).toBe(true);
+    await act(async () => slow.resolve(json(preview)));
+    if (checked !== undefined) await expect(checked).resolves.toBe('available');
+    else if (mode === 'unknown-dialog') expect(await within(dialog).findByText(/project is currently accessible/i)).toBeVisible();
+    else expect(await within(dialog).findByText('https://example.com/repo')).toBeVisible();
+  } finally { scope.dispose(); }
+});
+
+it.each(['dialog', 'callback'] as const)('rejects a pending unknown-outcome %s check after an independent withdrawal', async mode => {
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  const graph = graphFixture([detailFixture(projectId, '00000000-0000-4000-8000-000000000005')]);
+  const seed = await scope.beginSync(projectId, scope.signal);
+  await scope.applySync(seed, taskSyncFromGraph(graph, { versionForTask: () => 1n }), scope.signal);
+  const slow = Promise.withResolvers<Response>(); let previews = 0;
+  let check: (() => Promise<'available' | 'unavailable'>) | undefined;
+  const Subject = () => { const guard = useProjectManagementGuard(); return <ProjectAccessBoundary projectId={projectId} initialRead><ProjectDeletion projectId={projectId} active onRoute unavailable={false} guard={guard} onOutcome={(_kind, _error, retry) => { check = retry; }} /></ProjectAccessBoundary>; };
+  vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+    if (url.endsWith('/access')) return Promise.resolve(json(access));
+    if (url.includes('/deletion-preview')) return ++previews === 1 ? Promise.resolve(json(preview)) : slow.promise;
+    if (init.method === 'DELETE') return Promise.reject(new TypeError('lost response'));
+    throw new Error(`Unexpected request: ${url}`);
+  }));
+  try {
+    render(<Subject />, { taskCache: { scope } });
+    const dialog = await open(); confirm(dialog); await waitFor(() => expect(check).toBeDefined());
+    let checked: Promise<'available' | 'unavailable'> | undefined;
+    if (mode === 'callback') { checked = check!(); void checked.catch(() => {}); }
+    else fireEvent.click(within(dialog).getByRole('button', { name: 'Check current state' }));
+    await waitFor(() => expect(previews).toBe(2));
+    const ticket = await scope.beginSync(projectId, scope.signal);
+    await act(async () => { await scope.revokeProject(ticket, scope.signal); });
+    await act(async () => slow.resolve(json(preview)));
+    if (checked !== undefined) await expect(checked).rejects.toThrow('Project observation changed');
+    else {
+      expect(within(dialog).queryByText(/project is currently accessible/i)).toBeNull();
+      expect(within(dialog).getByRole('button', { name: 'Check current state' })).toBeEnabled();
+    }
+  } finally { scope.dispose(); }
+});
+
 it('does not withdraw a newer Project observation for an old rejected DELETE 404', async () => {
   const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
   const graph = graphFixture([detailFixture(projectId, '00000000-0000-4000-8000-000000000005')]);

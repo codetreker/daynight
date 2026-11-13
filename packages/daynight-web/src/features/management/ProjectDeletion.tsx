@@ -50,7 +50,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
   useEffect(() => { if (!onRoute) { read.current?.abort(); setLoading(false); if (operation.current !== null && !operation.current.dispatched) operation.current.controller.abort(); } }, [onRoute]);
   useEffect(() => scope.subscribe((event) => {
     if (event.projectId !== projectId || !event.accessRevoked) return;
-    read.current?.abort(); setPreview(null); setTyped("");
+    read.current?.abort(); read.current = null; setLoading(false); setPreview(null); setTyped("");
     if (resultRef.current?.kind !== "unknown" && operation.current === null) setDialog(false);
   }), [scope, projectId]);
   useEffect(() => {
@@ -77,7 +77,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
       await scope.ready(signal);
       const fresh = checkingUnknown ? null : await access.session.waitForFreshAccess(signal, true);
       if (signal.aborted || scope.isInvalidated || !latest.current.onRoute) return;
-      if (!scope.canRevokeProjectRead(ticket, projectReadRevision) || !checkingUnknown && fresh?.teamRole !== "admin") { setPreview(null); setTyped(""); setReadError(new Error("Project observation changed")); return; }
+      if (!scope.canRevokeProject(ticket) || !checkingUnknown && fresh?.teamRole !== "admin") { setPreview(null); setTyped(""); setReadError(new Error("Project observation changed")); return; }
       scope.markProjectReadable(projectId);
       if (resultRef.current?.kind === "unknown") { setChecked("available"); return; }
       setPreview((previous) => cursor === undefined || previous === null ? page : { ...page, activeClaims: [...previous.activeClaims, ...page.activeClaims] });
@@ -151,6 +151,8 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
       const next = { kind, error } as const; resultRef.current = next;
       const check = async (): Promise<"available" | "unavailable"> => {
         const controller = new AbortController();
+        let withdrawn = false;
+        const stopWithdrawal = scope.subscribe((event) => { if (event.projectId === projectId && event.accessRevoked) withdrawn = true; });
         const stop = subscribeAuthPause(() => controller.abort());
         if (authRequestsPaused()) controller.abort();
         const checkSignal = AbortSignal.any([controller.signal, scope.signal]);
@@ -160,7 +162,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
           try {
             await previewProjectDeletion(projectId, {}, scope.userId, checkSignal, scope.principalMismatch);
             await scope.ready(checkSignal);
-            if (!scope.canRevokeProjectRead(checkTicket, projectReadRevision)) throw new Error("Project observation changed");
+            if (withdrawn || !scope.canRevokeProject(checkTicket)) throw new Error("Project observation changed");
             scope.markProjectReadable(projectId);
             return "available";
           } catch (failure) {
@@ -173,7 +175,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
             }
             throw failure;
           }
-        } finally { stop(); }
+        } finally { stop(); stopWithdrawal(); }
       };
       if (kind === "rejected") guard.release("delete");
       const controller = new AbortController(); publication.current = controller;
