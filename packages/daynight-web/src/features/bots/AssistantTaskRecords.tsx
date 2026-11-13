@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import { listAssistantTaskItems, listAssistantTaskRecords, type AssistantTaskItem, type AssistantTaskRecord } from '../../api/assistant-tasks';
 import type { BotDefinition } from '../../api/bots';
@@ -43,6 +43,12 @@ export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = nu
   const records = useBotRead(`assistant-task-records:${taskId}:${itemId}`, enabled, loadRecords);
   const referenced = useRef<string | null>(null);
   const region = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (recordId === null) return;
+    // Following evidence selects that record independently of retained filters.
+    referenced.current = null;
+    setSelection({ taskId, itemId: '', pages: 1 }); setKind(''); setAuthor('');
+  }, [taskId, recordId]);
   useEffect(() => {
     if (!enabled || !recordId || referenced.current === `${taskId}:${recordId}` || !records.value?.records.some(entry => entry.id === recordId)) return;
     const target = region.current?.querySelector<HTMLElement>(`[id="record-${recordId}"]`);

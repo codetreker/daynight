@@ -145,3 +145,26 @@ it('keeps delete and rollback confirmations bound to the task version originally
   fireEvent.click(screen.getByRole('button', { name: 'Confirm rollback' }));
   await waitFor(() => expect(rollback).toHaveBeenCalledWith('1', '8'));
 });
+
+it('clears retained filters for a new evidence link while preserving filters during ordinary refreshes', async () => {
+  const firstItem = botId(50), secondItem = botId(51);
+  const items = [firstItem, secondItem].map((id, index) => ({ id, taskId, key: `Item ${index + 1}`, episode: '1', state: 'open' as const, category: 'stalled', followerBotId: botId(1), appState: {}, version: '1', createdAt: BOT_TIME, updatedAt: BOT_TIME }));
+  vi.mocked(listAssistantTaskItems).mockResolvedValue({ items, nextCursor: null, observedAt: BOT_TIME });
+  const first = record(40, firstItem, 'fact'), second = { ...record(41, secondItem, 'unknown'), authorBotId: botId(2) };
+  vi.mocked(listAssistantTaskRecords).mockImplementation(async (_id, query) => ({ items: query.itemId === firstItem ? [first] : [first, second], nextCursor: null, observedAt: BOT_TIME }));
+  const view = renderWithLocale(<AssistantTaskRecords taskId={taskId} enabled bots={[botDefinition(1), botDefinition(2)]} />, { locale: 'en', taskCache: true });
+  await screen.findByText('Evidence 40');
+  fireEvent.change(screen.getByRole('combobox', { name: 'Item' }), { target: { value: firstItem } });
+  await waitFor(() => expect(screen.queryByText('Evidence 41')).toBeNull());
+  fireEvent.change(screen.getByRole('combobox', { name: 'Record type' }), { target: { value: 'fact' } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Author' }), { target: { value: botId(1) } });
+  const before = vi.mocked(listAssistantTaskRecords).mock.calls.length;
+  fireEvent(document, new Event('visibilitychange'));
+  await waitFor(() => expect(vi.mocked(listAssistantTaskRecords).mock.calls.length).toBeGreaterThan(before));
+  expect(screen.getByRole('combobox', { name: 'Item' })).toHaveValue(firstItem);
+  expect(screen.getByRole('combobox', { name: 'Record type' })).toHaveValue('fact');
+  view.rerender(<AssistantTaskRecords taskId={taskId} enabled bots={[botDefinition(1), botDefinition(2)]} recordId={second.id} />);
+  const target = await screen.findByText('Evidence 41');
+  await waitFor(() => expect(target.closest('li')).toHaveFocus());
+  for (const name of ['Item', 'Record type', 'Author']) expect(screen.getByRole('combobox', { name })).toHaveValue('');
+});

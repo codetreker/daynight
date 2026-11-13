@@ -103,3 +103,27 @@ it('publishes a late unknown result to the remounted task and keeps its mutation
   expect(screen.getByRole('button', { name: 'Check current result' })).toBeEnabled();
   expect(f.writes).toHaveLength(1);
 });
+
+it.each(['transfer', 'release'] as const)('checks an unknown %s receipt and current task before an explicit new decision', async operation => {
+  const f = fixture();
+  if (operation === 'release') f.state.task = { ...f.state.task, holderBotId: botId(1), claimGeneration: '1', claimState: 'active', credentialOperationId: botId(83), claimedAt: BOT_TIME, renewedAt: BOT_TIME, leaseUntil: '2099-01-01T00:00:00Z' };
+  f.setWrite(async () => { throw new TypeError('claim response lost'); });
+  mount(); await screen.findByRole('region', { name: 'Coordination task' });
+  fireEvent.click(screen.getByRole('button', { name: operation === 'release' ? 'Release' : 'Assign assistant' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(screen.getAllByText(/The write result is unknown/).length).toBeGreaterThan(0));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  const before = f.fetch.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Check current result' }));
+  await screen.findByText(/Current data was read/);
+  expect(screen.queryByText('The change was not accepted.')).toBeNull();
+  expect(f.writes).toHaveLength(1);
+  const original = f.writes[0]!;
+  expect(original.path).toBe(`/api/v1/assistant-tasks/${taskId}/${operation}`);
+  const reads = f.fetch.mock.calls.slice(before).map(([url]) => String(url));
+  expect(reads[0]).toBe(`/api/v1/assistant-tasks/${taskId}/claim-operations/${original.input.operationId}`);
+  expect(reads).toContain(`/api/v1/assistant-tasks/${taskId}`);
+  fireEvent.click(screen.getByRole('button', { name: 'I reviewed the current result' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: operation === 'release' ? 'Release' : 'Assign assistant' })).toBeEnabled());
+  expect(f.writes).toHaveLength(1);
+});

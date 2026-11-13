@@ -37,7 +37,8 @@ export function AssistantTaskDetail({taskId,tab='manual',recordId,eventId,enable
   const value=read.value,task=value?.task;
   const focusedEvent=useRef<string|null>(null);
   useEffect(()=>{
-    if(!enabled || tab!=='records' || !eventId || focusedEvent.current===eventId)return;
+    if(!eventId){focusedEvent.current=null;return;}
+    if(!enabled || tab!=='records' || focusedEvent.current===eventId)return;
     const node=document.getElementById(`assistant-event-${eventId}`);
     if(node){node.scrollIntoView?.({block:'center'});node.focus({preventScroll:true});focusedEvent.current=eventId;}
   },[enabled,tab,eventId,value]);
