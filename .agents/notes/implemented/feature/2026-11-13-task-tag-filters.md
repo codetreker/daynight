@@ -11,7 +11,9 @@ label sets also need continuation cursors within the existing transport limit.
 
 ## Decision
 
-Ordinary and priority/ready queries share a normalized tag filter. REST and MCP list/ready inputs pass their tag selections to this shared query path. The business
+Ordinary, priority/ready and ranked search queries share a normalized tag filter.
+REST and MCP list/ready inputs pass their selections to this shared query path.
+The business
 layer canonicalizes, sorts and deduplicates UUIDs, defaults the match mode to all,
 and rejects incompatible untagged selection. Services resolve every requested
 label in the same authorized repeatable-read snapshot used for selection. SQL
@@ -38,5 +40,7 @@ would look like a valid empty result and hide a condition requiring correction.
 
 Filtered reads add one batch identity lookup for nonempty label sets in the
 existing snapshot. SQL retains bounded result selection and page-level reference
-loading. Ordinary queries gain no tag-count quota, and transport size limits
-remain authoritative. Ranked search and other client argument adoption retain their own entry points.
+loading. Queries gain no tag-count quota, and transport size limits remain
+authoritative. Search retains its literal expression grammar and applies the set
+filter independently of its Boolean branches. Other client argument adoption
+retains its own entry points.

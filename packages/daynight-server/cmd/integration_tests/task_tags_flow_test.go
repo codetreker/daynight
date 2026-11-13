@@ -85,4 +85,24 @@ func serverAPITaskTagsNormalFlow(t *testing.T, f *fixture) {
 	if len(seen) != 2 || !seen[task.ID] || !seen[second.ID] {
 		t.Fatalf("filtered task identities differ: %+v", seen)
 	}
+	searchFilter := map[string]any{"query": "tagged", "tagIds": []string{tag.ID}, "tagMatch": "all", "limit": 1}
+	searchSeen := map[string]bool{}
+	for {
+		page := requestJSON[api.TaskSearchPage](t, f, http.MethodPost, taskCollection(project.ID)+"/search", searchFilter, http.StatusOK)
+		if page.Total != 2 || len(page.Items) != 1 || searchSeen[page.Items[0].ID] {
+			t.Fatalf("filtered search page differs: %+v", page)
+		}
+		check(page.Items[0].Tags)
+		searchSeen[page.Items[0].ID] = true
+		if page.NextCursor == nil {
+			break
+		}
+		if len(searchSeen) >= 2 {
+			t.Fatal("filtered search pagination did not end")
+		}
+		searchFilter["cursor"] = *page.NextCursor
+	}
+	if len(searchSeen) != 2 || !searchSeen[task.ID] || !searchSeen[second.ID] {
+		t.Fatalf("filtered search identities differ: %+v", searchSeen)
+	}
 }

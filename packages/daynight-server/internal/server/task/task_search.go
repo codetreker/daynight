@@ -81,6 +81,27 @@ func searchInput(fields map[string]json.RawMessage) (tasksearch.Request, error) 
 		value := model.TaskPlatform(*platform)
 		input.CompatiblePlatform = &value
 	}
+	ids, err := httpx.OptionalStrings(fields, "tagIds")
+	if err != nil {
+		return input, err
+	}
+	if ids != nil {
+		input.TagFilter.TagIDs = *ids
+	}
+	match, err := httpx.OptionalString(fields, "tagMatch")
+	if err != nil {
+		return input, err
+	}
+	if match != nil {
+		input.TagFilter.TagMatch = *match
+	}
+	untagged, err := httpx.OptionalBool(fields, "untagged")
+	if err != nil {
+		return input, err
+	}
+	if untagged != nil {
+		input.TagFilter.Untagged = *untagged
+	}
 	if raw, ok := fields["limit"]; ok {
 		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &input.Limit) != nil || input.Limit < 1 || input.Limit > 100 {
 			return input, httpx.InvalidInput("limit must be an integer from 1 to 100")
@@ -112,7 +133,7 @@ func (h *searchHandler) search(w http.ResponseWriter, request *http.Request, pri
 		httpx.WriteError(w, request, logger, "task_search", "input", err)
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "query", "assignedTo", "status", "ready", "allowAgents", "compatiblePlatform", "limit", "cursor", "type", "parentId")
+	fields, err := httpx.DecodeObject(w, request, "query", "assignedTo", "status", "ready", "allowAgents", "compatiblePlatform", "limit", "cursor", "type", "parentId", "tagIds", "tagMatch", "untagged")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task_search", "input", err)
 		return

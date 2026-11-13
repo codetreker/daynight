@@ -49,6 +49,11 @@ func (f *contextStressFacts) ProjectAccess(ctx context.Context, principal model.
 	return model.ProjectAccess{ProjectID: project, UserID: principal.UserID, Role: model.ProjectAdmin}, nil
 }
 
+func (f *contextStressFacts) ResolveTags(context.Context, string, []string) ([]model.Tag, error) {
+	f.t.Fatal("unexpected tag resolution")
+	return nil, nil
+}
+
 func (f *contextStressFacts) Fence(ctx context.Context, project string) (store.TaskSearchFence, error) {
 	f.called(ctx, project, "fence")
 	return store.TaskSearchFence{Epoch: user, Count: "3303", VersionSum: "3303"}, nil
