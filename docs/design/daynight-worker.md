@@ -77,7 +77,7 @@ macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离�
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、false、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
-`configuration-bootstrap.ts` 拥有 desired:null 期间的当前文件候选。每个 pass 只读取一次 `readWorkerLocalConfiguration`，按同一 source 投影完整候选、mode 与工具，保留原始 native 覆盖意图。文件中的规范 origin 或显式 workerId 不匹配运行身份时拒绝；新凭据与本地执行覆盖不改变当前运行归属。一个 root 子任务拥有整个 60 秒 pass，报告 Operation 通过可取消等待加入它，等待者结束不撤销项目解析。source hash 与认证 scope 相同时可复用成功解析的 Project 身份，失败不写入缓存；候选明确被拒绝后失效并重新校验，服务端最终验证权限。
+`configuration-bootstrap.ts` 拥有 desired:null 期间的当前文件候选。每个 pass 只读取一次 `readWorkerLocalConfiguration`，按同一 source 投影完整候选、mode 与工具，保留原始 native 覆盖意图。报告投影只规范化完整候选一次，controlModeBootstrap 与 toolPathsBootstrap 从该候选派生，不能混入启动时旧值；没有完整候选时，独立能力采纳继续使用启动时本地模式与工具选择。文件中的规范 origin 或显式 workerId 不匹配运行身份时拒绝；新凭据与本地执行覆盖不改变当前运行归属。一个 root 子任务拥有整个 60 秒 pass，报告 Operation 通过可取消等待加入它，等待者结束不撤销项目解析。source hash 与认证 scope 相同时可复用成功解析的 Project 身份，失败不写入缓存；候选明确被拒绝后失效并重新校验，服务端最终验证权限。
 
 候选准备失败保持错误，在后续报告周期重新准备；不以可用项目的局部集合建立云目标或授予新执行。每个 null 周期先查服务端，已有目标优先，取消并 drain 旧候选；导入响应未知也先读，再从最新事实构造新请求。原协调器保留用于已有资源核验的视图；冷启动处于 null、未读取或不支持目标时，从真实本机项目映射提供原资源覆盖。快照单独提供 retainedRecoveryLimit，来自当前/保留记录中可继承的真实已应用标量，只供原执行恢复视图使用，不进入 effective 或新准入。原 Herdr 冻结元组只保存 Agent/model/args，恢复时须组合该已知策略；没有已应用事实就保持未知，不能从本地候选或默认值补造。Task/Bot 新准入保持关闭，原冻结执行继续原权限与生命周期。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 清单属于其他 Project 时保留责任，不按新 ID 重绑。
 
@@ -166,7 +166,7 @@ authority 保存本机 generation UUID、已接纳的 desired 与 observationRev
 
 当前 origin、principal 与 workerId 验证通过的 GET，或本机当前捕获对应的合法报告回执，完整安装服务端 desired 和准确 observationRevision，不以数值大小选择权威；较低 revision、同版本异内容、旧待应用目标及 null 都服从该规范状态。null 的基线固定为 "0"。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威，快照保持不可准入，不继续采用旧本地意图。每次权威安装更新本机 generation；相同目标保留仍有效的记录和 job，job 适用性由 recordId、内容及证明决定，不能仅按 revision 判断。
 
-目标变化建立新的当前核验身份，原工作和停止记录保留 origin。高版本原停止在服务端回退后继续拥有原操作；新目标仍排除项目时建立当前目标的停止核验，原 job 真正结束后通过同一适配器再观察资源。新目标重选项目时，准备等待原停止结束，不能提前 ready；原记录不直接作为较低目标的 observation，也不改写成该目标的历史成功。native 与准备 job 共享该项目实际停止槽，不能与尚未结束的停止重叠。没有原工作、待确认失败、停止或必要实际值的旧记录可收敛，不要求本机全部记录占用一次 wire 名额。
+目标变化建立新的当前核验身份，原工作和停止记录保留 origin。高版本原停止在服务端回退后继续拥有原操作；新目标仍排除项目时建立当前目标的停止核验，原 job 真正结束后通过同一适配器再观察资源。新目标重选项目时，准备等待原停止结束，不能提前 ready；原记录不直接作为较低目标的 observation，也不改写成该目标的历史成功。native 与准备 job 共享该项目实际停止槽，不能与尚未结束的停止重叠。启动后的真实本机项目映射仅在已认证且可用的目标下登记当前停止核验；ensureProjectRemoval 在串行提交时反馈该目标仍可用且项目已被选中或停止核验已登记，runtime 才记为已覆盖。未读取、null 或不支持目标不能完成这次覆盖；权威变为不可用时重置覆盖，后续合法状态重新登记。缓存 applied 停止结果不能代替新 coordinator 的资源观察。没有原工作、待确认失败、停止或必要实际值的旧记录可收敛，不要求本机全部记录占用一次 wire 名额。
 
 每次启动保留 native 实际值供观察，但重建本次运行证明。全局与项目 native 优先验证当前目标；目标失败后才在兼容的原 mode 下验证历史元组。schema 1/2 没有历史模式证明，按本机兼容模式重新验证，不能将该模式当作旧成功出处。本次验证证明归属于实际接受验证结果的记录，后续目标从实际提供复用值的前一当前或保留记录继承匹配证明，actualSource 保持原实际值来源。证明只随仍存在的记录保留，历史来源引用不能延长证明寿命。全局 mode 变化在继承前撤销所有项目旧资格，包括本代将被退休的原记录；同模式全局 native 失败不阻止健康项目独立验证。历史恢复只取得本进程资格，保持失败目标的非 applied 状态；正在验证目标时，未经本进程验证的历史保持 unavailable。已验证实际值在后续目标应用期间继续可用，相关工具选择变化使对应 native 必须重验，无关 Provider 的健康证明保持。结果提交仍检查原记录绑定、目标内容、mode 与选择，取消或被取代的结果不能授予新执行资格。
 

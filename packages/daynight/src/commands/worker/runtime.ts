@@ -669,15 +669,23 @@ export const runWorker = async (options: {
     // Keep progress across capacity retries, but require a new coordinator to observe each binding again.
     const initialRemovalsRegistered = new Set<string>();
     const ensureInitialRemovals = (): Promise<void> => {
-      if (initialRemovalsComplete || manager.current().desired === null) return Promise.resolve();
+      const current = manager.current();
+      if (!current.synchronized || current.desired === null) {
+        initialRemovalsComplete = false;
+        initialRemovalsRegistered.clear();
+        return Promise.resolve();
+      }
+      if (initialRemovalsComplete) return Promise.resolve();
       if (initialRemovalsJob !== undefined) return initialRemovalsJob;
       const job = (async () => {
         for (const project of getStore().listProjects()) {
           signal.throwIfAborted();
           if (initialRemovalsRegistered.has(project.projectId)) continue;
-          await manager.ensureProjectRemoval(project.projectId, signal);
+          if (!await manager.ensureProjectRemoval(project.projectId, signal)) { initialRemovalsRegistered.clear(); return; }
           initialRemovalsRegistered.add(project.projectId);
         }
+        const latest = manager.current();
+        if (!latest.synchronized || latest.desired === null) { initialRemovalsRegistered.clear(); return; }
         initialRemovalsComplete = true;
       })();
       initialRemovalsJob = job;

@@ -2,13 +2,18 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
+import { createApiClient } from "../../../src/api/client.js";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
+import type { WorkerCloudDesired, WorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import { createWorkerConfigurationBootstrap } from "../../../src/commands/worker/configuration-bootstrap.js";
 import type { WorkerConfigurationBootstrap } from "../../../src/commands/worker/configuration-bootstrap.js";
+import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce } from "../../../src/commands/worker/configuration-exchange.js";
+import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerBootstrapProjectResolver } from "../../../src/commands/worker/configuration-source.js";
 import { WorkerBootstrapIdentityError } from "../../../src/commands/worker/configuration-source.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
+import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 const id = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const identity = { serverOrigin: "https://daynight.example", userId: id(1), workerId: id(2) };
@@ -52,6 +57,42 @@ afterEach(async () => {
 });
 
 describe("Worker configuration bootstrap preparation", () => {
+  it("keeps current-file mode and tools in the wire bootstrap when a legacy target wins the import race", async () => {
+    const f = await fixture({ worker: { agentControlMode: "herdr" } });
+    const manager = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity, signal: f.root.signal, applyNative: async () => {} });
+    const codexPath = path.join(path.parse(process.cwd()).root, "current-tools", "codex");
+    const currentTools = { codex: { kind: "path" as const, path: codexPath }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
+    await f.write({ worker: { agentControlMode: "web", toolPaths: { codex: codexPath }, maxConcurrent: 9 } });
+    await manager.receive(null, "0");
+    // A competing target keeps its selected values; missing mode and tools adopt the independent wrappers.
+    // https://github.com/codetreker/daynight/blob/87afe5e477774b612f272c44689a8f359fd5844f/packages/daynight-server/internal/core/worker/configuration.go#L124-L143
+    const adopted: WorkerCloudDesired = { revision: "8", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", toolPaths: currentTools,
+      maxConcurrent: 3, pollIntervalMs: 1200, recoveryLimit: 4, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [] } };
+    let wire: WorkerCloudReport | undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      wire = JSON.parse(init!.body as string).configuration as WorkerCloudReport;
+      return new Response(JSON.stringify({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime,
+        configuration: { desired: adopted, observationRevision: "0", observationAccepted: false } }), {
+        headers: { "Content-Type": "application/json", "Daynight-User-ID": identity.userId, "Daynight-Worker-Configuration": "1",
+          "Daynight-Worker-Control-Mode": "1", "Daynight-Worker-Tool-Paths": "1" },
+      });
+    });
+    const exchange = createWorkerConfigurationExchange({ manager, bootstrap: f.provider,
+      read: async () => ({ desired: null, observationRevision: "0", observation: null }),
+      send: (report, captured, current) => createApiClient({ serverUrl: identity.serverOrigin, expectedUserId: identity.userId, operation: current, fetch,
+        workerControlMode: { supported: true }, workerToolPaths: { supported: true, serverOrigin: identity.serverOrigin, userId: identity.userId },
+      }).reportWorkerConfiguration(identity.workerId, report, captured),
+    });
+    try {
+      await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: () => ({ ...workerTelemetry, taskInventory: null }) });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(wire).toMatchObject({ bootstrap: { agentControlMode: "web", toolPaths: currentTools, maxConcurrent: 9 },
+        controlModeBootstrap: "web", toolPathsBootstrap: currentTools, observation: null });
+      expect(manager.current().desired).toEqual(adopted);
+      expect(manager.current().desired!.value.maxConcurrent).toBe(3);
+    } finally { await exchange.close(); await manager.stop(); }
+  });
+
   it("uses one current-file snapshot for the complete candidate and rereads the next pass", async () => {
     const entered = deferred(), release = deferred();
     const resolve = vi.fn<WorkerBootstrapProjectResolver>(async input => { entered.resolve(); await release.promise; return { id: input.projectId! }; });

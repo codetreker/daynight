@@ -5,9 +5,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import type { Task } from "../../../src/api/types.js";
 import { OperationError } from "../../../src/api/operation.js";
-import type { WorkerCloudDesired, WorkerCloudReport } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudReport, WorkerPromptSelector } from "../../../src/api/worker-configuration.js";
 import { createWorkerConfigurationManager, type WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
+import type { WorkerConfigurationCache } from "../../../src/commands/worker/configuration-model.js";
 import type { ExecutionInput } from "../../../src/commands/worker/execution.js";
+import { replaceFileAtomicallyFromChunks } from "../../../src/platform/files.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -228,4 +230,113 @@ it.each(["null", "unread", "unsupported"] as const)("cold-resumes an original fr
   expect(readWorkerClaim(task.properties)).toEqual(originalClaim);
   expect(await readFile(retainedJournal, "utf8")).toBe("retained Herdr journal marker");
   expect(lifecycle.close).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce();
+});
+
+it("registers fresh stop verification after a failed startup read even when the previous removal was acknowledged", async () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/runtime-retained-resources-tests");
+  await mkdir(base, { recursive: true });
+  const homeDirectory = await mkdtemp(path.join(base, "w-")); directories.push(homeDirectory);
+  const paths = resolveWorkerPaths(homeDirectory);
+  await mkdir(paths.workerDirectory, { recursive: true });
+  const selectedProjectId = uuid(9);
+  const retained = { projectId, repoUrl: "https://git.example/team/retained.git", localPath: path.join(homeDirectory, "retained") };
+  const selected = { projectId: selectedProjectId, repoUrl: "https://git.example/team/selected.git", localPath: path.join(homeDirectory, "selected") };
+  const owner = { projectId, taskId, claimId, worktreeId };
+  const binding = { repositoryPath: retained.localPath, commonDirectory: path.join(retained.localPath, ".git"), worktreePath: path.join(retained.localPath, ".worktrees", "daynight", worktreeId), branch: "original-branch" };
+  const marker = path.join(binding.worktreePath, "unfinished.txt");
+  await mkdir(binding.worktreePath, { recursive: true }); await mkdir(selected.localPath);
+  await writeFile(marker, "original unfinished work\n");
+  await writeFile(paths.configFile, stringify({ serverUrl: serverOrigin, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId, worker: { agentControlMode: "web", repositories: [{ remote: selected.repoUrl, path: selected.localPath, projectId: selectedProjectId }] } }));
+  const store = openWorkerStore(paths.databaseFile); stores.add(store); store.registerProject(retained); store.registerProject(selected);
+  const localTask = store.activateTask(store.registerPending({ projectId, taskId, claimId, agent: "codex", agentControlMode: "web" }));
+  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite")); stores.add(webStore);
+  const frozen = { agent: "codex" as const, agentControlMode: "web" as const, model: "original-frozen-model", args: [] as string[], recoveryLimit: 2 };
+  webStore.register({ ...owner, project: retained, serverOrigin, workerId, userId, configuration: frozen }, Date.now());
+  const original = webStore.bindWorktree(owner, binding, Date.now());
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "current-cloud-model", args: [] }, projects: [{ projectId: selectedProjectId, nativeOverrides: {} }] } };
+  const seed = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {} });
+  await seed.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
+  await seed.receive({ ...target, revision: "1", value: { ...target.value, projects: [{ projectId, nativeOverrides: {} }] } }, "0"); await seed.settle();
+  await seed.receive(target, "0"); await seed.settle();
+  await seed.acknowledge(seed.report(), { desired: target, observationRevision: "1", observationAccepted: true }); await seed.stop();
+  const saved = JSON.parse(await readFile(paths.configurationFile, "utf8")) as WorkerConfigurationCache;
+  expect([...saved.currentItems, ...saved.retainedItems].some(item => "projectId" in item.value.key && item.value.key.projectId === projectId)).toBe(false);
+  const task: Task = { type: "task", parentId: null,
+    id: taskId, projectId, title: "Retained Web execution", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
+    dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
+    properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
+  };
+  const originalClaim = readWorkerClaim(task.properties);
+  let releaseRead!: () => void, reads = 0, observationRevision = 1n;
+  const readAllowed = new Promise<void>(resolve => { releaseRead = resolve; });
+  const remote = {
+    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => {
+      if (++reads === 1) throw new OperationError("request_timeout");
+      await readAllowed;
+      return { desired: target, observationRevision: String(observationRevision), observation: null };
+    }), reportConfiguration: vi.fn(async (_workerId: string, _report: unknown, configuration: WorkerCloudReport, _operation: unknown, selectors: readonly WorkerPromptSelector[] = []) => {
+      const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
+      if (observationAccepted) observationRevision++;
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(observationRevision), observationAccepted },
+        prompts: { ok: true, results: selectors.map(({ key }) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? userId : workerId, revision: "0", text: "", updatedAt: null } })) } };
+    }), report: vi.fn(),
+    project: vi.fn(async (id: string) => ({ id, repoUrl: id === projectId ? retained.repoUrl : selected.repoUrl })), resolveProject: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selected.repoUrl })),
+    ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId, selectedProjectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
+  };
+  mocks.remote.mockReturnValue(remote); mocks.probe.mockResolvedValue("0.164.0");
+  const lifecycle = { responsibilities: vi.fn(() => []), isStopped: vi.fn(() => false), close: vi.fn(), registerClaim: vi.fn(), assertCanAdvance: vi.fn(), hasPreparedRun: vi.fn(() => false), stop: vi.fn(async () => {}) };
+  mocks.durable.mockReturnValue({ lifecycle, tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []) }, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn(), attachment: {} });
+  const dispose = vi.fn(async () => {}), prepareRepository = vi.fn(async () => {});
+  const retainedBindings = async (project: { projectId: string }) => project.projectId === projectId ? [{ owner, binding }] : [];
+  mocks.git.mockReturnValue(Object.assign({ prepareRepository, listWorktrees: vi.fn(retainedBindings), listWorktreeManifests: vi.fn(retainedBindings), resolveWorktreeBinding: vi.fn(async () => binding), dispose }, { scanWorktrees: scanFromList }));
+  const advance = vi.fn(async (record: WebTask) => record), cleanup = vi.fn(async (record: WebTask) => ({ task: record, complete: true }));
+  mocks.webBackend.mockReturnValue({ advance, cleanup });
+  const launch = vi.fn(); mocks.launcher.mockReturnValue({ launch });
+  const cancellation = new AbortController(); cancellations.add(cancellation);
+  const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
+  running.add(execution); void execution.catch(() => {});
+  try {
+    await vi.waitFor(() => expect(remote.configuration).toHaveBeenCalledTimes(2), { timeout: 3500, interval: 10 });
+    await vi.waitFor(() => expect(remote.ownInventory).toHaveBeenCalled(), { timeout: 3500, interval: 10 });
+    expect(cleanup).not.toHaveBeenCalled(); expect(remote.candidates).not.toHaveBeenCalled();
+  } finally { releaseRead(); }
+  await vi.waitFor(() => expect(cleanup).toHaveBeenCalledWith(expect.objectContaining(owner), { kind: "shutdown", deadline: expect.any(Number), signal: expect.any(AbortSignal), immediateStop: true }), { timeout: 3500, interval: 10 });
+  await vi.waitFor(() => {
+    const snapshot = (mocks.configuration.mock.calls.at(-1)![0] as WorkerConfigurationManager).current();
+    const warnings = mocks.emit.mock.calls.map(([event]) => ({ kind: event.kind, message: event.message, error: event.error instanceof Error ? event.error.message : undefined })).filter(event => event.error !== undefined || event.kind === "warning");
+    expect(remote.candidates, JSON.stringify({ effective: snapshot.effective, warnings })).toHaveBeenCalledWith(selectedProjectId, "macos", expect.any(AbortSignal));
+  }, { timeout: 3500, interval: 10 });
+  expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original);
+  expect(readWorkerClaim(task.properties)).toEqual(originalClaim); expect(await readFile(marker, "utf8")).toBe("original unfinished work\n");
+  expect(remote.claim).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled();
+  cancellation.abort(); await execution;
+});
+
+it("counts removal registration only when usable authority still owns its queued checkpoint", async () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/runtime-retained-resources-tests");
+  await mkdir(base, { recursive: true });
+  const directory = await mkdtemp(path.join(base, "registration-")); directories.push(directory);
+  let hold = false, entered!: () => void, release!: () => void;
+  const writeEntered = new Promise<void>(resolve => { entered = resolve; }), writeAllowed = new Promise<void>(resolve => { release = resolve; });
+  const manager = await createWorkerConfigurationManager({ file: path.join(directory, "configuration.json"), identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {}, persist: async (file, chunks) => {
+    if (hold) { hold = false; entered(); await writeAllowed; }
+    await replaceFileAtomicallyFromChunks(file, chunks(), 0o600);
+  } });
+  const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: [{ projectId: uuid(9), nativeOverrides: {} }] } };
+  try {
+    expect(await manager.ensureProjectRemoval(projectId)).toBe(false);
+    await manager.receive(target, "0"); await manager.settle();
+    hold = true;
+    const resetting = manager.receive(null, "0");
+    await writeEntered;
+    const registering = manager.ensureProjectRemoval(projectId);
+    release(); await resetting;
+    expect(await registering).toBe(false);
+    expect(manager.current().items).toEqual([]);
+    await manager.receive(target, "0"); await manager.settle();
+    expect(await manager.ensureProjectRemoval(uuid(9))).toBe(true);
+    expect(await manager.ensureProjectRemoval(projectId)).toBe(true);
+    expect(manager.current().items).toContainEqual(expect.objectContaining({ key: { kind: "projectRemoval", projectId }, targetRevision: "2", state: "pending" }));
+  } finally { release(); await manager.stop(); }
 });

@@ -43,8 +43,10 @@ report. Existing single-flight scheduling, merged triggers and finite prompt
 batches remain the report owner's responsibility.
 
 When desired is null, a root-owned preparation pass reads one consistent snapshot
-of the current local file and projects the permitted initial import, mode and
-tool choices from it. The pass has a 60-second budget, independently of the
+of the current local file and projects the permitted initial import once. Separate
+mode and tool adoption fields derive from that same complete candidate; without
+one, independent adoption retains startup local choices. The pass has a 60-second
+budget, independently of the
 report waiter's deadline. Successful Project identity resolutions may be reused
 only within the same source hash and authenticated identity; explicit candidate
 refusal invalidates them, and the service still performs final permission checks.
@@ -66,7 +68,11 @@ execution policy. Missing applied facts remain unknown. Original claims,
 workspaces, frozen native identity, unfinished stops and failures keep their
 owners. A high-origin stop continues through a lower target; excluded Projects
 receive current stop verification after the original operation joins, while
-reselected preparation waits for that original stop. Startup identity retries
+reselected preparation waits for that original stop. Initial retained-Project
+coverage counts only after the manager accepts it under usable authenticated
+authority. Unread, null or unsupported state cannot consume that verification;
+recovery rechecks it, and cached success does not prove that the current
+coordinator observed the resources. Startup identity retries
 transient network failures under the instance lock; a transient initial
 configuration GET remains unread and recovers through report preparation.
 Authentication, protocol, format and deterministic incompatibility errors never

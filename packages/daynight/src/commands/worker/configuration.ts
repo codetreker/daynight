@@ -402,13 +402,15 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       }, true, undefined, [...captured.recordIds, ...captured.failures.map(item => item.sourceRecordId)]).then(() => { sentProjections.delete(sent); });
       await waitForConfigurationOperation(owned, signal);
     },
-    ensureProjectRemoval: async (projectId: string, signal: AbortSignal = options.signal): Promise<void> => {
+    ensureProjectRemoval: async (projectId: string, signal: AbortSignal = options.signal): Promise<boolean> => {
       await inputReady(signal);
       const id = canonicalId(projectId);
       if (id === null) throw new TypeError("Project ID must be a UUID.");
+      let accepted = false;
       await waitForConfigurationOperation(commit(current => {
-        if (stopped) return current;
-        if (!synchronized || current.authority.desired === null || current.authority.desired.value.projects.some(project => project.projectId === id)) return current;
+        if (stopped || !synchronized || current.authority.desired === null || !supportsDesired(current.authority.desired)) return current;
+        accepted = true;
+        if (current.authority.desired.value.projects.some(project => project.projectId === id)) return current;
         const key: WorkerCloudItemKey = { kind: "projectRemoval", projectId: id }, previous = findItem(current, key);
         // A cached result does not prove that the new coordinator observed stopped resources.
         if (previous !== undefined) return previous.value.state === "applied" ? replaceItem(current, { ...previous, value: { ...previous.value, state: "pending", error: null, nextAttemptAt: null } }) : current;
@@ -417,6 +419,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         const item: TrackedConfigurationItem = { recordId: randomUUID(), origin: { generation: current.authority.generation, targetRevision: value.targetRevision, source: "application" }, value, backoffStep: 0, failureId: null, started: false, nativeMode: null, actualSource: null, blockedByRemovalId: blocker?.recordId ?? null };
         return { ...current, currentItems: [...current.currentItems, item] };
       }), signal);
+      return accepted;
     },
     confirmProjectPrepared: async (projectId: string, revision: string, signal: AbortSignal = options.signal): Promise<void> => {
       if (stopping !== undefined) throw new Error("Worker configuration manager is stopped.");

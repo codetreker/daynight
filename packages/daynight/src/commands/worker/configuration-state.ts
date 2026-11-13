@@ -3,6 +3,7 @@ import { stringifyApiJson } from "../../api/json.js";
 import { parseWorkerCloudItem, parseWorkerCloudValue } from "../../api/worker-configuration.js";
 import { ProtocolError } from "../../api/validation.js";
 import { prepareWorkerReport, WORKER_CONFIGURATION_REPORT_BYTES } from "../../api/worker-report.js";
+import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport } from "../../api/worker-configuration.js";
 import type { AgentControlMode } from "../../api/types.js";
 import type { ToolPaths } from "../../platform/tool-path-choice.js";
@@ -182,9 +183,11 @@ const removalSeverity = (item: TrackedConfigurationItem): number => item.value.s
 
 export const projectConfigurationReport = (cache: WorkerConfigurationCache, options: ConfigurationProjectionOptions): ConfigurationProjection => {
   const desired = cache.authority.desired;
+  const bootstrap = desired === null && options.bootstrap !== null ? parseWorkerCloudValue(options.bootstrap, true, configurationCapabilities(options.bootstrap)) : null;
   const base: WorkerCloudReport = {
-    controlModeBootstrap: options.localMode, toolPathsBootstrap: options.localTools,
-    bootstrap: desired === null && options.bootstrap !== null ? parseWorkerCloudValue(options.bootstrap, true, configurationCapabilities(options.bootstrap)) : null,
+    controlModeBootstrap: bootstrap !== null && bootstrap.agentControlMode !== undefined ? bootstrap.agentControlMode : options.localMode,
+    toolPathsBootstrap: bootstrap !== null && bootstrap.toolPaths !== undefined ? parseToolPathsBootstrap(bootstrap.toolPaths) : options.localTools,
+    bootstrap,
     observation: options.synchronized && desired !== null ? { baseRevision: cache.authority.observationRevision, desiredRevision: desired.revision, items: [] } : null,
   };
   const envelope = options.telemetry === undefined ? { configuration: base } : prepareWorkerReport({ ...options.telemetry, configuration: base }, WORKER_CONFIGURATION_REPORT_BYTES).value;

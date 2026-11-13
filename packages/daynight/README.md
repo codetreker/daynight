@@ -1998,8 +1998,10 @@ alter task/claim formats, permission or recovery rules.
 
 When the cloud target is uninitialized, including after an initialized target
 becomes null, the Worker automatically prepares a candidate from one consistent
-snapshot of the current local file. The candidate, mode and tool choices share
-that source. The running service, credential, Worker identity and local execution
+snapshot of the current local file. Its separate mode and tool adoption fields
+come from that same complete candidate. Without a complete candidate, independent
+capability adoption keeps the startup local choices. The running service,
+credential, Worker identity and local execution
 overrides remain fixed; a file that names another service or Worker is rejected.
 A root-owned preparation pass has a 60-second budget, independently of a report
 waiter's cancellation. Successful Project resolutions may be reused only for the
@@ -2374,7 +2376,11 @@ Unvalidated history remains unavailable during target validation; values already
 validated in this runtime remain usable during later updates. Original stops keep
 their identity and revision. Current stop verification waits for the original job
 to end, checks the resources again through the same adapter, and blocks new Project
-preparation and readiness until that verification completes.
+preparation and readiness until that verification completes. Initial retained
+Project coverage counts only after the manager accepts it under usable
+authenticated authority. Unread, null or unsupported authority leaves that
+verification pending; recovery rechecks it, and cached success cannot replace
+resource observation by the current coordinator.
 
 Heartbeats exchange targets and a bounded batch of complete current observations;
 native and Project operations run outside the report and commit queues. At most
