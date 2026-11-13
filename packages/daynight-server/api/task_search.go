@@ -7,14 +7,17 @@ import (
 )
 
 type TaskSearchRequest struct {
-	Query              string  `json:"query"`
-	AssignedTo         *string `json:"assignedTo,omitempty"`
-	Status             *string `json:"status,omitempty"`
-	Ready              *bool   `json:"ready,omitempty"`
-	AllowAgents        *bool   `json:"allowAgents,omitempty"`
-	CompatiblePlatform *string `json:"compatiblePlatform,omitempty"`
-	Limit              *int    `json:"limit,omitempty"`
-	Cursor             *string `json:"cursor,omitempty"`
+	Query              string   `json:"query"`
+	AssignedTo         *string  `json:"assignedTo,omitempty"`
+	Status             *string  `json:"status,omitempty"`
+	Ready              *bool    `json:"ready,omitempty"`
+	AllowAgents        *bool    `json:"allowAgents,omitempty"`
+	CompatiblePlatform *string  `json:"compatiblePlatform,omitempty"`
+	Limit              *int     `json:"limit,omitempty"`
+	Cursor             *string  `json:"cursor,omitempty"`
+	TagIDs             []string `json:"tagIds,omitempty"`
+	TagMatch           *string  `json:"tagMatch,omitempty"`
+	Untagged           *bool    `json:"untagged,omitempty"`
 }
 
 type TaskSearchContext struct {

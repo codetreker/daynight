@@ -21,6 +21,7 @@ import (
 )
 
 type Request struct {
+	TagFilter          store.TagFilter
 	Type               model.TaskType
 	Parent             *string
 	Query              string
@@ -62,6 +63,7 @@ type Page struct {
 }
 
 type cursorScope struct {
+	TagFilterIdentity  string                     `json:"tagFilter"`
 	Type               model.TaskType             `json:"type"`
 	Parent             *string                    `json:"parent"`
 	Version            int                        `json:"version"`
@@ -157,6 +159,10 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 	if err != nil {
 		return Page{}, err
 	}
+	filter, err := taskcore.NormalizeTagFilter(request.TagFilter)
+	if err != nil {
+		return Page{}, err
+	}
 	ast, err := query.Parse(request.Query)
 	if err != nil {
 		var syntax *query.Error
@@ -166,7 +172,7 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		return Page{}, err
 	}
 	hash := sha256.Sum256([]byte(request.Query))
-	scope := cursorScope{Version: 3, Type: kind, Parent: parent, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
+	scope := cursorScope{Version: 4, TagFilterIdentity: taskcore.TagFilterIdentity(filter), Type: kind, Parent: parent, UserID: userID, ProjectID: projectID, QueryHash: hex.EncodeToString(hash[:]), AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
 	var prior *cursor
 	if request.Cursor != nil {
 		value, err := decodeCursor(*request.Cursor, scope)
@@ -187,7 +193,10 @@ func Search(ctx context.Context, reader store.TaskSearchReader, principal model.
 		if prior != nil && prior.Fence != fence {
 			return &model.Fault{Code: "search_changed", Message: "Tasks changed during this search."}
 		}
-		selection := store.TaskSearchQuery{Type: request.Type, Parent: parent, Expression: ast, AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}
+		if err := taskcore.RequireTagFilter(ctx, snapshot, projectID, filter); err != nil {
+			return err
+		}
+		selection := store.TaskSearchQuery{TagFilter: filter, Type: request.Type, Parent: parent, Expression: ast, AssignedTo: assignment, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit}
 		if prior != nil {
 			selection.After = &prior.Position
 		}

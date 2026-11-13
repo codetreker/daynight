@@ -236,8 +236,9 @@ The [project Task search requirements](../../docs/spec/daynight-task-search.md)
 and [design](../../docs/design/daynight-task-search.md) define the read-only
 `POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
 IDs, complete titles and Markdown descriptions using literal expressions, returns ranked
-pages with their actual visible parent Goal context, and rejects continuation when the
-project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
+pages with their actual visible parent Goal context and tag references. Normalized
+tag-set filters intersect the entire expression before ranking and pagination;
+continuation rejects a changed project Task fence. [HTTP fixtures](testdata/task-search/README.md)
 include successful pages and typed failures.
 
 The [Task Session observation requirements](../../docs/spec/task-session-observation.md)
