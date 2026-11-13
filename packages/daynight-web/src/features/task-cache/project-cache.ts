@@ -1587,9 +1587,9 @@ export class TaskCacheScope {
     this.channel?.postMessage({ userId: this.userId, projectId, unboundProjectDenial: true } satisfies Hint);
   }
   enrollDirectProject(projectId: string): { readonly error: unknown } | null {
+    this.directProjects.add(projectId);
     const denial = this.unboundProjectDenials.get(projectId);
     if (denial === undefined) return null;
-    this.directProjects.add(projectId);
     if (!denial.direct) {
       denial.direct = true;
       this.emit({ projectId, directAccessUncertain: true }, true, true);

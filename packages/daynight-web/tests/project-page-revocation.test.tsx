@@ -796,3 +796,39 @@ it.each(['during verification', 'after failure'] as const)('recovers a Task open
     expect(await screen.findByRole('heading', { name: 'Private task' })).toBeVisible();
   } finally { pending.reject(new ApiError('network')); observation.mockRestore(); }
 });
+
+it.each(['success', 'failure and Retry'] as const)('recovers a first Task opening when an unbound hint precedes its read fence: %s', async outcome => {
+  vi.stubGlobal('BroadcastChannel', Channel);
+  const peer = scope(); await admit(peer);
+  const sender = scope();
+  const ticket = await peer.beginSync(projectId, peer.signal);
+  const fenceStarted = Promise.withResolvers<void>(), finishFence = Promise.withResolvers<void>();
+  const verification = Promise.withResolvers<ReturnType<typeof directAccessFixture>>();
+  const begin = peer.beginTaskRead.bind(peer); let calls = 0;
+  const delay = vi.spyOn(peer, 'beginTaskRead').mockImplementation((...args) => {
+    if (++calls !== 1) return begin(...args);
+    fenceStarted.resolve(); return finishFence.promise.then(() => begin(...args));
+  });
+  vi.mocked(getProjectAccess).mockReset().mockReturnValueOnce(verification.promise).mockResolvedValue(directAccessFixture(projectId));
+  vi.mocked(getTaskSync).mockReset().mockReturnValue(new Promise(() => {}));
+  const observation = vi.spyOn(client, 'getTaskObservation').mockResolvedValue({ detail: detailFixture(projectId, taskId, { title: 'Private task' }), epoch: ticket.epoch! });
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={peer}>
+      <TaskDetailPage projectId={projectId} taskId={taskId} navigation={{ tab: 'overview', path: null }} />
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await fenceStarted.promise;
+    act(() => sender.reportUnboundProjectDenial(projectId));
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalled());
+    await act(async () => finishFence.resolve());
+    expect(observation).not.toHaveBeenCalled();
+    if (outcome === 'success') await act(async () => verification.resolve(directAccessFixture(projectId)));
+    else {
+      await act(async () => verification.reject(new ApiError('network')));
+      const retry = await screen.findByRole('button', { name: 'Retry details' });
+      fireEvent.click(retry);
+    }
+    expect(await screen.findByRole('heading', { name: 'Private task' })).toBeVisible();
+    expect(calls).toBeGreaterThan(1);
+  } finally { finishFence.resolve(); verification.resolve(directAccessFixture(projectId)); delay.mockRestore(); observation.mockRestore(); }
+});
