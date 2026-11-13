@@ -1,6 +1,7 @@
 import { createRef, type RefObject } from 'react';
 import { createBotSessionApi, type BotSessionBinding, type SessionApi } from '../../api/sessions';
 import type { TimelineReadingBookmark } from '../../ui/useTimelineScroll';
+import { clearImageDraftScope } from '../task-agent-session/drafts/draft-store-cleanup';
 import { TaskSessionClient, clearIndependentSessionStorage } from '../task-agent-session/client';
 import type { SessionTimelineReadingHandle } from '../task-agent-session/SessionTimeline';
 import { clearSessionDisplayPreference } from '../task-agent-session/useSessionDisplayPreference';
@@ -10,13 +11,15 @@ import { BotHistorySnapshotObserver, type BotDisplaySnapshotCoordinator } from '
 export const botSessionKey = (binding: BotSessionBinding): string => JSON.stringify([binding.ownerUserId, binding.botId, binding.sessionId, binding.testExecutionId]);
 
 /** Clear a Bot's stored draft, receipts and display choices without a mounted cache. */
-export function clearBotStoredSessionState(userId: string, botId: string, sessionId?: string, storage?: Storage | null): void {
+export async function clearBotStoredSessionState(userId: string, botId: string, sessionId?: string, storage?: Storage | null, reason: 'revoked' | 'deleted' = 'revoked'): Promise<Error | null> {
   const sessions = new Set(clearBotSessionStorage(userId, botId, storage));
   if (sessionId) sessions.add(sessionId);
+  const imageCleanup = [...sessions].map(id => clearImageDraftScope({ origin: window.location.origin, actorUserId: userId, sessionId: id, reason }));
   for (const id of sessions) {
     clearIndependentSessionStorage(userId, id, storage);
     clearSessionDisplayPreference({ userId, sessionId: id });
   }
+  return (await Promise.all(imageCleanup)).find(error => error !== null) ?? null;
 }
 type Retained = { readonly storage: BotSessionStorage; bookmark: TimelineReadingBookmark | null };
 export type BotSessionPane = {

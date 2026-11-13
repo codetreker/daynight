@@ -38,6 +38,8 @@ func TestImageOccurrenceRetryEligibilityRetainsUncertainAndSavedResults(t *testi
 		{name: "trusted external", kind: "external", code: "invalid_image", state: "failed", want: "retry_source"},
 		{name: "trusted local", kind: "local", code: "image_decode_failed", state: "failed", want: "retry_source"},
 		{name: "decode", kind: "external", code: "decode_failed", state: "failed", want: "retry_source"},
+		{name: "quota", kind: "external", code: "quota_exceeded", state: "failed", want: "retry_source"},
+		{name: "storage", kind: "external", code: "storage_unavailable", state: "failed", want: "retry_source"},
 		{name: "media type", kind: "external", code: "unsupported_media_type", state: "failed", want: "retry_source"},
 		{name: "source_not_found", kind: "external", code: "source_not_found", state: "failed", want: "retry_source"},
 		{name: "source_timeout", kind: "external", code: "source_timeout", state: "failed", want: "retry_source"},
@@ -212,8 +214,8 @@ func TestImageCaptureRejectsUncheckpointedPositionAndOccupiedAttempt(t *testing.
 			f.d.uploads[changed.AttemptID] = store.SessionUploadRecord{SessionID: c.SessionID}
 		}
 		_, e := f.s.captureMessage(t.Context(), &operationTx{dao: f.d, op: &Operation{}}, f.r, sp.ControllerMessage{Action: "register", MediaBody: encode(changed)})
-		var fault *model.Fault
-		if !errors.As(e, &fault) || fault.Code != "resource_conflict" {
+		var refusal *CaptureRequestError
+		if !errors.As(e, &refusal) || refusal.Code != "resource_conflict" {
 			t.Fatal("untrusted registration accepted", e)
 		}
 	}

@@ -1,3 +1,5 @@
+@import "./task-state-colors.css";
+
 :root{color-scheme:light;--bg:#f7f8fa;--ink:#172132;--muted:#737d8e;--line:#e5e8ee;--indigo:#5c5ce0;--shadow:0 8px 28px #1c285808;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.55;color:var(--ink);background:var(--bg);font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased}
 *{box-sizing:border-box}body{margin:0;min-width:320px}button{font:inherit;color:inherit;cursor:pointer}button:disabled{cursor:default}a{color:inherit;text-decoration:none}a:focus-visible,button:focus-visible{outline:3px solid #8c8cf0;outline-offset:3px}svg{flex:none}h1,h2,p{margin:0}button,main{scroll-margin-top:12px}
 .shell{background:#171e2c;min-height:100vh;display:grid;grid-template-columns:190px minmax(0,1fr)}

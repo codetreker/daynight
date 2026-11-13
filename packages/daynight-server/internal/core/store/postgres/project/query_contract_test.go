@@ -46,6 +46,39 @@ func TestInvalidateTaskCacheUsesProjectTransaction(t *testing.T) {
 	}
 }
 
+// The epoch writer must reject missing Projects and propagate an expired transaction.
+func TestRotateTagCatalogEpochFailurePaths(t *testing.T) {
+	database := testutil.OpenStore(t, postgres.Open)
+	ctx := t.Context()
+	project := testutil.QueryProject(t, database.Pool, database, 1)
+	var before, after string
+	if err := database.Pool.QueryRow(ctx, `SELECT tag_catalog_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	missing := pgproject.NewWriter(tx, testutil.QueryID(999))
+	if err := missing.RotateTagCatalogEpoch(ctx); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing Project epoch rotation: %v", err)
+	}
+	writer := pgproject.NewWriter(tx, project.ID)
+	if err := writer.RotateTagCatalogEpoch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.RotateTagCatalogEpoch(ctx); !errors.Is(err, pgx.ErrTxClosed) {
+		t.Fatalf("closed transaction epoch rotation: %v", err)
+	}
+	if err := database.Pool.QueryRow(ctx, `SELECT tag_catalog_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&after); err != nil || before != after {
+		t.Fatalf("rollback changed epoch: %q %q %v", before, after, err)
+	}
+}
+
 func TestProjectReadMissingRelationPreservesDatabaseCause(t *testing.T) {
 	database := testutil.OpenStore(t, postgres.Open)
 	project := testutil.QueryProject(t, database.Pool, database, 1)

@@ -1,3 +1,4 @@
+import { assistantTaskDefinition } from "../commands/assistant-task/definition.js";
 import { botDefinition } from "../commands/bot/definition.js";
 import { controllerDefinition } from "../commands/controller/definition.js";
 import type { CliCommand } from "./context.js";
@@ -7,6 +8,7 @@ import { reviewDefinition } from "../commands/review/definition.js";
 import { workerDefinition } from "../commands/worker/definition.js";
 import { projectDefinition } from "../commands/project/definition.js";
 import { taskDefinition } from "../commands/task/definition.js";
+import { tagDefinition } from "../commands/tag/definition.js";
 import { invitationDefinition } from "../commands/invitation/definition.js";
 import { teamDefinition } from "../commands/team/definition.js";
 import { webhookDefinition } from "../commands/webhook/definition.js";
@@ -19,6 +21,7 @@ export type CommandRegistration = CommandDefinition & {
 };
 
 export const commands: readonly CommandRegistration[] = [
+  { ...assistantTaskDefinition, load: async () => ({ run: (await import("../commands/assistant-task/command.js")).runAssistantTaskCommand }) },
   { ...botDefinition, load: async () => ({ run: (await import("../commands/bot/commands.js")).runBotCommand }) },
   { ...controllerDefinition, load: async () => ({ run: (await import("../commands/controller/index.js")).runControllerCommand }) },
   { ...workerDefinition, load: async () => ({ run: (await import("../commands/worker/index.js")).runWorkerCommand }) },
@@ -42,6 +45,7 @@ export const commands: readonly CommandRegistration[] = [
     load: async () => ({ run: (await import("../commands/project/command.js")).runProjectCommand }),
   },
   { ...invitationDefinition, load: async () => ({ run: (await import("../commands/invitation/command.js")).runInvitationCommand }) },
+  { ...tagDefinition, load: async () => ({ run: (await import("../commands/tag/command.js")).runTagCommand }) },
   { ...teamDefinition, load: async () => ({ run: (await import("../commands/team/command.js")).runTeamCommand }) },
   { ...webhookDefinition, load: async () => ({ run: (await import("../commands/webhook/command.js")).runWebhookCommand }) },
   {

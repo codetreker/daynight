@@ -251,7 +251,7 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusServiceUnavailable
 		case "unsupported_mode":
 			status = http.StatusBadRequest
-		case "content_changed", "history_pending", "execution_changed":
+		case "claim_held", "claim_lost", "task_paused", "content_changed", "history_pending", "execution_changed":
 			status = http.StatusConflict
 		case "content_unavailable":
 			status = http.StatusBadGateway
@@ -269,6 +269,8 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusNotFound
 		case "media_outcome_unknown", "clock_not_advanced", "message_outcome_unknown", "write_outcome_unknown", "monitoring_unavailable", "monitoring_write_outcome_unknown":
 			status = http.StatusServiceUnavailable
+		case "github_repository_mismatch":
+			status = http.StatusConflict
 		case "archive_conflict", "archive_incomplete", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "configuration_not_initialized", "search_changed", "monitoring_revision_conflict", "monitoring_sequence_stale", "monitoring_sample_conflict", "monitoring_state_lost":
 			status = http.StatusConflict
 		case "cancelled", "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "personal_team_immutable", "team_not_empty", "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "active_worker_limit_exceeded", "active_worker_claims", "last_admin", "identity_mismatch", "dependency_cycle", "dependency_unsatisfied", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "resource_limit_exceeded":
@@ -276,6 +278,10 @@ func WriteError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 		}
 		if status != http.StatusInternalServerError {
 			response.Code, response.Message = fault.Code, fault.Message
+			var claim *model.AssistantTaskClaimError
+			if errors.As(err, &claim) {
+				response.Details = &api.ErrorDetails{HolderBotID: claim.Claim.HolderBotID, ClaimGeneration: &claim.Claim.Generation, LeaseUntil: claim.Claim.LeaseUntil}
+			}
 			if len(fault.TaskIDs) > 0 {
 				response.Details = &api.ErrorDetails{TaskIDs: fault.TaskIDs}
 			}

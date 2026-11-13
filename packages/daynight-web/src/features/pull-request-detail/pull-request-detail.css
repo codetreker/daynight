@@ -1,0 +1,27 @@
+.auth-dialog.pr-detail-dialog { width: 860px; }
+.pr-detail-dialog .dialog-header { align-items: start; max-height: 35dvh; overflow-y: auto; }
+.pr-detail-dialog .dialog-header h2 { font-size: 19px; line-height: 1.55; }
+.pr-detail-dialog .pr-detail-kicker { display: block; color: #777f91; font-size: 10px; margin-bottom: 7px; }
+.pr-detail-dialog .dialog-body { padding-top: 20px; overflow-x: hidden; }
+.pr-detail-dialog .detail-summary-line { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; color: #667287; font-size: 11px; margin-bottom: 18px; }
+.pr-detail-dialog .detail-state { display: inline-flex; border-radius: 5px; padding: 4px 8px; background: #edf7f1; color: #357558; }
+.pr-detail-dialog .detail-state.draft { background: #f0f1f6; color: #657187; }
+.pr-detail-dialog .detail-state.merged { background: #f2ecfa; color: #79519f; }
+.pr-detail-dialog .detail-state.closed { background: #fbeef1; color: #9c5062; }
+.pr-detail-dialog .detail-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 25px; border: 1px solid var(--line); border-radius: 8px; background: #fcfcfe; padding: 16px 18px; margin: 0 0 24px; }
+.pr-detail-dialog .detail-fields > div { min-width: 0; }
+.pr-detail-dialog .detail-fields dt { font-size: 10px; color: #6f7a8d; margin: 0 0 5px; }
+.pr-detail-dialog .detail-fields dd { font-size: 11px; color: #53617b; margin: 0; overflow-wrap: anywhere; line-height: 1.8; }
+.pr-detail-dialog .detail-fields code { font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.pr-detail-dialog .description-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 17px; }
+.pr-detail-dialog .description-heading h3 { font-size: 13px; color: #54627c; margin: 0; }
+.pr-detail-dialog .raw-toggle { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #657187; white-space: nowrap; }
+.pr-detail-dialog .raw-toggle input { accent-color: var(--indigo); margin: 0; }
+.pr-detail-dialog .pr-description-source { margin: 0; font: 11px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; color: #53617b; background: #f7f8fb; padding: 15px; border: 1px solid var(--line); border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pr-detail-dialog .no-description { padding: 22px; background: #fafbfe; border: 1px dashed #d9deea; border-radius: 7px; font-size: 12px; color: #6f7a8d; text-align: center; }
+.pr-detail-dialog .dialog-footer { justify-content: space-between; align-items: center; }
+.pr-detail-dialog .dialog-footer > span { font-size: 10px; color: #6f7a8d; }
+.pr-detail-dialog .pr-detail-error { color: #9c4052; margin-bottom: 16px; }
+.pr-detail-dialog .pr-detail-error button { font: inherit; margin-left: 6px; }
+@media (max-width: 740px) { .pr-detail-dialog .dialog-header h2 { font-size: 17px; } .pr-detail-dialog .detail-fields { gap: 14px; padding: 14px; } }
+@media (max-width: 480px) { .pr-detail-dialog .detail-fields { grid-template-columns: 1fr; } .pr-detail-dialog .dialog-header h2 { font-size: 15px; } .pr-detail-dialog .description-heading { align-items: flex-start; flex-wrap: wrap; } .pr-detail-dialog .dialog-footer > span { flex-basis: 100%; } .pr-detail-dialog .dialog-footer .button { margin-left: auto; } }

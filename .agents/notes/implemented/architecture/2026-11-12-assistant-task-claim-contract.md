@@ -31,8 +31,11 @@ an absent receipt is not proof of rollback or permission to resend.
 
 The contract assigns each required assertion to the layer that owns the
 behavior, retaining real database and cross-Worker acceptance where needed.
-This note records the delivered design decision. Server, CLI and Worker support
-remain implementation work; the documentation does not claim runtime delivery.
+This note originally delivered the design decision without runtime support.
+The [server implementation](2026-11-12-assistant-task-server.md) applies the
+contract to the API and persistence layer. The [CLI implementation](../feature/2026-11-13-assistant-task-cli.md)
+provides private operation records and single-writer coordination; Worker
+continuous execution still requires its own implementation and evidence.
 
 ## Alternatives
 

@@ -11,12 +11,12 @@
 .goal-detail-description-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; align-items: start; gap: 1.75rem; min-width: 0; }
 .goal-detail-description-body { min-width: 0; overflow-wrap: anywhere; }
 .goal-detail-description-body > .task-description { padding: 0; }
-.goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 1.25rem; color: #637087; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 1.25rem; color: var(--task-helper); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .goal-information-section + .goal-information-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
 .goal-information h3 { margin: 0 0 1rem; color: var(--ink); font-size: 13px; font-weight: 600; }
 .goal-information dl { margin: 0; }
 .goal-information dl > div + div { margin-top: .65rem; }
-.goal-information dt { color: #737d8e; }
+.goal-information dt { color: var(--task-helper); }
 .goal-information dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 .goal-information-dates dd { margin-top: .2rem; }
 .goal-information-counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
@@ -24,11 +24,11 @@
 .goal-information-progress { margin: 1rem 0 .5rem; }
 .goal-information-track { display: flex; height: 6px; overflow: hidden; border-radius: 3px; background: #edf0f5; }
 .goal-information-track i { display: block; height: 100%; }
-.goal-information-done { background: #78ac94; }
-.goal-information-cancelled { background: #c8bbd3; }
+.goal-information-done { background: var(--task-done-ink); }
+.goal-information-cancelled { background: var(--task-cancelled-ink); }
 .goal-information .goal-information-statuses { margin-top: .85rem; }
 .goal-information-loading, .goal-information-error p { margin: 0 0 .65rem; }
-.goal-information-error { margin-top: 1rem; color: #a05252; }
+.goal-information-error { margin-top: 1rem; color: var(--task-error-ink); }
 .goal-information-error .button { font-size: inherit; }
 @media (max-width: 740px) {
   .goal-detail-meta { gap: .5rem; }

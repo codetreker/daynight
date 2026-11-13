@@ -40,8 +40,204 @@ export type UpdateOptions = {
   operations?: UpdateOperations;
 };
 
-/** Parent interruption and command limits terminate only this invocation's process tree before rejecting. */
+// The anchor is evaluated from memory because npm may replace this installation while
+// the updater is running. Its stdout is a private pipe to the parent in capture mode:
+// the command inherits that pipe directly so its EOF also accounts for descendants.
+const posixAnchor = String.raw`
+const { spawn } = require("node:child_process");
+const { closeSync } = require("node:fs");
+let started = false;
+let cleaning = false;
+let finished = false;
+function cleanup() {
+  if (cleaning) return;
+  cleaning = true;
+  if (!process.connected) { process.kill(0, "SIGKILL"); return; }
+  process.send({ type: "cleaning" }, () => {
+    try { process.kill(0, "SIGKILL"); }
+    catch (error) {
+      if (process.connected) process.send({ type: "cleanup-error", message: String(error) }, () => process.exit(1));
+      else process.exit(1);
+    }
+  });
+}
+process.on("message", (message) => {
+  if (message.type === "start" && !started) {
+    started = true;
+    const child = spawn(message.executable, message.arguments, {
+      cwd: message.cwd, env: message.environment, stdio: ["inherit", "inherit", "inherit"],
+    });
+    // Only the command and its descendants retain the capture pipe's write end.
+    try { closeSync(1); } catch {}
+    let spawnError;
+    child.once("error", (error) => { spawnError = { message: error.message, code: error.code, errno: error.errno, syscall: error.syscall, path: error.path, spawnargs: error.spawnargs }; });
+    child.once("close", (code, signal) => {
+      if (process.connected) process.send({ type: "outcome", code, signal, spawnError });
+    });
+  } else if (message.type === "cleanup") cleanup();
+  else if (message.type === "finish") {
+    finished = true;
+    if (process.connected) process.send({ type: "finished" }, () => process.disconnect());
+  }
+});
+process.on("disconnect", () => { if (!cleaning && !finished) cleanup(); });
+`;
+
+type AnchorOutcome = {
+  type: "outcome";
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  spawnError?: { message: string; code?: string; errno?: number; syscall?: string; path?: string; spawnargs?: string[] };
+};
+
+const runPosixUpdateCommand = (command: UpdateCommand): Promise<string> => new Promise((resolve, reject) => {
+  // NODE_OPTIONS can load arbitrary caller preloads; only the actual command should
+  // receive them, not the additional Node process used as the anchor.
+  const anchorEnvironment = { ...process.env };
+  delete anchorEnvironment.NODE_OPTIONS;
+  const anchor = spawn(process.execPath, ["--eval", posixAnchor], {
+    cwd: command.cwd, env: anchorEnvironment, detached: true,
+    stdio: ["inherit", command.output === "capture" ? "pipe" : "inherit", "inherit", "ipc"],
+  });
+  let output = "";
+  let failure: Error | undefined;
+  let outcomeFailure: Error | undefined;
+  let outcomeReceived = false;
+  let cleaning = false;
+  let cleaningAcknowledged = false;
+  let finishRequested = false;
+  let finishAcknowledged = false;
+  let exited = false;
+  let exitCode: number | null = null;
+  let exitSignal: NodeJS.Signals | null = null;
+  let closed = false;
+  let outputEnded = command.output !== "capture";
+  let streamFailure: Error | undefined;
+  let settled = false;
+  let cleanupTimer: NodeJS.Timeout | undefined;
+  let observationTimer: NodeJS.Timeout | undefined;
+
+  const complete = (error?: Error): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(commandTimer);
+    if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
+    if (observationTimer !== undefined) clearTimeout(observationTimer);
+    process.removeListener("SIGINT", onInt);
+    process.removeListener("SIGTERM", onTerm);
+    if (error !== undefined) {
+      // A missed deadline must not leave the caller waiting on IPC or inherited pipes.
+      if (anchor.connected) anchor.disconnect();
+      anchor.stdout?.destroy();
+      anchor.unref();
+      reject(error);
+    } else resolve(output);
+  };
+  const unconfirmed = (detail: string, cause?: unknown): void => {
+    const original = failure ?? outcomeFailure ?? (cause instanceof Error ? cause : undefined);
+    complete(new Error(`Update command cleanup-unconfirmed: ${detail}`, original === undefined ? undefined : { cause: original }));
+  };
+  const observe = (): void => {
+    if (settled || !cleaning || !exited || !closed) return;
+    if (streamFailure !== undefined) { unconfirmed(`captured output failed: ${streamFailure.message}`, streamFailure); return; }
+    if (!outputEnded) return;
+    if (observationTimer !== undefined) { clearTimeout(observationTimer); observationTimer = undefined; }
+    if (!cleaningAcknowledged) { unconfirmed("anchor cleanup acknowledgement was lost."); return; }
+    if (exitSignal !== "SIGKILL") { unconfirmed("anchor did not exit from its group cleanup signal."); return; }
+    try {
+      // Signal zero only observes the group: it never targets a reused PGID with
+      // a destructive signal. ESRCH is accepted only after EOF and anchor close.
+      process.kill(-anchor.pid!, 0);
+    } catch (cause) {
+      if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") {
+        complete(failure ?? outcomeFailure); return;
+      } else { unconfirmed(`process group observation failed: ${String(cause)}`, cause); return; }
+    }
+    observationTimer = setTimeout(observe, 20);
+  };
+  const beginCleanup = (): void => {
+    if (cleaning || settled) return;
+    cleaning = true;
+    clearTimeout(commandTimer);
+    if (cleanupTimer !== undefined) clearTimeout(cleanupTimer);
+    cleanupTimer = setTimeout(() => { unconfirmed("cleanup did not finish within 10 seconds."); }, 10_000);
+    if (!anchor.connected || anchor.pid === undefined) { unconfirmed("anchor IPC is unavailable."); return; }
+    anchor.send({ type: "cleanup" }, (error) => {
+      if (error !== null) unconfirmed(`cannot request anchor cleanup: ${error.message}`, error);
+    });
+  };
+  const finishNormally = (): void => {
+    if (settled || cleaning || finishRequested || !outcomeReceived || !outputEnded) return;
+    if (!anchor.connected) { unconfirmed("anchor IPC was lost before completion."); return; }
+    finishRequested = true;
+    clearTimeout(commandTimer);
+    cleanupTimer = setTimeout(() => { unconfirmed("anchor release did not finish within 10 seconds."); }, 10_000);
+    anchor.send({ type: "finish" }, (error) => {
+      if (error !== null) unconfirmed(`cannot release anchor: ${error.message}`, error);
+    });
+  };
+  const interrupt = (signal: NodeJS.Signals): void => {
+    if (failure === undefined) failure = new Error(`The update command was interrupted by ${signal}.`);
+    beginCleanup();
+  };
+  const onInt = (): void => { interrupt("SIGINT"); };
+  const onTerm = (): void => { interrupt("SIGTERM"); };
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
+  anchor.stdout?.setEncoding("utf8");
+  anchor.stdout?.on("data", (chunk: string) => {
+    if (failure !== undefined) return;
+    output += chunk;
+    if (Buffer.byteLength(output, "utf8") > 64 * 1024) {
+      failure = new Error("npm returned more than 64 KiB while checking the update version.");
+      beginCleanup();
+    }
+  });
+  anchor.stdout?.once("end", () => { outputEnded = true; if (cleaning) observe(); else finishNormally(); });
+  anchor.stdout?.once("error", (error) => { streamFailure = error; if (failure === undefined) failure = outcomeFailure ?? error; beginCleanup(); });
+  anchor.on("message", (message: AnchorOutcome | { type: "cleaning" } | { type: "finished" } | { type: "cleanup-error"; message: string }) => {
+    if (message.type === "cleaning") { cleaningAcknowledged = true; return; }
+    if (message.type === "finished") { finishAcknowledged = true; return; }
+    if (message.type === "cleanup-error") { unconfirmed(`anchor could not signal its group: ${message.message}`); return; }
+    if (message.type !== "outcome" || outcomeReceived) return;
+    outcomeReceived = true;
+    if (message.spawnError !== undefined) {
+      outcomeFailure = Object.assign(new Error(message.spawnError.message), message.spawnError);
+    } else if (message.signal !== null) {
+      outcomeFailure = new Error(`The update command was terminated by ${message.signal}.`);
+    } else if (message.code !== 0) {
+      outcomeFailure = new Error(`The update command exited with code ${String(message.code)}.`);
+    }
+    if (command.cleanupProcessGroup === true) beginCleanup();
+    else finishNormally();
+  });
+  anchor.once("error", (error) => {
+    if (anchor.pid === undefined) complete(error);
+    else { if (failure === undefined) failure = error; unconfirmed("anchor IPC or process failed.", error); }
+  });
+  anchor.once("disconnect", () => {
+    if (settled) return;
+    if (cleaning && !cleaningAcknowledged || !cleaning && !finishAcknowledged) unconfirmed("anchor IPC was lost.");
+  });
+  anchor.once("exit", (code, signal) => { exitCode = code; exitSignal = signal; exited = true; if (cleaning) observe(); });
+  anchor.once("close", () => {
+    closed = true;
+    if (cleaning) observe();
+    else if (!outcomeReceived || !finishAcknowledged || exitCode !== 0 || exitSignal !== null) unconfirmed("anchor exited without a complete IPC exchange.");
+    else complete(failure ?? outcomeFailure);
+  });
+  const commandTimer = setTimeout(() => {
+    if (failure === undefined) failure = new Error(`The update command timed out after ${command.timeoutMs / 1_000} seconds.`);
+    beginCleanup();
+  }, command.timeoutMs);
+  anchor.send({ type: "start", executable: command.executable, arguments: command.arguments, cwd: command.cwd, environment: command.environment }, (error) => {
+    if (error !== null) { if (failure === undefined) failure = error; unconfirmed("cannot start command through anchor IPC.", error); }
+  });
+});
+
+/** Supervises commands; POSIX group cleanup either confirms completion or reports it unconfirmed. */
 export const runUpdateCommand = async (command: UpdateCommand): Promise<string> => {
+  if (process.platform !== "win32") return runPosixUpdateCommand(command);
   let taskkill: string | undefined;
   if (process.platform === "win32") {
     const systemRoot = Object.entries(command.environment).find(([name]) => name.toLowerCase() === "systemroot")?.[1];

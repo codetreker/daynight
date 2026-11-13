@@ -9,6 +9,8 @@ import type { TaskSessionSnapshot } from './helpers/session';
 
 const userId = '00000009-1111-4111-8111-111111111111';
 const clients: TaskSessionClient[] = [];
+// Keep IndexedDB cleanup on its real task queue while controlling Session deadlines.
+const fakeSessionClock = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
 afterEach(() => { clients.splice(0).forEach(client => client.close()); vi.useRealTimers(); });
 function fixture() {
   const s: TaskSessionSnapshot = { ...JSON.parse(readFileSync('../daynight/test/session/fixtures/snapshot.json', 'utf8')), executionGeneration: '1', connectionEpoch: '1', lastEventSeq: '0' };
@@ -31,7 +33,7 @@ function report(s: TaskSessionSnapshot, revision = '1'): SessionStartupReport {
 
 describe('startup observations and live history admission', () => {
   it('does not request offline history while continuing to observe the current startup report', async () => {
-    vi.useFakeTimers();
+    fakeSessionClock();
     const f = fixture(), offline = { ...f.s, connectionState: 'disconnected' as const, synchronized: false, activity: 'initializing' as const };
     f.current({ status: 'registered', session: offline, startupReport: report(offline) });
     await f.client.start(); f.receive(offline);
@@ -58,7 +60,7 @@ describe('startup observations and live history admission', () => {
   });
 
   it('updates blocked observations over a healthy browser channel and resumes only after a newer report permits history', async () => {
-    vi.useFakeTimers();
+    fakeSessionClock();
     const f = fixture(), blocked: SessionStartupReport = { ...report(f.s), startup: { state: 'ready', reasonCode: 'ready' }, recovery: { state: 'blocked', reasonCode: 'recovery_limit' } };
     f.current({ status: 'registered', session: f.s, startupReport: blocked });
     await f.client.start(); f.receive(f.s);
@@ -77,7 +79,7 @@ describe('startup observations and live history admission', () => {
   });
 
   it('does not regress a newer report revision or retry the same offline history refusal', async () => {
-    vi.useFakeTimers();
+    fakeSessionClock();
     const f = fixture(), healthy = { ...report(f.s, '3'), startup: { state: 'ready' as const, reasonCode: 'ready' as const }, recovery: { state: 'none' as const, reasonCode: null } };
     f.current({ status: 'registered', session: f.s, startupReport: healthy });
     vi.mocked(f.api.timeline).mockRejectedValue(new ApiError('server', 503, 'controller_offline'));
@@ -90,7 +92,7 @@ describe('startup observations and live history admission', () => {
   });
 
   it('rejects a polling permission revocation and clears execution content', async () => {
-    vi.useFakeTimers();
+    fakeSessionClock();
     const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
     f.client.setDraft('private text');
     vi.mocked(f.api.current).mockRejectedValue(new ApiError('server', 403, 'forbidden'));
@@ -110,7 +112,7 @@ it('remembers a connection only within the observed execution and controller ide
 });
 
 it('keeps safe permission failures visible after removing private execution data', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
   vi.mocked(f.api.current).mockRejectedValue(new ApiError('server', 403, 'forbidden'));
   await vi.advanceTimersByTimeAsync(3000);
@@ -118,7 +120,7 @@ it('keeps safe permission failures visible after removing private execution data
 });
 
 it('does not publish an old current response after a streamed generation replacement', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture(), oldReport = report(f.s);
   f.current({ status: 'registered', session: f.s, startupReport: oldReport });
   await f.client.start(); f.receive(f.s);
@@ -134,7 +136,7 @@ it('does not publish an old current response after a streamed generation replace
 });
 
 it('keeps history corruption visible across successful startup report polls', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture();
   vi.mocked(f.api.timeline).mockResolvedValue({ ...f.page, hasMoreBefore: true, beforeCursor: null });
   await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
@@ -145,7 +147,7 @@ it('keeps history corruption visible across successful startup report polls', as
 });
 
 it('keeps sending disabled when a polled snapshot is ahead of the materialized event watermark', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
   const newer = { ...f.s, sessionRevision: '13', lastEventSeq: '1' };
   f.current({ status: 'registered', session: newer });
@@ -157,7 +159,7 @@ it('keeps sending disabled when a polled snapshot is ahead of the materialized e
 });
 
 it('restarts an unfinished history read after the observed connection epoch changes', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture(); let finish!: (page: TimelinePage) => void;
   vi.mocked(f.api.timeline).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   await f.client.start(); f.receive(f.s);
@@ -171,7 +173,7 @@ it('restarts an unfinished history read after the observed connection epoch chan
 });
 
 it('does not replace a newer polled disconnection with an older unfinished tail snapshot', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture(); let finish!: (page: TimelinePage) => void;
   vi.mocked(f.api.timeline).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
   await f.client.start(); f.receive(f.s);
@@ -183,7 +185,7 @@ it('does not replace a newer polled disconnection with an older unfinished tail 
 });
 
 it('does not hide a protocol read failure behind an earlier offline-history notice', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture();
   vi.mocked(f.api.timeline).mockRejectedValue(new ApiError('server', 503, 'controller_offline'));
   await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
@@ -196,7 +198,7 @@ it('does not hide a protocol read failure behind an earlier offline-history noti
 });
 
 it('does not replace a newer polled disconnection with the delayed initial channel snapshot', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture(); await f.client.start();
   f.current({ status: 'registered', session: { ...f.s, sessionRevision: '13', connectionState: 'disconnected', synchronized: false, lastEventSeq: '1' } });
   await vi.advanceTimersByTimeAsync(3000);
@@ -249,7 +251,7 @@ it('withdraws an old public report when an explicit current refresh fails', asyn
 });
 
 it('clears consecutive current-read failures after success without requiring another channel event', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture(); await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
   expect(f.client.snapshot().historyReady).toBe(true);
   f.client.setDraft('preserve the idle draft');
@@ -264,7 +266,7 @@ it('clears consecutive current-read failures after success without requiring ano
 });
 
 it('retains an independent history failure through consecutive current-read failures and recovery', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture();
   vi.mocked(f.api.timeline).mockResolvedValue({ ...f.page, hasMoreBefore: true, beforeCursor: null });
   await f.client.start(); f.receive(f.s); await vi.advanceTimersByTimeAsync(0);
@@ -278,7 +280,7 @@ it('retains an independent history failure through consecutive current-read fail
 
 
 it('keeps current-read error ownership when an offline fallback finishes before current recovers', async () => {
-  vi.useFakeTimers();
+  fakeSessionClock();
   const f = fixture();
   let finish!: (page: TimelinePage) => void;
   vi.mocked(f.api.timeline)

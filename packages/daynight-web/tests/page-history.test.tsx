@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserNavigation } from '../src/app/navigation';
-import { accountHistory, emptyResourceReading, projectHistory, readAccountHistory, readProjectHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type ProjectReading, type ResourcePageReading } from '../src/app/page-history';
-import { useAccountHistory, useProjectHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
+import { accountHistory, emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readAccountHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, readWorkerHistory, resourceHistory, workerHistory, type MyTasksReading, type ProjectReading, type ResourcePageReading } from '../src/app/page-history';
+import { useAccountHistory, useMyTasksHistory, useProjectHistory, useResourceHistory, useWorkerHistory } from '../src/app/use-page-history';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 
 const user = '00000000-0000-4000-8000-000000000001';
@@ -120,6 +120,84 @@ describe('standalone resource reading history', () => {
 
 beforeEach(() => { history.replaceState(null, '', '/account'); });
 afterEach(() => { cleanup(); browserNavigation().dispose(); vi.restoreAllMocks(); });
+
+describe('personal overview reading history', () => {
+  const project = '10000000-0000-4000-8000-000000000001';
+  const root = '20000000-0000-4000-8000-000000000001';
+  const child = '20000000-0000-4000-8000-000000000002';
+  const selection: MyTasksReading = { projectPages: { [project]: 2 }, detail: { projectId: project, id: root,
+    navigation: { tab: 'attachments', path: 'docs/readme.md' },
+    goalChildren: { graphRootId: child, task: { id: child, navigation: { tab: 'session', path: null } } } } };
+
+  it('accepts only identity-bound positions and rejects malformed or private data', () => {
+    const state = myTasksHistory(user, selection);
+    expect(readMyTasksHistory(state, user)).toEqual(selection);
+    expect(readMyTasksHistory(state, other)).toBeNull();
+    expect(readMyTasksHistory(accountHistory(user, 'profile'), user)).toBeNull();
+    for (const bad of [
+      { ...selection, draft: 'secret' }, { ...selection, projectPages: { [project]: 0 } },
+      { ...selection, projectPages: { bad: 2 } }, { ...selection, projectPages: { [project]: 1.5 } },
+      { ...selection, detail: { ...selection.detail, snapshot: {} } },
+      { ...selection, detail: { ...selection.detail, navigation: { tab: 'attachments', path: '../private' } } },
+    ]) expect(() => readMyTasksHistory({ ...state, selection: bad }, user)).toThrow('Invalid my-tasks navigation state.');
+  });
+
+  it('restores history and prevents retired project entries from restoring readers', () => {
+    history.replaceState(null, '', '/my-tasks');
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useMyTasksHistory(user, true, scope));
+      expect(result.current.selection).toEqual(emptyMyTasksReading());
+      act(() => result.current.select(selection));
+      const saved = history.state;
+      act(() => result.current.select({ ...selection, detail: null }));
+      arrival(saved, '/my-tasks');
+      expect(result.current.selection).toEqual(selection);
+      act(() => scope.suspendProject(project));
+      expect(result.current.selection).toEqual({ ...selection, detail: null });
+      arrival(saved, '/my-tasks');
+      expect(result.current.selection).toEqual({ ...selection, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('accepts a restored entry under the same identity and refuses another identity', () => {
+    history.replaceState(null, '', '/my-tasks');
+    const navigation = browserNavigation();
+    act(() => navigation.setView(myTasksHistory(user, selection), { replace: true }));
+    navigation.dispose();
+    const rebuilt = browserNavigation();
+    expect(rebuilt.snapshot().view).toEqual(myTasksHistory(user, selection));
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useMyTasksHistory(user, true, scope));
+      expect(result.current.selection).toEqual(selection);
+      unmount();
+    } finally { scope.dispose(); }
+    const otherScope = createTaskCacheScope({ userId: other, onIdentityMismatch: vi.fn() });
+    try {
+      const { result } = renderHook(() => useMyTasksHistory(other, true, otherScope));
+      expect(result.current.selection).toEqual(emptyMyTasksReading());
+    } finally { otherScope.dispose(); }
+  });
+
+  it('does not requalify a rebuilt entry after observed project retirement', () => {
+    history.replaceState(null, '', '/my-tasks');
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useMyTasksHistory(user, true, scope));
+      act(() => result.current.select(selection));
+      const old = history.state;
+      act(() => scope.suspendProject(project));
+      unmount();
+      browserNavigation().dispose();
+      history.replaceState(old, '', '/my-tasks');
+      const restored = renderHook(() => useMyTasksHistory(user, true, scope));
+      expect(restored.result.current.selection).toEqual({ ...selection, detail: null });
+      restored.unmount();
+    } finally { scope.dispose(); }
+  });
+});
 
 describe('Project reading history', () => {
   const project = '10000000-0000-4000-8000-000000000001';

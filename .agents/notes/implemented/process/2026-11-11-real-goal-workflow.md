@@ -29,11 +29,21 @@ important progress change; child status accounting does not synchronize it.
 Task-specific results and evidence remain with their producer. Required stage
 tasks, files, confirmation and delivery gates follow the target project.
 
-[Goal handoff](../../../skills/handoff-goal/SKILL.md) selects direct ordinary
-children by Parent, checking each task independently. Dependencies can cross a
-Goal boundary without transferring the other Goal's work. The public CLI manual
-explains product operations and material ownership; repository stage policy
-remains in development-workflow.
+For a user-specified Goal handoff, read the `type=goal` resource and enumerate
+all pages of its ordinary direct children by Parent; an empty Goal has no Tasks
+to hand off. Apply the [handoff workflow](../../../skills/development-workflow/references/handoff.md)
+to each unfinished child individually, checking its actual Parent, assignee,
+`allowAgents`, status, platform, dependencies and required sources. Dependencies
+across Goals or without a Parent do not become members through connectivity or
+transfer the other Goal's work or authority. The Goal owner does not authorize
+changes to another user's Task. Do not hand off the Goal itself or infer a Goal
+from an old `[Goal]` title. Proposed Tasks retain their status and permission
+unless the caller explicitly selects todo; enabling `allowAgents` alone does not
+make them eligible for automatic execution.
+
+The public CLI manual explains product operations and material ownership;
+repository stage policy remains in development-workflow. The dedicated Goal
+handoff entrypoint was retired under the [retirement decision](2026-11-13-retire-handoff-entrypoints.md).
 
 ## Alternatives
 

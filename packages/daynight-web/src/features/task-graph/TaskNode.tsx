@@ -18,12 +18,15 @@ export type TaskNodeData = {
   kind: 'main' | 'external';
   center: CanvasPoint;
   size: Pick<CanvasNode, 'width' | 'height'>;
-  onInspectTask: (id: string) => void;
-  onOpenTask: (id: string, trigger: HTMLElement) => void;
-  onNavigateExternalTask: (id: string, trigger: HTMLElement) => void;
-  onExpandTask: (id: string, direction: TaskExpansionDirection) => void;
-  expansions: TaskExpansions;
-  revealRequest: number | null;
+  actions: { readonly kind: 'goal'; readonly onOpenTask: (id: string, trigger: HTMLElement) => void } | {
+    readonly kind: 'chain';
+    readonly onInspectTask: (id: string) => void;
+    readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
+    readonly onNavigateExternalTask: (id: string, trigger: HTMLElement) => void;
+    readonly onExpandTask: (id: string, direction: TaskExpansionDirection) => void;
+    readonly expansions: TaskExpansions;
+    readonly revealRequest: number | null;
+  };
 };
 
 export type TaskFlowNode = Node<TaskNodeData, 'task'>;
@@ -70,12 +73,14 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
   const recoveringFocus = useRef(false);
   const body = useRef<HTMLButtonElement>(null);
   const revealed = useRef<number | null>(null);
+  const actions = data.actions;
+  const revealRequest = actions.kind === 'chain' ? actions.revealRequest : null;
   useLayoutEffect(() => {
-    if (data.revealRequest === null || data.revealRequest === revealed.current) return;
-    revealed.current = data.revealRequest;
+    if (revealRequest === null || revealRequest === revealed.current) return;
+    revealed.current = revealRequest;
     void setCenter(data.center.x, data.center.y, { zoom: getViewport().zoom, duration: 0 });
     body.current!.focus({ preventScroll: true });
-  }, [data.revealRequest, data.center, getViewport, setCenter]);
+  }, [revealRequest, data.center, getViewport, setCenter]);
   useLayoutEffect(() => {
     // Controlled node data commits after the graph owner; restore a removed
     // footer at the task's DOM boundary without changing the viewport.
@@ -84,7 +89,7 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
       body.current!.focus({ preventScroll: true });
       recoveringFocus.current = false;
     }
-  }, [data.expansions]);
+  }, [actions]);
   const title = `${data.task.titlePreview}${data.task.titleTruncated ? '…' : ''}`;
   const revealOnFocus = useCallback((event: FocusEvent<HTMLButtonElement>) => {
     focusedControl.current = event.currentTarget;
@@ -99,28 +104,28 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
       void setCenter(data.center.x, data.center.y, { zoom, duration: 0 });
     }
   }, [data.center, data.size, getViewport, setCenter]);
-  const open = useCallback((event: MouseEvent<HTMLButtonElement>) => { data.onOpenTask(data.task.id, event.currentTarget); }, [data.onOpenTask, data.task.id]);
-  const navigate = useCallback((event: MouseEvent<HTMLButtonElement>) => { data.onNavigateExternalTask(data.task.id, event.currentTarget); }, [data.onNavigateExternalTask, data.task.id]);
-  const inspect = useCallback(() => { data.onInspectTask(data.task.id); }, [data.onInspectTask, data.task.id]);
-  const expandable = data.expansions.prerequisites.ids.length > 0 || data.expansions.successors.ids.length > 0;
+  const open = useCallback((event: MouseEvent<HTMLButtonElement>) => { actions.onOpenTask(data.task.id, event.currentTarget); }, [actions, data.task.id]);
+  const navigate = useCallback((event: MouseEvent<HTMLButtonElement>) => { if (actions.kind === 'chain') actions.onNavigateExternalTask(data.task.id, event.currentTarget); }, [actions, data.task.id]);
+  const inspect = useCallback(() => { if (actions.kind === 'chain') actions.onInspectTask(data.task.id); }, [actions, data.task.id]);
+  const expandable = actions.kind === 'chain' && (actions.expansions.prerequisites.ids.length > 0 || actions.expansions.successors.ids.length > 0);
   return (
-    <div className={`task-node task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''}${paused ? ' task-node-paused' : ''} nodrag nopan`} data-task-status={data.task.status} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
+    <div className={`task-node${actions.kind === 'goal' ? ' task-node-goal' : ''} task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''}${paused ? ' task-node-paused' : ''} nodrag nopan`} data-task-status={data.task.status} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
       <button type="button" ref={body} className="task-node-body nodrag nopan"
-        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${data.ownerLabel == null ? '' : `, ${data.ownerLabel}`}${paused ? `, ${pause.label}` : ''}${m.inspectionSuffix[inspection]}`}
+        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${data.ownerLabel == null ? '' : `, ${data.ownerLabel}`}${paused ? `, ${pause.label}` : ''}${actions.kind === 'chain' ? m.inspectionSuffix[inspection] : ''}`}
         aria-describedby={execution === null ? undefined : descriptionId}
-        aria-pressed={inspection === 'selected'} onClick={inspect} onFocus={revealOnFocus}>
+        aria-pressed={actions.kind === 'chain' ? inspection === 'selected' : undefined} aria-haspopup={actions.kind === 'goal' ? 'dialog' : undefined} onClick={actions.kind === 'goal' ? open : inspect} onFocus={revealOnFocus}>
         <TaskNodeContent task={data.task} kind={data.kind} ownerLabel={data.ownerLabel ?? null} execution={execution} />
       </button>
       {execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}
-      <button type="button" className="task-node-details nodrag nopan" aria-haspopup="dialog" aria-label={m.detailsLabel({ title })} onClick={open} onFocus={revealOnFocus}>{m.details}</button>
+      {actions.kind === 'chain' && <><button type="button" className="task-node-details nodrag nopan" aria-haspopup="dialog" aria-label={m.detailsLabel({ title })} onClick={open} onFocus={revealOnFocus}>{m.details}</button>
       {data.kind === 'external' ? <div className="task-node-expansions task-node-navigation">
         <button type="button" className="task-node-expand task-node-navigate nodrag nopan" aria-label={m.expandExternalLabel({ title })} onClick={navigate} onFocus={revealOnFocus}>
           <span>{m.expandExternal}</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10" /></svg>
         </button>
       </div> : expandable && <div className="task-node-expansions">
-        <ExpansionControl direction="prerequisites" expansion={data.expansions.prerequisites} onFocus={revealOnFocus} onExpand={() => { data.onExpandTask(data.task.id, 'prerequisites'); }} />
-        <ExpansionControl direction="successors" expansion={data.expansions.successors} onFocus={revealOnFocus} onExpand={() => { data.onExpandTask(data.task.id, 'successors'); }} />
-      </div>}
+        <ExpansionControl direction="prerequisites" expansion={actions.expansions.prerequisites} onFocus={revealOnFocus} onExpand={() => { actions.onExpandTask(data.task.id, 'prerequisites'); }} />
+        <ExpansionControl direction="successors" expansion={actions.expansions.successors} onFocus={revealOnFocus} onExpand={() => { actions.onExpandTask(data.task.id, 'successors'); }} />
+      </div>}</>}
     </div>
   );
 });

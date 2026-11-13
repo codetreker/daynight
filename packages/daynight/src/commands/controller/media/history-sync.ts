@@ -6,6 +6,14 @@ import type { ControllerFence } from "../../../session/protocol.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import { readControllerGrant } from "../relay.js";
+import type { ImageError } from "../../../session/image-values.js";
+
+export class ImageHistorySyncFailedError extends Error {
+  constructor(readonly imageError: ImageError) {
+    super(imageError.message);
+    this.name = "ImageHistorySyncFailedError";
+  }
+}
 
 /** A frozen body and sync ID survive unknown HTTP results and reconnects. */
 export const syncControllerImageHistory = async (options: {
@@ -54,5 +62,5 @@ export const syncControllerImageHistory = async (options: {
     }
   } finally { await file.close(); }
   journal.finishImageHistorySync(intent.syncId, receipt.state === "complete");
-  if (receipt.state !== "complete") throw new Error("The original controller history synchronization failed.");
+  if (receipt.state !== "complete") throw new ImageHistorySyncFailedError(receipt.error ?? { code: "history_unavailable", message: "The original controller history synchronization failed." });
 };

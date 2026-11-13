@@ -1,12 +1,13 @@
-import { act, fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, renderHook, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { registerOverlay } from '../src/app/overlay';
 import { browserNavigation } from '../src/app/navigation';
 import { useBrowserLocation } from '../src/app/browser-location';
-import { projectHistory, readProjectHistory, type ProjectReading } from '../src/app/page-history';
+import { useMyTasksHistory } from '../src/app/use-page-history';
+import { myTasksHistory, projectHistory, readProjectHistory, type MyTasksReading, type ProjectReading } from '../src/app/page-history';
 import { navigate } from '../src/app/router';
-import { DraftNavigationConfirmation, ProjectDraftHost, ResourceChildDraftHost, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
+import { DraftNavigationConfirmation, MyTasksDraftHost, ProjectDraftHost, ResourceChildDraftHost, TaskDraftBoundary, useDirtyTaskDraft, useRequestTaskDraftAction, useRetireTaskDraft } from '../src/features/task-detail/TaskDraftNavigation';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import type { CacheEvent } from '../src/features/task-cache/project-cache';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -250,4 +251,61 @@ it.each(['goal', 'child'] as const)('protects the %s draft when an available gra
   expect(editor).toHaveValue('keep Goal reader');
   expect(discard).not.toHaveBeenCalled();
   expect(readProjectHistory(navigation.snapshot().view, userId, projectId)!.detail!.source).toBe('direct');
+});
+
+it.each(['goal', 'child'] as const)('keeps overview %s drafts on same-reader navigation and protects leaving', (kind) => {
+  const userId = 'c0000000-0000-0000-0000-000000000001';
+  const childId = 'b0000000-0000-0000-0000-000000000002';
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  scopes.push(scope);
+  const initial: MyTasksReading = { projectPages: { [projectId]: 2 }, detail: { projectId, id: taskId,
+    navigation: { tab: 'overview', path: null }, goalChildren: { graphRootId: null, task: { id: childId, navigation: { tab: 'overview', path: null } } } } };
+  history.replaceState(null, '', '/my-tasks');
+  const navigation = browserNavigation();
+  navigation.setView(myTasksHistory(userId, initial), { replace: true });
+  const discard = vi.fn();
+  const content = <TaskDraftBoundary projectId={projectId} taskId={kind === 'goal' ? taskId : childId} page={false}><Consumer discard={discard} retired={false} /></TaskDraftBoundary>;
+  renderWithLocale(<TaskCacheProvider scope={scope}><MyTasksDraftHost projectId={projectId} taskId={taskId}>
+    {kind === 'child' ? <ResourceChildDraftHost>{content}</ResourceChildDraftHost> : content}
+  </MyTasksDraftHost></TaskCacheProvider>, { locale: 'en' });
+  const editor = screen.getByRole('textbox');
+  fireEvent.change(editor, { target: { value: 'draft' } });
+  const same = { ...initial, detail: { ...initial.detail!, navigation: { tab: 'discussion' as const, path: null },
+    goalChildren: { graphRootId: childId, task: { id: childId, navigation: { tab: 'attachments' as const, path: null } } } } };
+  act(() => navigation.setView(myTasksHistory(userId, same)));
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(editor).toHaveValue('draft');
+  const next = kind === 'goal' ? { ...same, detail: null } : { ...same, detail: { ...same.detail, goalChildren: null } };
+  act(() => navigation.setView(myTasksHistory(userId, next)));
+  expect(screen.getByRole('alertdialog')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+  expect(editor).toHaveValue('draft');
+  expect(discard).not.toHaveBeenCalled();
+});
+
+it('keeps newly admitted overview entries and drafts after an earlier project retirement', () => {
+  const userId = 'c0000000-0000-0000-0000-000000000001';
+  const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+  scopes.push(scope);
+  history.replaceState(null, '', '/my-tasks');
+  const { result } = renderHook(() => useMyTasksHistory(userId, true, scope));
+  act(() => scope.suspendProject(projectId));
+  const initial: MyTasksReading = { projectPages: {}, detail: { projectId, id: taskId, navigation: { tab: 'overview', path: null }, goalChildren: null } };
+  act(() => result.current.select(initial));
+  const source = history.state;
+  const discard = vi.fn();
+  renderWithLocale(<TaskCacheProvider scope={scope}><MyTasksDraftHost projectId={projectId} taskId={taskId}>
+    <TaskDraftBoundary projectId={projectId} taskId={taskId} page={false}><Consumer discard={discard} retired={false} /></TaskDraftBoundary>
+  </MyTasksDraftHost></TaskCacheProvider>, { locale: 'en' });
+  const editor = screen.getByRole('textbox');
+  fireEvent.change(editor, { target: { value: 'draft' } });
+  const next = { ...initial, detail: { ...initial.detail!, navigation: { tab: 'discussion' as const, path: null } } };
+  act(() => result.current.select(next));
+  expect(result.current.selection).toEqual(next);
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  act(() => { history.replaceState(source, '', '/my-tasks'); dispatchEvent(new PopStateEvent('popstate', { state: source })); });
+  expect(result.current.selection).toEqual(initial);
+  expect(screen.queryByRole('alertdialog')).toBeNull();
+  expect(editor).toHaveValue('draft');
+  expect(discard).not.toHaveBeenCalled();
 });

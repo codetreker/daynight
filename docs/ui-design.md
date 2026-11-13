@@ -1,7 +1,121 @@
 # UI Design
 
 These principles apply when designing, adding, modifying, or reviewing UI.
-Product specifications and design documents own specific interface behavior.
+This document owns the semantic color roles, exact palette, and their visual
+hierarchy. Product specifications and design documents own the behavior of
+specific interfaces and reference these rules for their colors.
+
+## Semantic color roles
+
+Keep lifecycle, activity, attention, operational health, policy, and interaction
+meaning separate. Preserve state labels and the applicable counts or icons;
+color is an additional cue.
+
+### Palette and lifecycle meaning
+
+| Role | Default background | Hover background | Border | Status text, dot, or state rail |
+|---|---|---|---|---|
+| `proposed` | `#F0EBFF` | `#E5DCFF` | `#C9B8EC` | `#64469C` |
+| `todo` | `#FAFBFC` | `#F0F3F7` | `#D5DCE5` | `#526174` |
+| `in_progress` | `#E9F1FF` | `#DCE8FF` | `#B6CEF4` | `#285B9F` |
+| `done` | `#EAF6EF` | `#DCEEE4` | `#B9D9C5` | `#256A48` |
+| `cancelled` | `#E9EBEE` | `#DDE1E6` | `#BFC6CE` | `#59616C` |
+| `ended` | `#F1F3F5` | `#E4E8EC` | `#C9D0D7` | `#52606D` |
+| `attention` | `#FFF7E8` | `#FFF0D6` | `#D4A04A` | `#805B27` |
+| `error` / `danger` | `#FFF0EF` | `#FFE2DF` | `#DF9D96` | `#A3322B` |
+
+Use lavender for unconfirmed proposals, near-white for accepted work waiting to
+start, blue for work in progress, green for successful completion, and gray for
+cancellation. Cancelled items retain readable content and their reading actions;
+their styling does not make the entire item disabled or strike through its title.
+
+`ended` is a neutral summary of mixed completed and cancelled work, with explicit
+done/cancelled counts. It is not a TaskStatus or a claim that every item succeeded.
+Shared Steps map `todo`, `in_progress`, and `done` to the corresponding roles;
+`skipped` reuses the neutral cancelled palette with its own label. These mappings
+do not add lifecycle states or change transition rules.
+
+Apply the same role to list rows, chain headings, Goal headings, graph cards,
+status chips, menu dots, and overview numbers. A real Goal uses its own state
+independently of child progress. Expanded containers remain neutral, and each
+child uses its own state. Keep item opacity at `1`; use the role's own hover
+background while retaining its labels, layout, and actions.
+
+### Attention, activity, health, and policy
+
+Orange expresses a need for attention: overdue work, blocking, pause, waiting
+for input, or a condition requiring inspection. Red expresses an explicit
+failure or a dangerous action. Ordinary lifecycle backgrounds use neither role.
+An error feedback panel does not create a failed Task lifecycle state.
+
+Preserve the existing overdue precedence: eligible standalone Tasks and graph
+cards may use the attention background over their lifecycle background, while
+retaining the genuine in-progress label and overdue icon or explanation. This
+override does not propagate to chain or overview summaries. Blocked and paused
+items retain their lifecycle background with attention badges, counts, or an
+existing strip.
+
+Actual Session work, running tools, and active Worker claims use activity blue
+from `in_progress`. Completed tool results use `done`; failed results use `error`.
+Waiting for input uses `attention`. Session summary `notice` and `warning` both
+use `attention`, retaining their distinct text and aggregation priority; a
+warning name, disconnection, or stopped Session alone does not establish failure.
+
+A green online dot expresses runtime availability. Its adjacent header label
+uses neutral helper text; actual work has its separate activity marker. Automatic
+execution permission uses a neutral outlined label with explicit on/off text:
+background `#FAFBFC`, border `#D5DCE5`, and foreground `#526174`. Permission does not
+establish acquisition or activity. Existing checked-switch brand colors remain
+control selection cues.
+
+### Progress and interaction hierarchy
+
+A single aggregate bar combining done and cancelled uses neutral `#64748B` to
+express the ended fraction, with both outcome counts retained. Existing Goal
+segments use done green `#256A48` and cancelled gray `#59616C`; retain their
+existing structure and scope.
+
+Use title text `#172132` and helper text `#556176` on the affected task/status
+surfaces, including graph metadata, completion labels, and assignee information.
+Status foregrounds come from the role table. Recheck these together with hover
+backgrounds rather than replacing backgrounds alone.
+
+Task/status keyboard focus uses dark `#344054`; selection and dependency
+inspection use `#52649B`. Preserve the lifecycle or attention fill beneath them.
+For graph nodes, keep a 2px selection outline outside the node with a 2px offset,
+and put a separate 2px focus outline inside the actual focused body with a -3px
+offset. Both cues must remain visible together without overflow clipping. Other
+task/status controls retain their existing focus geometry with the dark color.
+Overview positioning retains its independent outline. Decorative row borders
+are not the sole indicator of state or focus.
+
+These interaction colors apply to task/status controls and graph inspection.
+They do not redefine unrelated brand treatments, including the
+[Bot composer surface](spec/bot-session-view.md), or replace operational-health
+colors merely because an existing control uses green or purple.
+
+### Readability and verification
+
+Normal text must have at least `4.5:1` contrast on its actual background in default,
+hover, focused, selected, and overdue combinations. Required non-text control or
+state cues must have at least `3:1` contrast against adjacent colors. Disabled
+controls retain identifiable labels and the applicable reason; cancellation
+alone does not qualify a readable item as a disabled control.
+
+Verify actual consumers in both languages, desktop and 320px layouts, long
+content, empty/loading/failure states, retries, and applicable disabled controls.
+Check simultaneous selection and keyboard focus, mixed done/cancelled progress,
+external nodes, pause/blocking/permission combinations, and warning precedence.
+Preserve filtering, sorting, pagination, expansion, navigation, graph interaction,
+focus, and drafts. Presentation alone must not issue business writes.
+
+Retain accurate labels, mixed-outcome counts, and warning or pause indicators
+under grayscale and color-vision differences. Palette arithmetic and screenshots
+do not establish recognition by every reader. The normative accessibility
+references are [Use of Color](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html),
+[Contrast Minimum](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html),
+[Non-text Contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html),
+and [Focus Appearance, Level AAA](https://www.w3.org/WAI/WCAG22/Understanding/focus-appearance.html).
 
 ## Express business rules through controls and interaction
 

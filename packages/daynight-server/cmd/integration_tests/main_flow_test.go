@@ -45,8 +45,12 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("application Webhook management", func(t *testing.T) { serverAPIApplicationWebhookNormalFlow(t, f) })
 	t.Run("browser REST response headers", func(t *testing.T) { serverAPICORSNormalFlow(t, f) })
 	t.Run("worker readonly directory", func(t *testing.T) { serverAPIWorkerReadOnlyNormalFlow(t, f) })
+	t.Run("assistant task collaboration", func(t *testing.T) { serverAPIAssistantTaskFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
+	t.Run("personal task inventory", func(t *testing.T) { serverAPIPersonalTaskNormalFlow(t, f) })
+	t.Run("GitHub reads", func(t *testing.T) { serverAPIGitHubReadNormalFlow(t, f) })
 	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })
+	t.Run("project tag catalog", func(t *testing.T) { serverAPITagCatalogNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {
 		project := createProject(t, f, "API Goal")
 		goal := createTask(t, f, project, "Goal", map[string]any{"type": "goal"})
@@ -135,6 +139,52 @@ func TestServerAPINormalFlows(t *testing.T) {
 		resolved := call("project_resolve", map[string]any{"repoUrl": "git@github.com:example/manual-integration.git"})
 		if resolved["id"] != project.ID || resolved["repoUrl"] != repository {
 			t.Fatalf("resolved Project differs: %+v", resolved)
+		}
+		createdTag := call("tag_create", map[string]any{"projectId": project.ID, "name": " backend "})
+		tagID, ok := createdTag["id"].(string)
+		if !ok || tagID == "" || createdTag["name"] != "backend" || createdTag["version"] != "1" {
+			t.Fatalf("created tag differs: %+v", createdTag)
+		}
+		conflict := func(name string, arguments map[string]any) {
+			t.Helper()
+			result, err := session.CallTool(f.context, &sdk.CallToolParams{Name: name, Arguments: arguments})
+			if err != nil || result == nil || !result.IsError {
+				t.Fatalf("%s conflict: result=%+v error=%v", name, result, err)
+			}
+			encoded, err := json.Marshal(result.StructuredContent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Error struct {
+					Code         string `json:"code"`
+					WriteOutcome string `json:"writeOutcome"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Error.Code != "tag_name_conflict" || envelope.Error.WriteOutcome != "not_committed" {
+				t.Fatalf("%s conflict result: %s (%v)", name, encoded, err)
+			}
+		}
+		conflict("tag_create", map[string]any{"projectId": project.ID, "name": "BACKEND"})
+		other := call("tag_create", map[string]any{"projectId": project.ID, "name": "other"})
+		conflict("tag_rename", map[string]any{"projectId": project.ID, "tagId": other["id"], "ifVersion": other["version"], "name": "BACKEND"})
+		call("tag_delete", map[string]any{"projectId": project.ID, "tagId": other["id"], "ifVersion": other["version"], "confirm": true})
+		catalog := call("tag_list", map[string]any{"projectId": project.ID, "query": "back"})
+		tags, ok := catalog["items"].([]any)
+		if !ok || len(tags) != 1 || tags[0].(map[string]any)["id"] != tagID || catalog["catalogEpoch"] == "" {
+			t.Fatalf("tag catalog differs: %+v", catalog)
+		}
+		shown := call("tag_show", map[string]any{"projectId": project.ID, "tagId": tagID})
+		if shown["id"] != tagID || shown["version"] != "1" {
+			t.Fatalf("tag read differs: %+v", shown)
+		}
+		renamed := call("tag_rename", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": shown["version"], "name": "platform"})
+		if renamed["id"] != tagID || renamed["name"] != "platform" || renamed["version"] != "2" {
+			t.Fatalf("tag rename differs: %+v", renamed)
+		}
+		deleted := call("tag_delete", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": renamed["version"], "confirm": true})
+		if deleted["projectId"] != project.ID || deleted["tagId"] != tagID || deleted["deleted"] != true {
+			t.Fatalf("tag deletion differs: %+v", deleted)
 		}
 		actual := call("task_show", map[string]any{"projectId": resolved["id"], "taskId": task.ID, "view": "full"})
 		assertOrdinaryType(t, actual)
