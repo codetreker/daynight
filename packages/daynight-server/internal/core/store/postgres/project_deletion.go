@@ -9,6 +9,7 @@ import (
 	taskproperty "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/eligibility"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/project"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/session"
@@ -76,6 +77,11 @@ func (d *projectDeletion) MarkDeleted(ctx context.Context) (bool, error) {
 	tag, err := d.tx.Exec(ctx, `UPDATE projects SET deleted_at=statement_timestamp(),updated_at=statement_timestamp(),task_cache_epoch=gen_random_uuid() WHERE id=$1 AND deleted_at IS NULL`, d.projectID)
 	if err != nil {
 		return false, pg.QueryError("mark project deleted", err)
+	}
+	if tag.RowsAffected() == 1 {
+		if err := github.InvalidateProject(ctx, d.tx, d.projectID); err != nil {
+			return false, err
+		}
 	}
 	return tag.RowsAffected() == 1, nil
 }

@@ -15,13 +15,14 @@ const actorGrant = grant(actorId, 'admin', 1n);
 const actorAccess = { projectId, ownerTeam: owner, ownership: { teamId, version: 1n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: actorGrant };
 const error = (code: string) => ({ error: { code, message: code, requestId: '00000000-0000-4000-8000-000000000099' } });
 const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
-type State = { targetGrant: ReturnType<typeof grant> | null; actorLost: boolean; holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdMembers: Promise<void> | null; holdInvitations: Promise<void> | null; withInvitation: boolean; writes: { method: string; path: string; body: string }[]; requests: string[] };
+type State = { targetGrant: ReturnType<typeof grant> | null; actorLost: boolean; readOnly: boolean; longContent: boolean; holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdMembers: Promise<void> | null; holdInvitations: Promise<void> | null; withInvitation: boolean; writes: { method: string; path: string; body: string }[]; requests: string[] };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { targetGrant: null, actorLost: false, holdMe: null, holdAccess: null, holdMembers: null, holdInvitations: null, withInvitation: false, writes: [], requests: [] };
-  const members = () => ({ actorAccess, items: [
-    { userId: actorId, profile: { name: 'Alice', email: null, avatarUrl: null }, effectiveRole: 'admin', inheritedFrom: null, directGrant: actorGrant },
-    { userId: targetId, profile: { name: 'Bob', email: null, avatarUrl: null }, effectiveRole: 'admin', inheritedFrom: { team: owner, role: 'admin' }, directGrant: state.targetGrant },
+  const state: State = { targetGrant: null, actorLost: false, readOnly: false, longContent: false, holdMe: null, holdAccess: null, holdMembers: null, holdInvitations: null, withInvitation: false, writes: [], requests: [] };
+  const currentAccess = () => ({ ...actorAccess, ownerTeam: state.longContent ? { ...owner, name: 'Owner' + 'LongTeamName'.repeat(12) } : owner, ...(state.readOnly ? { effectiveRole: 'member', directGrant: grant(actorId, 'member', 1n) } : {}) });
+  const members = () => ({ actorAccess: currentAccess(), items: [
+    { userId: actorId, profile: { name: 'Alice', email: null, avatarUrl: null }, effectiveRole: state.readOnly ? 'member' : 'admin', inheritedFrom: null, directGrant: currentAccess().directGrant },
+    { userId: targetId, profile: { name: state.longContent ? 'Bob' + 'LongName'.repeat(12) : 'Bob', email: state.longContent ? `${'longaddress'.repeat(12)}@example.com` : null, avatarUrl: null }, effectiveRole: 'admin', inheritedFrom: { team: currentAccess().ownerTeam, role: 'admin' }, directGrant: state.targetGrant },
   ] });
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
@@ -32,7 +33,7 @@ const install = async (page: Page): Promise<State> => {
     if (path === `/api/v1/teams/${personalId}`) return send({ ...personal, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: actorId, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}`) return send({ id: projectId, name: 'Grant project', repoUrl: 'https://github.com/example/project', ownership: { teamId, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time });
-    if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess !== null) await state.holdAccess; return state.actorLost ? send(error('not_found'), 404) : send(actorAccess); }
+    if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess !== null) await state.holdAccess; return state.actorLost ? send(error('not_found'), 404) : send(currentAccess()); }
     if (path === `/api/v1/projects/${projectId}/members`) { if (state.holdMembers !== null) await state.holdMembers; return send(members()); }
     if (path === `/api/v1/projects/${projectId}/invitations`) {
       if (state.holdInvitations !== null) await state.holdInvitations;
@@ -174,7 +175,59 @@ test('narrow screen cancellation makes no write and self removal shows the null-
   expect(state.requests.filter((request) => request.includes(`/teams/${teamId}`))).toEqual([]);
 });
 
-for (const width of [700, 768, 800, 1280]) {
+for (const { width, locale, readOnly } of [
+  { width: 1440, locale: 'en-US', readOnly: false },
+  { width: 800, locale: 'zh-CN', readOnly: false },
+  { width: 768, locale: 'en-US', readOnly: true },
+  { width: 700, locale: 'zh-CN', readOnly: true },
+  { width: 390, locale: 'en-US', readOnly: false },
+  { width: 320, locale: 'zh-CN', readOnly: false },
+] as const) {
+  test(`member columns align with long content in ${locale} at ${width}px (${readOnly ? 'read-only' : 'admin'})`, async ({ page }, testInfo) => {
+    const state = await install(page);
+    state.longContent = true; state.readOnly = readOnly; state.targetGrant = grant(targetId, 'member', initialVersion);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}/members`);
+    await expect(page.getByRole('heading', { name: 'Project members' })).toBeVisible();
+    if (locale === 'zh-CN') await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const table = page.locator('.grant-table');
+    await expect(table.locator('.grant-row')).toHaveCount(3);
+    const geometry = await table.evaluate(element => {
+      const rows = [...element.querySelectorAll('.grant-row')].map(row => [...row.children].map(cell => {
+        const { left, right, top, bottom } = cell.getBoundingClientRect();
+        return { left, right, top, bottom };
+      }));
+      return { rows, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth };
+    });
+    await testInfo.attach('member-geometry', { contentType: 'application/json', body: JSON.stringify({ width, locale, readOnly, ...geometry }) });
+    expect(geometry.rows.map(row => row.length)).toEqual([5, 5, 5]);
+    const [header, ...members] = geometry.rows;
+    expect(Math.max(...header!.map(cell => cell.top)) - Math.min(...header!.map(cell => cell.top))).toBeLessThanOrEqual(1);
+    for (const row of members) {
+      const centers = row.map(cell => (cell.top + cell.bottom) / 2);
+      expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
+      for (let index = 0; index < 5; index++) {
+        const edge = index === 4 ? 'right' : 'left';
+        expect(Math.abs(row[index]![edge] - header![index]![edge])).toBeLessThanOrEqual(1);
+        if (index > 0) expect(row[index - 1]!.right).toBeLessThanOrEqual(row[index]!.left + 1);
+      }
+    }
+    for (const content of await table.locator('.person-name, .person-meta, .row-detail').all()) {
+      expect(await content.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    if (width <= 700) expect(geometry.scrollWidth).toBeGreaterThan(geometry.clientWidth);
+    if (readOnly) await expect(table.locator('select, button')).toHaveCount(0);
+    else {
+      const select = table.locator('select').last();
+      await select.focus(); await expect(select).toBeFocused(); await expect(select).toBeEnabled();
+    }
+    await page.screenshot({ path: testInfo.outputPath(`member-columns-${width}-${locale}.png`) });
+    expect(state.writes).toHaveLength(0);
+  });
+}
+
+for (const width of [320, 390, 700, 768, 800, 1280]) {
   test(`grant removal remains reachable inside the member table at ${width}px`, async ({ page }, testInfo) => {
     const externalRequests: string[] = [];
     await page.route('**/*', async (route) => {
@@ -205,6 +258,14 @@ for (const width of [700, 768, 800, 1280]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (width === 1280) expect(before.scrollWidth).toBe(before.clientWidth);
     await page.screenshot({ path: testInfo.outputPath(`members-${width}.png`) });
+    const select = page.getByLabel('Direct grant for Bob', { exact: true });
+    await select.click(); await expect(select).toBeFocused(); await page.keyboard.press('Escape');
+    await select.selectOption('admin');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(state.writes).toHaveLength(0);
+    await table.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
     await page.mouse.click(hit.x, hit.y);
     const dialog = page.getByRole('dialog');
     await expect(dialog).toContainText('Member → No direct grant');

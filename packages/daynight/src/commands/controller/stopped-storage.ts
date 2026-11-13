@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
 import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journal-format.js";
-import { inspectSqlite } from "../../platform/sqlite-format.js";
+import { currentSqliteVersion, inspectSqlite } from "../../platform/sqlite-format.js";
 import { randomUUID } from "node:crypto";
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import { acquireControllerStoragePermit } from "./storage-lock.js";
@@ -18,7 +18,7 @@ export const withStoppedControllerStorage = <T>(options: {
 }, action: (db: Database.Database) => T): T => {
   const { journalPath, stateDirectory, ticket } = options;
   const permit = acquireControllerStoragePermit(journalPath, undefined, { fileMustExist: true });
-  let db: Database.Database | undefined, value: T | undefined, sourceVersion: number | undefined;
+  let db: Database.Database | undefined, value: T | undefined, sourceVersion: number | undefined, admittedVersion: number | undefined;
   let failed = false, failure: unknown, outcome: SqliteOutcome = "not-started", admitted = false;
   const observation: ControllerStorageObservation = { role: "stopped-maintenance", roleResult: "pending" }, started = Date.now(), migrationId = randomUUID();
   try {
@@ -36,7 +36,7 @@ export const withStoppedControllerStorage = <T>(options: {
         assertControllerStorageRole({ journalFile: journalPath, stateDirectory, mode: "stopped-maintenance", ticket }, controllerStorageExecutionRow(connection));
       },
     });
-    outcome = "committed"; sourceVersion = 10;
+    outcome = "committed"; admittedVersion = Number(db.pragma("user_version", { simple: true }));
     if (controllerTimelineCleanupPending(db)) {
       const preparation = maintainControllerTimeline({ db, request: { journalFile: journalPath, stateDirectory, mode: "stopped-maintenance", ticket }, storagePermit: permit });
       if (preparation.kind === "waiting") throw new ControllerStorageWaitingError(preparation.reason, preparation.cause);
@@ -49,14 +49,14 @@ export const withStoppedControllerStorage = <T>(options: {
       controllerMetadataBudget(journalPath, db!).assert(0, true);
     }).deferred();
     admitted = true; observation.roleResult = "admitted";
-    reportControllerStorageEvent({ migrationId, database: controllerJournalFormat.name, file: journalPath, kind: "completed", phase: "storage-admission", fromVersion: 10, toVersion: 10, durationMs: Date.now() - started, outcome: "committed", storage: { admission: "settlement" } }, observation);
+    reportControllerStorageEvent({ migrationId, database: controllerJournalFormat.name, file: journalPath, kind: "completed", phase: "storage-admission", fromVersion: admittedVersion, toVersion: currentSqliteVersion(controllerJournalFormat), durationMs: Date.now() - started, outcome: "committed", storage: { admission: "settlement" } }, observation);
     value = action(db);
   } catch (error) {
     failed = true; failure = error;
     outcome = error instanceof SqliteAccessError ? error.outcome : sqliteTransactionOutcome(error);
     if (!admitted && sourceVersion !== undefined) {
       observation.roleResult = error instanceof ControllerStorageWaitingError ? "waiting" : "rejected";
-      reportControllerStorageEvent({ migrationId, database: controllerJournalFormat.name, file: journalPath, kind: "failed", phase: "storage-admission", fromVersion: sourceVersion, toVersion: 10, durationMs: Date.now() - started, outcome, error: serializeSqliteError(error) }, observation);
+      reportControllerStorageEvent({ migrationId, database: controllerJournalFormat.name, file: journalPath, kind: "failed", phase: "storage-admission", fromVersion: admittedVersion ?? sourceVersion, toVersion: currentSqliteVersion(controllerJournalFormat), durationMs: Date.now() - started, outcome, error: serializeSqliteError(error) }, observation);
     }
   }
   let cleanup: unknown, closed = db === undefined && (!(failure instanceof SqliteAccessError) || failure.connectionClosed);

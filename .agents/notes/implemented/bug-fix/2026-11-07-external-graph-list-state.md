@@ -19,13 +19,17 @@ to remain accessible.
 
 ## Decision
 
-ProjectPage owns an active actual-task `openChainWitness` for the graph resource.
-It resolves that task through the complete `componentByTask` index and requires
-a multi-member ordinary component while Task list / Task chains or Goal is active.
-Filtered and off-page components remain valid graph resources. A missing task or
-single-member component closes the graph; leaving the corresponding view clears
-its opening state. Representative changes preserve a still-valid actual-task
-witness through ordinary-component merges and splits.
+ProjectPage owns the graph reading state. History retains the resource UUID as
+`projectGraphWitness`; `resolveProjectGraphTarget` resolves an actual Task witness
+through the complete `componentByTask` index and requires a multi-member ordinary
+component. It also admits a typed Goal as the resource for the separate
+[Goal overview graph](../feature/2026-11-13-goal-overview-graph.md). The resulting chain target contains the witness and current root;
+the graph host consumes that target while the chain root drives list highlighting.
+Task list / Task chains or Goal must be active. Filtered and off-page components
+remain valid graph resources. An unavailable snapshot retains the witness; an
+authoritative missing task or single-member component closes the graph, and
+leaving the corresponding view clears its opening state. Representative changes
+preserve a still-valid actual-task witness through component merges and splits.
 
 An external card's unparented multi-member destination directly replaces the
 graph witness. It uses the destination representative's direction preference
@@ -46,7 +50,8 @@ and performs the existing scroll, focus and highlight operation.
 
 ProjectPage owns the runtime `ProjectListOrigin` separately from the active
 graph witness. It records the source view, nullable source Goal ID, original
-list-task witness and trigger; Goal entries pass their actual source Goal ID, while other entries pass null.
+`resourceWitness` and trigger; Goal entries pass their actual source Goal ID,
+while other entries pass null.
 The origin remains bound to the initial opening across external graph hops and
 when a standalone destination replaces the graph with task details. Closing the
 last reader focuses the connected, visible original trigger with `preventScroll`.
@@ -58,10 +63,11 @@ coordinates both restorations after overlay cleanup; the origin is neither
 history nor cache data. A history entry without a runtime opener uses visible
 fallbacks without changing list filters or pagination.
 
-`ProjectListGraphHost` composes the existing graph dialog within the active
-category and receives the complete index and summaries, callbacks and focus
-restoration. It keeps the existing overlay, scroll lock, direction and fullscreen
-lifecycle while reporting the actual graph root to the detail owner.
+`ProjectListGraphHost` composes the chain or Goal dialog within the active
+category and receives the resolved target, complete index and summaries,
+callbacks and focus restoration. It keeps the existing overlay, scroll lock,
+direction and fullscreen lifecycle while reporting the actual graph DOM to the
+detail owner.
 
 The [external dependency requirements](../../../../docs/spec/daynight-external-dependencies.md),
 [inspection design](../../../../docs/design/daynight-task-inspection.md) and

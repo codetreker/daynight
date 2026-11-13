@@ -15,6 +15,8 @@ import { openTimelineStore } from "../../../src/commands/controller/content/time
 import { assertControllerStorageCapacity } from "../../../src/commands/controller/storage-capacity.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { readSqliteDatabase, type SqliteMigrationEvent } from "../../../src/platform/sqlite-access.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { openResourceFiles, retireLegacyTimelineReferences } from "../../../src/commands/controller/content/resource-files.js";
 import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
@@ -440,7 +442,7 @@ test("unknown cleanup COMMIT with a failed readback preserves both errors and do
     let failure: unknown;
     try { maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: event => { events.push(event); } }); } catch (cause) { failure = cause; }
     expect(failure).toBeInstanceOf(SqliteAccessError);
-    expect(failure).toMatchObject({ outcome: "unknown", context: { phase: "timeline-cleanup-marker", fromVersion: 10, toVersion: 10 } });
+    expect(failure).toMatchObject({ outcome: "unknown", context: { phase: "timeline-cleanup-marker", fromVersion: currentSqliteVersion(controllerJournalFormat), toVersion: currentSqliteVersion(controllerJournalFormat) } });
     expect(((failure as Error).cause as AggregateError).errors.map(error => error.message)).toEqual(["actual unknown commit", "marker readback failure"]);
     expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "storage-admission", outcome: "unknown", storage: { pending: "unknown" } });
     restoreMocks(); expect(marker(db)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, db).bytes());
@@ -581,7 +583,7 @@ test("an empty current journal still reports a committed deadline failure after 
   } finally { permit.release(); f.permit.release(); }
 });
 
-test.each(["automatic-read", "stopped-storage"] as const)("%s emits the canonical import stage through the existing production envelope", mode => {
+test.each(["automatic-read", "stopped-storage"] as const)("%s emits the canonical journal migration stage through the existing production envelope", mode => {
   const f = fixture(); f.permit.release();
   const writes: string[] = [];
   vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => { writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; });
@@ -592,18 +594,30 @@ test.each(["automatic-read", "stopped-storage"] as const)("%s emits the canonica
       withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: db => expect(JSON.parse((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)).toEqual(f.snapshot) }, db => expect(marker(db)).toBe(0));
     }
     const envelopes = writes.flatMap(text => text.split("\n").filter(Boolean).map(line => JSON.parse(line) as { kind: string; sqlite: SqliteMigrationEvent })).filter(item => item.sqlite?.file === f.file);
-    const events = envelopes.map(item => item.sqlite), imported = events.filter(event => event.phase === "timeline-import");
+    const events = envelopes.map(item => item.sqlite), imported = events.filter(event => event.phase === "journal-migration");
     expect(imported.map(event => event.kind)).toEqual(["started", "completed"]);
     expect(envelopes.every(item => item.kind === `sqlite-migration-${item.sqlite.kind}`)).toBe(true);
-    expect(imported[0]).toMatchObject({ fromVersion: 9, toVersion: 10, outcome: "not-started", storage: { role: "upgrade-only", roleResult: "pending", sqlitePhase: "begin" } });
-    expect(imported[1]).toMatchObject({ fromVersion: 9, toVersion: 10, outcome: "committed", storage: { executionId: f.ticket.executionId, sessionId: f.ticket.sessionId, claimId: f.ticket.claimId, generation: "1", role: "upgrade-only", roleResult: "admitted", sqlitePhase: "commit", entryCount: 1, byteLength: Buffer.byteLength(JSON.stringify(f.entry)), databaseBytes: expect.any(Number), walBytes: expect.any(Number), freePageCount: expect.any(Number), freePageBytes: expect.any(Number), oldFileCount: 2, oldFileBytes: Buffer.byteLength(JSON.stringify(f.entry)) + Buffer.byteLength("interrupted candidate") } });
+    expect(imported[0]).toMatchObject({ fromVersion: 9, toVersion: currentSqliteVersion(controllerJournalFormat), outcome: "not-started", storage: { role: "upgrade-only", roleResult: "pending", sqlitePhase: "begin" } });
+    expect(imported[1]).toMatchObject({ fromVersion: 9, toVersion: currentSqliteVersion(controllerJournalFormat), outcome: "committed", storage: { executionId: f.ticket.executionId, sessionId: f.ticket.sessionId, claimId: f.ticket.claimId, generation: "1", role: "upgrade-only", roleResult: "admitted", sqlitePhase: "commit", entryCount: 1, byteLength: Buffer.byteLength(JSON.stringify(f.entry)), databaseBytes: expect.any(Number), walBytes: expect.any(Number), freePageCount: expect.any(Number), freePageBytes: expect.any(Number), oldFileCount: 2, oldFileBytes: Buffer.byteLength(JSON.stringify(f.entry)) + Buffer.byteLength("interrupted candidate") } });
     if (mode === "stopped-storage") {
-      expect(new Set(events.map(event => event.phase))).toEqual(new Set(["timeline-import", "legacy-timeline-retirement", "journal-compaction", "storage-admission"]));
-      expect(events.at(-1)).toMatchObject({ phase: "storage-admission", kind: "completed", storage: { admission: "settlement", role: "stopped-maintenance", roleResult: "admitted", executionId: f.ticket.executionId } });
+      expect(new Set(events.map(event => event.phase))).toEqual(new Set(["journal-migration", "legacy-timeline-retirement", "journal-compaction", "storage-admission"]));
+      expect(events.at(-1)).toMatchObject({ phase: "storage-admission", kind: "completed", fromVersion: currentSqliteVersion(controllerJournalFormat), toVersion: currentSqliteVersion(controllerJournalFormat), storage: { admission: "settlement", role: "stopped-maintenance", roleResult: "admitted", executionId: f.ticket.executionId } });
     }
     const serialized = JSON.stringify(envelopes);
     expect(serialized).not.toContain(f.entry.kind === "reasoning" ? f.entry.text : "not-a-real-body"); expect(serialized).not.toContain(f.ticket.initialPrompt); expect(serialized).not.toContain(f.ticket.ipcSecret);
   } finally { f.permit.release(); }
+});
+
+test.each(["before-open", "after-open"] as const)("stopped settlement reports the actual version on %s failure", point => {
+  const f = fixture(); f.permit.release();
+  const writes: string[] = [];
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => { writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; });
+  if (point === "after-open") vi.mocked(fs.unlinkSync).mockImplementation(file => { if (String(file).startsWith(`${f.file}.pending-content`)) throw new Error("retirement failure"); return actualFs.unlinkSync(file); });
+  expect(() => withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: () => { if (point === "before-open") throw new Error("original refusal"); } }, () => { throw new Error("action must not run"); })).toThrow(point === "before-open" ? /original refusal/ : /retirement failure/);
+  const events = writes.flatMap(text => text.split("\n").filter(Boolean).map(line => (JSON.parse(line) as { sqlite: SqliteMigrationEvent }).sqlite)).filter(event => event?.file === f.file);
+  expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "storage-admission", fromVersion: point === "before-open" ? 9 : currentSqliteVersion(controllerJournalFormat), toVersion: currentSqliteVersion(controllerJournalFormat), storage: { role: "stopped-maintenance", roleResult: "rejected" } });
+  const db = new Database(f.file, { readonly: true });
+  try { expect(db.pragma("user_version", { simple: true })).toBe(point === "before-open" ? 9 : currentSqliteVersion(controllerJournalFormat)); } finally { db.close(); }
 });
 
 test("an automatic upgrade's supplied reporter cannot override committed storage, and current reads remain reporter-free under a held writer permit", () => {
@@ -611,7 +625,7 @@ test("an automatic upgrade's supplied reporter cannot override committed storage
   const events: SqliteMigrationEvent[] = [], warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
   const reporter = vi.fn<(event: SqliteMigrationEvent) => undefined>(event => { events.push(event); throw new Error("injected reporter failure"); });
   const read = () => readSqliteDatabase({ ...controllerJournalReadOptions(f.file, undefined, reporter), onMissing: () => { throw new Error("Original source disappeared."); } }, db => openTimelineStore(db, { assertWrite: () => {} }).get(f.entry.entryId));
-  expect(read()).toEqual(f.entry); expect(events.map(event => event.phase)).toEqual(["timeline-import", "timeline-import"]); expect(events.at(-1)).toMatchObject({ kind: "completed", outcome: "committed", storage: { executionId: f.ticket.executionId } }); expect(warnings).toHaveBeenCalled();
+  expect(read()).toEqual(f.entry); expect(events.map(event => event.phase)).toEqual(["journal-migration", "journal-migration"]); expect(events.at(-1)).toMatchObject({ kind: "completed", outcome: "committed", storage: { executionId: f.ticket.executionId } }); expect(warnings).toHaveBeenCalled();
   const permit = acquireControllerStoragePermit(f.file);
   try { reporter.mockClear(); expect(read()).toEqual(f.entry); expect(reporter).not.toHaveBeenCalled(); }
   finally { permit.release(); f.permit.release(); }

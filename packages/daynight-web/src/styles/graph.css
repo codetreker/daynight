@@ -66,3 +66,5 @@
   .goal-header>.session-status-slot{grid-column:2;width:auto;padding-right:0}
   .goal-header>.goal-graph-button{grid-column:3;margin:0 11px 10px 8px}
 }
+
+.task-node-goal .task-node-bottom{padding-right:0}

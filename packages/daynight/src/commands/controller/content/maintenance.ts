@@ -6,7 +6,7 @@ import { canonicalId } from "../../../api/parse.js";
 import { syncDirectory } from "../../../platform/durable-json.js";
 import { runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationEvent, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../../../platform/sqlite-error.js";
-import { inspectSqlite } from "../../../platform/sqlite-format.js";
+import { currentSqliteVersion, inspectSqlite } from "../../../platform/sqlite-format.js";
 import { parseTimelineEntry } from "../../../session/protocol.js";
 import { controllerJournalFormat, type JournalMigrationContext } from "../journal-format.js";
 import { preflightPendingTimeline } from "../pending-content.js";
@@ -248,7 +248,7 @@ const validateCommitted = (db: Database.Database): ReturnType<ReturnType<typeof 
   return value!;
 };
 
-/** Operate an already committed v10 connection under its original permit; the caller retains both handles. */
+/** Operate an already committed current-format connection under its original permit; the caller retains both handles. */
 export const maintainControllerTimeline = (options: {
   db: Database.Database; request: Exclude<ControllerStorageRequest, { mode: "upgrade-only" }>; storagePermit: ControllerStoragePermit;
   reservation?: TimelineMaintenanceReservation; onMigration?: SqliteMigrationReporter;
@@ -256,13 +256,14 @@ export const maintainControllerTimeline = (options: {
   const { db, request, storagePermit } = options;
   assertControllerStoragePermit(storagePermit, request.journalFile);
   if (db.inTransaction || db.memory || db.name !== request.journalFile) throw new Error("Controller timeline maintenance requires its original idle connection.");
+  const currentVersion = currentSqliteVersion(controllerJournalFormat);
   const observation: ControllerStorageObservation = { role: request.mode, roleResult: "pending" };
   observeControllerStorage(observation, db, request.mode === "writer" ? request.ticket : undefined);
   let snapshot: ReturnType<typeof assertControllerStorageRole>;
   try { snapshot = assertControllerStorageRole(request, controllerStorageExecutionRow(db)); observation.roleResult = "admitted"; }
   catch (cause) {
     observation.roleResult = "rejected";
-    reportControllerStorageEvent({ migrationId: randomUUID(), database: controllerJournalFormat.name, file: request.journalFile, kind: "failed", phase: "storage-admission", fromVersion: 10, toVersion: 10, durationMs: 0, outcome: "not-started", error: serializeSqliteError(cause) }, observation, options.onMigration);
+    reportControllerStorageEvent({ migrationId: randomUUID(), database: controllerJournalFormat.name, file: request.journalFile, kind: "failed", phase: "storage-admission", fromVersion: currentVersion, toVersion: currentVersion, durationMs: 0, outcome: "not-started", error: serializeSqliteError(cause) }, observation, options.onMigration);
     throw cause;
   }
   if (db.pragma("journal_mode", { simple: true }) !== "wal") throw new Error("Controller timeline maintenance requires its original WAL journal.");
@@ -270,7 +271,7 @@ export const maintainControllerTimeline = (options: {
   const reservation = options.reservation ?? createTimelineMaintenanceReservation(db, { ...request, storagePermit, ...(snapshot === null ? {} : { executionId: snapshot.executionId }) });
   const started = Date.now(), migrationId = randomUUID();
   const report = (phase: string, kind: SqliteMigrationEvent["kind"], metrics: Record<string, number | string | boolean> = {}, outcome: SqliteOutcome = "committed", cause?: unknown): void => {
-    const event: SqliteMigrationEvent = { migrationId, database: controllerJournalFormat.name, file: request.journalFile, kind, phase, fromVersion: 10, toVersion: 10, durationMs: Date.now() - started, outcome, storage: metrics, ...(cause === undefined ? {} : { error: serializeSqliteError(cause) }) };
+    const event: SqliteMigrationEvent = { migrationId, database: controllerJournalFormat.name, file: request.journalFile, kind, phase, fromVersion: currentVersion, toVersion: currentVersion, durationMs: Date.now() - started, outcome, storage: metrics, ...(cause === undefined ? {} : { error: serializeSqliteError(cause) }) };
     reportControllerStorageEvent(event, observation, options.onMigration);
   };
   let phase = "storage-admission", maintenanceOutcome: SqliteOutcome = "committed";
@@ -303,7 +304,7 @@ export const maintainControllerTimeline = (options: {
     try { runSqliteImmediate(db, () => { db.prepare("UPDATE execution SET legacy_timeline_cleanup_pending=0 WHERE id=1 AND legacy_timeline_cleanup_pending=1").run(); }); }
     catch (cause) {
       maintenanceOutcome = sqliteTransactionOutcome(cause);
-      const uncertainClear = (failure: unknown): SqliteAccessError => new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: request.journalFile, phase: "timeline-cleanup-marker", fromVersion: 10, toVersion: 10 }, { cause: failure, outcome: maintenanceOutcome, connectionClosed: !db.open });
+      const uncertainClear = (failure: unknown): SqliteAccessError => new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: request.journalFile, phase: "timeline-cleanup-marker", fromVersion: currentVersion, toVersion: currentVersion }, { cause: failure, outcome: maintenanceOutcome, connectionClosed: !db.open });
       // The actual marker is observed before another caller can decide whether
       // retirement or settlement remains; an unknown COMMIT is never replayed.
       if (maintenanceOutcome === "unknown" && db.open && !db.inTransaction) {
