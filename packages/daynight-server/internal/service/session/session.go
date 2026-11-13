@@ -52,8 +52,8 @@ func (s *Service) write(ctx context.Context, finish func(store.TransactionOutcom
 			if errors.As(err, &refusal) && refusal.Code != "cleanup_unknown" && onlySessionCause(transaction.Cause, refusal) {
 				// Publication refusals carry identity and failure evidence used by
 				// Core after this confirmed rollback. Retain the original chain.
-				var evidence interface{ PreserveSessionRefusal() }
-				if errors.As(transaction.Cause, &evidence) {
+				var evidence interface{ PreserveSessionRefusal() bool }
+				if errors.As(transaction.Cause, &evidence) && evidence.PreserveSessionRefusal() {
 					return transaction.Cause
 				}
 				return refusal

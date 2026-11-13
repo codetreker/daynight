@@ -827,9 +827,11 @@ type definiteImageError struct {
 	expectAbsent   bool
 }
 
-func (e *definiteImageError) Error() string         { return e.cause.Error() }
-func (e *definiteImageError) Unwrap() error         { return e.cause }
-func (*definiteImageError) PreserveSessionRefusal() {}
+func (e *definiteImageError) Error() string { return e.cause.Error() }
+func (e *definiteImageError) Unwrap() error { return e.cause }
+func (e *definiteImageError) PreserveSessionRefusal() bool {
+	return e != nil && e.cause != nil && e.image.Code != ""
+}
 
 func imageFailureEvidence(err error) *definiteImageError {
 	if definiteImageFailure(err) == nil {

@@ -28,10 +28,10 @@ const maxArchiveHistoryOccurrences = 100000
 
 type archiveValidationError struct{ cause error }
 
-func (e *archiveValidationError) Error() string         { return "Archive file validation failed." }
-func (e *archiveValidationError) Unwrap() error         { return e.cause }
-func (*archiveValidationError) PreserveSessionRefusal() {}
-func invalidArchiveFile(cause error) error              { return &archiveValidationError{cause: cause} }
+func (e *archiveValidationError) Error() string                { return "Archive file validation failed." }
+func (e *archiveValidationError) Unwrap() error                { return e.cause }
+func (e *archiveValidationError) PreserveSessionRefusal() bool { return e != nil && e.cause != nil }
+func invalidArchiveFile(cause error) error                     { return &archiveValidationError{cause: cause} }
 
 func archiveContentFailure(err error) error {
 	var capacity *contentCapacityError
