@@ -57,6 +57,16 @@ own exact inputs, response fields, deadlines and failures. The
 [authentication design](../../../../docs/design/daynight-auth.md#oauth-family-的固定-profile-与-api-授权)
 owns assembly and transaction mechanisms.
 
+Normal API integration obtains the public S2S grant and reads the same
+Goal/Task, Step, Thread and protected attachment records through application and
+native access. The readonly HTTP requester uses that API grant while its Worker
+producer retains a PAT. Webhook management follows a disabled endpoint through
+subscription, operation, signing-key and tombstone readbacks. Disabled capture
+keeps the production destination transport inactive; the existing real transport
+and lifecycle mechanism tests own delivery and payload guarantees. This split
+proves public assembly without relaxing the public-address restriction or
+contacting an external receiver.
+
 ## Alternatives
 
 **Issue a browser session or PAT.** Those credentials mix the application's

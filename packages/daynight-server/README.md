@@ -1870,18 +1870,38 @@ CI events use the same non-race policy as the module check. Unit resource
 overlays are not used for this production binary.
 
 The explicit `integration` build tag keeps these flows outside ordinary unit
-test discovery. The runner explicitly selects `TestServerAPINormalFlows` and
-`TestServerAPISessionNormalFlow`; each test owns its real Server process,
-UniAuth gateway, login, PAT and isolated resources. Task groups run sequentially
-with separate projects: lifecycle, search pagination and dependency graph,
-property and Sync readback, Step operations, Thread replies, Attachment bytes,
-personal Worker prompt synchronization, and Worker claim/Agent discussion.
+test discovery. The runner selects `TestServerAPINormalFlows`,
+`TestServerAPISessionNormalFlow` and `TestServerAPICredentialUsageNormalFlow`;
+each test owns its real Server process, UniAuth gateway, login, PAT and isolated
+resources. Task groups run sequentially with separate projects: lifecycle,
+search pagination and dependency graph, property and Sync readback, Step
+operations, Thread replies, Attachment bytes, personal Worker prompt
+synchronization, and Worker claim/Agent discussion.
+
+The application flows obtain a real S2S grant for the existing native user and
+use API Bearer requests for profile, Team/member, Project, Goal/Task, Step,
+Thread and protected Attachment operations. Readbacks retain the same resource
+IDs, versions, authors, settings, progress, bytes and MIME through application
+and native access. Public refresh, owner grant reads and revocation, explicit
+reconnection and credential usage retain the same real family. The readonly
+flow keeps the actual PAT-authenticated Worker channel and dispatches its HTTP
+request through an S2S-issued API grant for that owner.
+
+Webhook management uses an API grant to read the event catalog, create a
+disabled endpoint with a Project subscription, read its operation and signing
+key, rename and rotate using observed versions, and delete the same endpoint.
+The reserved HTTPS destination receives no requests: disabled endpoints are
+excluded from capture. This production HTTP flow verifies configuration,
+current eligibility, operation identity, signing-key rotation and tombstone
+readback. Actual delivery transport, retained payloads and delivery history are
+verified by their existing Webhook mechanism tests, including the independent
+startup recovery probe; this flow does not claim an external receiver ACK.
 
 The Session flow creates an owner-bound Web Worker claim, registers a Session,
 mints its Controller grant and performs WebSocket hello and synchronization.
-HTTP current-state readback and the browser snapshot must retain the same
-identity, generation and native Session ID. A Controller timeline event must
-arrive through the browser WebSocket with exact content and source identity.
+HTTP current-state readback and native and API browser snapshots retain the
+same identity, generation and native Session ID. A Controller timeline event
+arrives through both browser WebSockets with exact content and source identity.
 Go HTTP and WebSocket clients exercise the actual service and persistence
 assembly. The suite does not run CLI, browser or Web tests and contains no
 business boundary or fault matrices.
