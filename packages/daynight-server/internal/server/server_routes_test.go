@@ -1764,7 +1764,7 @@ func assertMCPProductionTools(t *testing.T, tools []*sdk.Tool) {
 		"task_create": true, "task_show": true, "task_update": true, "task_set_status": true,
 		"task_delete": true, "task_properties": true, "task_set_property": true, "task_remove_property": true,
 		"task_attachment_list": true, "task_attachment_read": true, "task_attachment_remove": true, "task_attachment_put": true,
-		"task_list": true, "task_ready": true, "task_graph": true, "task_work_list": true,
+		"task_list": true, "task_ready": true, "task_search": true, "task_graph": true, "task_work_list": true,
 		"task_session_current": true, "task_session_list": true, "task_session_show": true,
 		"task_session_read": true, "task_session_entry": true,
 	}

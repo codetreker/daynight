@@ -1,0 +1,352 @@
+{
+  "name": "task_search",
+  "description": "Search Task or Goal titles, descriptions and IDs with a nonempty expression and optional tag and other filters. Results are ranked lean pages. Repeat the same query and filters with nextCursor; changes cause search_changed. Use task_list for tag-only queries.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "projectId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "task",
+          "goal"
+        ],
+        "default": "task",
+        "description": "Select ordinary tasks (default) or Goals."
+      },
+      "parentId": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "uuid",
+        "description": "Omit for all parents; null selects unparented tasks; a Goal UUID selects its direct children."
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "proposed",
+          "todo",
+          "in_progress",
+          "done",
+          "cancelled"
+        ]
+      },
+      "assignedTo": {
+        "anyOf": [
+          {
+            "type": "string",
+            "format": "uuid"
+          },
+          {
+            "enum": [
+              "me",
+              "unassigned"
+            ]
+          }
+        ]
+      },
+      "ready": {
+        "type": "boolean"
+      },
+      "allowAgents": {
+        "type": "boolean"
+      },
+      "compatiblePlatform": {
+        "type": "string",
+        "enum": [
+          "windows",
+          "linux",
+          "macos"
+        ]
+      },
+      "tagIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "description": "Project tag UUIDs; applied with other filters before pagination or the ready limit. Empty means no tag condition unless untagged is true."
+      },
+      "tagMatch": {
+        "type": "string",
+        "enum": [
+          "all",
+          "any"
+        ],
+        "default": "all",
+        "description": "Match all selected tags or any selected tag; defaults to all."
+      },
+      "untagged": {
+        "type": "boolean",
+        "description": "Select resources without tags; conflicts with a nonempty tagIds set."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 50
+      },
+      "cursor": {
+        "type": "string"
+      },
+      "query": {
+        "type": "string",
+        "description": "Nonempty text expression: AND, OR, NOT, parentheses, quoted terms and id:, title:, description: fields. Tag names are not text fields."
+      }
+    },
+    "required": [
+      "projectId",
+      "query"
+    ],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "data": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "type": {
+                  "enum": [
+                    "task",
+                    "goal"
+                  ]
+                },
+                "parentId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "projectId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "proposed",
+                    "todo",
+                    "in_progress",
+                    "done",
+                    "cancelled"
+                  ]
+                },
+                "context": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "taskId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "title": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "taskId",
+                        "title"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "match": {
+                  "type": "object",
+                  "properties": {
+                    "fields": {
+                      "type": "array",
+                      "items": {
+                        "enum": [
+                          "id",
+                          "title",
+                          "description"
+                        ]
+                      }
+                    },
+                    "descriptionSnippet": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "fields",
+                    "descriptionSnippet"
+                  ],
+                  "additionalProperties": false
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "parentId",
+                "projectId",
+                "title",
+                "status",
+                "context",
+                "match",
+                "tags"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "projectId",
+          "total",
+          "items",
+          "nextCursor"
+        ],
+        "additionalProperties": false
+      },
+      "meta": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "writeOutcome": {
+            "enum": [
+              "confirmed",
+              "not_committed",
+              "unknown"
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "refs": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "requestId"
+        ]
+      },
+      "error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "writeOutcome": {
+            "enum": [
+              "confirmed",
+              "not_committed",
+              "unknown"
+            ]
+          },
+          "phase": {
+            "type": "string"
+          },
+          "refs": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "requestId"
+        ]
+      }
+    },
+    "oneOf": [
+      {
+        "required": [
+          "data",
+          "meta"
+        ],
+        "not": {
+          "required": [
+            "error"
+          ]
+        }
+      },
+      {
+        "required": [
+          "error"
+        ],
+        "not": {
+          "required": [
+            "data"
+          ]
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "openWorldHint": false
+  }
+}
