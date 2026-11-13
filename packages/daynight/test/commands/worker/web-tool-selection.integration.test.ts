@@ -41,6 +41,22 @@ const stopped = async (controller: ProcessProof, native: readonly ProcessProof[]
   await vi.waitFor(async () => expect(await confirmControllerProcessesStopped(controller, native, undefined, lease)).toBe(true), { timeout: 20_000, interval: 100 });
 };
 
+type NativeReceipt = { invocationId: string; tool: "A" | "B"; pid: number; execPath: string; argv: string[]; cwd: string };
+type NativeRequest = { fixtureInvocationId: string; fixtureTool: "A" | "B"; fixturePid: number; method?: string; params?: Record<string, unknown> };
+type ExpectedNativeInvocation = { tool: "A" | "B"; execPath: string; entryPath: string; cwd: string };
+
+const assertNativeInvocation = (request: NativeRequest, receipts: readonly NativeReceipt[], expected: ExpectedNativeInvocation): void => {
+  expect(request.fixtureInvocationId).toEqual(expect.any(String));
+  expect(request.fixtureInvocationId).not.toBe("");
+  expect(request.fixtureTool).toBe(expected.tool);
+  const matches = receipts.filter(receipt => receipt.invocationId === request.fixtureInvocationId);
+  expect(matches).toHaveLength(1);
+  expect(matches[0]).toMatchObject({
+    tool: expected.tool, pid: request.fixturePid, execPath: expected.execPath,
+    argv: [expected.execPath, expected.entryPath, "app-server", "--stdio"], cwd: expected.cwd,
+  });
+};
+
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/web-tool-selection");
   await mkdir(base, { recursive: true });
@@ -54,12 +70,14 @@ const fixture = async () => {
   for (const tool of ["A", "B"] as const) {
     const header = `#!/usr/bin/env node
 import { appendFileSync as recordTool } from 'node:fs';
-recordTool(${JSON.stringify(receiptLog)}, JSON.stringify({tool:${JSON.stringify(tool)},pid:process.pid,execPath:process.execPath,argv:process.argv,cwd:process.cwd()})+'\\n');
+import { randomUUID as fixtureRandomUUID } from 'node:crypto';
+const fixtureInvocationId = fixtureRandomUUID();
+recordTool(${JSON.stringify(receiptLog)}, JSON.stringify({invocationId:fixtureInvocationId,tool:${JSON.stringify(tool)},pid:process.pid,execPath:process.execPath,argv:process.argv,cwd:process.cwd()})+'\\n');
 if (process.argv.includes('--version')) { console.log(${JSON.stringify(`codex-cli ${tool === "A" ? "1.10.1" : "1.20.2"}`)}); process.exit(0); }
 if (process.argv.includes('--help')) { console.log('app-server --stdio'); process.exit(0); }
 `;
     await writeFile(toolEntries[tool], header + nativeSource.replaceAll("native-thread", nativeIds[tool])
-      .replace("JSON.stringify(m)+'\\n'", `JSON.stringify({...m,fixtureTool:${JSON.stringify(tool)},fixturePid:process.pid})+'\\n'`));
+      .replace("JSON.stringify(m)+'\\n'", `JSON.stringify({...m,fixtureInvocationId,fixtureTool:${JSON.stringify(tool)},fixturePid:process.pid})+'\\n'`));
     await chmod(toolEntries[tool], 0o755);
     const bin = path.join(home, `path-${tool}`); await mkdir(bin);
     if (process.platform === "win32") await writeFile(path.join(bin, "codex.cmd"), `@echo off\r\n"${process.execPath}" "${toolEntries[tool]}" %*\r\n`);
@@ -160,8 +178,6 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
     });
   });
   const journal = (identity: ClaimIdentity) => readControllerSnapshot(path.join(controllerExecutionDirectory(home, current(identity).webExecution!.executionId), "journal.sqlite"));
-  type NativeReceipt = { tool: "A" | "B"; pid: number; execPath: string; argv: string[]; cwd: string };
-  type NativeRequest = { fixtureTool: "A" | "B"; fixturePid: number; method?: string; params?: Record<string, unknown> };
   const lines = async <T>(file: string): Promise<T[]> => existsSync(file) ? (await readFile(file, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as T) : [];
   const receipts = () => lines<NativeReceipt>(receiptLog), requests = () => lines<NativeRequest>(requestLog);
   diagnostics.push(async () => {
@@ -251,6 +267,31 @@ await runController({homeDirectory:${JSON.stringify(home)},provider:process.argv
   };
 };
 
+test("correlates native invocations when a PID is reused", () => {
+  const execPath = "node", pid = 6044;
+  const expectedA: ExpectedNativeInvocation = { tool: "A", execPath, entryPath: "codex-A.mjs", cwd: "worktree-A" };
+  const expectedB: ExpectedNativeInvocation = { tool: "B", execPath, entryPath: "codex-B.mjs", cwd: "worktree-B" };
+  const receiptB: NativeReceipt = { invocationId: "invocation-B", tool: "B", pid, execPath, argv: [execPath, expectedB.entryPath, "app-server", "--stdio"], cwd: expectedB.cwd };
+  const receiptA: NativeReceipt = { invocationId: "invocation-A-resumed", tool: "A", pid, execPath, argv: [execPath, expectedA.entryPath, "app-server", "--stdio"], cwd: expectedA.cwd };
+  const requestB: NativeRequest = { fixtureInvocationId: receiptB.invocationId, fixtureTool: "B", fixturePid: pid };
+  const requestA: NativeRequest = { fixtureInvocationId: receiptA.invocationId, fixtureTool: "A", fixturePid: pid };
+  const receipts = [receiptB, receiptA];
+  assertNativeInvocation(requestB, receipts, expectedB);
+  assertNativeInvocation(requestA, receipts, expectedA);
+
+  const mismatches: NativeReceipt[] = [
+    { ...receiptA, tool: "B" },
+    { ...receiptA, argv: [execPath, expectedB.entryPath, "app-server", "--stdio"] },
+    { ...receiptA, execPath: "other-node" },
+    { ...receiptA, cwd: expectedB.cwd },
+    { ...receiptA, pid: pid + 1 },
+  ];
+  for (const mismatch of mismatches) expect(() => assertNativeInvocation(requestA, [receiptB, mismatch], expectedA)).toThrow();
+  expect(() => assertNativeInvocation({ ...requestA, fixtureTool: "B" }, receipts, expectedA)).toThrow();
+  expect(() => assertNativeInvocation(requestA, [receiptB], expectedA)).toThrow();
+  expect(() => assertNativeInvocation(requestA, [...receipts, receiptA], expectedA)).toThrow();
+});
+
 test("restores the original Web claim with A after target B and refuses missing A without replacing its native Session or replaying its prompt", async () => {
   const f = await fixture(), signal = AbortSignal.timeout(150_000);
   const identityA = await f.addTask("A"), original = await f.ready(identityA, signal), initial = original.webExecution!;
@@ -303,7 +344,15 @@ test("restores the original Web claim with A after target B and refuses missing 
     expect(receipt.argv.slice(0, 2)).toEqual([receipt.execPath, f.toolEntries[receipt.tool]]);
     if (!receipt.argv.includes("--version") && !receipt.argv.includes("--help")) expect(receipt.argv.slice(2)).toEqual(["app-server", "--stdio"]);
   }
+  expect(new Set(beforeRemoval.map(receipt => receipt.invocationId)).size).toBe(beforeRemoval.length);
+  for (const receipt of beforeRemoval) expect(receipt.invocationId).toEqual(expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/));
   const starts = (await f.requests()).filter(request => request.method === "thread/start" || request.method === "thread/resume");
-  for (const request of starts) expect(beforeRemoval.find(receipt => receipt.pid === request.fixturePid)).toMatchObject({ tool: request.fixtureTool, argv: [node, f.toolEntries[request.fixtureTool], "app-server", "--stdio"] });
+  const expectedInvocations: ExpectedNativeInvocation[] = [
+    { tool: "A", execPath: node, entryPath: f.toolEntries.A, cwd: original.resources.worktree!.worktreePath },
+    { tool: "B", execPath: node, entryPath: f.toolEntries.B, cwd: next.resources.worktree!.worktreePath },
+    { tool: "A", execPath: node, entryPath: f.toolEntries.A, cwd: original.resources.worktree!.worktreePath },
+  ];
+  expect(starts).toHaveLength(expectedInvocations.length);
+  starts.forEach((request, index) => assertNativeInvocation(request, beforeRemoval, expectedInvocations[index]!));
   expect(f.relayErrors).toEqual([]);
 }, 180_000);
