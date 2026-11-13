@@ -11,7 +11,7 @@ vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onC
 const detail: TaskDetail = { id: 'task', projectId: 'project', type: 'task', parentId: null, assignedTo: null, title: 'Task', description: '', status: 'todo', version: 1n, tags: [{ id: 'a', name: 'Alpha' }], allowAgents: false, requiredPlatform: null, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], properties: {}, startedAt: null, completedAt: null, cancelledAt: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
 const operation = { action: 'tags' as const, tagIds: ['a'], version: 1n };
-const make = (current: TaskDetail, mutation: TaskMutationState, setTags: (ids: readonly string[], version: bigint) => void) => <LocaleProvider initial={{ locale: 'en', issue: null }}><TaskTagsEditor projectId="project" detail={current} tags={current.tags} canMutate={mutation.phase !== 'pending'} mutation={mutation} setTags={setTags} reconcile={vi.fn()} /></LocaleProvider>;
+const make = (current: TaskDetail, mutation: TaskMutationState, setTags: (ids: readonly string[], version: bigint) => void, reconcile = vi.fn(), canMutate = mutation.phase !== 'pending') => <LocaleProvider initial={{ locale: 'en', issue: null }}><TaskTagsEditor projectId="project" detail={current} tags={current.tags} canMutate={canMutate} mutation={mutation} setTags={setTags} reconcile={reconcile} /></LocaleProvider>;
 
 it('keeps the original draft across fresh detail and requires explicit version adoption', () => {
   const save = vi.fn(); const view = render(make(detail, idle, save));
@@ -86,4 +86,23 @@ it('retains later selections when a confirmed save is followed by different curr
   fireEvent.click(screen.getByRole('button', { name: 'Keep draft and use current version' }));
   expect(navigationDraft.current?.isDirty()).toBe(true);
   fireEvent.click(screen.getByRole('button', { name: 'Save' })); expect(save).toHaveBeenLastCalledWith(['a', 'b'], 3n);
+});
+
+it.each(['Cancel', 'Escape'] as const)('offers recovery after %s closes an editor with an unknown write and failed check', close => {
+  const save = vi.fn(), reconcile = vi.fn(); const view = render(make(detail, idle, save, reconcile));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' })); fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  const unknown: TaskMutationState = { ...idle, operation, phase: 'unknown', error: new Error('lost response'), reconciliationError: new Error('offline') };
+  view.rerender(make(detail, unknown, save, reconcile, false));
+  if (close === 'Cancel') fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  else fireEvent.keyDown(screen.getByLabelText('New name'), { key: 'Escape' });
+  expect(screen.queryByTestId('draft')).toBeNull();
+  expect(screen.getByText(/outcome is unknown/)).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Edit tags' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Check current state' }));
+  expect(reconcile).toHaveBeenCalledOnce(); expect(save).toHaveBeenCalledOnce();
+  view.rerender(make(detail, { ...unknown, reconciling: true, reconciliationError: null }, save, reconcile, false));
+  expect(screen.getByRole('button', { name: 'Checking…' })).toBeDisabled();
+  view.rerender(make(detail, { ...unknown, phase: 'reconciled', reconciledFrom: 'unknown', reconciliationError: null }, save, reconcile, true));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+  expect(screen.getByTestId('draft')).toHaveTextContent('Alpha'); expect(save).toHaveBeenCalledOnce();
 });

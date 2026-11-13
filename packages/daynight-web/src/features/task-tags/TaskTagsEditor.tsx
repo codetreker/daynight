@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import type { TaskDetail, TaskTag } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -22,10 +22,18 @@ export const TaskTagsEditor = ({ projectId, detail, tags, canMutate, mutation, s
   const baseline = useRef<readonly string[]>([]);
   const trigger = useRef<HTMLButtonElement>(null);
   const root = useRef<HTMLDivElement>(null);
+  const recovery = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
   const [submitted, setSubmitted] = useState(false);
   const submittedIds = useRef<readonly string[]>([]);
   const previousOperation = useRef<TaskMutationState['operation']>(null);
-  const close = () => { setSubmitted(false); setCreating(false); setNameDirty(false); setDraft(null); queueMicrotask(() => { if (trigger.current?.isConnected) trigger.current.focus(); }); };
+  const close = () => { restoreFocus.current = true; setSubmitted(false); setCreating(false); setNameDirty(false); setDraft(null); };
+  useLayoutEffect(() => {
+    if (draft !== null || !restoreFocus.current) return;
+    restoreFocus.current = false;
+    const target = recovery.current && !recovery.current.disabled ? recovery.current : trigger.current?.disabled ? root.current : trigger.current;
+    if (target?.isConnected) target.focus();
+  }, [draft]);
   useDirtyTaskDraft({ isDirty: () => draft !== null && (creating || nameDirty || submitted || draft.length !== baseline.current.length || draft.some(tag => !baseline.current.includes(tag.id))), discard: close });
   const current = submitted && mutation.operation !== previousOperation.current && mutation.operation?.action === 'tags' ? mutation : null;
   useEffect(() => {
@@ -38,9 +46,10 @@ export const TaskTagsEditor = ({ projectId, detail, tags, canMutate, mutation, s
   }, [draft, current, detail, version, nameDirty, creating]);
   const unresolved = current?.phase === 'unknown' || current?.phase === 'conflict' || current?.phase === 'reconciled';
   const stale = draft !== null && detail.version !== version && (current === null || current.phase === 'refused' || current.phase === 'confirmed' && !current.reconciling && !current.publicationPending);
-  return <div ref={root} onKeyDown={event => { if (draft !== null && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } }}>
+  return <div ref={root} tabIndex={-1} onKeyDown={event => { if (draft !== null && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } }}>
     <TaskTagList tags={tags} />
     <button className="button" type="button" ref={trigger} disabled={!canMutate || draft !== null} onClick={() => { setSubmitted(false); setVersion(detail.version); baseline.current = detail.tags.map(tag => tag.id); setDraft([...detail.tags]); }}>{zh ? '编辑标签' : 'Edit tags'}</button>
+    {draft === null && mutation.operation?.action === 'tags' && (mutation.phase === 'unknown' || mutation.reconciliationError !== null) && <div role="alert"><p>{mutation.phase === 'unknown' || mutation.reconciledFrom === 'unknown' ? m.unknown : m.readError}</p>{mutation.reconciliationError !== null && <p>{m.readError}</p>}<button className="button" type="button" ref={recovery} disabled={mutation.reconciling} onClick={reconcile}>{mutation.reconciling ? m.checking : m.check}</button></div>}
     {draft !== null && <div className="task-tags-editor">
       <TagPicker projectId={projectId} value={draft} onChange={setDraft} canWrite={canMutate} onCreatingChange={setCreating} onNameDirty={setNameDirty} />
       {current !== null && current.phase === 'refused' && <p role="alert">{current.error instanceof ApiError && (current.error.status === 403 || current.error.code === 'permission_denied') ? m.denied : current.error instanceof ApiError && current.error.code === 'tag_not_found' ? (zh ? '所选标签已不存在，请检查选择。' : 'A selected tag no longer exists. Check the selection.') : current.error instanceof ApiError && current.error.code === 'resource_limit_exceeded' ? (zh ? '已达到标签容量上限。' : 'The tag capacity limit was reached.') : m.failed}</p>}
