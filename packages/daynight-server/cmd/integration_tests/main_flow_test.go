@@ -140,6 +140,28 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if resolved["id"] != project.ID || resolved["repoUrl"] != repository {
 			t.Fatalf("resolved Project differs: %+v", resolved)
 		}
+		createdTag := call("tag_create", map[string]any{"projectId": project.ID, "name": " backend "})
+		tagID, ok := createdTag["id"].(string)
+		if !ok || tagID == "" || createdTag["name"] != "backend" || createdTag["version"] != "1" {
+			t.Fatalf("created tag differs: %+v", createdTag)
+		}
+		catalog := call("tag_list", map[string]any{"projectId": project.ID, "query": "back"})
+		tags, ok := catalog["items"].([]any)
+		if !ok || len(tags) != 1 || tags[0].(map[string]any)["id"] != tagID || catalog["catalogEpoch"] == "" {
+			t.Fatalf("tag catalog differs: %+v", catalog)
+		}
+		shown := call("tag_show", map[string]any{"projectId": project.ID, "tagId": tagID})
+		if shown["id"] != tagID || shown["version"] != "1" {
+			t.Fatalf("tag read differs: %+v", shown)
+		}
+		renamed := call("tag_rename", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": shown["version"], "name": "platform"})
+		if renamed["id"] != tagID || renamed["name"] != "platform" || renamed["version"] != "2" {
+			t.Fatalf("tag rename differs: %+v", renamed)
+		}
+		deleted := call("tag_delete", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": renamed["version"], "confirm": true})
+		if deleted["projectId"] != project.ID || deleted["tagId"] != tagID || deleted["deleted"] != true {
+			t.Fatalf("tag deletion differs: %+v", deleted)
+		}
 		actual := call("task_show", map[string]any{"projectId": resolved["id"], "taskId": task.ID, "view": "full"})
 		assertOrdinaryType(t, actual)
 		if actual["id"] != task.ID || actual["projectId"] != project.ID || actual["title"] != task.Title {

@@ -554,7 +554,7 @@ Project creation, transfer, listing and inspection,
 Team invitation creation, listing and revocation, inspection and acceptance of
 Team or Project invitations, Bot management, Task creation, reading, updating,
 status, deletion, property, list, ready and graph tools, ordered Task Steps reads
-and writes, Task discussion reads and posts, and attachment listing, removal,
+and writes, Project tag catalog management, Task discussion reads and posts, and attachment listing, removal,
 bounded reads and inline or resumable upload. The [attachment design](../../docs/design/daynight-task-attachments.md)
 owns upload admission and transfer behavior. Attachment open creates a private immutable snapshot for ranged
 reads; each request rechecks access. Inspection returns metadata by default,
@@ -582,6 +582,15 @@ states. Team and membership versions are decimal strings, and list results use
 scoped cursors. Team, member, scoped Project, invitation and attachment pages
 use ordinary candidate batches and item-count continuation. Reads preserve full
 items without field-budget admission or repeated prefix encoding.
+
+`tag_list`, `tag_show`, `tag_create`, `tag_rename` and `tag_delete` use the
+shared Project tag service and Control permits. Catalog pages default to 50
+items (maximum 100), return `catalogEpoch` and bind the cursor to the Project,
+principal, query, limit and epoch. Tag versions are exact positive decimal
+strings; rename and deletion require the observed `ifVersion`, and deletion
+also requires `confirm: true`. Usage counts are snapshot hints, not a deletion
+condition. Mutation results retain confirmed, not committed or unknown completion;
+an unknown creation or deletion must not be replayed blindly.
 
 `project_resolve` reads the unique accessible Project for a supplied repository
 address, returning its ID in `data.id`. Equivalent HTTPS, SSH and SCP addresses

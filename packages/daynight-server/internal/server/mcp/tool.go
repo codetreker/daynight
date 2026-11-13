@@ -426,7 +426,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			}
 		}
 		result, err := handler(ctx, actor, raw)
-		logger := e.logger.With(threadLogReferences(tool.Name, result.Refs)...)
+		logger := e.logger.With(resourceLogReferences(tool.Name, result.Refs)...)
 		if err != nil {
 			failure := envelopeError{Code: "internal_error", Message: "The tool could not complete.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: result.Phase, Refs: result.Refs}
 			facts := operation.CompletionFacts(err)
@@ -562,17 +562,25 @@ func ValidateUnicodeFields(raw json.RawMessage, fields ...string) error {
 	return nil
 }
 
-// Only validated resource IDs from Thread receipts are safe to log; arbitrary
+// Only validated resource IDs from selected tools are safe to log; arbitrary
 // tool references can contain user-controlled data and are not log attributes.
-func threadLogReferences(name string, refs map[string]any) []any {
-	if name != "task_thread_read" && name != "task_thread_post" {
+func resourceLogReferences(name string, refs map[string]any) []any {
+	var fields []struct{ key, attr string }
+	switch name {
+	case "task_thread_read", "task_thread_post":
+		fields = []struct{ key, attr string }{
+			{"projectId", "project_id"}, {"taskId", "task_id"}, {"replyTo", "reply_to"},
+			{"claimId", "claim_id"}, {"messageId", "message_id"}, {"candidateMessageId", "candidate_message_id"},
+		}
+	case "tag_list", "tag_show", "tag_create", "tag_rename", "tag_delete":
+		fields = []struct{ key, attr string }{
+			{"projectId", "project_id"}, {"tagId", "tag_id"}, {"candidateTagId", "candidate_tag_id"},
+		}
+	default:
 		return nil
 	}
 	var attrs []any
-	for _, field := range []struct{ key, attr string }{
-		{"projectId", "project_id"}, {"taskId", "task_id"}, {"replyTo", "reply_to"},
-		{"claimId", "claim_id"}, {"messageId", "message_id"}, {"candidateMessageId", "candidate_message_id"},
-	} {
+	for _, field := range fields {
 		if value, ok := refs[field.key].(string); ok {
 			if id, err := model.CanonicalID(value); err == nil {
 				attrs = append(attrs, field.attr, id)
