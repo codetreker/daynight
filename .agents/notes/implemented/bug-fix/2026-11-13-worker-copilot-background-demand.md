@@ -31,6 +31,13 @@ own the reporting contract and mechanism. This narrows background preparation
 in the [frozen tool runtime decision](../architecture/2026-11-12-worker-frozen-tool-runtime.md)
 without changing frozen execution identities or probe cleanup rules.
 
+The [read-only channel](../architecture/2026-11-06-worker-readonly-channel.md)
+binds its connection to effective configuration, tool targets and local model
+overrides, not to inspection proofs. Model requests separately bind the selected
+tool identity after preparation. A first on-demand inspection therefore does not
+cancel its own result, while later configuration or selection changes still
+invalidate the appropriate connection or model snapshot.
+
 ## Alternatives
 
 **Prepare every provider in the background.** This ensures a candidate is ready
@@ -44,6 +51,11 @@ uses Copilot, so it would retain unnecessary checks and diagnostics.
 **Use active tool selections alone.** A pending, failed or inactive Bot can still
 need recovery without an active selection. Excluding its non-deleted definition
 would suppress preparation for that work.
+
+**Bind the read-only connection to inspection proofs.** This would make every
+selection change replace the connection, but a first on-demand model query creates
+its own proof and would cancel itself. Binding model snapshots to the inspected
+selection instead retains identity checks without invalidating that connection.
 
 ## Consequences
 

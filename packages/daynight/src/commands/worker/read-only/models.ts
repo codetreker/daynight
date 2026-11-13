@@ -8,6 +8,9 @@ import type { WorkerAgent, WorkerRuntimeNative } from "../../../api/types.js";
 import type { NativeModelObservation, NativeModelOption } from "../../controller/providers/native-selection.js";
 import { assertNativeModelSelection } from "../../controller/providers/native-selection.js";
 import { BotCliProbeCleanupError } from "../bots/cli-probe.js";
+import type { WorkerConfigurationSnapshot } from "../configuration-model.js";
+import type { WorkerLocalNativeOverrides } from "../local-native.js";
+import { normalizeWorkerNative } from "../native-overrides.js";
 
 export type WorkerModelInput = { provider: WorkerAgent; cwd?: string; model?: string; includeHidden?: boolean; limit?: number; cursor?: string };
 export type WorkerModelDefault = { value: string | null; source: "explicit" | "local" | "cloud" | "native" | "unknown" };
@@ -74,6 +77,23 @@ const defaults = (input: WorkerModelInput, report: WorkerRuntimeNative, observat
 };
 
 type Configuration = { native: WorkerCloudNative; report: WorkerRuntimeNative };
+/** Connection identity tracks configuration targets; query identity also tracks inspected recipes. */
+export const createWorkerReadOnlyConfiguration = (options: {
+  current(): Pick<WorkerConfigurationSnapshot, "effective" | "toolTargets">;
+  local: WorkerLocalNativeOverrides;
+  selection(provider: "codex" | "copilot"): { selectionKey: string; revision: number } | undefined;
+}) => ({
+  channelSignature: (): string => {
+    const snapshot = options.current();
+    return JSON.stringify([snapshot.effective, snapshot.toolTargets, options.local.agentModel, options.local.agentReasoningEffort]);
+  },
+  modelConfiguration: () => {
+    const snapshot = options.current(), native = snapshot.effective.native;
+    if (native === null) throw new WorkerModelDiscoveryError("capability_error");
+    return { ...normalizeWorkerNative(native, "web", options.local, false), toolTargets: snapshot.toolTargets,
+      toolSelections: [options.selection("codex") ?? null, options.selection("copilot") ?? null] };
+  },
+});
 type Snapshot = { result: Omit<WorkerModelResult, "nextCursor">; configuration: string; query: string; expires: number };
 type Verifier = { discover(options: { native: WorkerCloudNative; cwd: string; environment: NodeJS.ProcessEnv }, operation: Operation): Promise<NativeModelObservation> };
 /** A catalog is read on demand. Only bounded pagination snapshots survive a request; no existing Session is consulted. */

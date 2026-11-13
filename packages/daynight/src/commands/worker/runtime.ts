@@ -68,7 +68,7 @@ import { shutdownWorkerExecutions } from "./shutdown.js";
 import { createWorkerBotHost, type WorkerBotHost } from "./bots/host.js";
 import { createWorkerReadOnlyChannel } from "./read-only/channel.js";
 import { browseWorkerDirectory } from "./read-only/directory.js";
-import { createWorkerModelDiscovery, WorkerModelDiscoveryError, type WorkerModelInput } from "./read-only/models.js";
+import { createWorkerModelDiscovery, createWorkerReadOnlyConfiguration, type WorkerModelInput } from "./read-only/models.js";
 import type { WorkerReadOnlyOperations, WorkerReadOnlyOperation } from "./read-only/channel.js";
 import type { WorkerDirectoryInput } from "./read-only/directory.js";
 import { createWorkerGitManager, type WorkerGitPending } from "./worktrees.js";
@@ -611,6 +611,11 @@ export const runWorker = async (options: {
       const current = proofSignature(); if (current === observedToolProof) return;
       observedToolProof = current; return manager.refreshToolSelections(signal);
     };
+    const readOnlyConfiguration = createWorkerReadOnlyConfiguration({ current: () => manager.current(), local,
+      selection: tool => {
+        const launch = toolRuntime.manager.currentSelection(tool, "web");
+        return launch === undefined ? undefined : { selectionKey: launch.selectionKey, revision: toolRuntime.inspector.revision(launch) };
+      } });
     modelDiscovery = createWorkerModelDiscovery({
       prepare: async (provider, operation) => { if (provider === "codex" || provider === "copilot") await toolRuntime.manager.prepare(provider, "web", operation); },
       defaultCwd: options.workingDirectory, environment: { ...process.env, ...toolEnvironment.agentEnvironment }, verifier: { discover: async (input, operation) => {
@@ -618,11 +623,7 @@ export const runWorker = async (options: {
         const toolLaunch = await toolRuntime.manager.selectForNewExecution(input.native.agent, "web", operation);
         return toolRuntime.inspector.discover({ ...input, toolLaunch, mode: "web", toolRuntimeRoot: toolRuntime.toolRuntimeRoot }, operation);
       } },
-      configuration: () => {
-        const native = manager.current().effective.native;
-        if (native === null) throw new WorkerModelDiscoveryError("capability_error");
-        return { ...normalizeWorkerNative(native, "web", local, false), toolSelections: ["codex", "copilot"].map(tool => toolRuntime.manager.currentSelection(tool as "codex" | "copilot", "web")?.selectionKey ?? null) };
-      },
+      configuration: readOnlyConfiguration.modelConfiguration,
     });
     const executeReadOnly = async <K extends WorkerReadOnlyOperation>(operation: K, input: WorkerReadOnlyOperations[K]["input"], requestSignal: AbortSignal): Promise<WorkerReadOnlyOperations[K]["result"]> => {
       const result = operation === "directory.list"
@@ -631,7 +632,7 @@ export const runWorker = async (options: {
       return result as WorkerReadOnlyOperations[K]["result"];
     };
     readOnly = createWorkerReadOnlyChannel({ serverOrigin: serverUrl, serverToken, ownerUserId: userId, workerId,
-      configurationSignature: () => JSON.stringify([manager.current().effective, local.agentModel, local.agentReasoningEffort, toolRuntime.manager.currentSelection("codex", "web")?.selectionKey, toolRuntime.manager.currentSelection("copilot", "web")?.selectionKey]),
+      configurationSignature: readOnlyConfiguration.channelSignature,
       execute: executeReadOnly,
       onInvalidate: () => modelDiscovery?.invalidate(),
       onError: message => emit({ kind: "worker-readonly", message }),
