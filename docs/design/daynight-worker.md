@@ -73,11 +73,13 @@ macOS Herdr 将终态原运行停止证明作为执行槽释放目标；隔离�
 
 ### 本地配置与首次候选
 
-本地读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort、完整 toolPaths 选择与原始 source。认证后读取云端配置，已有目标时不让本地托管字段参与权威选择；只有目标缺失时，才从同一捕获的原始 YAML 投影完整首次候选。独立模式候选读取本机有效 agentControlMode，目标已存在但未采纳模式时仍可上报；只有服务回显模式能力才交换扩展字段，无回显继续本机模式。toolPaths 进入同一原始 YAML 产生的完整候选和独立 toolPathsBootstrap；API 只有认证配置读取确认工具能力后才发送扩展，旧服务仍使用本地选择。该顺序避免旧 native 参数、空仓库和交互选择阻断已登记 Worker 的配置通道。语法错误、本地字段错误、读取故障和取消仍明确失败。
+本地启动读取先投影服务连接、凭据、repositoryRoot、agentControlMode、可选 agentModel/agentReasoningEffort、完整 toolPaths 选择与原始 source；这些运行归属不在进程中热切换。取得原实例锁后确认认证账号，再访问该身份的缓存与云端配置。currentUser 的临时网络失败在锁下按 5、10、20、40、60 秒封顶退避；首次配置 GET 临时失败保留未读取状态，配置 manager 和 reporter 建立后由报告周期重试。认证、协议、格式及确定不兼容错误保持明确拒绝，未知不能变成 desired:null。已有目标时本地托管字段不参与权威选择。独立模式候选读取启动时本机有效 agentControlMode，目标已存在但未采纳模式时仍可上报；只有服务回显模式能力才交换扩展字段，无回显继续本机模式。API 只有认证配置读取确认工具能力后才发送工具扩展，旧服务仍使用本地选择。
 
 首次候选的 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects 使用 workerConfigurationDefaults 的独立默认值：1、60000、3、false、copilot/null/[]、[]。本地 repositoryRoot 默认 `~/daynights`，mode 默认 herdr；不从 review 推断任何 worker 值。未知 YAML 字段在投影时忽略、编辑时保留，读取不改写文件；显式已知值严格校验。导入从仓库项的 remote/projectId 取得 Project 关联；本机绑定实际使用时再校验路径，按 config.yml 目录解析并禁止 tilde、drive-relative 路径、重叠仓库或状态根。原始覆盖节点直接投影 nativeOverrides，不能从已展开配置反推省略、model:null 或 args:[]。
 
-云端尚无目标且首次候选中有明确不可用的 Project 时，runtime 保留完整本地选择，在进程内分别验证和准备可用项目；不把局部集合提交为云配置。所有项目重新可访问并完成验证后，才提交完整首次候选。身份、协议和网络错误保持原分类；已有云目标始终是配置权威。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 清单属于其他 Project 时保留责任，不按新 ID 重绑。
+`configuration-bootstrap.ts` 拥有 desired:null 期间的当前文件候选。每个 pass 只读取一次 `readWorkerLocalConfiguration`，按同一 source 投影完整候选、mode 与工具，保留原始 native 覆盖意图。文件中的规范 origin 或显式 workerId 不匹配运行身份时拒绝；新凭据与本地执行覆盖不改变当前运行归属。一个 root 子任务拥有整个 60 秒 pass，报告 Operation 通过可取消等待加入它，等待者结束不撤销项目解析。source hash 与认证 scope 相同时可复用成功解析的 Project 身份，失败不写入缓存；候选明确被拒绝后失效并重新校验，服务端最终验证权限。
+
+候选准备失败保持错误，在后续报告周期重新准备；不以可用项目的局部集合建立云目标或授予新执行。每个 null 周期先查服务端，已有目标优先，取消并 drain 旧候选；导入响应未知也先读，再从最新事实构造新请求。原协调器保留用于已有资源核验的视图，重启后的 null 状态从真实本机项目映射提供原资源覆盖；Task/Bot 新准入关闭，原冻结执行继续原权限与生命周期。已知本地映射即使不再选中也须核对其资源；映射或仓库扫描未确认时不释放假容量。无 ID 的旧映射通过已有绑定或仓库发现识别，实际 worktree 清单属于其他 Project 时保留责任，不按新 ID 重绑。
 
 `worker repo list` 只读本地注册。云端目标尚未建立时，setup 与 repo add/remove 仍通过现有完整 Project 清单、身份和路径计算处理本地候选。已有传输 URL、路径和兼容 native 值保留；同类型逐字段继承，切换类型清除未覆盖的 model/args，args 整体替换。repositoryRoot 与 review 独立，只为新路径展开，改变根不搬移已有仓库。
 
@@ -91,7 +93,7 @@ Setup 在终端内汇总只读环境报告、单选 Copilot/Codex/Claude、选�
 
 `local-native.ts` 负责两个新字段的存在性、字符串约束及旧 model 同层冲突。`native-overrides.ts` 在已解析云端全局或项目原生元组上独立应用本地两项，抽取 model/effort 参数、去重并映射当前 Provider 的 Web/Herdr 表达。其它原生参数交给既有验证器；Codex 非相关 TOML 设置保留。
 
-`runtime.ts` 的云端应用入口验证规范化结果，管理器仍持久保存原始云端 appliedValue。提供给 coordinator 与助手 host 的是规范化后配置；机器报告单独输出 `runtimeConfiguration`，由 `schemaVersion:1` 标识来源对象。这样本地覆盖不冒充 desired 或云端应用值，移除后重新组合会恢复真实下层来源。null/native 表示委托原生配置，不把未知值当作探测结果。云端目标缺失而本地候选部分运行时，报告与 coordinator 相同的全局配置和可运行项目，候选中明确的 model/effort 均归 local；不能用尚为空的云端管理器快照覆盖实际运行来源。
+`runtime.ts` 的云端应用入口验证规范化结果，管理器仍持久保存原始云端 appliedValue。提供给 coordinator 与助手 host 的是规范化后配置；机器报告单独输出 `runtimeConfiguration`，由 `schemaVersion:1` 标识来源对象。这样本地覆盖不冒充 desired 或云端应用值，移除后重新组合会恢复真实下层来源。null/native 表示委托原生配置，不把未知值当作探测结果。尚未接纳的本地候选不成为有效执行配置或来源观察；原执行的实际参数继续由其冻结记录表达。
 
 Worker SQLite `claim_native_configurations` 以 project/task/claim 关联不可变原生元组。新登记与冻结在同一事务中，旧无会话记录在首次启动前冻结；有会话而缺少旧快照的记录保持未知。原 Session 恢复不追加当前 model/effort，避免覆盖会话内原生设置。已有助手沿用自己的持久冻结记录。
 
@@ -152,7 +154,9 @@ configuration.json 使用 schemaVersion=5，保持单个 JSON 对象、原路径
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
 | configuration-persistence.ts | 初始化读取、串行冻结检查点、存储 readiness、I/O 重试及关闭所有权 |
-| configuration.ts | 结果转换与发布、异步应用 job、原停止归属及当前进程证明 |
+| configuration.ts | 权威安装、捕获 token、结果转换与发布、异步应用 job、原停止归属及当前进程证明 |
+| configuration-exchange.ts | foreground/管理路径共用的准备、采样、代次围栏、单次发送及回执编排 |
+| configuration-bootstrap.ts | 当前文件一致候选、root 有界准备、source/auth scoped 解析复用与取消收尾 |
 
 authority 保存本机 generation UUID、已接纳的 desired 与 observationRevision；generation 不是服务端 epoch。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，表示当前目标的完整本机应用与核验；retainedItems 保存仍有工作、停止、未知结果、失败或必要实际值的原记录。两组 recordId 全局唯一。每项 origin 记录原 generation、targetRevision 与 application/schema4 来源，actualSource 单独表达实际值的本机观察出处；复用值只复制原来源元组，不修改旧历史。旧格式已经丢失的成功版本使用 schema4/successRevision:null 明确为未知，不能由新的目标版本推断。nativeMode 留在对应记录中，执行资格只由本次进程的 recordId 证明提供。blockedByRemovalId 必须指向同项目的移除记录且无环。
 
@@ -160,17 +164,21 @@ authority 保存本机 generation UUID、已接纳的 desired 与 observationRev
 
 读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
 
-非空目标继续忽略较低 revision；首次同步安装读取到的观测基线，其后对非空目标只提升观测版本。目标为空时基线固定为 "0"。目标变化建立新的当前核验身份，原工作和停止记录保留 origin；已开始的停止不因新目标或重新选中而改写。新停止核验等待原 job 真正结束，并通过原适配器重新确认资源；当前停止核验完成前，项目准备和 ready 发布保持受阻。native 与准备 job 共享该项目实际停止槽，不能和仍在执行的停止操作重叠。没有原工作、待确认失败、停止或必要实际值的旧记录可收敛，不要求本机全部记录占用一次 wire 名额。
+当前 origin、principal 与 workerId 验证通过的 GET，或本机当前捕获对应的合法报告回执，完整安装服务端 desired 和准确 observationRevision，不以数值大小选择权威；较低 revision、同版本异内容、旧待应用目标及 null 都服从该规范状态。null 的基线固定为 "0"。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威，快照保持不可准入，不继续采用旧本地意图。每次权威安装更新本机 generation；相同目标保留仍有效的记录和 job，job 适用性由 recordId、内容及证明决定，不能仅按 revision 判断。
+
+目标变化建立新的当前核验身份，原工作和停止记录保留 origin。高版本原停止在服务端回退后继续拥有原操作；新目标仍排除项目时建立当前目标的停止核验，原 job 真正结束后通过同一适配器再观察资源。新目标重选项目时，准备等待原停止结束，不能提前 ready；原记录不直接作为较低目标的 observation，也不改写成该目标的历史成功。native 与准备 job 共享该项目实际停止槽，不能与尚未结束的停止重叠。没有原工作、待确认失败、停止或必要实际值的旧记录可收敛，不要求本机全部记录占用一次 wire 名额。
 
 每次启动保留 native 实际值供观察，但重建本次运行证明。全局与项目 native 优先验证当前目标；目标失败后才在兼容的原 mode 下验证历史元组。schema 1/2 没有历史模式证明，按本机兼容模式重新验证，不能将该模式当作旧成功出处。本次验证证明归属于实际接受验证结果的记录，后续目标从实际提供复用值的前一当前或保留记录继承匹配证明，actualSource 保持原实际值来源。证明只随仍存在的记录保留，历史来源引用不能延长证明寿命。全局 mode 变化在继承前撤销所有项目旧资格，包括本代将被退休的原记录；同模式全局 native 失败不阻止健康项目独立验证。历史恢复只取得本进程资格，保持失败目标的非 applied 状态；正在验证目标时，未经本进程验证的历史保持 unavailable。已验证实际值在后续目标应用期间继续可用，相关工具选择变化使对应 native 必须重验，无关 Provider 的健康证明保持。结果提交仍检查原记录绑定、目标内容、mode 与选择，取消或被取代的结果不能授予新执行资格。
 
 native 参数校验、版本探测与项目适配等外部 I/O 在提交队列之外运行，完成后只提交结果转换。native 应用显式接收目标 mode，在该模式下校验 native 及本地 model/effort，并在同一原生环境做纯版本探测；最低启动能力、integration、hook 和 task cwd 继续由原有 launch preflight 验证，配置成功不代替真实执行。应用单元为三个数值标量、preferPlatformSpecificTasks 布尔标量、mode 与完整全局 native 组合，以及独立项目项。mode/native 的验证结果经单一提交 owner 一次保存后发布；验证失败保留旧有效组合；未成功持久化的结果不发布，已完成应用的准确结果等待原检查点恢复。项目 native 验证记录绑定 {mode,native} 及接入工具管理器后提供的相关选择和 selectionKey，模式切换撤销旧资格并取消旧模式的项目 native 校验 job，随后独立重验项目。提交先计算模式撤销与本次已接纳验证结果形成的下一份进程内证明；当前选中的 native 应用项若仍为 applied 但缺少匹配有效模式和已应用值的证明，先归为 pending，保留历史值与未确认失败。应用状态原子保存成功后才一起发布缓存与证明，因此直接接收目标和报告确认回执都不会把尚待重验的重选项目报告为成功。未选中的历史项仍由原移除确认流程保留与收敛。提交再次核对目标 revision、mode 和 native，陈旧结果不能授予新 claim 资格。仓库准备与移除事实不因单独模式变化丢弃。独立成功值不因另一项失败回滚；从未成功的项保持 unavailable。失败按 5、10、20、40、60 秒退避，新目标替代旧应用重试。异步配置应用最多 16 个 job，按稳定 recordId 轮转；退避项让出槽位，原停止保有该次有界尝试的槽位。普通标量转换不占异步 job 槽。旧结果在队列内再次检查原记录是否适用。已经开始的项目移除保留原记录工作，后续重新选中不能抹掉它；当前停止核验独立报告自己的目标版本。runtime 只对已完成仓库准备的绑定确认 project ready；native 解析或能力检查本身不能证明项目可执行。没有对应副作用完成结果的项目项继续 pending。
 
-reporter 在发送前把同一份实际机器报告传给配置 capture 和 send；配置准备与本轮已有采样的顺序由[采集设计](daynight-worker-reporting.md#配置快照与回执)拥有。配置模块从完整事实投影本批当前项，同 key 的最近待确认失败可以来自 current 或 retained；捕获保存真实 sourceRecordId/failureId，不复制失败所有权。旧合同回执或明确的 400 invalid_input 使下一轮先 GET 重新协商能力，不重放旧请求。接纳仅清除实际发送且身份仍匹配的失败，飞行中的新失败保留；拒绝更新比较版本但不确认失败。
+`configuration-exchange.ts` 统一 foreground reporter 与实际配置管理调用者：先等待持久化就绪，准备当前权威及候选，再收集新 telemetry、捕获并验证 generation，发送一次，最后由 manager 接收并保存回执。prepare 后和发送前的代次围栏丢弃过期样本，不把旧工具 targetRevision 带入新目标。正常同步轮次不新增 GET；启动、未知结果、400/协议失败或能力重发现先读取；null 期间每轮先读取，以便竞争目标优先。单飞、触发合并与有限 prompt 批次由[采集设计](daynight-worker-reporting.md#配置快照与回执)拥有。
+
+同一份实际 WorkerReport 用于 capture 预算与 send。捕获在本机保存随机 reportId、generation、精确 baseRevision、observation、实际 recordId/失败来源及下一个游标；token 不进入网络正文，也不能由等值报告重建。同 key 的最近待确认失败可以来自 current 或 retained，捕获保留真实 sourceRecordId/failureId，不复制失败所有权。当前代 observationAccepted=true 先确认该捕获实际发送且仍匹配的失败，再安装回执规范状态；false 且 observation 非空仍安装完整规范状态，下一轮基于它生成新报告，不能确认旧失败。observation:null 的 false 是正常未提交观察。旧 generation 的回执不改变当前目标、基线、失败或游标；远端已知成功、明确拒绝与未知继续各自保留原含义。
 
 projectionCursor 是持久化的 recordId 字典序位置。投影先固定一项真实未完成或失败移除核验，其优先级包含被阻塞的原停止错误；wire 仍表达当前核验的真实 pending/error 状态。其余合格项从游标后选择连续前缀，首个放不下的项是下批起点，不跳过大项填小项。每批同时满足 1025 个非 mode 项、协商后的 1026 个总项、Go HTML/U+2028/U+2029 转义加 512 字节存储包装余量的 4 MiB，以及实际整包 9 MiB。请求碰到预算时对实际候选报告重新准备可选工具/来源观测，完整配置项与必需清单不截断。结构合法但当前 wire 无法表示的历史值继续保留本机，错误结构仍明确失败。
 
-匹配且 observationAccepted=true 的回执才确认本批失败来源；游标仅在捕获 generation 等于当前代时前移。完成停止还须核对实际 job 结束及准确的 applied 本批确认后才能收敛。未发送失败、未知结果和仍有资源责任的记录保留。服务端整体替换最近接纳批次，不累积各批 items；遗漏表示本次未观察，消费者不能据此宣称已应用。配置错误仍是闭合 code/category/phase 与时刻，原生命令、参数、输出和凭据不进入公开诊断。心跳不等待应用 job，退出取消并 join 配置应用和报告，由 runtime 统一持有生命周期。
+匹配且 observationAccepted=true 的当前代回执才确认本批失败来源与游标；围栏在同一串行提交内再次检查，排队期间被新权威取代的 ACK 也不能确认。完成停止还须核对实际 job 结束及准确的 applied 本批确认后才能收敛。未发送失败、未知结果和仍有资源责任的记录保留。服务端整体替换最近接纳批次，不累积各批 items；遗漏表示本次未观察，消费者不能据此宣称已应用。配置错误仍是闭合 code/category/phase 与时刻，原生命令、参数、输出和凭据不进入公开诊断。心跳不等待应用 job，退出取消并 join 配置应用和报告，由 runtime 统一持有生命周期。
 
 ### 临时存储恢复与准入
 
@@ -499,7 +507,7 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 本地工具路径测试执行真实 YAML 解析与两个配置入口，验证三项缺省值、null、未知键、相对路径、控制字符、非法 Unicode、4096 字节边界及原字符串保留。POSIX 与 Windows path API 的纯语法测试不证明另一操作系统能启动对应文件；文件、解释器、shim 和子进程行为须由共享解析器在对应平台验证。云端 bootstrap 和 API 协商测试保证旧服务不接收工具扩展，明确 auto 不会重新读取本地旧路径。
 
-配置验证使用受控时间、延后 I/O 与真实缓存读写，覆盖 cloud-first 和无 picker 的空项目启动、原始覆盖意图、身份/损坏/持久化拒绝、mode/native 成组提交与项目同模式重验、单提交 owner 的 receive/apply/ACK 竞争、旧目标晚完成、快速恢复及飞行期间新失败。coordinator/runtime 测试观察实际并发、下一次轮询、恢复上限和 native 参数消费者；长应用与任务清单失败期间报告继续，健康进程不能因参数变更重启。项目没有已确认准备结果时保持 pending，不用 native 验证代替准备或停止证明。
+配置验证使用受控时间、请求屏障、延后 I/O 与真实缓存读写，覆盖运行期/重启后的较低或同版本异内容权威、null 重新导入及当前文件快照、未知响应先读、旧 generation ACK、原高版本停止与重新选择、cloud-first 和无 picker 的空项目启动、原始覆盖意图、身份/损坏/持久化拒绝、mode/native 成组提交与项目同模式重验、单提交 owner 的 receive/apply/ACK 竞争、旧目标晚完成、快速恢复及飞行期间新失败。coordinator/runtime 测试观察实际并发、下一次轮询、恢复上限和 native 参数消费者；长应用与任务清单失败期间报告继续，健康进程不能因参数变更重启。项目没有已确认准备结果时保持 pending，不用 native 验证代替准备或停止证明。
 
 macOS lifecycle 验证严格 schema、原 owner/binding 不可更换、先身份后输入、未知提交不重放、Session 注册与 ledger 丢响应读回、普通重连与 generation 换代、停止/封段/同步崩溃及归档前保留；原进程替代和 socket 变化必须拒绝。只读 attach 验证多候选选择、暂停接入、schema/权限失败与替代实例保护。
 

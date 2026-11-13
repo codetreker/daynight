@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import type { Task } from "../../../src/api/types.js";
 import type { WorkerCloudDesired, WorkerCloudReport } from "../../../src/api/worker-configuration.js";
+import type { WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -21,7 +22,13 @@ vi.mock("../../../src/commands/worker/bots/host.js", () => ({ createWorkerBotHos
   run: async () => {}, shutdown: async () => {}, collect: async () => undefined, activeToolSelections: () => [], close: () => {},
 }) }));
 
-const mocks = vi.hoisted(() => ({ durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn() }));
+const mocks = vi.hoisted(() => ({ durable: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), probe: vi.fn(), telemetry: vi.fn(), webBackend: vi.fn(), launcher: vi.fn(), emit: vi.fn(), verify: vi.fn(), configuration: vi.fn() }));
+vi.mock("../../../src/commands/worker/configuration.js", async original => {
+  const actual = await original<typeof import("../../../src/commands/worker/configuration.js")>();
+  return { ...actual, createWorkerConfigurationManager: async (...args: Parameters<typeof actual.createWorkerConfigurationManager>) => {
+    const manager = await actual.createWorkerConfigurationManager(...args); mocks.configuration(manager); return manager;
+  } };
+});
 vi.mock("../../../src/commands/worker/herdr/durable.js", () => ({ createDurableWorkerHerdr: mocks.durable }));
 vi.mock("../../../src/commands/worker/worktrees.js", async original => ({ ...await original<object>(), createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ buildWorkerPrompt: mocks.prompt }));
@@ -58,7 +65,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
-it("inspects retained Herdr responsibility and advances a frozen Web execution when new native defaults are unavailable", async () => {
+it.each([false, true])("keeps retained Herdr and frozen Web execution responsibility when native defaults are unavailable (reset to null: %s)", async resetToNull => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/runtime-retained-resources-tests");
   await mkdir(base, { recursive: true });
   const homeDirectory = await mkdtemp(path.join(base, "w-")); directories.push(homeDirectory);
@@ -82,16 +89,17 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const originalClaim = readWorkerClaim(task.properties);
-  const target: WorkerCloudDesired = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "new-unavailable-model", args: ["--search"] }, projects: [{ projectId, nativeOverrides: {} }] } };
+  const target: WorkerCloudDesired = { revision: "10", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "new-unavailable-model", args: ["--search"] }, projects: [{ projectId, nativeOverrides: {} }] } };
+  let canonical: WorkerCloudDesired | null = target;
   let observationRevision = 0n;
   const report = vi.fn(async (_workerId: string, _body: unknown, configuration: WorkerCloudReport) => {
     const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
     if (observationAccepted) observationRevision++;
-    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(observationRevision), observationAccepted } };
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: canonical, observationRevision: String(observationRevision), observationAccepted } };
   });
   const remote = {
-    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), reportConfiguration: report, report: vi.fn(),
-    project: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })), resolveProject: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })),
+    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => ({ desired: canonical, observationRevision: String(observationRevision), observation: null })), reportConfiguration: report, report: vi.fn(),
+    project: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })), resolveProject: vi.fn(async (_repository: unknown, _signal: AbortSignal) => ({ id: projectId, repoUrl: project.repoUrl })),
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
   mocks.remote.mockReturnValue(remote);
@@ -115,6 +123,24 @@ it("inspects retained Herdr responsibility and advances a frozen Web execution w
     expect.objectContaining({ value: expect.objectContaining({ key: { kind: "native" }, state: "error", appliedValue: null }) }),
     expect.objectContaining({ value: expect.objectContaining({ key: { kind: "projectNative", projectId }, state: "error", appliedValue: null }) }),
   ]));
+  if (resetToNull) {
+    const manager = mocks.configuration.mock.calls[0]![0] as WorkerConfigurationManager;
+    const advances = advance.mock.calls.length, inventories = remote.ownInventory.mock.calls.length;
+    canonical = null; observationRevision = 0n;
+    remote.resolveProject.mockImplementation(async (_repository, signal: AbortSignal) => {
+      await new Promise<void>(resolve => signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true }));
+      signal.throwIfAborted();
+      return { id: projectId, repoUrl: project.repoUrl };
+    });
+    await manager.receive(null, "0");
+    await vi.waitFor(() => expect(advance.mock.calls.length).toBeGreaterThan(advances), { timeout: 3500, interval: 10 });
+    expect(remote.ownInventory.mock.calls.length).toBeGreaterThan(inventories);
+    expect(manager.current().desired).toBeNull();
+    expect(advance.mock.calls.slice(advances).every(([record]) => record.configuration !== null)).toBe(true);
+    expect(advance.mock.calls.slice(advances).every(([record]) => record.configuration!.model === frozen.model && record.claimId === claimId && record.worktreeId === worktreeId)).toBe(true);
+    expect(remote.claim).not.toHaveBeenCalled(); expect(launch).not.toHaveBeenCalled();
+    expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original);
+  }
   cancellation.abort(); await execution;
   expect(lifecycle.close).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce();
   expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ projectId, taskId, claimId, worktreeId }), { kind: "shutdown", deadline: expect.any(Number), immediateStop: true });

@@ -659,13 +659,13 @@ describe("Worker cloud configuration application", () => {
       expect(reopened.current().items.some(entry => entry.key.kind === "projectRemoval" && entry.key.projectId === projectId)).toBe(false);
     }
   });
-  it("retains an invalid historical target without executing it and resumes with a valid newer target", async () => {
-    const invalid = { ...desired("1", "original", false), value: { ...desired("1", "original", false).value, maxConcurrent: 65 } };
+  it("retains the exact unsupported authority without executing it and resumes with a valid lower target", async () => {
+    const invalid = { ...desired("10", "original", false), value: { ...desired("10", "original", false).value, maxConcurrent: 65 } };
     const onInvalidDesired = vi.fn(), applyNative = vi.fn(async () => {});
     const { manager } = await fixture({ onInvalidDesired, applyNative });
     await manager.receive(invalid); await manager.settle();
     expect(manager.current().synchronized).toBe(false);
-    expect(manager.current().desired).toBeNull();
+    expect(manager.current().desired).toEqual(invalid);
     expect(applyNative).not.toHaveBeenCalled();
     const sent = manager.report();
     await manager.acknowledge(sent, { desired: invalid, observationRevision: "0", observationAccepted: false });
@@ -836,7 +836,9 @@ describe("Worker cloud configuration application", () => {
     await wait(snapshot => snapshot.effective.native?.model === "latest");
     expect(item(manager.current(), "native")).toMatchObject({ targetRevision: "2", appliedValue: { model: "latest" }, state: "applied" });
     await manager.receive(desired("1", "old", false));
-    expect(manager.current().desired?.revision).toBe("2");
+    await manager.settle();
+    expect(manager.current().desired?.revision).toBe("1");
+    expect(item(manager.current(), "native")).toMatchObject({ targetRevision: "1", appliedValue: { model: "old" }, state: "applied" });
   });
 
   it("retains recovered failures until accepted and cannot clear a new failure with an older ACK", async () => {
@@ -851,16 +853,19 @@ describe("Worker cloud configuration application", () => {
     expect(item(manager.current(), "native")?.lastFailure).not.toBeNull();
     await manager.acknowledge(firstReport, { desired: desired("2", "recovered", false), observationRevision: "1", observationAccepted: false });
     expect(item(manager.current(), "native")?.lastFailure).not.toBeNull();
-    expect(manager.report().observation?.baseRevision).toBe("1");
+    expect(manager.report().observation?.baseRevision).toBe("0");
     const recoveredReport = manager.report();
     failed = true;
     await manager.receive(desired("3", "bad-again", false));
     await wait(snapshot => item(snapshot, "native")?.state === "error");
     const newFailure = item(manager.current(), "native")?.lastFailure;
-    await manager.acknowledge(recoveredReport, { desired: desired("3", "bad-again", false), observationRevision: "2", observationAccepted: true });
+    await manager.acknowledge(recoveredReport, { desired: desired("3", "bad-again", false), observationRevision: "1", observationAccepted: true });
     expect(item(manager.current(), "native")?.lastFailure).toEqual(newFailure);
     const latestReport = manager.report();
-    await manager.acknowledge(latestReport, { desired: desired("3", "bad-again", false), observationRevision: "3", observationAccepted: true });
+    await manager.acknowledge(latestReport, { desired: desired("3", "bad-again", false), observationRevision: "1", observationAccepted: true });
+    expect(item(manager.current(), "native")?.lastFailure).not.toBeNull();
+    const historicalReport = manager.report();
+    await manager.acknowledge(historicalReport, { desired: desired("3", "bad-again", false), observationRevision: "2", observationAccepted: true });
     expect(item(manager.current(), "native")?.lastFailure).toBeNull();
     expect(item(manager.current(), "native")?.error).not.toBeNull();
   });
@@ -997,7 +1002,7 @@ describe("Worker cloud configuration application", () => {
     await manager.acknowledge(earlier, { desired: desired("2", "original", false), observationRevision: "1", observationAccepted: true });
     expect(item(manager.current(), "projectRemoval")).toBeDefined();
     const completed = manager.report();
-    await manager.acknowledge(completed, { desired: desired("2", "original", false), observationRevision: "2", observationAccepted: true });
+    await manager.acknowledge(completed, { desired: desired("2", "original", false), observationRevision: "1", observationAccepted: true });
     expect(manager.current().items.every(item => !("projectId" in item.key))).toBe(true);
   });
 
@@ -1024,6 +1029,11 @@ describe("Worker cloud configuration application", () => {
     }
     await manager.acknowledge(report, { desired: reselected, observationRevision: "1", observationAccepted: true });
     await manager.settle();
+    if (selection === "before acknowledgement") {
+      expect(manager.current().observationRevision).toBe("0");
+      await manager.acknowledge(manager.report(), { desired: reselected, observationRevision: "1", observationAccepted: true });
+      await manager.settle();
+    }
     expect(reports[0]?.observation?.items.find(value => value.key.kind === "projectNative")).toMatchObject({ targetRevision: "3", state: "pending" });
     expect(item(published.find(snapshot => snapshot.desired?.revision === "3")!, "projectNative")).toMatchObject({ state: "pending", appliedValue: projectNative });
     expect(published.filter(snapshot => snapshot.desired?.revision === "3").every(snapshot => item(snapshot, "projectNative")?.state !== "applied" || snapshot.effective.projects[0]?.native !== null)).toBe(true);

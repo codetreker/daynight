@@ -52,13 +52,17 @@ The server replaces the latest accepted batch without merging earlier items.
 Omitted target items mean unobserved/pending, while the complete local records
 remain available. The [configuration contract](../../../../docs/spec/daynight-worker-configuration.md)
 and [Worker design](../../../../docs/design/daynight-worker.md#云端接收与本机提交)
-own the detailed behavior. Non-null target revisions retain existing monotonic
-policy. The first synchronization installs its observation baseline; later
-non-null target observations only advance it, and null uses the canonical zero
-baseline. The [storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
-owns current transient-I/O recovery and readiness. The fact representation originally
-retained the earlier persistence-failure path; it still preserves actual values,
-original work and unconfirmed failures while a checkpoint waits for storage.
+own the detailed behavior. The fact representation initially retained the
+existing monotonic non-null target and baseline policy while separating local
+history from report capacity. The
+[canonical authority decision](2026-11-12-worker-configuration-canonical-authority.md)
+now owns exact authenticated lower, same-revision content changes and null installation,
+generation fencing and automatic reimport. The
+[storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
+owns current transient-I/O recovery and readiness. The fact representation
+originally retained the earlier persistence-failure path; it still preserves
+actual values, original work and unconfirmed failures while a checkpoint waits
+for storage.
 
 This decision replaces the shared local/report collection in the
 [capacity decision](2026-11-07-worker-current-capacity.md) and extends the

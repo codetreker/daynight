@@ -9,7 +9,7 @@ import type { AgentControlMode } from "../../api/types.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
-import { parseServerConfiguration } from "../../config/server.js";
+import { normalizeServerUrl, parseServerConfiguration } from "../../config/server.js";
 import type { ServerConfiguration } from "../../config/server.js";
 import { pathsOverlap, type PathApi } from "../../platform/filesystem.js";
 import { parseLocalToolPaths, type ToolPaths } from "../../platform/tool-path-choice.js";
@@ -18,6 +18,7 @@ import { validateRepositoryRoot } from "../../repository/location.js";
 import { resolveWorkerRepositoryPath, validateWorkerRepositoryLocations, workerConfigurationDefaults } from "./config.js";
 import type { WorkerPaths } from "./paths.js";
 import { parseWorkerLocalNativeOverrides, type WorkerLocalNativeOverrides } from "./local-native.js";
+import type { WorkerConfigurationIdentity } from "./configuration-model.js";
 
 export { resolveCloudNative } from "./config.js";
 
@@ -64,6 +65,24 @@ export const parseWorkerLocalConfiguration = (source: string | undefined, paths:
 export const readWorkerLocalConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerLocalConfiguration> => {
   signal?.throwIfAborted();
   return parseWorkerLocalConfiguration(await readSource(paths, signal), paths);
+};
+
+export class WorkerBootstrapIdentityError extends Error {
+  constructor(readonly field: "serverUrl" | "workerId") {
+    super(`The local bootstrap ${field} does not match the running Worker's identity.`);
+    this.name = "WorkerBootstrapIdentityError";
+  }
+}
+
+export const validateWorkerBootstrapIdentity = (
+  local: WorkerLocalConfiguration, paths: WorkerPaths, identity: Pick<WorkerConfigurationIdentity, "serverOrigin" | "workerId">,
+): void => {
+  if (local.serverUrl !== normalizeServerUrl(identity.serverOrigin)) throw new WorkerBootstrapIdentityError("serverUrl");
+  const root = sourceMapping(local.source, paths);
+  if (!Object.hasOwn(root, "workerId")) return;
+  const workerId = typeof root.workerId === "string" ? canonicalId(root.workerId) : null;
+  if (workerId === null) throw new TypeError("Configuration workerId must be a hyphenated UUID.");
+  if (workerId !== identity.workerId) throw new WorkerBootstrapIdentityError("workerId");
 };
 
 const matchesRemote = (remote: unknown, expected: string): boolean => {

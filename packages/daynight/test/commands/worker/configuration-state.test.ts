@@ -134,13 +134,14 @@ describe("Worker configuration projection acceptance", () => {
     expect(accepted.currentItems[0]!.value.lastFailure).toEqual(updated.value.lastFailure);
   });
 
-  it("allows the exact old source acknowledgement without advancing a new generation cursor", () => {
+  it("rejects an old generation acknowledgement without retiring its exact source failure or advancing the cursor", () => {
     const original = failed(tracked(1, { kind: "native" }, native)), cache = { ...empty(), currentItems: [original] };
     const projection = projectConfigurationReport(cache, options);
     const changed = { ...cache, authority: { ...cache.authority, generation: id(8001) }, projectionCursor: id(90), currentItems: [], retainedItems: [original] };
     const accepted = acceptConfigurationProjection(changed, projection, new Set());
     expect(accepted.projectionCursor).toBe(id(90));
-    expect(allConfigurationItems(accepted).some(item => item.failureId !== null)).toBe(false);
+    expect(accepted).toBe(changed);
+    expect(allConfigurationItems(accepted).some(item => item.failureId !== null)).toBe(true);
   });
 
   it("retains completed stop ownership until the exact applied carrier is accepted and joined", () => {

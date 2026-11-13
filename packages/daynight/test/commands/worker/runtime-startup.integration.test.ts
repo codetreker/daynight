@@ -18,6 +18,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
+import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
@@ -82,6 +83,11 @@ const fixture = async (warm = false, configured = true) => {
 };
 const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), archiveYield: () => false, updateConfiguration: vi.fn(), stopProject: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
 const reporter = () => ({ trigger: vi.fn(), publishInventory: vi.fn(), recordClaim: vi.fn(), stop: vi.fn(async () => {}) });
+const prepareConfiguration = async (options: ReporterOptions): Promise<ReturnType<NonNullable<ReporterOptions["configuration"]>["capture"]>> => {
+  const operation = createOperation();
+  try { await options.configuration!.prepare?.(operation); return options.configuration!.capture(reportSample); }
+  finally { operation.dispose(); }
+};
 const observeCommittedConfiguration = () => {
   // Encoding alone is not committed evidence; publication follows the real atomic writer's successful completion.
   let encoded: WorkerConfigurationCache | undefined, published: WorkerConfigurationCache | undefined;
@@ -274,10 +280,11 @@ describe("worker cloud-first startup", () => {
     await runWorker({ ...f, signal: cancellation.signal });
   });
 
-  it.each([true, false])("retains unavailable local IDs and reports fallback sources with local overrides=%s", async overrides => {
+  it.each([true, false])("retries unavailable bootstrap projects before granting admission with local overrides=%s", async overrides => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
-    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } }));
+    const source = stringify({ ...f.document, worker: { agent: "codex", model: "local-model", args: ["-c", 'model_reasoning_effort="low"'], ...(overrides ? { agentModel: "local-model", agentReasoningEffort: "high" } : {}), repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } });
+    await writeFile(f.paths.configFile, source);
     let available = false;
     const unavailable = new ApiError({ operation: "project.show" }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -286,89 +293,85 @@ describe("worker cloud-first startup", () => {
       if (projectId === uuid(1) && !available) throw unavailable;
       return { id: projectId, repoUrl: projectId === uuid(1) ? remoteUrl : second.remote };
     });
-    remote.project.mockImplementation(async (id: string) => {
-      if (id === uuid(1) && !available) throw unavailable;
-      return { id, repoUrl: id === uuid(1) ? remoteUrl : second.remote };
-    });
+    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: id === uuid(1) ? remoteUrl : second.remote }));
     let reporterOptions: ReporterOptions | undefined;
-    let assertionFailure: unknown;
     mocks.reporter.mockImplementation((options: ReporterOptions) => { reporterOptions = options; return reporter(); });
-    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
-      let current = options;
-      let rounds = 0;
-      return {
-        archiveYield: () => false, updateConfiguration: vi.fn(value => { current = { ...current, ...value }; }),
-        tick: vi.fn(async () => {
-          try {
-          if (rounds++ === 0) {
-            expect(current.store.listProjects().map(project => project.projectId)).toEqual([uuid(1), uuid(2)]);
-            expect(current.targetProjectIds).toEqual([uuid(1), uuid(2)]);
-            expect(current.readyProjectIds).toEqual([uuid(2)]);
-            expect(reporterOptions!.configuration!.capture(reportSample).bootstrap).toBeNull();
-            const operation = createOperation();
-            try {
-              const sample = await reporterOptions!.collect(operation);
-              const native = { agent: "codex", model: { value: "local-model", source: "local" }, reasoningEffort: { value: overrides ? "high" : "low", source: "local" } };
-              expect(sample.telemetry.runtimeConfiguration).toEqual({ schemaVersion: 1, native, projects: [{ projectId: uuid(2), native }] });
-              expect(current.repositories[0]!.configuration.model).toBe("local-model");
-            } finally { operation.dispose(); }
-            available = true;
-          } else {
-            expect(current.readyProjectIds).toEqual([uuid(1), uuid(2)]);
-            expect(reporterOptions!.configuration!.capture(reportSample).bootstrap?.projects.map(project => project.projectId)).toEqual([uuid(1), uuid(2)]);
-            cancellation.abort();
-          }
-          } catch (error) { assertionFailure = error; cancellation.abort(error); }
-        }),
-        shutdown: vi.fn(async () => true),
-      };
-    });
-    await runWorker({ ...f, signal: cancellation.signal });
-    if (assertionFailure !== undefined) throw assertionFailure;
-    expect(remote.resolveProject.mock.calls.every(([repository]: [{ projectId?: string }]) => repository.projectId !== undefined)).toBe(true);
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => expect(reporterOptions).toBeDefined());
+      await expect(prepareConfiguration(reporterOptions!)).rejects.toBe(unavailable);
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      expect(mocks.git).not.toHaveBeenCalled();
+      expect(reporterOptions!.configuration!.capture(reportSample).bootstrap).toBeNull();
+      available = true;
+      const sent = await prepareConfiguration(reporterOptions!);
+      expect(sent.bootstrap).toMatchObject({ maxConcurrent: 2, native: { model: "local-model", args: ["-c", 'model_reasoning_effort="low"'] }, projects: [{ projectId: uuid(1) }, { projectId: uuid(2) }] });
+      expect(sent.observation).toBeNull();
+      const operation = createOperation();
+      try { await reporterOptions!.configuration!.accept(sent, { desired: { ...desired([uuid(1), uuid(2)], 2), value: sent.bootstrap! }, observationRevision: "0", observationAccepted: false }, operation); }
+      finally { operation.dispose(); }
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
+      await vi.waitFor(() => {
+        const current = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
+        expect(current.configurationComplete!()).toBe(true);
+      });
+      const sampleOperation = createOperation();
+      try {
+        const sample = await reporterOptions!.collect(sampleOperation);
+        const native = { agent: "codex", model: { value: "local-model", source: overrides ? "local" : "cloud" }, reasoningEffort: { value: overrides ? "high" : "low", source: overrides ? "local" : "cloud" } };
+        expect(sample.telemetry.runtimeConfiguration).toEqual({ schemaVersion: 1, native, projects: [{ projectId: uuid(1), native }, { projectId: uuid(2), native }] });
+      } finally { sampleOperation.dispose(); }
+      expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+      expect(remote.resolveProject.mock.calls.every(([repository]: [{ projectId?: string }]) => repository.projectId !== undefined)).toBe(true);
+    } finally { cancellation.abort(); await running; }
   });
 
-  it.each(["protocol", "request"] as const)("does not treat a %s bootstrap error as an unavailable project", async (phase) => {
-    const f = await fixture();
+  it.each(["protocol", "request"] as const)("keeps a %s bootstrap error visible while its configuration channel stays available", async phase => {
+    const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(null));
     const failure = new ApiError({ operation: "project.show" }, phase, { cause: new Error("Identity or transport failure") });
     remote.resolveProject.mockRejectedValue(failure);
-    await expect(runWorker(f)).rejects.toBe(failure);
-    expect(mocks.coordinator).not.toHaveBeenCalled();
-    expect(mocks.reporter).not.toHaveBeenCalled();
+    let options: ReporterOptions | undefined;
+    mocks.reporter.mockImplementation((value: ReporterOptions) => { options = value; return reporter(); });
+    const running = runWorker({ ...f, signal: cancellation.signal });
+    try {
+      await vi.waitFor(() => expect(options).toBeDefined());
+      await expect(prepareConfiguration(options!)).rejects.toBe(failure);
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      expect(mocks.git).not.toHaveBeenCalled();
+      expect(options!.configuration!.capture(reportSample).bootstrap).toBeNull();
+      expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+    } finally { cancellation.abort(); await running; }
   });
 
-  it("invalidates an unavailable fallback project before another project's lookup finishes", async () => {
+  it("invalidates candidate inventory at a permission refusal before preparing later repositories", async () => {
     const f = await fixture(), cancellation = new AbortController(); cancellations.add(cancellation);
     const second = { projectId: uuid(2), remote: "https://git.example/team/other.git", path: path.join(f.homeDirectory, "other") };
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { agent: "codex", repositories: [f.repository, second], maxConcurrent: 2, pollIntervalMs: 1000 } }));
     const unavailable = new ApiError({ operation: "project.show", projectId: uuid(1) }, "response", { status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "unavailable" }, cause: new Error("Unavailable") });
-    let firstAvailable = false, blockSecond = false, entered = false;
-    let release!: () => void;
+    let release!: () => void, entered = false;
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(null));
     remote.resolveProject.mockImplementation(async ({ projectId }: { projectId: string }) => {
-      if (projectId === uuid(1) && !firstAvailable) throw unavailable;
-      if (projectId === uuid(2) && blockSecond) { entered = true; await blocked; }
-      return { id: projectId, repoUrl: projectId === uuid(1) ? remoteUrl : second.remote };
+      if (projectId === uuid(1)) { entered = true; await blocked; throw unavailable; }
+      return { id: projectId, repoUrl: second.remote };
     });
-    remote.project.mockImplementation(async (id: string) => ({ id, repoUrl: id === uuid(1) ? remoteUrl : second.remote }));
-    const reported = reporter(), invalidateProject = vi.fn();
-    mocks.reporter.mockReturnValue(reported);
-    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
-      let rounds = 0;
-      return { archiveYield: () => false, updateConfiguration: vi.fn(), invalidateProject, shutdown: vi.fn(async () => true), tick: vi.fn(async () => {
-        if (rounds++ === 0) firstAvailable = true;
-        else if (rounds === 2) { options.onInventory!({ observedAt: "2026-11-04T00:00:00Z", claims: [] }); firstAvailable = false; blockSecond = true; }
-      }) };
-    });
+    const reported = reporter(); let options: ReporterOptions | undefined;
+    mocks.reporter.mockImplementation((value: ReporterOptions) => { options = value; return reported; });
     const running = runWorker({ ...f, signal: cancellation.signal });
     try {
-      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 5000, interval: 10 });
-      expect(invalidateProject).toHaveBeenCalledWith(uuid(1));
+      await vi.waitFor(() => expect(options).toBeDefined());
+      const preparation = prepareConfiguration(options!);
+      const failed = expect(preparation).rejects.toBe(unavailable);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      expect(remote.resolveProject).toHaveBeenCalledTimes(1);
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      release(); await failed;
       expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
+      expect(remote.resolveProject).toHaveBeenCalledTimes(1);
+      expect(options!.configuration!.capture(reportSample).bootstrap).toBeNull();
     } finally { cancellation.abort(); release(); await running; }
   });
 
@@ -590,6 +593,63 @@ describe("worker cloud-first startup", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
   });
 
+  it("recovers a transient startup configuration read while retaining the original instance lock", async () => {
+    const f = await fixture(), failure = new ApiError({ operation: "worker.configuration" }, "request", { cause: new Error("Temporary connection refusal") });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    let recover = false;
+    remote.configuration.mockImplementation(async () => { if (!recover) throw failure; return resource(desired()); });
+    let channel: ReporterOptions | undefined;
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options; return reporter(); });
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(channel).toBeDefined());
+      expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled();
+      const competing = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(competing).toBeNull(); } finally { await competing?.release(); }
+      await expect(prepareConfiguration(channel!)).rejects.toBe(failure);
+      expect(channel!.configuration!.capture(reportSample).observation).toBeNull();
+      recover = true;
+      const sent = await prepareConfiguration(channel!);
+      expect(sent.bootstrap).toBeNull(); expect(sent.observation?.desiredRevision).toBe("1");
+      await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
+      await vi.waitFor(() => expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).configurationComplete!()).toBe(true));
+      expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+    } finally { cancellation.abort(); await running; }
+    const next = await tryAcquireWorkerInstanceLock(f.paths);
+    try { expect(next).not.toBeNull(); } finally { await next?.release(); }
+  });
+
+  it("retries startup identity under the same lock without reading account-bound cache early", async () => {
+    const f = await fixture(), failure = new ApiError({ operation: "me.show" }, "request", { cause: new Error("Temporary identity connection refusal") });
+    const remote = mocks.remote(); mocks.remote.mockClear();
+    let release!: () => void, verified = false;
+    const secondIdentity = new Promise<void>(resolve => { release = resolve; });
+    remote.currentUserId.mockRejectedValueOnce(failure).mockImplementation(async () => { await secondIdentity; verified = true; return uuid(6); });
+    const cacheRead = vi.spyOn(configurationCache, "readConfigurationCache");
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(remote.currentUserId).toHaveBeenCalledOnce());
+      expect(cacheRead).not.toHaveBeenCalled(); expect(remote.configuration).not.toHaveBeenCalled();
+      expect(mocks.reporter).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled();
+      const competing = await tryAcquireWorkerInstanceLock(f.paths);
+      try { expect(competing).toBeNull(); } finally { await competing?.release(); }
+      await vi.waitFor(() => expect(remote.currentUserId).toHaveBeenCalledTimes(2), { timeout: 6500, interval: 20 });
+      expect(verified).toBe(false); expect(cacheRead).not.toHaveBeenCalled();
+      release();
+      await vi.waitFor(() => expect(mocks.reporter).toHaveBeenCalledOnce());
+      expect(verified).toBe(true); expect(remote.configuration).toHaveBeenCalledOnce();
+    } finally { release(); cancellation.abort(); await running; cacheRead.mockRestore(); }
+  }, 12_000);
+
+  it.each([401, 403])("preserves a definite startup identity refusal with HTTP %s", async status => {
+    const f = await fixture();
+    const failure = new ApiError({ operation: "me.show" }, "response", { status, serverError: { code: "unauthorized", message: "Identity refused.", requestId: "identity-refused" }, cause: new Error("Identity refused.") });
+    const remote = mocks.remote(); mocks.remote.mockClear(); remote.currentUserId.mockRejectedValue(failure);
+    await expect(runWorker(f)).rejects.toBe(failure);
+    expect(remote.currentUserId).toHaveBeenCalledOnce(); expect(remote.configuration).not.toHaveBeenCalled();
+    expect(mocks.reporter).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled();
+  });
+
   it("passes one raw local bootstrap through the reporter and uses the returned cloud target", async () => {
     const f = await fixture();
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -597,18 +657,22 @@ describe("worker cloud-first startup", () => {
       cause: new Error("not found"), status: 404, serverError: { code: "not_found", message: "Not found.", requestId: "bootstrap-test" },
     }));
     const cancellation = new AbortController(); cancellations.add(cancellation);
-    let accepted: Promise<void> | undefined;
+    let accepted: Promise<void> | undefined, assertionFailure: unknown;
     mocks.reporter.mockImplementation((options: ReporterOptions) => {
-      const sent = options.configuration!.capture(reportSample);
-      expect(sent.bootstrap).toMatchObject({ maxConcurrent: 7, projects: [{ projectId: uuid(1), nativeOverrides: {} }] });
-      expect(sent.observation).toBeNull();
-      const operation = createOperation();
-      accepted = options.configuration!.accept(sent, { desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false }, operation).finally(() => operation.dispose());
+      accepted = (async () => {
+        const sent = await prepareConfiguration(options);
+        expect(sent.bootstrap).toMatchObject({ maxConcurrent: 7, projects: [{ projectId: uuid(1), nativeOverrides: {} }] });
+        expect(sent.observation).toBeNull();
+        const operation = createOperation();
+        try { await options.configuration!.accept(sent, { desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false }, operation); }
+        finally { operation.dispose(); }
+      })().catch(error => { assertionFailure = error; cancellation.abort(error); });
       return reporter();
     });
     finishAtTick(cancellation, options => { expect(options.maxConcurrent).toBe(3); expect(options.globalConfiguration).not.toBeNull(); expect(options.globalConfiguration!.model).toBe("cloud-model"); }, options => options.globalConfiguration !== null && options.maxConcurrent === 3);
     const { running } = start(f, { signal: cancellation.signal });
     await running; await accepted;
+    if (assertionFailure !== undefined) throw assertionFailure;
     expect(remote.reportConfiguration).not.toHaveBeenCalled();
     expect(mocks.reporter).toHaveBeenCalledOnce();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);

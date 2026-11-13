@@ -22,11 +22,15 @@ alone consumes no slot. Bootstrap and native control resolve the relevant
 Project independently; an explicit ID is never replaced by another Project
 with the same repository.
 
-When a legacy local selection cannot be fully imported because a Project is
-unavailable, the Worker applies a temporary process-local view and retries the
-complete import. It does not publish a partial cloud configuration. Existing
-cloud configuration remains authoritative. Local mappings and worktree markers remain resource responsibilities after
-deselection; unconfirmed scans do not establish free capacity.
+This isolation decision originally allowed a temporary process-local execution
+view when an unavailable Project prevented complete import, keeping a healthy
+Project from depending on that import. The
+[canonical authority decision](2026-11-12-worker-configuration-canonical-authority.md)
+replaces that bootstrap choice: a null cloud target closes new admission while
+the complete current-file candidate retries and the original resource view stays
+available. No partial candidate becomes cloud authority. Local mappings and
+worktree markers remain resource responsibilities after deselection; unconfirmed
+scans do not establish free capacity.
 
 The reporter invalidates its complete inventory when coverage fails or a
 Project is unavailable and sends the existing null inventory alongside telemetry
