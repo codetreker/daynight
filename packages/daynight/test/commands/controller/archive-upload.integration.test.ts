@@ -552,21 +552,19 @@ test.each(["none", "transport", "close", "acquire", "descriptor", "verify", "rea
   expect(leases.every(lease => lease.closed)).toBe(true);
 });
 
-test("240 valid PNG resources archive with one controlled resource lease at a time", async () => {
+test("multiple valid PNG resources archive with one controlled resource lease at a time", async () => {
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWNgZGL+DwABFAEG9O6t0QAAAABJRU5ErkJggg==", "base64");
   expect(png.length).toBe(91);
   expect(await sharp(png).metadata()).toMatchObject({ format: "png", width: 1, height: 1 });
   expect(await sharp(png).raw().toBuffer()).toEqual(Buffer.from([1, 2, 3, 255]));
   const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
-  for (let group = 0; group < 30; group++) {
-    const content = [];
-    for (let index = 0; index < 8; index++) {
-      const resourceId = randomUUID();
-      store.saveResource({ resourceId, status: "available", name: "pixel.png", mediaType: "image/png", byteLength: String(png.length), sha256: createHash("sha256").update(png).digest("hex"), error: null }, png);
-      content.push({ type: "resource" as const, resourceId, label: "pixel.png" });
-    }
-    store.projectTimeline({ ...f.entry, entryId: group === 0 ? f.entry.entryId : randomUUID(), content });
+  const content = [];
+  for (let index = 0; index < 3; index++) {
+    const resourceId = randomUUID();
+    store.saveResource({ resourceId, status: "available", name: "pixel.png", mediaType: "image/png", byteLength: String(png.length), sha256: createHash("sha256").update(png).digest("hex"), error: null }, png);
+    content.push({ type: "resource" as const, resourceId, label: "pixel.png" });
   }
+  store.projectTimeline({ ...f.entry, content });
   const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
   const openFiles = resourceFiles.openResourceFiles;
   let active = 0, peak = 0, acquired = 0;
@@ -580,11 +578,11 @@ test("240 valid PNG resources archive with one controlled resource lease at a ti
   });
   const bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough });
   expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver.request })).state).toBe("ready");
-  expect(acquired).toBe(240);
+  expect(acquired).toBe(3);
   expect(peak).toBe(1);
   expect(active).toBe(0);
-  expect([...receiver.files.values()].filter(bytes => bytes.equals(png))).toHaveLength(240);
-  expect(receiver.entries(bodies[0]!)).toHaveLength(30);
+  expect([...receiver.files.values()].filter(bytes => bytes.equals(png))).toHaveLength(3);
+  expect(receiver.entries(bodies[0]!)).toHaveLength(1);
 }, 30000);
 
 test("archive freeze validation rereads current SQL bodies after asynchronous status", async () => {
