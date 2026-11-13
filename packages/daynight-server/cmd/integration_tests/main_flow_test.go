@@ -46,6 +46,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 	t.Run("browser REST response headers", func(t *testing.T) { serverAPICORSNormalFlow(t, f) })
 	t.Run("worker readonly directory", func(t *testing.T) { serverAPIWorkerReadOnlyNormalFlow(t, f) })
 	t.Run("worker tool paths adoption", func(t *testing.T) { serverAPIWorkerToolPathsFlow(t, f) })
+	t.Run("GitHub reads", func(t *testing.T) { serverAPIGitHubReadNormalFlow(t, f) })
 	t.Run("direct Team member", func(t *testing.T) { serverAPIDirectMemberNormalFlow(t, f) })
 	t.Run("project tag catalog", func(t *testing.T) { serverAPITagCatalogNormalFlow(t, f) })
 	t.Run("Goal and child", func(t *testing.T) {
