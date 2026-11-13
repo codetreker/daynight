@@ -232,6 +232,11 @@ it("round trips fenced media requests and rejects mismatched result shapes", asy
     error: null,
   };
   expect(parseImageResponse(response)).toEqual(response);
+  for (const result of [
+    { ...response.result, data: "AB==" },
+    { ...response.result, byteLength: "0" },
+    { ...response.result, eof: false },
+  ]) expect(() => parseImageResponse({ ...response, result })).toThrow();
   expect(() => parseImageResponse({ ...response, action: "status" })).toThrow();
   expect(() =>
     parseImageResponse({
