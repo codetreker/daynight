@@ -10,6 +10,13 @@ Project members need stable tag identities and a shared catalog that can be mana
 
 The tag service uses the project write lock for authorization, original version checks, catalog changes and association cleanup. Rename and deletion touch associated Task and Goal versions as a set; deletion removes all associations, including retained deleted resources. Reads authorize and obtain the catalog and visible usage in one snapshot. Catalog pages bind their cursor to the principal, project, query, limit and catalog epoch. Batch resolution refuses invalid identities and oversized encoded results instead of returning a partial set. MCP catalog tools call the same service with exact decimal version strings, explicit delete confirmation and bounded Control permits. They preserve transaction completion facts instead of retrying an unknown write. The [server design](../../../../docs/design/daynight-server.md#领域模型与存储结构) owns the implementation structure.
 
+The CLI manages this catalog by stable UUID. It collects each complete page under
+the same query, limit and epoch before publishing output, and preserves exact
+int64 versions for conditional writes. Deletion previews the current name and
+visible usage, then confirms removal of all associations. An explicit version
+remains the caller's original condition; an omitted version uses the preview.
+Unknown mutations are not replayed.
+
 ## Alternatives
 
 **Store names on each association.** Rewriting copies on rename would increase write cost and permit identity and display names to diverge.
@@ -17,6 +24,9 @@ The tag service uses the project write lock for authorization, original version 
 **Return only tag IDs on resource reads.** Consumers would need another lookup to display names and the existing Task version would no longer signal changed display content. Set-based touch preserves that signal without reading every Task body.
 
 **Implement catalog rules in the MCP adapter.** Duplicating authorization, name validation and transaction rules would let the protocol disagree with REST and the shared service.
+
+**Resolve targets by name.** A rename or deletion followed by recreation could
+make the same name identify a different Tag, so writes use stable UUIDs instead.
 
 ## Consequences
 
