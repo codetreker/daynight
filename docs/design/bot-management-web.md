@@ -22,7 +22,7 @@
 
 网站在 Bot 列表、详情与创建请求中发送 `Daynight-Bot-Attention: 1`，要求服务端回显该版本，并在活跃 Bot 定义中提供非负整数 `attentionCount`（包括零）。未声明该能力的客户端继续得到不含该字段的旧响应，避免已安装 CLI 的严格字段校验拒绝 list、show 或创建后的原 ID 核对；删除责任响应保持原有最小结构。CLI 解析器兼容缺失字段，并验证存在时的非负安全整数。服务端 Bot 查询在同一读取快照中按 owner 和 Bot 汇总两部分：目标为该 Bot、`attention=true`、`seenAt` 为空且不是 `proposal_pending` 的事件；该 Bot 为当前 holder 的未删除助手任务中状态为 pending 的提案。提案通知只负责投递，提案资源负责持续计数，因此不会重复计数，也不会因打开聊天或认领过期消失。投递状态不参与已看到判定。
 
-`POST /api/v1/bots/{id}/attention/seen` 复用助手任务模块的 `ClearAttention`，验证当前用户和目标 Bot，事务内为普通关注事件写入 `seenAt`，排除提案通知；响应为 `{targetBotId}`。已有 `/api/v1/assistant-task-events/attention` 保留同一清除语义。此操作不改变 Bot 定义版本、不确认事件投递、不决定提案，也不改变 Session 执行。服务层负责实例组装，HTTP 层只解析目标和编码结果。
+`POST /api/v1/bots/{id}/attention/seen` 复用助手任务模块的 `ClearAttention`，验证当前用户和目标 Bot，事务内为普通关注事件写入 `seenAt`，排除提案通知；响应为 `{targetBotId}`。已有 `/api/v1/assistant-task-events/attention` 保留同一清除语义。此操作不改变 Bot 定义版本、不确认事件投递、不决定提案，也不改变 Session 执行。服务层负责实例组装，HTTP 层只解析目标和编码结果。配置应用来源时，根 CORS 适配器允许该精确路径的 POST 预检及 Authorization、Content-Type 请求头；预检不执行认证或清除操作，实际请求仍经过原有身份与权限检查。
 
 `BotListItem` 将正数计数显示为紧凑数字徽标，提供中英文可访问名称。打开对话时，页面在当前账号和当前目标的权威详情确认后发起一次已看到请求；列表刷新及缓存 pane 留存不触发该写入。首次确认计数为零时也消费本次打开，后续轮询出现的新报告保留提醒，直到用户再次打开对话；首次详情仍在加载时不提前消费。成功后重新读取列表与目标详情，保留仍待决定的提案。清除失败保留计数和局部错误，核对入口只重新读取列表与详情；同一次打开不重放 POST，关闭后重新打开才产生新的已看到操作。恢复读取服从既有身份准入；迟到结果不能更改新目标或恢复已删除的内容。
 

@@ -30,7 +30,9 @@ Bot HTTP responses expose the count only when the caller requests
 `Daynight-Bot-Attention: 1`; the server echoes that capability. Existing strict
 CLI clients retain their original response shape, including creation and
 original-ID recovery. The current CLI parser accepts a missing count and validates
-the field when present. The website requests and requires the count projection.
+the field when present. The website requests and requires the count projection. The root CORS adapter
+recognizes POST on the exact seen route while keeping unsupported methods and
+other methodless fallbacks closed; preflight never invokes acknowledgement.
 
 ## Alternatives
 

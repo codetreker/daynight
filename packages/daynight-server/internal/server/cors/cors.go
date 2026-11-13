@@ -144,6 +144,9 @@ func registeredMethod(method, pattern string) bool {
 	if pattern == "/api/v1/me/bots/{botId}" {
 		return method == "GET" || method == "HEAD" || method == "DELETE"
 	}
+	if pattern == "/api/v1/bots/{id}/attention/seen" {
+		return method == http.MethodPost
+	}
 	for _, base := range []string{"/api/v1/me/webhooks", "/api/v1/teams/{teamId}/webhooks"} {
 		suffix, ok := strings.CutPrefix(pattern, base)
 		if !ok {

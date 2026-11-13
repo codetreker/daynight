@@ -177,6 +177,7 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	add("GET HEAD POST", "/api/v1/me/bots")
 	add("GET HEAD", "/api/v1/me/bots/defaults")
 	add("GET HEAD DELETE", "/api/v1/me/bots/"+id)
+	add("POST", "/api/v1/bots/"+id+"/attention/seen")
 	add("GET HEAD", worker+"/bots")
 	for _, op := range []string{"register", "grant", "report", "deletion-complete"} {
 		add("POST", worker+"/bots/"+id+"/"+op)
@@ -255,6 +256,11 @@ func TestRootCORSRefusesUnregisteredMethodsAndProducerHeaders(t *testing.T) {
 		{"HEAD", session + "/channel"}, {"HEAD", session + "/archive"}, {"GET", task[:strings.LastIndex(task, "/")] + "/search"},
 		{"GET", "/api/v1/me/webhooks/" + id + "/deliveries/" + id + "/redeliveries"}, {"POST", "/api/v1/unknown"},
 		{"TRACE", "/api/v1/me"},
+		{"GET", "/api/v1/bots/" + id + "/attention/seen"},
+		{"HEAD", "/api/v1/bots/" + id + "/attention/seen"},
+		{"DELETE", "/api/v1/bots/" + id + "/attention/seen"},
+		{"POST", "/api/v1/bots/" + id + "/attention/other"},
+		{"POST", "/api/v1/assistant-task-events/attention"},
 	} {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			w := corsHTTP(t, handler, "OPTIONS", route.path, http.Header{"Origin": {browserAPIOrigin}, "Access-Control-Request-Method": {route.method}})
@@ -288,6 +294,7 @@ func TestRootCORSKeepsResponseAndAuthenticationSemantics(t *testing.T) {
 		code         string
 	}{
 		{"GET", "/api/v1/me", 401, "unauthenticated"},
+		{"POST", "/api/v1/bots/" + id + "/attention/seen", 401, "unauthenticated"},
 		{"GET", "/api/v1/projects/" + id + "/tasks/" + id + "/attachments/files/a/../b", 400, "invalid_input"},
 		{"GET", "/api/v1/unknown", 404, "not_found"},
 	} {
@@ -304,7 +311,7 @@ func TestRootCORSKeepsResponseAndAuthenticationSemantics(t *testing.T) {
 	for _, tc := range []struct {
 		method, path string
 		status       int
-	}{{"GET", "/api/v1/task-properties/schema", 200}, {"DELETE", "/api/v1/me", 405}, {"HEAD", "/api/v1/me/workers/" + id + "/monitoring", 405}} {
+	}{{"GET", "/api/v1/task-properties/schema", 200}, {"DELETE", "/api/v1/me", 405}, {"HEAD", "/api/v1/me/workers/" + id + "/monitoring", 405}, {"POST", "/api/v1/bots/" + id + "/attention/seen", 400}, {"GET", "/api/v1/bots/" + id + "/attention/seen", 405}} {
 		w := corsHTTP(t, handler, tc.method, tc.path, headers)
 		if w.Code != tc.status {
 			t.Fatalf("%s %s: %d %s", tc.method, tc.path, w.Code, w.Body.String())
