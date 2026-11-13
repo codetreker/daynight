@@ -236,6 +236,7 @@ func TestProtocolRefusalsNeverCallOperations(t *testing.T) {
 		{"GET", taskPath + "/manual/versions/0", "", false},
 		{"GET", taskPath + "/records?itemId=bad", "", false},
 		{"GET", taskPath + "/events?targetBotId=bad", "", false},
+		{"PATCH", taskPath + "?unexpected=true", `{"ifVersion":"1","name":"updated"}`, false},
 		{"POST", taskPath + "/claim", `{"operationId":"` + testOperation + `","ifVersion":"1","expectedGeneration":"0","claimToken":"bad"}`, true},
 		{"POST", taskPath + "/claim", `{"operationId":"` + testOperation + `","ifVersion":"1","expectedGeneration":"0","claimToken":null}`, true},
 		{"POST", taskPath + "/release", `{"operationId":"` + testOperation + `","expectedGeneration":"1","ifVersion":"1","claimToken":"` + testToken + `"}`, false},
