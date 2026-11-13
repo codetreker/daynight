@@ -68,7 +68,6 @@ export type ProtectedRoute = Route
   | { readonly kind: "account" | "invitations" | "teamInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "oauthConsent"; readonly requestId: string | null }
-  | { readonly kind: "members"; readonly projectId: string }
   | { readonly kind: "settings"; readonly projectId: string; readonly selection: ProjectSettingsSelection };
 export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
 
@@ -160,7 +159,7 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (management !== null) {
     const project = parseRoute(management[1]!);
     if (project.kind !== "project") return { kind: "notFound" };
-    return management[2] === "members" ? { kind: "members", projectId: project.projectId }
+    return management[2] === "members" ? { kind: "settings", projectId: project.projectId, selection: { kind: "tab", tab: "members" } }
       : { kind: "settings", projectId: project.projectId, selection: projectSettingsSelection(search) };
   }
   return parseRoute(pathname, search);
