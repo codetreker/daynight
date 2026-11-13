@@ -332,8 +332,10 @@ Project 列表默认返回当前主体全部可访问项目；单值 `teamId` �
 
 Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
+普通列表及 ready 支持 `tagIds`、`tagMatch` 和 `untagged`。GET 的 `tagIds` 为逗号分隔 UUID 集合，规范化后去重排序；`tagMatch` 为 `all`（默认）或 `any`，分别要求全部或任一关联。`untagged=true` 只匹配无关联条目，不能与非空 ID 集合组合；省略 ID 且不选择无标签时不增加标签条件。全部标签必须在当前 Project 存在；不存在、跨项目或已删除 ID 返回 `400 invalid_tag_filter`。资格与选页在同一读取快照完成，标签条件与现有条件 AND 组合，在排序、分页和 ready 候选限制前执行。Task 与 Goal 只按自身关联匹配，Parent 条件保持。cursor 绑定规范化集合、模式与无标签选择的摘要，改变条件后不能续页；ID 顺序或重复不改变范围。既有 query、request-target 和 cursor 大小限制继续适用，不增加标签数量配额。
+
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
-Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版本1 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
+Task 列表 cursor 使用版本3，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。
 单次响应中的 task、依赖和派生字段保持一致；多次翻页不承诺跨请求快照。
 

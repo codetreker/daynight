@@ -11,8 +11,9 @@ import (
 )
 
 type ListRequest struct {
-	Type   model.TaskType
-	Parent *string
+	TagFilter store.TagFilter
+	Type      model.TaskType
+	Parent    *string
 	model.PageRequest
 	AssignedTo         *string
 	Status             *model.TaskStatus
@@ -72,6 +73,10 @@ func ResourceFilter(kind model.TaskType, parent *string) (model.TaskType, *strin
 }
 
 func SelectList(projectID, principalUserID string, request ListRequest) (ListSelection, error) {
+	filter, err := NormalizeTagFilter(request.TagFilter)
+	if err != nil {
+		return ListSelection{}, err
+	}
 	kind, parent, err := ResourceFilter(request.Type, request.Parent)
 	if err != nil {
 		return ListSelection{}, err
@@ -86,7 +91,7 @@ func SelectList(projectID, principalUserID string, request ListRequest) (ListSel
 	if err != nil {
 		return ListSelection{}, err
 	}
-	scope := query.ListScope{Type: kind, Parent: parent, Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, AssignedTo: assignedTo}
+	scope := query.ListScope{TagFilterIdentity: TagFilterIdentity(filter), Type: kind, Parent: parent, Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, AssignedTo: assignedTo}
 	var worker *store.WorkerQuery
 	if request.WorkerID != nil {
 		workerID, err := model.CanonicalID(*request.WorkerID)
@@ -104,7 +109,7 @@ func SelectList(projectID, principalUserID string, request ListRequest) (ListSel
 	if err != nil {
 		return ListSelection{}, err
 	}
-	return ListSelection{Scope: scope, Query: store.TaskQuery{Type: request.Type, Parent: parent, Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, Worker: worker, AssignedTo: assignedTo}}, nil
+	return ListSelection{Scope: scope, Query: store.TaskQuery{TagFilter: filter, Type: request.Type, Parent: parent, Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, Worker: worker, AssignedTo: assignedTo}}, nil
 }
 
 // ReadFault classifies a task read refusal without hiding unrelated failures.

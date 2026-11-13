@@ -64,7 +64,7 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}
-	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{Type: request.Type, Parent: request.Parent, PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, WorkerID: request.WorkerID})
+	selection, err := taskcore.SelectList(projectID, principal.UserID, taskcore.ListRequest{TagFilter: request.TagFilter, Type: request.Type, Parent: request.Parent, PageRequest: request.PageRequest, AssignedTo: request.AssignedTo, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, PlatformSpecific: request.PlatformSpecific, AutomaticCandidate: request.AutomaticCandidate, WorkerID: request.WorkerID})
 	if err != nil {
 		return ObservedTaskPage{}, err
 	}
@@ -74,6 +74,11 @@ func (s *Observations) ObserveList(ctx context.Context, principal model.Principa
 	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.authorizeObservation(ctx, snapshot, principal, projectID); err != nil {
 			return err
+		}
+		if len(selection.Query.TagFilter.TagIDs) != 0 {
+			if err := taskcore.RequireTagFilter(ctx, snapshot.TagDAO(), projectID, selection.Query.TagFilter); err != nil {
+				return err
+			}
 		}
 		rows, refusal, err := s.operations.list(ctx, snapshot.TaskDAO(), projectID, selection)
 		if err != nil {
@@ -182,6 +187,11 @@ func (s *Observations) ObservedMCPList(ctx context.Context, principal model.Prin
 	err = s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.authorizeObservation(ctx, snapshot, principal, projectID); err != nil {
 			return err
+		}
+		if len(selection.TagFilter().TagIDs) != 0 {
+			if err := taskcore.RequireTagFilter(ctx, snapshot.TagDAO(), projectID, selection.TagFilter()); err != nil {
+				return err
+			}
 		}
 		page, err := s.operations.mcpList(ctx, snapshot.TaskDAO(), projectID, selection)
 		if err != nil {
