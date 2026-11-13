@@ -59,7 +59,7 @@ export const useTagFilter = (projectId: string, active = true) => {
       if (signal.aborted || scope.isInvalidated || blocked.current || scope.isProjectSuspended(projectId)) return;
       setStored(previous => {
         if (previous.scope !== scope || previous.projectId !== projectId || JSON.stringify(previous.value.tagIds) !== idsKey) return previous;
-        return { ...previous, names: { ...previous.names, ...Object.fromEntries(names.map(tag => [tag.id, tag.name])) }, invalidIds: [...new Set([...previous.invalidIds, ...invalidIds])], unidentified: identified && invalidIds.length > 0 || error === null && names.length > 0 && previous.afterRemoval ? false : previous.unidentified, afterRemoval: false, error };
+        return { ...previous, names: { ...previous.names, ...Object.fromEntries(names.map(tag => [tag.id, tag.name])) }, invalidIds: [...new Set([...previous.invalidIds, ...invalidIds])], unidentified: identified && invalidIds.length > 0 || error === null && names.length > 0 && previous.afterRemoval ? false : previous.unidentified, afterRemoval: error === null ? false : previous.afterRemoval, error };
       });
     };
     void (async () => {

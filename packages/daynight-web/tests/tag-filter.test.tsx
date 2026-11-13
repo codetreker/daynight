@@ -207,3 +207,24 @@ it('offers tag management only in the main filter when a navigation action is su
   view.rerender(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness child onManage={manage} /></LocaleProvider>);
   expect(screen.queryByRole('button', { name: 'Manage tags' })).not.toBeInTheDocument();
 });
+
+
+it('retains the removal decision across a failed resolve and unlocks after Retry confirms the remainder', async () => {
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByLabelText('bug')); fireEvent.click(screen.getByLabelText('backend'));
+  await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
+  const pending = Promise.withResolvers<readonly { id: string; name: string }[]>();
+  vi.mocked(resolveProjectTags).mockReset().mockReturnValueOnce(pending.promise)
+    .mockRejectedValueOnce(new ApiError('network')).mockResolvedValueOnce([{ id: 'b', name: 'backend' }]);
+  fireEvent.click(screen.getByRole('button', { name: 'Server invalid' }));
+  await waitFor(() => expect(resolveProjectTags).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Remove bug' }));
+  await screen.findByText('Could not check selected tags.');
+  expect(screen.getByTestId('invalid')).toHaveTextContent('true');
+  expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["b"]');
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(screen.getByTestId('invalid')).toHaveTextContent('false'));
+  expect(screen.getByRole('button', { name: 'Remove backend' })).toBeVisible();
+  await act(async () => { pending.resolve([{ id: 'a', name: 'bug' }, { id: 'b', name: 'backend' }]); await pending.promise; });
+  expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["b"]');
+});
