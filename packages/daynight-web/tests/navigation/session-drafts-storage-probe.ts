@@ -39,6 +39,40 @@ export function createDraftStorageProbe(identity: () => DraftOwnerIdentity) {
   };
   const clearFault = () => { fault = null; IDBObjectStore.prototype.put = originalPut; IDBObjectStore.prototype.add = originalAdd; };
   return {
+    /** Rebuild a controlled legacy fixture after its production clients have closed. */
+    recreateLegacySchema: async (version: 1 | 2 | 3) => {
+      const current = await requestResult(indexedDB.open(SESSION_DRAFT_DATABASE)), sourceVersion = current.version;
+      const reading = current.transaction([...names], 'readonly'), readDone = transactionDone(reading);
+      void readDone.catch(() => {});
+      const rows = await Promise.all(names.map(name => requestResult(reading.objectStore(name).getAll())));
+      await readDone; current.close();
+      for (const draft of rows[1] as DraftRecord[]) for (const item of draft.items) delete (item as { incarnation?: string }).incarnation;
+      for (const blob of rows[2] as DraftBlob[]) delete (blob as { originalId?: string }).originalId;
+      for (const submission of rows[4] as DraftSubmission[]) for (const item of submission.snapshot?.items ?? []) delete (item as { incarnation?: string }).incarnation;
+      await requestResult(indexedDB.deleteDatabase(SESSION_DRAFT_DATABASE));
+      const opening = indexedDB.open(SESSION_DRAFT_DATABASE, version);
+      opening.addEventListener('upgradeneeded', () => {
+        const database = opening.result, owners = database.createObjectStore('owners', { keyPath: 'ownerKey' });
+        owners.createIndex('execution', 'executionKey'); owners.createIndex('account', 'accountKey');
+        for (const [name, id] of [['drafts', 'draftId'], ['blobs', 'blobId'], ['uploads', 'uploadId'], ['submissions', 'operationId']]) {
+          const object = database.createObjectStore(name!, { keyPath: ['ownerKey', id!] }); object.createIndex('owner', 'ownerKey');
+          if (name === 'submissions') object.createIndex('execution', 'executionKey');
+        }
+      }, { once: true });
+      const legacy = await requestResult(opening);
+      try {
+        const writing = legacy.transaction([...names], 'readwrite'), written = transactionDone(writing);
+        void written.catch(() => {});
+        for (const [index, name] of names.entries()) for (const row of rows[index]!) writing.objectStore(name).put(row);
+        await written;
+        const inspecting = legacy.transaction([...names], 'readonly'), inspected = transactionDone(inspecting);
+        void inspected.catch(() => {});
+        const [drafts, blobs, uploads] = await Promise.all(['drafts', 'blobs', 'uploads'].map(name => requestResult(inspecting.objectStore(name).getAll())));
+        await inspected;
+        return { sourceVersion, version: legacy.version, drafts: drafts as DraftRecord[], uploads: uploads as DraftUpload[],
+          blobs: await Promise.all((blobs as DraftBlob[]).map(async blob => ({ blobId: blob.blobId, byteLength: blob.blob.size, actualSha256: [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.blob.arrayBuffer()))].map(byte => byte.toString(16).padStart(2, '0')).join('') }))) };
+      } finally { legacy.close(); }
+    },
     read: (actor?: string) => inspect(store => store.readExisting(scopedIdentity(actor))),
     readBlob: (blobId: string, actor?: string) => inspect(async store => { const saved = await store.readExisting(scopedIdentity(actor)); const blob = saved ? await store.readBlob(saved.owner, blobId) : null; return blob ? { blobId: blob.blobId, byteLength: blob.blob.size, sha256: isValidatedDraftBlob(blob) ? blob.sha256 : null } : null; }),
     inventory: async () => {

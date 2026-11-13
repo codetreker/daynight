@@ -484,6 +484,75 @@ for (const state of ['failed', 'expired', 'released'] as const) test(`retries a 
   }
 });
 
+for (const version of [1, 2, 3] as const) test(`restores a native schema ${version} image draft and retries its legacy upload without editing`, async ({ page, context }, info) => {
+  const api = await installDraftAPI(context), original = file('Legacy.png'); api.completeNextAs('failed');
+  await page.goto(clientFixture); await expect(page.getByRole('textbox')).toBeEditable();
+  await page.getByRole('textbox').fill('Caption from the legacy image draft'); await page.locator('input[type=file]').setInputFiles(original);
+  await expect.poll(async () => (await clientSaved(page))?.uploads[0]?.receipt?.state).toBe('failed');
+  const before = (await clientSaved(page))!, oldItem = before.editable!.items[0]!, firstSpec = api.observations.prepareSpecs[0]!;
+  const originals = await page.evaluate(() => window.sessionDraftClient.storage.inventory());
+  const seeded = await page.evaluate(async version => {
+    await window.sessionDraftClient.client.imageDrafts.close(); window.sessionDraftClient.client.close();
+    return window.sessionDraftClient.storage.recreateLegacySchema(version);
+  }, version);
+  expect(seeded.version).toBe(version); expect(seeded.sourceVersion).toBe(3);
+  expect(seeded.drafts.flatMap(draft => draft.items).every(item => item.incarnation === undefined)).toBe(true);
+  expect(seeded.blobs).toEqual([{ blobId: oldItem.blobId, byteLength: original.buffer.length, actualSha256: sha256(original.buffer) }]);
+  await info.attach('native-legacy-seed', { body: JSON.stringify({ boundary: `${boundary} The legacy format is a controlled fixture rebuilt from production-created records after closing their clients; it was not created by a historical bundle.`, before, seeded }), contentType: 'application/json' });
+  await context.addInitScript(() => {
+    const open = IDBFactory.prototype.open;
+    IDBFactory.prototype.open = function (...args) {
+      const request = open.apply(this, args);
+      if (args[0] === 'daynight-session-drafts') request.addEventListener('upgradeneeded', event => {
+        const evidence = { oldVersion: event.oldVersion, newVersion: event.newVersion, committed: false };
+        sessionStorage.setItem('fixture-native-schema-upgrade', JSON.stringify(evidence));
+        request.transaction!.addEventListener('complete', () => { evidence.committed = true; sessionStorage.setItem('fixture-native-schema-upgrade', JSON.stringify(evidence)); }, { once: true });
+      }, { once: true });
+      return request;
+    };
+  });
+  await page.close(); const reopened = await context.newPage();
+  try {
+    await reopened.goto(clientFixture);
+    await expect(reopened.getByRole('textbox')).toBeEditable(); await expect(reopened.getByRole('textbox')).toHaveValue('Caption from the legacy image draft');
+    await expect(reopened.locator('.session-draft-item').getByRole('button', { name: 'Retry', exact: true })).toBeEnabled();
+    const restored = (await clientSaved(reopened))!, restoredItem = restored.editable!.items[0]!;
+    expect(restoredItem.incarnation).toEqual(expect.any(String)); expect(restoredItem.incarnation).not.toBe(oldItem.incarnation);
+    expect(restored.editable).toEqual({ ...before.editable, items: [{ ...oldItem, incarnation: restoredItem.incarnation }] });
+    const upgrade = await reopened.evaluate(() => JSON.parse(sessionStorage.getItem('fixture-native-schema-upgrade') ?? 'null'));
+    expect(upgrade).toEqual(version === 3 ? null : { oldVersion: version, newVersion: 3, committed: true });
+    expect((await reopened.evaluate(() => window.sessionDraftClient.storage.inventory())).blobs).toEqual(originals.blobs);
+    expect(api.observations.prepares).toHaveLength(1); expect(api.observations.commands).toEqual([]);
+    await reopened.getByRole('button', { name: 'View image: Legacy.png', exact: true }).click();
+    await expect(reopened.locator('dialog img')).toHaveJSProperty('naturalWidth', 3); await reopened.keyboard.press('Escape');
+    await reopened.locator('.session-draft-item').getByRole('button', { name: 'Retry', exact: true }).click(); await clientReady(reopened);
+    const after = (await clientSaved(reopened))!, next = after.editable!.items[0]!;
+    expect(next).toMatchObject({ draftImageId: oldItem.draftImageId, incarnation: restoredItem.incarnation, blobId: oldItem.blobId, byteRevision: oldItem.byteRevision });
+    expect(after.editable).toMatchObject({ text: before.editable!.text, draftId: before.editable!.draftId, revision: before.editable!.revision, savedAt: before.editable!.savedAt });
+    expect(next.imageId).not.toBe(oldItem.imageId); expect(next.uploadId).not.toBe(oldItem.uploadId);
+    expect(api.observations.prepareSpecs).toEqual([firstSpec, { ...firstSpec, imageId: next.imageId, uploadId: next.uploadId }]);
+    expect(api.uploads.get(oldItem.uploadId!)!.spec).toEqual(firstSpec); expect(Buffer.concat(api.uploads.get(next.uploadId!)!.chunks)).toEqual(original.buffer);
+    expect((await reopened.evaluate(() => window.sessionDraftClient.storage.inventory())).blobs).toEqual(originals.blobs);
+    await reopened.reload(); await clientReady(reopened); expect((await clientSaved(reopened))!.editable!.items[0]).toEqual(next);
+    await expect(reopened.getByRole('textbox')).toHaveValue('Caption from the legacy image draft'); expect(api.observations.prepares).toHaveLength(2);
+    await reopened.getByRole('button', { name: 'Send', exact: true }).click(); await expect.poll(() => api.observations.commands.length).toBe(1);
+    await expect.poll(async () => (await clientSaved(reopened))?.submission).toBeNull();
+    const command = api.observations.commands[0]!; if (command.kind !== 'send_message') throw new Error('Expected the recovered image message.');
+    expect(command.payload.content.filter(part => part.type === 'text')).toEqual([{ type: 'text', text: before.editable!.text }]);
+    expect(command.payload.content.filter(part => part.type === 'image').map(part => ({ imageId: part.imageId, uploadId: part.uploadId }))).toEqual([{ imageId: next.imageId, uploadId: next.uploadId }]);
+    expect(api.observations.identityConflicts).toEqual([]); expect(await reopened.evaluate(() => window.sessionDraftClient.errors)).toEqual([]);
+    await info.attach('native-legacy-retry-and-send', { body: JSON.stringify({ boundary, version, upgrade, restored, after, originals, observations: api.observations }), contentType: 'application/json' });
+  } finally {
+    await info.attach('native-legacy-final-observations', { body: JSON.stringify({ version, seeded, observations: api.observations,
+      view: await clientView(reopened).catch(() => null), saved: await clientSaved(reopened).catch(() => null),
+      inventory: await reopened.evaluate(() => window.sessionDraftClient.storage.inventory()).catch(() => null),
+      upgrade: await reopened.evaluate(() => sessionStorage.getItem('fixture-native-schema-upgrade')).catch(() => null),
+      errors: await reopened.evaluate(() => window.sessionDraftClient.errors).catch(() => null),
+    }), contentType: 'application/json' });
+  }
+});
+
+
 test('keeps an unknown prepare on its original upload and image identities through 404 and explicit retry', async ({ page, context }, info) => {
   const api = await installDraftAPI(context); api.setPrepare('lost_before_create');
   try {
