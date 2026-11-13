@@ -30,8 +30,6 @@ it('shows each item’s own tags and updates them without remounting an expanded
   const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   expect(toggle).toHaveAccessibleDescription(/Goal tag/);
   fireEvent.click(toggle);
-  const chainToggle = card.querySelector<HTMLButtonElement>('.root-toggle')!;
-  fireEvent.click(chainToggle);
   const childRow = card.querySelector<HTMLElement>(`.goal-task-main[id$="-${child.id}"]`)!;
   const chainRow = card.querySelector<HTMLElement>(`.goal-task-main[id$="-${chain.id}"]`)!;
   expect(childRow).toHaveTextContent('Child tag');
@@ -43,7 +41,6 @@ it('shows each item’s own tags and updates them without remounting an expanded
   summaries.set(goal.id, { ...summaries.get(goal.id)!, version: 2n, tags: [] });
   rendered.rerender(view(summaries));
   expect(toggle).toHaveAttribute('aria-expanded', 'true');
-  expect(chainToggle).toHaveAttribute('aria-expanded', 'true');
   expect(childRow).toHaveFocus();
   expect(childRow).toHaveTextContent('Renamed child');
   expect(childRow).toHaveTextContent('Another');

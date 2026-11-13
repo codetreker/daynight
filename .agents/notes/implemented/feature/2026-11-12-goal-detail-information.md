@@ -32,7 +32,8 @@ refresh failure retains displayed statistics and its retry action. The Goal
 resource retains its own exact completion time in the common metadata row,
 independently of the child progress and the description aside timestamps.
 
-Child rows and chain disclosures belong to the project Goal list. Goal detail
+Child rows belong to the project Goal list; the [flat Goal list decision](../simplification/2026-11-13-goal-flat-list.md)
+describes their presentation. Goal detail
 retains controlled nested graph and Task reading owners for history restoration.
 Details selects a cross-Goal destination and its child Task together. External
 Expand selects that Goal and its complete chain graph for a multi-member target,

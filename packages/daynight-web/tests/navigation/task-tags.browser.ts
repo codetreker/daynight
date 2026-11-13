@@ -103,13 +103,11 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const card = page.locator(`[data-goal-id="${goal.id}"]`);
   await expect(card.locator('.goal-list-toggle .task-tag')).toHaveText(['Goal label']);
   await card.locator('.goal-list-toggle').click();
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText(['Child label']);
   await expect(childRow.locator('.task-tag')).not.toContainText('Goal label');
-  const chainToggle = card.locator(`#task-root-goal-${goal.id}-chain-${root.id}`);
-  await chainToggle.click();
-  await expect(card.locator(`#chain-task-goal-${goal.id}-chain-${root.id}-${root.id} .task-tag`)).toHaveText(['Root label']);
-  const emptyRow = card.locator(`#chain-task-goal-${goal.id}-chain-${root.id}-${chained.id}`);
+  await expect(card.locator(`#chain-task-goal-${goal.id}-${root.id} .task-tag`)).toHaveText(['Root label']);
+  const emptyRow = card.locator(`#chain-task-goal-${goal.id}-${chained.id}`);
   await expect(emptyRow.locator('.task-tag')).toHaveCount(0);
   await card.locator(`#project-goal-detail-${goal.id}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
@@ -126,7 +124,7 @@ test('delta updates each row without losing expanded state or clearing content w
   await page.locator('#project-task-tab-goals').click();
   const card = page.locator(`[data-goal-id="${goal.id}"]`), toggle = card.locator('.goal-list-toggle');
   await toggle.click(); await toggle.focus();
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText(['Child label']);
   state.hold = true;
   await page.locator('.project-title-actions>button').evaluate((element: HTMLButtonElement) => element.click());
@@ -145,8 +143,7 @@ test('delta updates each row without losing expanded state or clearing content w
     await expect(childRow.locator('.task-tag')).toHaveCount(0);
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await expect(toggle).toBeFocused();
-    await card.locator(`#task-root-goal-${goal.id}-chain-${root.id}`).click();
-    await expect(card.locator(`#chain-task-goal-${goal.id}-chain-${root.id}-${root.id} .task-tag`)).toHaveText(['Renamed root label']);
+    await expect(card.locator(`#chain-task-goal-${goal.id}-${root.id} .task-tag`)).toHaveText(['Renamed root label']);
     expect(state.writes).toEqual([]);
   } finally { state.release(); }
 });
@@ -207,7 +204,7 @@ test('changing Parent preserves the Task own tags', async ({ page }) => {
   await page.locator('#project-task-tab-goals').click();
   const card = page.locator(`[data-goal-id="${goal.id}"]`);
   await card.locator('.goal-list-toggle').click();
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText(['Child label']);
   state.observedAt = '2026-10-22T10:00:04Z';
   state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, parentId: null, version: 2n, updatedAt: '2026-10-22T10:00:02Z' } : item);
@@ -234,14 +231,14 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
   const outline = await toggle.evaluate(element => { const style = getComputedStyle(element); return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) }; });
   expect(outline.style).not.toBe('none'); expect(outline.width).toBeGreaterThan(0);
   await page.keyboard.press('Enter');
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText([longName]);
   for (const tag of [toggle.locator('.task-tag'), childRow.locator('.task-tag')]) {
     await expect(tag).toBeVisible();
     const dimensions = await tag.evaluate(element => ({ w: element.clientWidth, sw: element.scrollWidth, h: element.clientHeight, sh: element.scrollHeight }));
     expect(dimensions.sw).toBeLessThanOrEqual(dimensions.w + 1); expect(dimensions.sh).toBeLessThanOrEqual(dimensions.h + 1);
   }
-  for (const control of [toggle.locator('.goal-list-title'), toggle.locator('.root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph'), childRow.locator('.root-title'), childRow.locator('.root-status')]) {
+  for (const control of [toggle.locator('.goal-list-title'), toggle.locator('.root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph'), childRow.locator('.root-title'), childRow.locator('..').locator('.root-status')]) {
     await expect(control).toBeVisible();
     const box = await control.boundingBox(); expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(321);
@@ -253,7 +250,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
     expect(overlap).toBe(false);
   }
   const childTagBox = (await childRow.locator('.task-tag').boundingBox())!;
-  const childStatusBox = (await childRow.locator('.root-status').boundingBox())!;
+  const childStatusBox = (await childRow.locator('..').locator('.root-status').boundingBox())!;
   const childOverlap = Math.min(childTagBox.x + childTagBox.width, childStatusBox.x + childStatusBox.width) > Math.max(childTagBox.x, childStatusBox.x) && Math.min(childTagBox.y + childTagBox.height, childStatusBox.y + childStatusBox.height) > Math.max(childTagBox.y, childStatusBox.y);
   expect(childOverlap).toBe(false);
   await expect(childRow).toHaveAccessibleName(new RegExp(longName));
@@ -373,7 +370,7 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await page.locator('#project-task-tab-goals').click();
     const card = page.locator(`[data-goal-id="${goal.id}"]`);
     await card.locator('.goal-list-toggle').click();
-    await expect(card.locator(`#goal-${goal.id}-task-${created.id} .task-tag`)).toHaveText(['Goal label', 'Child label']);
+    await expect(card.locator(`#chain-task-goal-${goal.id}-${created.id} .task-tag`)).toHaveText(['Goal label', 'Child label']);
   } else {
     await expect(page.locator(`[data-goal-id="${created.id}"] .goal-list-toggle .task-tag`)).toHaveText(['Goal label', 'Child label']);
   }

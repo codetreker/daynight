@@ -25,11 +25,6 @@ export const focusProjectList = (view: TaskView, origin: ProjectListOrigin | nul
     if (target?.kind === 'goal' && focusVisible(goal?.querySelector<HTMLElement>('.goal-list-graph'))) return true;
     if (focusVisible(goal?.querySelector<HTMLElement>('.goal-list-toggle')) || focusVisible(goal?.querySelector<HTMLElement>('.goal-list-detail'))) return true;
   }
-  if (view === 'goals' && list !== null && witness !== null) {
-    const representative = target?.kind === 'chain' && target.witnessTaskId === witness ? target.rootId : index?.componentByTask.get(witness);
-    const chains = [...list.querySelectorAll<HTMLElement>('[data-chain-id]')].filter((item) => item.dataset.chainId === representative);
-    if (chains.some((chain) => focusVisible(chain.querySelector<HTMLElement>('.root-toggle')))) return true;
-  }
   if (view === 'chains' && list !== null) {
     const representative = witness === null ? undefined : target?.kind === 'chain' && target.witnessTaskId === witness ? target.rootId : index?.componentByTask.get(witness);
     const entry = representative === undefined ? null : document.getElementById(`task-root-${representative}`);
