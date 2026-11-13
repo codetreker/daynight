@@ -1,9 +1,13 @@
 import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ApiError, authRequestsPaused, createTask, isAbortError } from '../../api/client';
+import { ApiError, authRequestsPaused, createTask, isAbortError, type CreateTaskInput } from '../../api/client';
 import { listProjectPeople } from '../../api/auth';
 import type { ProjectPerson } from '../../api/auth-types';
+import type { TaskTag } from '../../api/types';
+import { TagPicker } from '../task-tags/TagPicker';
+import { tagMessages } from '../task-tags/messages';
+import '../task-tags/task-tags.css';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { OverlayOwnerContext } from '../../app/overlay';
 import { ProjectAccessBoundary, useProjectAccess } from '../projects/ProjectAccess';
@@ -40,14 +44,14 @@ export const FormDialog = ({ title, onClose, children }: { readonly title: strin
   return createPortal(<div className="task-detail-backdrop"><OverlayOwnerContext value={root}><DetailFrame root={root} modal headingId={heading} className="task-organization-dialog"><header className="dialog-header"><h2 id={heading}>{title}</h2><AccountRefreshNotice /><button className="close-button" ref={close} type="button" aria-label={m.close} onClick={onClose}>×</button></header>{children}</DetailFrame></OverlayOwnerContext></div>, document.body);
 };
 
-type CreateState = { readonly title: string; readonly description: string; readonly parent: string; readonly assignee: string; readonly busy: boolean; readonly error: unknown; readonly unknown: boolean };
+type CreateState = { readonly title: string; readonly description: string; readonly parent: string; readonly assignee: string; readonly tags: readonly TaskTag[]; readonly submitted: CreateTaskInput | null; readonly busy: boolean; readonly error: unknown; readonly unknown: boolean };
 type CreateStore = { state: CreateState; readonly listeners: Set<() => void> };
 const createStores = new WeakMap<object, Map<string, CreateStore>>();
 const createStore = (scope: object, projectId: string): CreateStore => {
   let projects = createStores.get(scope);
   if (projects === undefined) { projects = new Map(); createStores.set(scope, projects); }
   let store = projects.get(projectId);
-  if (store === undefined) { store = { state: { title: '', description: '', parent: '', assignee: 'default', busy: false, error: null, unknown: false }, listeners: new Set() }; projects.set(projectId, store); }
+  if (store === undefined) { store = { state: { title: '', description: '', parent: '', assignee: 'default', tags: [], submitted: null, busy: false, error: null, unknown: false }, listeners: new Set() }; projects.set(projectId, store); }
   return store;
 };
 const updateCreate = (store: CreateStore, patch: Partial<CreateState>) => {
@@ -76,8 +80,9 @@ const TaskOrganizationContent = ({ projectId, goalId, snapshot, onRefreshGraph }
   const scope = useTaskCacheScope(); const access = useProjectAccess(projectId);
   const [mode, setMode] = useState<'create' | 'existing' | null>(null);
   const store = createStore(scope, projectId);
-  const { title, description, parent, assignee, busy, error, unknown } = useSyncExternalStore((listener) => { store.listeners.add(listener); return () => { store.listeners.delete(listener); }; }, () => store.state);
+  const { title, description, parent, assignee, tags, busy, error, unknown } = useSyncExternalStore((listener) => { store.listeners.add(listener); return () => { store.listeners.delete(listener); }; }, () => store.state);
   const [selected, setSelected] = useState('');
+  const [creatingTag, setCreatingTag] = useState(false);
   const [people, setPeople] = useState<{ items: readonly ProjectPerson[]; error: unknown }>({ items: [], error: null });
   const [peopleAttempt, setPeopleAttempt] = useState(0);
   const mounted = useRef(true);
@@ -90,23 +95,25 @@ const TaskOrganizationContent = ({ projectId, goalId, snapshot, onRefreshGraph }
   }, [mode, scope, projectId, peopleAttempt]);
   const candidates = goalId === undefined ? [] : taskOptions(snapshot, goalId);
   const create = async (event: FormEvent) => {
-    event.preventDefault(); if (store.state.busy || store.state.unknown || !access.ready || authRequestsPaused() || !title.trim()) return;
-    updateCreate(store, { busy: true, error: null }); let confirmed = false; let dispatched = false;
+    event.preventDefault(); if (store.state.busy || store.state.unknown || creatingTag || !access.ready || authRequestsPaused() || !title.trim()) return;
+    const draft = store.state;
+    const input = { title: draft.title, description: draft.description, tagIds: draft.tags.map(tag => tag.id), ...(draft.parent ? { parentId: draft.parent } : {}), ...(draft.assignee === 'default' ? {} : { assignedTo: draft.assignee || null }) };
+    updateCreate(store, { busy: true, error: null, submitted: input }); let confirmed = false; let dispatched = false;
     try {
       await scope.ready(scope.signal);
       if (await access.session.waitForFreshAccess(scope.signal) === null || scope.isInvalidated || authRequestsPaused()) throw new Error(m.error);
       dispatched = true;
-      await createTask(projectId, { title, description, ...(parent ? { parentId: parent } : {}), ...(assignee === 'default' ? {} : { assignedTo: assignee || null }) }, scope.signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch, onWriteConfirmed: () => { confirmed = true; } });
-      if (mounted.current) setMode(null); updateCreate(store, { title: '', description: '', parent: '', assignee: 'default', error: null }); if (mounted.current) onRefreshGraph();
+      await createTask(projectId, input, scope.signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch, onWriteConfirmed: () => { confirmed = true; } });
+      if (mounted.current) setMode(null); updateCreate(store, { title: '', description: '', parent: '', assignee: 'default', tags: [], submitted: null, error: null }); if (mounted.current) onRefreshGraph();
     } catch (failure) {
       if (scope.isInvalidated || isAbortError(failure) && scope.signal.aborted) return;
       const uncertain = dispatched && (confirmed || !(failure instanceof ApiError) || failure.kind !== 'server' || failure.status === null || failure.status >= 500 || failure.code === 'write_outcome_unknown');
-      updateCreate(store, { error: failure, unknown: uncertain }); if (uncertain && mounted.current) onRefreshGraph();
+      updateCreate(store, { error: failure, unknown: uncertain, ...(uncertain ? {} : { submitted: null }) }); if (uncertain && mounted.current) onRefreshGraph();
     } finally { updateCreate(store, { busy: false }); }
   };
-  const close = () => setMode(null);
+  const close = () => { if (!store.state.busy && !store.state.unknown && store.state.error === null) updateCreate(store, { tags: [] }); setCreatingTag(false); setMode(null); };
   return <span className="task-organization-actions">{goalId !== undefined && <button className="button" type="button" disabled={snapshot === null} onClick={() => { setSelected(''); setMode('existing'); }}>{m.addExisting}</button>}<button className="button primary" type="button" disabled={snapshot === null} onClick={() => { if (!store.state.title && !store.state.error && !store.state.busy) updateCreate(store, { parent: goalId ?? '' }); setMode('create'); }}>{m.newTask}</button>
-    {mode === 'create' && <FormDialog title={m.newTask} onClose={close}><form onSubmit={create}><div className="dialog-body task-organization-fields"><fieldset disabled={busy || unknown}><label>{m.title}<input required value={title} onChange={event => updateCreate(store, { title: event.target.value })} /></label><label>{m.description}<textarea value={description} onChange={event => updateCreate(store, { description: event.target.value })} /></label><label>{m.goal}<select value={parent} onChange={event => updateCreate(store, { parent: event.target.value })}><option value="">{m.none}</option>{goalOptions(snapshot).map(goal => <option key={goal.id} value={goal.id}>{optionTitle(goal)}</option>)}</select></label><label>{m.assignee}<select value={assignee} onChange={event => updateCreate(store, { assignee: event.target.value })}><option value="default">{m.defaultAssignee}</option><option value="">{m.unassigned}</option>{assignee !== 'default' && assignee !== '' && !people.items.some(person => person.userId === assignee) && <option value={assignee}>{assignee}</option>}{people.items.filter(person => person.hasProjectAccess).map(person => <option key={person.userId} value={person.userId}>{person.name ?? person.userId}</option>)}</select></label></fieldset>{people.error !== null && <div role="alert"><p>{m.peopleFailed} {failureText(people.error, m.error)}</p><button className="button" type="button" onClick={() => setPeopleAttempt(value => value + 1)}>{m.retry}</button></div>}{unknown && <div role="alert"><p>{m.createUnknown}</p><button className="button" type="button" onClick={() => { onRefreshGraph(); setMode(null); }}>{m.check}</button><button className="button" type="button" onClick={() => updateCreate(store, { title: '', description: '', parent: goalId ?? '', assignee: 'default', error: null, unknown: false })}>{m.checked}</button></div>}{error !== null && <p role="alert">{failureText(error, m.error)}</p>}</div><footer className="dialog-footer"><button className="button" type="button" onClick={close}>{m.cancel}</button><button className="button primary" type="submit" disabled={busy || unknown || !access.ready || !title.trim()}>{m.create}</button></footer></form></FormDialog>}
+    {mode === 'create' && <FormDialog title={m.newTask} onClose={close}><form onSubmit={create}><div className="dialog-body task-organization-fields"><fieldset disabled={busy || unknown}><label>{m.title}<input required value={title} onChange={event => updateCreate(store, { title: event.target.value })} /></label><label>{m.description}<textarea value={description} onChange={event => updateCreate(store, { description: event.target.value })} /></label><label>{m.goal}<select value={parent} onChange={event => updateCreate(store, { parent: event.target.value })}><option value="">{m.none}</option>{goalOptions(snapshot).map(goal => <option key={goal.id} value={goal.id}>{optionTitle(goal)}</option>)}</select></label><label>{m.assignee}<select value={assignee} onChange={event => updateCreate(store, { assignee: event.target.value })}><option value="default">{m.defaultAssignee}</option><option value="">{m.unassigned}</option>{assignee !== 'default' && assignee !== '' && !people.items.some(person => person.userId === assignee) && <option value={assignee}>{assignee}</option>}{people.items.filter(person => person.hasProjectAccess).map(person => <option key={person.userId} value={person.userId}>{person.name ?? person.userId}</option>)}</select></label><div><span>{tagMessages[locale].title}</span><TagPicker projectId={projectId} value={tags} onChange={value => { if (!store.state.busy && !store.state.unknown) updateCreate(store, { tags: value }); }} canWrite={access.ready} onCreatingChange={setCreatingTag} /></div></fieldset>{people.error !== null && <div role="alert"><p>{m.peopleFailed} {failureText(people.error, m.error)}</p><button className="button" type="button" onClick={() => setPeopleAttempt(value => value + 1)}>{m.retry}</button></div>}{unknown && <div role="alert"><p>{m.createUnknown}</p><button className="button" type="button" onClick={() => { onRefreshGraph(); setMode(null); }}>{m.check}</button><button className="button" type="button" onClick={() => updateCreate(store, { title: '', description: '', parent: goalId ?? '', assignee: 'default', tags: [], submitted: null, error: null, unknown: false })}>{m.checked}</button></div>}{error !== null && <p role="alert">{failureText(error, m.error)}</p>}</div><footer className="dialog-footer"><button className="button" type="button" onClick={close}>{m.cancel}</button><button className="button primary" type="submit" disabled={busy || unknown || creatingTag || !access.ready || !title.trim()}>{m.create}</button></footer></form></FormDialog>}
     {mode === 'existing' && goalId !== undefined && snapshot !== null && <FormDialog title={m.addExisting} onClose={close}><div className="dialog-body task-organization-fields"><label>{m.select}<select value={selected} onChange={event => setSelected(event.target.value)}><option value="">—</option>{candidates.map(task => <option key={task.id} value={task.id}>{optionTitle(task)} · {parentLabel(snapshot, task.parentId, m.none)}</option>)}</select></label></div>{selected ? <ExistingSelection key={selected} projectId={projectId} taskId={selected} goalId={goalId} snapshot={snapshot} onClose={close} /> : <footer className="dialog-footer"><button className="button" type="button" onClick={close}>{m.cancel}</button><button className="button primary" type="button" disabled>{m.add}</button></footer>}</FormDialog>}
   </span>;
 };
