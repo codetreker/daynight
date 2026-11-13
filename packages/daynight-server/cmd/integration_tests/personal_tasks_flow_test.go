@@ -68,7 +68,9 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	}
 	assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(child), nil, http.StatusOK), child)
 	startedGoal := requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)
-	if startedGoal.ID != goal.ID || startedGoal.Status != "in_progress" || startedGoal.Version != goal.Version+1 || startedGoal.StartedAt == nil {
+	if startedGoal.StartedAt == nil {
 		t.Fatalf("child start did not advance its Goal: %+v", startedGoal)
 	}
+	goal.Status, goal.Version = "in_progress", goal.Version+1
+	assertTaskContent(t, startedGoal, goal)
 }
