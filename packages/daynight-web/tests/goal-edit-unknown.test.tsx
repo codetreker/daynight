@@ -23,6 +23,7 @@ vi.mock('../src/features/projects/ProjectAccess', async original => ({ ...await 
 vi.mock('../src/features/task-assignment/TaskAssigneeSelect', () => ({ TaskAssigneeSelect: () => null }));
 vi.mock('../src/features/task-assignment/TaskAssigneeIdentity', () => ({ TaskAssigneeIdentity: () => null }));
 vi.mock('../src/features/task-assignment/AssigneePicker', () => ({ AssigneePicker: () => null }));
+vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onChange, canWrite }: { value: readonly { id: string; name: string }[]; onChange: (value: readonly { id: string; name: string }[]) => void; canWrite: boolean }) => <div><output aria-label="Selected tags">{value.map(tag => tag.name).join(',')}</output><button type="button" disabled={!canWrite} onClick={() => onChange([{ id: 'tag-a', name: 'Alpha' }])}>Select Alpha</button></div> }));
 
 const projectId = '10000000-0000-4000-8000-000000000001';
 const goalId = '20000000-0000-4000-8000-000000000001';
@@ -286,11 +287,59 @@ it.each(['api', 'confirmed-api', 'non-api'] as const)('reports an unknown Goal c
   });
   renderWithLocale(<GoalCreate projectId={projectId} onClose={() => {}} onRefreshGraph={() => {}} />, { locale: 'en', taskCache: true, container: root });
   fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Draft title' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Select Alpha' }));
   fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
   expect(await screen.findByText(/The creation outcome is unknown\. Check the Goal list/)).toBeVisible();
   expect(screen.queryByText('Creation failed')).toBeNull();
   expect(screen.queryByText(/Goal information is invalid/i)).toBeNull();
   expect(screen.getByRole('button', { name: /^Create$/ })).toBeDisabled();
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('Alpha');
+  expect(vi.mocked(createTask).mock.calls[0]![1]).toMatchObject({ type: 'goal', tagIds: ['tag-a'] });
   if (kind !== 'non-api') expect(screen.getByText('request-2').closest('p')).toHaveTextContent('(invalid_input)');
   expect(createTask).toHaveBeenCalledTimes(1);
+});
+
+it('submits Goal tags as a frozen selection and clears them after a confirmed create', async () => {
+  const pending = Promise.withResolvers<never>();
+  vi.mocked(createTask).mockReturnValue(pending.promise);
+  const close = vi.fn();
+  renderWithLocale(<GoalCreate projectId={projectId} onClose={close} onRefreshGraph={() => {}} />, { locale: 'en', taskCache: true, container: root });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Tagged goal' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Select Alpha' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+  await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  expect(vi.mocked(createTask).mock.calls[0]![1]).toMatchObject({ type: 'goal', title: 'Tagged goal', tagIds: ['tag-a'] });
+  expect(screen.getByRole('button', { name: 'Select Alpha' })).toBeDisabled();
+  await act(async () => pending.resolve({} as never));
+  expect(close).toHaveBeenCalledOnce();
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('');
+});
+
+it('retains the Goal draft and tags after a definite create rejection', async () => {
+  vi.mocked(createTask).mockRejectedValueOnce(new ApiError('server', 400, 'tag_not_found', 'request'));
+  const CreateHarness = () => {
+    const [open, setOpen] = useState(true);
+    return open ? <GoalCreate projectId={projectId} onClose={() => setOpen(false)} onRefreshGraph={() => {}} /> : <button onClick={() => setOpen(true)}>Reopen Goal</button>;
+  };
+  renderWithLocale(<CreateHarness />, { locale: 'en', taskCache: true, container: root });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Draft goal' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Select Alpha' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+  await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Create$/ })).toBeEnabled());
+  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Draft goal');
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('Alpha');
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Reopen Goal' }));
+  expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('Draft goal');
+  expect(screen.getByLabelText('Selected tags')).toHaveTextContent('Alpha');
+});
+
+it('creates an untagged Goal with an empty tag set', async () => {
+  vi.mocked(createTask).mockResolvedValueOnce({} as never);
+  renderWithLocale(<GoalCreate projectId={projectId} onClose={() => {}} onRefreshGraph={() => {}} />, { locale: 'en', taskCache: true, container: root });
+  fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Untagged goal' } });
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+  await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  expect(vi.mocked(createTask).mock.calls[0]![1]).toMatchObject({ type: 'goal', title: 'Untagged goal', tagIds: [] });
 });
