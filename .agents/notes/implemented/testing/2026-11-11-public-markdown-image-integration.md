@@ -27,6 +27,8 @@ input and the external identity provider are controlled test inputs. Public DNS,
 HTTP bytes, HTTPS certificate validation, image decoding, Go persistence and
 subsequent resource reads are real. This is a source integration regression;
 it does not assert native-model vision or complete browser behavior.
+The decoder wrapper forwards the runtime's arguments to the server so that it
+uses the isolated configuration root as well as the configured image helper.
 
 Network setup is restricted to a fresh standard GitHub-hosted Linux VM. A
 Controller namespace has one owned route to the host. A job-owned nftables

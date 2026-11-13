@@ -313,6 +313,20 @@ test("querying a committed association reports a later settled capture without w
   } finally { f.journal.close(); }
 });
 
+test.each(["commit", "failure"] as const)("publication query retains a durable %s retry", async action => {
+  const f = await fixture();
+  try {
+    f.publishNative(); const result = f.journal.publishNativeInputAssociation(f.request);
+    expect(result.state).toBe("committed"); if (result.state !== "committed") return;
+    const state: NativeImageProjectionState = action === "commit"
+      ? { ...f.state, phase: "commit", retryAt: 12345, validated: { mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 } }
+      : { ...f.state, phase: "failure", retryAt: 12345, part: { type: "image_unavailable", imageId: f.nativeImageId, label: "Native image", error: { code: "source_missing", message: "Original is missing." } } };
+    f.journal.writeNativeImageState(f.key, state);
+    const query = f.journal.queryNativeInputAssociation(f.request.identity);
+    expect(query.state).toBe("committed"); if (query.state === "committed") expect(query.view.slots[0]!.state).toEqual(state);
+  } finally { f.journal.close(); }
+});
+
 test("a lost SQL commit confirmation is unknown until querying the unchanged identity observes the original committed receipt", async () => {
   const f = await fixture();
   try {

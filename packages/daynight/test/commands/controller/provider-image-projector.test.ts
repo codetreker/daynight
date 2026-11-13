@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { ProviderImageProjector } from "../../../src/commands/controller/providers/image-projector.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError, ImageCaptureRequestError } from "../../../src/commands/controller/media/capture-error.js";
 import type { ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 import type { ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart } from "../../../src/session/image-values.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
@@ -172,6 +173,147 @@ test("a lost register response is queried by its original capture identity and n
     expect(f.options.queryImageCapture).toHaveBeenCalledOnce();
     expect(f.options.stageImageCapture).not.toHaveBeenCalled();
     expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+  } finally { await projector.close(); }
+});
+
+test.each(["capture", "history"] as const)("a definite %s refusal settles without querying or inventing a receipt", async kind => {
+  const f = fixture(); f.acknowledge();
+  const failure = { code: "quota_exceeded", message: "Capture capacity is exhausted." };
+  vi.mocked(f.options.registerImageCapture!).mockRejectedValue(kind === "capture" ? new ImageCaptureRequestError(failure) : new ImageCapturePrerequisiteError(failure));
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(f.options.registerImageCapture).toHaveBeenCalledOnce();
+    expect(f.options.queryImageCapture).not.toHaveBeenCalled(); expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image_unavailable", error: { code: "quota_exceeded" } }, { text: "after" }] });
+    expect(f.release).toHaveBeenCalledOnce();
+    expect([...f.states.values()]).toContainEqual(expect.objectContaining({ phase: "settled", unknownAction: null }));
+  } finally { await projector.close(); }
+});
+
+test.each(["rate", "local"] as const)("register retries %s refusal with its frozen identity without querying it", async kind => {
+  const f = fixture(); f.acknowledge();
+  const now = vi.spyOn(Date, "now").mockReturnValue(10000);
+  const register = vi.mocked(f.options.registerImageCapture!);
+  register.mockRejectedValueOnce(kind === "rate" ? new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }) : new ImageCaptureNotDispatchedError("Capture slots are full."));
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(register).toHaveBeenCalledOnce(); expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+    now.mockReturnValue(11000); projector.acknowledged(); await projector.settled();
+    expect(register).toHaveBeenCalledTimes(2); expect(register.mock.calls[0]![0]).toEqual(register.mock.calls[1]![0]);
+    expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+  } finally { now.mockRestore(); await projector.close(); }
+});
+
+test.each((["commit", "failure"] as const).flatMap(action => (["rate", "local"] as const).map(kind => ({ action, kind }))))("$action retries $kind refusal after restart with the original request", async ({ action, kind }) => {
+  const f = fixture(); f.acknowledge();
+  const now = vi.spyOn(Date, "now").mockReturnValue(10000);
+  const control = action === "commit" ? vi.mocked(f.options.commitImageCapture!) : vi.mocked(f.options.failImageCapture!);
+  control.mockRejectedValueOnce(kind === "rate" ? new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." }) : new ImageCaptureNotDispatchedError("Capture slots are full."));
+  if (action === "failure") vi.mocked(f.options.failImageCapture!).mockImplementationOnce(async (captureId, attemptId, error) => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId, revision: "2", occurrence: saved.request.occurrence, state: "failed", resourceId: null, resource: null, error };
+  });
+  let projector = new ProviderImageProjector(f.options);
+  const slot = action === "failure" ? { ...f.slot, payload: { kind: "unavailable" as const, error: { code: "source_missing", message: "Original is missing." } } } : f.slot;
+  try {
+    projector.publish(f.entry, [slot]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(control).toHaveBeenCalledOnce(); expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    await projector.close(); projector = new ProviderImageProjector(f.options);
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled();
+    expect(control).toHaveBeenCalledOnce();
+    now.mockReturnValue(11000); projector.acknowledged(); await projector.settled();
+    expect(control).toHaveBeenCalledTimes(2); expect(control.mock.calls[0]).toEqual(control.mock.calls[1]);
+    expect(f.options.queryImageCapture).not.toHaveBeenCalled();
+    expect(f.options.stageImageCapture).toHaveBeenCalledTimes(action === "commit" ? 1 : 0);
+  } finally { now.mockRestore(); await projector.close(); }
+});
+
+test.each(["commit", "failure"] as const)("a lost native %s retry is queried after restart, never replayed", async action => {
+  const f = fixture(); f.acknowledge();
+  const now = vi.spyOn(Date, "now").mockReturnValue(10000);
+  const control = action === "commit" ? vi.mocked(f.options.commitImageCapture!) : vi.mocked(f.options.failImageCapture!);
+  control.mockRejectedValueOnce(new ImageCaptureRequestError({ code: "rate_limited", message: "Try later." })).mockImplementationOnce(async () => {
+    expect([...f.states.values()]).toContainEqual(expect.objectContaining({ phase: "query", unknownAction: action }));
+    throw new Error("Response lost");
+  });
+  vi.mocked(f.options.queryImageCapture!).mockImplementation(async captureId => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId: saved.request.attemptId, revision: "1", occurrence: saved.request.occurrence, state: "reserved", resourceId: f.resourceId, resource: null, error: null };
+  });
+  const slot = action === "failure" ? { ...f.slot, payload: { kind: "unavailable" as const, error: { code: "source_missing", message: "Original is missing." } } } : f.slot;
+  let projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [slot]); await projector.settled();
+    now.mockReturnValue(11000); projector.acknowledged(); await projector.settled();
+    expect(control).toHaveBeenCalledTimes(2);
+    await projector.close(); projector = new ProviderImageProjector(f.options);
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled();
+    expect(f.options.queryImageCapture).toHaveBeenCalledOnce(); expect(control).toHaveBeenCalledTimes(2);
+  } finally { now.mockRestore(); await projector.close(); }
+});
+
+test("a failed original receipt ends observation after an unknown register result", async () => {
+  const f = fixture(); f.acknowledge();
+  vi.mocked(f.options.registerImageCapture!).mockRejectedValue(new Error("lost receipt"));
+  vi.mocked(f.options.queryImageCapture!).mockImplementation(async captureId => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId: saved.request.attemptId, revision: "1", occurrence: saved.request.occurrence, state: "failed", resourceId: null, resource: null, error: { code: "quota_exceeded", message: "Capture capacity is exhausted." } };
+  });
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(f.options.queryImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image_unavailable", error: { code: "quota_exceeded" } }, { text: "after" }] });
+  } finally { await projector.close(); }
+});
+
+test("a missing query after an unknown register does not settle the original capture", async () => {
+  const f = fixture(); f.acknowledge();
+  vi.mocked(f.options.registerImageCapture!).mockRejectedValue(new Error("lost response"));
+  vi.mocked(f.options.queryImageCapture!).mockRejectedValueOnce(new ImageCaptureRequestError({ code: "capture_not_found", message: "Capture was not found." })).mockImplementation(async captureId => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId: saved.request.attemptId, revision: "2", occurrence: saved.request.occurrence, state: "committed", resourceId: f.resourceId, resource: null, error: null };
+  });
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image_unavailable", error: { code: "capture_unknown" } }, { text: "after" }] });
+    expect(f.release).not.toHaveBeenCalled();
+    projector.acknowledged(); await projector.settled();
+    expect(f.options.queryImageCapture).toHaveBeenCalledTimes(2);
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+  } finally { await projector.close(); }
+});
+
+test.each(["commit", "failure"] as const)("a rejected %s observes the original copying and committed states", async action => {
+  const f = fixture(); f.acknowledge();
+  const refusal = new ImageCaptureRequestError({ code: "resource_conflict", message: "Capture changed." });
+  if (action === "commit") vi.mocked(f.options.commitImageCapture!).mockRejectedValue(refusal);
+  else vi.mocked(f.options.failImageCapture!).mockRejectedValue(refusal);
+  let queries = 0;
+  vi.mocked(f.options.queryImageCapture!).mockImplementation(async captureId => {
+    const saved = [...f.states.values()].find((value: any) => value.request?.captureId === captureId) as any;
+    return { captureId, attemptId: saved.request.attemptId, revision: "2", occurrence: saved.request.occurrence, state: ++queries === 1 ? "copying" : "committed", resourceId: f.resourceId, resource: null, error: null };
+  });
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, ...(action === "failure" ? { payload: { kind: "unavailable" as const, error: { code: "source_unavailable", message: "Missing." } } } : {}) }]); await projector.settled();
+    projector.acknowledged(); await projector.settled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image_unavailable", error: { code: "capture_unknown" } }, { text: "after" }] });
+    projector.acknowledged(); await projector.settled();
+    expect(f.options.queryImageCapture).toHaveBeenCalledTimes(2);
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(action === "commit" ? f.options.commitImageCapture : f.options.failImageCapture).toHaveBeenCalledOnce();
   } finally { await projector.close(); }
 });
 

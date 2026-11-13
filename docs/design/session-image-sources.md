@@ -273,7 +273,7 @@ coordinator 在 register 或 commit 发出前持久原请求及 unknown 阶段�
 
 | 状态/失败 | 允许的恢复 |
 | --- | --- |
-| register/validated/commit 未知 | query 原 capture；404、超时或本地计时器不证明未提交。 |
+| register/validated/commit 未知 | query 原 capture；`capture_not_found`、超时或本地计时器不证明未提交。 |
 | reserved 且原 attempt 活跃 | 返回进度，不并行第二次源请求。 |
 | 原 writer 停止，只剩 partial staging | 先查服务，确定未提交且无活跃 attempt 后 failed/释放；显式重试才新 attempt，不 Range 续抓或拼接新响应。 |
 | validated/copying/提交未知 | 用原 immutable prepared 文件协调，不换 hash/ID。准备丢失先查服务，确认未提交才可结算失败。 |
