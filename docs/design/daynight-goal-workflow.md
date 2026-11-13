@@ -10,7 +10,7 @@ worker-managed 执行，保留服务生命周期与安装机制。[Goal 需求](
 
 Goal 是 `type=goal` 的独立容器，普通阶段 Task 通过 `parentId` 归属并以依赖边表达阶段顺序；它可为空，不从历史普通 `[Goal]` Task 或资料自动转换。需求讨论由普通 Task 负责；需求确认后才产生方案或架构讨论任务；方案确认后才产生实际交付子任务。Agent 临时生成的命令、文件
 读取和常规检查保留在 session 执行计划，不成为 task 或任务材料。独立验收或验证有自己的成果时仍可成为任务。
-容器归属不改变依赖、状态或执行权限。
+容器归属本身不改变依赖、状态或执行权限。普通子 Task 实际开始时，服务端会将其 `todo` Parent Goal 推进为 `in_progress`；这不替代阶段确认、验收或执行授权，具体规则见 [Goal 需求](../spec/daynight-goals.md)。
 
 仓库流程位于 `.agents/skills/development-workflow/`。入口按目的导航，`goal.md` 拥有阶段、确认和拆分，`task-content.md` 拥有内容标准，`dependencies.md` 拥有依赖约简与图核验，`handoff.md` 和 `run-task.md` 分别拥有移交与普通执行，`task-execution.md` 拥有共享准备，`delivery.md` 拥有 PR 交付与仅适用于托管任务的额外成果要求，`final-acceptance.md` 拥有整体验收。产品操作及通用材料归属由 `daynight --skill` 的公共手册拥有；Worker assignment 和运行约束由 CLI 运行时提供。
 

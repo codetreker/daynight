@@ -141,6 +141,10 @@ func LogFailure(logger *slog.Logger, ctx context.Context, component, phase strin
 		// Search failures may contain query parameters or driver diagnostics.
 		diagnostic = "search operation failed"
 	}
+	if component == "personal_tasks" {
+		// Query and driver diagnostics may contain caller or stored content.
+		diagnostic = "read operation failed"
+	}
 	upstreamID := ""
 	var protocolFailure *uniauth.ProtocolError
 	var gatewayFailure *uniauth.APIError

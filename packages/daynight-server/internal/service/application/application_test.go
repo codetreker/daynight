@@ -35,6 +35,9 @@ func (m *strictObservations) unexpected(name string) error {
 	m.t.Errorf("unexpected observation operation %s", name)
 	return errors.New("unexpected observation operation: " + name)
 }
+func (m *strictObservations) PersonalTasks(context.Context, model.Principal, int, *string) (task.PersonalTaskPage, error) {
+	return task.PersonalTaskPage{}, m.unexpected("PersonalTasks")
+}
 func (m *strictObservations) ObserveGet(context.Context, model.Principal, string, string) (task.ObservedTask, error) {
 	return task.ObservedTask{}, m.unexpected("ObserveGet")
 }

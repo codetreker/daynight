@@ -21,6 +21,30 @@ type DeleteTask struct {
 	RemoveDepends bool
 }
 
+// PrepareParentStart derives a Goal transition from an actual child start while
+// the project write lock is held. The caller applies it in the child's transaction.
+func PrepareParentStart(ctx context.Context, dao store.TaskWriteDAO, child Mutation) (Mutation, error) {
+	if !child.Changed || child.Create || child.Delete || child.Current.Type != model.TaskTypeTask ||
+		child.Current.Status == model.TaskInProgress || child.Values.Status != model.TaskInProgress || child.Current.ParentID == nil {
+		return Mutation{}, nil
+	}
+	parent, err := dao.ParentTask(ctx, *child.Current.ParentID)
+	if err != nil {
+		return Mutation{}, err
+	}
+	if parent.Type != model.TaskTypeGoal || parent.ParentID != nil {
+		return Mutation{}, invalidInput("Parent must identify a visible Goal in this project.")
+	}
+	if parent.Status != model.TaskTodo {
+		return Mutation{}, nil
+	}
+	values, changed, err := StatusCandidate(ctx, dao, model.Principal{}, parent, SetTaskStatus{Status: model.TaskInProgress}, nil)
+	if err != nil {
+		return Mutation{}, err
+	}
+	return Mutation{ID: parent.ID, Current: parent, Values: values, Changed: changed}, nil
+}
+
 func ValidateStatus(input SetTaskStatus) (SetTaskStatus, error) {
 	if input.Version < 1 {
 		return input, invalidInput("Version must be a positive integer.")
