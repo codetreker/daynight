@@ -2,11 +2,21 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import type { TaskDetail } from '../../src/api/types';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
 const successorId = '00000000-0000-4000-8000-000000000042';
 const standaloneId = '00000000-0000-4000-8000-000000000043';
+const doneId = '00000000-0000-4000-8000-000000000044';
+const mixedDoneId = '00000000-0000-4000-8000-000000000045';
+const mixedProposedId = '00000000-0000-4000-8000-000000000046';
+const overdueId = '00000000-0000-4000-8000-000000000047';
+const goalId = '00000000-0000-4000-8000-000000000048';
+const goalStandaloneId = '00000000-0000-4000-8000-000000000049';
+const scopedRootId = '00000000-0000-4000-8000-000000000050';
+const scopedMemberId = '00000000-0000-4000-8000-000000000052';
+const externalId = '00000000-0000-4000-8000-000000000053';
 const personalId = '00000000-0000-4000-8000-000000000011';
 const messageId = '00000000-0000-4000-8000-000000000051';
 const time = '2026-10-20T09:00:00Z';
@@ -31,11 +41,11 @@ async function expectChainTimeLayout(header: Locator) {
   expect(layout).toEqual({ belowTitle: true, inMeta: true, alignedLeft: true, insideHeader: true, separate: true, noHorizontalOverflow: true });
 }
 
-async function install(page: Page, timing = false, completion = false, title = 'Reading task') {
+async function install(page: Page, timing = false, completion = false, title = 'Reading task', suppliedDetails?: readonly TaskDetail[]) {
   const task = detailFixture(projectId, taskId, { title, description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}), ...(completion ? { status: 'done' as const, ready: false, completedAt: '2026-10-22T09:59:30Z' } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Successor', version: 5n, dependsOn: [taskId], blockedBy: completion ? [] : [taskId], ready: false, ...(completion ? { status: 'done' as const, completedAt: '2026-10-22T09:59:50Z' } : {}) });
   const standalone = detailFixture(projectId, standaloneId, { title: 'Running standalone task', version: 5n, status: completion ? 'done' : 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z', ...(completion ? { completedAt: '2026-10-22T09:59:40Z' } : {}) });
-  const details = timing || completion ? [task, successor, standalone] : [task]; const graph = graphFixture(details);
+  const details = suppliedDetails ?? (timing || completion ? [task, successor, standalone] : [task]); const graph = graphFixture(details);
   const message = { id: messageId, author: { userId: TEST_VIEWER_ID, displayName: 'Reader', Agent: false }, body: 'Discussion text', createdAt: '2026-10-20T09:00:00.000Z' };
   const state = { writes: [] as string[], holdSync: null as Promise<void> | null, syncReads: 0 };
   await page.context().route('**/api/v1/**', async route => {
@@ -57,6 +67,92 @@ async function install(page: Page, timing = false, completion = false, title = '
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
   });
   return state;
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) {
+  test(`proposed surfaces stay distinct from done and overdue at ${width}px in ${locale}`, async ({ page }) => {
+    const proposed = (id: string, title: string, dependsOn: string[] = []) => detailFixture(projectId, id, { title, status: 'proposed', ready: false, dependsOn, version: 5n });
+    const done = (id: string, title: string) => detailFixture(projectId, id, { title, status: 'done', ready: false, completedAt: time, version: 5n });
+    const state = await install(page, false, false, 'Reading task', [
+      proposed(taskId, 'A long proposed chain title that wraps naturally at narrow widths'),
+      proposed(successorId, 'Proposed chain member', [taskId]),
+      proposed(standaloneId, 'Proposed standalone task with a long title'),
+      done(doneId, 'Done standalone task'),
+      done(mixedDoneId, 'Done prerequisite'),
+      { ...proposed(mixedProposedId, 'Proposed successor', [mixedDoneId, externalId]), externalDependsOn: [externalId] },
+      detailFixture(projectId, overdueId, { title: 'Overdue task', status: 'in_progress', ready: false, allowAgents: true, startedAt: time, version: 5n }),
+      detailFixture(projectId, goalId, { type: 'goal', title: 'Goal', ready: false, version: 5n }),
+      { ...proposed(goalStandaloneId, 'Goal proposed standalone'), parentId: goalId },
+      proposed(scopedRootId, 'Outside scope chain root'),
+      { ...proposed(scopedMemberId, 'Goal proposed chain member', [scopedRootId]), parentId: goalId },
+      proposed(externalId, 'Proposed external prerequisite'),
+    ]);
+    await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const yellow = 'rgb(255, 246, 207)', hover = 'rgb(255, 237, 176)', ink = 'rgb(117, 91, 19)';
+    const overview = page.locator('.overview-progress-row[data-task-status="proposed"]').filter({ hasText: 'A long proposed chain title' });
+    await expect(overview).toHaveCSS('background-color', yellow);
+    await expect(page.locator('.stat.proposed .stat-number')).toHaveCSS('color', ink);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    const row = page.locator(`#standalone-task-${standaloneId}`);
+    await expect(row).toHaveCSS('background-color', yellow);
+    await expect(page.locator(`#standalone-task-${doneId}`)).toHaveCSS('background-color', 'rgb(234, 246, 239)');
+    const overdue = page.locator(`#standalone-task-${overdueId}`);
+    await expect(overdue.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+    await expect(overdue).toHaveCSS('background-color', 'rgb(255, 247, 232)');
+    await row.hover(); await expect(row).toHaveCSS('background-color', hover);
+    await row.focus(); await expect(row).toBeFocused();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+    const header = page.locator(`[data-chain-id="${taskId}"] > .goal-header`);
+    await expect(header).toHaveCSS('background-color', yellow);
+    await expect(header.locator('.root-status')).toHaveCSS('color', ink);
+    await header.hover(); await expect(header).toHaveCSS('background-color', hover);
+    await page.locator(`#task-root-${taskId}`).click();
+    const member = page.locator(`#chain-task-${taskId}-${successorId}`).locator('..');
+    await expect(member).toHaveCSS('background-color', yellow);
+    await member.hover(); await expect(member).toHaveCSS('background-color', hover);
+    await page.locator(`#task-chain-graph-${mixedDoneId}`).click();
+    const proposedNode = page.locator(`.react-flow__node[data-id="${mixedProposedId}"] .task-node`);
+    const doneNode = page.locator(`.react-flow__node[data-id="${mixedDoneId}"] .task-node`);
+    await page.mouse.move(0, 0);
+    await expect(proposedNode).toHaveCSS('background-color', yellow);
+    await expect(proposedNode).toHaveCSS('border-left-color', ink);
+    await expect(doneNode).toHaveCSS('background-color', 'rgb(234, 246, 239)');
+    await expect(proposedNode.locator('.graph-status')).toHaveText(locale === 'en' ? 'Proposed' : '待确认');
+    await expect(proposedNode.locator('.graph-status')).toHaveCSS('color', ink);
+    const external = page.locator(`.react-flow__node[data-id="${externalId}"] .task-node`);
+    await expect(external).toHaveClass(/task-node-external/);
+    await expect(external).toHaveCSS('background-color', yellow);
+    await expect(external).toHaveCSS('border-left-color', ink);
+    await expect(external).toHaveCSS('border-left-style', 'dashed');
+    await external.locator('.task-node-body').hover(); await expect(external).toHaveCSS('background-color', hover);
+    const body = proposedNode.locator('.task-node-body');
+    await body.focus(); await expect(body).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(body).toHaveAttribute('aria-pressed', 'true');
+    await expect(proposedNode).toHaveClass(/task-node-selected/);
+    await expect(doneNode).toHaveAttribute('data-inspection', 'prerequisite');
+    await expect(external).toHaveAttribute('data-inspection', 'prerequisite');
+    await page.keyboard.press('Escape');
+    await page.getByRole('tab', { name: /^Goal/ }).click();
+    const goal = page.locator(`[data-goal-id="${goalId}"]`);
+    await goal.locator('.goal-list-toggle').click();
+    const goalStandalone = goal.locator(`#goal-${goalId}-task-${goalStandaloneId}`);
+    await expect(goalStandalone).toHaveCSS('background-color', yellow);
+    await goalStandalone.hover(); await expect(goalStandalone).toHaveCSS('background-color', hover);
+    const scoped = goal.locator(`[data-chain-id="${scopedRootId}"]`);
+    const scopedHeader = scoped.locator('.goal-header');
+    await expect(scopedHeader).toHaveCSS('background-color', yellow);
+    await scoped.locator('.goal-toggle').click();
+    const scopedMember = scoped.locator('.goal-task-row');
+    await expect(scopedMember).toHaveCSS('background-color', yellow);
+    await scopedMember.hover(); await expect(scopedMember).toHaveCSS('background-color', hover);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(state.writes).toEqual([]);
+  });
 }
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {

@@ -1,8 +1,8 @@
 [data-task-status="proposed"] {
-  --row-background: #edf6f6;
-  --row-hover: #e0eeee;
-  --row-border: #c4dcdc;
-  --row-status: #43757e;
+  --row-background: #fff6cf;
+  --row-hover: #ffedb0;
+  --row-border: #dfc570;
+  --row-status: #755b13;
 }
 
 [data-task-status="todo"] {

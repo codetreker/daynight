@@ -109,7 +109,7 @@ async function openDialog(page: Page) {
 
 test('ID search keeps long results readable and opens the correct task on narrow screens', async ({ page }) => {
   const title = 'Long search title '.repeat(12) + 'end';
-  const writes = await install(page, false, false, false, false, false, undefined, { title, description: 'Full task details' });
+  const writes = await install(page, false, false, false, false, false, undefined, { title, description: 'Full task details', status: 'proposed', ready: false });
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
   const input = page.getByRole('textbox', { name: 'Search task IDs, titles and descriptions' });
@@ -120,6 +120,9 @@ test('ID search keeps long results readable and opens the correct task on narrow
     await expect(result).toContainText(taskId);
     await expect(result).toContainText('ID match · Description match');
     await expect(result).toContainText('A long matching description');
+    await page.mouse.move(0, 0);
+    await expect(result).toHaveCSS('background-color', 'rgb(255, 246, 207)');
+    await result.hover(); await expect(result).toHaveCSS('background-color', 'rgb(255, 237, 176)');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await result.click();
     const dialog = page.locator('.task-detail-dialog');
@@ -412,7 +415,7 @@ test('touch can open and cancel the Step position target picker', async ({ brows
 
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
   test(`Task status and platform controls fit and keep focus at ${width}px in ${locale}`, async ({ page }) => {
-    const writes = await install(page);
+    const writes = await install(page, false, false, false, false, false, undefined, { status: 'proposed', ready: false });
     await page.setViewportSize({ width, height: 844 });
     await page.goto(`/projects/${projectId}`);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
@@ -423,6 +426,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     const status = dialog.locator('.task-status-trigger');
     const platform = dialog.getByRole('combobox', { name: locale === 'en' ? 'Execution platform' : '执行平台' });
     await expect(status).toBeEnabled(); await expect(platform).toBeEnabled();
+    await expect(status).toHaveText(locale === 'en' ? 'Proposed' : '待确认');
+    await expect(status.locator('i')).toHaveCSS('background-color', 'rgb(117, 91, 19)');
     await expect.poll(() => dialog.locator('.task-detail-status-row').evaluate(row => {
       const bounds = row.getBoundingClientRect();
       const boxes = Array.from(row.querySelectorAll('.task-status-trigger, .task-assignee-field, .task-platform-select, .task-detail-ready, .task-detail-blocked, .task-detail-execution-mode, .task-automation-control')).map(element => element.getBoundingClientRect());
@@ -430,12 +435,18 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     })).toBe(true);
     await status.focus(); await page.keyboard.press('Enter');
     const options = dialog.getByRole('menuitemradio'); await expect(options).toHaveCount(5);
+    await expect(options.first()).toHaveAttribute('aria-checked', 'true');
+    await expect(options.first().locator('i')).toHaveCSS('background-color', 'rgb(117, 91, 19)');
     await page.keyboard.press('End'); await expect(options.last()).toBeFocused();
     await page.keyboard.press('Home'); await expect(options.first()).toBeFocused();
     await page.keyboard.press('Escape'); await expect(status).toBeFocused();
     await status.click(); await options.last().click();
     const statusConfirmation = page.getByRole('alertdialog', { name: locale === 'en' ? 'Set task status' : '设置任务状态' });
-    await expect(statusConfirmation).toBeVisible(); await page.keyboard.press('Escape');
+    await expect(statusConfirmation).toBeVisible();
+    const proposedChip = statusConfirmation.locator('.task-detail-status-proposed');
+    await expect(proposedChip).toHaveCSS('background-color', 'rgb(255, 246, 207)');
+    await expect(proposedChip).toHaveCSS('color', 'rgb(117, 91, 19)');
+    await page.keyboard.press('Escape');
     await expect(statusConfirmation).toHaveCount(0); await expect(status).toBeFocused();
     await platform.focus(); await expect(platform).toBeFocused();
     if (await page.evaluate(() => navigator.platform.startsWith('Mac'))) {
