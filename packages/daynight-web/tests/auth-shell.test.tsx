@@ -543,6 +543,7 @@ describe("authenticated application shell", () => {
     const initial = { ...graphFixture([detailFixture(projectId, taskId)]), project: project() };
     let responseMode: 'valid' | 'untrusted' | 'not-found' = 'valid';
     install((url) => {
+      if (responseMode === 'not-found' && (url === `/api/v1/projects/${projectId}` || url === `/api/v1/projects/${projectId}/access`)) return fail(404, 'not_found');
       if (!isTaskSync(url)) return defaults(url);
       if (responseMode === 'valid') return graphResponse(initial, url);
       if (responseMode === 'not-found') return fail(404, 'not_found');
@@ -679,7 +680,7 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("button", { name: "账户菜单：Alice" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url))));
-    fireEvent.click(within(screen.getByRole("heading", { name: "项目不存在" }).closest("section")!).getByRole("button", { name: "重试" }));
+    fireEvent.click(within(screen.getByRole("tabpanel", { name: "概览" })).getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.getByText("登录状态已过期。重新登录后可继续访问项目。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "账户菜单：Alice" })).toBeNull();
@@ -1407,18 +1408,21 @@ it('rejects a recovery response after a newer project withdrawal', async () => {
   const suspend = TaskCacheScope.prototype.suspendProject;
   let current: TaskCacheScope | null = null;
   vi.spyOn(TaskCacheScope.prototype, 'suspendProject').mockImplementation(function (this: TaskCacheScope, id) { current = this; return suspend.call(this, id); });
-  let denied = true; const pending = Promise.withResolvers<Response>();
-  const fetcher = install(url => url === `/api/v1/projects/${projectId}` ? denied ? fail(404, 'not_found') : pending.promise : defaults(url));
+  let denied = true, recoveryReads = 0; const pending = Promise.withResolvers<Response>(), newer = Promise.withResolvers<Response>();
+  const fetcher = install(url => url === `/api/v1/projects/${projectId}` ? denied ? fail(404, 'not_found') : ++recoveryReads === 1 ? pending.promise : newer.promise : defaults(url));
   render(<AuthenticatedApp />);
   const unavailable = await screen.findByRole('heading', { name: '项目不存在或你没有访问权限' });
   denied = false;
   fireEvent.click(within(unavailable.closest('section')!).getByRole('button', { name: '重试' }));
   await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`)).toHaveLength(2));
   act(() => current!.suspendProject(projectId));
+  await waitFor(() => expect(recoveryReads).toBe(2));
   await act(async () => pending.resolve(json(project())));
   expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
   expect(screen.queryByRole('link', { name: '项目成员' })).toBeNull();
   expect(screen.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
+  await act(async () => newer.resolve(json(project())));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
 });
 
 
@@ -1458,4 +1462,31 @@ it('recovers Project after its access recheck confirms denial and cache cleanup 
   expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
   expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length).toBeGreaterThan(1);
   purge.mockRestore();
+});
+
+it('automatically rereads Project after task sync denial even when the cache becomes unavailable', async () => {
+  window.history.replaceState(null, '', `/projects/${projectId}`);
+  const beginSync = TaskCacheScope.prototype.beginSync;
+  let cacheFailed = false, graphDenied = false;
+  vi.spyOn(TaskCacheScope.prototype, 'beginSync').mockImplementation(function (this: TaskCacheScope, ...args) {
+    return cacheFailed ? Promise.reject(new Error('cache unavailable')) : beginSync.apply(this, args);
+  });
+  const pending = Promise.withResolvers<Response>();
+  const fetcher = install(url => {
+    if (isTaskSync(url) && graphDenied) { cacheFailed = true; return fail(404, 'not_found'); }
+    if (url === `/api/v1/projects/${projectId}` && graphDenied) return pending.promise;
+    return defaults(url);
+  });
+  render(<AuthenticatedApp />);
+  await screen.findByRole('heading', { name: '私有项目' });
+  await screen.findByRole('heading', { name: '概览' });
+  const projectReads = fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length;
+  graphDenied = true;
+  fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+  await screen.findByRole('heading', { name: '项目不存在' });
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === `/api/v1/projects/${projectId}`).length).toBeGreaterThan(projectReads));
+  expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
+  await act(async () => pending.resolve(json(project())));
+  expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
+  expect(screen.getByRole('link', { name: '项目成员' })).toBeVisible();
 });

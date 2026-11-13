@@ -34,7 +34,7 @@ describe('application navigation', () => {
       return projectPage();
     }));
   });
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  afterEach(() => { cleanup(); });
 
   it('navigates via real card hrefs, focuses the main content, and restores the list through browser back and forward', async () => {
     render(<App />);
@@ -52,6 +52,7 @@ describe('application navigation', () => {
     expect(window.location.pathname).toBe('/projects');
     await act(async () => { window.history.forward(); });
     await screen.findByRole('heading', { name: '项目任务页面' });
+    expect(await screen.findByRole('region', { name: '项目任务统计' })).toBeVisible();
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
   });
 

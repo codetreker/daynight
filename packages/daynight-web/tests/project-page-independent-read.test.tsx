@@ -68,13 +68,13 @@ it('lets a slow project read finish across polling intervals and focus recovery'
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   const pending = Promise.withResolvers<typeof project>();
   const started = Promise.withResolvers<AbortSignal>();
-  vi.mocked(getProject).mockImplementationOnce((_id, signal) => { started.resolve(signal); return pending.promise; }).mockResolvedValue(project);
+  vi.mocked(getProject).mockImplementationOnce((_id, signal, _admission, onDispatch) => { onDispatch?.(); started.resolve(signal); return pending.promise; }).mockResolvedValue(project);
   vi.mocked(getProjectAccess).mockReturnValue(new Promise(() => {}));
   vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
   render(page(scope()));
   let deadline!: ReturnType<typeof setTimeout>;
   const signal = await Promise.race([started.promise, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Project read did not start')), 5_000); })]).finally(() => clearTimeout(deadline));
-  await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(50_000); });
   fireEvent(window, new Event('focus'));
   expect(signal.aborted).toBe(false);
   expect(getProject).toHaveBeenCalledOnce();
@@ -84,20 +84,27 @@ it('lets a slow project read finish across polling intervals and focus recovery'
 });
 
 it('withdraws project facts on access revocation and rejects a late read', async () => {
-  const pending = Promise.withResolvers<typeof project>();
+  const old = Promise.withResolvers<typeof project>(), fresh = Promise.withResolvers<typeof project>();
   vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
-  vi.mocked(getProject).mockResolvedValueOnce(project).mockReturnValue(pending.promise);
+  vi.mocked(getProject).mockResolvedValueOnce(project)
+    .mockImplementationOnce((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return old.promise; })
+    .mockImplementation((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return fresh.promise; });
   const current = scope();
   render(page(current));
   await screen.findByRole('heading', { name: 'Independent project' });
   fireEvent(window, new Event('focus'));
   await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
+  const oldSignal = vi.mocked(getProject).mock.calls[1]![1];
   act(() => current.suspendProject(projectId));
+  expect(oldSignal.aborted).toBe(true);
   expect(screen.queryByRole('heading', { name: 'Independent project' })).toBeNull();
   expect(screen.queryByText(project.repoUrl)).toBeNull();
   expect(screen.queryByRole('link', { name: 'Manage Independent project' })).toBeNull();
-  await act(async () => { pending.resolve(project); });
+  await waitFor(() => expect(getProject).toHaveBeenCalledTimes(3));
+  await act(async () => { old.resolve(project); });
   expect(screen.queryByRole('heading', { name: 'Independent project' })).toBeNull();
+  await act(async () => { fresh.resolve({ ...project, name: 'Rechecked project' }); });
+  await screen.findByRole('heading', { name: 'Rechecked project' });
 });
 
 it('does not expose the previous identity project while the replacement identity reads', async () => {
@@ -169,7 +176,7 @@ it('ignores a late project 404 after a newer read succeeds', async () => {
   expect(screen.getByText('Current project')).toBeVisible();
 });
 
-it('immediately rereads a project response superseded by a newer task-sync access observation', async () => {
+it('accepts a project read despite newer successful task-sync access observations', async () => {
   const old = Promise.withResolvers<typeof project>();
   vi.mocked(getProject).mockResolvedValue(project);
   let session: ProjectAccessSession | null = null;
@@ -183,13 +190,11 @@ it('immediately rereads a project response superseded by a newer task-sync acces
   </TestTaskCacheBoundary></LocaleProvider>);
   await screen.findByText('Independent project');
   await waitFor(() => expect(session!.snapshot().refreshing).toBe(false));
-  vi.mocked(getProject).mockReset().mockReturnValueOnce(old.promise)
-    .mockResolvedValue({ ...project, name: 'Current project' });
+  vi.mocked(getProject).mockReset().mockImplementationOnce((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return old.promise; });
   fireEvent(window, new Event('focus'));
   await waitFor(() => expect(getProject).toHaveBeenCalledTimes(1));
-  act(() => { expect(session!.publishSync(session!.beginObservation(), directAccessFixture(projectId))).toBe(true); });
-  await act(async () => { old.resolve({ ...project, name: 'Obsolete project' }); });
+  act(() => { for (let index = 0; index < 3; index++) expect(session!.publishSync(session!.beginObservation(), directAccessFixture(projectId))).toBe(true); });
+  await act(async () => { old.resolve({ ...project, name: 'Current project' }); });
   await screen.findByText('Current project');
-  expect(getProject).toHaveBeenCalledTimes(2);
-  expect(screen.queryByText('Obsolete project')).toBeNull();
+  expect(getProject).toHaveBeenCalledOnce();
 });

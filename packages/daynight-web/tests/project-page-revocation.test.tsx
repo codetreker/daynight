@@ -7,12 +7,12 @@ import { ApiError, getTaskSync } from '../src/api/client';
 import { getProjectAccess } from '../src/api/auth';
 import { getProject } from '../src/api/project-settings';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
-import { ProjectAccessSession } from '../src/features/projects/ProjectAccess';
+import { ProjectAccessBoundary, ProjectAccessSession, useProjectAccessSession } from '../src/features/projects/ProjectAccess';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
 import { TestTaskCacheBoundary } from './helpers/taskCache';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
-import { directAccessFixture, taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
+import { directAccessFixture, taskSyncFromGraph, taskSyncReadFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 
 vi.mock('../src/api/client', async original => ({ ...await original<typeof import('../src/api/client')>(), getTaskSync: vi.fn() }));
 vi.mock('../src/api/auth', async original => ({ ...await original<typeof import('../src/api/auth')>(), getProjectAccess: vi.fn() }));
@@ -155,4 +155,177 @@ it('does not withdraw a peer when an older verification fails after newer projec
   await waitFor(() => expect(vi.mocked(getProjectAccess).mock.calls.length).toBeGreaterThan(1));
   expect(peer.getAuthorizedProject(projectId)).not.toBeNull();
   expect(peer.canPreviewProject(projectId)).toBe(true);
+});
+
+it('reads Project on a new page when its scope was already suspended and the task cache fails', async () => {
+  const current = scope();
+  current.suspendProject(projectId);
+  vi.spyOn(current, 'beginSync').mockRejectedValue(new Error('cache unavailable'));
+  vi.mocked(getProject).mockReset().mockResolvedValue(graph.project);
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProjectAccess).mockRejectedValue(new ApiError('network'));
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+    <ProjectPage projectId={projectId} />
+  </TestTaskCacheBoundary></LocaleProvider>);
+  expect(await screen.findByRole('heading', { name: graph.project.name })).toBeVisible();
+  expect(current.isProjectSuspended(projectId)).toBe(true);
+  expect(current.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it('rereads after a second withdrawal while access is already unavailable', async () => {
+  const current = scope(); current.suspendProject(projectId);
+  vi.spyOn(current, 'beginSync').mockReturnValue(new Promise(() => {}));
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  const old = Promise.withResolvers<typeof graph.project>();
+  vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project).mockReturnValueOnce(old.promise)
+    .mockResolvedValue({ ...graph.project, name: 'Current project' });
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+    <ProjectPage projectId={projectId} />
+  </TestTaskCacheBoundary></LocaleProvider>);
+  await screen.findByRole('heading', { name: graph.project.name });
+  act(() => current.suspendProject(projectId));
+  await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
+  act(() => current.suspendProject(projectId));
+  expect(await screen.findByRole('heading', { name: 'Current project' })).toBeVisible();
+  await act(async () => old.resolve(graph.project));
+  expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
+  expect(current.isProjectSuspended(projectId)).toBe(true);
+});
+
+it('rereads independently on access restoration when task-cache preparation is stuck', async () => {
+  const current = scope(); current.suspendProject(projectId);
+  vi.spyOn(current, 'beginSync').mockReturnValue(new Promise(() => {}));
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project).mockResolvedValue({ ...graph.project, name: 'Restored project' });
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+    <ProjectPage projectId={projectId} />
+  </TestTaskCacheBoundary></LocaleProvider>);
+  await screen.findByRole('heading', { name: graph.project.name });
+  act(() => current.resumeProject(projectId));
+  expect(await screen.findByRole('heading', { name: 'Restored project' })).toBeVisible();
+  expect(current.getAuthorizedProject(projectId)).toBeNull();
+});
+
+
+it('retires old Project reads after an event-free transfer denial and reads the new state', async () => {
+  const current = scope(); current.suspendProject(projectId);
+  vi.spyOn(current, 'beginSync').mockReturnValue(new Promise(() => {}));
+  vi.mocked(getTaskSync).mockReturnValue(new Promise(() => {}));
+  const old = Promise.withResolvers<typeof graph.project>();
+  vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project).mockReturnValueOnce(old.promise)
+    .mockResolvedValue({ ...graph.project, name: 'Current project' });
+  let access: ProjectAccessSession | null = null;
+  const Probe = () => { access = useProjectAccessSession(projectId); return null; };
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+    <ProjectAccessBoundary projectId={projectId}><Probe /><ProjectPage projectId={projectId} /></ProjectAccessBoundary>
+  </TestTaskCacheBoundary></LocaleProvider>);
+  await screen.findByRole('heading', { name: graph.project.name });
+  fireEvent(window, new Event('focus'));
+  await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
+  act(() => access!.publishMutation(null));
+  expect(await screen.findByRole('heading', { name: 'Current project' })).toBeVisible();
+  await act(async () => old.resolve(graph.project));
+  expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
+  expect(current.isProjectSuspended(projectId)).toBe(true);
+  expect(current.getAuthorizedProject(projectId)).toBeNull();
+});
+
+it('keeps task polling during an ordinary slow Project read', async () => {
+  Reflect.set(globalThis, Symbol.for('daynight.pollingIntervals'), { taskSync: 20 });
+  const current = scope();
+  const pending = Promise.withResolvers<typeof graph.project>();
+  vi.mocked(getProject).mockReset().mockImplementation((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return pending.promise; });
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (_projectId, query) => taskSyncReadFixture(taskSyncFromGraph(graph, { query, versionForTask: () => 1n })));
+  vi.mocked(getProjectAccess).mockReset().mockResolvedValue(directAccessFixture(projectId));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+      <ProjectPage projectId={projectId} />
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await waitFor(() => expect(vi.mocked(getTaskSync).mock.calls.length).toBeGreaterThan(2));
+    await act(async () => pending.resolve(graph.project));
+    expect(await screen.findByRole('heading', { name: graph.project.name })).toBeVisible();
+  } finally { Reflect.deleteProperty(globalThis, Symbol.for('daynight.pollingIntervals')); }
+});
+
+it('bounds a stuck recovery read and resumes task polling', async () => {
+  Reflect.set(globalThis, Symbol.for('daynight.pollingIntervals'), { taskSync: 20 });
+  const current = scope();
+  const slow = Promise.withResolvers<typeof graph.project>();
+  vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project).mockImplementation((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return slow.promise; });
+  vi.mocked(getTaskSync).mockReset().mockRejectedValue(new ApiError('network'));
+  vi.mocked(getProjectAccess).mockReset().mockRejectedValue(new ApiError('network'));
+  const nativeTimeout = globalThis.setTimeout;
+  const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) =>
+    nativeTimeout(handler, delay === 60_000 ? 120 : delay, ...args)) as typeof setTimeout);
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+      <ProjectPage projectId={projectId} />
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: graph.project.name });
+    act(() => current.suspendProject(projectId));
+    await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
+    const reads = vi.mocked(getTaskSync).mock.calls.length;
+    await screen.findByText('Could not read project information.');
+    await waitFor(() => expect(vi.mocked(getTaskSync).mock.calls.length).toBeGreaterThan(reads));
+    expect(current.isProjectSuspended(projectId)).toBe(true);
+  } finally { timers.mockRestore(); Reflect.deleteProperty(globalThis, Symbol.for('daynight.pollingIntervals')); }
+});
+
+it('keeps a slow recovery read alive across automatic graph and access checks', async () => {
+  Reflect.set(globalThis, Symbol.for('daynight.pollingIntervals'), { taskSync: 20 });
+  const current = scope();
+  const slow = Promise.withResolvers<typeof graph.project>();
+  vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project).mockImplementation((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return slow.promise; });
+  vi.mocked(getTaskSync).mockReset().mockRejectedValue(new ApiError('network'));
+  vi.mocked(getProjectAccess).mockReset().mockRejectedValue(new ApiError('network'));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+      <ProjectPage projectId={projectId} />
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: graph.project.name });
+    await waitFor(() => expect(getProjectAccess).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); });
+    act(() => current.suspendProject(projectId));
+    await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
+    const graphReads = vi.mocked(getTaskSync).mock.calls.length;
+    const accessReads = vi.mocked(getProjectAccess).mock.calls.length;
+    fireEvent(window, new Event('focus'));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)); });
+    expect(vi.mocked(getTaskSync).mock.calls.length).toBe(graphReads);
+    expect(vi.mocked(getProjectAccess).mock.calls.length).toBe(accessReads);
+    await act(async () => slow.resolve({ ...graph.project, name: 'Recovered project' }));
+    expect(await screen.findByRole('heading', { name: 'Recovered project' })).toBeVisible();
+    expect(current.isProjectSuspended(projectId)).toBe(true);
+  } finally { Reflect.deleteProperty(globalThis, Symbol.for('daynight.pollingIntervals')); }
+});
+
+it('bounds a superseded Project denial with a fresh check despite continued task sync', async () => {
+  Reflect.set(globalThis, Symbol.for('daynight.pollingIntervals'), { taskSync: 20 });
+  const current = scope();
+  const earlier = Promise.withResolvers<typeof graph.project>(), confirm = Promise.withResolvers<typeof graph.project>();
+  vi.mocked(getProject).mockReset().mockResolvedValueOnce(graph.project)
+    .mockImplementationOnce((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return earlier.promise; })
+    .mockImplementation((_id, _signal, _admission, onDispatch) => { onDispatch?.(); return confirm.promise; });
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (_projectId, query) => taskSyncReadFixture(taskSyncFromGraph(graph, { query, versionForTask: () => 1n })));
+  vi.mocked(getProjectAccess).mockReset().mockResolvedValue(directAccessFixture(projectId));
+  try {
+    render(<LocaleProvider initial={{ locale: 'en', issue: null }}><TestTaskCacheBoundary scope={current}>
+      <ProjectPage projectId={projectId} />
+    </TestTaskCacheBoundary></LocaleProvider>);
+    await screen.findByRole('heading', { name: graph.project.name });
+    await waitFor(() => expect(current.getAuthorizedProject(projectId)).not.toBeNull());
+    fireEvent(window, new Event('focus'));
+    await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2));
+    const before = vi.mocked(getTaskSync).mock.calls.length;
+    await waitFor(() => expect(vi.mocked(getTaskSync).mock.calls.length).toBeGreaterThan(before));
+    await act(async () => earlier.reject(new ApiError('server', 404, 'not_found')));
+    await waitFor(() => expect(getProject).toHaveBeenCalledTimes(3));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); });
+    const graphReads = vi.mocked(getTaskSync).mock.calls.length;
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)); });
+    expect(vi.mocked(getTaskSync).mock.calls.length).toBe(graphReads);
+    await act(async () => confirm.reject(new ApiError('server', 404, 'not_found')));
+    await waitFor(() => expect(current.getAuthorizedProject(projectId)).toBeNull());
+    expect(screen.queryByRole('heading', { name: graph.project.name })).toBeNull();
+  } finally { Reflect.deleteProperty(globalThis, Symbol.for('daynight.pollingIntervals')); }
 });

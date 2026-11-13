@@ -17,9 +17,13 @@ independently of task synchronization and cache-backed access verification. The
 GET authorizes its own resource read, waits for identity admission and orders its
 receipt with the access session. Identity and project lifetime fences reject
 obsolete responses; a current trusted 404 withdraws project facts and starts
-access revalidation. A new Project GET can restore the page metadata under unchanged identity and
-project fences from its current denial or a confirmed access denial, even when
-cleanup or task storage is unavailable; it does not restore task access or synthesize an access role. A
+access revalidation. A new Project GET can restore page metadata under unchanged identity and project
+fences after withdrawal, even when cleanup or task storage is unavailable; it
+does not restore task access or synthesize an access role. During this recovery read and a follow-up to a superseded trusted 404, automatic
+task and access checks wait so their repeated observations cannot starve the
+Project observation; already dispatched automatic sync cannot publish a competing
+access receipt during that check. Its dispatched request has a 60-second deadline;
+ordinary background Project reads leave task synchronization running. A
 captured cache generation permits fenced withdrawal and cleanup. Without one, a same-account hint causes peer scopes to verify access;
 peers with confirmed access retain their displayed content during the check,
 while cold peers are isolated. Only a peer's own current denial can retire its

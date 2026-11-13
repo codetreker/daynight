@@ -12,7 +12,7 @@ export const useProjectPageRead = (projectId: string) => {
   const active = useRef<AbortController | null>(null);
   const sequence = useRef(0);
   const read = useCallback(async (retried = false, automatic = false): Promise<void> => {
-    if (automatic && active.current !== null) return;
+    if (automatic && active.current !== null && !active.current.signal.aborted) return;
     active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
@@ -21,6 +21,9 @@ export const useProjectPageRead = (projectId: string) => {
     const revision = session.scope.getProjectRevision(projectId);
     const admission = session.scope.getAdmissionRevision(projectId);
     let ticket = 0;
+    let projectRead: symbol | null = null;
+    let deadline: ReturnType<typeof setTimeout> | null = null;
+    const deadlineAbort = new AbortController();
     let historyTicket: ReturnType<typeof session.scope.getObservedHistoryTicket> = null;
     const current = () => !signal.aborted && generation === sequence.current && !session.scope.isInvalidated
       && revision === session.scope.getProjectRevision(projectId) && admission === session.scope.getAdmissionRevision(projectId)
@@ -34,46 +37,67 @@ export const useProjectPageRead = (projectId: string) => {
       if (!current()) return;
       historyTicket = session.scope.getObservedHistoryTicket(projectId);
       ticket = session.beginObservation();
-      const project = await getProject(projectId, signal, { userId: session.scope.userId, onPrincipalMismatch: session.scope.principalMismatch });
+      projectRead = session.beginProjectRead();
+      let expire!: (error: unknown) => void;
+      const timeout = new Promise<never>((_, reject) => { expire = reject; });
+      const dispatch = () => {
+        deadline = setTimeout(() => {
+          deadlineAbort.abort();
+          expire(new ApiError("network", null, "network", null, new Error("Project read timed out.")));
+        }, 60_000);
+      };
+      const project = await Promise.race([getProject(projectId, AbortSignal.any([signal, deadlineAbort.signal]),
+        { userId: session.scope.userId, onPrincipalMismatch: session.scope.principalMismatch }, dispatch), timeout]);
       await session.scope.ready(signal);
       if (current() && session.publishProjectRead(ticket)) setState({ session, projectId, project, error: null });
       else retrySuperseded();
     } catch (error) {
       if (isAbortError(error)) return;
-      if (!current()) { retrySuperseded(); return; }
+      if (!current()) {
+        if (!signal.aborted && generation === sequence.current && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") session.requireProjectReadRecheck();
+        retrySuperseded(); return;
+      }
       if (error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
-        if (!session.withdrawProjectRead(ticket, historyTicket, error)) retrySuperseded();
+        if (!session.withdrawProjectRead(ticket, historyTicket, error)) {
+          session.requireProjectReadRecheck();
+          retrySuperseded();
+        }
         return;
       }
       setState(previous => ({ session, projectId, project: previous.session === session && previous.projectId === projectId ? previous.project : null, error }));
     } finally {
+      if (deadline !== null) clearTimeout(deadline);
+      deadlineAbort.abort();
+      if (projectRead !== null) session.endProjectRead(projectRead);
       if (active.current === controller) active.current = null;
     }
   }, [projectId, session]);
   useEffect(() => {
     void session.revalidate();
     void read();
-    const unsubscribeRetry = session.subscribeProjectReadRetry(() => { void read(); });
+    const unsubscribeRetry = session.subscribeProjectReadRetry(automatic => { void read(false, automatic); });
+    const withdraw = (error: unknown) => {
+      ++sequence.current; active.current?.abort();
+      setState({ session, projectId, project: null, error });
+    };
+    const unsubscribeWithdrawal = session.subscribeProjectReadWithdrawal(() => withdraw(null));
     const unsubscribe = session.scope.subscribe(event => {
       if (event.projectId !== projectId) return;
-      if (event.accessRevoked && !session.isProjectReadCleanupFailure(event)) {
-        ++sequence.current; active.current?.abort();
-        setState({ session, projectId, project: null, error: event.error ?? null });
-      }
+      if (event.accessRevoked && !session.isProjectReadCleanupFailure(event)) withdraw(event.error ?? null);
     });
     const refresh = () => { if (document.visibilityState !== "hidden") void read(false, true); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     const timer = setInterval(refresh, 30_000);
     return () => {
-      ++sequence.current; active.current?.abort(); unsubscribe(); unsubscribeRetry(); clearInterval(timer);
+      ++sequence.current; active.current?.abort(); unsubscribe(); unsubscribeRetry(); unsubscribeWithdrawal(); clearInterval(timer);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [projectId, session, read]);
   useEffect(() => {
     if (access.status === "ready") void read(false, true);
-  }, [access.status, read]);
+  }, [access.status, read, session]);
   const retry = useCallback(() => { void session.revalidate(); void read(); }, [session, read]);
   const currentState = state.session === session && state.projectId === projectId ? state : null;
   const project = session.canObserveProjectRead() && !session.scope.isInvalidated ? currentState?.project ?? null : null;

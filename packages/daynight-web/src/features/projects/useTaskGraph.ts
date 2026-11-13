@@ -68,7 +68,7 @@ export const useTaskGraph = (projectId: string) => {
     });
   }, [projectId, scope]);
   const request = useCallback(async (automatic = false, historyRetry = false, confirmationRetry = false) => {
-    if (automatic && active.current !== null) return;
+    if (automatic && (active.current !== null || access?.projectReadInFlight())) return;
     active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
@@ -123,7 +123,7 @@ export const useTaskGraph = (projectId: string) => {
         changed: result.changedTaskIds.length, duplicate: response.tasks.length - result.changedTaskIds.length,
         cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
-      if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess);
+      if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess, automatic);
       if (sessionAdmission === authRequestsPauseRevision()) {
         sessionStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, response), sessions: response.sessions, receivedMonotonic });
       }

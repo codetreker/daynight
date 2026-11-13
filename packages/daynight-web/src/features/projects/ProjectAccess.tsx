@@ -17,9 +17,12 @@ type AccessState = {
 export class ProjectAccessSession {
   private state: AccessState = { access: null, status: 'loading', refreshing: false, error: null };
   private readonly listeners = new Set<() => void>();
-  private readonly projectReadRetries = new Set<() => void>();
+  private readonly projectReadRetries = new Set<(automatic: boolean) => void>();
+  private readonly projectReadWithdrawals = new Set<() => void>();
+  private activeProjectRead: symbol | null = null;
+  private projectReadNeedsRecheck = false;
+  private publishingProjectReadDenial = false;
   private projectReadRecovery: { readonly revision: number; readonly admission: number; readonly cleanupGeneration?: string } | null = null;
-  private projectReadBlocked = false;
   private readonly activityWaiters = new Set<() => void>();
   private readonly lifetime = new AbortController();
   private read: Promise<ProjectAccess | null> | null = null;
@@ -29,6 +32,7 @@ export class ProjectAccessSession {
   private sequence = 0;
   private accepted = 0;
   private barrier = 0;
+  private projectReadBarrier = 0;
   private lastObservation = performance.now();
   private timer: ReturnType<typeof setTimeout> | null = null;
   constructor(readonly projectId: string, readonly scope: TaskCacheScope, private active = true) {}
@@ -41,52 +45,55 @@ export class ProjectAccessSession {
     for (const listener of this.listeners) listener();
   }
   beginObservation = (): number => ++this.sequence;
-  canObserveProjectRead = (): boolean => {
-    if (!this.live()) return false;
-    if (!this.projectReadBlocked && !this.scope.isProjectSuspended(this.projectId) && this.state.status !== 'unavailable') return true;
-    const recovery = this.projectReadRecovery;
-    return recovery !== null && recovery.revision === this.scope.getProjectRevision(this.projectId) &&
-      recovery.admission === this.scope.getAdmissionRevision(this.projectId);
-  };
+  canObserveProjectRead = (): boolean => this.live();
   isProjectReadCleanupFailure = (event: CacheEvent): boolean => {
     const recovery = this.projectReadRecovery;
     return recovery !== null && event.error instanceof TaskCacheError && event.revokedGeneration !== undefined &&
       event.revokedGeneration === recovery.cleanupGeneration && recovery.revision === this.scope.getProjectRevision(this.projectId) &&
       recovery.admission === this.scope.getAdmissionRevision(this.projectId);
   };
-  subscribeProjectReadRetry = (retry: () => void): (() => void) => { this.projectReadRetries.add(retry); return () => { this.projectReadRetries.delete(retry); }; };
-  retryProjectRead = (): void => { for (const retry of this.projectReadRetries) retry(); };
+  subscribeProjectReadRetry = (retry: (automatic: boolean) => void): (() => void) => { this.projectReadRetries.add(retry); return () => { this.projectReadRetries.delete(retry); }; };
+  retryProjectRead = (): void => { for (const retry of this.projectReadRetries) retry(false); };
+  private recheckProjectRead = (): void => { for (const retry of this.projectReadRetries) retry(true); };
+  subscribeProjectReadWithdrawal = (withdraw: () => void): (() => void) => { this.projectReadWithdrawals.add(withdraw); return () => { this.projectReadWithdrawals.delete(withdraw); }; };
+  requireProjectReadRecheck = (): void => { this.projectReadNeedsRecheck = true; };
+  beginProjectRead = (): symbol => { const token = Symbol(); this.activeProjectRead = token; return token; };
+  endProjectRead = (token: symbol): void => { if (this.activeProjectRead === token) { this.activeProjectRead = null; this.schedule(); } };
+  projectReadInFlight = (): boolean => this.projectReadNeedsRecheck && this.activeProjectRead !== null;
   // Project GET is independently authorized. Order its receipts with access and
   // task-sync observations so an older denial cannot withdraw newer access.
   publishProjectRead = (ticket: number): boolean => {
-    if (!this.live() || ticket < this.barrier || ticket < this.accepted) return false;
-    this.accepted = ticket;
+    if (!this.live() || ticket < this.projectReadBarrier) return false;
+    this.accepted = Math.max(this.accepted, ticket);
     this.scope.markProjectReadable(this.projectId);
+    this.projectReadNeedsRecheck = false;
     this.update({ ...this.state, projectReadAvailable: true });
     if (this.read !== null) this.refreshAfterRead = true;
     return true;
   };
   withdrawProjectRead = (ticket: number, history: SyncTicket | null, error: ApiError): boolean => {
     if (!this.live() || ticket < this.barrier || ticket < this.accepted) return false;
-    if (history !== null) {
-      if (!this.scope.canRevokeProject(history)) return false;
-      // Revocation publishes its generation before asynchronous durable cleanup.
-      void this.scope.revokeProject(history, this.scope.signal, true, error).catch(() => {});
-    } else {
-      // A cold read has no generation to withdraw safely; isolate locally until
-      // access verification can identify its persistent generation.
-      this.scope.suspendProject(this.projectId);
-      this.scope.reportUnboundProjectDenial(this.projectId);
-    }
+    if (history !== null && !this.scope.canRevokeProject(history)) return false;
+    this.publishingProjectReadDenial = true;
+    try {
+      if (history !== null) {
+        // Revocation publishes its generation before asynchronous durable cleanup.
+        void this.scope.revokeProject(history, this.scope.signal, true, error).catch(() => {});
+      } else {
+        // A cold read has no generation to withdraw safely; isolate locally until
+        // access verification can identify its persistent generation.
+        this.scope.suspendProject(this.projectId);
+        this.scope.reportUnboundProjectDenial(this.projectId);
+      }
+    } finally { this.publishingProjectReadDenial = false; }
     this.projectReadRecovery = { revision: this.scope.getProjectRevision(this.projectId), admission: this.scope.getAdmissionRevision(this.projectId),
       ...(history === null ? {} : { cleanupGeneration: history.cacheGeneration }) };
     void this.revalidateAfterMutation();
     return true;
   };
-  publishSync = (ticket: number, access: ProjectAccess): boolean => {
-    if (!this.live() || ticket < this.barrier || ticket < this.accepted) return false;
+  publishSync = (ticket: number, access: ProjectAccess, automatic = false): boolean => {
+    if (!this.live() || automatic && this.projectReadInFlight() || ticket < this.barrier || ticket < this.accepted) return false;
     this.accepted = ticket;
-    this.projectReadBlocked = false;
     this.scope.markProjectReadable(this.projectId);
     this.lastObservation = performance.now();
     this.update({ access, status: 'ready', refreshing: this.read !== null, error: null, projectReadAvailable: this.state.projectReadAvailable ?? false });
@@ -97,17 +104,26 @@ export class ProjectAccessSession {
     if (!this.live()) return;
     this.barrier = this.beginObservation();
     this.accepted = this.barrier;
-    this.projectReadBlocked = access === null;
-    if (access === null) this.projectReadRecovery = null;
+    if (access === null) { this.projectReadRecovery = null; this.projectReadNeedsRecheck = true; this.projectReadBarrier = this.barrier; }
     this.lastObservation = performance.now();
     this.update({ access, status: access === null ? 'unavailable' : 'ready', refreshing: false, error: null, projectReadAvailable: access === null ? false : this.state.projectReadAvailable ?? false });
+    if (access === null) {
+      for (const withdraw of this.projectReadWithdrawals) withdraw();
+      const barrier = this.barrier;
+      queueMicrotask(() => { if (this.live() && barrier === this.barrier) this.recheckProjectRead(); });
+    }
     this.schedule();
   };
   private schedule = (): void => {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     if (!this.live() || !this.active || document.visibilityState === 'hidden' || this.read !== null) return;
-    this.timer = setTimeout(() => { this.timer = null; void this.revalidate(); }, Math.max(0, this.lastObservation + 30_000 - performance.now()));
+    const delay = this.projectReadInFlight() ? 30_000 : Math.max(0, this.lastObservation + 30_000 - performance.now());
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      if (this.projectReadInFlight()) this.schedule();
+      else void this.revalidate();
+    }, delay);
   };
   revalidate = (): Promise<ProjectAccess | null> => this.readAccess(false);
   waitForFreshAccess = async (signal: AbortSignal, requireActive = false): Promise<ProjectAccess | null> => {
@@ -153,7 +169,6 @@ export class ProjectAccessSession {
         if (!this.live() || ticket < this.barrier || cacheTicket.scopeRevision !== this.scope.getProjectRevision(this.projectId)) return null;
         if (ticket >= this.accepted) {
           this.accepted = ticket;
-          this.projectReadBlocked = false;
           this.scope.markProjectReadable(this.projectId);
           this.scope.resumeProject(this.projectId);
           this.update({ access, status: 'ready', refreshing: true, error: null, projectReadAvailable: this.state.projectReadAvailable ?? false });
@@ -179,7 +194,10 @@ export class ProjectAccessSession {
         this.lastObservation = performance.now();
         if (denied && cacheTicket !== null) {
           const denialBarrier = this.barrier;
-          const cleanup = this.scope.revokeProject(cacheTicket, this.scope.signal, true, error as ApiError);
+          this.publishingProjectReadDenial = true;
+          let cleanup: Promise<boolean>;
+          try { cleanup = this.scope.revokeProject(cacheTicket, this.scope.signal, true, error as ApiError); }
+          finally { this.publishingProjectReadDenial = false; }
           if (cacheTicket.scopeRevision === this.scope.getProjectRevision(this.projectId) &&
             cacheTicket.admissionRevision === this.scope.getAdmissionRevision(this.projectId)) {
             this.projectReadRecovery = { revision: cacheTicket.scopeRevision, admission: cacheTicket.admissionRevision, cleanupGeneration: cacheTicket.cacheGeneration };
@@ -241,6 +259,7 @@ export class ProjectAccessSession {
     }
   };
   private refreshVisible = (): void => {
+    if (this.projectReadInFlight()) { this.schedule(); return; }
     if (this.read !== null && this.protectedRead) { this.refreshAfterRead = true; return; }
     if (this.read !== null) {
       // A foreground return must observe access after the preceding background read.
@@ -257,18 +276,28 @@ export class ProjectAccessSession {
     document.addEventListener('visibilitychange', refresh);
     const unsubscribe = this.scope.subscribe((event) => {
       if (event.projectId !== this.projectId) return;
-      if (event.accessRestored) { this.refreshVisible(); return; }
+      if (event.accessRestored) {
+        this.refreshVisible();
+        queueMicrotask(() => { if (this.live()) this.recheckProjectRead(); });
+        return;
+      }
       if (event.taskNotFound) { void this.revalidateAfterMutation(); return; }
       if (!event.accessRevoked) return;
       if (this.isProjectReadCleanupFailure(event)) {
         this.update({ ...this.state, error: event.error });
         return;
       }
-      this.projectReadRecovery = null;
-      this.projectReadBlocked = true;
+      this.projectReadNeedsRecheck = true;
       this.barrier = this.beginObservation();
+      this.projectReadBarrier = this.barrier;
       const previous = this.state.error;
       const knownDenial = event.error instanceof ApiError && event.error.kind === 'server' && event.error.status === 404 && event.error.code === 'not_found';
+      const recovery = { revision: this.scope.getProjectRevision(this.projectId), admission: this.scope.getAdmissionRevision(this.projectId),
+        ...(event.revokedGeneration === undefined ? {} : { cleanupGeneration: event.revokedGeneration }) };
+      this.projectReadRecovery = recovery;
+      if (!this.publishingProjectReadDenial) queueMicrotask(() => {
+        if (this.projectReadRecovery === recovery && this.canObserveProjectRead()) this.recheckProjectRead();
+      });
       const priorFailure = previous !== null && !(previous instanceof ApiError && previous.kind === 'server' && previous.status === 404 && previous.code === 'not_found');
       this.update({ access: null, status: 'unavailable', refreshing: false, error: knownDenial && priorFailure ? previous : event.error, projectReadAvailable: false });
     });
