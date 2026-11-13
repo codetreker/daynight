@@ -15,6 +15,12 @@ export class ImageHistorySyncFailedError extends Error {
   }
 }
 
+/** A confirmed history refusal remains visible until a later checkpoint succeeds. */
+export const assertImageHistoryAvailable = (journal: ControllerLifecycleStore): void => {
+  const failure = journal.getImageHistorySyncFailure();
+  if (failure) throw new ImageHistorySyncFailedError(failure);
+};
+
 /** A frozen body and sync ID survive unknown HTTP results and reconnects. */
 export const syncControllerImageHistory = async (options: {
   ticket: ControllerLaunchTicket; journal: ControllerLifecycleStore; fence: ControllerFence;
@@ -44,23 +50,38 @@ export const syncControllerImageHistory = async (options: {
   let receipt: SessionArchiveFileReceipt | null = null;
   try { receipt = parse(await call("GET", "/status")); }
   catch (error) { if (!(error && typeof error === "object" && "status" in error && error.status === 404)) throw error; }
-  const file = await open(intent.filename, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = await file.stat(); if (!stat.isFile() || String(stat.size) !== intent.byteLength || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Frozen controller history is not a private complete file.");
-    const hash = createHash("sha256"), buffer = Buffer.alloc(1_048_576); let position = 0;
-    while (position < stat.size) { const result = await file.read(buffer, 0, Math.min(buffer.length, stat.size - position), position); if (!result.bytesRead) throw new Error("Frozen controller history is incomplete."); hash.update(buffer.subarray(0, result.bytesRead)); position += result.bytesRead; }
-    if (hash.digest("hex") !== intent.sha256) throw new Error("Frozen controller history integrity differs.");
-    const unchanged = async () => { const current = await file.stat(); if (current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs) throw new Error("Frozen controller history changed during synchronization."); };
-    while (receipt?.state !== "complete" && receipt?.state !== "failed") {
-      await unchanged();
-      const accepted = Number(receipt?.acceptedOffset ?? "0"), offset = accepted === stat.size ? Math.floor((accepted - 1) / buffer.length) * buffer.length : accepted;
-      const result = await file.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
-      if (!result.bytesRead) throw new Error("Frozen controller history is incomplete.");
-      await unchanged();
-      receipt = parse(await call("PUT", `?offset=${offset}`, buffer.subarray(0, result.bytesRead)));
-      if (Number(receipt.acceptedOffset) < accepted || receipt.state === "receiving" && Number(receipt.acceptedOffset) === accepted && accepted < stat.size) throw new Error("Controller history did not confirm the original chunk prefix.");
-    }
-  } finally { await file.close(); }
-  journal.finishImageHistorySync(intent.syncId, receipt.state === "complete");
-  if (receipt.state !== "complete") throw new ImageHistorySyncFailedError(receipt.error ?? { code: "history_unavailable", message: "The original controller history synchronization failed." });
+  if (receipt?.state !== "complete" && receipt?.state !== "failed") {
+    const file = await open(intent.filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await file.stat(); if (!stat.isFile() || String(stat.size) !== intent.byteLength || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Frozen controller history is not a private complete file.");
+      const hash = createHash("sha256"), buffer = Buffer.alloc(1_048_576); let position = 0;
+      while (position < stat.size) { const result = await file.read(buffer, 0, Math.min(buffer.length, stat.size - position), position); if (!result.bytesRead) throw new Error("Frozen controller history is incomplete."); hash.update(buffer.subarray(0, result.bytesRead)); position += result.bytesRead; }
+      if (hash.digest("hex") !== intent.sha256) throw new Error("Frozen controller history integrity differs.");
+      const unchanged = async () => { const current = await file.stat(); if (current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs) throw new Error("Frozen controller history changed during synchronization."); };
+      while (receipt?.state !== "complete" && receipt?.state !== "failed") {
+        await unchanged();
+        const accepted = Number(receipt?.acceptedOffset ?? "0"), offset = accepted === stat.size ? Math.floor((accepted - 1) / buffer.length) * buffer.length : accepted;
+        const result = await file.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
+        if (!result.bytesRead) throw new Error("Frozen controller history is incomplete.");
+        await unchanged();
+        try {
+          receipt = parse(await call("PUT", `?offset=${offset}`, buffer.subarray(0, result.bytesRead)));
+        } catch (original) {
+          // A non-success response can still follow a durable failed or complete
+          // write. Observe only this frozen identity before classifying it.
+          options.signal?.throwIfAborted();
+          let observed: SessionArchiveFileReceipt;
+          try { observed = parse(await call("GET", "/status")); }
+          catch (observation) { throw new AggregateError([original, observation], "Controller history write and original status observation failed.", { cause: original }); }
+          if (observed.state !== "complete" && observed.state !== "failed") throw original;
+          receipt = observed;
+        }
+        if (Number(receipt.acceptedOffset) < accepted || receipt.state === "receiving" && Number(receipt.acceptedOffset) === accepted && accepted < stat.size) throw new Error("Controller history did not confirm the original chunk prefix.");
+      }
+    } finally { await file.close(); }
+  }
+  if (!receipt) throw new Error("Controller history did not reach a terminal receipt.");
+  const failure = receipt.state === "failed" ? receipt.error ?? { code: "history_unavailable", message: "The original controller history synchronization failed." } : undefined;
+  journal.finishImageHistorySync(intent.syncId, receipt.state === "complete", failure);
+  if (failure) throw new ImageHistorySyncFailedError(failure);
 };

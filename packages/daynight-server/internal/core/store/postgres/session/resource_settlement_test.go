@@ -206,7 +206,7 @@ func testResourceReclamationPersistsAdmissionBarrierUntilFinalDeletion(t *testin
 			t.Fatal("final cleanup retained original row", e)
 		}
 		usage, e := d.SessionResourceUsage(ctx, id)
-		if e != nil || usage.Bytes != 0 || usage.Resources != 0 || usage.UploadIdentities != 1 {
+		if e != nil || usage.Bytes != 0 || usage.Resources != 0 {
 			t.Fatal("cleanup quota or immutable tombstone changed", usage, e)
 		}
 		saved, e := d.SessionUpload(ctx, id, upload.Spec.UploadID)

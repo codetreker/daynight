@@ -32,10 +32,9 @@ func (s *Execution) imageTarget(p model.Principal, r *record, target sp.ImageTar
 	return nil
 }
 func sameNative(a, b *string) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
-func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, project, taskID, id string, spec sp.ImageUploadSpec, remote bool, desiredBlob ...string) (sp.ImageUploadReceipt, bool, error) {
+func (s *Execution) prepareUploadIdentity(ctx context.Context, p model.Principal, project, taskID, id string, spec sp.ImageUploadSpec, remote bool, desiredBlob ...string) (sp.ImageUploadReceipt, bool, error) {
 	var out sp.ImageUploadReceipt
 	created := false
-	var copyAdmission error
 	validate := sp.DecodeImageUploadSpec
 	if !remote {
 		validate = sp.DecodeImageDisplayUploadSpec
@@ -81,9 +80,6 @@ func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, projec
 			if exists {
 				return fault("resource_conflict", "The image identity already has an original upload.")
 			}
-			if e = requireImageHistoryLedger(ctx, tx, r, false); e != nil {
-				return e
-			}
 		}
 		usage, e := d.SessionResourceUsage(ctx, id)
 		if e != nil {
@@ -92,7 +88,6 @@ func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, projec
 		if usage.Deleting || usage.Frozen {
 			return fault("resource_conflict", "Session resource deletion has begun.")
 		}
-		size := number(spec.ByteLength)
 		if !remote && len(desiredBlob) > 0 {
 			captureID := spec.UploadID
 			if len(desiredBlob) > 1 {
@@ -105,24 +100,6 @@ func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, projec
 			if capture.Validated == nil || capture.Receipt.State != "copying" || capture.Receipt.ResourceID == nil || *capture.Receipt.ResourceID != desiredBlob[0] || capture.Request.Occurrence.ImageID != spec.ImageID {
 				return conflict()
 			}
-			usage.ReservedBytes -= number(capture.Validated.ByteLength)
-			usage.ReservedResources--
-			usage.GlobalReservedBytes -= 2 * number(capture.Validated.ByteLength)
-		}
-		if usage.UploadIdentities >= sp.MaxUploadIdentities {
-			e := fault("quota_exceeded", "Session image upload identity capacity is exhausted.")
-			if !remote && len(desiredBlob) > 0 {
-				copyAdmission = e
-			}
-			return e
-		}
-		if e = s.admitImageResource(ctx, usage, size); e != nil {
-			if !remote && len(desiredBlob) > 0 {
-				if f, ok := e.(*model.Fault); ok && (f.Code == "quota_exceeded" || f.Code == "component_unsupported") {
-					copyAdmission = e
-				}
-			}
-			return e
 		}
 		expires := s.now().Add(24 * time.Hour).UTC().Truncate(time.Microsecond)
 		out = sp.ImageUploadReceipt{UploadID: spec.UploadID, ImageID: spec.ImageID, Target: spec.Target, State: "receiving", AcceptedOffset: "0", Spec: sp.ImageUploadMetadata{Name: spec.Name, MediaType: spec.MediaType, ByteLength: spec.ByteLength, SHA256: spec.SHA256}, ExpiresAt: expires.Format(time.RFC3339Nano)}
@@ -133,10 +110,6 @@ func (s *Execution) prepareUpload(ctx context.Context, p model.Principal, projec
 		}
 		return s.saveImageUpload(ctx, tx, r, store.SessionUploadRecord{SessionID: id, ActorID: p.UserID, BlobID: blob, Spec: spec, Receipt: out, ExpiresAt: expires})
 	})
-	if copyAdmission != nil && err == copyAdmission {
-		f := copyAdmission.(*model.Fault)
-		err = &definiteImageError{image: sp.ImageError{Code: f.Code, Message: f.Message}, cause: err, expectAbsent: true}
-	}
 	return out, created, err
 }
 func (s *Execution) upload(ctx context.Context, tx *operationTx, r *record, p model.Principal, id string) (store.SessionResourceDAO, store.SessionUploadRecord, error) {
@@ -657,6 +630,14 @@ func (s *Execution) completeUpload(ctx context.Context, p model.Principal, proje
 				return conflict()
 			}
 		} else if errors.Is(e, model.ErrNotFound) {
+			if e = checkContentPublication(ctx, tx, id, resourceContentChange{descriptor}); e != nil {
+				var capacity *contentCapacityError
+				var f *model.Fault
+				if errors.As(e, &capacity) && errors.As(e, &f) && f.Code == "quota_exceeded" {
+					return &definiteImageError{image: sp.ImageError{Code: f.Code, Message: f.Message}, cause: e}
+				}
+				return e
+			}
 			if e = d.InsertSessionResource(ctx, store.SessionResourceRecord{SessionID: id, Resource: descriptor, BlobID: u.BlobID, BlobPath: path}); e != nil {
 				return e
 			}
@@ -741,7 +722,7 @@ func (s *Execution) ReleaseUpload(ctx context.Context, p model.Principal, projec
 }
 
 func (s *Execution) PrepareUpload(ctx context.Context, p model.Principal, project, task, id string, spec sp.ImageUploadSpec) (sp.ImageUploadReceipt, bool, error) {
-	return s.prepareUpload(ctx, p, project, task, id, spec, true)
+	return s.prepareUploadIdentity(ctx, p, project, task, id, spec, true)
 }
 func (s *Execution) WriteUploadChunk(ctx context.Context, p model.Principal, project, task, id, upload string, input sp.ImageChunkWrite) (sp.ImageUploadReceipt, error) {
 	return s.writeUploadChunk(ctx, p, project, task, id, upload, input, true)
@@ -914,28 +895,4 @@ func definiteImageFailure(err error) *sp.ImageError {
 		return definiteImageFailure(children[0])
 	}
 	return definiteImageFailure(errors.Unwrap(err))
-}
-
-func (s *Execution) admitImageResource(ctx context.Context, usage store.SessionResourceUsage, size int64) error {
-	if usage.Resources+usage.ReservedResources >= sp.MaxSessionResources || usage.Bytes+usage.ReservedBytes+size > sp.MaxSessionResourceBytes {
-		return fault("quota_exceeded", "Session image resource capacity is exhausted.")
-	}
-	space, ok := s.files.(interface {
-		ResourceSpace(context.Context) (int64, int64, error)
-	})
-	if !ok {
-		return fault("component_unsupported", "Resource volume admission is unavailable.")
-	}
-	free, total, e := space.ResourceSpace(ctx)
-	if e != nil {
-		return e
-	}
-	floor := int64(1024 * 1024 * 1024)
-	if total/20 > floor {
-		floor = total / 20
-	}
-	if free <= floor+sp.ArchiveResourceReserve+usage.GlobalReservedBytes+2*size {
-		return fault("quota_exceeded", "Resource volume free space is reserved for existing content.")
-	}
-	return nil
 }

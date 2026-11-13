@@ -141,19 +141,8 @@ func (s *Execution) captureMessage(ctx context.Context, tx *operationTx, r *reco
 		if ledgerRefusal != nil {
 			return failRegistration(ledgerRefusal.Code, ledgerRefusal.Message)
 		}
-		if usage.UploadIdentities >= sp.MaxUploadIdentities {
-			return failRegistration("quota_exceeded", "Session image capture identity capacity is exhausted.")
-		}
-		if request.Locator.Kind != "resource" {
-			if s.imageDecoder == nil {
-				return failRegistration("component_unsupported", "Full image validation is unavailable.")
-			}
-			if e = s.admitImageResource(ctx, usage, sp.MaxImageBytes); e != nil {
-				if f, ok := e.(*model.Fault); ok && (f.Code == "quota_exceeded" || f.Code == "component_unsupported") {
-					return failRegistration(f.Code, f.Message)
-				}
-				return nil, e
-			}
+		if request.Locator.Kind != "resource" && s.imageDecoder == nil {
+			return failRegistration("component_unsupported", "Full image validation is unavailable.")
 		}
 		resourceID := uuid.NewString()
 		capture = store.SessionCaptureRecord{SessionID: r.Snapshot.SessionID, Request: request, Receipt: sp.ImageCaptureReceipt{CaptureID: request.CaptureID, AttemptID: request.AttemptID, Revision: "1", Occurrence: request.Occurrence, State: "reserved", ResourceID: &resourceID}}
@@ -404,7 +393,7 @@ func (s *Execution) copyCapture(ctx context.Context, p model.Principal, project,
 	if err != nil {
 		return err
 	}
-	receipt, _, err := s.prepareUpload(ctx, p, project, taskID, id, spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID)
+	receipt, _, err := s.prepareUploadIdentity(ctx, p, project, taskID, id, spec, false, *capture.Receipt.ResourceID, capture.Request.CaptureID)
 	if err != nil {
 		return err
 	}

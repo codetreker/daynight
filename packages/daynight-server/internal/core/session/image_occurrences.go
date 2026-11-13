@@ -150,11 +150,8 @@ func (s *Execution) RetryImageOccurrence(ctx context.Context, p model.Principal,
 		if e != nil {
 			return e
 		}
-		if usage.Deleting || usage.Frozen || usage.UploadIdentities >= sp.MaxUploadIdentities {
+		if usage.Deleting || usage.Frozen {
 			return conflict()
-		}
-		if e = s.admitImageResource(ctx, usage, sp.MaxImageBytes); e != nil {
-			return e
 		}
 		resource := uuid.NewString()
 		capture.Receipt.AttemptID = uuid.NewString()
@@ -166,7 +163,7 @@ func (s *Execution) RetryImageOccurrence(ctx context.Context, p model.Principal,
 		if e = saveImageCapture(ctx, d, capture); e != nil {
 			return e
 		}
-		// The reservation and original request share one transaction. A lost
+		// The attempt and original request share one transaction. A lost
 		// response can then recover through the same durable attempt and offer.
 		if e = saveMediaRequest(ctx, media, store.SessionMediaRequest{SessionID: id, RequestID: mediaIdentity(capture.Receipt.AttemptID, "retry_capture"), Action: "retry_capture", Fence: r.Snapshot.ControllerFence, Body: encode(map[string]any{"captureId": capture.Request.CaptureID, "attemptId": capture.Receipt.AttemptID})}); e != nil {
 			return e

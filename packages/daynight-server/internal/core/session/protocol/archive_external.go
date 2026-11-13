@@ -11,7 +11,8 @@ import (
 )
 
 const MaxArchiveManifestBytes = 4 * 1024 * 1024
-const MaxArchiveHistoryBytes = 67125248
+const MaxArchiveTimelineBytes = 128 * 1024 * 1024
+const MaxArchiveHistoryBytes = MaxArchiveTimelineBytes + 16*1024
 const MaxArchiveBlobBytes = 10 * 1024 * 1024
 const ArchiveMetadataReserveBytes = 132 * 1024 * 1024
 
@@ -101,7 +102,7 @@ func DecodeArchiveManifest(data []byte) (ArchiveManifest, error) {
 		return ArchiveManifest{}, errInvalid
 	}
 	n, e := strconv.ParseInt(out.Timeline.ByteLength, 10, 64)
-	if e != nil || n > MaxArchiveBytes {
+	if e != nil || n > MaxArchiveTimelineBytes {
 		return ArchiveManifest{}, errInvalid
 	}
 	values, e := array(fields["resources"])
@@ -146,7 +147,7 @@ func DecodeArchiveManifest(data []byte) (ArchiveManifest, error) {
 }
 func DecodeArchiveTimeline(data []byte) (ArchiveTimeline, error) {
 	var out ArchiveTimeline
-	if len(data) == 0 || len(data) > MaxArchiveBytes || !validUnicode(data) {
+	if len(data) == 0 || len(data) > MaxArchiveTimelineBytes || !validUnicode(data) {
 		return out, errInvalid
 	}
 	f, e := object(data, "entries")

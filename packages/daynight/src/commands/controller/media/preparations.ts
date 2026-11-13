@@ -2,7 +2,7 @@ import { createImageCaptureSource } from "./capture-source.js";
 import { captureSourceReservations } from "./capture-reservations.js";
 export type { CaptureSourceLease } from "./capture-reservations.js";
 import { openNativeMediaSpool, type NativeMediaSpool } from "./native-spool.js";
-import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "./metadata-budget.js";
+import { controllerMetadataBudget } from "./metadata-budget.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./release-error.js";
 import { openMediaBudgetLedger } from "./budget-ledger.js";
 import { controllerMediaDiskBytes } from "./disk-budget.js";
@@ -92,7 +92,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     // Unknown files retain their actual charge after interrupted preparation or
     // capture. Native names share only private immutable original inodes.
     const mediaBytes = controllerMediaDiskBytes([root, path.join(content.root, "blobs")], reservations);
-    ledger.reserve(mediaBytes + next + CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES);
+    ledger.reserve(mediaBytes + next + metadataBudget.reservationCeiling());
     const actualBytes = controllerMediaDiskBytes([root, path.join(content.root, "blobs")], new Map());
     return Math.max(0, mediaBytes - actualBytes) + next;
   });

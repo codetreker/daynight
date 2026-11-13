@@ -30,7 +30,7 @@ import type { NativeInput } from "./providers/types.js";
 import type { NativeInputLease } from "./media/preparations.js";
 import type { NativeInputPublicationQuery, NativeInputPublicationResult } from "./media/native-publication-types.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
-import { syncControllerImageHistory } from "./media/history-sync.js";
+import { assertImageHistoryAvailable, syncControllerImageHistory } from "./media/history-sync.js";
 import type { NativeProvider, NativeReadPolicy, ProviderOptions, ProviderState } from "./providers/types.js";
 
 type ControllerRuntimeOptions = { homeDirectory: string; provider: "codex" | "claude" | "copilot"; launchId: string };
@@ -183,7 +183,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   let relay!: ReturnType<typeof createControllerRelay>;
-  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
+  const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: () => synchronizeImageHistory(true), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
   const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
   const closeExternalImages = own(() => externalImages.close());
   const markdownCaptures = createMarkdownCaptureCoordinator({ ticket, journal, bridge: captureBridge.providerOptions,
@@ -206,7 +206,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       if (historyTimer) clearTimeout(historyTimer);
       historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(String(error))); }, 250);
     },
-    beforeImage: () => synchronizeImageHistory(),
+    beforeImage: () => synchronizeImageHistory(true),
     onRetryCapture: (body, signal) => captureBridge.retry(body, signal),
     acquireCaptureReadPolicy: request => markdownCaptures.acquireReadPolicy(request),
     onCommand: async command => {
@@ -254,9 +254,18 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     historyAbort.abort(new Error("Controller history synchronization stopped."));
     await historyWork;
   });
-  async function synchronizeImageHistory(): Promise<void> {
+  async function synchronizeImageHistory(forCapture = false): Promise<void> {
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     if (stopping || !relay?.connected() || !journal.prepareImageHistorySync || !relay.currentFence || !relay.imageHistorySupported?.()) return;
+    if (forCapture) {
+      try { assertImageHistoryAvailable(journal); }
+      catch (error) {
+        // The current capture must see the confirmed failure. A later
+        // checkpoint can independently establish recovery after space changes.
+        historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(cause => diagnostic(String(cause))); }, 250);
+        throw error;
+      }
+    }
     historyRequested = true;
     if (historyWork) return historyWork;
     historyWork = (async () => {
