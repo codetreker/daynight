@@ -18,7 +18,7 @@
 .goal-information dl > div + div { margin-top: .65rem; }
 .goal-information dt { color: var(--task-helper); }
 .goal-information dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
-.goal-information-dates dd { margin-top: .2rem; }
+.goal-information-general dd { margin-top: .2rem; }
 .goal-information-counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
 .goal-information-counts dd { flex: none; }
 .goal-information-progress { margin: 1rem 0 .5rem; }
