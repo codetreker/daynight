@@ -68,6 +68,7 @@
 .task-claim-label, .task-claim-account { color: #778194; }
 .task-claim-execution { margin-top: 4px; color: #56627a; }
 .task-claim-phase { padding: 0 7px; border: 1px solid #e3e3f2; border-radius: 4px; color: #6666a4; background: #f1f1fc; font-size: 11px; }
+.task-claim-active .task-claim-phase { border-color: var(--task-in_progress-border); color: var(--task-in_progress-ink); background: var(--task-in_progress-background); }
 .task-claim-withdraw { color: var(--task-error-ink); border-color: #e7d4d4; background: #fff; font-size: 11px; min-height: 30px; flex: none; scroll-margin-top: 0; }
 .task-claim-members { margin: 6px 0 0; font-size: 11px; color: #778194; }
 .task-claim-members p { margin: 3px 0; }
