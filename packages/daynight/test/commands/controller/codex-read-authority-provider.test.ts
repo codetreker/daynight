@@ -85,6 +85,20 @@ test("native settings mutation waits for source writers after synchronous policy
   expect(() => policy.verify()).toThrow();
 });
 
+test("accounting failure during Read authority drain prevents native settings dispatch", async () => {
+  let release!: () => void, fenced = false;
+  const failure = new Error("accounting failure");
+  const drain = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+  const { provider, policies, states } = await open({ drainNativeReadPolicy: drain, assertNativeDispatch: () => { if (fenced) throw failure; } });
+  const policy = policies.at(-1)!;
+  const pending = provider.setSetting!("sandbox", "readOnly", "operation", states.at(-1)!.controls!.revision);
+  const rejected = expect(pending).rejects.toBe(failure);
+  expect(drain).toHaveBeenCalledTimes(1); expect(() => policy.verify()).toThrow();
+  fenced = true; release(); drain.mockResolvedValue(undefined);
+  await rejected;
+  expect((await requests()).some(call => call.method === "thread/settings/update")).toBe(false);
+});
+
 test("model changes retain the same native Read permission after full native settings confirmation", async () => {
   const { provider, policies, states } = await open();
   const policy = policies.at(-1)!;

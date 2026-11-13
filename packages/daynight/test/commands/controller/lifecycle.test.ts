@@ -37,6 +37,94 @@ it("rejects new native input at outbox capacity without consuming a sequence or 
   store.acknowledgeEvents("1");
   expect(store.appendEvent({ text: "next" }).sequence).toBe("2"); store.close();
 });
+it("keeps Unicode outbox bytes and event watermarks atomic through append and ACK failures", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database });
+  const account = () => {
+    const values = database.prepare("SELECT value FROM outbox ORDER BY sequence").all() as { value: string }[];
+    const total = database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get() as { byte_length: number };
+    expect(total.byte_length).toBe(values.reduce((sum, row) => sum + Buffer.byteLength(row.value, "utf8"), 0));
+    return total.byte_length;
+  };
+  try {
+    store.appendEvent({ text: "中文 🐈\n\\\"" });
+    const before = account();
+    database.exec("CREATE TEMP TRIGGER fail_outbox_total BEFORE UPDATE ON outbox_totals BEGIN SELECT RAISE(ABORT, 'injected accounting failure'); END");
+    expect(() => store.appendEvent({ text: "failure" })).toThrow("injected accounting failure");
+    expect(store.pendingEvents()).toHaveLength(1);
+    expect(account()).toBe(before);
+    expect(() => store.acknowledgeEvents("1")).toThrow("injected accounting failure");
+    expect(store.pendingEvents()).toHaveLength(1);
+    expect(store.getLastAcknowledgedSequence()).toBe("0");
+    expect(account()).toBe(before);
+    database.exec("DROP TRIGGER fail_outbox_total");
+    expect(store.appendEvent({ text: "二" }).sequence).toBe("2");
+    store.acknowledgeEvents("1");
+    const remaining = account();
+    expect(remaining).toBeGreaterThan(0);
+    store.acknowledgeEvents("1");
+    expect(account()).toBe(remaining);
+    store.acknowledgeEvents("2");
+    expect(account()).toBe(0);
+  } finally { store.close(); }
+});
+it("reports rollback when a nested outbox capacity read fails inside the original write transaction", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database });
+  try {
+    store.appendEvent({ text: "original" });
+    const total = (database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get() as { byte_length: number }).byte_length;
+    database.exec("DELETE FROM outbox_totals");
+    let failure: unknown;
+    try { store.appendEvent({ text: "not admitted" }); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-read" }, outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } });
+    database.prepare("INSERT INTO outbox_totals VALUES(1,?)").run(total);
+    expect(store.pendingEvents()).toHaveLength(1);
+    expect(store.appendEvent({ text: "next" }).sequence).toBe("2");
+  } finally { store.close(); }
+});
+it("fences later outbox writes and watermarks while keeping reads and shutdown available", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database, contentOwnedLocally: true, maxOutboxBytes: 512 });
+  const entryId = randomUUID();
+  try {
+    store.appendEvent({ text: "original" });
+    store.markProjectionGap("retained");
+    const before = store.pendingEvents(), source = store.getHistorySource(), floor = store.getSourceFloor();
+    const total = database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get();
+    let resume!: () => void;
+    const callback = (async () => {
+      await new Promise<void>(resolve => { resume = resolve; });
+      return store.projectTimeline({ entryId, revision: "1", kind: "reasoning", text: "later" });
+    })();
+    store.disableOutboxWrites();
+    store.disableOutboxWrites();
+    resume();
+    await expect(callback).rejects.toThrow("outbox writes are disabled");
+    expect(() => store.appendEvent({ text: "later" })).toThrow("outbox writes are disabled");
+    expect(() => store.appendEvent({ text: "x".repeat(600) })).toThrow("outbox writes are disabled");
+    expect(() => store.acknowledgeEvents("1")).toThrow("outbox writes are disabled");
+    expect(() => store.drainProjectionGap()).toThrow("outbox writes are disabled");
+    expect(store.hasTimelineEntry(entryId)).toBe(false);
+    expect(store.pendingEvents()).toEqual(before);
+    expect(store.getHistorySource()).toEqual(source);
+    expect(store.getSourceFloor()).toBe(floor);
+    expect(database.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get()).toEqual(total);
+  } finally { store.close(); }
+});
+
+it("fences a write disabled while serializing an oversized event", async () => {
+  const { home, ticket, database } = await fixture();
+  const store = openControllerLifecycleStore(path.join(home, "state.sqlite"), ticket, { database, contentOwnedLocally: true, maxOutboxBytes: 512 });
+  try {
+    store.appendEvent({ text: "original" });
+    const before = store.pendingEvents(), source = store.getHistorySource(), floor = store.getSourceFloor();
+    expect(() => store.appendEvent({ toJSON: () => { store.disableOutboxWrites(); return { text: "x".repeat(600) }; } })).toThrow("outbox writes are disabled");
+    expect(store.pendingEvents()).toEqual(before);
+    expect(store.getHistorySource()).toEqual(source);
+    expect(store.getSourceFloor()).toBe(floor);
+  } finally { store.close(); }
+});
 it("replays numeric event order across decimal digit boundaries", async () => {
   const { home, ticket, database } = await fixture(); const store = openControllerLifecycleStore(path.join(home,"state.sqlite"),ticket,{database});
   for(let i=1;i<=110;i++) store.appendEvent({index:i});

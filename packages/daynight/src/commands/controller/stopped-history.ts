@@ -4,13 +4,14 @@ import { randomUUID } from "node:crypto";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerSnapshot } from "./lifecycle-store.js";
 import { controllerJournalFormat } from "./journal-format.js";
-import { runSqliteImmediate } from "../../platform/sqlite-access.js";
+import { runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import path from "node:path";
 import { withStoppedControllerStorage } from "./stopped-storage.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { parseSourceEvent, RELAY_LIMITS, type SourceEvent } from "../../session/controller-protocol.js";
 import { sessionBinding } from "../../session/protocol.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
+import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 
 export type StoppedSourceTail = { sourceEpoch: string; batchId: string; events: readonly SourceEvent[] };
 export type StoppedSourceTailReceipt = { sourceEpoch: string; batchId: string; lastAckedSourceSeq: string };
@@ -36,10 +37,15 @@ export const replayStoppedControllerHistory = async (options: {
   const stateKey = "stopped_source_tail";
   let originalThrough: string | undefined;
   const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, stateDirectory: options.stateDirectory ?? path.dirname(journalPath), assertOriginal: assertStopped }, action);
+  const settle = <T>(db: Database.Database, action: () => T): T => {
+    try { return runSqliteImmediate(db, action); }
+    catch (error) { throw withOutboxTransactionOutcome(error, sqliteTransactionOutcome(error)); }
+  };
   for (;;) {
     signal.throwIfAborted();
     const batch = local(db => runSqliteImmediate(db, (): StoppedSourceTail | null => {
       assertCurrentSqlite(db, controllerJournalFormat); assertStopped(db);
+      const outbox = openControllerOutbox(db, { assertWrite: () => { throw new Error("Stopped source batch construction cannot mutate the outbox."); } });
       const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS through,CAST(last_acknowledged AS TEXT) AS ack,CAST(source_floor AS TEXT) AS floor,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { through: string; ack: string; floor: string; projection_gap: string | null; archive_incomplete: number };
       if (originalThrough !== undefined && source.through !== originalThrough) throw new Error("The stopped source cutoff changed during replay.");
       originalThrough = source.through;
@@ -55,14 +61,14 @@ export const replayStoppedControllerHistory = async (options: {
         for (const raw of batch.events) {
           const event = parseSourceEvent(raw);
           if (event.kind === "gap" || BigInt(event.sourceSeq) > BigInt(source.through)) throw new Error("Stopped history contains an invalid source event.");
-          const row = db.prepare("SELECT value FROM outbox WHERE sequence=?").get(BigInt(event.sourceSeq)) as { value: string } | undefined;
-          if (BigInt(event.sourceSeq) !== ++previous || !row || JSON.stringify(parseSourceEvent({ ...(JSON.parse(row.value) as object), sourceSeq: event.sourceSeq })) !== JSON.stringify(event)) throw new Error("Stopped source batch differs from the original durable tail.");
+          const value = outbox.valueAt(BigInt(event.sourceSeq));
+          if (BigInt(event.sourceSeq) !== ++previous || value === undefined || JSON.stringify(parseSourceEvent({ ...(JSON.parse(value) as object), sourceSeq: event.sourceSeq })) !== JSON.stringify(event)) throw new Error("Stopped source batch differs from the original durable tail.");
         }
         return batch;
       }
       const events: SourceEvent[] = [], batchId = randomUUID();
       let previous = BigInt(source.ack);
-      for (const row of db.prepare("SELECT CAST(sequence AS TEXT) AS sequence,value FROM outbox WHERE sequence>? ORDER BY outbox.sequence LIMIT ?").all(previous, RELAY_LIMITS.maxBatchEvents) as { sequence: string; value: string }[]) {
+      for (const row of outbox.pending(previous, RELAY_LIMITS.maxBatchEvents)) {
         if (BigInt(row.sequence) !== previous + 1n) throw new Error("Stopped history source sequence is incomplete.");
         const event = parseSourceEvent({ ...(JSON.parse(row.value) as object), sourceSeq: row.sequence });
         if (event.kind === "gap") throw new Error("Stopped history contains an explicit projection gap.");
@@ -83,13 +89,19 @@ export const replayStoppedControllerHistory = async (options: {
     const receipt = await options.send(batch, signal);
     signal.throwIfAborted();
     if (!receipt || Object.keys(receipt).sort().join() !== "batchId,lastAckedSourceSeq,sourceEpoch" || receipt.sourceEpoch !== batch.sourceEpoch || receipt.batchId !== batch.batchId || receipt.lastAckedSourceSeq !== batch.events.at(-1)!.sourceSeq) throw new Error("Stopped history source acknowledgement conflicts with its original batch.");
-    local(db => runSqliteImmediate(db, () => {
+    local(db => settle(db, () => {
       assertCurrentSqlite(db, controllerJournalFormat); assertStopped(db);
       const cutoff = db.prepare("SELECT CAST(last_sequence AS TEXT) AS through FROM execution WHERE id=1").get() as { through: string };
       if (cutoff.through !== originalThrough) throw new Error("The stopped source cutoff changed before acknowledgement.");
       const current = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(stateKey) as { value: string } | undefined;
       if (!current || current.value !== JSON.stringify(batch)) throw new Error("Stopped source batch changed before acknowledgement.");
-      db.prepare("DELETE FROM outbox WHERE sequence<=?").run(BigInt(receipt.lastAckedSourceSeq));
+      // This callback runs under the stopped-storage permit and its immediate
+      // transaction, after the original generation and batch were verified.
+      const outbox = openControllerOutbox(db, { assertWrite: () => {
+        if (!db.inTransaction) throw new Error("Stopped source acknowledgement requires its original write transaction.");
+        assertStopped(db);
+      } });
+      outbox.acknowledgeThrough(BigInt(receipt.lastAckedSourceSeq));
       db.prepare("UPDATE image_occurrences SET acknowledged=1 WHERE CAST(source_sequence AS INTEGER)<=?").run(BigInt(receipt.lastAckedSourceSeq));
       db.prepare("UPDATE execution SET last_acknowledged=MAX(last_acknowledged,?) WHERE id=1").run(BigInt(receipt.lastAckedSourceSeq));
       db.prepare("DELETE FROM image_runtime_state WHERE key=?").run(stateKey);

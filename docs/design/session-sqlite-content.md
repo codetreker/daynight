@@ -2,7 +2,7 @@
 
 ## 范围与所有者
 
-Controller journal 的唯一编号序列为 `001`–`010`，当前格式为 v10。标准化 timeline 的唯一权威是原 `journal.sqlite` 的当前行；普通发布、分页、inspection、同步、归档和资源引用判断均消费同一个 SQL 正文所有者。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务。
+Controller journal 的唯一编号序列为 `001`–`011`，当前格式为 v11。标准化 timeline 的唯一权威是原 `journal.sqlite` 的当前行；普通发布、分页、inspection、同步、归档和资源引用判断均消费同一个 SQL 正文所有者。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务。
 
 | 模块 | 责任 |
 |---|---|
@@ -38,7 +38,7 @@ canonical 010 沿原迁移链处理 v1–9。旧 writer 准入继续由 `assertJ
 
 v2–5 的 SQL 正文和资源先按原合同耐久导出；v6–7 仍核对文件与索引完全一致；v1 保留历史不完整标记。v8–9 只读取已提交 `content_index` 指针，不从目录选择更新候选。打开源前后检查私有普通文件身份，并核对长度、SHA-256、entry id、seq、revision 和内容 hash。没有原 execution 的非空 pending 源拒绝导入。
 
-先在原事务中完整核对并捕获有界的已提交指针元数据，不缓存正文；再执行包含旧索引删除的完整 DDL，按捕获指针重新核对原文件并逐项保存。DDL、总量核对、设置 `legacy_timeline_cleanup_pending=1` 与 `user_version=10` 处于同一个 immediate 事务。任何导入或提交失败均保留真实事务结果与原文件；SQL 回滚不会提前删除唯一文件源。导入后可以读取 SQL 正文，旧正文文件由独立的停止维护阶段退休。
+先在原事务中完整核对并捕获有界的已提交指针元数据，不缓存正文；再执行包含旧索引删除的完整 DDL，按捕获指针重新核对原文件并逐项保存。DDL、总量核对、设置 `legacy_timeline_cleanup_pending=1` 与后续编号步骤及最终 `user_version` 处于同一个 immediate 事务。任何导入或提交失败均保留真实事务结果与原文件；SQL 回滚不会提前删除唯一文件源。导入后可以读取 SQL 正文，旧正文文件由独立的停止维护阶段退休。
 
 ## 峰值预留与停止维护
 
@@ -54,7 +54,7 @@ v2–5 的 SQL 正文和资源先按原合同耐久导出；v6–7 仍核对文�
 
 退休仅覆盖私有 Session-bound 根下识别出的 UUID 候选、旧 timeline 与已确认迁移备份中的 timeline。资源、blob、pin 和原生资料保留。未知文件、symlink 或身份冲突会暴露错误并保留现场；已退休文件的缺失可在重入时确认。共享 `index.json` 仍由 `resource-files.ts` 统一读写，Session 绑定、descriptor、blob、pin 和 lease 均不随正文索引退休而改变。索引发布失败时不删除正文；索引已发布而删除中断时，SQL 正文继续可读，重入仍重新耐久发布空旧正文清单，确认之前 rename 后的目录刷盘结果，再完成文件退休。
 
-当前 v10 读者可能在屏障之后建立自己的 SQL 快照，并在构造资源拥有者时读到发布前的旧文件清单。若旧 timeline 引用的文件在检查时消失，仅允许在索引原始字节确实已改变时重读一次，并完整核对新清单仍引用的全部文件；未改变的索引、仍被引用的缺失文件或无效清单继续报错。资源清单不缓存旧正文引用；后续资源写入只发布空 `entries`，删除回滚读取当前已发布清单，不恢复构造时的旧引用。
+当前格式读者可能在屏障之后建立自己的 SQL 快照，并在构造资源拥有者时读到发布前的旧文件清单。若旧 timeline 引用的文件在检查时消失，仅允许在索引原始字节确实已改变时重读一次，并完整核对新清单仍引用的全部文件；未改变的索引、仍被引用的缺失文件或无效清单继续报错。资源清单不缓存旧正文引用；后续资源写入只发布空 `entries`，删除回滚读取当前已发布清单，不恢复构造时的旧引用。
 
 `deadline` 在阶段前后检查，SQLite busy timeout 约束锁等待；同步原生 VACUUM 不能被 JavaScript timer 强制中断。VACUUM 返回后若期限已过，保留真实已提交阶段、pending 与后续维护所需预留，再由同一入口重入。
 
