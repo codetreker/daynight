@@ -16,8 +16,8 @@ export const createControllerCaptureBridge = (options: {
 }) => {
   const { journal } = options;
   const retries = new Map<string, Promise<ValidatedImage>>();
-  const observe = (input: ImageCaptureReceipt, reconcileAttempt = false): ImageCaptureReceipt => {
-    const receipt = journal.observeImageCaptureReceipt(input, reconcileAttempt);
+  const observe = (input: ImageCaptureReceipt, reconcileAttempt = false, expectedAttempt?: string): ImageCaptureReceipt => {
+    const receipt = journal.observeImageCaptureReceipt(input, reconcileAttempt, expectedAttempt);
     if (receipt.resource) {
       const request = journal.getImageCaptureRequest(receipt.captureId);
       if (request.locator.kind === "resource") journal.saveResource(receipt.resource);
@@ -55,8 +55,10 @@ export const createControllerCaptureBridge = (options: {
     queryImageCapture: async captureId => {
       journal.getImageCaptureRequest(captureId);
       const receipt = await options.capture("query", { captureId });
-      if (journal.getImageCaptureAttempt(captureId) !== receipt.attemptId) await journal.media().releaseCaptureSource(captureId, journal.getImageCaptureAttempt(captureId));
-      return observe(receipt, true);
+      const previousAttempt = journal.getImageCaptureAttempt(captureId);
+      journal.validateImageCaptureReceipt(receipt, true, previousAttempt);
+      if (previousAttempt !== receipt.attemptId) await journal.media().releaseCaptureSource(captureId, previousAttempt);
+      return observe(receipt, true, previousAttempt);
     },
     commitImageCapture: async (captureId, attemptId, validated) => {
       journal.assertImageCaptureAttempt(captureId, attemptId);

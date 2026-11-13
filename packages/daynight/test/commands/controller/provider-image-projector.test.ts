@@ -6,6 +6,9 @@ import type { ProviderEntry, ProviderOptions } from "../../../src/commands/contr
 import type { DirectCaptureSubmission, ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart } from "../../../src/session/image-values.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
 import type { NativeInputPublicationView, NativeImageProjectionState } from "../../../src/commands/controller/media/native-publication-types.js";
+import { createMemoryDatabase } from "../../helpers/sqlite.js";
+import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
+import { migrateDirectCaptureState } from "../../../src/commands/controller/media/capture-migration.js";
 
 const fixture = () => {
   let acknowledged = false;
@@ -34,6 +37,17 @@ const fixture = () => {
 // Retained capture state is inspected because callback output cannot prove that
 // an otherwise unreachable historical body was released.
 const retainedMapValues = (projector: ProviderImageProjector): unknown[] => Object.values(projector).flatMap(value => value instanceof Map ? [...value.values()] : []);
+
+const migrateLegacyProjection = (states: Map<string, unknown>, old: unknown): NativeImageProjectionState => {
+  const db = createMemoryDatabase(), key = [...states.keys()][0]!;
+  try {
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 11)) db.exec(step.sql);
+    db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(`native_provider:${key}`, JSON.stringify(old));
+    db.transaction(() => migrateDirectCaptureState(db, "SELECT 1", () => {}))();
+    const state = JSON.parse((db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`native_provider:${key}`) as { value: string }).value) as NativeImageProjectionState;
+    states.set(key, state); return state;
+  } finally { db.close(); }
+};
 
 test("text history is not retained and fallback bodies live only with active captures", async () => {
   const f = fixture(), projector = new ProviderImageProjector(f.options);
@@ -536,5 +550,64 @@ test("a stale submit refusal observes the service's current retry without replac
     projector.acknowledged(); await projector.settled();
     expect([...f.states.values()][0]).toMatchObject({ request: original, attemptId: currentAttempt, phase: "query", submission: null });
     expect(f.options.stageImageCapture).toHaveBeenCalledOnce(); expect(f.options.submitImageCapture).toHaveBeenCalledOnce();
+  } finally { await projector.close(); }
+});
+
+test("migrated unknown registration resumes its first source read only after the same reserved attempt is observed", async () => {
+  const f = fixture(); let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [f.slot]); await projector.settled(); await projector.close();
+  const current = [...f.states.values()][0] as NativeImageProjectionState, { attemptId: _attemptId, submission: _submission, ...old } = current;
+  const saved = migrateLegacyProjection(f.states, { ...old, phase: "query", unknownAction: "register", validated: null });
+  const read = vi.fn(async () => f.slot.payload);
+  vi.mocked(f.options.queryImageCapture!).mockRejectedValueOnce(new ImageCaptureRequestError({ code: "forbidden", message: "Current authority must be reconciled." })).mockResolvedValueOnce({ captureId: saved.request.captureId, attemptId: saved.attemptId, revision: "1", occurrence: saved.request.occurrence, state: "reserved", resourceId: f.resourceId, resource: null, error: null });
+  f.acknowledge(); projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "deferred", read } }]); await projector.settled();
+    expect(read).not.toHaveBeenCalled(); expect([...f.states.values()][0]).toMatchObject({ phase: "query", resumeReserved: "source" });
+    projector.acknowledged(); await projector.settled();
+    expect(read).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).toHaveBeenCalledOnce(); expect(f.options.submitImageCapture).toHaveBeenCalledOnce();
+    expect([...f.states.values()][0]).toMatchObject({ phase: "settled" }); expect([...f.states.values()][0]).not.toHaveProperty("resumeReserved");
+  } finally { await projector.close(); }
+});
+
+test.each(["commit", "failure"] as const)("migrated unknown %s resumes its frozen outcome after the same reserved attempt is observed", async action => {
+  const f = fixture(); let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [f.slot]); await projector.settled(); await projector.close();
+  const current = [...f.states.values()][0] as NativeImageProjectionState, { attemptId: _attemptId, submission: _submission, ...old } = current;
+  const validated = { mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 };
+  const saved = migrateLegacyProjection(f.states, { ...old, phase: "query", unknownAction: action, validated: action === "commit" ? validated : null, part: action === "failure" ? { ...old.part, error: { code: "decode_failed", message: "Original decoder failed." } } : old.part });
+  const read = vi.fn(async () => f.slot.payload);
+  vi.mocked(f.options.queryImageCapture!).mockResolvedValueOnce({ captureId: saved.request.captureId, attemptId: saved.attemptId, revision: "1", occurrence: saved.request.occurrence, state: "reserved", resourceId: f.resourceId, resource: null, error: null });
+  f.acknowledge(); projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "deferred", read } }]); await projector.settled();
+    expect(read).not.toHaveBeenCalled(); expect(f.options.stageImageCapture).not.toHaveBeenCalled(); expect(f.options.submitImageCapture).toHaveBeenCalledWith(saved.submission);
+    expect([...f.states.values()][0]).toMatchObject({ phase: "settled" }); expect([...f.states.values()][0]).not.toHaveProperty("resumeReserved");
+  } finally { await projector.close(); }
+});
+test.each(["upgrade_required", "capability_changed", "component_unsupported"])("a correlated native %s submit refusal settles once without replaying or inventing a receipt", async code => {
+  const f = fixture(); f.acknowledge();
+  vi.mocked(f.options.submitImageCapture!).mockRejectedValueOnce(new ImageCaptureRequestError({ code, message: "Direct capture cannot be accepted by the current component." }));
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot]); await projector.settled(); projector.acknowledged(); await projector.settled();
+    expect(f.options.submitImageCapture).toHaveBeenCalledOnce(); expect(f.options.queryImageCapture).not.toHaveBeenCalled(); expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect([...f.states.values()][0]).toMatchObject({ phase: "settled", part: { type: "image_unavailable", error: { code } } });
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image_unavailable", error: { code } }, { text: "after" }] });
+  } finally { await projector.close(); }
+});
+test.each(["capture_conflict", "resource_conflict", "session_conflict"])("a correlated %s followed by exact absence settles its original refusal after reopen", async code => {
+  const f = fixture(); f.acknowledge();
+  vi.mocked(f.options.submitImageCapture!).mockRejectedValueOnce(new ImageCaptureRequestError({ code, message: "The original capture cannot be accepted." }));
+  let projector = new ProviderImageProjector(f.options);
+  projector.publish(f.entry, [f.slot]); await projector.settled(); await projector.close();
+  expect([...f.states.values()][0]).toMatchObject({ phase: "query", submissionRefusal: { code } });
+  vi.mocked(f.options.queryImageCapture!).mockRejectedValueOnce(new ImageCaptureRequestError({ code: "capture_not_found", message: "Original capture is absent." }));
+  projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [{ ...f.slot, payload: { kind: "pending" } }]); await projector.settled(); projector.acknowledged(); await projector.settled();
+    expect(f.options.submitImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect([...f.states.values()][0]).toMatchObject({ phase: "settled", part: { type: "image_unavailable", error: { code } } });
+    expect([...f.states.values()][0]).not.toHaveProperty("submissionRefusal");
   } finally { await projector.close(); }
 });

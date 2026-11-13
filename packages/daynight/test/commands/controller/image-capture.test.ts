@@ -288,6 +288,24 @@ test("query reconciles a service retry whose request was lost without reviving a
 });
 
 
+test("a delayed old query cannot cancel the current attempt source writer", async () => {
+  const f = await fixture(), query = Promise.withResolvers<ImageCaptureReceipt>();
+  const consumer = bridge(f.journal, async () => query.promise);
+  f.journal.registerImageCaptureRequest(f.request);
+  f.journal.observeImageCaptureReceipt(f.receipt({ state: "failed", resourceId: null, error: { code: "decode_failed", message: "Previous source failed" } }));
+  const oldQuery = consumer.providerOptions.queryImageCapture!(f.request.captureId), result = oldQuery.catch(error => error);
+  const attemptId = randomUUID(); f.journal.retryImageCaptureRequest(f.request.captureId, attemptId);
+  const lease = f.journal.media().reserveCaptureSource(f.request.captureId, attemptId), started = Promise.withResolvers<AbortSignal>(), finish = Promise.withResolvers<void>();
+  const writer = lease.runWriter(async (_filename, signal) => { started.resolve(signal); await finish.promise; });
+  const signal = await started.promise;
+  try {
+    query.resolve(f.receipt({ state: "failed", resourceId: null, error: { code: "decode_failed", message: "Previous source failed" } }));
+    expect(await result).toMatchObject({ message: "Image capture receipt attempt conflict." });
+    expect(signal.aborted).toBe(false);
+    expect(f.journal.getImageCaptureAttempt(f.request.captureId)).toBe(attemptId);
+  } finally { finish.resolve(); await writer; await lease.release(); await f.journal.stopMedia(); f.journal.close(); }
+});
+
 test("source IO reserves both complete copies durably and never reopens an interrupted source", async () => {
   const f = await fixture();
   f.journal.registerImageCaptureRequest(f.request);

@@ -1,4 +1,4 @@
-import type { DirectCaptureSubmission, ImageCaptureRequest, ImagePart, ImageUnavailablePart, InputObservation, NativeImageSource } from "../../../session/image-values.js";
+import type { DirectCaptureSubmission, ImageCaptureRequest, ImageError, ImagePart, ImageUnavailablePart, InputObservation, NativeImageSource } from "../../../session/image-values.js";
 import type { TimelineEntry } from "../../../session/protocol.js";
 
 export type NativePublicationEntry = Extract<TimelineEntry, { kind: "user_message" | "assistant_message" }> & { kind: "user_message" };
@@ -28,6 +28,8 @@ export type NativeImageProjectionState = {
   phase: "new" | "preparing" | "submit" | "query" | "settled";
   part: ImagePart | ImageUnavailablePart;
   submission: DirectCaptureSubmission | null;
+  resumeReserved?: "source" | "submission";
+  submissionRefusal?: ImageError;
 };
 export type CommittedOriginalImageSlot = {
   readonly imageId: string;

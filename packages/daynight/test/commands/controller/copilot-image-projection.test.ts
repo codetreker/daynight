@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart, InputObservation, NativeImageSource } from "../../../src/session/image-values.js";
+import type { DirectCaptureSubmission, ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart, InputObservation, NativeImageSource } from "../../../src/session/image-values.js";
 import type { NativeInput, ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
 const bridge = vi.hoisted(() => ({ brands: new WeakSet<object>(), releases: vi.fn(), retained: vi.fn() }));
 vi.mock("../../../src/commands/controller/providers/copilot-bridge.js", () => ({
@@ -42,10 +42,10 @@ const fixture = async (imageCount = 1) => {
     onTimeline: (entry: ProviderEntry) => { journal.projectTimeline(entry); entries.push(structuredClone(entry)); }, onImageOccurrence: (occurrence: ImageOccurrence, source: NativeImageSource | null) => journal.registerImageOccurrence(occurrence, source).acknowledged, imageOccurrenceAcknowledged: (imageId: string) => journal.imageOccurrenceAcknowledged(imageId),
     imageRuntime: { getIntent: (id: string) => { const intent = journal.getInputIntent(id), operation = journal.getOperation(id); return intent && operation ? { sha256: intent.sha256, command: JSON.parse(intent.canonical), state: operation.state } : null; }, readState: (key: string) => journal.readNativeImageState(key), writeState: (key: string, value: unknown) => journal.writeNativeImageState(key, value), publishNativeInputAssociation: (request: NativeInputPublicationRequest) => journal.publishNativeInputAssociation(request), queryNativeInputAssociation: (identity: NativeInputPublicationIdentity) => journal.queryNativeInputAssociation(identity), patchNativeImagePart: (occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart) => journal.patchNativeImagePart(occurrence, part) },
     onInputObserved: vi.fn((observation: string | InputObservation) => observeNativeInput(journal, observation)),
-    registerImageCapture: vi.fn(async (request: ImageCaptureRequest) => { journal.registerImageCaptureRequest(request); requests.set(request.captureId, request); return receipt(request.captureId, request.locator.kind === "resource" ? "committed" : "reserved"); }),
+    prepareImageCapture: vi.fn(async (request: ImageCaptureRequest) => { journal.registerImageCaptureRequest(request); requests.set(request.captureId, request); }),
     queryImageCapture: vi.fn(async (id: string) => receipt(id, "committed")),
     stageImageCapture: vi.fn(async () => ({ mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 })),
-    commitImageCapture: vi.fn(async (id: string) => receipt(id, "committed")), failImageCapture: vi.fn(async (id: string) => receipt(id, "failed")),
+    submitImageCapture: vi.fn(async (input: DirectCaptureSubmission) => input.outcome.kind === "failed" ? { ...receipt(input.request.captureId, "failed"), resourceId: null, error: input.outcome.error } : receipt(input.request.captureId, "committed")),
   } as unknown as ProviderOptions;
   const inputs = new CopilotImageInputs(options, sessionId), images = new CopilotImages(options, sessionId, inputs), projection = new CopilotProjection(sessionId, options.onTimeline, images);
   cleanups.push(async () => { await images.close(); journal.close(); await rm(cwd, { recursive: true, force: true }); });
@@ -58,7 +58,7 @@ test("receipt-first input reuses original image identity and does not stage a du
   try {
     f.inputs.prepare(f.input, f.operationId, null); f.inputs.accept(f.operationId, f.messageId); f.projection.accept(f.event());
     expect(publish.mock.results[0]?.value.state, JSON.stringify({ result: publish.mock.results[0]?.value, request: publish.mock.calls[0]?.[0] })).toBe("committed");
-    await f.images.settled(); expect(f.options.registerImageCapture).not.toHaveBeenCalled();
+    await f.images.settled(); expect(f.options.prepareImageCapture).not.toHaveBeenCalled();
     f.acknowledge(); await f.images.settled();
     expect(f.timeline()[0]).toMatchObject({ content: [{ type: "text", text: "question" }, { type: "image", imageId: f.image.imageId, resourceId: f.image.resourceId }] });
     expect(f.options.stageImageCapture).not.toHaveBeenCalled();
@@ -181,9 +181,9 @@ test.each(["read", "write"] as const)("receipt-first source %s failure on the se
 });
 
 test("an old native capture preserves original slots committed before the publication result was adopted", async () => {
-  const f = await fixture(), publishOriginal = f.options.imageRuntime!.publishNativeInputAssociation!, commitOriginal = vi.mocked(f.options.commitImageCapture!).getMockImplementation()!;
+  const f = await fixture(), publishOriginal = f.options.imageRuntime!.publishNativeInputAssociation!, submitOriginal = vi.mocked(f.options.submitImageCapture!).getMockImplementation()!;
   const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
-  vi.mocked(f.options.commitImageCapture!).mockImplementation(async (...args) => { entered.resolve(); await finish.promise; return commitOriginal(...args); });
+  vi.mocked(f.options.submitImageCapture!).mockImplementation(async (...args) => { entered.resolve(); await finish.promise; return submitOriginal(...args); });
   const publish = vi.spyOn(f.options.imageRuntime!, "publishNativeInputAssociation").mockImplementation(request => {
     const result = publishOriginal(request); expect(result.state, JSON.stringify(result)).toBe("committed");
     throw new Error("Controlled publication response loss after commit");
@@ -199,7 +199,7 @@ test("an old native capture preserves original slots committed before the public
     if (committed?.state !== "committed") throw new Error("Shared publication did not commit.");
     const nativeState = f.journal.readNativeImageState(committed.view.slots[0]!.key) as NativeImageProjectionState;
     expect(nativeState).toMatchObject({ phase: "settled", part: { type: "image", resourceId: f.image.resourceId } });
-    expect(publish).toHaveBeenCalledOnce(); expect(f.options.registerImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+    expect(publish).toHaveBeenCalledOnce(); expect(f.options.prepareImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
   } finally { finish.resolve(); await f.images.close(); }
 });
 
@@ -220,7 +220,7 @@ test("a referenced asset waits for bytes, preserves the original owner and never
   try {
     f.projection.accept(f.event({ type: "blob", mimeType: "image/png", assetId, byteLength: 3 })); f.acknowledge(); await f.images.settled();
     const first = (f.timeline().at(-1) as any).content[1].imageId;
-    expect(f.options.registerImageCapture).not.toHaveBeenCalled();
+    expect(f.options.prepareImageCapture).not.toHaveBeenCalled();
     f.projection.accept({ type: "session.binary_asset", id: "asset-event", data: { assetId, mimeType: "image/png", byteLength: 3, data: f.marker() } }); await f.images.settled();
     expect((f.timeline().at(-1) as any).content[1]).toMatchObject({ type: "image", imageId: first });
     expect(f.entries.every(entry => entry.kind === "user_message")).toBe(true);
@@ -301,7 +301,7 @@ test("a content-addressed asset digest conflict cannot become readable media", a
   try {
     f.projection.accept(f.event({ type: "blob", mimeType: "image/png", assetId, byteLength: 3 })); f.acknowledge(); await f.images.settled();
     f.projection.accept({ type: "session.binary_asset", id: "asset-event", data: { assetId, mimeType: "image/png", byteLength: 3, data: f.marker() } }); await f.images.settled();
-    expect(f.options.stageImageCapture).not.toHaveBeenCalled(); expect(f.options.failImageCapture).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ code: "asset_identity_conflict" }));
+    expect(f.options.stageImageCapture).not.toHaveBeenCalled(); expect(f.options.submitImageCapture).toHaveBeenCalledWith(expect.objectContaining({ outcome: { kind: "failed", error: expect.objectContaining({ code: "asset_identity_conflict" }) } }));
   } finally { await f.images.close(); }
 });
 
@@ -320,7 +320,7 @@ test("an asset identity conflict remains unavailable after a repeated original e
     projection.accept(asset(f.marker()));
     projection.accept({ ...f.event({ type: "blob", mimeType: "image/png", assetId, byteLength: 3 }), id: randomUUID() }); reopened.acknowledge(); await reopened.settled();
     expect(f.options.stageImageCapture).not.toHaveBeenCalled();
-    expect(f.options.failImageCapture).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ code: "asset_identity_conflict" }));
+    expect(f.options.submitImageCapture).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: { kind: "failed", error: expect.objectContaining({ code: "asset_identity_conflict" }) } }));
   } finally { await reopened.close(); }
 });
 
@@ -343,8 +343,8 @@ test.each(["before", "after"] as const)("publication result loss %s commit queri
     if (boundary === "before") expect(publish.mock.calls[1]![0]).toEqual(request);
     expect(f.inputs.publication(f.messageId)).toMatchObject({ state: "committed" });
     expect(f.timeline()[0]).toMatchObject({ content: [{ text: "question" }, { type: "image", imageId: f.image.imageId, resourceId: f.image.resourceId }] });
-    expect(timeline).not.toHaveBeenCalled(); expect(occurrence).not.toHaveBeenCalled(); expect(f.options.registerImageCapture).not.toHaveBeenCalled();
-    f.acknowledge(); await f.images.settled(); expect(f.options.registerImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).not.toHaveBeenCalled();
+    expect(timeline).not.toHaveBeenCalled(); expect(occurrence).not.toHaveBeenCalled(); expect(f.options.prepareImageCapture).not.toHaveBeenCalled();
+    f.acknowledge(); await f.images.settled(); expect(f.options.prepareImageCapture).toHaveBeenCalledOnce(); expect(f.options.stageImageCapture).not.toHaveBeenCalled();
     expect(bridge.retained).toHaveBeenCalledOnce(); expect(f.inputs.pendingAccepted()).toEqual([]);
   } finally { await f.images.close(); }
 });

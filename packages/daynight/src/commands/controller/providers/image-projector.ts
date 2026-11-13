@@ -229,8 +229,10 @@ export class ProviderImageProjector {
       // exact command can acquire new bytes; projection keeps observing it.
       pending.saved.attemptId = receipt.attemptId;
       pending.saved.submission = null;
+      delete pending.saved.resumeReserved;
       pending.saved.phase = "query";
     }
+    delete pending.saved.submissionRefusal;
     if (receipt.state === "committed") {
       if (!receipt.resourceId) throw new Error("Native image capture has no committed original.");
       pending.saved.part = { type: "image", imageId: request.occurrence.imageId, resourceId: receipt.resourceId, label: pending.slot.label };
@@ -238,13 +240,19 @@ export class ProviderImageProjector {
       if (!receipt.error) throw new Error("Native image capture has no failure result.");
       pending.saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, receipt.error);
     } else { this.save(pending); return false; }
-    pending.saved.phase = "settled"; this.save(pending);
+    pending.saved.phase = "settled"; delete pending.saved.resumeReserved; this.save(pending);
     this.emitPart(pending); this.retire(pending); return true;
   }
   private freeze(pending: Pending, outcome: DirectCaptureSubmission["outcome"]): void {
     pending.saved.submission = structuredClone({ request: pending.saved.request, attemptId: pending.saved.attemptId, outcome });
     pending.saved.phase = "submit";
     this.save(pending);
+  }
+  private settleRefusal(pending: Pending, error: ImageError): void {
+    pending.saved.part = pendingPart(pending.saved.request.occurrence.imageId, pending.slot.label, error);
+    pending.saved.phase = "settled";
+    delete pending.saved.resumeReserved; delete pending.saved.submissionRefusal;
+    this.save(pending); this.emitPart(pending); this.retire(pending);
   }
   private sourceFailure(pending: Pending, error: unknown, fallback: ImageError): void {
     const code = error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : fallback.code;
@@ -306,11 +314,18 @@ export class ProviderImageProjector {
       if (saved.phase === "query") {
         try {
           const receipt = await options.queryImageCapture(request.captureId);
+          const resume = receipt.state === "reserved" && receipt.attemptId === saved.attemptId ? saved.resumeReserved : undefined;
           if (this.applyReceipt(pending, receipt, true)) return;
-          this.scheduleQuery(); return;
+          if (!resume) { this.scheduleQuery(); return; }
+          saved.phase = resume === "source" ? "new" : "submit";
+          delete saved.resumeReserved;
+          this.save(pending);
         } catch (error) {
+          if (error instanceof ImageCaptureRequestError && error.code === "capture_not_found" && saved.submissionRefusal) {
+            this.settleRefusal(pending, saved.submissionRefusal); return;
+          }
           if (!(error instanceof ImageCaptureRequestError) || error.code !== "capture_not_found" || !saved.submission) throw error;
-          saved.phase = "submit"; this.save(pending);
+          saved.phase = "submit"; delete saved.resumeReserved; this.save(pending);
         }
       }
       if (saved.phase === "new") await this.prepare(pending);
@@ -335,12 +350,11 @@ export class ProviderImageProjector {
         this.retryAt.set(request.captureId, Date.now() + 1000);
         this.save(pending); this.scheduleQuery(); return;
       }
-      if (error instanceof ImageCapturePrerequisiteError || dispatching && error instanceof ImageCaptureRequestError && error.code === "upgrade_required") {
-        saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, { code: error.code, message: error.message });
-        saved.phase = "settled";
-        try { this.save(pending); this.emitPart(pending); this.retire(pending); } catch { this.scheduleQuery(); }
+      if (error instanceof ImageCapturePrerequisiteError || dispatching && error instanceof ImageCaptureRequestError && ["upgrade_required", "capability_changed", "component_unsupported"].includes(error.code)) {
+        try { this.settleRefusal(pending, { code: error.code, message: error.message }); } catch { this.scheduleQuery(); }
         return;
       }
+      if (dispatching && error instanceof ImageCaptureRequestError) saved.submissionRefusal = { code: error.code, message: error.message };
       saved.part = pendingPart(request.occurrence.imageId, pending.slot.label, error instanceof ImageCaptureRequestError ? { code: error.code, message: error.message } : { code: "capture_unknown", message: "The original image capture result is unknown." });
       this.options.onDiagnostic?.(`Native image capture requires reconciliation: ${String(error)}`);
       this.save(pending); this.emitPart(pending); this.scheduleQuery();

@@ -712,7 +712,7 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
 test.each(["rolled-back", "unknown"] as const)("native publication carries its real SQLite %s outcome to the runtime fence", async outcome => {
   setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const db = new Database(":memory:");
-  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=11");
+  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=12");
   const quarantine = vi.fn(), originalExec = db.exec.bind(db);
   if (outcome === "unknown") vi.spyOn(db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw new Error("controlled rollback failure"); return originalExec(sql); });
   const publication = createNativeInputPublication({

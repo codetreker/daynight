@@ -44,8 +44,9 @@ const setup = async (operations: ControllerOperation[] = [], live = false, image
   const socket = transport.sockets[0]! as EventEmitter & { sent: Record<string, unknown>[]; close(): void };
   const frame = (type: string, extra = {}) => ({ protocol: snapshot.protocol, sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, connectionEpoch: "3", type, ...extra });
   const emit = (value: unknown) => socket.emit("message", Buffer.from(JSON.stringify(value)));
-  emit({ type: "welcome", protocol: snapshot.protocol, connectionEpoch: "3", session: { ...snapshot, historyEpoch, ...(images ? { contentRevision: 2, imageBudget: { revision: "1", maxBytes: "0", committedBytes: "0", reservedBytes: "0", maxResources: 0, committedResources: 0, reservedResources: 0 }, capabilities: { ...snapshot.capabilities, images: { revision: "1", providerRevision: "1", expectedNativeSessionId: null, modelId: null, controlsRevision: null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: "0", maxMessageImageBytes: "0", maxImagesPerMessage: 0, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } } } } : {}) }, lastAckedSourceSeq: "8", limits: RELAY_LIMITS, ...(live ? { requiresLiveSync: true } : {}) });
-  return { relay, journal, callbacks, ticket, socket, emit, frame, historyEpoch, setMedia };
+  const welcome = { type: "welcome", protocol: snapshot.protocol, connectionEpoch: "3", session: { ...snapshot, historyEpoch, ...(images ? { contentRevision: 2, imageBudget: { revision: "1", maxBytes: "0", committedBytes: "0", reservedBytes: "0", maxResources: 0, committedResources: 0, reservedResources: 0 }, capabilities: { ...snapshot.capabilities, images: { revision: "1", providerRevision: "1", expectedNativeSessionId: null, modelId: null, controlsRevision: null, send: "unsupported", steer: "unsupported", reasonCode: "profile_disabled", inputMediaTypes: [], maxImageBytes: "0", maxMessageImageBytes: "0", maxImagesPerMessage: 0, geometry: { version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 } } } } : {}) }, lastAckedSourceSeq: "8", limits: RELAY_LIMITS, ...(live ? { requiresLiveSync: true } : {}) };
+  emit(welcome);
+  return { relay, journal, callbacks, ticket, socket, emit, frame, historyEpoch, setMedia, welcome };
 };
 
 test("reconciliation waits for all bounded pages and retains unknown without native dispatch", async () => {
@@ -403,7 +404,7 @@ test("full capture slots refuse before dispatch and permit the same control afte
 });
 
 test("direct capture requires the upgrade capability and preserves frozen business across current transport frames", async () => {
-  const { relay, socket, emit, frame, callbacks } = await setup([], false, true);
+  const { relay, socket, emit, frame, callbacks, welcome } = await setup([], false, true);
   emit(frame("reconcile_result", { operations: [] }));
   const captureId = randomUUID(), attemptId = randomUUID();
   const occurrence = { imageId: randomUUID(), entryId: randomUUID(), container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-native-part" };
@@ -421,6 +422,18 @@ test("direct capture requires the upgrade capability and preserves frozen busine
   expect(replayFrame.requestId).not.toEqual(original.requestId);
   emit(frame("image_capture_result", { requestId: replayFrame.requestId, action: "submit", result: receipt, error: null }));
   expect(await replay).toEqual(receipt);
+  socket.close();
+  await vi.waitFor(() => expect(transport.sockets).toHaveLength(2), { timeout: 3000 });
+  const reconnected = transport.sockets[1]! as typeof socket;
+  const receive = (message: unknown) => reconnected.emit("message", Buffer.from(JSON.stringify(message)));
+  reconnected.emit("upgrade", { headers: { "daynight-session-direct-upload-version": "1" } });
+  receive({ ...welcome, connectionEpoch: "4" });
+  receive(frame("reconcile_result", { connectionEpoch: "4", operations: [] }));
+  const recovered = relay.capture("submit", structuredClone(submission)), recoveredFrame = reconnected.sent.at(-1)!;
+  expect(recoveredFrame).toMatchObject({ action: "submit", body: submission, connectionEpoch: "4" });
+  expect([original.requestId, replayFrame.requestId]).not.toContain(recoveredFrame.requestId);
+  receive(frame("image_capture_result", { connectionEpoch: "4", requestId: recoveredFrame.requestId, action: "submit", result: receipt, error: null }));
+  expect(await recovered).toEqual(receipt);
   expect(relay.connected()).toBe(true); expect(callbacks.onError).not.toHaveBeenCalled();
 });
 

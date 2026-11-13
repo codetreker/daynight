@@ -24,7 +24,9 @@ export type MarkdownCaptureRecord = {
   sourceAdmission?: { attemptId: string; policyRevision: string | null; sourceProofSha256: string | null; validated: ValidatedImage } | null;
   sourceCleanup?: { captureId: string; attemptId: string; pending: boolean; error: ImageError | null } | null;
   submission?: DirectCaptureSubmission;
+  submissionRefusal?: ImageError;
   dispatchPending?: boolean;
+  resumeReserved?: "source" | "submission";
 };
 type Hooks = Required<Pick<ProviderOptions, "prepareImageCapture" | "queryImageCapture" | "submitImageCapture">>;
 const failure = (code: string): ImageError => ({ code, message: "The original image source could not be captured." });
@@ -156,15 +158,16 @@ export const createMarkdownCaptureCoordinator = (options: {
   };
   const observe = (record: MarkdownCaptureRecord, receipt: ImageCaptureReceipt): void => {
     if (!record.request) return;
+    delete record.submissionRefusal;
     if (receipt.attemptId !== record.request.attemptId) {
       // Only the original control request may start a service retry. Persist
       // that boundary with its identity before receipt projection can fail.
-      record.awaitingRetry = true; record.started = false; record.error = null; delete record.submission; delete record.dispatchPending; record.phase = "unknown";
+      record.awaitingRetry = true; record.started = false; record.error = null; delete record.submission; delete record.dispatchPending; delete record.resumeReserved; record.phase = "unknown";
     }
     record.request = { ...record.request, attemptId: receipt.attemptId };
     record.receipt = receipt;
     const terminal = receipt.state === "committed" || receipt.state === "failed";
-    if (terminal) { record.phase = "unknown"; record.error = receipt.error; }
+    if (terminal) { record.phase = "unknown"; record.error = receipt.error; delete record.resumeReserved; }
     saved(record);
     if (receipt.resource) {
       store.put("context", `resource:daynight-resource:${receipt.resource.resourceId}`, receipt.resource.resourceId);
@@ -175,7 +178,7 @@ export const createMarkdownCaptureCoordinator = (options: {
   const settleRefusal = (record: MarkdownCaptureRecord, error: unknown): boolean => {
     if (!(error instanceof ImageCaptureRequestError || error instanceof ImageCapturePrerequisiteError)) return false;
     // The local projection records the refusal, not a fabricated service receipt.
-    record.error = { code: error.code, message: error.message }; record.receipt = null; record.phase = "settled";
+    record.error = { code: error.code, message: error.message }; record.receipt = null; record.phase = "settled"; delete record.submissionRefusal;
     saved(record); options.onFailure?.(record.occurrence, record.error);
     return true;
   };
@@ -200,7 +203,7 @@ export const createMarkdownCaptureCoordinator = (options: {
       if (isRetryableCaptureRefusal(cause)) {
         record.dispatchPending = true; record.cooldownUntil = Date.now() + 1000; saved(record);
       } else if (cause instanceof ImageCaptureRequestError && ["capture_conflict", "resource_conflict"].includes(cause.code)) {
-        return;
+        record.submissionRefusal = { code: cause.code, message: cause.message }; saved(record);
       } else if (cause instanceof ImageCaptureRequestError || cause instanceof ImageCapturePrerequisiteError) settleRefusal(record, cause);
       else throw cause;
       return;
@@ -274,21 +277,32 @@ export const createMarkdownCaptureCoordinator = (options: {
     await cleanupSource(record);
     if (stopped || !options.writable() || !options.fence() || !record.request || record.phase === "settled" || !journal.imageOccurrenceAcknowledged(record.occurrence.imageId)) return;
     const request = record.request;
-    if (record.submission || record.awaitingRetry) {
+    if (record.submission || record.awaitingRetry || record.resumeReserved) {
       if (record.dispatchPending) { if (Date.now() >= record.cooldownUntil) await submit(record); return; }
       let receipt: ImageCaptureReceipt;
       try { receipt = await hooks.queryImageCapture(request.captureId); }
       catch (error) {
         if (isRetryableCaptureRefusal(error)) return;
         if (error instanceof ImageCaptureRequestError) {
-          if (error.code === "capture_not_found") { if (record.submission) await submit(record); }
+          if (error.code === "capture_not_found") {
+            if (record.submissionRefusal) settleRefusal(record, new ImageCaptureRequestError(record.submissionRefusal));
+            else if (record.submission) { delete record.resumeReserved; saved(record); await submit(record); }
+          }
           else settleRefusal(record, error);
           return;
         }
         throw error;
       }
+      const resume = record.resumeReserved;
       observe(record, receipt);
-      return;
+      if (!resume || receipt.state !== "reserved" || receipt.attemptId !== request.attemptId) return;
+      // Migration preserves the old control boundary. Only its original
+      // reservation can authorize continuation of that unfinished action.
+      delete record.resumeReserved; record.awaitingRetry = false;
+      if (resume === "submission") {
+        record.dispatchPending = true; saved(record); await submit(record); return;
+      }
+      record.phase = "registered"; saved(record);
     }
     if (Date.now() < record.cooldownUntil) return;
     if (record.phase === "waiting") journal.registerImageCaptureRequest(request);
@@ -360,7 +374,7 @@ export const createMarkdownCaptureCoordinator = (options: {
         joined.throwIfAborted(); checkContext(old.context, request.locator.kind === "local");
         await new Promise<void>(resolve => setTimeout(resolve, Math.min(100, until - performance.now())));
       }
-      const { submission: _previousSubmission, dispatchPending: _previousDispatch, ...withoutRetry } = old;
+      const { submission: _previousSubmission, submissionRefusal: _previousRefusal, dispatchPending: _previousDispatch, resumeReserved: _previousResume, ...withoutRetry } = old;
       const record = saved({ ...withoutRetry, request, phase: "registered", started: false, awaitingRetry: false, error: null, sourceAdmission: null, queuedAt: Date.now() });
       try { const result = await copy(record, joined); record.phase = "unknown"; saved(record); return result; }
       catch (error) { record.error ??= sourceError(error); freeze(record, { kind: "failed", error: record.error }); await submit(record); throw error; }

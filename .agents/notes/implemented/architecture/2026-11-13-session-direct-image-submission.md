@@ -46,7 +46,16 @@ frames still encounter the Server's identity and attempt checks. Missing sealed
 bytes cannot authorize another source read. Receipt observation and exact retry
 controls preserve the immutable initial request while advancing the separate
 current attempt. Local source cleanup remains independent of service settlement
-and must finish before replacing its attempt.
+and must finish before replacing its attempt. A query validates the receipt before
+releasing the current writer and rechecks the same local attempt after that join.
+Definite nonretryable submission refusals settle the occurrence; they do not
+become an endless query-and-replay loop.
+
+Journal v12 converts unfinished registration, commit and failure state in the
+database migration. Only an old registration whose source never started retains
+permission to begin its first read after an exact same-attempt reserved receipt.
+Frozen old outcomes can resume submission after that receipt or replay after a
+correlated capture-not-found. Neither path recreates an interrupted source.
 
 ## Alternatives
 

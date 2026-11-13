@@ -48,7 +48,10 @@ export const migrateDirectCaptureState = (db: Database.Database, sql: string, as
     const phase: NativeImageProjectionState["phase"] = old.phase === "settled" ? "settled"
       : capture.attemptId !== request.attemptId || old.phase === "query" ? "query"
         : frozen ? "submit" : old.phase === "new" ? "new" : "preparing";
-    return { request: capture.request, attemptId: capture.attemptId, index: old.index, waitingForSource: old.waitingForSource, phase, part, submission: frozen };
+    const resumeReserved = phase === "query" && capture.attemptId === request.attemptId
+      ? frozen ? "submission" as const : old.unknownAction === "register" ? "source" as const : undefined
+      : undefined;
+    return { request: capture.request, attemptId: capture.attemptId, index: old.index, waitingForSource: old.waitingForSource, phase, part, submission: frozen, ...(resumeReserved ? { resumeReserved } : {}) };
   };
   const update = (key: string, value: unknown): void => {
     const encoded = JSON.stringify(value); assertWrite(Buffer.byteLength(encoded) + 16384);
@@ -75,11 +78,11 @@ export const migrateDirectCaptureState = (db: Database.Database, sql: string, as
     if (outcome) {
       record.submission = submission({ request: capture.request, attemptId: request.attemptId }, outcome);
       record.dispatchPending = !!retryControl || record.phase === "validated";
+      if (!record.dispatchPending) record.resumeReserved = "submission";
       record.phase = "unknown";
       if (retryControl) record.cooldownUntil = Math.max(record.cooldownUntil, retryControl.after);
     } else if (record.phase === "unknown" || record.awaitingRetry || capture.attemptId !== request.attemptId) {
-      // An unknown legacy dispatch has no frozen business body to replay.
-      // Retain observation responsibility without reopening the old source.
+      if (!record.started && !record.awaitingRetry && !observeOnly && capture.attemptId === request.attemptId) record.resumeReserved = "source";
       record.awaitingRetry = true; record.phase = "unknown";
     }
     update(row.key, record);

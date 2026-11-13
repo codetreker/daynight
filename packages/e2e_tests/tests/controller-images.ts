@@ -30,7 +30,7 @@ export const verifyControllerImages = async (page: Page): Promise<void> => {
   await copyFile(path.join(import.meta.dirname, "native-image-peer.mjs"), peer); await chmod(peer, 0o700);
   await writeFile(path.join(directory, "plot.png"), png, { mode: 0o600 });
   let output = "", sessionId: string | undefined;
-  const command = startCommand(process.execPath, [topology.cliEntry, "controller", "codex", "--sandbox", "danger-full-access", "--ask-for-approval", "never", "Render and save the local plot"], {
+  const command = startCommand(process.execPath, [topology.cliEntry, "controller", "codex", "--ask-for-approval", "never", "Render and save the local plot"], {
     cwd: directory, env: { ...cliEnvironment, PATH: `${binaries}${path.delimiter}${process.env.PATH}`, CODEX_HOME: path.join(directory, "native") }, timeoutMs: 120_000,
     onOutput: (_channel, chunk) => { output += chunk; sessionId = output.match(/Test Session: .*\/test-sessions\/([0-9a-f-]{36})/)?.[1]; },
   });

@@ -34,6 +34,14 @@ export const createImageCaptureSource = (db: Database.Database, transactions: Tr
     assertSource(capture.request);
     return { ...capture.request, attemptId };
   });
+  const validateReceipt = (input: ImageCaptureReceipt, reconcileAttempt: boolean, expectedAttempt?: string) => {
+    const receipt = parseImageCaptureReceipt(input, parseSessionResource), capture = load(receipt.captureId);
+    if (expectedAttempt !== undefined && capture.attemptId !== expectedAttempt) throw new Error("Image capture attempt changed during receipt reconciliation.");
+    if (canonicalImageJson(receipt.occurrence) !== canonicalImageJson(capture.request.occurrence)) throw new Error("Image capture receipt occurrence conflict.");
+    if (receipt.attemptId !== capture.attemptId && (!reconcileAttempt || capture.attempts.includes(receipt.attemptId) || capture.receipt && BigInt(receipt.revision) <= BigInt(capture.receipt.revision))) throw new Error("Image capture receipt attempt conflict.");
+    if (capture.receipt && (BigInt(receipt.revision) < BigInt(capture.receipt.revision) || receipt.revision === capture.receipt.revision && canonicalImageJson(receipt) !== canonicalImageJson(capture.receipt))) throw new Error("Image capture receipt revision conflict.");
+    return { receipt, capture };
+  };
   return {
     registerImageCaptureRequest: (input: ImageCaptureRequest): ImageCaptureRequest => transactions.write(() => {
       const request = parseImageCaptureRequest(input); assertSource(request);
@@ -66,16 +74,14 @@ export const createImageCaptureSource = (db: Database.Database, transactions: Tr
       capture.attemptId = attemptId; capture.attempts.push(attemptId); save(capture);
       return { ...capture.request, attemptId };
     }),
-    observeImageCaptureReceipt: (input: ImageCaptureReceipt, reconcileAttempt = false): ImageCaptureReceipt => transactions.write(() => {
-      const receipt = parseImageCaptureReceipt(input, parseSessionResource), capture = load(receipt.captureId);
-      if (canonicalImageJson(receipt.occurrence) !== canonicalImageJson(capture.request.occurrence)) throw new Error("Image capture receipt occurrence conflict.");
+    validateImageCaptureReceipt: (input: ImageCaptureReceipt, reconcileAttempt = false, expectedAttempt?: string): void => transactions.read(() => { validateReceipt(input, reconcileAttempt, expectedAttempt); }),
+    observeImageCaptureReceipt: (input: ImageCaptureReceipt, reconcileAttempt = false, expectedAttempt?: string): ImageCaptureReceipt => transactions.write(() => {
+      const { receipt, capture } = validateReceipt(input, reconcileAttempt, expectedAttempt);
       if (receipt.attemptId !== capture.attemptId) {
         // A service query can observe a retry whose request never reached this
         // connection. It cannot revive a previous attempt or roll back revision.
-        if (!reconcileAttempt || capture.attempts.includes(receipt.attemptId) || capture.receipt && BigInt(receipt.revision) <= BigInt(capture.receipt.revision)) throw new Error("Image capture receipt attempt conflict.");
         capture.attemptId = receipt.attemptId; capture.attempts.push(receipt.attemptId);
       }
-      if (capture.receipt && (BigInt(receipt.revision) < BigInt(capture.receipt.revision) || receipt.revision === capture.receipt.revision && canonicalImageJson(receipt) !== canonicalImageJson(capture.receipt))) throw new Error("Image capture receipt revision conflict.");
       capture.receipt = receipt; save(capture); return receipt;
     }),
   };

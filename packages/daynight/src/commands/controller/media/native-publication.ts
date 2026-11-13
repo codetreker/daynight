@@ -4,7 +4,7 @@ import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerOperation, ControllerOutboxEvent, ControllerSnapshot } from "../lifecycle-store.js";
 import type { SessionContent } from "../content/session-content.js";
 import type { SourceTimelineEntry } from "../../../session/controller-protocol.js";
-import { canonicalImageJson, imageId, parseImageCaptureRequest, parseDirectCaptureSubmission, parseImagePart, parseInputObservation, parseLocalImagePreparation, parseNativeImageSource, parseValidatedImage, type ImageOccurrence, type InputObservation, type NativeImageSource } from "../../../session/image-values.js";
+import { canonicalImageJson, imageId, parseImageCaptureRequest, parseDirectCaptureSubmission, parseImageError, parseImagePart, parseInputObservation, parseLocalImagePreparation, parseNativeImageSource, parseValidatedImage, type ImageOccurrence, type InputObservation, type NativeImageSource } from "../../../session/image-values.js";
 import { parseTimelineEntry, type MessagePart, type TimelineEntry } from "../../../session/protocol.js";
 import { runSqliteImmediate, sqliteTransactionOutcome } from "../../../platform/sqlite-access.js";
 import { assertCurrentSqlite } from "../../../platform/sqlite-format.js";
@@ -44,10 +44,11 @@ const observationOf = (identity: NativeInputPublicationIdentity): InputObservati
 const imagePart = (part: MessagePart | undefined): part is NativeImageProjectionState["part"] => part?.type === "image" || part?.type === "image_unavailable";
 const parseCaptureState = (value: unknown): NativeImageProjectionState => {
   const state = value as NativeImageProjectionState;
-  if (!state || typeof state !== "object" || Object.keys(state).sort().join(",") !== "attemptId,index,part,phase,request,submission,waitingForSource" || !Number.isSafeInteger(state.index) || state.index < 0 || typeof state.waitingForSource !== "boolean" || !["new", "preparing", "submit", "query", "settled"].includes(state.phase) || state.waitingForSource && state.phase !== "new") throw new Error("Native publication capture state is corrupt.");
+  if (!state || typeof state !== "object" || Object.keys(state).filter(key => key !== "resumeReserved" && key !== "submissionRefusal").sort().join(",") !== "attemptId,index,part,phase,request,submission,waitingForSource" || !Number.isSafeInteger(state.index) || state.index < 0 || typeof state.waitingForSource !== "boolean" || !["new", "preparing", "submit", "query", "settled"].includes(state.phase) || state.waitingForSource && state.phase !== "new" || state.resumeReserved !== undefined && (!["source", "submission"].includes(state.resumeReserved) || state.phase !== "query") || state.submissionRefusal !== undefined && state.phase !== "query") throw new Error("Native publication capture state is corrupt.");
   const request = parseImageCaptureRequest(state.request), part = parseImagePart(state.part), submission = state.submission === null ? null : parseDirectCaptureSubmission(state.submission);
   imageId(state.attemptId);
-  if (part.imageId !== request.occurrence.imageId || state.phase === "submit" && !submission || submission && (!same(submission.request, request) || submission.attemptId !== state.attemptId)) throw new Error("Native publication capture progress is inconsistent.");
+  if (state.submissionRefusal !== undefined) parseImageError(state.submissionRefusal);
+  if (part.imageId !== request.occurrence.imageId || (state.phase === "submit" || state.resumeReserved === "submission") && !submission || state.resumeReserved === "source" && submission || submission && (!same(submission.request, request) || submission.attemptId !== state.attemptId)) throw new Error("Native publication capture progress is inconsistent.");
   return { ...state, request, part, submission };
 };
 const errorValue = (cause: unknown, unknown: boolean) => ({
