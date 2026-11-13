@@ -38,6 +38,7 @@ async function install(page: Page, running = false, linked = false, large = fals
     const send = (body: unknown, status = 200, headers: Readonly<Record<string, string>> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...headers } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph().project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph().project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
