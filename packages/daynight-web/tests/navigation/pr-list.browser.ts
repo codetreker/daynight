@@ -151,4 +151,3 @@ test('independent PR empty, connection and saved-data notices remain readable at
   }
   expect(state.unexpected).toEqual([]);
 });
-
