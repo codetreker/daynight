@@ -76,6 +76,33 @@ const windowsFixture = async (action: (directory: string, run: any) => Promise<v
     await action(directory, run);
   } finally { await rm(directory, { recursive: true, force: true }); }
 };
+test.each(["closed", "pid-present", "endpoint-present", "receipt-present", "capture-present", "adapter-created", "stage-missing", "error-missing", "diagnostics-missing", "mock-open", "query-unconfirmed", "retained"])("classifies pre-adapter initialization failure without weakening cleanup: %s", async kind => {
+  await windowsFixture(async directory => {
+    const file = "acceptance-codex-fixture.json";
+    const run: any = { schemaVersion: 1, platform: "win32", resourceStage: "initialization", error: "Git initialization failed", errorDetails: { code: 1, killed: false, signal: null, elapsedMs: 42 }, endpoints: null, receipt: null, initialInputAttempts: 0, requests: [], cleanup: { mockClosed: true, runtimeDirectoryRemoved: true, windowsQueries: [] } };
+    if (kind === "pid-present") run.daemonPid = 101;
+    if (kind === "endpoint-present") run.endpoints = {};
+    if (kind === "receipt-present") run.receipt = { helperPid: 103, childPid: 104 };
+    if (kind === "capture-present") run.cleanup.processCapture = { stage: "before-stop", roots: [101], processes: [] };
+    if (kind === "adapter-created") run.resourceStage = "adapter-created";
+    if (kind === "stage-missing") delete run.resourceStage;
+    if (kind === "error-missing") delete run.error;
+    if (kind === "diagnostics-missing") delete run.errorDetails;
+    if (kind === "mock-open") run.cleanup.mockClosed = false;
+    if (kind === "query-unconfirmed") run.cleanup.windowsQueries = [{ closed: false, cleanupConfirmed: false }];
+    if (kind === "retained") run.cleanup.runtimeDirectoryRemoved = false;
+    await writeFile(path.join(directory, file), JSON.stringify(run));
+    const result = await cleanup.checkHerdrPlatformCleanup(directory, { platform: "win32", observeWindows: observing() });
+    const formal = result.runs.find((entry: any) => entry.file === file);
+    expect(formal.livePids).toEqual([]);
+    if (kind === "closed") {
+      expect(result.failures).toEqual([]);
+      expect(formal).toMatchObject({ resourceState: "no-resource-initialization-failure", resourcesAbsent: true, processes: [], processEvidenceError: null });
+      expect(formal.processStopped).toBeUndefined();
+    } else expect(result.failures).toContain(file);
+  });
+});
+
 const queryResult = (rows: unknown[]) => ({ pid: 900, code: 0, signal: null, closed: true, error: null, stdoutBytes: 100, stderrBytes: 0, stdout: JSON.stringify({ schemaVersion: 1, rows }) });
 const observing = (change: (rows: any[], targets: any[]) => any = rows => rows) => (targets: any[]) => cleanup.observeWindowsCleanup(targets, { systemRoot: "C:\\Windows", execute: async () => queryResult(change(targets.map(target => ({ ...target, state: "missing", startToken: null, error: null })), targets)) });
 

@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { Socket } from "node:net";
 import path from "node:path";
+import which from "which";
 import { setTimeout as delay } from "node:timers/promises";
 import { herdrIpcAddress } from "../../../src/commands/worker/herdr/rpc.js";
 import { createOperation } from "../../../src/api/operation.js";
@@ -18,8 +17,8 @@ import { herdrExecutionAgentName } from "../../../src/commands/worker/herdr/agen
 import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
 import { executeHistoricalMetadataProbe, executeRawPreparationProbe, historicalWindowsInventoryCommand, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
 import { decodeWindowsExternalScript, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsExternalScriptQuery, windowsProcessQuery, decodeWindowsProcessQuery, windowsConsoleQuery, decodeWindowsConsoleQuery } from "./windows-platform-query.fixtures.js";
+import { executePlatformCommand as execute, platformErrorDetails } from "./herdr-platform-command.fixtures.js";
 
-const execute = promisify(execFile);
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
 const outputRoot = path.resolve(packageRoot, "../../.tmp/herdr-tools/research-platform");
 let windowsPreparationProbeAttempted = false;
@@ -41,6 +40,7 @@ const closedEndpoint = (endpoint: string): Promise<boolean> => new Promise(resol
 export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentRoundTrip = false) => {
   if (argumentRoundTrip) assert.equal(process.platform, "win32");
   assert.equal(process.versions.node.split(".")[0], "24", "Real Herdr acceptance requires a Node24 driver.");
+  const startedAt = performance.now();
   const systemEnvironment = platformSystemEnvironment(process.env);
   const binary = argumentRoundTrip ? process.execPath : process.env[agent === "codex" ? "DAYNIGHT_TEST_CODEX" : "DAYNIGHT_TEST_COPILOT"];
   const herdrBinary = process.env.DAYNIGHT_TEST_HERDR;
@@ -55,7 +55,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
   const link = process.platform !== "win32" ? `/tmp/dn-a0bc-platform-${nonce.slice(0, 8)}` : null;
   const route = link ?? root, home = path.join(root, "home"), cwd = path.join(root, "cwd"), tools = path.join(root, "tools");
   const evidenceFile = path.join(outputRoot, `${argumentRoundTrip ? "argv" : "formal"}-${agent}-${nonce}.json`);
-  const evidence: Record<string, any> = { agent, nonce, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, platform: process.platform, architecture: process.arch, driverNode: { version: process.version, executable: process.execPath }, businessPromptsSent: 0, initialInputAttempts: 0, uiInputsSent: 0, requests: [], cleanup: { windowsQueries: [] }, observations: [], evidenceFile };
+  const evidence: Record<string, any> = { agent, nonce, resourceStage: "initialization", controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, platform: process.platform, architecture: process.arch, driverNode: { version: process.version, executable: process.execPath }, businessPromptsSent: 0, initialInputAttempts: 0, uiInputsSent: 0, requests: [], cleanup: { windowsQueries: [] }, observations: [], evidenceFile };
   const persist = () => writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`);
   const inventory = async (): Promise<{ pid: number; parent: number; token: string }[]> => {
     if (process.platform === "linux") {
@@ -98,7 +98,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     const address = mock.address(); if (address === null || typeof address === "string") throw new Error("The isolated model fixture did not bind TCP.");
     const environment = { ...systemEnvironment };
     Object.assign(environment, { HOME: home, USERPROFILE: home, PATH: `${tools}${path.delimiter}${process.platform === "win32" ? [path.join(environment.SystemRoot!, "System32"), path.join(environment.SystemRoot!, "System32/WindowsPowerShell/v1.0")].join(path.delimiter) : "/usr/bin:/bin"}`, TERM: "xterm-256color", LANG: "en_US.UTF-8", XDG_CONFIG_HOME: path.join(home, "config"), XDG_STATE_HOME: path.join(home, "state"), XDG_CACHE_HOME: path.join(home, "cache"), CODEX_HOME: path.join(home, "codex"), CODEX_SQLITE_HOME: path.join(home, "codex"), COPILOT_HOME: path.join(home, "copilot"), COPILOT_CACHE_HOME: path.join(home, "copilot-cache"), COPILOT_OFFLINE: "true", COPILOT_AUTO_UPDATE: "false", COPILOT_ALLOW_ALL: "true", COPILOT_PROVIDER_BASE_URL: `http://127.0.0.1:${address.port}/v1`, COPILOT_PROVIDER_TYPE: "openai", COPILOT_PROVIDER_API_KEY: "fake-loopback-only", COPILOT_PROVIDER_WIRE_API: "responses", COPILOT_MODEL: "gpt-5.4", PROBE_LOOPBACK_KEY: "fake-loopback-only", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(home, "empty-git-config"), CI: "1" });
-    const git = process.env.DAYNIGHT_TEST_GIT ?? (process.platform === "win32" ? (await execute("where.exe", ["git.exe"], { timeout: 5000 })).stdout.trim().split(/\r?\n/)[0]! : "/usr/bin/git");
+    const git = process.env.DAYNIGHT_TEST_GIT ?? (process.platform === "win32" ? await which("git.exe") : "/usr/bin/git");
     if (process.platform === "win32") environment.PATH += `${path.delimiter}${path.dirname(git)}`;
     await execute(git, ["init", "--quiet", cwd], { env: { ...process.env, HOME: home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: environment.GIT_CONFIG_GLOBAL }, timeout: 5000 });
     if (process.platform !== "win32") {
@@ -115,6 +115,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     const configuration: ExecutionConfiguration = { agent, model: "gpt-5.4", args: agent === "codex" ? ["--no-alt-screen"] : ["--disable-client-telemetry", "--disable-builtin-mcps"], recoveryLimit: 0, toolLaunch: launch, herdrLaunch };
     const paths: WorkerPaths = { stateDirectory: root, configFile: path.join(root, "config.yml"), workerDirectory: root, databaseFile: path.join(root, "worker.sqlite"), configurationFile: path.join(root, "worker.json"), lockFile: path.join(root, "worker.lock"), herdrDirectory: path.join(route, "h"), logsDirectory: path.join(root, "logs"), temporaryDirectory: path.join(root, "tmp") };
     preparationProbeEnvironment = { ...createHerdrNativeEnvironment(paths, environment), PATH: environment.PATH };
+    evidence.resourceStage = "adapter-created";
     adapter = createWorkerHerdr({ paths, homeDirectory: home, environment, agentEnvironment: { PATH: environment.PATH! }, herdrLaunch, readExecutionConfiguration: () => configuration, isolatedRun: process.platform === "darwin", onDaemonSpawn: async pid => { daemonPid = pid; } });
     evidence.ready = await adapter.ensureInstance(operation());
     if (mac && daemonPid) daemonIdentity = await mac.capture(daemonPid, "daemon");
@@ -286,7 +287,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     }
     evidence.sameOriginalNativeAfterInput = true;
     evidence.afterInitialInput = await rpc.request("session.snapshot", {}, operation());
-  } catch (error) { evidence.error = errorText(error); }
+  } catch (error) { evidence.error = errorText(error); evidence.errorDetails = platformErrorDetails(error, performance.now() - startedAt); }
   finally {
     cleaning = true;
     if (adapter) {
@@ -343,7 +344,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     else evidence.cleanup.retainedDirectory = root;
     process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
     await persist();
-    const summary = { schemaVersion: 1, agent, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, nativeVersion: evidence.nativeVersion, frozenArtifacts: evidence.frozenArtifacts, expectedArguments: evidence.expectedArguments, argumentRoundTrip: evidence.argumentRoundTrip, externalScript: evidence.externalScript, originalShellPreserved: evidence.originalShellPreserved, platform: process.platform, architecture: process.arch, driverNode: evidence.driverNode, helperExecutable: evidence.helperExecutable, endpoints: adapter ? { api: adapter.paths.apiEndpoint, client: adapter.paths.clientEndpoint } : null, shortLink: link, daemonPid, shellPid: evidence.shellBefore?.shellPid, receipt: evidence.receipt ? { helperPid: evidence.receipt.helperPid, childPid: evidence.receipt.childPid, executable: path.basename(evidence.receipt.file) } : null, processProofCompleted: evidence.processProofCompleted, sameOriginalNativeAfterInput: evidence.sameOriginalNativeAfterInput, beforeInitialInput: evidence.beforeInitialInput, initialInputAttempts: evidence.initialInputAttempts, initialInputReceipt: evidence.initialInputReceipt, observation: evidence.observation, requestsBeforeInitialInput: evidence.requestsBeforeInitialInput, requests: evidence.requests, cleanup: evidence.cleanup, error: evidence.error };
+    const summary = { schemaVersion: 1, agent, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, nativeVersion: evidence.nativeVersion, frozenArtifacts: evidence.frozenArtifacts, expectedArguments: evidence.expectedArguments, argumentRoundTrip: evidence.argumentRoundTrip, externalScript: evidence.externalScript, originalShellPreserved: evidence.originalShellPreserved, platform: process.platform, architecture: process.arch, driverNode: evidence.driverNode, helperExecutable: evidence.helperExecutable, endpoints: adapter ? { api: adapter.paths.apiEndpoint, client: adapter.paths.clientEndpoint } : null, shortLink: link, daemonPid, shellPid: evidence.shellBefore?.shellPid, receipt: evidence.receipt ? { helperPid: evidence.receipt.helperPid, childPid: evidence.receipt.childPid, executable: path.basename(evidence.receipt.file) } : null, processProofCompleted: evidence.processProofCompleted, sameOriginalNativeAfterInput: evidence.sameOriginalNativeAfterInput, beforeInitialInput: evidence.beforeInitialInput, initialInputAttempts: evidence.initialInputAttempts, initialInputReceipt: evidence.initialInputReceipt, observation: evidence.observation, requestsBeforeInitialInput: evidence.requestsBeforeInitialInput, requests: evidence.requests, cleanup: evidence.cleanup, resourceStage: evidence.resourceStage, error: evidence.error, errorDetails: evidence.errorDetails };
     await writeFile(path.join(outputRoot, `acceptance-${argumentRoundTrip ? "argv-" : ""}${agent}-${nonce}.json`), `${JSON.stringify(summary, null, 2)}\n`);
   }
   return evidence;
