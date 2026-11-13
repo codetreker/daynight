@@ -20,6 +20,9 @@ type StorageArchive struct {
 type StorageObject struct {
 	Bucket, Path, SHA256 string
 	ByteLength           int64
+	// Optional permits absence of an unconfirmed first image chunk; present bytes
+	// still require the same integrity verification as a confirmed object.
+	Optional bool
 }
 type StorageInlineResource struct {
 	Resource sp.Resource

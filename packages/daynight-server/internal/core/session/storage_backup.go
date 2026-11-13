@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"strings"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
@@ -19,12 +20,35 @@ type backupStorageReader interface {
 	Open(context.Context, string, string) (filestorage.Object, error)
 }
 
+func backupMissingOnly(err error) bool {
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !backupMissingOnly(cause) {
+				return false
+			}
+		}
+	} else if wrapped, ok := err.(interface{ Unwrap() error }); ok && wrapped.Unwrap() != nil {
+		return backupMissingOnly(wrapped.Unwrap())
+	}
+	return true
+}
+
 func verifyStorageObject(ctx context.Context, files backupStorageReader, object store.StorageObject) (result error) {
 	if object.ByteLength < 0 {
 		return errors.New("invalid storage object length")
 	}
 	value, err := files.Open(ctx, object.Bucket, object.Path)
 	if err != nil {
+		if object.Optional && backupMissingOnly(err) {
+			return nil
+		}
 		return err
 	}
 	defer func() { result = archiveCleanupFailure(result, value.Body.Close()) }()

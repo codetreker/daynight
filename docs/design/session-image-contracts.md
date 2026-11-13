@@ -172,7 +172,7 @@ type DirectImageContent = {
 | 完成 | `POST .../{uploadId}/complete`，body `{sha256,byteLength}` | 200 complete，或202 verifying；必须与 spec 一致。服务和 Controller 完成真实格式/可解码性/完整摘要校验及服务持久化后才能 complete。 |
 | 释放 | `DELETE .../{uploadId}`，无body | 200 receipt state=released；只撤销未发送准备引用。原发送已占用或未知时返回409 upload_in_use，不能删消息引用。 |
 
-首块精确重放须匹配完整 spec、offset、块摘要和原字节，不再次建立身份或确认未持久化的偏移。结果未知时先查询原 uploadId：确认不存在后可重发冻结的首块，receiving 按已确认前缀续传，complete 复用原资源，failed 按原失败规则处理；不能更换 ID 绕过未知结果。旧准备与直接首块共享身份、授权和真实内容发布规则，但直接入口不调用兼容准备处理器或容量申请。
+首块精确重放须匹配完整 spec、offset、块摘要和原字节，不再次建立身份或确认未持久化的偏移。结果未知时先查询原 uploadId：确认不存在后可重发冻结的首块，receiving 按已确认前缀续传，complete 复用原资源，failed 按原失败规则处理；不能更换 ID 绕过未知结果。旧准备与直接首块共享身份、授权和真实内容发布规则，但直接入口不调用兼容准备处理器或容量申请。首块的身份与块意图在同一事务登记，实际文件发布前 acceptedOffset 保持 0；备份校验允许这一未确认意图的文件缺失，但文件存在时仍核验其长度和摘要。恢复后 receiving 沿原身份重传冻结首块，failed/expired/released 按原终态处理与清理；已确认块始终是必需的备份对象。
 
 服务在成功的 `GET .../image-capabilities` 和 Controller WebSocket 升级响应中提供可忽略的 `Daynight-Session-Direct-Upload-Version: 1`，跨源响应公开该 header，原响应 body 不增加必填字段。新消费者须在现有能力发现或握手中检查此版本；无支持时报告 `upgrade_required`，不发新 submit 或回退容量申请。当前 Server 已提供直接入口，现有 Controller 仍使用 register/commit 兼容流程，尚未采用 submit。
 

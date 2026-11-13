@@ -21,6 +21,10 @@ authorization, publication and cleanup rules. Resource association and its
 message pin share a Session transaction; a reclaimed resource cannot be revived.
 Exact replay compares the original business content and returns the current
 receipt. A later attempt cannot be overwritten by an earlier submission.
+A first-chunk intent can commit before its file; backup verification allows that
+unconfirmed file to be absent but checks its bytes when present. Confirmed
+chunks remain mandatory. Recovery retains the original intent identity and
+terminal-state cleanup rules.
 
 Existing capability discovery and Controller upgrade responses advertise version
 1 in an optional header. The legacy exchanges and response bodies remain
