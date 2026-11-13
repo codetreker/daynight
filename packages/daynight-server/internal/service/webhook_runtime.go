@@ -72,7 +72,7 @@ func (a *App) Start(root context.Context) error {
 		return errors.New("application already drained")
 	}
 	w := a.webhookRuntime
-	if w == nil && a.CredentialUsage == nil {
+	if w == nil && a.CredentialUsage == nil && a.githubRuntime == nil {
 		return nil
 	}
 	if root == nil || root.Err() != nil {
@@ -83,6 +83,11 @@ func (a *App) Start(root context.Context) error {
 			return err
 		}
 		a.usageStarted = true
+	}
+	if a.githubRuntime != nil {
+		if err := a.githubRuntime.start(root); err != nil {
+			return err
+		}
 	}
 	if w == nil {
 		return nil
@@ -150,6 +155,9 @@ func (w *webhookRuntime) failed(err error) {
 }
 
 func (a *App) StopClaims() {
+	if a.githubRuntime != nil {
+		a.githubRuntime.runner.StopClaims()
+	}
 	if a.webhookRuntime != nil {
 		a.webhookRuntime.runner.StopClaims()
 	}
@@ -157,6 +165,9 @@ func (a *App) StopClaims() {
 
 // CancelWork cancels outstanding attempts and maintenance after claims stop.
 func (a *App) CancelWork() {
+	if a.githubRuntime != nil {
+		a.githubRuntime.cancelWork()
+	}
 	if a.CredentialUsage != nil {
 		a.CredentialUsage.CancelWork()
 	}
@@ -215,6 +226,11 @@ func (a *App) drainResult(err error, complete bool) error {
 }
 
 func (a *App) drainProducers(ctx context.Context) error {
+	if a.githubRuntime != nil {
+		if err := a.githubRuntime.drain(ctx); err != nil {
+			return err
+		}
+	}
 	if w := a.webhookRuntime; w != nil {
 		a.StopClaims()
 		w.mu.Lock()

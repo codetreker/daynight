@@ -99,6 +99,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
 	githubhttp.RegisterReadRoutes(mux, app.GitHubRead, auth, logger)
+	githubhttp.RegisterManagementRoutes(mux, app.GitHubManager, auth, logger)
 	teamhttp.RegisterRoutes(mux, app.Teams, auth, logger)
 	teamhttp.RegisterDirectMemberRoutes(mux, app.DirectMembers, auth, logger)
 	workerhttp.RegisterRoutes(mux, app.Workers, auth, logger)

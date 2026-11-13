@@ -604,8 +604,18 @@ func TestGitHubCoordinationDueProjects(t *testing.T) {
 		t.Fatalf("due limit: %v %v", got, err)
 	}
 	got, err = s.DueGitHubProjects(t.Context(), 999, now, 10)
-	if err != nil || len(got) != 0 {
-		t.Fatalf("other app: %v %v", got, err)
+	if err != nil || len(got) != 3 {
+		t.Fatalf("changed app candidates: %v %v", got, err)
+	}
+	mustQueryExec(t, s, `UPDATE project_github SET access_state='unavailable',access_reason='app_changed' WHERE project_id=$1`, a.ID)
+	mustQueryExec(t, s, `UPDATE project_github SET access_state='unavailable',access_reason='installation_missing' WHERE project_id=$1`, b.ID)
+	got, err = s.DueGitHubProjects(t.Context(), 10, now, 10)
+	if err != nil || !reflect.DeepEqual(got, []string{c.ID}) {
+		t.Fatalf("terminal access states must not starve runnable projects: %v %v", got, err)
+	}
+	got, err = s.DueGitHubProjects(t.Context(), 999, now, 10)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("changed app must recheck installation-missing bindings: %v %v", got, err)
 	}
 }
 

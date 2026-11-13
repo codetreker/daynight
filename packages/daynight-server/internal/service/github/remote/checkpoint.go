@@ -36,6 +36,12 @@ func CheckpointRequest(ctx context.Context) error {
 
 type checkpointTransport struct{ base http.RoundTripper }
 
+func (t checkpointTransport) CloseIdleConnections() {
+	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 func (t checkpointTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
 	if err := CheckpointRequest(ctx); err != nil {
