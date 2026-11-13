@@ -106,5 +106,8 @@ Diagnostic queues can omit undispatched records, and failed appends remain
 unknown even if a complete line happens to exist. Segment families and recovery
 summaries make that limitation visible; old tails are not promised valid JSONL.
 Neither logging nor readiness adds a server epoch, configuration/journal schema,
-execution identity or input replay rule. Non-null authority counters retain their current
-monotonic policy.
+execution identity or input replay rule. This storage decision originally left
+non-null authority counters under their existing monotonic policy. The
+[canonical authority decision](2026-11-12-worker-configuration-canonical-authority.md)
+now owns exact authenticated state installation and null reimport while retaining
+this checkpoint, waiter and shutdown ownership.

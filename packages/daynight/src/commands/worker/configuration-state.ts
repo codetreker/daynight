@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { stringifyApiJson } from "../../api/json.js";
 import { parseWorkerCloudItem, parseWorkerCloudValue } from "../../api/worker-configuration.js";
 import { ProtocolError } from "../../api/validation.js";
 import { prepareWorkerReport, WORKER_CONFIGURATION_REPORT_BYTES } from "../../api/worker-report.js";
+import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport } from "../../api/worker-configuration.js";
 import type { AgentControlMode } from "../../api/types.js";
 import type { ToolPaths } from "../../platform/tool-path-choice.js";
@@ -83,6 +85,7 @@ export const transitionConfigurationDesired = (
   runningRecordIds: ReadonlySet<string>, newId: () => string,
 ): WorkerConfigurationCache => {
   if (sameConfigurationValue(cache.authority.desired, desired)) return cache;
+  if (desired !== null && cache.authority.desired?.revision === desired.revision && sameConfigurationValue(cache.authority.desired.value, desired.value)) return { ...cache, authority: { ...cache.authority, desired } };
   const generation = newId();
   const next: WorkerConfigurationCache = { ...cache, authority: { ...cache.authority, generation, desired }, currentItems: [], retainedItems: [...cache.retainedItems, ...cache.currentItems] };
   if (desired === null) return pruneConfigurationRetained({ ...next, authority: { ...next.authority, observationRevision: "0" } }, runningRecordIds);
@@ -90,6 +93,9 @@ export const transitionConfigurationDesired = (
   const selected = new Set(desired.value.projects.map(project => project.projectId));
   const removals = new Set([...previousSelected].filter(projectId => !selected.has(projectId)));
   const previousItems = allConfigurationItems(cache);
+  if (cache.authority.desired === null) for (const item of previousItems) {
+    if ((item.value.key.kind === "projectPreparation" || item.value.key.kind === "projectNative") && !selected.has(item.value.key.projectId)) removals.add(item.value.key.projectId);
+  }
   const inherited = configurationInheritanceSources(cache);
   const blockers = new Map<string, TrackedConfigurationItem>();
   for (const item of previousItems) if (item.value.key.kind === "projectRemoval") {
@@ -139,6 +145,7 @@ export const configurationSnapshot = (
 ): WorkerConfigurationSnapshot => {
   const desired = cache.authority.desired;
   const failures = latestFailures(cache);
+  const retainedRecoveryLimit = configurationInheritanceSources(cache).get(configurationKey({ kind: "recoveryLimit" }))?.value.appliedValue;
   const current = new Map(cache.currentItems.map(item => [configurationKey(item.value.key), item]));
   const unfinishedRemovals = unfinishedRemovalProjects(cache);
   const applied = (key: WorkerCloudItemKey) => current.get(configurationKey(key))?.value.appliedValue ?? null;
@@ -155,7 +162,7 @@ export const configurationSnapshot = (
   const projects = synchronized && desired !== null ? desired.value.projects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
     ready: current.get(configurationKey({ kind: "projectPreparation", projectId: project.projectId }))?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !unfinishedRemovals.has(project.projectId) })) : [];
   const globalNative = native({ kind: "native" });
-  return freezeConfiguration({ synchronized, desired, observationRevision: cache.authority.observationRevision,
+  return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: configurationToolTargets(cache, localTools), effective: {
       agentControlMode: desired?.value.agentControlMode == null || globalNative !== null || projects.some(project => project.native !== null) ? mode : null,
       maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,
@@ -176,15 +183,17 @@ const removalSeverity = (item: TrackedConfigurationItem): number => item.value.s
 
 export const projectConfigurationReport = (cache: WorkerConfigurationCache, options: ConfigurationProjectionOptions): ConfigurationProjection => {
   const desired = cache.authority.desired;
+  const bootstrap = desired === null && options.bootstrap !== null ? parseWorkerCloudValue(options.bootstrap, true, configurationCapabilities(options.bootstrap)) : null;
   const base: WorkerCloudReport = {
-    controlModeBootstrap: options.localMode, toolPathsBootstrap: options.localTools,
-    bootstrap: desired === null && options.bootstrap !== null ? parseWorkerCloudValue(options.bootstrap, true, configurationCapabilities(options.bootstrap)) : null,
+    controlModeBootstrap: bootstrap !== null && bootstrap.agentControlMode !== undefined ? bootstrap.agentControlMode : options.localMode,
+    toolPathsBootstrap: bootstrap !== null && bootstrap.toolPaths !== undefined ? parseToolPathsBootstrap(bootstrap.toolPaths) : options.localTools,
+    bootstrap,
     observation: options.synchronized && desired !== null ? { baseRevision: cache.authority.observationRevision, desiredRevision: desired.revision, items: [] } : null,
   };
   const envelope = options.telemetry === undefined ? { configuration: base } : prepareWorkerReport({ ...options.telemetry, configuration: base }, WORKER_CONFIGURATION_REPORT_BYTES).value;
   let requestBytes = Buffer.byteLength(stringifyApiJson(envelope), "utf8");
   if (requestBytes > WORKER_CONFIGURATION_REPORT_BYTES) throw new RangeError("Worker configuration report required content exceeds its request budget.");
-  if (base.observation === null) return freezeConfiguration({ report: base, generation: cache.authority.generation, recordIds: [], failures: [], nextCursor: cache.projectionCursor });
+  if (base.observation === null) return freezeConfiguration({ reportId: randomUUID(), report: base, generation: cache.authority.generation, baseRevision: cache.authority.observationRevision, recordIds: [], failures: [], nextCursor: cache.projectionCursor });
   const pendingFailures = latestFailures(cache);
   const candidates = cache.currentItems.flatMap(item => {
     const value = publicItem(item, pendingFailures);
@@ -240,10 +249,11 @@ export const projectConfigurationReport = (cache: WorkerConfigurationCache, opti
     const source = pendingFailures.get(configurationKey(candidate.item.value.key));
     return source === undefined ? [] : [{ sourceRecordId: source.recordId, failureId: source.failureId! }];
   });
-  return freezeConfiguration({ report, generation: cache.authority.generation, recordIds: selected.map(candidate => candidate.item.recordId), failures, nextCursor });
+  return freezeConfiguration({ reportId: randomUUID(), report, generation: cache.authority.generation, baseRevision: base.observation.baseRevision, recordIds: selected.map(candidate => candidate.item.recordId), failures, nextCursor });
 };
 
-export const acceptConfigurationProjection = (cache: WorkerConfigurationCache, projection: ConfigurationProjection, runningRecordIds: ReadonlySet<string>): WorkerConfigurationCache => {
+export const acceptConfigurationProjection = (cache: WorkerConfigurationCache, projection: ConfigurationProjection, runningRecordIds: ReadonlySet<string>, options: { readonly prune?: boolean } = {}): WorkerConfigurationCache => {
+  if (projection.generation !== cache.authority.generation) return cache;
   if (projection.report.observation === null) throw new TypeError("Worker configuration projection has no observation to accept.");
   const acknowledged = new Map(projection.failures.map(token => [token.sourceRecordId, token.failureId]));
   const clear = (item: TrackedConfigurationItem): TrackedConfigurationItem => item.failureId !== null && acknowledged.get(item.recordId) === item.failureId ? { ...item, failureId: null, value: { ...item.value, lastFailure: null } } : item;
@@ -259,5 +269,5 @@ export const acceptConfigurationProjection = (cache: WorkerConfigurationCache, p
     return selected.has(projectId) || !failedProjects.has(projectId);
   }).map(item => item.recordId));
   if (completed.size !== 0) next = { ...next, currentItems: next.currentItems.filter(item => !completed.has(item.recordId)) };
-  return pruneConfigurationRetained(next, runningRecordIds);
+  return options.prune === false ? next : pruneConfigurationRetained(next, runningRecordIds);
 };

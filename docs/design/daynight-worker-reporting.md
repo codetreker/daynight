@@ -16,9 +16,9 @@ flowchart LR
   A --> S[账号 Worker 快照 API]
 ```
 
-`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 取得实例锁、稳定身份、存储、日志及认证账号，先查询云端目标并建立配置模块，再创建 collector/reporter；此时仓库准备、业务 backend 初始化与任务 tick 尚未开始。runtime 将固定的 workerId 与 serverOrigin 交给 collector，供其筛选 durable daemon 归属。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
+`index.ts` 仅在 run 命令捕获 context.version 和 context.workingDirectory()。`runtime.ts` 取得实例锁、稳定身份、日志及认证账号，再尝试读取云端目标并建立配置模块与 collector/reporter；此时仓库准备、业务 backend 初始化与任务 tick 尚未开始。身份临时读取失败在原锁下退避恢复，配置 GET 临时失败保留未读取状态，由报告准备重新读取；认证与协议错误不变成空目标。runtime 将固定的 workerId 与 serverOrigin 交给 collector，供其筛选 durable daemon 归属。collector 使用同一 machine 描述和实际平台；machine 名称及派生 ID 仅为展示元数据，稳定 workerId 和 principal 承担账号归属。
 
-`telemetry.ts` 只读采集运行环境，返回完整 telemetry 和私有 issue 列表。`reporter.ts` 拥有周期、触发合并、最新清单、尝试 Operation 和清洗诊断。`remote.ts` 使用固定服务凭据及 expectedUserId 将报告转交 typed ApiClient；调用者拥有 Operation 的取消及释放。配置报告采用独立 typed 方法，对该请求设置配置能力标记并验证完整回执，普通报告保留精确两字段回执。API 对 mutable POST 使用精确 200 准入，不套用通用创建操作的 201 语义。
+`telemetry.ts` 只读采集运行环境，返回完整 telemetry 和私有 issue 列表。`reporter.ts` 拥有周期、触发合并、最新清单、尝试 Operation 和清洗诊断；`configuration-exchange.ts` 组织共享配置交换的实际阶段，foreground 与需要配置的管理路径复用该顺序。`remote.ts` 使用固定服务凭据及 expectedUserId 将报告转交 typed ApiClient；调用者拥有 Operation 的取消及释放。配置报告采用独立 typed 方法，对该请求设置配置能力标记并验证完整回执，普通报告保留精确两字段回执。API 对 mutable POST 使用精确 200 准入，不套用通用创建操作的 201 语义。
 
 reporter 不拥有执行 backend，不调用 task/claim 更新。Herdr 观察器直接读取私有 API 端点，不经过 runtime 的 lazyHerdr；纯 Web 执行保持对 Herdr 的延迟初始化。
 
@@ -44,11 +44,13 @@ reporter 保留带清理失败标记的原始错误，在 `stop()` 停止触发�
 
 ## 配置快照与回执
 
-reporter 通过 capture/send/accept 接缝与配置模块协作。本轮先取得机器采样及最新任务引用，配置准备后将同一份 WorkerReport 传给 capture，投影的请求计量与 send 使用这个对象，不在两处重复采样。配置模块从完整当前与保留记录中捕获不可变的本批报告、generation、实际发送的 recordId/失败来源和下一个游标。
+共享 exchange 每轮依次等待 manager 持久化就绪、准备权威读取与 null 候选、收集新机器采样及最新任务引用、捕获、检查 generation、发送一次、接收并持久化回执。采样发生在 prepare 完成之后；准备或采样期间权威变化时丢弃该样本，后续周期重采，不继续发送旧工具目标。投影计量与 send 使用同一份 WorkerReport，不重复采样。捕获在本机保存不可变报告与随机 reportId、generation、精确 baseRevision、实际 observation、recordId/失败来源和下一个游标；token 不进入网络正文。
+
+启动、未知写入结果、400/协议失败与能力重发现安排下一次认证 GET；正常已同步周期不增加读取。desired:null 的每轮准备先查服务端，再加入 root 拥有的当前文件候选；已存在目标取消并 drain 候选。报告十五秒 Operation 只取消等待者，完整候选 pass 自有六十秒预算，生命周期由[Worker 配置设计](daynight-worker.md#本地配置与首次候选)拥有。同步仍使用原单飞与触发合并，不保存旧请求正文或无限追赶。
 
 本批同时受 1025 个非 mode 项、协商后的 1026 个总项、Go 编码加存储包装余量的 4 MiB 和整包 9 MiB 约束；固定一项真实未完成或失败移除，其余连续轮转。最近同 key 失败可以来自保留记录，捕获保存其准确 sourceRecordId/failureId，而不复制失败所有权或历史成功出处。服务端整体替换本批观察，不合并各批历史；本机记录不因本次遗漏而被删除。
 
-成功回执交给原捕获的确认处理。只有 observationAccepted=true 才清除实际发送且身份仍匹配的失败；飞行期间的新失败保留，恢复不提前丢弃 lastFailure。游标仅在捕获 generation 仍为当前代时推进，拒绝或未知回执不让出未确认报告槽。目标与观测版本接收沿用配置管理器的原合同；首次同步的观测基线和未初始化状态的 "0" 分别处理。完成移除还须满足原执行结束、准确本批确认及本机保留责任的收敛条件。完整投影与状态表示由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。
+成功回执交给原捕获的确认处理，并在 manager 的串行提交内核对 generation。当前捕获 observationAccepted=true 才确认实际发送且身份仍匹配的失败与游标；飞行期间的新失败保留，恢复不提前丢弃 lastFailure。当前捕获的合法回执完整安装规范 desired 与 observationRevision，包括较低值、同版本异内容和 null；非空 observation 的 false 不确认应用，下一轮基于准确状态生成新报告，空 observation 的 false 是正常未提交观察。旧 generation 的任何回执均不更新当前目标、基线、失败或游标，已知远端成功不能因本地等待取消而改称未知。未知或无合法规范回执时先读，不让出未确认报告槽或重放。完成移除还须满足原执行结束、准确本批确认及本机保留责任的收敛条件。完整投影与状态表示由[Worker 设计](daynight-worker.md#云端接收与本机提交)拥有。
 
 capture 和 accept 不执行 native、仓库或停止 I/O。接收唤醒配置应用循环，外部操作在报告预算之外完成，再通过配置提交队列发布实际结果。报告因此不等待项目变更，也不被任务清单错误阻断。配置持久化错误保持原错误链，不能把尚未持久化的实际值发布为成功。配置模块在 Worker 自有 JSON 保存应用与确认状态，机器采样、版本缓存和清单仍是进程内状态。
 
@@ -120,7 +122,7 @@ reporter 按字段或 report 子系统保存故障签名和重复次数；故障
 
 ## 验证结构
 
-reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。配置测试核对不可变发送快照、回执准入、报告前恢复、飞行期间新失败、CAS 拒绝和结果未知；runtime 测试同时延后 native/项目应用与任务清单，确认配置通道持续工作。
+reporter 测试以受控时间和延后 Promise 验证单飞、合并、独立周期、失败恢复、最新清单及 stop 的取消/join。共享 exchange 验证 prepare 先于 collect、代次变化丢弃旧样本、正常周期不额外读取、未知结果先读和有限 prompt 批次。配置测试核对不可变 token、较低/同版本异内容/null 权威、回执准入、旧 ACK 与飞行期间新失败；runtime 真实装配验证当前文件重新导入、竞争目标、临时启动读取恢复与原资源视图保留，同时延后 native/项目应用与任务清单，确认配置通道持续工作。
 
 collector 测试覆盖真实差分、字段错误、缓存过期、未完成 statfs gate、只读私有实例和严格命令清理。durable 版本回归使用真实只读 SQLite reader、run 路径解析与 collector，替换 RPC 和进程观察边界，验证多 run 共识、停止与过期身份、preparation、不确定与错误路径、期限、取消、私密证据隔离和记录不变；遗留路径与纯 Web 不获取原生执行资源。
 

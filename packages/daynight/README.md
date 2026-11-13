@@ -1986,10 +1986,37 @@ The cloud target owns concurrency, polling and recovery limits, platform-specifi
 acquisition preference, control mode, Project selection, and global/per-Project
 Agent, model and arguments. Repository roots, local paths, service credentials,
 Worker identity, and optional
-`agentModel` / `agentReasoningEffort` overrides stay local. First enrollment imports a candidate from the original local YAML only
-when no cloud target exists. Later starts and heartbeats always use the cloud
-target; legacy local managed fields cannot replace it. Configuration enrollment does not depend
-on active claims or alter task/claim formats, permission or recovery rules.
+`agentModel` / `agentReasoningEffort` overrides stay local. An authenticated
+configuration read or matching report receipt installs the complete current cloud
+target and observation baseline, including lower counters, different content at
+the same revision, or an uninitialized target. Local cached or pending targets
+cannot override that authority. Each installation renews a local generation while
+matching application records and jobs retain their identities. An unsupported
+cloud target remains visible as authority with new admission closed until a valid
+target arrives. Configuration enrollment does not depend on active claims or
+alter task/claim formats, permission or recovery rules.
+
+When the cloud target is uninitialized, including after an initialized target
+becomes null, the Worker automatically prepares a candidate from one consistent
+snapshot of the current local file. Its separate mode and tool adoption fields
+come from that same complete candidate. Without a complete candidate, independent
+capability adoption keeps the startup local choices. The running service,
+credential, Worker identity and local execution
+overrides remain fixed; a file that names another service or Worker is rejected.
+A root-owned preparation pass has a 60-second budget, independently of a report
+waiter's cancellation. Successful Project resolutions may be reused only for the
+same source hash and authenticated identity; explicit candidate rejection
+invalidates them, and the service still checks permissions. Later null cycles
+read cloud state before joining or preparing the candidate. A competing cloud
+target wins and cancels and drains the candidate. Unknown import results require
+a read before a new report. Reimport establishes the current local candidate,
+without promising to reconstruct the cloud target that was lost.
+
+Startup identity reads retry temporary network failures under the original
+instance lock at 5, 10, 20, 40 and capped 60-second intervals. No account-scoped
+cache or execution is admitted before identity verification. A temporary initial
+configuration read failure remains unread and is retried by report preparation;
+authentication, protocol and format errors remain explicit failures.
 
 My Workers → Configuration → Control mode selects `herdr` or `web`. A new local
 configuration defaults to `herdr`; an existing local `web` setting is adopted
@@ -2290,6 +2317,14 @@ model/args, and args replaces the list. Worker owns cwd/session/model/mode
 arguments and the fixed full-access policy; conflicting arguments are rejected
 before application.
 
+Foreground reporting and configuration-dependent management paths share one
+exchange sequence: persistence readiness, authority/candidate preparation, fresh
+telemetry collection, capture, generation check, one send, and durable receipt
+acceptance. A changed generation discards the old sample. Normal synchronized
+cycles add no configuration GET; startup, unknown results, 400/protocol failures
+and capability discovery read first. Reporting keeps its 30-second single-flight
+scheduler, merged triggers and finite prompt batches.
+
 The Worker stores configuration facts in one schema 5
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority contains the target, observation revision and a local
@@ -2341,7 +2376,11 @@ Unvalidated history remains unavailable during target validation; values already
 validated in this runtime remain usable during later updates. Original stops keep
 their identity and revision. Current stop verification waits for the original job
 to end, checks the resources again through the same adapter, and blocks new Project
-preparation and readiness until that verification completes.
+preparation and readiness until that verification completes. Initial retained
+Project coverage counts only after the manager accepts it under usable
+authenticated authority. Unread, null or unsupported authority leaves that
+verification pending; recovery rechecks it, and cached success cannot replace
+resource observation by the current coordinator.
 
 Heartbeats exchange targets and a bounded batch of complete current observations;
 native and Project operations run outside the report and commit queues. At most
@@ -2351,10 +2390,17 @@ when another item fails. Failed application attempts use 5, 10, 20, 40 and then
 60-second backoff. Storage failures retain the original error and do not publish
 uncommitted results. The last committed target, effective values and Project view
 remain available; storage readiness closes new execution admission without
-manufacturing a removed-Project target. Task configurationComplete and Bot
-canAdmitNewExecution are checked after awaited preparation and before the first
-intent, registration and dispatch. Original submitted/unknown execution and
-frozen native recovery/input/stop keep their original identities and permissions.
+manufacturing a removed-Project target. An uninitialized, unread or unsupported
+target also closes new Task and Bot admission while the original coordinator
+resource view remains available; a local bootstrap candidate grants no execution
+qualification. After a cold restart, that recovery view uses actual registered
+Project IDs, the original frozen native tuple and any retained, genuinely applied
+recovery limit. The limit is exposed separately from effective admission values;
+missing facts remain unknown and are not filled from a local candidate or default.
+Task configurationComplete and Bot canAdmitNewExecution are checked after awaited
+preparation and before the first intent, registration and dispatch. Original
+submitted/unknown execution and frozen native recovery/input/stop keep their
+original identities and permissions.
 
 Each observation batch fits at most 1025 non-mode items and 1026 total items when
 mode is negotiated, the 4 MiB Go-encoded storage budget with 512 bytes reserved
@@ -2365,7 +2411,12 @@ cannot fit starts the next batch, so large valid items are not skipped to fill
 later small ones. Capture sizes the actual report sample used by send, including
 optional telemetry preparation. Only an accepted matching capture advances the
 current generation's cursor and acknowledges its exact
-`sourceRecordId`/`failureId` pairs. New or unsent failures remain owned locally; a failure without a current
+`sourceRecordId`/`failureId` pairs. The local token includes a random report ID,
+generation, exact base, observation and sent record identities. A stale-generation
+receipt cannot change the current target, baseline, failures or cursor. A matching
+rejected observation adopts the receipt's canonical state and produces a new
+report; false for a null observation is a normal receipt with no observation to
+confirm. New or unsent failures remain owned locally; a failure without a current
 carrier is not invented as a new Project target.
 
 The server replaces the most recently accepted observation batch without merging

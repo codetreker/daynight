@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseWorkerCloudReport, projectWorkerCloudReport } from "../../../src/api/worker-configuration.js";
 import type { WorkerCloudDesired, WorkerCloudFailure, WorkerCloudItemKey, WorkerCloudNative } from "../../../src/api/worker-configuration.js";
 import type { TrackedConfigurationItem, WorkerConfigurationCache, WorkerNativeProof } from "../../../src/commands/worker/configuration-model.js";
 import { acceptConfigurationProjection, allConfigurationItems, configurationHasUnfinishedRemoval, configurationSnapshot, findCurrentConfigurationItem, projectConfigurationReport, pruneConfigurationRetained, transitionConfigurationDesired } from "../../../src/commands/worker/configuration-state.js";
@@ -96,6 +97,7 @@ describe("Worker configuration fact transitions", () => {
 
   it("does not manufacture runtime native authority from durable applied text", () => {
     const item = tracked(1, { kind: "native" }, native), cache = { ...empty(), currentItems: [item] };
+    expect(configurationSnapshot(cache, false, new Map(), "herdr", options.localTools, valueProof).retainedRecoveryLimit).toBeNull();
     expect(configurationSnapshot(cache, true, new Map(), "herdr", options.localTools, valueProof).effective.native).toBeNull();
     expect(configurationSnapshot(cache, true, new Map([[item.recordId, valueProof(cache, native, "herdr")]]), "herdr", options.localTools, valueProof).effective.native).toEqual(native);
     expect(configurationSnapshot(cache, false, new Map([[item.recordId, valueProof(cache, native, "herdr")]]), "herdr", options.localTools, valueProof).effective.native).toBeNull();
@@ -105,6 +107,16 @@ describe("Worker configuration fact transitions", () => {
 const valueProof = (_cache: WorkerConfigurationCache, value: WorkerCloudNative, mode: "herdr" | "web"): WorkerNativeProof => ({ native: value, mode, tools: [] });
 
 describe("Worker configuration projection acceptance", () => {
+  it("keeps independent capability adoption wrappers when no full candidate supplies those fields", () => {
+    const legacyCandidate = desired().value;
+    for (const [cache, bootstrap] of [[empty(null), null], [empty(null), legacyCandidate], [empty(), legacyCandidate]] as const) {
+      const projection = projectConfigurationReport(cache, { ...options, localMode: "web", bootstrap });
+      expect(projection.report).toMatchObject({ controlModeBootstrap: "web", toolPathsBootstrap: options.localTools });
+      expect(parseWorkerCloudReport(projectWorkerCloudReport(projection.report))).toEqual({ bootstrap: cache.authority.desired === null ? bootstrap : null,
+        observation: cache.authority.desired === null ? null : { baseRevision: "0", desiredRevision: "1", items: [] } });
+    }
+  });
+
   it("reports the newest same-key failure and acknowledges only its immutable source token", () => {
     const current = tracked(1, { kind: "native" }, native), older = failed(tracked(2, { kind: "native" }, native), 1), newer = failed(tracked(3, { kind: "native" }, native), 2, "2026-11-12T00:00:02Z");
     const cache = { ...empty(), currentItems: [current], retainedItems: [older, newer] };
@@ -134,13 +146,14 @@ describe("Worker configuration projection acceptance", () => {
     expect(accepted.currentItems[0]!.value.lastFailure).toEqual(updated.value.lastFailure);
   });
 
-  it("allows the exact old source acknowledgement without advancing a new generation cursor", () => {
+  it("rejects an old generation acknowledgement without retiring its exact source failure or advancing the cursor", () => {
     const original = failed(tracked(1, { kind: "native" }, native)), cache = { ...empty(), currentItems: [original] };
     const projection = projectConfigurationReport(cache, options);
     const changed = { ...cache, authority: { ...cache.authority, generation: id(8001) }, projectionCursor: id(90), currentItems: [], retainedItems: [original] };
     const accepted = acceptConfigurationProjection(changed, projection, new Set());
     expect(accepted.projectionCursor).toBe(id(90));
-    expect(allConfigurationItems(accepted).some(item => item.failureId !== null)).toBe(false);
+    expect(accepted).toBe(changed);
+    expect(allConfigurationItems(accepted).some(item => item.failureId !== null)).toBe(true);
   });
 
   it("retains completed stop ownership until the exact applied carrier is accepted and joined", () => {

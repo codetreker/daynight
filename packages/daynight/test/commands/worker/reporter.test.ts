@@ -609,9 +609,10 @@ it("reconciles an unknown import before capturing a fresh report within the same
   await settle(); expect(send).toHaveBeenCalledOnce(); expect(accept).not.toHaveBeenCalled();
   reporter.trigger(); await settle();
   expect(prepare).toHaveBeenCalledTimes(2); expect(capture).toHaveBeenCalledOnce();
-  expect(prepare.mock.calls[1]![0]).toBe(f.collect.mock.calls[1]![0]);
+  expect(f.collect).toHaveBeenCalledOnce();
   expect(prepare.mock.calls[1]![0].limits).toMatchObject({ totalMs: 15_000, requestMs: 10_000 });
   reconciled.resolve(); await settle();
+  expect(prepare.mock.calls[1]![0]).toBe(f.collect.mock.calls[1]![0]);
   expect(send).toHaveBeenCalledTimes(2);
   expect(send.mock.calls[0]![1]).toEqual({ bootstrap: cloudValue, observation: null });
   expect(send.mock.calls[1]![1]).toEqual({ bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [] } });

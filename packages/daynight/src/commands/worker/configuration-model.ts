@@ -31,9 +31,11 @@ export type WorkerConfigurationCache = {
   readonly retainedItems: readonly TrackedConfigurationItem[];
 };
 export type WorkerConfigurationSnapshot = {
+  readonly generation: string;
   readonly synchronized: boolean;
   readonly desired: WorkerCloudDesired | null;
   readonly observationRevision: string;
+  readonly retainedRecoveryLimit: number | null;
   readonly items: readonly WorkerCloudItem[];
   readonly toolTargets: WorkerConfigurationToolTargets | null;
   readonly effective: {
@@ -48,8 +50,10 @@ export type WorkerConfigurationSnapshot = {
 };
 export type ConfigurationFailureToken = { readonly sourceRecordId: string; readonly failureId: number };
 export type ConfigurationProjection = {
+  readonly reportId: string;
   readonly report: WorkerCloudReport;
   readonly generation: string;
+  readonly baseRevision: string;
   readonly recordIds: readonly string[];
   readonly failures: readonly ConfigurationFailureToken[];
   readonly nextCursor: string | null;
