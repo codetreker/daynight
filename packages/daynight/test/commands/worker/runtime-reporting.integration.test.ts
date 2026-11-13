@@ -973,11 +973,23 @@ describe("worker runtime configuration reporting", () => {
   });
 
   it.each([true, false])("retains the real instance lock through a confirmed report's late checkpoint writer past drain (project native valid: %s)", async projectNativeValid => {
-    const f = await fixture(), writing = deferred<void>(), release = deferred<void>();
+    const f = await fixture(), writing = deferred<void>(), release = deferred<void>(), firstReceipt = deferred<void>(), nextRequest = deferred<WorkerCloudReport>(), releaseReceipt = deferred<void>();
     target = { ...target, value: { ...target.value, agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(observationRevision), observation: null }));
     if (!projectNativeValid) target = { ...target, value: { ...target.value, agentControlMode: "web", projects: [{ projectId: uuid(1), nativeOverrides: { args: ["--search"] } }] } };
+    const acceptReport = report.getMockImplementation()!;
+    report.mockImplementation(async (...args) => {
+      if (report.mock.calls.length === 1) {
+        const receipt = await acceptReport(...args);
+        firstReceipt.resolve();
+        return receipt;
+      }
+      nextRequest.resolve(args[2]);
+      await releaseReceipt.promise;
+      args[3].check();
+      return acceptReport(...args);
+    });
     const files = await vi.importActual<typeof import("../../../src/platform/files.js")>("../../../src/platform/files.js");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(workerTelemetryTime));
@@ -1006,19 +1018,25 @@ describe("worker runtime configuration reporting", () => {
       await eventuallyWithoutAdvancingTime(() => expect(mocks.createdReporter).toHaveBeenCalledOnce());
       const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
       const reporter = mocks.createdReporter.mock.calls[0]![0] as ReturnType<typeof createWorkerReporter>;
+      await firstReceipt.promise;
+      reporter.trigger();
+      const captured = await nextRequest.promise;
       await manager.settle();
       if (!projectNativeValid) expect(manager.current().items).toContainEqual(expect.objectContaining({ key: { kind: "projectNative", projectId: uuid(1) }, state: "error" }));
-      await eventually(async () => {
-        const cache = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } };
-        expect(cache.authority.observationRevision).toBe(String(observationRevision));
-      });
-      baseline = (JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } }).authority.observationRevision;
-      reporter.trigger();
+      const committed = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { observationRevision: string } };
+      baseline = committed.authority.observationRevision;
+      expect(baseline).toBe("1");
+      expect(baseline).toBe(String(observationRevision));
+      expect(captured.observation?.baseRevision).toBe(baseline);
+      const expectedReceipt = String(BigInt(baseline) + 1n);
+      releaseReceipt.resolve();
       await eventuallyWithoutAdvancingTime(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker-configuration-storage-blocked" })));
       expect(mocks.coordinator.mock.calls[0]![0].configurationComplete()).toBe(false);
       await vi.advanceTimersByTimeAsync(5_000);
       await writing.promise;
-      expect(receiptRevision).toBe(String(observationRevision));
+      expect(receiptRevision).toBe(expectedReceipt);
+      expect(String(observationRevision)).toBe(expectedReceipt);
+      expect(report).toHaveBeenCalledTimes(2);
       f.signal.abort();
       await vi.advanceTimersByTimeAsync(6_000);
       expect(finished).toBe(false);
@@ -1033,7 +1051,7 @@ describe("worker runtime configuration reporting", () => {
       const next = await tryAcquireWorkerInstanceLock(f.paths);
       try { expect(next).not.toBeNull(); } finally { await next?.release(); }
     } finally {
-      release.resolve(); f.signal.abort();
+      releaseReceipt.resolve(); release.resolve(); f.signal.abort();
       await vi.advanceTimersByTimeAsync(5_000);
       await Promise.allSettled([running]);
     }
