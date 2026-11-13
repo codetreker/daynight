@@ -44,12 +44,11 @@ type SessionCaptureState struct {
 	Validated *sp.ValidatedImage
 }
 type SessionResourceUsage struct {
-	Frozen                                         bool
-	GlobalReservedBytes                            int64
-	Bytes, ReservedBytes                           int64
-	Resources, ReservedResources, UploadIdentities int
-	DeleteEpoch                                    int64
-	Deleting                                       bool
+	Frozen      bool
+	Bytes       int64
+	Resources   int
+	DeleteEpoch int64
+	Deleting    bool
 }
 
 // SessionResourceLeaseAdmission contains caller-decided occupancy upper bounds.

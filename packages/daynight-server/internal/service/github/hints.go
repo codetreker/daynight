@@ -83,7 +83,12 @@ func (r *run) hints(ctx context.Context) error {
 	return errors.Join(failures, r.release(ctx))
 }
 func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name string) error {
-	r.log.InfoContext(ctx, "github hint fetch", "phase", "fetch", "hint_id", h.RequestID, "delivery_id", h.DeliveryID)
+	// Each hint retains its own context through fetch, publication and acknowledgement.
+	job := *r
+	job.log = r.log.With("hint_id", h.RequestID, "delivery_id", h.DeliveryID)
+	r = &job
+	ctx = r.checkpointContext(ctx)
+	r.log.InfoContext(ctx, "github hint fetch", "phase", "fetch")
 	if err := r.runtime(ctx, func(w *store.GitHubRuntimeWrite, _ githubpr.Connection, now time.Time) { core.WebhookAttempt(w, now) }); err != nil {
 		return err
 	}

@@ -6,6 +6,14 @@ account-owned Worker observations and cloud configuration, a cross-project in-pr
 request cancellation, runtime API decoding, native browser routing and a pure
 dependency graph model with horizontal and vertical layouts. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
+Project navigation includes Overview, Task list, PR list and Tags. The independent PR
+workspace reads saved summaries in six-item cursor pages, filters by state and
+title/number, and opens the existing PR detail reader. Visible workspaces reconcile
+every 15 seconds; hidden sections retain filters, pages and selections while
+cancelling reads. Task graph errors do not block PR browsing. The
+[PR read design](../../docs/design/github-pr-reading.md) owns synchronization
+states, unknown counts, identity admission and retained-page behavior.
+
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -747,6 +755,12 @@ while old-history ownership cannot carry forward. Clock-only responses retain th
 latest `GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings
 edit changes task time or graph geometry.
 
+## GitHub connection settings
+
+Project settings show GitHub connection and independent polling and Webhook status to all members. Administrators can discover the configured App's installation, connect or reconnect, set the polling interval and disconnect. Discovery checks the App's access to the Project repository, independently of the operator's GitHub account. Disconnect retains synchronized data; private repository data is shared with Project members. A connection schedules the first sync and does not imply it has completed.
+
+Management uses the independent GitHub resource's exact version and shares the synchronous Project management guard. A conflict or unknown write outcome retains the draft and holds the guard until an admitted read reconciles the state or the scope ends, without replaying the write. An existing binding can be disconnected even when the App is unavailable or unconfigured. The [runtime design](../../docs/design/github-connection-runtime.md) describes the server behavior.
+
 ## Project deletion
 
 Project Settings offers owner Team administrators a deletion preview and exact
@@ -755,15 +769,15 @@ active Worker claims; those observations are not DELETE conditions. Names with
 control characters use reversible JSON escaping. A confirmed receipt is retained
 independently of local completion and preserves a success notice across navigation. During an admission pause, deletion settles
 locally without cleanup, automatic reads or navigation. On admission, cleanup
-uses the original cache generation. Withdrawal is not started, and navigation
-and dialog closure are skipped, when the submitted dialog, input or route has
-since changed. If persistent cleanup fails after withdrawal, retry targets the
+uses the original cache generation. A confirmed receipt withdraws only the original admitted cache generation.
+Navigation and dialog closure are skipped when the submitted dialog, input,
+section or route has since changed. If persistent cleanup fails after withdrawal, retry targets the
 matching user, Project, user fence and denied generation without broadcasting
 withdrawal again or resending DELETE. The denial may use a different ticket;
 a stale ticket cannot clear a newer generation. Cleanup and navigation
 can be retried independently. A dispatched request
 with an unknown outcome is never replayed, and a later 404 does not prove that
-the deletion succeeded. Settings saves, ownership transfers and deletion share
+the deletion succeeded. Settings saves, GitHub management, ownership transfers and deletion share
 a synchronous management guard. The [Web design](../../docs/design/daynight-web.md#项目删除)
 owns the operation and identity boundaries.
 
@@ -772,12 +786,12 @@ owns the operation and identity boundaries.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 11 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
-`profiles` and `sessionHistory` stores. Schema 11 clears project, summary and
+schema 12 and idb 8.0.4, with `userScopes`, `projects`, `summaries`, `details`,
+`profiles` and `sessionHistory` stores. Schema 12 clears project, summary and
 detail records and their watermarks before strict parsing, preserving user fences,
 profiles and compatible Session-history formats. A full snapshot can clear the
 refetchable Session catalogue. Upgrades from schema 1 through 4 rotate user fences; schema 7 Session records lack the complete-empty
-proof and are cleared. Missing fields are not supplied with defaults.
+proof and are cleared. Task summaries, search results and details require `tags` references; missing or malformed references fail parsing. Missing fields are not supplied with defaults.
 Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and actual counts for both active and invalidated manifests.
@@ -1437,12 +1451,12 @@ list section contains Standalone tasks and Task chains. Desktop section navigati
 left of the selected content; narrow screens use horizontal tabs with matching
 keyboard direction. The outer choice is stored per project in browser
 preferences, so the first render after reload or a new visit already shows the saved
-Overview or Task list selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
-projects retain both section destinations.
+Overview, Task list, PR list or Tags selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
+projects retain all section destinations.
 
-Both sections use one `ProjectView` snapshot, synchronization loop and detail
+Overview and Task list use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
-inert on Overview. Leaving Task list or its Task chains category closes the
+inert outside Task list. Leaving Task list or its Task chains category closes the
 current graph dialog and clears its temporary opening state; an ordinary return shows
 the list without reopening it. Browser history traversal can restore an earlier graph selection. The retained task subtree does not start another
 cache, index or refresh loop. Task details remain outside either section panel.
@@ -1743,10 +1757,39 @@ fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
 written. The outer section uses the independent
 `daynight:project-section:${projectId}` record with the JSON string `"overview"`
-or `"tasks"`; a missing record selects Overview. A read or format failure selects
+or `"tasks"`, `"prs"` or `"tags"`; a missing record selects Overview. A read or format failure selects
 Overview with a section-specific notice; a write failure retains the current
 in-memory selection and reports that it was not saved. Other preference errors
 likewise leave the current page usable with visible feedback.
+
+The Tags section is available to project members and administrators through the
+project access boundary. It reads one in-memory catalog page for the current
+identity, project and query, and offers search, creation, rename and deletion.
+Names are trimmed and validated as 1–64 Unicode code points without controls or
+line separators; the server enforces ASCII case-insensitive uniqueness. A delete
+preview reads the current tag, original version and visible Task and Goal counts.
+Confirmation removes every association, including those added after the preview;
+counts are hints rather than a condition on deletion. Writes retain the observed
+version. Conflicts and unknown outcomes retain the draft and require a current
+observation; a check does not replay a write or establish the original outcome.
+
+Catalog cursors bind the project, principal, query, limit and catalog epoch.
+An invalidated cursor restarts at the first page; background revalidation retains
+the displayed page and drafts while waiting. Counts are refreshed independently
+of the epoch, which tracks names, membership and ordering. The catalog is not
+persisted or accumulated in the Task cache. Batch resolution validates selected
+IDs outside the current page. Leaving the section cancels its reads; an
+already dispatched write is retained as unknown for review on return. Identity
+or project access withdrawal retires private data and requests.
+
+Task and Goal details share a searchable multi-select tag editor. Its draft starts
+from the resource's own detail and keeps its original version until the user
+explicitly adopts a newer one. Saving replaces the complete association set,
+including an empty set. Conflicts and unknown outcomes retain the draft and
+show the current saved tags without replaying the write. Creating a tag in the
+picker writes to the catalog independently; cancelling the association edit
+does not delete it. Pending saves retain later local edits. Identity change or
+project access withdrawal retires private editing state.
 
 Both stable inner tabpanel wrappers retain their IDs and hide inactive content.
 Task page scroll restoration and scroll/pagehide listeners are active only when
@@ -2115,9 +2158,19 @@ navigation. A Goal presents Description, Attachments and Discussion in that
 order, with `description` and `overview` selecting Description. Its child tasks
 and scoped chains remain in the project Goal list. Description uses the Goal's
 Markdown and attachment owner and shows the existing empty state when empty.
-Its information aside displays the Goal's creation and modification times in the
-selected language and browser timezone, together with direct-child standalone,
-chain, total, done, cancelled and unfinished counts. Classification uses the
+Its information aside starts General information with the complete, selectable
+Goal ID and a localized copy button. Copy uses the shared Task clipboard button
+and a notification host owned by the Goal frame: pending disables repeated
+submission, success confirms the copy, and rejection or unavailable clipboard
+access shows a Goal-specific error while preserving manual selection and retry.
+Results arriving after resource replacement or unmount cannot notify a new Goal.
+Copy remains available for any readable Goal, independently of edit permission,
+status, empty children or graph loading and failure; existing unavailable-resource
+boundaries still apply. The UUID wraps without horizontal overflow at 320px and
+390px, and the copy button remains reachable. The aside also displays the Goal's
+creation and modification times in the selected language and browser timezone,
+together with direct-child standalone, chain, total, done, cancelled and unfinished
+counts. Classification uses the
 complete ordinary graph before Parent projection; external edges do not merge
 chains. The description scroll owner contains both desktop columns, stacked on
 narrow screens. Unknown graph state is distinct from zero tasks, and a failed

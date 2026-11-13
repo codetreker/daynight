@@ -42,7 +42,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 
 ## HTTP 操作
 
-以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动认领生成新 ID，稳定 workerId 与项目仓库映射先保存，实际远端授予后才登记本机 pending。请求标识和版本只留当前进程；未知响应不启动资源或重放请求，通过完整自有清单找回实际授予。人工命令的互斥、停止与本机收尾顺序由[worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
+以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动认领生成新 ID，稳定 workerId 与项目仓库映射先保存，实际远端授予后才登记本机 pending。冻结 Herdr 的原请求标识、精确版本和工具配置在发送前保存为独立本机预留，原 grant 确认后在单一事务内转入 pending 及冻结配置。未知响应不启动资源或重放请求，通过完整自有清单和原 Task 读回对账；同版本与清单缺席本身不能排除迟到授予。预留与共享实例切换的互斥及解除条件由[Herdr 工具启动设计](herdr-tool-launch.md#共享实例切换与恢复)拥有；其他请求仍不凭未知响应补造授予。人工命令的互斥、停止与本机收尾顺序由[worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
 
 | 方法和后缀 | 输入与结果 |
 |---|---|

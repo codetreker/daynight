@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserNavigation, type DirtyDraft } from '../src/app/navigation';
+import { myTasksHistory } from '../src/app/page-history';
 
 let owner: BrowserNavigation;
 beforeEach(() => { owner = new BrowserNavigation(window); });
@@ -12,6 +13,43 @@ const arrival = (state: unknown, path: string) => {
 };
 
 describe('window navigation admission', () => {
+  it('restores only the current overview reading after rebuilding the window owner', () => {
+    const user = '00000000-0000-4000-8000-000000000001';
+    const project = '10000000-0000-4000-8000-000000000001';
+    const task = '20000000-0000-4000-8000-000000000001';
+    const reading = myTasksHistory(user, { projectPages: { [project]: 2 }, detail: { projectId: project, id: task, navigation: { tab: 'discussion', path: null }, goalChildren: null } });
+    owner.navigate('/my-tasks');
+    owner.setView(reading);
+    const previous = history.state;
+    const length = history.length;
+    owner.dispose();
+    owner = new BrowserNavigation(window);
+    expect(owner.snapshot().view).toEqual(reading);
+    expect(history.length).toBe(length);
+    expect(history.state.__daynightNavigation.session).not.toBe(previous.__daynightNavigation.session);
+    expect(history.state.__daynightNavigation.entryId).not.toBe(previous.__daynightNavigation.entryId);
+    const current = owner.snapshot();
+    arrival(previous, '/my-tasks');
+    expect(owner.snapshot().entryId).toBeNull();
+    expect(owner.snapshot().view).toBeUndefined();
+    expect(current.entryId).not.toBeNull();
+  });
+
+  it('does not restore copied overview state at another URL or malformed readings', () => {
+    const user = '00000000-0000-4000-8000-000000000001';
+    const reading = myTasksHistory(user, { projectPages: {}, detail: null });
+    owner.navigate('/my-tasks'); owner.setView(reading);
+    const previous = history.state;
+    owner.dispose();
+    history.replaceState(previous, '', '/my-tasks?other=1');
+    owner = new BrowserNavigation(window);
+    expect(owner.snapshot().view).toBeUndefined();
+    owner.dispose();
+    const bad = { ...previous, __daynightNavigation: { ...previous.__daynightNavigation, view: { ...reading, selection: { ...reading.selection, draft: 'private' } } } };
+    history.replaceState(bad, '', '/my-tasks');
+    owner = new BrowserNavigation(window);
+    expect(owner.snapshot().view).toBeUndefined();
+  });
   it('initializes without adding an entry and preserves other history state fields on writes', () => {
     owner.dispose();
     window.history.replaceState({ reader: { offset: 7 } }, '', '/projects');

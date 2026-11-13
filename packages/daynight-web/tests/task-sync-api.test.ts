@@ -12,7 +12,7 @@ const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { type: "task", parentId: null, assignedTo: null, id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task = { type: "task", parentId: null, assignedTo: null, tags: [], id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const dependencyStates = { [taskId]: { taskVersion: task.version, blockedBy: [], ready: true } };
 const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, tasks: [task], dependencyStates, sessions: {} };
 const signal = () => new AbortController().signal;

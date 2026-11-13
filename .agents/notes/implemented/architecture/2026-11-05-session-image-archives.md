@@ -21,11 +21,12 @@ contracts use one resource model and one archive representation.
 The repository publishes the adopted
 [image archive design](../../../../docs/design/session-image-archives.md).
 This implemented note originally recorded publication of the design. Its dual
-representation is superseded; native consumer acceptance remains separate. Immutable Session-owned originals are
-retained by explicit references. A schema3 manifest points to a sealed timeline,
-verified original resources and a deterministic legacy representation. New
-history and the complete legacy envelope each receive exact capacity accounting
-before image admission.
+representation is superseded; native consumer acceptance remains separate.
+Immutable Session-owned originals are retained by explicit references. The
+original design paired a schema3 manifest and sealed timeline with verified
+resources and a deterministic legacy representation, and accounted for both
+complete histories before image admission. The [actual content capacity decision](2026-11-13-session-actual-content-capacity.md)
+replaces that future reservation.
 
 The shared codec owns representation, traversal and encoded-size rules. The
 archive consumer synchronizes complete history into bounded temporary files and
@@ -33,7 +34,7 @@ retains only identifiers, hashes, lengths, counts, references and source cutoffs
 in the service database. Stop, capture settlement, sealing and ready publication
 are distinct facts. Unknown commits and missing known originals cannot become
 partial success. Explicit Test resume imports only a verified same-owner source
-relation, reserves the complete target budget and creates independent target
+relation, checks target capacity and creates independent target
 originals without sending native input.
 
 The existing [file archive decision](../../archived/architecture/2026-10-30-session-file-archives.md)
@@ -115,8 +116,8 @@ local error could leave the service permanently unable to seal the archive.
 The design requires reference and intent ledgers, exact dual representation
 accounting, staged file transfer and recovery across file/database boundaries.
 In return, valid accepted originals remain readable after Controller and source
-shutdown without invoking native execution or source IO. The 64 MiB metadata
-limits, 1 GiB/1000-resource budget and reserved physical space remain explicit.
+shutdown without invoking native execution or source IO. The later actual
+content capacity decision replaces the earlier reservation and capacity values.
 
 Ready publication requires a verified closure and durable manifest, timeline,
 legacy file and originals. Later corruption does not rewrite the immutable

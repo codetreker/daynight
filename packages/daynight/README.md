@@ -16,7 +16,7 @@ the private test home and parent/child protection of real Daynight state
 (`~/.daynight` and the inherited `DN_CONFIG_DIR`) against writes and cleanup,
 including symbolic-link aliases. Ordinary test and installed acceptance suites exclude stress
 workloads. From this package, `pnpm test:stress` builds the CLI and runs the
-rendering and full Session-v2 `.stress.ts` suites. The command is local-only
+rendering, Session-v2 archive and Controller capacity/transport `.stress.ts` suites. The command is local-only
 and refuses CI. The [local stress guide](../../docs/development.md#local-stress-validation) owns
 selection and evidence interpretation. Each command's `--help` owns its exact
 usage. Review execution additionally requires Git, an authenticated
@@ -203,10 +203,10 @@ daynight bot create --name <name> [--worker <worker-id>] [--cwd <path>] [--agent
 daynight bot delete <bot-id> --if-version <version> [--request-id <uuid>] [--json]
 daynight task
 daynight task create --title <title> [options]
-daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
+daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
 daynight task list --status in_progress --group-by chain [--assigned-to <uuid|me>] [--limit <1-50>] [--cursor <cursor> | --group-id <group-id> --targets-cursor <cursor>] [--json] [--project <project-id>]
-daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--json] [--project <project-id>]
-daynight task ready [--limit <N>] [--json] [--project <project-id>]
+daynight task search <expression> [--status <status>] [--assigned-to <assignee>] [--ready] [--allow-agents <true|false>] [--compatible-platform <platform>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
+daynight task ready [--limit <N>] [--tag <tag-id> ...] [--tag-match <all|any>] [--untagged] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
 daynight task step
 daynight task step list <task-id> [--json] [--project <project-id>]
@@ -217,6 +217,8 @@ daynight task step set-status <task-id> <step-id> <todo|in_progress|done|skipped
 daynight task step move <task-id> <step-id> (--before <step-id> | --after <step-id> | --first | --last) [--if-version <version>] [--json] [--project <project-id>]
 daynight task step delete <task-id> <step-id> [--if-version <version>] [--json] [--project <project-id>]
 daynight task update <task-id> [options]
+daynight task tag add <task-id> <tag-id> [--if-version <version>] [--project <project-id>]
+daynight task tag remove <task-id> <tag-id> [--if-version <version>] [--project <project-id>]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--force] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--force] [--project <project-id>]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
@@ -855,16 +857,16 @@ A positive exact full ID match ranks before a title match; fragments do not.
 Uppercase `NOT`, `AND`, and `OR`, parentheses, implicit AND, and the `id:`,
 `title:` and `description:` fields form expressions. Inside quotes, `\"` and `\\`
 escape a quote and a backslash. `--status`, `--assigned-to`, `--ready`,
-`--allow-agents`, `--compatible-platform`, `--type`, and `--parent` intersect the expression; search
+`--allow-agents`, `--compatible-platform`, `--type`, `--parent` and tag filters intersect the expression; search
 does not accept `--all`. Explicit `--project` searches that project directly;
 otherwise the current repository resolves the project.
 
 Search reads and validates every page before producing output, preserving the
-server's order. Text shows the full Task ID and title, type, parent, status, actual
+server's order. Text shows the full Task ID and title, type, parent, tags, status, actual
 parent Goal or `none`, positive match fields, and a description snippet when present. A
 negative-only match is identified as such; text escapes terminal controls.
 `--json` emits one newline-terminated array whose entries contain only `id`,
-`type`, `parentId`, `projectId`, `title`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
+`type`, `parentId`, `projectId`, `title`, `tags`, `status`, `cancelledAt`, `context`, and `match`. Both formats omit the
 assignee and update time; use `task show` for complete Task details. An empty
 result is `No matching tasks.` in text or `[]` in JSON. Invalid arguments and
 expression syntax exit 2; read, permission, protocol, cancellation, budget and
@@ -880,17 +882,21 @@ Implement OAuth sign-in for the web workspace. Deliver the callback flow and
 visible failure recovery; preserve the existing session and provider rules.
 Complete when a valid login opens the workspace and a rejected login can retry.'
 daynight task create --title "Build the sign-in page" --depends-on <design-task-id> --external-depends-on <authentication-task-id>
-daynight task create --type goal --title "Improve installation"
+daynight task create --type goal --title "Improve installation" --tag <tag-id>
 daynight task create --type goal --title "Unassigned Goal" --clear-assigned-to
 daynight task create --title "Document prerequisites" --parent <goal-id> --status todo
 daynight task ready
 daynight task ready --parent <goal-id> --limit 5 --json
 daynight task ready --allow-agents true --compatible-platform linux --json
+daynight task ready --tag <tag-id> --limit 5 --json
 daynight task list --allow-agents false --ready
 daynight task list --ready
 daynight task list --all --json
 daynight task list --type goal --json
 daynight task list --parent none --json
+daynight task list --tag <tag-id> --tag <another-tag-id> --tag-match any --json
+daynight task list --untagged --json
+daynight task search 'title:cache' --tag <tag-id> --json
 daynight task list --status in_progress --json
 daynight task list --status in_progress --group-by chain --assigned-to me --json
 daynight task list --ready --assigned-to me --json
@@ -903,6 +909,10 @@ daynight task remove-property <task-id> pullRequests --if-version <observed-vers
 daynight task update <task-id> --parent <goal-id> --if-version <version>
 daynight task update <task-id> --parent none --if-version <version>
 daynight task update <task-id> --description=
+daynight task update <task-id> --tag <tag-id> --tag <another-tag-id> --if-version <version>
+daynight task update <task-id> --clear-tags --if-version <version>
+daynight task tag add <task-id> <tag-id> --if-version <version>
+daynight task tag remove <task-id> <tag-id> --if-version <version>
 daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
 daynight task update <task-id> --required-platform macos --if-version <version>
@@ -917,6 +927,21 @@ daynight task graph <task-id> --json
 daynight task graph <task-id> --depends-only
 daynight task graph <task-id> --depends-only --json
 ```
+
+Task and Goal creation accepts repeated `--tag <UUID>` and writes the selected
+set atomically with the other fields; omission creates an entry without tags.
+Update accepts repeated `--tag` to replace the complete set, or `--clear-tags`
+to empty it. These options conflict; omitting both preserves the existing set.
+IDs are normalized, deduplicated and sorted. Tags belong to the selected Project;
+parent and child associations are independent.
+
+`task tag add` and `remove` read the current set and submit its replacement with
+the original Task version, even when the resulting set is unchanged. An explicit
+`--if-version` must match the read and is never replaced by a newer version;
+otherwise the read version is used. A conflict requires a fresh decision. If a
+write times out or its outcome is unknown, read the Task to inspect its current
+state; the command does not replay the write or assume rollback. Successful
+receipts are checked against the submitted tag IDs.
 
 `task graph` requires a task ID. It returns every member of that task's ordinary
 undirected dependency component, including completed tasks and sibling branches,
@@ -1126,6 +1151,20 @@ to permission and other eligibility checks. Existing claim inventory and manual
 control remain execution-based; the
 [self-assigned acquisition decision](../../.agents/notes/archived/architecture/2026-11-03-worker-self-assigned-claims.md) records the rationale for the runtime rule.
 
+Ordinary list, ready and search accept repeated `--tag <tag-id>` UUIDs. IDs are
+canonicalized, deduplicated and sorted. `--tag-match all` (the default) requires
+every selected tag; `--tag-match any` requires at least one. `--untagged` selects
+entries with no tags and conflicts with a nonempty tag selection. With neither
+selected IDs nor `--untagged`, there is no tag predicate. The service combines
+the predicate with the other filters before pagination or the ready limit. Each
+Task or Goal is matched on its own tags; a Goal's tags do not match its children.
+Search still requires a nonempty expression and does not search tag names; use
+list to filter only by tags. Invalid UUIDs or incompatible options are rejected,
+and the service rejects unknown, deleted or cross-project tags as
+`invalid_tag_filter`. Failures do not become empty or partial results. The same
+normalized selection is sent on every page, subject to existing request and
+cursor size limits; oversized inputs are rejected rather than truncated.
+
 For `me`, each successful task-page response must carry one canonical
 Daynight-User-ID, even when its items array is empty. A complete list traversal
 binds its first successful page to that identity and rejects a different later
@@ -1139,7 +1178,7 @@ error-response header requirement.
 
 `task list --status in_progress --group-by chain` reads one work-overview page.
 It defaults to `--assigned-to me`; an explicit user UUID is supported, while
-`unassigned`, `--all`, readiness, permission and platform filters are rejected.
+`unassigned`, `--all`, readiness, permission, platform and tag filters are rejected.
 Each ordinary dependency component appears once when it contains a matching
 in-progress task, including when its root is done. External prerequisites do
 not expand a group. Independent tasks are groups with `kind=task`.
@@ -1224,10 +1263,14 @@ traversal across all relevant projects provides ownership inventory; extra filte
 or incomplete pages cannot authorize cleanup. These filters are not public task
 CLI options.
 
-Human task lists use labeled blocks containing ID, project, title, complete
+Human task lists use labeled blocks containing ID, project, title, tags, complete
 properties, status, readiness, automatic-execution permission, required platform,
 assignee, dependencies, blocking and Session observations. Property rows are ordered by name and rendered as
 terminal-safe JSON; missing keys are not replaced with default values.
+Task and Goal text displays each own tag name on a separate line, or `Tags: none`.
+Their JSON includes `tags` as an array of `{id,name}` references; `[]` means no
+tags. The same references appear in details, ready results and Task receipts.
+Missing or invalid references are protocol errors. Graph nodes do not include tags.
 Description, version and Task timestamps
 remain available in show, ready, create and update output. Graph nodes include
 state, permission, required platform, assignee, dependencies, blocking and
@@ -2289,9 +2332,12 @@ that proof, the Copilot entry is unavailable without an issue. Explicit Copilot
 model discovery and execution continue to prepare it on demand. A tool path or
 previous success alone does not create background demand.
 
-Explicit Herdr targets are rejected until its instance mapping supports them;
-all-automatic Herdr keeps its existing behavior. Explicit paths must be absolute
-on the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
+Herdr Codex/Copilot executions freeze both the Agent and Herdr
+recipes; controlled pane mappings preserve the original kind and logical argv.
+macOS retains per-run instances. Linux/Windows shared instances keep new targets
+pending until the original daemon, endpoints and all old process responsibilities
+are confirmed closed. Explicit paths must be absolute on
+the Worker platform, at most 4096 UTF-8 bytes, valid Unicode and free of control
 characters. Windows paths need a drive or complete UNC share. Values retain all
 spaces and punctuation: the parser does not trim, normalize, expand `~` or
 environment variables, split arguments, or access the filesystem. Provide one
@@ -2313,7 +2359,7 @@ reconciles the previous probe's cleanup, then resolves and probes the current
 choice within the same operation. Unconfirmed cleanup blocks the new probe. This
 refresh does not replace the frozen recipe of an existing execution.
 
-New Web executions freeze the complete tool recipe and its observed version before
+New executions freeze the complete tool recipe and its observed version before
 submission. Target or PATH changes affect future executions. Recovery verifies the
 original files and reports `tool_identity_changed` when a dependency is missing or
 changed; it never substitutes another installation. Restore the original matching
@@ -2322,6 +2368,15 @@ existing live process retain its original process identity. Old submitted record
 without a frozen identity report `legacy_tool_identity_missing`; they cannot start
 a replacement. Never-submitted legacy tickets can acquire a private, immutable
 selection sidecar bound to the original ticket, without replaying initial input.
+
+Herdr startup verifies the original shell, helper/native process tree, launch
+receipt, binding and readiness before a single initial input. Startup succeeds
+only after the official integration reports the original native Session to the
+same pane. Missing or unknown results never permit replay or a replacement
+Session. Original-claim recovery and attach keep their frozen recipes. Windows
+uses system PowerShell 5 as the root shell with owned ExternalScript mappings;
+PowerShell 7 is not supported by this path. See the
+[Herdr tool launch design](../../docs/design/herdr-tool-launch.md).
 
 The supported Web Copilot image-authority profile freezes its source SEA, Worker
 Node, preload closure and a complete private extracted distribution. Its public
@@ -2767,8 +2822,10 @@ worker lock or start a replacement daemon. On macOS with a lifecycle journal,
 it reads the current schema without migration or recovery, selects among
 unfinished recorded runs, and verifies the original daemon plus both socket
 peers before connecting. Paused tasks remain attachable. An unreadable journal
-or missing runtime is an error; only installations without a journal use the
-legacy shared session. Detaching preserves execution. Task panes retain their
+or missing runtime is an error. Without a lifecycle journal, attach reads the
+shared instance journal. Both paths verify and use the original frozen Herdr
+client recipe; missing historical identity or changed files prohibit a new client.
+Detaching preserves execution. Task panes retain their
 native XDG and private HISTFILE; client routing uses the original instance's
 attachment descriptor.
 
@@ -3057,6 +3114,16 @@ the Herdr execution backend. Codex uses a private app-server over stdio, Claude
 uses the bundled Agent SDK, and Copilot uses the bundled SDK with
 its own headless runtime. Provider arguments are checked for that backend before
 claiming. The service must advertise the matching Session protocol and provider.
+Codex stdout consumption yields to ready I/O after each complete frame and each
+bounded decoder input slice. Output remains ordered and complete, media leases
+retain their existing ownership, and partial frames keep their original absolute
+deadline. The Worker IPC observation timeout remains 2,000 ms. This cooperative
+scheduling cannot preempt a single synchronous decoder or storage operation.
+The [Controller design](../../docs/design/task-session-protocol.md#codex-输出消费与-io)
+owns the mechanism; the separate local stress entry can run
+`pnpm test:stress test/commands/controller/output-responsiveness.stress.ts`
+for native stdout, authenticated IPC, content and outbox accounting evidence.
+
 Keep authentication in the native provider profile; credentials never enter a
 Session URL. Project members can read the task's Session tab for messages and tools.
 Only the persisted Session owner can send input, change model or permission
@@ -3096,7 +3163,7 @@ input/results and stopped/closed/deleted flags, preserving cleanup intent,
 identity and deadline. Version 0 resets its schema and data through the common
 SQLite policy. Private launch tickets and Controller
 journals live under `~/.daynight/controller/`; journals retain their independent
-format version 10. Both Worker stores must open successfully before scheduling.
+format version 11. Both Worker stores must open successfully before scheduling.
 Web restart reconnects to a surviving Controller. Starting a new generation
 requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
@@ -3115,6 +3182,13 @@ retain their evidence. The journal stores one current SQL row per timeline entry
 body, UTF-8 totals, Markdown/image state, original input origins and outbox commit
 in the original transaction. Replaced body revisions do not create candidate files.
 Historical candidates remain only until reader-safe stopped maintenance finishes.
+
+The outbox stores its exact encoded UTF-8 byte total in the same journal
+transaction as every queue mutation. Capacity reads use the singleton total;
+partial acknowledgements measure only deleted rows, while full drains and clears
+bulk-delete and reset the total. Normal reopen and recovery do not recount the
+queue. Version 11 initializes the total once from old encoded text during the
+original migration transaction, independent of the SQLite file encoding.
 
 Version 10 imports only committed historical body pointers and preserves the
 original execution, native identity, operations and message origins. Upgrade-only

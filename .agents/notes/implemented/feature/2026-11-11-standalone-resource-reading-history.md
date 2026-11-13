@@ -49,6 +49,13 @@ cross-Goal Details selects the target Goal and child together, while external
 Expand selects that Goal and complete chain graph for a multi-member target.
 Unparented chain expansion uses a transient project graph witness; it does not
 change the root and nested detail sharing contract.
+The account-level in-progress overview uses the same detail and Goal child
+owners with an identity-bound reading entry for the selected project, resource
+and group pages. Its direct reader does not depend on membership in the filtered
+list. A selected project alone owns the full graph and assignee receipt; changing
+projects retires that host. Resource retirement also fences earlier overview
+entries, and draft admission follows the root and actual child selection.
+
 This extends the shared entry model
 in the [account reading-history decision](2026-11-11-account-reading-history.md)
 and partially supersedes the dialog-local history boundary in the archived
@@ -69,6 +76,6 @@ cannot restore the browser's sequence of nested reading choices.
 Back and Forward restore reading choices without replaying business operations.
 The state contains no business response, draft, permissions or DOM; existing
 resource, identity and access lifecycles continue to own admission and cleanup.
-Closing does not skip older entries. Nested selections are not a cross-refresh
-or shareable-link contract, and native unnumbered entries retain the existing
-navigation limits.
+Closing does not skip older entries. Standalone nested selections are not a
+cross-refresh or shareable-link contract; overview selections restore the current
+entry on reload. Native unnumbered entries retain the existing navigation limits.

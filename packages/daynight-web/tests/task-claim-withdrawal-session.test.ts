@@ -16,7 +16,7 @@ const worker: WorkerClaim = {
   claimId, state: 'active', userId: TEST_VIEWER_ID, workerId, machine: { id: workerId, name: 'Machine' },
   platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: projectId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time,
 };
-const initial: TaskDetail = { type: 'task', parentId: null, assignedTo: null,
+const initial: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null,
   id: taskId, projectId, title: 'Keep the delivery', description: 'Existing task materials', status: 'in_progress', version: 9_007_199_254_740_993n,
   allowAgents: true, requiredPlatform: 'macos', ready: false, dependsOn: [], externalDependsOn: [], blockedBy: [],
   properties: { worker, pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },

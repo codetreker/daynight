@@ -12,6 +12,7 @@ const (
 )
 
 type TaskViewRecord struct {
+	Tags              []TagReference
 	Type              TaskType
 	ParentID          *string
 	Properties        TaskProperties

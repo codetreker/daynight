@@ -33,6 +33,7 @@ export type PullRequestDetailDialogProps = {
   readonly canRead: boolean;
   /** Controls new reads without clearing a still-authorized view. */
   readonly active: boolean;
+  readonly visible?: boolean;
   readonly onPrincipalMismatch: () => void;
   readonly onAccessError?: (error: ApiError) => void;
   readonly onClose: () => void;
@@ -61,8 +62,10 @@ export function PullRequestDetailDialog(props: PullRequestDetailDialogProps) {
   const identity = `${props.userId}/${props.projectId}/${props.number}`;
   const lastIdentity = useRef(identity);
   const lastRefresh = useRef(props.refreshKey);
-  useBodyScrollLock(true);
+  const visible = props.visible !== false;
+  useBodyScrollLock(visible);
   useLayoutEffect(() => {
+    if (!visible) return;
     const node = dialog.current!, opener = document.activeElement;
     const release = registerOverlay(node, owner?.current ?? null);
     node.showModal(); close.current?.focus({ preventScroll: true });
@@ -85,7 +88,7 @@ export function PullRequestDetailDialog(props: PullRequestDetailDialogProps) {
       if (callbacks.current.onRestoreFocus) callbacks.current.onRestoreFocus();
       else if (opener instanceof HTMLElement && opener.isConnected && !opener.closest('[inert], [hidden]') && !opener.matches(':disabled')) opener.focus({ preventScroll: true });
     };
-  }, [owner]);
+  }, [owner, visible]);
   useLayoutEffect(() => {
     if (lastIdentity.current !== identity) {
       lastIdentity.current = identity; anchor.current = undefined; setRaw(false);

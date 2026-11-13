@@ -1,4 +1,14 @@
 import type { SessionV2BoundaryGap, SessionV2Message, SessionV2Owner, SessionV2Run, TerminalBinding } from "../../../session/v2/types.js";
+import type { ResolvedToolLaunch } from "../../../platform/tool-executables.js";
+import type { FrozenToolObservation } from "../types.js";
+
+export type HerdrExecutionTools = {
+  agent: ResolvedToolLaunch | null;
+  agentObservation: FrozenToolObservation | null;
+  herdr: ResolvedToolLaunch;
+  herdrObservation: FrozenToolObservation;
+};
+export type HerdrInstanceObservation = FrozenToolObservation & { protocol: 22 };
 
 /** Birth identity survives exec; audit identity additionally fences the execution image. */
 export type MacProcessIdentity = {
@@ -17,6 +27,8 @@ export type HerdrLocalRun = {
   phase: HerdrRunPhase;
   nativeLaunch: "not_submitted" | "requested" | "observed" | "unknown";
   instanceDirectory: string;
+  launches?: HerdrExecutionTools;
+  instanceObservation?: HerdrInstanceObservation;
   daemon: MacProcessIdentity | null;
   processes: MacProcessIdentity[];
   stopOperationId: string | null;
@@ -34,7 +46,7 @@ export type HerdrLocalSegment = {
   durationMs: string | null;
   gap: SessionV2BoundaryGap | null;
 };
-export type HerdrPreparation = { instanceId: string; instanceDirectory: string; phase: "prepared" | "launch_requested"; daemon: MacProcessIdentity | null };
+export type HerdrPreparation = { instanceId: string; instanceDirectory: string; phase: "prepared" | "launch_requested"; daemon: MacProcessIdentity | null; launches?: HerdrExecutionTools; instanceObservation?: HerdrInstanceObservation };
 export type HerdrLedgerRequest = { message: Extract<SessionV2Message, { type: "generation_ledger" }>; connectionEpoch: string };
 export type HerdrNativeLaunchRejection = { method: "agent.start"; code: "agent_pane_busy"; executionGeneration: string; binding: TerminalBinding };
 export type HerdrLifecycleRecord = {

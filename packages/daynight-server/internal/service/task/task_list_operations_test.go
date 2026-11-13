@@ -73,10 +73,10 @@ func newListOperationFixture(t *testing.T) *listOperationFixture {
 		Status: listOperationPointer(model.TaskInProgress), Ready: listOperationPointer(false), AllowAgents: listOperationPointer(true),
 		CompatiblePlatform: listOperationPointer(model.PlatformLinux), PlatformSpecific: listOperationPointer(false), AutomaticCandidate: true, WorkerID: listOperationPointer(strings.ToUpper(listOperationWorker))}
 	f.selection = taskcore.ListSelection{
-		Scope: query.ListScope{Type: model.TaskTypeTask, Kind: "tasks", ProjectID: listOperationProject, Status: listOperationPointer("in_progress"), Ready: listOperationPointer(false),
+		Scope: query.ListScope{TagFilterIdentity: taskcore.TagFilterIdentity(store.TagFilter{TagIDs: []string{}, TagMatch: "all"}), Type: model.TaskTypeTask, Kind: "tasks", ProjectID: listOperationProject, Status: listOperationPointer("in_progress"), Ready: listOperationPointer(false),
 			AllowAgents: listOperationPointer(true), CompatiblePlatform: listOperationPointer(model.PlatformLinux), PlatformSpecific: listOperationPointer(false), AutomaticCandidate: true,
 			WorkerID: listOperationPointer(listOperationWorker), WorkerUserID: listOperationPointer(listOperationActor), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor}},
-		Query: store.TaskQuery{Page: store.Page{Limit: 2}, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor},
+		Query: store.TaskQuery{TagFilter: store.TagFilter{TagIDs: []string{}, TagMatch: "all"}, Page: store.Page{Limit: 2}, AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentUser, UserID: listOperationActor},
 			Status: listOperationPointer(model.TaskInProgress), Ready: listOperationPointer(false), AllowAgents: listOperationPointer(true), CompatiblePlatform: listOperationPointer(model.PlatformLinux),
 			PlatformSpecific: listOperationPointer(false), AutomaticCandidate: true, Worker: &store.WorkerQuery{UserID: listOperationActor, WorkerID: listOperationWorker}},
 	}
@@ -383,7 +383,7 @@ func TestTaskListOperationsCoordinateSnapshotAndProjection(t *testing.T) {
 				t.Fatal(err)
 			}
 			last := listOperationRows()[1]
-			want := map[string]any{"version": float64(3), "type": "task", "kind": "tasks", "projectId": listOperationProject,
+			want := map[string]any{"tagFilter": f.selection.Scope.TagFilterIdentity, "version": float64(3), "type": "task", "kind": "tasks", "projectId": listOperationProject,
 				"status": "in_progress", "ready": false, "allowAgents": true, "compatiblePlatform": "linux", "platformSpecific": false, "automaticCandidate": true,
 				"workerId": listOperationWorker, "workerUserId": listOperationActor, "assignedTo": "user:" + listOperationActor,
 				"createdAt": last.CreatedAt.Format(time.RFC3339Nano), "id": last.ID}

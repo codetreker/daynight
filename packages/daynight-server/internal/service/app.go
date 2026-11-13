@@ -38,6 +38,7 @@ type App struct {
 	*application.Application
 	GitHubRead           *coregithub.Reader
 	GitHubManager        *githubservice.Manager
+	GitHubWebhook        *githubservice.WebhookReceiver
 	Metrics              *prometheus.Registry
 	Web                  *webresources.Resources
 	Ready                func(context.Context) error

@@ -44,6 +44,21 @@ const fixture = async (respond: (url: URL, init: RequestInit) => Response | Prom
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json", "Daynight-User-ID": id } });
 
 describe("public Bot commands", () => {
+  it.each([undefined, 0, 3])("accepts legacy and attention-aware Bot responses with count %s", async attentionCount => {
+    const value = { ...bot, ...(attentionCount === undefined ? {} : { attentionCount }) };
+    const { run } = await fixture((url, init) => json(url.pathname === "/api/v1/me/bots" && init.method === "GET" ? { items: [value], nextCursor: null } : value));
+    const shown = await run(["show", id, "--json"]);
+    expect(shown.exit).toBe(0); expect(JSON.parse(shown.out)).toEqual(value);
+    const created = await run(["create", "--name", "助手", "--request-id", id, "--json"]);
+    expect(created.exit).toBe(0); expect(JSON.parse(created.out.slice(shown.out.length))).toEqual(value);
+    const listed = await run(["list", "--json"]);
+    expect(listed.exit).toBe(0); expect(JSON.parse(listed.out.slice(created.out.length))).toEqual([value]);
+  });
+  it.each([-1, 0.5, "1", null, Number.MAX_SAFE_INTEGER + 1])("rejects malformed attention count %s", async attentionCount => {
+    const { run, requests } = await fixture(() => json({ ...bot, attentionCount }));
+    const result = await run(["show", id, "--json"]);
+    expect(result.exit).toBe(1); expect(result.out).toBe(""); expect(requests).toHaveLength(1);
+  });
   it.each([{}, { model: "native-model" }, { reasoningEffort: "none" }, { model: "native-model", reasoningEffort: "none" }])("preserves explicit native choices %j through the creation receipt", async (native) => {
     const overrides = { workerId, ...native };
     const config = { ...bot.resolvedConfiguration, model: native.model ?? null, reasoningEffort: native.reasoningEffort ?? null, selection: { schemaVersion: 1, modelSource: native.model ? "explicit" : "native", reasoningEffortSource: native.reasoningEffort ? "explicit" : "native" } };

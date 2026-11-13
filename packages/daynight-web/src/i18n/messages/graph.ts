@@ -4,7 +4,7 @@ export type GraphMessages = {
   readonly chainList: string;
   readonly rootSummary: (args: { total: number; remaining: number }) => string;
   readonly inProgressCount: (args: { count: number }) => string;
-  readonly progress: (args: { done: number; cancelled: number; total: number }) => string;
+  readonly progress: (args: { done: number; total: number }) => string;
   readonly chainTitle: string;
   readonly goalTitle: string;
   readonly goalGraph: string;

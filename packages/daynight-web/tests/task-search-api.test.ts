@@ -6,12 +6,18 @@ const project = '79ccb68f-2bb1-4f41-a364-8befabb50945';
 const user = '459052e2-186f-4a52-8a58-55425ce43631';
 const admission = { userId: user, onPrincipalMismatch: vi.fn() };
 const filters = { status: '' as const, assignedTo: '' };
-const fixture = (name: string) => readFileSync(`../daynight-server/testdata/task-search/${name}.json`, 'utf8');
+const fixture = (name: string) => {
+  const body = readFileSync(`../daynight-server/testdata/task-search/${name}.json`, 'utf8');
+  // These captured search examples predate the required tag projection.
+  if (!['first-page', 'id-only', 'mixed-fields'].includes(name)) return body;
+  const page = JSON.parse(body);
+  return JSON.stringify({ ...page, items: page.items.map((item: object) => ({ ...item, tags: [] })) });
+};
 const response = (body: string, status = 200, principal = user) => new Response(body, { status, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': principal } });
 const read = (query = 'cache') => searchTasks(project, query, filters, null, new AbortController().signal, admission);
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
-it('reads the real HTTP fixture and sends a scoped POST without ranking or projection', async () => {
+it('reads the HTTP fixture with current tag references and sends a scoped POST without ranking or projection', async () => {
   const fetch = vi.fn().mockResolvedValue(response(fixture('first-page'))); vi.stubGlobal('fetch', fetch);
   const page = await read(); expect(page.items[0]?.context?.title).toBe('Goal'); expect(page.total).toBe(2);
   expect(JSON.parse(fetch.mock.calls[0]![1].body)).toEqual({ query: 'cache', limit: 15 });

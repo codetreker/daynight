@@ -629,6 +629,7 @@ for (const scenario of [
 test('imports a legacy text draft only after the native migration transaction commits', async ({ page, context }, info) => {
   const api = await installDraftAPI(context), legacy = await seedLegacyDraft(page, 'legacy text retained', 'old-draft-revision');
   await page.goto('/tests/navigation/session-drafts-client-fixture.html'); await expect(page.getByRole('textbox')).toHaveValue('legacy text retained');
+  await expect(page.getByRole('button', { name: 'Add images' })).toBeEnabled();
   expect(await page.evaluate(() => window.sessionDraftClient.storage.read())).toBeNull();
   await page.evaluate(() => window.sessionDraftClient.storage.armFault('abort')); await page.locator('input[type=file]').setInputFiles(file('Migrated.png'));
   await expect.poll(() => page.evaluate(() => window.sessionDraftClient.client.imageDrafts.getSnapshot().error)).toBe('image_draft_unavailable');

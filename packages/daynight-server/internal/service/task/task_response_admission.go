@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/limit"
@@ -40,6 +43,16 @@ func MCPTaskResponseFromContext(ctx context.Context) (MCPTaskResponse, bool) {
 // but before the surrounding transaction commits. Returning its error directly
 // from the transaction callback is required to roll back the completed writes.
 func admitTaskResponse(ctx context.Context, task model.Task, changed bool) error {
+	if len(task.Tags) != 0 {
+		// Reserve space for any legal rename and later version/time-only touches.
+		// The returned Task and its references must retain their actual values.
+		task.Tags = slices.Clone(task.Tags)
+		for i := range task.Tags {
+			task.Tags[i].Name = strings.Repeat("&", 64)
+		}
+		task.Version = math.MaxInt64
+		task.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	}
 	for _, extended := range []bool{false, true} {
 		if _, err := taskprotocol.EncodeREST(io.Discard, task, extended, taskcore.MaxTaskResponseJSONBytes); err != nil {
 			return taskResponseError(err)

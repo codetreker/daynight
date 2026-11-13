@@ -303,7 +303,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         }
         if (pending !== undefined && pending.binding.terminalId === actual.binding.terminalId && pending.binding.paneId === actual.binding.paneId && observed.status !== "blocked" && observed.interactiveReady && !observed.launchPending) {
           try {
-            const initialOnly = deps.herdr.lifecycle !== undefined && !pending.continuation;
+            const initialOnly = !pending.continuation && (deps.herdr.lifecycle !== undefined || input.configuration.toolLaunch !== undefined);
             const result = await submitInput(task, context, observed, pending.prompt, signal, pending.continuation ? continuationGuard(task, context) : undefined, initialOnly, pending.continuation ? undefined : "startup-input");
             observed = result.observation;
             if (result.submitted || initialOnly) {

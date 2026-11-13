@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { ApiError, setTaskStatus, checkAttachmentPreview, getTask, getTaskSync, listAttachments, putAttachment, readAttachmentText } from '../src/api/client';
 import * as projectAuth from '../src/api/auth';
+import { getProject } from '../src/api/project-settings';
 import type { TaskDetail, TaskGraph } from '../src/api/types';
 import { App } from '../src/app/App';
 import { TaskDetailSessionProvider, useTaskDetailSessions, type TaskDetailSessions } from '../src/features/task-detail/TaskDetailSession';
@@ -14,6 +15,7 @@ import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { installGraphMeasurements } from './graph-measurements';
 
+vi.mock('../src/api/project-settings', async original => ({ ...await original<typeof import('../src/api/project-settings')>(), getProject: vi.fn() }));
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual,
   getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(), putAttachment: vi.fn(),
   readAttachmentText: vi.fn(), checkAttachmentPreview: vi.fn(), }; });
@@ -41,7 +43,7 @@ const confirmStatus = async (button: HTMLElement) => {
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const project = id(100); const parent = id(1); const child = id(2); const standalone = id(3);
 const time = '2026-10-22T00:00:00Z';
-const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: id(number), projectId: project,
+const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => ({ tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: id(number), projectId: project,
   version: 9007199254740993n, title: `Task ${number}`, description: `Complete description ${number}`, properties: { pullRequests: [] },
   status: 'todo', dependsOn, blockedBy: [], ready: true, createdAt: time, updatedAt: time });
 let records: Map<string, TaskDetail>;
@@ -80,6 +82,7 @@ beforeEach(() => {
   otherRecords.clear();
   records = new Map([{ ...seed(1), status: 'done' as const, ready: false }, seed(2, [parent]), seed(3)].map((task) => [task.id, task]));
   graphRequest.mockReset().mockImplementation(async () => graph());
+  vi.mocked(getProject).mockReset().mockImplementation(async id => ({ ...graph().project, id, name: id === project ? "Approval project" : "Other project" }));
   vi.mocked(getTask).mockReset().mockImplementation(async (_project, taskId) => records.get(taskId)!);
   vi.mocked(setTaskStatus).mockReset();
   vi.mocked(listAttachments).mockReset().mockResolvedValue({ items: [], nextCursor: null });
@@ -254,8 +257,8 @@ describe('status in shared production task details', () => {
     };
     const openStandalone = async (title: string) => {
       await selectTaskList();
-      fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
-      fireEvent.click(screen.getByRole('button', { name: new RegExp(title) }));
+      fireEvent.click(await screen.findByRole('tab', { name: 'Standalone tasks' }));
+      fireEvent.click(await screen.findByRole('button', { name: new RegExp(title) }));
       const dialog = detailDialog();
       await within(dialog).findByRole('heading', { name: title });
       return dialog;
@@ -378,7 +381,7 @@ describe('status in shared production task details', () => {
     const obsolete = deferred<TaskGraph>(); const fresh = deferred<TaskGraph>(); const mutation = deferred<TaskDetail>();
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(obsolete.promise).mockReturnValueOnce(fresh.promise);
     vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
-    await mount(); await screen.findByRole('heading', { name: 'Approval project' });
+    await mount(); await screen.findByRole('tab', { name: 'Task chains' });
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
     const oldSignal = graphRequest.mock.calls[1]![1]; const oldGraph = graph();

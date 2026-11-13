@@ -8,7 +8,7 @@ import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -38,6 +38,8 @@ import type { HerdrSessionApi, HerdrSessionState } from "../../../src/commands/w
 import type { WorkerPaths } from "../../../src/commands/worker/paths.js";
 import type { SessionV2Message } from "../../../src/session/v2/types.js";
 import type { HerdrInputRecord } from "../../../src/commands/worker/herdr/input-types.js";
+import { toolSelectionKey, type ResolvedToolLaunch } from "../../../src/platform/tool-executables.js";
+import { recordedHerdrTools } from "./herdr-tool-snapshot.fixtures.js";
 import type { NativeSelectionVerifier } from "../../../src/commands/worker/native-selection.js";
 
 const cleanupScope = (owner: { projectId: string; taskId: string; claimId: string; worktreeId: string }): TerminalCleanupContext => ({ attempt: { owner, attemptId: "fixture" }, onExecutionStopped: () => {} });
@@ -54,17 +56,25 @@ afterEach(() => {
 });
 type Registration = Extract<SessionV2Message, { type: "registration" }>;
 type Ledger = Extract<SessionV2Message, { type: "generation_ledger" }>;
+const workerExecutable = realpathSync(process.execPath);
+const workerArtifact = { path: process.execPath, realPath: workerExecutable, size: String(statSync(workerExecutable).size), sha256: createHash("sha256").update(readFileSync(workerExecutable)).digest("hex") };
+const frozenLaunch = (tool: "codex" | "herdr"): ResolvedToolLaunch => {
+  const value = { schemaVersion: 1 as const, tool, context: "herdr" as const, source: "explicit" as const, entryPath: process.execPath, canonicalEntryPath: workerExecutable, executablePath: workerExecutable, interpreterPath: null, command: { file: workerExecutable, prefixArgs: [] }, artifacts: [{ role: "entry" as const, ...workerArtifact }] };
+  return { ...value, selectionKey: toolSelectionKey(value) };
+};
 const fixture = (realInspector = false, driverResources = false, selectionVerifier?: NativeSelectionVerifier) => {
   mkdirSync(root, { recursive: true }); const directory = mkdtempSync(path.join(root, "run-")); directories.push(directory);
   const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: driverResources ? path.join(directory, "repo", ".worktrees", "daynight", uuid(2)) : directory, agent: "codex" };
   mkdirSync(context.cwd, { recursive: true });
   const ownerId = uuid(5), workerId = uuid(6), nativeId = uuid(7), serverOrigin = "https://daynight.example";
   const paths: WorkerPaths = { stateDirectory: directory, workerDirectory: path.join(directory, "worker"), configFile: path.join(directory, "config.yml"), databaseFile: path.join(directory, "worker.sqlite"), configurationFile: path.join(directory, "configuration.json"), lockFile: path.join(directory, "worker.lock"), herdrDirectory: path.resolve("/state/h"), logsDirectory: path.resolve("/state/logs"), temporaryDirectory: path.join(directory, "tmp") };
-  let task: Task = { type: "task", parentId: null, id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, cancelledAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
+  let task: Task = { type: "task", parentId: null, id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", tags: [], status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, cancelledAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
+  let frozenTools = { ...recordedHerdrTools(), agent: frozenLaunch("codex"), herdr: frozenLaunch("herdr") };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
   const adapterSelectionVerifiers: (NativeSelectionVerifier | undefined)[] = [];
-  const settings = { recordingBlocked: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, observeFailure: undefined as Error | undefined, observeAfterInputFailure: undefined as Error | undefined, observeFailureAfterCount: 1, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const settings = { recordingBlocked: false, launchReceiptMissing: false, helperExited: false, unrelatedHelper: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, observeFailure: undefined as Error | undefined, observeAfterInputFailure: undefined as Error | undefined, observeFailureAfterCount: 1, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
+  const nativeReference = { source: "herdr:codex", sessionId: nativeId };
   const shellSettings = { managed: false, captureFailure: false };
   const launchOutcomes = { busyRejections: 0, unknown: false };
   let beforeDefiniteRetry: (() => void) | undefined;
@@ -75,7 +85,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   let beforeLaunchRetry: (() => void) | undefined;
   let recoveryDelay: ((stage: "publish" | "state" | "prepare", signal: AbortSignal | undefined) => Promise<void>) | undefined;
   const observed = new Map<number, MacProcessObservation>();
-  type Local = { ordinal: number; paths: ReturnType<typeof resolveHerdrInstancePaths>; binding: HerdrTaskBinding; started: boolean; launched: boolean; nativeVisible: boolean; daemonPid: number; shellPid: number; agentPid: number };
+  type Local = { ordinal: number; paths: ReturnType<typeof resolveHerdrInstancePaths>; binding: HerdrTaskBinding; started: boolean; launched: boolean; nativeVisible: boolean; daemonPid: number; shellPid: number; agentPid: number; helperPid: number };
   const transmit = new Map<string, (initial: boolean, body: string) => Promise<unknown>>();
   const instances = new Map<string, Local>(); let sequence = 0, reader: HerdrLifecycleStore | undefined, facade: WorkerHerdrAdapter;
   const read = () => {
@@ -83,14 +93,15 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
     const record = reader.get(context); if (!record) throw new Error("Missing test execution"); return record;
   };
   const proof = (pid: number, role: MacProcessIdentity["role"]): MacProcessIdentity => {
-    const local = [...instances.values()].find(value => [value.daemonPid, value.shellPid, value.agentPid].includes(pid));
+    const local = [...instances.values()].find(value => [value.daemonPid, value.shellPid, value.agentPid, value.helperPid].includes(pid));
     if (!local) throw new Error("Unexpected process identity");
-    return { pid, role, birthToken: `1700000000:${pid}`, bootId: "boot-one", auditToken: [501, 501, 20, 501, 20, pid, 100000, pid + 100], ppid: role === "daemon" ? 1 : role === "shell" ? local.daemonPid : local.shellPid, pgid: pid, sid: role === "daemon" ? pid : local.shellPid };
+    return { pid, role, birthToken: `1700000000:${pid}`, bootId: "boot-one", auditToken: [501, 501, 20, 501, 20, pid, 100000, pid + 100], ppid: role === "daemon" ? 1 : role === "shell" ? local.daemonPid : pid === local.helperPid ? settings.unrelatedHelper ? 999 : local.shellPid : local.helperPid, pgid: role === "agent" ? local.helperPid : pid, sid: role === "daemon" ? pid : local.shellPid };
   };
   const native: MacProcessControl = {
     bootIdentity: async () => "boot-one",
     capture: async (pid, role, expected) => {
       events.push(`capture:${role}`);
+      if (settings.helperExited && [...instances.values()].some(local => local.helperPid === pid)) throw new Error("Original helper exited before its birth identity was captured");
       if (expected) { expected.operation.check(); events.push(`image:${expected.executable}`); if (shellSettings.captureFailure) throw new Error("Unconfirmed final shell image"); expect(await expected.ready()).toBe(true); }
       return proof(pid, role);
     },
@@ -176,13 +187,13 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   const createAdapter: typeof createWorkerHerdr = options => {
     adapterSelectionVerifiers.push(options.selectionVerifier);
     let local = instances.get(options.paths.herdrDirectory);
-    if (!local) { const ordinal = ++sequence; local = { ordinal, paths: resolveHerdrInstancePaths(options.paths), binding: { session: "w", workspaceId: `workspace-${ordinal}`, paneId: `pane-${ordinal}`, terminalId: `terminal-${ordinal}` }, started: false, launched: false, nativeVisible: false, daemonPid: ordinal * 100, shellPid: ordinal * 100 + 1, agentPid: ordinal * 100 + 2 }; instances.set(options.paths.herdrDirectory, local); }
+    if (!local) { const ordinal = ++sequence; local = { ordinal, paths: resolveHerdrInstancePaths(options.paths), binding: { session: "w", workspaceId: `workspace-${ordinal}`, paneId: `pane-${ordinal}`, terminalId: `terminal-${ordinal}` }, started: false, launched: false, nativeVisible: false, daemonPid: ordinal * 100, shellPid: ordinal * 100 + 1, agentPid: ordinal * 100 + 2, helperPid: ordinal * 100 + 3 }; instances.set(options.paths.herdrDirectory, local); }
     const state = local;
-    const observation = (): HerdrAgentObservation => ({ binding: state.binding, kind: state.launched ? "codex" : null, name: null, status: settings.nativeStatus, launchPending: false, interactiveReady: state.launched && settings.nativeReady, nativeSession: state.nativeVisible ? { source: "herdr:codex", agent: "codex", sessionId: nativeId } : null, stateChangeSeq: 1, completionSeq: 0 });
+    const observation = (): HerdrAgentObservation => ({ binding: state.binding, kind: state.launched ? "codex" : null, name: null, status: settings.nativeStatus, launchPending: false, interactiveReady: state.launched && settings.nativeReady, nativeSession: state.nativeVisible ? { ...nativeReference, agent: "codex" } : null, stateChangeSeq: 1, completionSeq: 0 });
     const input = async (initial: boolean, body: string) => {
       const record = read(), run = record.runs.at(-1)!;
       expect(run.phase).toBe("active"); expect(run.daemon).toEqual(proof(state.daemonPid, "daemon"));
-      expect(run.processes).toEqual([proof(state.shellPid, "shell"), proof(state.agentPid, "agent")]); expect(run.admission).not.toBeNull();
+      expect(run.processes).toEqual([proof(state.shellPid, "shell"), proof(state.helperPid, "agent"), proof(state.agentPid, "agent")]); expect(run.admission).not.toBeNull();
       expect(initial ? ["dispatching"] : ["transport_completed", "unknown"]).toContain(record.initialAssignment);
       events.push(initial ? "initial-input" : "continuation-input"); inputs.push({ initial, body });
       if (settings.inputUnknown) throw new HerdrAgentActionError("Lost input receipt", "agent.prompt", "unknown", { promptSubmission: "unknown" });
@@ -199,12 +210,14 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
         return { nonce: uuid(900 + state.ordinal), executable: "/bin/bash" as const, isReady: async (pid: number) => { expect(pid).toBe(state.shellPid); events.push("shell-ready"); return true; } };
       },
       ensureInstance: async () => { if (!state.started) { events.push("daemon-launch"); expect(read().preparation?.phase).toBe("launch_requested"); await options.onDaemonSpawn?.(state.daemonPid); state.started = true; } return { reconnected: false, version: "0.9.5", protocol: 22, snapshot: {} }; },
+      connectInstance: async () => { if (!state.started) throw new Error("The original daemon is not running"); return { reconnected: true, version: "0.9.5", protocol: 22, snapshot: {} }; },
       stopInstance: async () => { throw new Error("Unsafe daemon close must not be used"); },
       tasks: {
         observeExecutionStop: async target => ({ kind: "unknown", target, error: new Error("Not used by native lifecycle"), observedAt: Date.now() }),
         pendingStops: () => [], listResources: async () => driverResources && state.launched ? [{ owner: context, workspaceId: state.binding.workspaceId, panes: [{ ...observation(), kind: "codex" as const, cwd: context.cwd }] }] : [],
         prepareWorkspace: async (_context, _title, _operation, startup) => { expect(startup).toEqual(shellSettings.managed ? { shellNonce: uuid(900 + state.ordinal) } : undefined); events.push("workspace"); return state.binding; },
         syncWorkspaceName: async () => {}, observe: async () => { if (settings.observeFailure !== undefined) { const failure = settings.observeFailure; settings.observeFailure = undefined; throw failure; } if (inputs.length >= settings.observeFailureAfterCount && settings.observeAfterInputFailure !== undefined) { const failure = settings.observeAfterInputFailure; settings.observeAfterInputFailure = undefined; throw failure; } return observation(); },
+        launchReceipt: async () => settings.launchReceiptMissing ? null : ({ schemaVersion: 1 as const, owner: { projectId: context.projectId, taskId: context.taskId, claimId: context.claimId, worktreeId: context.worktreeId }, nonce: uuid(999), selectionKey: read().runs.at(-1)!.launches!.agent!.selectionKey, logicalArgvDigest: "a".repeat(64), file: workerExecutable, prefixArgs: [], helperPid: state.helperPid, childPid: state.agentPid }),
         processInfo: async () => ({ shellPid: state.shellPid, foregroundPids: state.launched ? [state.agentPid] : [state.shellPid] }),
         launch: async (_context, _binding, request, active) => {
           await request.beforeStart?.(active);
@@ -233,7 +246,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   };
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
-    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => { if (taskReadFailure) throw taskReadFailure; return task; }, processControl: native, ...(selectionVerifier ? { selectionVerifier } : {}),
+    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => { if (taskReadFailure) throw taskReadFailure; return task; }, processControl: native, readExecutionConfiguration: () => ({ agent: "codex", model: null, args: [], recoveryLimit: 3, agentControlMode: "herdr", toolLaunch: frozenTools.agent, toolObservation: frozenTools.agentObservation, herdrLaunch: frozenTools.herdr, herdrObservation: frozenTools.herdrObservation }), ...(selectionVerifier ? { selectionVerifier } : {}),
       readRecording: async (_record, signal) => {
         if (settings.recordingBlocked) await new Promise<void>((_resolve, reject) => {
           if (signal.aborted) reject(signal.reason);
@@ -286,7 +299,12 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   const register = () => facade.lifecycle!.registerClaim(context, ownerId);
   const prepare = () => facade.tasks.prepareWorkspace(context, task.title, operation());
   const start = (binding: HerdrTaskBinding) => facade.tasks.start(context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, operation());
-  return { context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, launchOutcomes, observed, nativeId, api, read, stateView, register, prepare, start, reopen, adapterSelectionVerifiers, readTask: async () => task,
+  return { replaceToolTargets: () => { frozenTools = recordedHerdrTools(); }, context, paths, events, registrations, ledgers, inputs, launches, settings, shellSettings, launchOutcomes, observed, nativeId, nativeReference, api, read, stateView, register, prepare, start, reopen, adapterSelectionVerifiers, readTask: async () => task,
+    removeLegacyToolSnapshot: () => {
+      const database = new Database(path.join(paths.workerDirectory, "herdr-executions.sqlite"));
+      try { database.prepare("UPDATE executions SET data = json_remove(data, '$.runs[0].launches', '$.runs[0].instanceObservation')").run(); }
+      finally { database.close(); }
+    },
     beforeDefiniteRetry: (hook: () => void) => { beforeDefiniteRetry = hook; },
     acknowledgeControl: (control: NonNullable<HerdrSessionState["control"]>) => { if (!remote) throw new Error("No remote state"); remote.control = structuredClone(control); },
     revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
@@ -419,6 +437,58 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(() => f.facade.lifecycle!.migration!.assertOrigin({ ...f.read(), owner: { ...f.read().owner, workerId: uuid(778) } })).toThrow("another server or worker");
     await f.prepare();
     expect(f.facade.lifecycle!.hasStarted!(f.context)).toBe(true);
+  });
+  it("keeps an unstarted preparation uncertain until its daemon handshake is recorded", async () => {
+    const f = fixture(); f.register();
+    f.mutateRecord(record => { record.preparation = { instanceId: uuid(991), instanceDirectory: path.join(f.context.cwd, "not-started"), phase: "prepared", daemon: null, launches: recordedHerdrTools() }; });
+    expect(f.facade.lifecycle!.activeToolSelections!()).toEqual([expect.objectContaining({ tool: "herdr", instanceCount: null, unconfirmedCount: 1, version: null, checkedAt: null })]);
+  });
+  it("reports a prepared runtime from its persisted handshake", async () => {
+    const f = fixture(); f.register(); await f.prepare();
+    expect(f.facade.lifecycle!.activeToolSelections!()).toEqual([expect.objectContaining({ tool: "herdr", instanceCount: 1, unconfirmedCount: 0, version: "0.9.5", checkedAt: expect.any(String) })]);
+    f.removeLegacyToolSnapshot();
+    expect(f.facade.lifecycle!.activeToolSelections!()).toEqual([expect.objectContaining({ tool: "herdr", instanceCount: null, unconfirmedCount: 1, version: null, checkedAt: null })]);
+  });
+  it("freezes both launches before daemon submission and retains them for original-claim recovery", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare();
+    const launches = f.read().runs[0]!.launches;
+    expect(launches).toMatchObject({ agent: { selectionKey: frozenLaunch("codex").selectionKey }, herdr: { selectionKey: frozenLaunch("herdr").selectionKey } });
+    await f.start(binding); await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    f.replaceToolTargets(); f.reopen(); await f.prepare();
+    expect(f.read().runs[1]!.launches).toEqual(launches);
+  });
+  it.each(["launchReceiptMissing", "helperExited", "unrelatedHelper"] as const)("keeps input closed when original launch proof is %s", async failure => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); f.settings[failure] = true;
+    await expect(f.start(binding)).rejects.toThrow(/receipt|helper|chain|identity/i);
+    expect(f.inputs).toEqual([]); expect(f.read().runs[0]!.phase).toBe("launch_requested");
+    expect(f.read().runs[0]!.admission).toBeNull();
+  });
+  it("keeps legacy endpoint observation, input, and stopping without inventing launch identity", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    f.removeLegacyToolSnapshot(); f.replaceToolTargets();
+    await f.facade.tasks.observe(f.context, binding, operation());
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Continue the original legacy session", operation())).resolves.toMatchObject({ submission: "submitted" });
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    expect(f.read().runs[0]!).toMatchObject({ phase: "stopped_confirmed" });
+    expect(f.read().runs[0]!.launches).toBeUndefined();
+    expect(f.events.filter(value => value === "daemon-launch")).toHaveLength(1);
+    expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(2);
+  });
+  it("reconnects a legacy runtime after restart and refuses a replacement generation", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    f.removeLegacyToolSnapshot(); f.replaceToolTargets(); f.reopen();
+    await f.facade.tasks.observe(f.context, binding, operation());
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
+    await expect(f.prepare()).rejects.toMatchObject({ code: "legacy_tool_identity_missing" });
+    expect(f.read().runs).toHaveLength(1); expect(f.read().preparation).toBeNull();
+    expect(f.events.filter(value => value === "daemon-launch")).toHaveLength(1);
+    expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
+  });
+  it("refuses an unsubmitted legacy run before native launch", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); f.removeLegacyToolSnapshot();
+    await expect(f.start(binding)).rejects.toMatchObject({ code: "legacy_tool_identity_missing" });
+    expect(f.read().runs[0]!).toMatchObject({ phase: "prepared", nativeLaunch: "not_submitted" });
+    expect(f.launches).toEqual([]); expect(f.inputs).toEqual([]);
   });
   it("captures a fresh recovery input without replaying the original assignment", async () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
@@ -576,7 +646,7 @@ describe("durable Herdr facade with real SQLite", () => {
     const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
     await f.facade.lifecycle!.stop(f.context, "shutdown", operation());
     expect(await f.facade.lifecycle!.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "stopped" });
-    f.mutateRecord(record => { record.preparation = { instanceId: uuid(991), instanceDirectory: path.join(f.context.cwd, "replacement"), phase: "prepared", daemon: null }; });
+    f.mutateRecord(record => { record.preparation = { instanceId: uuid(991), instanceDirectory: path.join(f.context.cwd, "replacement"), phase: "prepared", daemon: null, launches: record.runs.at(-1)!.launches! }; });
     expect(await f.facade.lifecycle!.observeExecutionStop(f.context, operation())).toMatchObject({ kind: "unknown", error: expect.any(ExecutionSourceConflictError) });
   });
 
@@ -1090,9 +1160,53 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(recovered.segments[1]!.executionGeneration).toBe("1"); expect(f.launches).toHaveLength(1); expect(f.inputs).toHaveLength(1);
   });
   it("refuses recovery when the original native session never became known", async () => {
-    const f = fixture(); f.settings.nativeAfterInput = false; f.register(); const binding = await f.prepare(); await f.start(binding);
+    const f = fixture(); f.settings.nativeAfterInput = false; f.register(); const binding = await f.prepare(); await expect(f.start(binding)).rejects.toThrow();
+    expect(f.read().initialAssignment).toBe("transport_completed"); expect(f.inputs).toHaveLength(1);
     await f.facade.lifecycle!.stop(f.context, "shutdown", operation()); f.reopen();
     await expect(f.prepare()).rejects.toThrow(/native.*identity|native.*session/i); expect(f.launches).toHaveLength(1);
+  });
+  it("waits for the original official Session after exactly one authorized initial input", async () => {
+    const f = fixture(); f.settings.nativeAfterInput = false; f.register(); const binding = await f.prepare();
+    let completed = false;
+    const starting = f.start(binding).then(value => { completed = true; return value; });
+    await vi.waitFor(() => expect(f.inputs).toHaveLength(1));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(completed).toBe(false); expect(f.read().initialAssignment).toBe("transport_completed");
+    f.revealNative();
+    await expect(starting).resolves.toMatchObject({ nativeSession: { source: "herdr:codex", sessionId: f.nativeId } });
+    expect(f.inputs).toHaveLength(1); expect(f.launches).toHaveLength(1);
+  });
+  it("keeps a delivered initial input recorded when native identity confirmation times out", async () => {
+    const f = fixture(); f.settings.nativeAfterInput = false; f.register(); const binding = await f.prepare();
+    const short = createOperation({ limits: { totalMs: 180 } }); operations.push(short);
+    await expect(f.facade.tasks.start(f.context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, short)).rejects.toThrow();
+    expect(f.inputs).toHaveLength(1); expect(f.read().initialAssignment).toBe("transport_completed");
+    f.reopen();
+    await expect(f.facade.tasks.submitInitialPrompt(f.context, binding, "Do not repeat", operation())).resolves.toMatchObject({ submission: "skipped" });
+    await expect(f.facade.tasks.submitPrompt(f.context, binding, "Do not continue", operation())).rejects.toMatchObject({ reason: "native_session_pending" });
+    expect(f.inputs).toHaveLength(1); expect(f.launches).toHaveLength(1);
+  });
+  it("rejects a replaced process while waiting for the original official Session", async () => {
+    const f = fixture(); f.settings.nativeAfterInput = false; f.register(); const binding = await f.prepare();
+    const starting = f.start(binding), rejection = expect(starting).rejects.toThrow(/process.*changed/i);
+    await vi.waitFor(() => expect(f.inputs).toHaveLength(1));
+    f.observed.set(f.read().runs[0]!.processes.find(value => value.role === "agent")!.pid, "changed");
+    f.revealNative(); await rejection;
+    expect(f.read().initialAssignment).toBe("transport_completed"); expect(f.inputs).toHaveLength(1); expect(f.launches).toHaveLength(1);
+  });
+  it("never stores an identity from another native Session source", async () => {
+    const f = fixture(); f.nativeReference.source = "manual:codex"; f.register(); const binding = await f.prepare();
+    await expect(f.start(binding)).rejects.toThrow(/official Herdr integration/i);
+    expect(f.read().runs[0]!.run.binding.nativeSessionId).toBeNull();
+    expect(f.inputs).toHaveLength(1); expect(f.read().initialAssignment).toBe("transport_completed");
+  });
+  it("refuses recovery when the original hook reports another native Session", async () => {
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "shutdown", operation()); f.reopen(); const next = await f.prepare();
+    f.nativeReference.sessionId = uuid(999);
+    await expect(f.start(next)).rejects.toThrow(/identity changed/i);
+    expect(f.read().runs.at(-1)!.run.binding.nativeSessionId).toBe(f.nativeId);
+    expect(f.inputs).toHaveLength(1); expect(f.launches).toEqual([{}, { resumeSessionId: f.nativeId }]);
   });
   it("retains unknown first input across restart and never automatically repeats it", async () => {
     const f = fixture(); f.settings.inputUnknown = true; f.register(); const binding = await f.prepare();
@@ -1310,7 +1424,8 @@ it.each(["initial input", "ordinary observation"] as const)("publishes the enric
   vi.spyOn(inputSessionModule, "createHerdrInputSession").mockImplementation(options => ({ ...create(options), publishSnapshot: delivered }));
   const f = fixture(); f.settings.nativeAfterInput = discovery === "initial input"; f.register(); const binding = await f.prepare();
   expect(f.stateView().binding.nativeSessionId).toBeNull();
-  await f.start(binding);
+  if (discovery === "initial input") await f.start(binding);
+  else await expect(f.start(binding)).rejects.toThrow();
   if (discovery === "ordinary observation") {
     expect(f.stateView().binding.nativeSessionId).toBeNull(); delivered.mockClear(); f.revealNative();
     await f.facade.tasks.observe(f.context, binding, operation());

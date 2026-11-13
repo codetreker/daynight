@@ -57,7 +57,7 @@ describe("minimal worker SQLite schema", () => {
     close(f.store);
     const db = connect(f.file);
     if ((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).some(row => row.name === "archive_repair_code")) db.exec("ALTER TABLE cleanup_schedules DROP COLUMN archive_repair_code");
-    db.exec("DROP TABLE IF EXISTS archive_backfill_schedules");
+    db.exec("DROP TABLE IF EXISTS archive_backfill_schedules; DROP TABLE claim_tool_reservations");
     db.pragma("user_version=12"); db.close();
     expect(open(f.file).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
   });

@@ -14,6 +14,7 @@ import (
 type TaskService interface {
 	Create(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
 	Update(context.Context, model.Principal, string, string, taskcore.UpdateTask) (model.Task, error)
+	ReplaceTags(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error)
 	Delete(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetStatus(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	Get(context.Context, model.Principal, string, string) (model.Task, error)

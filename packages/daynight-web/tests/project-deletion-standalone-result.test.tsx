@@ -26,7 +26,7 @@ const access = (id: string) => ({ ...directAccessFixture(id, userId, "admin"), t
 const json = (body: unknown, status = 200, headers?: HeadersInit) => new Response(stringifyWireJson(body), { status, headers: viewerHeaders(userId, { "Content-Type": "application/json", ...Object.fromEntries(new Headers(headers)) }) });
 const render = createLocaleRender("en");
 
-beforeEach(() => { browserNavigation().dispose(); window.history.replaceState(null, "", `/projects/${projectId}/settings`); window.localStorage.clear(); window.sessionStorage.clear(); vi.spyOn(document, "hasFocus").mockReturnValue(true); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
+beforeEach(() => { browserNavigation().dispose(); window.history.replaceState(null, "", `/projects/${projectId}/settings?tab=management`); window.localStorage.clear(); window.sessionStorage.clear(); vi.spyOn(document, "hasFocus").mockReturnValue(true); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 afterEach(() => { browserNavigation().dispose(); vi.restoreAllMocks(); });
 
 const setup = () => {

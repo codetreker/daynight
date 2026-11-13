@@ -67,6 +67,20 @@ it('retains a newer sync snapshot when an earlier GET arrives late without relea
   expect(session.snapshot()).toMatchObject({ access: admin, refreshing: false });
 });
 
+it('rechecks access when an independent project read succeeds after an older access request started', async () => {
+  const old = deferred<ProjectAccess>();
+  vi.mocked(getProjectAccess).mockReturnValueOnce(old.promise).mockResolvedValue(member);
+  const { session } = mount();
+  const read = session.revalidate();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
+  expect(session.publishProjectRead(session.beginObservation())).toBe(true);
+  old.reject(new ApiError('server', 404, 'not_found'));
+  await read;
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
+  await session.revalidate();
+  expect(session.snapshot()).toMatchObject({ status: 'ready', access: member, refreshing: false });
+});
+
 it('does not let a sync started before explicit revalidation replace the confirmed GET result', async () => {
   const { session } = mount();
   const stale = session.beginObservation();

@@ -130,9 +130,9 @@ func TestBotsHTTPStrictInputAndAuthentication(t *testing.T) {
 }
 
 func TestBotResponseRoleAndRedaction(t *testing.T) {
-	bot := model.Bot{ID: uuid.NewString(), Version: 1, RoleConfiguration: &model.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	bot := model.Bot{ID: uuid.NewString(), Version: 1, AttentionCount: 3, RoleConfiguration: &model.BotRoleConfiguration{Instructions: "Role", Revision: "v1", Digest: "digest"}, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	value := bothttp.Response(bot)
-	if value.RoleConfiguration.Instructions != "Role" || value.CreatedAt.Location() != time.UTC {
+	if value.RoleConfiguration.Instructions != "Role" || value.CreatedAt.Location() != time.UTC || value.AttentionCount != nil {
 		t.Fatal("role or timestamp projection changed")
 	}
 	bot.Deletion = &model.BotDeletion{DeletionID: uuid.NewString(), RequestedVersion: 1}

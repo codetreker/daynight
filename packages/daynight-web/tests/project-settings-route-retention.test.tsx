@@ -1,3 +1,6 @@
+// GitHub settings has its own component and route-lifecycle coverage.
+vi.mock('../src/features/github-integration/GitHubSettings', () => ({ GitHubSettings: () => null }));
+
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { AuthenticatedApp } from "../src/app/AuthenticatedApp";
@@ -29,7 +32,9 @@ const json = (body: unknown, status = 200) => new Response(stringifyWireJson(bod
 const fail = (status: number, code: string, requestId: string) => json({ error: { code, message: "private error", requestId } }, status);
 const render = createLocaleRender("en");
 
+let lastSection: "execution" | "prompts" | "management" = "execution";
 beforeEach(() => {
+  lastSection = "execution";
   window.localStorage.clear(); window.sessionStorage.clear();
   window.history.replaceState(null, "", `/projects/${projectId}/settings`);
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
@@ -121,6 +126,11 @@ const setup = () => {
   };
 };
 
+const selectSection = (section: "execution" | "prompts" | "management") => {
+  lastSection = section;
+  const query = section === "execution" ? "" : `?tab=${section}`;
+  act(() => navigate(`/projects/${projectId}/settings${query}`));
+};
 const settings = () => within(document.querySelector<HTMLElement>(".project-settings-panel")!);
 const transferDialog = () => screen.getByRole("dialog", { name: "Transfer project" });
 const submitSave = async () => {
@@ -130,8 +140,9 @@ const submitSave = async () => {
   fireEvent.click(settings().getByRole("button", { name: "Save settings" }));
 };
 const leave = () => act(() => navigate("/workers"));
-const returnToSettings = () => act(() => navigate(`/projects/${projectId}/settings`));
+const returnToSettings = () => selectSection(lastSection);
 const previewTransfer = async (blocked = false) => {
+  selectSection("management");
   const open = await screen.findByRole("button", { name: /^Transfer project$/ });
   await waitFor(() => expect(open).toBeEnabled());
   fireEvent.click(open);
@@ -155,6 +166,7 @@ const startTransfer = async () => {
 
 it("keeps a dispatched personal project prompt owner across route navigation", async () => {
   const app = setup();
+  selectSection("prompts");
   const field = await screen.findByRole("textbox", { name: "Prompt text" });
   fireEvent.change(field, { target: { value: "project instructions" } });
   fireEvent.click(within(field.closest("form")!).getByRole("button", { name: "Save changes" }));
@@ -176,6 +188,7 @@ it("keeps transfer blocked while a settings save is dispatched, including after 
   await waitFor(() => expect(within(screen.getByRole("dialog", { name: "Transfer project" })).getByRole("button", { name: "Confirm transfer" })).toBeDisabled());
   fireEvent.click(within(screen.getByRole("dialog", { name: "Transfer project" })).getByRole("button", { name: "Cancel" }));
   await act(async () => { app.setSavedProject(project(90, 2n)); app.save.resolve(json(project(90, 2n))); });
+  selectSection("execution");
   await screen.findByText("Settings saved.");
   await previewTransfer();
   expect(app.transfers()).toBe(0);
@@ -184,6 +197,7 @@ it("keeps transfer blocked while a settings save is dispatched, including after 
 it("blocks settings saves while a transfer is dispatched", async () => {
   const app = setup(); await startTransfer();
   await waitForState(() => expect(app.transfers()).toBe(1));
+  selectSection("execution");
   const field = screen.getByLabelText("Alert threshold");
   expect(field).toBeEnabled(); fireEvent.change(field, { target: { value: "90" } });
   expect(settings().getByRole("button", { name: "Save settings", hidden: true })).toBeDisabled();
@@ -219,7 +233,8 @@ it("retains a newer edit when a confirmed save publishes after returning during 
     fireEvent.change(field, { target: { value: "110" } });
     expect(app.projectReads).toBe(reads); expect(app.saves()).toBe(1);
     resume();
-    await screen.findByText("Settings saved.");
+    await screen.findByText(/unsaved changes/i);
+    expect(screen.queryByText("Settings saved.")).toBeNull();
     expect(field).toHaveValue(110);
     await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
     expect(app.saves()).toBe(1);
@@ -241,7 +256,8 @@ it("retains a cancellation made after confirmation while the return publication 
     fireEvent.click(cancel); expect(field).toHaveValue(60);
     expect(app.projectReads).toBe(reads);
     resume();
-    await screen.findByText("Settings saved.");
+    await screen.findByText(/unsaved changes/i);
+    expect(screen.queryByText("Settings saved.")).toBeNull();
     await waitForState(() => expect(app.projectReads).toBeGreaterThan(reads));
     await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
     expect(field).toHaveValue(60); expect(app.saves()).toBe(1);
@@ -643,6 +659,7 @@ it("hides an unconfirmed transfer preview after revocation while a settings save
   app.setSavedProject(project(90, 2n)); await act(async () => app.save.resolve(json(project(90, 2n))));
   expect(screen.queryByText("Settings saved.")).toBeNull();
   app.setDenyAccess(false); fireEvent(window, new Event("focus"));
+  selectSection("execution");
   expect(await screen.findByText("Settings saved.")).toBeVisible();
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
   expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull();
@@ -801,6 +818,7 @@ it.each([false, true])("restarts a discarded return read after another route cyc
     app.setFailRead(false); fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitForState(() => expect(app.projectReads).toBeGreaterThan(failedReads));
   }
+  selectSection("execution");
   await waitFor(() => expect(screen.getByLabelText("Alert threshold")).toHaveValue(120));
   expect(settings().getByRole("button", { name: "Save settings" })).toBeDisabled();
   expect(app.saves()).toBe(0); expect(app.transfers()).toBe(1);
@@ -821,6 +839,7 @@ it("keeps a preexisting draft through a return access failure and recovery", asy
   const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(await within(dialog).findByText("transfer-rejected")).toBeVisible();
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  selectSection("execution");
   const returned = screen.getByLabelText("Alert threshold"); expect(returned).toBeDisabled();
   expect(returned).toHaveValue(90);
   expect(screen.getByText("The operation could not be completed. Please try again.")).toBeVisible();
@@ -840,6 +859,7 @@ it.each([false, true])("treats a cancelled draft and subsequent edit=%s correctl
   const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(await within(dialog).findByText("transfer-rejected")).toBeVisible();
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  selectSection("execution");
   const returned = screen.getByLabelText("Alert threshold");
   expect(returned).toHaveValue(90);
   expect(settings().getByRole("button", { name: "Cancel" })).toBeEnabled();
@@ -873,6 +893,7 @@ it.each([
   fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
   leave(); const held = app.holdNextProjectRead(), before = app.projectReads;
   returnToSettings(); await waitForState(() => expect(app.projectReads).toBeGreaterThan(before));
+  selectSection("execution");
   const returned = screen.getByLabelText("Alert threshold"); await waitFor(() => expect(returned).toBeEnabled());
   expect(returned).toHaveValue(90);
   if (action === "cancel") {
@@ -919,6 +940,7 @@ it.each([
   returnToSettings();
   await waitForState(() => expect(app.projectReads).toBeGreaterThan(before));
   if (failure === "access") await waitForState(() => expect(app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(accessReads));
+  selectSection("execution");
   const returned = screen.getByLabelText("Alert threshold"); await waitFor(() => expect(returned).toBeEnabled());
   expect(returned).toHaveValue(90);
   if (action === "cancel") fireEvent.click(settings().getByRole("button", { name: "Cancel" }));
@@ -962,6 +984,7 @@ it.each([120, 90])("requires an old draft to be reconciled with newer saved valu
   const dialog = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(await within(dialog).findByText("transfer-rejected")).toBeVisible();
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  selectSection("execution");
   const returned = screen.getByLabelText("Alert threshold"); await waitFor(() => expect(returned).toBeEnabled());
   expect(returned).toHaveValue(90);
   expect(screen.queryByText("Settings saved.")).toBeNull();

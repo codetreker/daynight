@@ -90,7 +90,7 @@ export type WorkspaceMessages = {
     readonly allCompleted: string;
     readonly allCompletedDetail: string;
     readonly targetUnavailable: string;
-    readonly rowLabel: (args: { readonly title: string; readonly done: number; readonly cancelled: number; readonly total: number; readonly percent: number }) => string;
+    readonly rowLabel: (args: { readonly title: string; readonly done: number; readonly total: number; readonly percent: number }) => string;
   };
   readonly standalone: {
     readonly list: string;
@@ -111,6 +111,8 @@ export type WorkspaceMessages = {
     readonly label: string;
     readonly overview: string;
     readonly tasks: string;
+    readonly prs: string;
+    readonly tags: string;
     readonly overviewDescription: string;
     readonly tasksDescription: string;
   };
@@ -126,12 +128,10 @@ export type WorkspaceMessages = {
     readonly empty: string;
     readonly emptyDetail: string;
     readonly summary: (args: { shown: number; total: number }) => string;
-    readonly composition: (args: { chains: number; standalone: number }) => string;
+    readonly composition: (args: { count: number }) => string;
     readonly toggle: (args: { title: string; expanded: boolean }) => string;
     readonly details: string;
     readonly detailsLabel: (args: { title: string }) => string;
-    readonly standalone: string;
-    readonly chains: string;
     readonly emptyTasks: string;
   };
   readonly preferences: {

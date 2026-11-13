@@ -33,6 +33,11 @@ func (s *Tasks) MCPList(ctx context.Context, principal model.Principal, projectI
 			}
 			return err
 		}
+		if len(selection.TagFilter().TagIDs) != 0 {
+			if err := taskcore.RequireTagFilter(ctx, snapshot.TagDAO(), projectID, selection.TagFilter()); err != nil {
+				return err
+			}
+		}
 		page, err := taskcore.ReadMCPList(ctx, snapshot.TaskDAO(), projectID, selection)
 		if err != nil {
 			return err
@@ -85,6 +90,11 @@ func (s *Tasks) MCPReady(ctx context.Context, principal model.Principal, project
 				return nil
 			}
 			return err
+		}
+		if len(query.TagFilter.TagIDs) != 0 {
+			if err := taskcore.RequireTagFilter(ctx, snapshot.TagDAO(), projectID, query.TagFilter); err != nil {
+				return err
+			}
 		}
 		page, err := snapshot.TaskDAO().TaskPriorityList(ctx, projectID, query)
 		if err != nil {

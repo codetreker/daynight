@@ -18,14 +18,13 @@
 .goal-information dl > div + div { margin-top: .65rem; }
 .goal-information dt { color: var(--task-helper); }
 .goal-information dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
-.goal-information-dates dd { margin-top: .2rem; }
+.goal-information-general dd { margin-top: .2rem; }
 .goal-information-counts > div { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
 .goal-information-counts dd { flex: none; }
 .goal-information-progress { margin: 1rem 0 .5rem; }
 .goal-information-track { display: flex; height: 6px; overflow: hidden; border-radius: 3px; background: #edf0f5; }
 .goal-information-track i { display: block; height: 100%; }
 .goal-information-done { background: var(--task-done-ink); }
-.goal-information-cancelled { background: var(--task-cancelled-ink); }
 .goal-information .goal-information-statuses { margin-top: .85rem; }
 .goal-information-loading, .goal-information-error p { margin: 0 0 .65rem; }
 .goal-information-error { margin-top: 1rem; color: var(--task-error-ink); }

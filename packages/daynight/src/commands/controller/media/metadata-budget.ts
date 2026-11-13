@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { lstatSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { SESSION_ARCHIVE_HISTORY_MAX_BYTES, SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
 export const CONTROLLER_METADATA_BYTES = 128 * 1048576;
 export const CONTROLLER_SETTLEMENT_BYTES = 8 * 1048576;
 export class ControllerMetadataBudgetError extends Error {
@@ -20,6 +21,27 @@ export const controllerJournalPhysicalBytes = (file: string, db: Database.Databa
 };
 /** Count real SQLite sidecars and the pending archive's metadata, excluding blobs. */
 export const controllerMetadataBudget = (file: string, db: Database.Database) => {
+  const contentBytes = (): number => {
+    let timeline = 0, history = 0;
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='timeline_totals'").get()) {
+      const row = db.prepare("SELECT byte_length FROM timeline_totals WHERE id=1").get() as { byte_length: number } | undefined;
+      if (!row || !Number.isSafeInteger(row.byte_length) || row.byte_length < 0 || row.byte_length > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Controller timeline totals are corrupt.");
+      timeline = row.byte_length;
+    }
+    if (!db.memory && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='image_runtime_state'").get()) {
+      const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='active_history_sync'").get() as { value: string } | undefined;
+      if (row) {
+        const intent = JSON.parse(row.value) as { syncId?: unknown; filename?: unknown; byteLength?: unknown };
+        if (typeof intent.syncId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(intent.syncId) || intent.filename !== path.join(`${file}.history-sync`, `${intent.syncId}.json`) || typeof intent.byteLength !== "string" || !/^[1-9][0-9]{0,8}$/.test(intent.byteLength) || Number(intent.byteLength) > SESSION_ARCHIVE_HISTORY_MAX_BYTES) throw new Error("Controller history synchronization intent is corrupt.");
+        try {
+          const stat = lstatSync(intent.filename);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== Number(intent.byteLength)) throw new Error("Controller history synchronization file is corrupt.");
+          history = stat.size;
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+    }
+    return timeline + history;
+  };
   const nativeIndexBytes = (): number => {
     const visit = (filename: string): number => {
       const stat = lstatSync(filename);
@@ -64,9 +86,17 @@ export const controllerMetadataBudget = (file: string, db: Database.Database) =>
     }
     return total;
   };
-  const assert = (additional = 0, settlement = false): void => {
-    if (!Number.isSafeInteger(additional) || additional < 0) throw new Error("Controller metadata budget exceeded.");
-    if (bytes() + additional > CONTROLLER_METADATA_BYTES + (settlement ? CONTROLLER_SETTLEMENT_BYTES : 0)) throw new ControllerMetadataBudgetError();
+  const ceiling = (contentGrowth = 0): number => {
+    if (!Number.isSafeInteger(contentGrowth) || contentGrowth < 0 || contentGrowth > SESSION_ARCHIVE_HISTORY_MAX_BYTES) throw new Error("Controller content growth is invalid.");
+    return CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES + contentBytes() + contentGrowth;
   };
-  return { bytes, assert, nativeIndexBytes };
+  const reservationCeiling = (contentGrowth = 0): number => {
+    const base = CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES;
+    return base + Math.ceil((ceiling(contentGrowth) - base) / (8 * 1048576)) * (8 * 1048576);
+  };
+  const assert = (additional = 0, settlement = false, contentGrowth = 0): void => {
+    if (!Number.isSafeInteger(additional) || additional < 0 || contentGrowth > additional) throw new Error("Controller metadata budget exceeded.");
+    if (bytes() + additional > ceiling(contentGrowth) - (settlement ? 0 : CONTROLLER_SETTLEMENT_BYTES)) throw new ControllerMetadataBudgetError();
+  };
+  return { bytes, assert, ceiling, reservationCeiling, nativeIndexBytes };
 };

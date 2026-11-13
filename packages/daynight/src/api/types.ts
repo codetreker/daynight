@@ -316,6 +316,8 @@ export type TaskPropertyDefinition = {
 };
 export type TaskPropertySchema = { readonly properties: Readonly<Record<string, TaskPropertyDefinition>> };
 
+export type TagReference = { readonly id: string; readonly name: string };
+
 export type Task = {
   readonly id: string;
   readonly type: "task" | "goal";
@@ -323,6 +325,7 @@ export type Task = {
   readonly projectId: string;
   readonly title: string;
   readonly description: string;
+  readonly tags: readonly TagReference[];
   readonly status: TaskStatus;
   readonly allowAgents: boolean;
   readonly requiredPlatform: TaskPlatform | null;
@@ -343,7 +346,7 @@ export type Task = {
 
 export type GoalProgress = { readonly total: number; readonly done: number; readonly cancelled: number; readonly unfinished: number };
 
-export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "version" | "properties" | "progress" | "type"> & {
+export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "tags" | "version" | "properties" | "progress" | "type"> & {
   readonly type: "task";
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
@@ -381,6 +384,7 @@ export type CreateTaskInput = {
   readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
+  readonly tagIds?: readonly string[];
 };
 export type UpdateTaskInput = {
   readonly version: bigint;
@@ -393,6 +397,7 @@ export type UpdateTaskInput = {
   readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
+  readonly tagIds?: readonly string[];
 };
 export type DeleteTaskInput = { readonly version: bigint; readonly removeDepends?: boolean };
 export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus };
@@ -418,6 +423,9 @@ export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claim
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };
 export type WithdrawWorkerClaimInput = CompleteWorkerTaskInput;
 export type TaskFilters = {
+  readonly tagIds?: readonly string[];
+  readonly tagMatch?: "all" | "any";
+  readonly untagged?: boolean;
   readonly type?: "task" | "goal";
   readonly parentId?: string | null;
   readonly assignedTo?: string;
@@ -437,6 +445,7 @@ export type TaskSearchItem = {
   readonly parentId: string | null;
   readonly projectId: string;
   readonly title: string;
+  readonly tags: readonly TagReference[];
   readonly status: TaskStatus;
   readonly cancelledAt: string | null;
   readonly context: { readonly taskId: string; readonly title: string } | null;
@@ -444,7 +453,7 @@ export type TaskSearchItem = {
 };
 export type TaskSearchPage = { readonly projectId: string; readonly total: number; readonly items: readonly TaskSearchItem[]; readonly nextCursor: string | null };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
-export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform">;
+export type ReadyTaskFilters = Pick<TaskFilters, "parentId" | "allowAgents" | "compatiblePlatform" | "tagIds" | "tagMatch" | "untagged">;
 export type ErrorDetails = {
   readonly writeOutcome?: "not_committed";
   readonly reason?: string;

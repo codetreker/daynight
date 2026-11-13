@@ -36,6 +36,14 @@ func assistantFixture(f *fixture, botID string) *fixture {
 	return &result
 }
 
+type botAttentionTransport struct{ next http.RoundTripper }
+
+func (r botAttentionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	copy := request.Clone(request.Context())
+	copy.Header.Set("Daynight-Bot-Attention", "1")
+	return r.next.RoundTrip(copy)
+}
+
 func createAssistantBots(t *testing.T, f *fixture) (string, string) {
 	t.Helper()
 	workerID := uuid.NewString()
@@ -158,14 +166,41 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	if value := expectID(t, appendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != appendix.Text || !reflect.DeepEqual(value.SourceRecords, []string{record.ID}) {
 		t.Fatalf("appendix readback differs: %+v", value)
 	}
+	attentionFixture := *f
+	attentionClient := *f.client
+	attentionClient.Transport = botAttentionTransport{next: attentionClient.Transport}
+	attentionFixture.client = &attentionClient
+	assertAttention := func(want int64) {
+		t.Helper()
+		bot := requestJSON[api.Bot](t, &attentionFixture, http.MethodGet, "/api/v1/me/bots/"+second, nil, http.StatusOK)
+		listed := requestJSON[api.BotPage](t, &attentionFixture, http.MethodGet, "/api/v1/me/bots", nil, http.StatusOK)
+		listBot := expectID(t, listed.Items, second, func(v api.Bot) string { return v.ID })
+		if bot.AttentionCount == nil || listBot.AttentionCount == nil || *bot.AttentionCount != want || *listBot.AttentionCount != want {
+			t.Fatalf("attention readback differs: detail=%v list=%v want=%d", bot.AttentionCount, listBot.AttentionCount, want)
+		}
+	}
+	assertAttention(0)
+	requestJSON[api.AssistantTaskEvent](t, secondClient, http.MethodPost, base+"/events", protected(map[string]any{
+		"id": uuid.NewString(), "targetBotId": second, "type": "report", "payload": map[string]any{"text": "Review the workspace notes."},
+	}, secondToken, "2"), http.StatusOK)
+	assertAttention(1)
 	proposal := requestJSON[struct {
 		Proposal api.AssistantTaskProposal `json:"proposal"`
 	}](t, secondClient, http.MethodPost, base+"/proposals", protected(map[string]any{
 		"id": uuid.NewString(), "baseVersion": "1", "body": "Read the notes and preserve their references.", "rules": []any{}, "reason": "Keep the observed links intact.", "evidenceRecords": []string{record.ID},
 	}, secondToken, "2"), http.StatusOK).Proposal
+	assertAttention(2)
+	seen := requestJSON[struct {
+		TargetBotID string `json:"targetBotId"`
+	}](t, f, http.MethodPost, "/api/v1/bots/"+second+"/attention/seen", map[string]any{}, http.StatusOK)
+	if seen.TargetBotID != second {
+		t.Fatalf("seen target differs: %+v", seen)
+	}
+	assertAttention(1)
 	decision := requestJSON[api.AssistantTaskProposal](t, f, http.MethodPost, base+"/proposals/"+proposal.ID+"/decision", map[string]any{
 		"ifVersion": strconv.FormatInt(readTask().Version, 10), "decision": "approved", "note": "Use this procedure.",
 	}, http.StatusOK)
+	assertAttention(0)
 	updatedManual := requestJSON[api.AssistantTaskManual](t, firstClient, http.MethodGet, base+"/manual", nil, http.StatusOK)
 	if decision.Status != "approved" || decision.DecidedAt == nil || updatedManual.Version != 2 || updatedManual.Body != proposal.Body || updatedManual.ProposalID == nil || *updatedManual.ProposalID != proposal.ID {
 		t.Fatalf("approved manual differs: decision=%+v manual=%+v", decision, updatedManual)
@@ -240,6 +275,22 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	requestJSON[api.AssistantTask](t, f, http.MethodPatch, base, map[string]any{"ifVersion": strconv.FormatInt(paused.Version, 10), "state": "active"}, http.StatusOK)
 	if readTask().State != "active" {
 		t.Fatal("resume did not persist")
+	}
+	editedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodPatch, base+"/appendix/"+appendix.ID, map[string]any{
+		"ifVersion": strconv.FormatInt(readTask().Version, 10), "text": "Keep verified source references.",
+	}, http.StatusOK)
+	if editedAppendix.State != "edited" || editedAppendix.Text != "Keep verified source references." || !reflect.DeepEqual(editedAppendix.SourceRecords, appendix.SourceRecords) {
+		t.Fatalf("appendix edit differs: %+v", editedAppendix)
+	}
+	deletedAppendix := requestJSON[api.AssistantTaskAppendix](t, f, http.MethodDelete, base+"/appendix/"+appendix.ID, map[string]any{
+		"ifVersion": strconv.FormatInt(readTask().Version, 10),
+	}, http.StatusOK)
+	if deletedAppendix.ID != appendix.ID || deletedAppendix.State != "deleted" || deletedAppendix.Text != "" || len(deletedAppendix.SourceRecords) != 0 || deletedAppendix.Version != editedAppendix.Version+1 {
+		t.Fatalf("appendix deletion differs: %+v", deletedAppendix)
+	}
+	deletedAppendices := requestJSON[api.AssistantTaskPage[api.AssistantTaskAppendix]](t, f, http.MethodGet, base+"/appendix?state=deleted", nil, http.StatusOK)
+	if value := expectID(t, deletedAppendices.Items, appendix.ID, func(v api.AssistantTaskAppendix) string { return v.ID }); value.Text != "" || len(value.SourceRecords) != 0 || value.Version != deletedAppendix.Version {
+		t.Fatalf("appendix deletion did not persist: %+v", value)
 	}
 	deleted := requestJSON[api.AssistantTask](t, f, http.MethodDelete, base, map[string]any{"ifVersion": strconv.FormatInt(readTask().Version, 10)}, http.StatusOK)
 	if deleted.ID != id || deleted.State != "deleted" {

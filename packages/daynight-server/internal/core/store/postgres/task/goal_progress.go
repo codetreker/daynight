@@ -55,5 +55,8 @@ func (s *Reader) TaskBodies(ctx context.Context, projectID string, ids []string)
 	if err := pg.AttachTaskProperties(ctx, s.tx, tasks); err != nil {
 		return nil, err
 	}
+	if err := pg.AttachTaskTags(ctx, s.tx, projectID, tasks); err != nil {
+		return nil, err
+	}
 	return tasks, nil
 }

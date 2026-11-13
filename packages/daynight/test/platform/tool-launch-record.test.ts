@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { expect, test } from "vitest";
 import { pathToFileURL } from "node:url";
 import { createOperation } from "../../src/api/operation.js";
-import { resolveToolLaunch, toolSelectionKey } from "../../src/platform/tool-executables.js";
+import { resolveToolLaunch, toolSelectionKey, verifyToolLaunch, probeResourceKey } from "../../src/platform/tool-executables.js";
 import { parseResolvedToolLaunch } from "../../src/platform/tool-launch-record.js";
 
 test("persisted tool recipes strictly preserve identity and provider context", async () => {
@@ -14,6 +14,10 @@ test("persisted tool recipes strictly preserve identity and provider context", a
     await writeFile(entry, "console.log('fixture');\n");
     const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: root, environment: process.env }, operation);
     expect(parseResolvedToolLaunch(JSON.parse(JSON.stringify(launch)), { tool: "codex", context: "web" })).toEqual(launch);
+    const reordered = { ...launch, command: { prefixArgs: launch.command.prefixArgs, file: launch.command.file }, artifacts: launch.artifacts.map(item => ({ sha256: item.sha256, size: item.size, realPath: item.realPath, path: item.path, role: item.role })) };
+    expect(parseResolvedToolLaunch(reordered)).toEqual(launch);
+    await expect(verifyToolLaunch(reordered, operation)).resolves.toBeUndefined();
+    expect(probeResourceKey(reordered, { cwd: root, environment: process.env })).toBe(probeResourceKey(launch, { cwd: root, environment: process.env }));
     expect(() => parseResolvedToolLaunch(launch, { tool: "copilot", context: "web" })).toThrow();
     expect(() => parseResolvedToolLaunch({ ...launch, unknown: true })).toThrow();
     expect(() => parseResolvedToolLaunch({ ...launch, command: { ...launch.command, prefixArgs: ["--eval", "wrong"] } })).toThrow();

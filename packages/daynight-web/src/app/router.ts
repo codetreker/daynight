@@ -1,6 +1,7 @@
 import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
 import { browserNavigation } from './navigation';
+import { projectSettingsSelection, type ProjectSettingsSelection } from './project-settings-route';
 
 export type TaskDetailTab = "description" | "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
@@ -58,6 +59,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "team" | "teamSettings" | "teamMembers"; readonly teamId: string }
   | { readonly kind: "sharedProjects" | "myTasks" }
   | { readonly kind: "bots" }
+  | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals"; readonly recordId?: string; readonly eventId?: string }
   | { readonly kind: "bot"; readonly botId: string }
   | { readonly kind: "workers" }
   | { readonly kind: "worker"; readonly workerId: string }
@@ -66,7 +68,8 @@ export type ProtectedRoute = Route
   | { readonly kind: "account" | "invitations" | "teamInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "oauthConsent"; readonly requestId: string | null }
-  | { readonly kind: "members" | "settings"; readonly projectId: string };
+  | { readonly kind: "members"; readonly projectId: string }
+  | { readonly kind: "settings"; readonly projectId: string; readonly selection: ProjectSettingsSelection };
 export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
 
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
@@ -116,6 +119,14 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
     catch { return { kind: "notFound" }; }
   }
   if (pathname === "/bots") return { kind: "bots" };
+  const assistantTask = /^\/bots\/tasks\/([^/]+)$/.exec(pathname);
+  if (assistantTask) {
+    try {
+      const taskId = canonicalId(decodeURIComponent(assistantTask[1]!)), query = new URLSearchParams(search), tab = query.get('tab') ?? 'manual', rawRecord = query.get('recordId'), recordId = rawRecord === null ? null : canonicalId(rawRecord), rawEvent = query.get('eventId'), eventId = rawEvent === null ? null : canonicalId(rawEvent);
+      if (!taskId || !['manual','records','proposals'].includes(tab) || rawRecord !== null && !recordId || rawEvent !== null && !eventId || [...query.keys()].some(key => !['tab','recordId','eventId'].includes(key) || query.getAll(key).length !== 1)) return {kind:'notFound'};
+      return {kind:'assistantTask',taskId,tab:tab as 'manual'|'records'|'proposals',...(recordId ? {recordId} : {}),...(eventId ? {eventId} : {})};
+    } catch { return {kind:'notFound'}; }
+  }
   const bot = /^\/bots\/([^/]+)$/.exec(pathname);
   if (bot !== null) {
     try { const botId = canonicalId(decodeURIComponent(bot[1]!)); return botId === null ? { kind: "notFound" } : { kind: "bot", botId }; }
@@ -148,7 +159,9 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   const management = /^(\/projects\/[^/]+)\/(members|settings)$/.exec(pathname);
   if (management !== null) {
     const project = parseRoute(management[1]!);
-    return project.kind === "project" ? { kind: management[2] as "members" | "settings", projectId: project.projectId } : { kind: "notFound" };
+    if (project.kind !== "project") return { kind: "notFound" };
+    return management[2] === "members" ? { kind: "members", projectId: project.projectId }
+      : { kind: "settings", projectId: project.projectId, selection: projectSettingsSelection(search) };
   }
   return parseRoute(pathname, search);
 };

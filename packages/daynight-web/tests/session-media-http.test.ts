@@ -242,3 +242,39 @@ it('settles the resource read and close when reader cancellation never finishes'
   failCleanup(new Error('late cleanup failure'));
   await Promise.resolve();
 });
+
+it('uses the schema3 timeline limit for its response length and still parses the saved metadata', async () => {
+  const saved = savedBundle();
+  const fetch = vi.fn(async (url: string) => {
+    if (url.endsWith('/archive/content')) return response(saved.manifest);
+    if (url.endsWith('/archive')) return response({ archive: saved.status });
+    if (url.includes('/archive/files/')) return new Response(saved.timeline, { headers: { 'Daynight-User-ID': userId, 'Content-Length': String(64 * 1024 * 1024 + 1025) } });
+    throw new Error('Unexpected request');
+  });
+  vi.stubGlobal('fetch', fetch);
+  const archive = await createTestSessionApi(fence.sessionId, userId, vi.fn()).archiveContent(fence.sessionId, new AbortController().signal);
+  expect(archive.entries).toEqual(saved.entries);
+  expect(fetch).toHaveBeenCalledTimes(3);
+});
+
+it('rejects an oversized schema3 timeline length before consuming its body', async () => {
+  const saved = savedBundle();
+  const cancelled = vi.fn();
+  const stream = new ReadableStream<Uint8Array>({ cancel: cancelled });
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.endsWith('/archive/content')) return response(saved.manifest);
+    if (url.endsWith('/archive')) return response({ archive: saved.status });
+    if (url.includes('/archive/files/')) return new Response(stream, { headers: { 'Daynight-User-ID': userId, 'Content-Length': String(128 * 1024 * 1024 + 1) } });
+    throw new Error('Unexpected request');
+  }));
+  await expect(createTestSessionApi(fence.sessionId, userId, vi.fn()).archiveContent(fence.sessionId, new AbortController().signal)).rejects.toThrow();
+  expect(cancelled).toHaveBeenCalledOnce();
+});
+
+it('keeps the legacy archive response length bound', async () => {
+  const cancelled = vi.fn();
+  const stream = new ReadableStream<Uint8Array>({ cancel: cancelled });
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(stream, { headers: { 'Daynight-User-ID': userId, 'Content-Length': String(64 * 1024 * 1024 + 1025), 'Content-Type': 'application/json' } })));
+  await expect(createTestSessionApi(fence.sessionId, userId, vi.fn()).archiveContent(fence.sessionId, new AbortController().signal)).rejects.toThrow();
+  expect(cancelled).toHaveBeenCalledOnce();
+});

@@ -1,3 +1,4 @@
+import { completionProgress } from './completion-progress';
 import { latestScopedCompletion, completedAtFor } from "../task-completion/model";
 import { useCompletionTime } from "../task-completion/useCompletionTime";
 import { CompletionTimeLabel } from "../task-completion/CompletionTimeLabel";
@@ -16,7 +17,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from './model';
 import { ProjectListGraphHost } from './ProjectListGraphHost';
 import type { ProjectGraphTarget } from '../projects/project-graph-target';
-import { ChainMemberRow } from './ChainMemberRow';
+import { TaskMemberRow } from './TaskMemberRow';
 import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
 import { ScopedTaskChainRow } from './ScopedTaskChainRow';
 import { scopedChainProgress } from './scoped-chain-progress';
@@ -66,6 +67,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
   const progress = component.progress;
+  const displayProgress = completionProgress(progress);
   const completion = useCompletionTime(latestScopedCompletion(index, [...component.memberIds]));
   const sessionIndicator = useChainSessionSummary(component.memberIds);
   const observeVisibility = useSessionChainVisibility(rootId, component.memberIds);
@@ -98,7 +100,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
         </button>
         <div className="task-assignee-row-meta chain-summary-meta"><span className="chain-summary-context" id={`chain-meta-${rootId}`}><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /><ActiveWorkerIndicator memberIds={component.memberIds} workerMachines={workerMachines} /></span><ChainCompletionTime value={completion} title={title} /></div>
       </div>
-      <span className="root-progress" id={`chain-progress-${rootId}`}><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.ended / progress.total * 100}%` }} /></span></span>
+      <span className="root-progress" id={`chain-progress-${rootId}`}><span className="root-progress-label">{m.progress({ done: displayProgress.displayDone, total: displayProgress.displayTotal })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${displayProgress.widthPercent}%` }} /></span></span>
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`}
         {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
       <button className="button goal-graph-button" type="button" id={`task-chain-graph-${rootId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined}
@@ -111,7 +113,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
         <RepresentativeDetail task={task} rootId={rootId} title={title} onOpenTask={onOpenTask} />
       </div>
-      <ul className="goal-task-list">{members.map((member) => <ChainMemberRow key={member.id} projectId={projectId} task={member} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
+      <ul className="goal-task-list">{members.map((member) => <TaskMemberRow key={member.id} projectId={projectId} task={member} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>
   </li>;
 });

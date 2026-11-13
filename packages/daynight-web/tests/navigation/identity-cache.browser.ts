@@ -9,7 +9,8 @@ const alice = TEST_VIEWER_ID, bob = '00000000-0000-4000-8000-000000000202';
 const projectId = '00000000-0000-4000-8000-000000000031', taskId = '00000000-0000-4000-8000-000000000041';
 const personalId = '00000000-0000-4000-8000-000000000701', time = '2026-10-20T09:00:00Z';
 const base = `/api/v1/projects/${projectId}/tasks/${taskId}`;
-const task = detailFixture(projectId, taskId, { title: 'Private task', assignedTo: alice, version: 5n });
+const tags = [{ id: '00000000-0000-4000-8000-000000000091', name: 'Frontend' }];
+const task = detailFixture(projectId, taskId, { title: 'Private task', assignedTo: alice, version: 5n, tags });
 const graph = graphFixture([task]);
 
 async function cache(page: Page) {
@@ -20,15 +21,16 @@ async function cache(page: Page) {
       const tx = db.transaction(['projects', 'summaries', 'details', 'profiles'], 'readonly');
       const done = new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
       const read = <T,>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-      const [projects, summaries, details, profiles, otherProject, otherSummaries, otherDetails, otherProfiles] = await Promise.all([
+      const [projects, summaries, details, profiles, otherProject, otherSummaries, otherDetails, otherProfiles, summaryRecord, detailRecord] = await Promise.all([
         read(tx.objectStore('projects').index('by-user').getAll(aliceId)), read(tx.objectStore('summaries').index('by-user').count(aliceId)),
         read(tx.objectStore('details').index('by-user').count(aliceId)), read(tx.objectStore('profiles').index('by-user').count(aliceId)),
         read(tx.objectStore('projects').get([bobId, project])), read(tx.objectStore('summaries').index('by-project').count([bobId, project])),
         read(tx.objectStore('details').index('by-project').count([bobId, project])), read(tx.objectStore('profiles').index('by-project').count([bobId, project])),
+        read(tx.objectStore('summaries').getAll()), read(tx.objectStore('details').getAll()),
       ]);
       await done;
       return { active: projects.filter((item: { state: string }) => item.state === 'active').length, summaries, details, profiles,
-        otherActive: otherProject?.state === 'active', otherSummaries, otherDetails, otherProfiles };
+        otherActive: otherProject?.state === 'active', otherSummaries, otherDetails, otherProfiles, summaryTags: summaryRecord[0]?.summary.tags, detailTags: detailRecord[0]?.detail.tags };
     } finally { db.close(); }
   }, { databaseName: TASK_CACHE_DATABASE, schema: TASK_CACHE_SCHEMA, aliceId: alice, bobId: bob, project: projectId });
 }
@@ -45,9 +47,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': observed, ...extra } });
     if (path === '/api/v1/me') { meReads++; return send({ id: observed, personalTeam: { id: personalId, kind: 'personal', name: null }, name: observed === alice ? 'Alice' : 'Bob', email: null, emailVerified: null, avatarUrl: null }); }
     if (path === '/api/v1/projects') return send({ items: observed === alice ? [graph.project] : [], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return observed === alice ? send(graph.project) : send({ error: { code: 'not_found', message: 'not found', requestId: 'denied' } }, 404);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: observed, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return observed === alice ? send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties })) : send({ error: { code: 'not_found', message: 'not found', requestId: 'denied' } }, 404);
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return observed === alice ? send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties, tagsForTask: () => task.tags })) : send({ error: { code: 'not_found', message: 'not found', requestId: 'denied' } }, 404);
     if (path === `/api/v1/projects/${projectId}/access`) return observed === alice ? send(directAccessFixture(projectId)) : send({ error: { code: 'not_found', message: 'not found', requestId: 'denied' } }, 404);
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: alice, version: TEST_PROFILE_VERSION, name: 'Alice', avatarUrl: null, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === base) return send(task, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -69,6 +72,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
   await dialog.locator('input[type=file]').setInputFiles({ name: 'private.txt', mimeType: 'text/plain', buffer: Buffer.from('private') });
   await input.fill('draft/private.txt'); await input.focus();
   await expect.poll(async () => { const values = await cache(page); return values.summaries > 0 && values.details > 0 && values.profiles > 0; }).toBe(true);
+  const persistedTags = await cache(page);
+  expect(persistedTags.summaryTags).toEqual(tags); expect(persistedTags.detailTags).toEqual(tags);
   const detail = await dialog.elementHandle(), originalFrame = await frame.elementHandle();
   const other = await context.newPage();
   try {
@@ -190,10 +195,11 @@ async function installDirectFixture(context: BrowserContext, page: Page) {
     if (path === '/api/v1/auth/logout') { actor = null; return route.fulfill({ status: 204 }); }
     if (path === '/api/v1/me') return observed === null ? send({ error: { code: 'unauthorized', message: 'signed out', requestId: 'fixture' } }, 401) : send({ id: observed, personalTeam: { id: personalId, kind: 'personal', name: null }, name: observed === alice ? 'Alice' : 'Bob', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: observed, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties, tagsForTask: () => task.tags }));
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: alice, version: TEST_PROFILE_VERSION, name: 'Alice', avatarUrl: null, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === base) return send(task, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `${base}/sessions`) return send({ items: [], nextCursor: null });

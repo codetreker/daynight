@@ -439,13 +439,25 @@ func (s *Execution) operationAuthorized(ctx context.Context, tx *operationTx, r 
 	return s.authorizeCommand(ctx, tx, r, t, o.Command)
 }
 func (s *Execution) updateReceipt(ctx context.Context, tx *operationTx, r *record, o sp.Operation) error {
-	if err := tx.dao.SetSessionOperationReceipt(ctx, durableOperation(o)); err != nil {
+	return s.saveReceipt(ctx, tx, r, o, durableOperation(o))
+}
+
+// Only the server's pre-dispatch authorization check can persist this proof.
+// Controller receipts may carry the same code, but still lose all error text.
+func (s *Execution) rejectBeforeDispatch(ctx context.Context, tx *operationTx, r *record, o sp.Operation) (sp.Operation, error) {
+	o.State = "rejected"
+	o.Error = &sp.OperationError{Code: "permission_or_state_changed", Message: "Operation no longer has current permission or state."}
+	return o, s.saveReceipt(ctx, tx, r, o, o)
+}
+
+func (s *Execution) saveReceipt(ctx context.Context, tx *operationTx, r *record, live, durable sp.Operation) error {
+	if err := tx.dao.SetSessionOperationReceipt(ctx, durable); err != nil {
 		return err
 	}
-	if r.Live != nil && (terminal(o.State) || o.State == "unknown" || o.State == "provider_accepted") {
-		delete(r.Live.Commands, o.OperationID)
+	if r.Live != nil && (terminal(live.State) || live.State == "unknown" || live.State == "provider_accepted") {
+		delete(r.Live.Commands, live.OperationID)
 	}
-	return s.emit(ctx, tx, r, "operation", o, nil)
+	return s.emit(ctx, tx, r, "operation", live, nil)
 }
 func (s *Execution) Poll(ctx context.Context, f sp.ControllerFence) ([]map[string]any, error) {
 	out := []map[string]any{}
@@ -475,8 +487,10 @@ func (s *Execution) Poll(ctx context.Context, f sp.ControllerFence) ([]map[strin
 			if !s.now().Before(o.Deadline) {
 				o.Receipt.State = "expired"
 			} else if err = s.operationAuthorized(ctx, tx, r, t, o); err != nil {
-				o.Receipt.State = "rejected"
-				o.Receipt.Error = &sp.OperationError{Code: "permission_or_state_changed", Message: "Operation no longer has current permission or state."}
+				if _, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt); err != nil {
+					return err
+				}
+				continue
 			} else {
 				msg := envelope(r, "operation_offer")
 				msg["operationSeq"] = decimal(o.Seq)
@@ -532,9 +546,8 @@ func (s *Execution) begin(ctx context.Context, tx *operationTx, r *record, t tas
 		}
 		// A stale offer has not crossed the native dispatch boundary. Reject only
 		// that operation so unrelated work can continue on the same channel.
-		o.Receipt.State = "rejected"
-		o.Receipt.Error = &sp.OperationError{Code: "permission_or_state_changed", Message: "Operation no longer has current permission or state."}
-		if err = s.updateReceipt(ctx, tx, r, o.Receipt); err != nil {
+		o.Receipt, err = s.rejectBeforeDispatch(ctx, tx, r, o.Receipt)
+		if err != nil {
 			return nil, err
 		}
 		out := envelope(r, "receipt_ack")
@@ -575,6 +588,11 @@ func (s *Execution) receipt(ctx context.Context, tx *operationTx, r *record, rec
 		if err = s.updateReceipt(ctx, tx, r, receipt); err != nil {
 			return nil, err
 		}
+	}
+	// A duplicate cannot replace the server's durable refusal proof with the
+	// Controller journal's generic diagnostic (or fabricate a proof for history).
+	if terminal(o.Receipt.State) {
+		receipt = o.Receipt
 	}
 	out := envelope(r, "receipt_ack")
 	out["operation"] = receipt

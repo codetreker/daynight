@@ -14,7 +14,7 @@ const taskId = "bbbbbbbb-2222-4222-8222-222222222222";
 const userId = "cccccccc-3333-4333-8333-333333333333";
 const time = "2026-10-20T00:00:00.123456Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test:org/repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, ownership: { teamId: userId, version: 1n }, createdAt: time, updatedAt: time };
-const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: userId, requiredPlatform: null, version: 1n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task: Task = { type: "task", parentId: null, id: taskId, projectId, title: "Task", description: "", tags: [], properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: userId, requiredPlatform: null, version: 1n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const operations: ReturnType<typeof createOperation>[] = [];
 afterEach(() => { operations.splice(0).forEach(operation => operation.dispose()); });
 const fixture = () => {

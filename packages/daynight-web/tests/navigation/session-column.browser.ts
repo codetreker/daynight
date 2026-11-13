@@ -5,7 +5,7 @@ import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import type { TaskSessionSnapshot } from '../helpers/session';
 import { stringifyWireJson } from '../helpers/wireJson';
-import { botDefaults, botDefinition, botId } from '../helpers/bots';
+import { botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
 import { closeBotConversation } from '../helpers/bot-heading';
 import type { SessionControls } from '../../../daynight/src/session/controls';
 
@@ -50,7 +50,7 @@ async function open(page: Page, locale: string, state: State, entry: Entry = 'ta
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) observations.writes.push(`${request.method()} ${path}`);
-    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
+    const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...botAttentionHeaders(route.request().headers(), status), ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/me/bots/defaults') return send(botDefaults());
     if (path === '/api/v1/me/bots') return send({ items: [bot], nextCursor: null });

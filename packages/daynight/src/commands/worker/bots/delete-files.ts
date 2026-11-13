@@ -9,6 +9,7 @@ import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket } 
 import { resolveControllerIpcEndpoint } from "../../controller/paths.js";
 import { removeHerdrSourceDirectory } from "../resource-disposal.js";
 import type { BotExecution } from "./execution-store.js";
+import { botStateDirectory } from "./environment.js";
 import { botUUID, parseBot, type BotRecord } from "./types.js";
 
 /** Persist this plan outside the sources before removing any entry. */
@@ -47,6 +48,22 @@ const capture = async (target: string, kind: BotDeletionTarget["kind"], signal: 
   return { path: target, root, kind, identity: entry === null ? null : identity(entry), rootIdentity: parent === null ? null : identity(parent), completed: entry === null };
 };
 
+const protectDirectories = async (targets: BotDeletionTarget[], protectedPaths: { directory: string; label: string }[], signal: AbortSignal): Promise<void> => {
+  for (const protectedPath of protectedPaths) {
+    signal.throwIfAborted();
+    let resolved = path.resolve(protectedPath.directory);
+    try { resolved = await realpath(resolved); }
+    catch (error) { if (!missing(error)) throw error; }
+    for (const protectedDirectory of new Set([path.resolve(protectedPath.directory), resolved])) {
+      for (const target of targets) {
+        if (target.kind !== "directory" || target.completed) continue;
+        const relative = path.relative(target.path, protectedDirectory);
+        if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) throw new Error(`Bot private deletion would remove its ${protectedPath.label}; original sources are retained.`);
+      }
+    }
+  }
+};
+
 /**
  * The caller first proves all Bot writers stopped and blocks new generations.
  * Sources are derived from the trusted Worker home, never from cwd or native home.
@@ -56,23 +73,25 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   if (!path.isAbsolute(homeDirectory) || path.resolve(homeDirectory) !== homeDirectory || /[\0\r\n]/.test(homeDirectory)) throw new Error("Bot deletion requires the original absolute Worker home.");
   const bot = parseBot(record.observed, record.owner), intent = record.intent;
   if (bot.id !== record.botId || bot.deletion === null) throw new Error("Bot private deletion requires the original deletion responsibility.");
+  const paths = resolveConfigurationPaths(homeDirectory);
+  const protectedPaths = record.definition === null ? [] : [{ directory: record.definition.resolvedConfiguration.cwd, label: "working directory" }];
+  const targets = [await capture(botStateDirectory(paths, record.botId), "directory", signal)];
   if (intent === null) {
     if (execution !== null) throw new Error("Bot private execution has lost its original launch intent.");
-    return [];
+    await protectDirectories(targets, protectedPaths, signal);
+    return targets;
   }
   const directory = controllerExecutionDirectory(homeDirectory, intent.executionId);
   if (intent.executionId !== intent.registration.testExecutionId || intent.ticketPath !== controllerTicketPath(homeDirectory, intent.launchId)
     || intent.journalPath !== path.join(directory, "journal.sqlite") || intent.credentialFile !== path.join(directory, "credential.json")) throw new Error("Bot private paths differ from the original derived execution paths.");
   if (execution !== null && (execution.executionId !== intent.executionId || execution.launchId !== intent.launchId || execution.executionGeneration !== intent.executionGeneration)) throw new Error("Bot private execution identity differs from the original launch intent.");
-  const { stateDirectory } = resolveConfigurationPaths(homeDirectory), aliasRoot = path.join(stateDirectory, "agent-cli-aliases");
+  const { stateDirectory } = paths, aliasRoot = path.join(stateDirectory, "agent-cli-aliases");
   const aliases = [...new Set([...(execution?.retainedAliasDirectories ?? []), ...(execution?.aliasDirectory == null ? [] : [execution.aliasDirectory])])];
   for (const alias of aliases) {
     if (!path.isAbsolute(alias) || path.dirname(alias) !== aliasRoot || !/^execution-[A-Za-z0-9]+$/.test(path.basename(alias))) throw new Error("Bot aliases must be original execution directories directly under the private alias root.");
   }
   const launches = [...new Set([intent.launchId, ...(execution?.retainedLaunchIds ?? [])])];
   for (const launch of launches) botUUID(launch, "Bot retained launch ID");
-  const protectedPaths = record.definition === null ? [] : [{ directory: record.definition.resolvedConfiguration.cwd, label: "working directory" }];
-  const targets: BotDeletionTarget[] = [];
   const launchRoot = path.dirname(intent.ticketPath), launchParent = await physicalParent(launchRoot);
   const launchFiles = launchParent === null ? [] : await readdir(launchRoot);
   for (const launch of launches) {
@@ -112,19 +131,7 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   }
   // Retain the journal until all other captured private sources are removed.
   targets.push(await capture(directory, "directory", signal));
-  for (const protectedPath of protectedPaths) {
-    signal.throwIfAborted();
-    let resolved = path.resolve(protectedPath.directory);
-    try { resolved = await realpath(resolved); }
-    catch (error) { if (!missing(error)) throw error; }
-    for (const protectedDirectory of new Set([path.resolve(protectedPath.directory), resolved])) {
-      for (const target of targets) {
-        if (target.kind !== "directory" || target.completed) continue;
-        const relative = path.relative(target.path, protectedDirectory);
-        if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) throw new Error(`Bot private deletion would remove its ${protectedPath.label}; original sources are retained.`);
-      }
-    }
-  }
+  await protectDirectories(targets, protectedPaths, signal);
   return targets;
 };
 

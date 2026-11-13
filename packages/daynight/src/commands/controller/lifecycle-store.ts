@@ -21,8 +21,10 @@ import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, runSqliteI
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
 import { controllerJournalFormat } from "./journal-format.js";
+import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, prepareControllerStorage } from "./storage-preparation.js";
+import { controllerStorageMediaUsage, reserveControllerStoragePeak } from "./storage-capacity.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
@@ -78,8 +80,9 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   let sessionContent!: SessionContent;
   let db!: Database.Database;
   let metadataBudget!: ReturnType<typeof controllerMetadataBudget>;
-  let quarantined = false, writeDepth = 0;
+  let quarantined = false, outboxWritesDisabled = false, writeDepth = 0;
   const assertUsable = (): void => { if (quarantined) throw new Error("Controller journal has an unresolved transaction; independent recovery is required."); };
+  const assertOutboxWrites = (): void => { if (outboxWritesDisabled) throw new Error("Controller outbox writes are disabled after an accounting failure."); };
   const quarantine = (_cause: unknown): void => { quarantined = true; };
   const transaction = <T>(action: () => T, mode: "deferred" | "immediate"): T => {
     assertUsable();
@@ -97,16 +100,27 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     } catch (cause) {
       if (!nested && db.open && db.inTransaction) quarantine(cause);
       if (failed && cause !== primary) throw new AggregateError([primary, cause], "Controller journal operation and rollback failed.");
+      if (!nested && mode === "immediate" && failed && cause === primary && db.open && !db.inTransaction) throw withOutboxTransactionOutcome(cause, "rolled-back");
       throw cause;
     }
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
-  const assertTimelineWrite = (additionalBytes: number): void => {
+  let reservedContentCeiling = 0;
+  const reserveContent = (additionalBytes: number, contentGrowth: number): void => {
+    metadataBudget.assert(additionalBytes, true, contentGrowth);
+    if (db.memory) return;
+    const current = metadataBudget.reservationCeiling(), next = metadataBudget.reservationCeiling(contentGrowth);
+    if (next <= reservedContentCeiling && current === reservedContentCeiling) return;
+    const media = controllerStorageMediaUsage(file, db);
+    reserveControllerStoragePeak(file, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, media.reservedBytes + next, Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes);
+    reservedContentCeiling = next;
+  };
+  const assertTimelineWrite = (additionalBytes: number, contentGrowth = 0): void => {
     assertUsable();
     assertControllerStoragePermit(permit, file);
     if (writeDepth === 0 || !db.inTransaction) throw new Error("SQL timeline publication requires the original Controller write transaction.");
-    if (additionalBytes > 0) metadataBudget.assert(additionalBytes, true);
+    if (additionalBytes > 0) reserveContent(additionalBytes, contentGrowth);
   };
   db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, undefined, options.onMigration), file: options.database ?? file, allowCreate: true,
     onReady: (connection) => {
@@ -147,6 +161,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     },
   });
   try {
+  const outbox = openControllerOutbox(db, { assertWrite: () => { assertOutboxWrites(); assertTimelineWrite(0); } });
   const markdownStore = createMarkdownSourceStore(db, { read, write: atomic }, metadataBudget);
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
   const getOperation = (operationId: string): ControllerOperation | null => read(() => { const row = db.prepare("SELECT value FROM operations WHERE id=?").get(operationId) as { value: string } | undefined; return row === undefined ? null : json(row.value); });
@@ -159,27 +174,29 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     if (current.nativeSessionId !== null && patch.nativeSessionId !== undefined && patch.nativeSessionId !== current.nativeSessionId) throw new Error("The original native session cannot be replaced.");
     const value = checkedSnapshot({ ...current, ...patch }); db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
   });
-  const outboxBytes = (): number => read(() => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes);
+  const outboxBytes = (): number => read(() => outbox.byteLength());
   const assertInputCapacity = (): void => { assertUsable(); metadataBudget.assert(); if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
   const localContent = createLocalSessionContent(sessionContent, ticket.sessionId, { read, write: atomic });
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
+    assertOutboxWrites();
     if (options.contentOwnedLocally && payload && typeof payload === "object" && "kind" in payload && payload.kind === "resource" && "payload" in payload) {
       const event = parseSourceEvent({ sourceSeq: "1", ...payload });
       if (event.kind === "resource") localContent.saveResource(event.payload);
     }
     const encoded = JSON.stringify(payload);
+    assertOutboxWrites();
     if (encoded !== undefined) metadataBudget.assert(Buffer.byteLength(encoded) + 16384, true);
     if (encoded === undefined) throw new Error("Controller event must be serializable.");
     if (outboxBytes() + Buffer.byteLength(encoded) > maxOutboxBytes) {
       if (!options.contentOwnedLocally) throw new Error("Controller outbox capacity exceeded; event was not discarded.");
       // Content is already committed in the local projection. Only transport
       // replay is discarded; the next connection must hydrate from local data.
-      db.prepare("DELETE FROM outbox").run();
+      outbox.clear();
       db.prepare("UPDATE execution SET source_floor=last_sequence WHERE id=1").run();
     }
     const row = db.prepare("UPDATE execution SET last_sequence=last_sequence+1 WHERE id=1 RETURNING CAST(last_sequence AS TEXT) AS sequence").get() as { sequence: string };
     if (options.contentOwnedLocally && Buffer.byteLength(encoded) > maxOutboxBytes) db.prepare("UPDATE execution SET source_floor=last_sequence WHERE id=1").run();
-    else db.prepare("INSERT INTO outbox(sequence,value) VALUES(?,?)").run(BigInt(row.sequence), encoded);
+    else outbox.append(BigInt(row.sequence), encoded);
     return { sequence: row.sequence, payload };
   });
   let closed = false;
@@ -271,7 +288,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     }),
     ...createNativeInputPublication({ db, ticket, content: sessionContent, read, assertUsable, quarantine, getSnapshot, getOperation, projectTimeline, associateInputMessage, publishTimelineSnapshot, registerImageOccurrence, metadataBudget }),
     ...createNativeImageState(db, { read, write: atomic }, metadataBudget),
-    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, metadataBudget),
+    ...createImageHistorySource(file, db, sessionContent, { read, write: atomic }, reserveContent),
     ...createImageCaptureSource(db, { read, write: atomic }, getSnapshot, metadataBudget),
     media,
     stopMedia: async (): Promise<void> => { await mediaInstance?.close(); },
@@ -396,15 +413,17 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (operation.kind === "initial") patchSnapshot({ initialInputState: state === "rejected" || state === "expired" ? "failed" : state });
       return writeOperation({ ...operation, state, result, error, updatedAt: Date.now() });
     }),
+    disableOutboxWrites: (): void => { outboxWritesDisabled = true; },
     appendEvent,
     pendingEvents: (limit = 100): ControllerOutboxEvent[] => read(() => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error("Invalid controller outbox page size.");
-      return (db.prepare("SELECT CAST(sequence AS TEXT) AS sequence,value FROM outbox ORDER BY outbox.sequence LIMIT ?").all(limit) as { sequence: string; value: string }[]).map((row) => ({ sequence: row.sequence, payload: json(row.value) }));
+      return outbox.pending(null, limit).map((row) => ({ sequence: row.sequence, payload: json(row.value) }));
     }),
     acknowledgeEvents: (sequence: string): void => atomic(() => {
+      assertOutboxWrites();
       const value = validSequence(sequence); const row = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string };
       if (value > BigInt(row.sequence)) throw new Error("Controller ACK exceeds its durable event watermark.");
-      db.prepare("DELETE FROM outbox WHERE sequence<=?").run(value);
+      outbox.acknowledgeThrough(value);
       db.prepare("UPDATE image_occurrences SET acknowledged=1 WHERE CAST(source_sequence AS INTEGER)<=?").run(value);
       db.prepare("UPDATE execution SET last_acknowledged=MAX(last_acknowledged,?) WHERE id=1").run(value);
     }),

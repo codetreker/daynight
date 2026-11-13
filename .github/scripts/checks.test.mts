@@ -48,7 +48,7 @@ test("successful module jobs pass the actual workflow gate", () => {
   assert.equal(runGate(success), 0);
 });
 
-for (const name of ["verify", "verify-installed", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-e2e"]) {
+for (const name of ["verify", "verify-herdr-platform", "verify-installed", "verify-runtime", "verify-server", "verify-server-startup-shutdown", "verify-api-integration", "verify-web-quality", "verify-e2e"]) {
   for (const result of ["failure", "cancelled"]) {
     test(`${name} ${result} fails the actual workflow gate independently`, () => {
       assert.notEqual(runGate({ ...success, [name]: result }), 0);
@@ -311,11 +311,11 @@ test("Windows discovery remains whole and execution outcome comes from the real 
 
 const selectedCLIStep = stepsOf(gate).find(step => step.includes("name: Require selected CLI jobs to succeed\n"))!;
 const selectedCLICommand = selectedCLIStep.match(/^        run: (.+)$/m)![1]!;
-const cliResults = { CLI_RESULT: "success", INSTALLED_RESULT: "success", RUNTIME_RESULT: "success" };
+const cliResults = { HERDR_RESULT: "success", CLI_RESULT: "success", INSTALLED_RESULT: "success", RUNTIME_RESULT: "success" };
 
-test("selected CLI requires every ordinary shard, installed phase, runtime job", () => {
+test("selected CLI requires every ordinary shard, real Herdr, installed phase and runtime job", () => {
   assert.match(selectedCLIStep, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
-  for (const [variable, job] of [["CLI_RESULT", "verify"], ["INSTALLED_RESULT", "verify-installed"], ["RUNTIME_RESULT", "verify-runtime"]]) {
+  for (const [variable, job] of [["CLI_RESULT", "verify"], ["HERDR_RESULT", "verify-herdr-platform"], ["INSTALLED_RESULT", "verify-installed"], ["RUNTIME_RESULT", "verify-runtime"]]) {
     assert.ok(selectedCLIStep.includes(`${variable}: \${{ needs.${job}.result }}`));
   }
 });
@@ -718,3 +718,18 @@ for (const outcome of ["success", "skipped", "failure", "cancelled"]) {
     assert.equal(result.status === 0, outcome === "success");
   });
 }
+
+
+test("real Herdr validates pinned official agents independently on all three platforms", () => {
+  const stage = jobs.get("verify-herdr-platform")!;
+  assert.match(stage, /^    needs: detect-changes$/m);
+  assert.match(stage, /^    if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
+  assert.deepEqual(stage.match(/^        os: \[([^\]]+)\]$/m)![1]!.split(", "), nativePlatforms);
+  assert.match(stage, /^          node-version: 24$/m);
+  assert.ok(stage.includes("node packages/daynight/scripts/prepare-herdr-platform.mjs"));
+  assert.ok(stage.includes("node node_modules/vitest/vitest.mjs run test/commands/worker/herdr-tool-platform.integration.test.ts"));
+  assert.ok(stage.includes("node packages/daynight/scripts/check-herdr-platform-cleanup.mjs"));
+  assert.ok(stage.includes("steps.herdr-platform.outcome != 'skipped'"));
+  assert.ok(gate.includes('test "$HERDR_RESULT" = success'));
+  assert.doesNotMatch(stage, /continue-on-error/);
+});

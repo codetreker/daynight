@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	searchmodel "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/tasksearch"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 )
 
 const user = "11111111-1111-4111-8111-111111111111"
@@ -31,6 +33,8 @@ type searchFixture struct {
 	failure       error
 	missingTitles bool
 	onTitles      func()
+	resolveTags   func(context.Context, string, []string) ([]model.Tag, error)
+	onMatches     func(context.Context, string, store.TaskSearchQuery)
 }
 
 func (f *searchFixture) ReadTaskSearch(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error {
@@ -51,7 +55,16 @@ func (f *searchFixture) Fence(context.Context, string) (store.TaskSearchFence, e
 	}
 	return f.fence, nil
 }
-func (f *searchFixture) Matches(context.Context, string, store.TaskSearchQuery) (store.TaskSearchPage, error) {
+func (f *searchFixture) ResolveTags(ctx context.Context, project string, ids []string) ([]model.Tag, error) {
+	if f.resolveTags == nil {
+		panic("unexpected ResolveTags")
+	}
+	return f.resolveTags(ctx, project, ids)
+}
+func (f *searchFixture) Matches(ctx context.Context, project string, query store.TaskSearchQuery) (store.TaskSearchPage, error) {
+	if f.onMatches != nil {
+		f.onMatches(ctx, project, query)
+	}
 	if f.failurePhase == "matches" {
 		return store.TaskSearchPage{}, f.failure
 	}
@@ -218,7 +231,7 @@ func TestSearchSnapshotFailuresAreNotSuccess(t *testing.T) {
 }
 
 func TestSearchCursorValidation(t *testing.T) {
-	scope := cursorScope{Version: 3, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+	scope := cursorScope{Version: 4, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: "hash"}
 	valid := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "0", VersionSum: "123456789012345678901234567890"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	encoded, err := encodeCursor(valid)
 	if err != nil {
@@ -273,7 +286,7 @@ func TestSearchIDEvidenceAndContinuation(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || !reflect.DeepEqual(page.Items[0].Match.Fields, []string{"id"}) || page.Items[0].Match.DescriptionSnippet != nil || page.NextCursor == nil {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
-	scope := cursorScope{Version: 3, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("id:"+id))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}}
+	scope := cursorScope{Version: 4, TagFilterIdentity: taskcore.TagFilterIdentity(store.TagFilter{TagIDs: []string{}, TagMatch: "all"}), Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: fmt.Sprintf("%x", sha256.Sum256([]byte("id:"+id))), AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll}}
 	value, err := decodeCursor(*page.NextCursor, scope)
 	if err != nil || !value.Position.ExactIDPriority || value.Position.TitlePriority || value.Position.ID != id {
 		t.Fatalf("position=%+v err=%v", value.Position, err)
@@ -281,8 +294,8 @@ func TestSearchIDEvidenceAndContinuation(t *testing.T) {
 
 }
 
-func TestSearchCursorV3RequiresCanonicalExactPriority(t *testing.T) {
-	scope := cursorScope{Version: 3, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: "hash"}
+func TestSearchCursorV4RequiresCanonicalExactPriority(t *testing.T) {
+	scope := cursorScope{Version: 4, Type: model.TaskTypeTask, UserID: user, ProjectID: projectID, QueryHash: "hash"}
 	c := cursor{Scope: scope, Fence: store.TaskSearchFence{Epoch: user, Count: "1", VersionSum: "1"}, Position: store.TaskSearchPosition{ID: child, UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	encoded, err := encodeCursor(c)
 	if err != nil {
@@ -296,7 +309,7 @@ func TestSearchCursorV3RequiresCanonicalExactPriority(t *testing.T) {
 		"missing":     strings.Replace(string(raw), `"ExactIDPriority":false,`, "", 1),
 		"null":        strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":null`, 1),
 		"wrong type":  strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":"false"`, 1),
-		"old version": strings.Replace(string(raw), `"version":3`, `"version":2`, 1),
+		"old version": strings.Replace(string(raw), `"version":4`, `"version":3`, 1),
 		"duplicate":   strings.Replace(string(raw), `"ExactIDPriority":false`, `"ExactIDPriority":false,"ExactIDPriority":false`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -362,3 +375,131 @@ func TestSearchCursorBindsTypeAndParent(t *testing.T) {
 }
 
 func ptrSearch(value string) *string { return &value }
+
+func TestSearchTagFilterQualificationAndCursor(t *testing.T) {
+	const tagA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	const tagB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	f := testFixture()
+	ctx := t.Context()
+	resolved := 0
+	f.resolveTags = func(actual context.Context, project string, ids []string) ([]model.Tag, error) {
+		resolved++
+		if actual != ctx || project != projectID || !reflect.DeepEqual(ids, []string{tagA, tagB}) {
+			t.Fatalf("tag qualification changed: %s %v", project, ids)
+		}
+		return []model.Tag{{ID: tagA}, {ID: tagB}}, nil
+	}
+	matched := 0
+	f.onMatches = func(actual context.Context, project string, selection store.TaskSearchQuery) {
+		matched++
+		want := store.TagFilter{TagIDs: []string{tagA, tagB}, TagMatch: "any"}
+		if actual != ctx || project != projectID || !reflect.DeepEqual(selection.TagFilter, want) || selection.Expression == nil || selection.Expression.Kind != searchmodel.Or {
+			t.Fatalf("selection changed: %#v", selection)
+		}
+	}
+	f.rows.Items[0].Tags = []model.TagReference{{ID: tagA, Name: "backend"}}
+	req := Request{Query: "cache OR NOT title:other", Limit: 1, TagFilter: store.TagFilter{TagIDs: []string{tagB, strings.ToUpper(tagA), tagA}, TagMatch: "any"}}
+	page, err := Search(ctx, f, principal(), projectID, req)
+	if err != nil || page.NextCursor == nil || !reflect.DeepEqual(page.Items[0].Tags, f.rows.Items[0].Tags) || resolved != 1 || matched != 1 {
+		t.Fatalf("page=%#v resolved=%d matched=%d error=%v", page, resolved, matched, err)
+	}
+	req.Cursor = page.NextCursor
+	req.TagFilter.TagIDs = []string{tagA, tagB}
+	if _, err := Search(ctx, f, principal(), projectID, req); err != nil || resolved != 2 || matched != 2 {
+		t.Fatalf("canonical continuation failed: %v", err)
+	}
+	for _, filter := range []store.TagFilter{
+		{TagIDs: []string{tagA}, TagMatch: "any"},
+		{TagIDs: []string{tagA, tagB}, TagMatch: "all"},
+		{Untagged: true},
+	} {
+		req.TagFilter = filter
+		_, err := Search(ctx, f, principal(), projectID, req)
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Code != "invalid_input" {
+			t.Fatalf("changed filter accepted: %#v %v", filter, err)
+		}
+	}
+	if resolved != 2 || matched != 2 {
+		t.Fatal("mismatched cursor reached snapshot")
+	}
+}
+
+func TestSearchTagFilterRefusesInvalidOrChangedInputs(t *testing.T) {
+	const tagID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	for _, filter := range []store.TagFilter{
+		{TagIDs: []string{"bad"}}, {TagMatch: "invalid"}, {TagIDs: []string{tagID}, Untagged: true},
+	} {
+		_, err := Search(t.Context(), testFixture(), principal(), projectID, Request{Query: "cache", Limit: 1, TagFilter: filter})
+		var fault *model.Fault
+		if !errors.As(err, &fault) || fault.Code != "invalid_tag_filter" {
+			t.Fatalf("filter %#v: %v", filter, err)
+		}
+	}
+	f := testFixture()
+	resolved := 0
+	f.resolveTags = func(context.Context, string, []string) ([]model.Tag, error) {
+		resolved++
+		return nil, nil
+	}
+	f.onMatches = func(context.Context, string, store.TaskSearchQuery) { t.Fatal("invalid tag reached selection") }
+	req := Request{Query: "cache", Limit: 1, TagFilter: store.TagFilter{TagIDs: []string{tagID}}}
+	_, err := Search(t.Context(), f, principal(), projectID, req)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "invalid_tag_filter" || resolved != 1 {
+		t.Fatalf("missing tag: %v", err)
+	}
+	f.denied = true
+	_, err = Search(t.Context(), f, principal(), projectID, req)
+	if err == nil || resolved != 1 {
+		t.Fatalf("qualification occurred before permission: %v", err)
+	}
+	f.denied = false
+	f.resolveTags = func(context.Context, string, []string) ([]model.Tag, error) { return []model.Tag{{ID: tagID}}, nil }
+	f.onMatches = nil
+	page, err := Search(t.Context(), f, principal(), projectID, req)
+	if err != nil || page.NextCursor == nil {
+		t.Fatalf("first page: %#v %v", page, err)
+	}
+	req.Cursor = page.NextCursor
+	f.fence.VersionSum = "3"
+	f.resolveTags = func(context.Context, string, []string) ([]model.Tag, error) {
+		t.Fatal("changed fence must precede tag qualification")
+		return nil, nil
+	}
+	_, err = Search(t.Context(), f, principal(), projectID, req)
+	if !errors.As(err, &fault) || fault.Code != "search_changed" {
+		t.Fatalf("changed snapshot not reported: %v", err)
+	}
+}
+
+func TestSearchTagFilterPreservesOtherQualificationsAndErrors(t *testing.T) {
+	const tagID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	f := testFixture()
+	status := model.TaskTodo
+	ready := true
+	parent := root
+	f.onMatches = func(_ context.Context, _ string, selection store.TaskSearchQuery) {
+		if !selection.TagFilter.Untagged || selection.TagFilter.TagMatch != "all" || selection.Type != model.TaskTypeTask || selection.Parent == nil || *selection.Parent != parent || selection.Status != &status || selection.Ready != &ready {
+			t.Fatalf("selection lost qualifications: %#v", selection)
+		}
+	}
+	_, err := Search(t.Context(), f, principal(), projectID, Request{Query: "cache AND NOT missing", Limit: 1, Type: model.TaskTypeTask, Parent: &parent, Status: &status, Ready: &ready, TagFilter: store.TagFilter{Untagged: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("tag read failed")
+	f.resolveTags = func(context.Context, string, []string) ([]model.Tag, error) { return nil, sentinel }
+	f.onMatches = func(context.Context, string, store.TaskSearchQuery) {
+		t.Fatal("failed tag qualification reached selection")
+	}
+	page, err := Search(t.Context(), f, principal(), projectID, Request{Query: "cache", Limit: 1, TagFilter: store.TagFilter{TagIDs: []string{tagID}}})
+	if !errors.Is(err, sentinel) || !reflect.DeepEqual(page, Page{}) {
+		t.Fatalf("tag read error lost: %#v %v", page, err)
+	}
+	f.resolveTags = func(context.Context, string, []string) ([]model.Tag, error) { return nil, context.Canceled }
+	page, err = Search(t.Context(), f, principal(), projectID, Request{Query: "cache", Limit: 1, TagFilter: store.TagFilter{TagIDs: []string{tagID}}})
+	if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(page, Page{}) {
+		t.Fatalf("tag read cancellation lost: %#v %v", page, err)
+	}
+}

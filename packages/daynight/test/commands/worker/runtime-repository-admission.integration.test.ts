@@ -76,7 +76,7 @@ it("rejects a selected repository nested in a retained project's worktree while 
   const frozen = webStore.register({ projectId: retainedProjectId, taskId, claimId, worktreeId, project: retainedProject, serverOrigin, workerId, userId,
     configuration: { agent: "codex", agentControlMode: "web", model: "retained-model", args: [], recoveryLimit: 2 } }, Date.now());
   const task: Task = { type: "task", parentId: null,
-    id: taskId, projectId: retainedProjectId, title: "Retained unfinished task", description: "", status: "in_progress", allowAgents: true, assignedTo: userId,
+    id: taskId, projectId: retainedProjectId, title: "Retained unfinished task", description: "", tags: [], status: "in_progress", allowAgents: true, assignedTo: userId,
     requiredPlatform: null, startedAt: workerTelemetryTime, completedAt: null, cancelledAt: null, version: 1n,
     dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime,
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(8), name: "original" }, platform: "linux", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },

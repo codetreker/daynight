@@ -15,6 +15,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook/protocol"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
 	"github.com/google/uuid"
 )
 
@@ -282,9 +283,17 @@ func externalHTTPWrite(row model.Task) store.TaskWrite {
 	row = copyTaskHTTPTask(row)
 	return store.TaskWrite{Type: row.Type, ParentID: row.ParentID, AssignedTo: row.AssignedTo, RequiredPlatform: row.RequiredPlatform, AllowAgents: row.AllowAgents, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: row.Status, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn}
 }
+func tagHTTPReferences(tags []model.TagReference) []taskprotocol.RESTTagReference {
+	result := make([]taskprotocol.RESTTagReference, 0, len(tags))
+	for _, tag := range tags {
+		result = append(result, taskprotocol.RESTTagReference{ID: tag.ID, Name: tag.Name})
+	}
+	return result
+}
+
 func externalHTTPAPI(row model.Task) api.Task {
 	row = copyTaskHTTPTask(row)
-	return api.Task{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Properties: row.Properties, Status: string(row.Status), Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CancelledAt: row.CancelledAt, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AssignedTo: row.AssignedTo, AllowAgents: row.AllowAgents, Ready: row.Ready}
+	return api.Task{ID: row.ID, Type: row.Type, ParentID: row.ParentID, ProjectID: row.ProjectID, Title: row.Title, Description: row.Description, Properties: row.Properties, Tags: tagHTTPReferences(row.Tags), Status: string(row.Status), Version: row.Version, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CancelledAt: row.CancelledAt, DependsOn: row.DependsOn, ExternalDependsOn: row.ExternalDependsOn, BlockedBy: row.BlockedBy, AssignedTo: row.AssignedTo, AllowAgents: row.AllowAgents, Ready: row.Ready}
 }
 func externalHTTPCheck(t *testing.T, actual, expected any) {
 	t.Helper()
@@ -655,7 +664,7 @@ func platformHTTPAPI(task model.Task) api.Task {
 		platform = &value
 	}
 	return api.Task{ID: task.ID, Type: task.Type, ParentID: task.ParentID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
-		Status: string(task.Status), Properties: api.TaskProperties(task.Properties), Version: task.Version,
+		Status: string(task.Status), Properties: api.TaskProperties(task.Properties), Tags: tagHTTPReferences(task.Tags), Version: task.Version,
 		CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt, StartedAt: task.StartedAt, CompletedAt: task.CompletedAt, CancelledAt: task.CancelledAt,
 		DependsOn: task.DependsOn, ExternalDependsOn: task.ExternalDependsOn, BlockedBy: task.BlockedBy,
 		RequiredPlatform: platform, AssignedTo: task.AssignedTo, AllowAgents: task.AllowAgents, Ready: task.Ready}

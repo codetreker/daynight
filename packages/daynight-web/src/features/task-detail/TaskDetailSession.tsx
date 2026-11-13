@@ -1,4 +1,5 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
+import { sameTaskTags } from "../../api/task-tags";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, subscribeAuthPause, deleteTask, getTaskObservation, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, updateTaskFields, withdrawWorkerClaim } from "../../api/client";
 import { addTaskStep, deleteTaskStep, editTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
@@ -12,7 +13,7 @@ import type { CommittedTaskProjection } from '../projects/committed-task-project
 
 const emptyCommittedTasks: ReadonlyMap<string, CommittedTaskProjection> = new Map();
 
-export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "parent"; readonly parentId: string | null; readonly version: bigint } | { readonly action: "editGoal"; readonly title: string; readonly description: string; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepEdit"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepDelete"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
+export type TaskMutationOperation = { readonly action: "unpause"; readonly version: bigint } | { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "parent"; readonly parentId: string | null; readonly version: bigint } | { readonly action: "editGoal"; readonly title: string; readonly description: string; readonly version: bigint } | { readonly action: "tags"; readonly tagIds: readonly string[]; readonly version: bigint } | { readonly action: "stepAdd"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepEdit"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepDelete"; readonly stepId: string; readonly version: bigint; readonly requestId: string } | { readonly action: "stepPosition"; readonly stepId: string; readonly placement: StepPlacement; readonly version: bigint; readonly requestId: string } | { readonly action: "stepStatus"; readonly stepId: string; readonly status: StepStatus; readonly version: bigint; readonly requestId: string } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint } | { readonly action: "assignedTo"; readonly assignedTo: string | null; readonly version: bigint };
 export type TaskObservationInput = { readonly kind: "project-summary"; readonly revision: number; readonly task: GraphTask | undefined } | { readonly kind: "direct" };
 type DirectTaskReceipt = { readonly fence: TaskReadFence; readonly epoch: string; readonly detail: TaskDetail };
 const directQualification = Symbol("directQualification");
@@ -131,6 +132,7 @@ const initialState = (): DetailState => ({ revision: 0, loadedRevision: null, de
 const canMutate = (state: DetailState): boolean => state.detail !== null && state.status === "ready" &&
   state.mutation.phase !== "pending" && state.mutation.phase !== "unknown" && !state.mutation.reconciling && state.mutation.reconciliationError === null && !state.requiresFreshRead && state.error === null;
 export const canDeleteTask = (state: DetailState): boolean => canMutate(state);
+export const canSetTags = (state: DetailState): boolean => canMutate(state);
 export const canSetStatus = (state: DetailState): boolean => canMutate(state) && (state.detail!.type === "goal" || state.detail!.status !== "cancelled");
 export const canUnpause = (state: DetailState): boolean => canMutate(state) && readTaskPaused(state.detail!.properties) === true;
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
@@ -145,8 +147,8 @@ export const canWithdrawClaim = (state: DetailState): boolean => {
 };
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((id) => right.includes(id));
-const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true, preserveAssignment = true): boolean => before.title === after.title && before.description === after.description &&
-  before.createdAt === after.createdAt && sameTaskProperties(before.properties, after.properties, !preserveWorker) &&
+const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true, preserveAssignment = true, preserveTags = true): boolean => before.title === after.title && before.description === after.description &&
+  before.createdAt === after.createdAt && sameTaskProperties(before.properties, after.properties, !preserveWorker) && (!preserveTags || sameTaskTags(before.tags, after.tags)) &&
   (!preserveAssignment || before.assignedTo === after.assignedTo) &&
   sameIds(before.dependsOn, after.dependsOn) && sameIds(before.externalDependsOn, after.externalDependsOn);
 const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskStatus): boolean => {
@@ -207,11 +209,16 @@ export class TaskDetailSessions {
           continue;
         }
         if (entry.source === "direct" && event.directAccessRecheck && entry.directAccessPending) {
-          entry.directAccessPending = false; entry.admitted = true;
-          if (event.error !== undefined) this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
-          else if (entry.listeners.size > 0) queueMicrotask(() => {
-            if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
-          });
+          if (event.error !== undefined) {
+            if (!event.scopeSuspended) entry.admitted = true;
+            this.publish(entry, { ...initialState(), revision: entry.state.revision, status: "error", error: event.error });
+          }
+          else {
+            entry.directAccessPending = false; entry.admitted = true;
+            if (entry.listeners.size > 0) queueMicrotask(() => {
+              if (!this.disposed && entry.listeners.size > 0) void this.read(event.projectId, entry.steps.taskId, entry.state.revision, false, false);
+            });
+          }
           continue;
         }
         if (entry.source === "direct" && event.accessRevoked && entry.directAccessPending) {
@@ -368,6 +375,12 @@ export class TaskDetailSessions {
     entry.source = "direct"; entry.openingGeneration++; entry.historyRetry = false; entry.historyHintRetry = false; entry.directAccessPending = false; entry.receipt = null; entry.admitted = true;
     entry.observedGeneration = this.entryGeneration(entry); entry.committedVersion = null; entry.deletedGeneration = null;
     entry.liveVersion = null; entry.pending = null; entry.mismatch = null;
+    const isolation = this.scope.enrollDirectProject(projectId);
+    if (isolation !== null) {
+      entry.directAccessPending = true; entry.admitted = false;
+      this.publish(entry, { ...initialState(), revision: 1, status: isolation.error === null ? "loading" : "error", error: isolation.error });
+      return;
+    }
     this.publish(entry, { ...initialState(), revision: 1 });
     this.load(projectId, taskId, 1, "open");
   }
@@ -774,6 +787,10 @@ export class TaskDetailSessions {
   load(projectId: string, taskId: string, revision: number, mode: "open" | "refresh" | "automatic" = "refresh"): void {
     const entry = this.entry(projectId, taskId);
     if (authRequestsPaused()) return;
+    if (mode === "refresh" && entry.source === "direct" && entry.directAccessPending) {
+      this.scope.retryProjectVerification(projectId);
+      return;
+    }
     if (mode === "refresh") {
       for (const [operation, retired] of this.retiredMutations) if (retired.projectId === projectId && retired.taskId === taskId && retired.phase !== "pending" && !retired.reconciling) this.finishRetiredMutation(operation, retired.phase === "confirmed", retired.error);
     }
@@ -902,7 +919,8 @@ export class TaskDetailSessions {
       (entry.committedVersion === null || detail.version >= entry.committedVersion) && entry.mismatch === null && storageError === null &&
       (entry.operationFence === null || this.scope.isTaskReadCurrent(entry.operationFence));
     const mutation = reconciliation
-      ? { ...currentMutation, phase: currentMutation.phase === "unknown" ? "reconciled" as const : currentMutation.phase, reconciling: false, reconciliationError: null, ...(published ? { publicationPending: false } : {}) }
+      ? { ...currentMutation, phase: currentMutation.phase === "unknown" ? "reconciled" as const : currentMutation.phase,
+        ...(currentMutation.phase === "unknown" ? { reconciledFrom: "unknown" as const } : {}), reconciling: false, reconciliationError: null, ...(published ? { publicationPending: false } : {}) }
       : readOpeningGeneration !== null && !isStepOperation(currentMutation.operation) ? { ...currentMutation, reconciling: false, reconciliationError: null, ...(published ? { publicationPending: false } : {}) } : currentMutation;
     this.publish(entry, { ...entry.state, revision, loadedRevision: revision,
       detail: preserveCollection(entry.state.detail, materializeDetail(admitted.detail, node)), status: "ready", refreshing: false,
@@ -958,6 +976,9 @@ export class TaskDetailSessions {
       }
       const detail = await this.getParent(entry, ticket, signal);
       if (signal.aborted || generation !== entry.generation || this.disposed) return;
+      if (openingGeneration === entry.openingGeneration && entry.admitted && !this.scope.hasIdentityMismatch &&
+        entry.observedGeneration === ticket.cacheGeneration && this.projectGeneration(projectId) === ticket.cacheGeneration &&
+        this.scope.canRevokeProject(ticket)) this.scope.markProjectReadable(projectId);
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
       if (signal.aborted || generation !== entry.generation || this.disposed || this.scope.hasIdentityMismatch || !retain && !reconciliation && isAbortError(error)) return;
@@ -1014,6 +1035,7 @@ export class TaskDetailSessions {
         throw new ApiError("protocol");
       }
       entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
+      this.scope.markProjectReadable(projectId);
       entry.historyRetry = false; entry.historyHintRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
       const currentMutation = entry.state.mutation;
       const receiptGeneration = currentMutation.operation === null ? undefined : this.receiptReadGenerations.get(currentMutation.operation);
@@ -1137,6 +1159,12 @@ export class TaskDetailSessions {
     const state = this.writableState(projectId, taskId);
     if (!canEditGoal(state) || state.detail!.version !== version) return;
     this.performMutation(projectId, taskId, { action: "editGoal", title, description, version });
+  }
+  setTags(projectId: string, taskId: string, tagIds: readonly string[], version: bigint): void {
+    const state = this.writableState(projectId, taskId);
+    if (!canSetTags(state) || state.detail!.version !== version) return;
+    const canonicalIds = [...new Set(tagIds.map(requestId))].sort();
+    this.performMutation(projectId, taskId, { action: "tags", tagIds: canonicalIds, version });
   }
   setAgentPermission(projectId: string, taskId: string, allowAgents: boolean, version: bigint): void {
     const state = this.writableState(projectId, taskId);
@@ -1528,7 +1556,8 @@ export class TaskDetailSessions {
         : operation.action === "status" ? previous.status !== operation.status
         : operation.action === "assignedTo" ? previous.assignedTo !== operation.assignedTo
         : operation.action === "parent" ? previous.parentId !== operation.parentId
-        : operation.action === "editGoal" ? previous.title !== operation.title || previous.description !== operation.description : true;
+        : operation.action === "editGoal" ? previous.title !== operation.title || previous.description !== operation.description
+        : operation.action === "tags" ? !sameIds(previous.tags.map(tag => tag.id), operation.tagIds) : true;
       const committedVersion = operation.version + (changed ? 1n : 0n);
       let ticket: ReadTicket | null = null;
       // Verification can retire the owner while a known write outcome is in flight.
@@ -1710,6 +1739,8 @@ export class TaskDetailSessions {
               ? updateTaskFields(projectId, taskId, { parentId: operation.parentId }, operation.version, signal, admission)
               : operation.action === "editGoal"
               ? updateTaskFields(projectId, taskId, { title: operation.title, description: operation.description }, operation.version, signal, admission)
+              : operation.action === "tags"
+              ? updateTaskFields(projectId, taskId, { tagIds: operation.tagIds }, operation.version, signal, admission)
               : setTaskStatus(projectId, taskId, operation.status, operation.version, signal, admission);
         }, () => !submitted);
         if (response === null) return;
@@ -1727,13 +1758,15 @@ export class TaskDetailSessions {
               : operation.action === "assignedTo"
               ? detail.status === previous.status && detail.assignedTo === operation.assignedTo && detail.requiredPlatform === previous.requiredPlatform &&
                 detail.allowAgents === (changed ? false : previous.allowAgents) && preservesTiming && (changed || detail.updatedAt === previous.updatedAt)
-              : operation.action === "parent" || operation.action === "editGoal"
+              : operation.action === "parent" || operation.action === "editGoal" || operation.action === "tags"
               ? detail.status === previous.status && detail.allowAgents === previous.allowAgents && detail.requiredPlatform === previous.requiredPlatform && preservesTiming && (changed || detail.updatedAt === previous.updatedAt)
               : detail.status === operation.status && detail.allowAgents === previous.allowAgents && detail.requiredPlatform === previous.requiredPlatform && validStatusTiming(previous, detail, operation.status);
           const expectedMaterials = operation.action === "unpause" ? { ...previous, properties: { ...previous.properties, paused: false } }
             : operation.action === "editGoal" ? { ...previous, title: operation.title, description: operation.description } : previous;
           const expectedParent = operation.action === "parent" ? operation.parentId : previous.parentId;
-          if (detail.projectId !== projectId || detail.id !== taskId || detail.type !== previous.type || detail.parentId !== expectedParent || !validResult || !preservesMaterials(expectedMaterials, detail, operation.action !== "withdraw", operation.action !== "assignedTo") || detail.version !== committedVersion) throw new ApiError("protocol");
+          if (detail.projectId !== projectId || detail.id !== taskId || detail.type !== previous.type || detail.parentId !== expectedParent || !validResult ||
+            operation.action === "tags" && !sameIds(detail.tags.map(tag => tag.id), operation.tagIds) ||
+            !preservesMaterials(expectedMaterials, detail, operation.action !== "withdraw", operation.action !== "assignedTo", operation.action !== "tags") || detail.version !== committedVersion) throw new ApiError("protocol");
         };
         await runOutcome(requestTicket, null, async () => {
           if (confirmed && actualVersion !== null) entry.committedVersion = actualVersion;

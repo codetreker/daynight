@@ -220,6 +220,23 @@ describe("shared local calendar clock", () => {
 });
 
 describe("project overview progress presentation", () => {
+  it("displays completed counts and integer percentages while retaining raw counts and status", () => {
+    const value = snapshot([
+      { id: "root", status: "done" },
+      ...[1, 2, 3].map((n) => ({ id: `done-${n}`, status: "done" as const, dependsOn: ["root"] })),
+      ...[1, 2].map((n) => ({ id: `todo-${n}`, status: "todo" as const, dependsOn: ["root"] })),
+      ...[1, 2, 3].map((n) => ({ id: `cancelled-${n}`, status: "cancelled" as const, dependsOn: ["root"] })),
+    ]);
+    const progress = project(value);
+    expect(progress.chains[0]).toMatchObject({ done: 4, cancelled: 3, ended: 7, total: 9, percent: 66, status: "in_progress" });
+    const view = renderWithLocale(<ProjectOverview onOpenTask={vi.fn()} {...presentation(value)} onNavigate={vi.fn()} />, { locale: "en" });
+    const button = screen.getByRole("button", { name: /Title root, 4 \/ 6 completed, 66%/ });
+    expect(button).toHaveTextContent("4 / 6");
+    expect(button.querySelector(".root-progress-track i")).toHaveStyle({ width: "66%" });
+    expect(screen.getByText("Total tasks").parentElement).toHaveTextContent("9");
+    view.setLocale("zh-CN");
+    expect(button).toHaveAccessibleName(/Title root.*4.*6.*66%/);
+  });
   it("offers both navigation targets, explains the recent scope, and keeps project statistics complete in both languages", () => {
     const value = mixed(); const onNavigate = vi.fn();
     const view = renderWithLocale(<ProjectOverview onOpenTask={vi.fn()} {...presentation(value)} onNavigate={onNavigate} />, { locale: "zh-CN" });
@@ -256,10 +273,11 @@ it("uses cancellation time for mixed and cancelled terminal Goals without replac
   ]);
   const progress = project(value);
   expect(progress.chains[0]).toMatchObject({ taskId: "root", done: 1, cancelled: 1, ended: 2, total: 2, percent: 100, status: "ended" });
-  expect(progress.standalone).toMatchObject({ done: 0, cancelled: 1, ended: 1, total: 1, percent: 100, status: "cancelled" });
+  expect(progress.standalone).toMatchObject({ done: 0, cancelled: 1, ended: 1, total: 1, percent: 0, status: "cancelled" });
   expect(progress.recentStandaloneIds).toEqual(["cancelled-only"]);
   const view = renderWithLocale(<ProjectOverview snapshot={value} progress={progress} pagination={{ page: 1, pageCount: 1, total: 2, start: 1, end: 2, onPageChange: vi.fn() }} onNavigate={vi.fn()} onOpenTask={vi.fn()} />, { locale: "en" });
-  expect(screen.getByRole("button", { name: /Title root, 2 \/ 2 ended, 1 completed, 1 cancelled/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Title root, 1 \/ 1 completed, 100%/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Standalone tasks, 0 \/ 0 completed, 0%/ })).toHaveAttribute("data-task-status", "cancelled");
   expect(screen.getByText("Ended", { selector: ".stat-label" })).toBeInTheDocument();
   expect(value.index.nodes.get("cancelled")!.completedAt).toBe(beforeCutoff);
   view.unmount();

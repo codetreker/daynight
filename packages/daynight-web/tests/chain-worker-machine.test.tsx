@@ -15,7 +15,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
 const time = '2026-11-04T00:00:00Z';
 const project: Project = { id: id(100), name: 'Project', repoUrl: 'https://example.com/project', ownership: { teamId: id(101), version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: 'task', parentId: null, id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ tags: [], type: 'task', parentId: null, id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true, version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const claim = (name: string, state: WorkerClaim['state'], agentControlMode: WorkerClaim['agentControlMode'] = 'web'): WorkerClaim => ({
   claimId: id(201), state, userId: id(202), workerId: id(203), machine: { id: id(204), name }, platform: 'linux', agent: 'codex', agentControlMode, worktreeId: id(205), phase: 'executing', herdr: agentControlMode === 'web' ? null : { session: 'session', workspaceId: 'workspace', paneId: 'pane' }, nativeSessionId: null, claimedAt: time,
 });

@@ -1,26 +1,34 @@
 import { useCallback, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { useBrowserLocation } from './browser-location';
 import { browserNavigation } from './navigation';
-import { accountHistory, emptyResourceReading, projectHistory, readAccountHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type AccountTab, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
+import { accountHistory, emptyMyTasksReading, emptyResourceReading, myTasksHistory, projectHistory, readAccountHistory, readMyTasksHistory, readProjectHistory, readResourceHistory, resourceHistory, workerHistory, readWorkerHistory, type AccountTab, type MyTasksReading, type ProjectReading, type ResourcePageReading, type WorkerSection } from './page-history';
 import { parseAuthRoute, parseRoute } from './router';
 import type { TaskCacheScope } from '../features/task-cache/project-cache';
 
 type ResourceFence = { generation: number; readonly entries: Map<string, number>; readonly listeners: Set<() => void> };
 const resourceFences = new WeakMap<TaskCacheScope, Map<string, ResourceFence>>();
-const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence => {
+const resourceFencesFor = (scope: TaskCacheScope): Map<string, ResourceFence> => {
   let projects = resourceFences.get(scope);
-  if (projects === undefined) { projects = new Map(); resourceFences.set(scope, projects); }
+  if (projects !== undefined) return projects;
+  projects = new Map();
+  resourceFences.set(scope, projects);
+  const all = projects;
+  const unsubscribe = scope.subscribe(event => {
+    if (!(event.historyChanged || event.accessRevoked)) return;
+    let fence = all.get(event.projectId);
+    if (fence === undefined) { fence = { generation: 0, entries: new Map(), listeners: new Set() }; all.set(event.projectId, fence); }
+    fence.generation++;
+    for (const listener of fence.listeners) listener();
+  });
+  scope.signal.addEventListener('abort', unsubscribe, { once: true });
+  return projects;
+};
+const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence => {
+  const projects = resourceFencesFor(scope);
   let fence = projects.get(projectId);
   if (fence !== undefined) return fence;
   fence = { generation: 0, entries: new Map(), listeners: new Set() };
   projects.set(projectId, fence);
-  const current = fence;
-  const unsubscribe = scope.subscribe(event => {
-    if (event.projectId !== projectId || !(event.historyChanged || event.accessRevoked)) return;
-    current.generation++;
-    for (const listener of current.listeners) listener();
-  });
-  scope.signal.addEventListener('abort', unsubscribe, { once: true });
   return fence;
 };
 
@@ -39,6 +47,63 @@ export const isRetiredResourceEntry = (scope: TaskCacheScope, projectId: string,
   const fence = resourceFence(scope, projectId);
   return fence.entries.get(entryId) !== fence.generation;
 };
+
+/** Restored entries are admitted until this identity observes a retirement. */
+export const isRetiredMyTasksEntry = (scope: TaskCacheScope, projectId: string, entryId: string): boolean => {
+  const fence = resourceFence(scope, projectId);
+  return (fence.entries.get(entryId) ?? 0) !== fence.generation;
+};
+
+/** The overview retains page positions and resource readers, never their contents. */
+export function useMyTasksHistory(userId: string, active: boolean, scope: TaskCacheScope) {
+  resourceFencesFor(scope);
+  const location = useBrowserLocation();
+  const navigation = browserNavigation();
+  const retained = useRef<{ userId: string; scope: TaskCacheScope; selection: MyTasksReading; onPage: boolean; fence: ResourceFence | null; generation: number }>({ userId, scope, selection: emptyMyTasksReading(), onPage: false, fence: null, generation: 0 });
+  if (retained.current.userId !== userId || retained.current.scope !== scope) retained.current = { userId, scope, selection: emptyMyTasksReading(), onPage: false, fence: null, generation: 0 };
+  const onPage = active && parseAuthRoute(location.pathname, location.search).kind === 'myTasks';
+  if (onPage && !retained.current.onPage) retained.current.selection = emptyMyTasksReading();
+  retained.current.onPage = onPage;
+  let selected: MyTasksReading | null = null;
+  let error = false;
+  if (onPage) {
+    try { selected = readMyTasksHistory(location.view, userId); }
+    catch { error = true; }
+  }
+  const projectId = selected?.detail?.projectId ?? retained.current.selection.detail?.projectId;
+  const fence = projectId === undefined ? null : resourceFence(scope, projectId);
+  const subscribe = useCallback((listener: () => void) => {
+    if (fence === null) return () => {};
+    fence.listeners.add(listener);
+    return () => { fence.listeners.delete(listener); };
+  }, [fence]);
+  const generation = useSyncExternalStore(subscribe, () => fence?.generation ?? 0);
+  if (retained.current.fence === fence && retained.current.generation !== generation) retained.current.selection = { ...retained.current.selection, detail: null };
+  retained.current.fence = fence;
+  retained.current.generation = generation;
+  const retired = selected?.detail !== null && selected?.detail !== undefined && location.entryId !== null &&
+    isRetiredMyTasksEntry(scope, selected.detail.projectId, location.entryId);
+  if (retired && selected !== null) selected = { ...selected, detail: null };
+  const selection = !onPage || location.entryId === null ? retained.current.selection : selected ?? emptyMyTasksReading();
+  useLayoutEffect(() => {
+    if (!onPage || error) return;
+    retained.current.selection = selection;
+    if (location.entryId !== null && (selected === null || retired)) navigation.setView(myTasksHistory(userId, selection), { replace: true });
+  }, [onPage, error, selection, selected, retired, location.entryId, navigation, userId, generation]);
+  const select = (next: MyTasksReading, replace = false, onCommit?: () => void) => {
+    if (!onPage || error) return;
+    if (location.entryId !== null && selected === null) navigation.setView(myTasksHistory(userId, selection), { replace: true });
+    navigation.setView(myTasksHistory(userId, next), { replace, onCommit: () => {
+      const entryId = navigation.snapshot().entryId;
+      if (next.detail !== null && entryId !== null) {
+        const nextFence = resourceFence(scope, next.detail.projectId);
+        nextFence.entries.set(entryId, nextFence.generation);
+      }
+      onCommit?.();
+    } });
+  };
+  return { selection, select, error };
+}
 
 /** The active account page consumes only admitted, identity-bound selections. */
 export function useAccountHistory(userId: string, active: boolean) {

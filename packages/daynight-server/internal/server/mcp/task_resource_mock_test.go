@@ -41,6 +41,7 @@ type taskResourceMock struct {
 	CreateFunc         func(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
 	GetFunc            func(context.Context, model.Principal, string, string) (model.Task, error)
 	UpdateFunc         func(context.Context, model.Principal, string, string, taskcore.UpdateTask, *[]string, *[]string) (model.Task, error)
+	ReplaceTagsFunc    func(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error)
 	SetStatusFunc      func(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	DeleteFunc         func(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetPropertyFunc    func(context.Context, model.Principal, string, string, string, string, int64) (model.Task, error)
@@ -86,6 +87,12 @@ func (m *taskResourceMock) UpdatePartitionedDependencies(ctx context.Context, p 
 		return model.Task{}, err
 	}
 	return m.UpdateFunc(ctx, p, project, id, in, ordinary, external)
+}
+func (m *taskResourceMock) ReplaceTags(ctx context.Context, p model.Principal, project, id string, version int64, tags *[]string) (model.Task, error) {
+	if err := m.called("ReplaceTags", ctx, p, project, m.ReplaceTagsFunc != nil); err != nil {
+		return model.Task{}, err
+	}
+	return m.ReplaceTagsFunc(ctx, p, project, id, version, tags)
 }
 func (m *taskResourceMock) SetStatus(ctx context.Context, p model.Principal, project, id string, in taskcore.SetTaskStatus) (model.Task, error) {
 	if err := m.called("SetStatus", ctx, p, project, m.SetStatusFunc != nil); err != nil {

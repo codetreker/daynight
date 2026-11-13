@@ -56,6 +56,56 @@ test.each(fixturePlatforms)("bounded stopped replay advances exact source ACK wi
   expect(after.operation).toEqual(before.operation); expect(after.outbox).toEqual({ total: 0 }); expect(after.batch).toBeUndefined();
 });
 
+test("stopped replay on another connection accounts for the deleted prefix and complete ACK", async () => {
+  const f = await fixture(101, "中文 🐈\n\\\"");
+  const account = () => {
+    const db = new Database(f.journalPath, { readonly: true });
+    try {
+      const values = db.prepare("SELECT value FROM outbox ORDER BY sequence").all() as { value: string }[];
+      const total = (db.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get() as { byte_length: number }).byte_length;
+      expect(total).toBe(values.reduce((sum, row) => sum + Buffer.byteLength(row.value, "utf8"), 0));
+      return values.length;
+    } finally { db.close(); }
+  };
+  const observed: number[] = [];
+  await replayStoppedControllerHistory({ ...f, send: async batch => { observed.push(account()); return acknowledged(batch); } });
+  expect(observed).toEqual([101, 1]);
+  expect(account()).toBe(0);
+});
+
+test("stopped ACK reports its actual rollback and retains the original batch on accounting corruption", async () => {
+  const f = await fixture(101); let sent!: StoppedSourceTail;
+  const failure = await replayStoppedControllerHistory({ ...f, send: async batch => {
+    sent = batch;
+    const db = new Database(f.journalPath);
+    try { db.prepare("UPDATE outbox_totals SET byte_length=1 WHERE id=1").run(); } finally { db.close(); }
+    return acknowledged(batch);
+  } }).then(() => null, (error: unknown) => error);
+  expect(failure).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } });
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
+  expect(f.read().outbox).toEqual({ total: 101 });
+  expect(f.read().batch).toEqual({ value: JSON.stringify(sent) });
+});
+
+test("a failed stopped ACK rollback retains both errors and does not invent an outcome", async () => {
+  const f = await fixture(101), exec = Database.prototype.exec, rollbackFailure = new Error("injected rollback failure");
+  const failure = await replayStoppedControllerHistory({ ...f, send: async batch => {
+    const db = new Database(f.journalPath);
+    try { db.prepare("UPDATE outbox_totals SET byte_length=1 WHERE id=1").run(); } finally { db.close(); }
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+      if (this.name === f.journalPath && sql === "ROLLBACK") throw rollbackFailure;
+      return exec.call(this, sql);
+    });
+    return acknowledged(batch);
+  } }).then(() => null, (error: unknown) => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).errors[0]).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "unknown" });
+  expect((failure as AggregateError).errors[1]).toBe(rollbackFailure);
+  expect(sqliteAccess.sqliteTransactionOutcome(failure)).toBe("unknown");
+  expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
+  expect(f.read().outbox).toEqual({ total: 101 });
+});
+
 test("unknown HTTP results retain exact durable batch ID and bytes across a new replay invocation", async () => {
   const f = await fixture(); let original!: StoppedSourceTail;
   await expect(replayStoppedControllerHistory({ ...f, send: async batch => { original = batch; throw new Error("Response lost after commit"); } })).rejects.toThrow("Response lost");

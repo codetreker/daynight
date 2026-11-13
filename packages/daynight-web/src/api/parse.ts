@@ -14,6 +14,7 @@ import { isTaskVersion } from "./json";
 export { array, boolean, canonicalId, executionPlatform, id, malformed, nonemptyString, record, string, timestamp } from "./validation";
 import { array, boolean, canonicalId, count, id, ids, malformed, nonemptyString, nullableId, nullableTimestamp, record, requiredPlatform, taskStatusFields, taskTypeFields, string, timestamp } from "./validation";
 import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim } from "./task-properties";
+import { parseTaskTags } from "./task-tags";
 
 const projectSettings = (value: unknown): Project["settings"] => {
   const data = record(value);
@@ -112,6 +113,7 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     title: nonemptyString(data.title),
     description: string(data.description),
     properties: parseTaskProperties(data.properties),
+    tags: parseTaskTags(data.tags),
     ...taskStatusFields(data),
     version,
     ...taskDependencies(data),

@@ -1,4 +1,5 @@
 import { isTerminalStatus, taskEndedAt, taskProgressStatus, type TaskProgressStatus } from "../../api/task-status";
+import { completionProgress } from '../task-graph/completion-progress';
 import type { GraphIndex } from "../task-graph/model";
 import { isRecentCompletion, latestKnownGoalCompletion, recentTaskWindow } from "./task-visibility";
 import { timestampNanoseconds } from "../../time/timestamp";
@@ -18,7 +19,7 @@ export type OverviewProgress = {
 };
 
 const count = (done: number, cancelled: number, total: number, status: TaskProgressStatus): OverviewProgressCount =>
-  ({ done, cancelled, ended: done + cancelled, total, percent: Math.floor((done + cancelled) * 100 / total), status });
+  ({ done, cancelled, ended: done + cancelled, total, percent: completionProgress({ done, cancelled, total }).percent, status });
 
 export const overviewProgress = (index: GraphIndex, chainIds: readonly string[], standaloneIds: readonly string[], now: bigint): OverviewProgress => {
   const window = recentTaskWindow(now);

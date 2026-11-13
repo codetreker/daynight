@@ -208,7 +208,15 @@ list, create, read, rename and confirmed deletion use stable IDs and original
 versions. List cursors bind the project, principal, query, page size and catalog
 epoch; `/tags/resolve` validates the complete selection within a bounded response.
 Visible Task and Goal usage counts are snapshot hints, while deletion removes all
-associations under the Project write lock. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
+associations under the Project write lock. Task and Goal creation accepts `tagIds`
+and atomically saves the validated set with the new resource; omission or an empty
+array creates no associations. The receipt contains the actual references, and a
+failed validation or response admission rolls back the entire creation. Task and Goal PATCH accepts the complete
+`tagIds` set; omission preserves it and an empty array clears it. Mixed metadata
+and tag changes commit atomically with one version increment. Full, list, ready,
+search and sync results contain the current `tags` array, including `[]` when
+empty. Tag rename and deletion reach associated Tasks through ordinary sync
+without rotating the task cache epoch. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
 and [server design](../../docs/design/daynight-server.md#领域模型与存储结构) describe the contract and implementation.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph, attachment and Worker route. The production Web entry separates
@@ -228,8 +236,9 @@ The [project Task search requirements](../../docs/spec/daynight-task-search.md)
 and [design](../../docs/design/daynight-task-search.md) define the read-only
 `POST /api/v1/projects/{projectId}/tasks/search` endpoint. It searches complete
 IDs, complete titles and Markdown descriptions using literal expressions, returns ranked
-pages with their actual visible parent Goal context, and rejects continuation when the
-project Task fence changes. [HTTP fixtures](testdata/task-search/README.md)
+pages with their actual visible parent Goal context and tag references. Normalized
+tag-set filters intersect the entire expression before ranking and pagination;
+continuation rejects a changed project Task fence. [HTTP fixtures](testdata/task-search/README.md)
 include successful pages and typed failures.
 
 The [Task Session observation requirements](../../docs/spec/task-session-observation.md)
@@ -262,7 +271,7 @@ watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; each intrinsic summary includes explicit nullable
 assignedTo and the complete current properties object, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
-one bulk `task_id = ANY(...)` property query share one repeatable-read snapshot.
+bulk property and tag-reference queries share one repeatable-read snapshot.
 The required `dependencyStates` map supplies each visible ordinary Task's exact
 version, retained unsatisfied prerequisites and ready state in snapshots; deltas
 patch owners whose own or direct prerequisite's update falls in the window.
@@ -572,6 +581,13 @@ summaries; request `full` for complete content. Task full and summary schemas
 require `type` and nullable `parentId`; the Goal full schema also describes
 `progress`. MCP creation accepts ordinary Tasks and Goals; Task list and ready
 filters select Goal membership, and Task updates can assign or clear a Parent.
+Task and Goal creation and updates accept `tagIds` as a complete set of Project
+tag UUIDs. Omission on creation selects none; omission on update preserves the
+set and `[]` clears it. Task full and summary results include `tags` references
+with stable IDs and current names, including an empty array when untagged. A
+tag-only update uses the dedicated association operation; mixed changes commit
+with metadata in one transaction. Unknown outcomes require a read before deciding
+what to do next.
 Step page cursors bind the parent version and reject
 continuation after a change. Step writes return confirmed version and change facts
 and preserve the original collection capacity. Discussion reads return complete
@@ -628,6 +644,13 @@ successful read results have no schema or byte admission.
 To traverse all ready tasks, use `task_list` with `ready: true`; its full list
 projection omits descriptions. Read current complete Tasks separately through
 `task_show` with `view: full`. These separate reads do not share the list's fence.
+
+`task_search` applies a nonempty literal expression and optional tag and Task
+filters through the same ranked search as REST. Its lean page contains identity,
+membership, title, status, match evidence and tag references, without complete
+descriptions. The default limit is 50 (maximum 100). Repeat the expression and
+filters with `nextCursor`; a changed snapshot returns `search_changed`. Invalid
+tag selections return `invalid_tag_filter`. Use `task_list` for tag-only queries.
 
 OAuth grant families store only 32-byte SHA-256 hashes of canonical secrets with
 32 random bytes. MCP retains its actual client, `/mcp` resource, `daynight:mcp`
@@ -843,8 +866,12 @@ resolve from the configuration root. The [remote design](../../docs/design/githu
 describes token handling and the read contract. When enabled, the server starts
 the bounded synchronization worker and exposes Project administrator connection
 and settings operations. Configure the GitHub App with Pull requests read access
-and install it on the target repository. The Webhook receiver is a separate
-integration; polling remains available without it.
+and install it on the target repository. Set the App's HTTPS webhook URL to
+`/api/v1/github/webhook`, configure the same webhook secret, and subscribe to
+pull request and installation lifecycle events. The reverse proxy must allow a
+26,214,400-byte request body. The receiver persists refresh hints before
+acknowledging relevant deliveries; polling repairs missed deliveries. See the
+[connection and scheduler design](../../docs/design/github-connection-runtime.md).
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
@@ -1897,10 +1924,11 @@ explicit `DAYNIGHT_TEST_DATABASE_URL` must refer to the invoking test
 environment's isolated instance, such as its fresh CI service or local validation
 container. It must not select a development, shared or production database.
 
-`scripts/integration.sh` builds the production `cmd/daynight-server` from the
-current source and checks its source fingerprint before and after the build.
-The suite verifies the binary hash, Go toolchain and race mode against that
-receipt. Local validation and main pushes use race instrumentation; PR and other
+`scripts/integration.sh` builds the production `cmd/daynight-server` and the
+CLI image validator from the current source, requiring Node 24 and the installed
+workspace dependencies. It fingerprints the server, Web and CLI build inputs
+and the packaged validator; the suite verifies the binary hash, Go toolchain and
+race mode against the receipt. Local validation and main pushes use race instrumentation; PR and other
 CI events use the same non-race policy as the module check. Unit resource
 overlays are not used for this production binary.
 
@@ -1938,8 +1966,10 @@ HTTP current-state readback and native and API browser snapshots retain the
 same identity, generation and native Session ID. A Controller timeline event
 arrives through both browser WebSockets with exact content and source identity.
 Go HTTP and WebSocket clients exercise the actual service and persistence
-assembly. The suite does not run CLI, browser or Web tests and contains no
-business boundary or fault matrices.
+assembly. The Session flow also uploads a real first image chunk over HTTP,
+completes validation using the packaged CLI image decoder and verifies the
+original through resource and archive reads. The suite does not run CLI, browser
+or Web test suites and contains no business boundary or fault matrices.
 
 Startup, build and test execution have deadlines. Owned process cleanup stops
 the Server before releasing its schema and storage and confirms authentication
@@ -1971,8 +2001,8 @@ It waits only for change detection; Go module coverage runs in a separate job.
 Private ownership/resource receipts, configuration, credentials, database files
 and copied build artifacts stay outside the evidence directory.
 
-The job is selected for server inputs and the production Web build inputs used
-by the Server: Web source, resources and build configuration, root Node
+The job is selected for server inputs, the CLI validator build inputs and the
+production Web build inputs used by the Server: Web source, resources and build configuration, root Node
 configuration and dependency patches. CLI-only changes keep their own checks.
 The final gate requires actual success whenever API integration is selected.
 The [API integration decision](../../.agents/notes/implemented/testing/2026-11-09-independent-go-api-integration.md)
@@ -3494,8 +3524,9 @@ project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
 Task lists support `limit`, `cursor`, `type`, `parentId`, `status`, `ready`,
-`allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo` and UUID
-`workerId`, once each. Type defaults to `task` and can select `goal`; parentId
+`allowAgents`, `platformSpecific`, `compatiblePlatform`, `assignedTo`, UUID
+`workerId`, `tagIds`, `tagMatch` and `untagged`, once each. Type defaults to
+`task` and can select `goal`; parentId
 accepts `none` or a canonical UUID and is omitted for all parents. Goal lists
 cannot select a nonempty parent. The ready, allowAgents and platformSpecific
 filters accept literal `true` or `false`; compatibility accepts `windows`,
@@ -3510,6 +3541,20 @@ status, readiness, permission or platform eligibility condition. Only a workerId
 query aggregated successfully across all relevant projects/pages supplies a complete
 ownership inventory. Partial pages, additional filters and failed traversals cannot
 authorize cleanup by absence. HTTP input retains strict query validation.
+
+List and ready selection accept comma-separated UUID `tagIds`,
+`tagMatch=all|any` (default all), and literal boolean `untagged`. IDs are
+canonicalized, sorted and deduplicated. `untagged=true` conflicts with nonempty
+IDs; omitted IDs without untagged impose no tag predicate. Every requested tag
+must exist in the current Project in the same authorized repeatable-read
+snapshot used to select the page; missing, cross-Project or deleted tags return
+400 `invalid_tag_filter`. SQL applies the tag predicate with existing filters
+before ordering, pagination and priority/ready candidate limits. Each Task or
+Goal matches its own associations. Cursors bind a SHA-256 digest of the
+normalized IDs, mode and untagged state, keeping cursor size independent of the
+selected set. Existing 24 KiB query, 48 KiB request-target and 16 KiB cursor
+limits remain; no tag-count quota is added.
+
 Task cursor version 3 includes type, parent and the resolved assignee scope; me and its concrete
 UUID may share that scope, but another account's me cannot. Account-owned Worker
 list cursors remain version 1.

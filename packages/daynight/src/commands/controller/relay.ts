@@ -21,7 +21,7 @@ export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promi
   if (grant.sessionId !== ticket.sessionId || grant.claimId !== ticket.claimId || grant.testExecutionId !== ticket.testExecutionId || grant.executionGeneration !== ticket.executionGeneration || grant.controllerId !== ticket.controllerId || grant.controllerInstanceId !== ticket.controllerInstanceId || Date.parse(grant.expiresAt) <= Date.now()) throw new Error("Controller credential is stale or belongs to another execution.");
   return grant;
 };
-export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(message: string): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; acquireCaptureReadPolicy?: CaptureReadPolicy; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
+export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(error: unknown): void; readState?(): ControllerState; onAcknowledged?(): void; beforeImage?(): Promise<void>; acquireCaptureReadPolicy?: CaptureReadPolicy; onRetryCapture?(body: { captureId: string; attemptId: string }, signal: AbortSignal): Promise<ValidatedImage> }) => {
   let socket: WebSocket | null = null, fence: ControllerFence | null = null, stopped = false, synchronized = false;
   let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
   let historyEpoch = "";
@@ -95,7 +95,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         respond(null, { code, message: "The Controller could not complete this image request." });
       } finally { if (acquired && decode) releaseDecoder(); blockLease?.close(); mediaRequests.delete(requestKey); }
     })();
-    mediaRequests.set(requestKey, { key, promise: work, controller }); mediaWork.add(work); void work.finally(() => mediaWork.delete(work)).catch(error => callbacks.onError(String(error)));
+    mediaRequests.set(requestKey, { key, promise: work, controller }); mediaWork.add(work); void work.finally(() => mediaWork.delete(work)).catch(error => callbacks.onError(error));
   };
   let pendingBatch: { id: string; through: string } | null = null, currentToken = "", lastHeartbeat = 0, reconnectAt = 0, connecting = false;
   const authorization = new Map<string, { resolve(value: ImageCapabilities | undefined): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
@@ -176,12 +176,12 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
             }
           }
           else if (message.type === "events_ack") { if (message.sourceEpoch !== ticket.executionId || !pendingBatch || message.batchId !== pendingBatch.id || BigInt(message.lastAckedSourceSeq) < BigInt(pendingBatch.through)) throw new Error("Invalid event ACK."); journal.acknowledgeEvents(message.lastAckedSourceSeq); pendingBatch = null; callbacks.onAcknowledged?.(); }
-          else if (message.type === "operation_offer") { if (!synchronized) throw new Error("Operation offered before reconciliation."); void callbacks.onCommand(message.command).catch(error => callbacks.onError(String(error))); }
+          else if (message.type === "operation_offer") { if (!synchronized) throw new Error("Operation offered before reconciliation."); void callbacks.onCommand(message.command).catch(error => callbacks.onError(error)); }
           else if (message.type === "operation_authorized") { const waiter = authorization.get(message.operationId); if (waiter) { authorization.delete(message.operationId); clearTimeout(waiter.timer); waiter.resolve(message.imageAuthorization); } }
           else if (message.type === "error") { callbacks.onError(`${message.code}: ${message.message}`); ws.close(); }
-        } catch (error) { callbacks.onError(String(error)); ws.close(1008, "Invalid relay frame"); }
+        } catch (error) { callbacks.onError(error); ws.close(1008, "Invalid relay frame"); }
       });
-    } catch (error) { callbacks.onError(String(error)); reconnectAt = Date.now() + 1000; }
+    } catch (error) { callbacks.onError(error); reconnectAt = Date.now() + 1000; }
     finally { connecting = false; }
   };
   let polling = false;
@@ -235,12 +235,17 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
         events.push(event); bytes += size;
       }
       if (events.length) { const id = randomUUID(); pendingBatch = { id, through: events.at(-1)!.sourceSeq }; send({ ...prefix(), type: "events", batchId: id, sourceEpoch: ticket.executionId, events }); }
-    } catch (error) { callbacks.onError(String(error)); socket?.close(); }
+    } catch (error) { callbacks.onError(error); socket?.close(); }
     finally { polling = false; }
   };
   const timer = setInterval(() => { void tick(); }, 100);
   void tick();
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true; clearInterval(timer); socket?.terminate(); socket = null; clearConnection();
+  };
   return {
+    stop,
     connected: () => synchronized && fence !== null,
     currentFence: (): ControllerFence | null => fence ? { ...fence } : null,
     imageHistorySupported: (): boolean => supportsImageHistory && fence !== null,
@@ -249,7 +254,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
       const requestId = randomUUID();
       const timer = setTimeout(() => { captureRequests.delete(requestId); reject(new Error("Image capture outcome is unknown; query the original capture.")); }, 15_000);
-      captureRequests.set(requestId, { action, captureId: body.captureId, attemptId: "attemptId" in body ? body.attemptId : null, resolve, reject, timer });
+      captureRequests.set(requestId, { action, captureId: "request" in body ? body.request.captureId : body.captureId, attemptId: "attemptId" in body ? body.attemptId : null, resolve, reject, timer });
       try { send(parseImageCaptureMessage({ ...prefix(), type: "image_capture", requestId, action, body }) as ImageCaptureMessage); }
       catch (error) { clearTimeout(timer); captureRequests.delete(requestId); reject(error); }
     }),
@@ -261,6 +266,6 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     }),
     receipt: (operation: ControllerOperation) => { if (synchronized && (!operation.executionGeneration || operation.executionGeneration === ticket.executionGeneration)) send({ ...prefix(), type: "operation_receipt", operation: publicOperation(ticket, operation) }); },
     async flush(timeoutMs = 5000): Promise<void> { const end = Date.now() + timeoutMs; while (journal.pendingEvents(1).length && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 50)); if (journal.pendingEvents(1).length) throw new Error("Session events remain in the durable outbox."); },
-    close: async (): Promise<void> => { stopped = true; clearInterval(timer); socket?.terminate(); socket = null; clearConnection(); await journal.stopMedia?.(); await Promise.allSettled([...mediaWork]); },
+    close: async (): Promise<void> => { stop(); await journal.stopMedia?.(); await Promise.allSettled([...mediaWork]); },
   };
 };

@@ -424,6 +424,18 @@ test("Copilot ACK confirms only its send; text history never fabricates operatio
   await provider.close();
 });
 
+test("Copilot cannot submit input when the working-state callback fences its queued send", async () => {
+  const failure = new Error("accounting failure"); let fenced = false;
+  const provider = await openCopilotProvider({ ...fixture.options,
+    onState: state => { fixture.options.onState(state); if (state.activity === "working") fenced = true; },
+    assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  try {
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
+    expect(fixture.native.send).not.toHaveBeenCalled();
+  } finally { await provider.close(); }
+});
+
 test("Copilot model-step completion and child idle cannot complete the foreground turn", async () => {
   const provider = await openCopilotProvider(fixture.options);
   const receipt = await provider.send(textNativeInput("work"), randomUUID(), null); let ended = false;
@@ -716,6 +728,17 @@ test("Copilot Worker does not submit input when native full access configuration
   expect(fixture.native.send).not.toHaveBeenCalled();
 });
 
+test.each([false, true])("Copilot does not initialize native permissions after a fence during session creation (unattended=%s)", async unattended => {
+  const failure = new Error("accounting failure"); let fenced = false;
+  const setApproveAll = vi.fn(async () => ({ success: true })); Object.assign(fixture.native.rpc.permissions, { setApproveAll });
+  const create = fixture.client.createSession.getMockImplementation()!;
+  fixture.client.createSession.mockImplementation(async config => { const session = await create(config); fenced = true; return session; });
+  await expect(openCopilotProvider({ ...fixture.options, unattended, assertNativeDispatch: () => { if (fenced) throw failure; } })).rejects.toBe(failure);
+  expect(fixture.client.createSession).toHaveBeenCalledOnce();
+  expect(fixture.native.rpc.permissions.configure).not.toHaveBeenCalled(); expect(setApproveAll).not.toHaveBeenCalled();
+  expect(fixture.native.send).not.toHaveBeenCalled();
+});
+
 const imageFixture = async (pure = false, provenGeometry = true) => {
   sdk.provenGeometry = provenGeometry;
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-provider-images"); await mkdir(base, { recursive: true });
@@ -758,6 +781,20 @@ test("second image validation failure and changed model evidence both prevent th
     f.model.getCurrent.mockResolvedValue({ modelId: "unknown-model" });
     await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("capability"); expect(sdk.imageSend).not.toHaveBeenCalled();
     expect(fixture.states.at(-1)?.currentTurnId).toBeNull();
+  } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("Copilot does not send an image after the fence rises during native model revalidation", async () => {
+  const f = await imageFixture(), failure = new Error("accounting failure"); let fenced = false, release!: (value: { modelId: string }) => void;
+  let provider: Awaited<ReturnType<typeof openCopilotProvider>> | undefined;
+  try {
+    provider = await openCopilotProvider({ ...f.options, assertNativeDispatch: () => { if (fenced) throw failure; } });
+    f.model.getCurrent.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const pending = provider.send(f.input, f.operationId, null);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    fenced = true; release({ modelId: "vision-model" });
+    await expect(pending).rejects.toBe(failure);
+    expect(sdk.imageSend).not.toHaveBeenCalled(); expect(fixture.native.send).not.toHaveBeenCalled();
   } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 

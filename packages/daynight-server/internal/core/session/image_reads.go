@@ -151,5 +151,5 @@ func (s *Execution) ImageCapabilities(ctx context.Context, p model.Principal, pr
 	return out, err
 }
 func imageBudget(u store.SessionResourceUsage) *sp.ImageBudget {
-	return &sp.ImageBudget{Revision: "1", MaxBytes: decimal(sp.MaxSessionResourceBytes), CommittedBytes: decimal(u.Bytes), ReservedBytes: decimal(u.ReservedBytes), MaxResources: sp.MaxSessionResources, CommittedResources: u.Resources, ReservedResources: u.ReservedResources}
+	return &sp.ImageBudget{Revision: "1", MaxBytes: decimal(sp.MaxSessionResourceBytes), CommittedBytes: decimal(u.Bytes), ReservedBytes: "0", MaxResources: sp.MaxSessionResources, CommittedResources: u.Resources, ReservedResources: 0}
 }

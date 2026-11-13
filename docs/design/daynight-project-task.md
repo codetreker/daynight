@@ -530,6 +530,7 @@ Operation/API/身份内 GET 一次完整集合，只报告当前版本与目标 
 不增加服务排序或多状态查询契约。
 
 普通 Task 的 API 响应与命令 choices 接受 proposed、todo、in_progress、done、cancelled；普通 Task 的取消不可恢复。创建默认proposed，可显式选择proposed或todo；普通set-status不增加阶段顺序。
+REST 创建 Task 或 Goal 可直接提交 `tagIds`；服务在同一事务保存条目与本项目标签并返回实际引用，省略或空数组均无关联。当前 CLI 创建不提供标签选项；创建与关联的服务端机制见[服务端设计](daynight-server.md#领域模型与存储结构)。
 graph 参数先验证目标 UUID，缺失或非法值在配置、Git 和网络 I/O 前失败。
 `ApiClient.getTaskGraph(projectId, taskId)` 将规范化 ID 作为 taskId query 提交，解码器同时
 核对请求 project 和目标任务。返回集合必须恰好是目标所在普通依赖无向分量，加上该分量

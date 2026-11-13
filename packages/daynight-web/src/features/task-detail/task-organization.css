@@ -26,14 +26,14 @@
 .task-organization-dialog .dialog-footer .button { white-space: normal; }
 .task-organization-fields { display: grid; gap: 16px; }
 .task-organization-fields fieldset { display: grid; gap: 16px; border: 0; padding: 0; margin: 0; min-width: 0; }
-.task-organization-fields > label, .task-organization-fields fieldset label { display: grid; gap: 8px; min-width: 0; color: #4c5870; font-size: 12px; font-weight: 600; }
-.task-organization-fields > label > :is(input, textarea, select), .task-organization-fields fieldset label > :is(input, textarea, select) {
+.task-organization-fields > label, .task-organization-fields fieldset > label { display: grid; gap: 8px; min-width: 0; color: #4c5870; font-size: 12px; font-weight: 600; }
+.task-organization-fields > label > :is(input, textarea, select), .task-organization-fields fieldset > label > :is(input, textarea, select) {
   width: 100%; max-width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #dce0e8;
   border-radius: 7px; background: #fff; color: inherit; font: inherit; font-size: 12px; font-weight: 400;
 }
-.task-organization-fields > label > textarea, .task-organization-fields fieldset label > textarea { min-height: 7rem; resize: vertical; }
-.task-organization-fields > label > :is(input, textarea, select):disabled, .task-organization-fields fieldset label > :is(input, textarea, select):disabled { color: #747d91; background: #f5f6f9; }
-.task-organization-fields > label > :is(input, textarea, select):focus-visible, .task-organization-fields fieldset label > :is(input, textarea, select):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
+.task-organization-fields > label > textarea, .task-organization-fields fieldset > label > textarea { min-height: 7rem; resize: vertical; }
+.task-organization-fields > label > :is(input, textarea, select):disabled, .task-organization-fields fieldset > label > :is(input, textarea, select):disabled { color: #747d91; background: #f5f6f9; }
+.task-organization-fields > label > :is(input, textarea, select):focus-visible, .task-organization-fields fieldset > label > :is(input, textarea, select):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
 @media (max-width: 600px) {
   .task-organization-dialog .dialog-header { padding: 18px 17px 14px; }
   .task-organization-dialog .dialog-body { padding: 19px 17px; }

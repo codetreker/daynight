@@ -397,3 +397,30 @@ func TestReadOnlySnapshotCleansConnectionAfterQueryDeadline(t *testing.T) {
 	}
 	assertMigrationPoolReusable(t, pool)
 }
+
+type deadlineRollbackTx struct {
+	pgx.Tx
+	deadline time.Time
+}
+
+func (tx *deadlineRollbackTx) Rollback(ctx context.Context) error {
+	tx.deadline, _ = ctx.Deadline()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestGitHubSignalCleanupHonorsRequestDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	tx := &deadlineRollbackTx{}
+	started := time.Now()
+	err := transactSignal(ctx, tx, func(pgx.Tx) error { return errors.New("operation failed") })
+	var failure *TransactionError
+	if !errors.As(err, &failure) || !failure.CleanupFailed || failure.Outcome != TransactionUnknown || !tx.deadline.Equal(deadline) {
+		t.Fatalf("cleanup deadline=%s transaction=%+v error=%v", tx.deadline, failure, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("cleanup exceeded request deadline: %v", elapsed)
+	}
+}

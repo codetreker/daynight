@@ -1,5 +1,6 @@
 import { isText } from "../platform/text.js";
-import type { ErrorDetails, TaskSearchField, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import type { ErrorDetails, TagReference, TaskSearchField, TaskSearchItem, TaskSearchPage, GraphTask, Page, Project, ProjectAccess, ProjectGrant, ProjectParticipant, ProjectTransferPreview, ProjectTransferReceipt, ProjectDeletionPreview, ProjectDeletionReceipt, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, Team, TeamRef, TeamMember, TeamMemberWithProfile, TeamMemberRoleReceipt, RemoveTeamMemberReceipt, TeamRole, ProjectOwnership, User, WorkerReportReceipt } from "./types.js";
+import { parseTagName } from "./tags.js";
 
 export { canonicalId, ProtocolError } from "./validation.js";
 import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
@@ -277,6 +278,15 @@ export const parseProjectParticipants = (value: unknown, projectId: string, acto
   if (new Set(participants.map(({ userId }) => userId)).size !== participants.length) return malformed();
   return participants;
 };
+const parseTagReferences = (value: unknown): TagReference[] => {
+  const tags = array(value, (value) => {
+    const tag = fields(value, ["id", "name"]);
+    return { id: id(tag.id), name: parseTagName(tag.name) };
+  });
+  if (new Set(tags.map((tag) => tag.id)).size !== tags.length) return malformed();
+  return tags;
+};
+
 export const parseTask = (value: unknown, projectId: string, taskId?: string): Task => {
   const data = record(value);
   const version = resourceVersion(data.version);
@@ -288,7 +298,7 @@ export const parseTask = (value: unknown, projectId: string, taskId?: string): T
     return result;
   })() : undefined;
   if (base.type === "task" && Object.hasOwn(data, "progress")) return malformed();
-  const parsed = { ...base, projectId: id(data.projectId), title: text(data.title, true), description: text(data.description), properties: parseTaskProperties(data.properties), version, ...(progress === undefined ? {} : { progress }) };
+  const parsed = { ...base, projectId: id(data.projectId), title: text(data.title, true), description: text(data.description), tags: parseTagReferences(data.tags), properties: parseTaskProperties(data.properties), version, ...(progress === undefined ? {} : { progress }) };
   if (parsed.projectId !== projectId || (taskId !== undefined && parsed.id !== taskId)) return malformed();
   const worker = readWorkerClaim(parsed.properties);
   if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
@@ -321,7 +331,7 @@ export const parseTaskSearchPage = (value: unknown, projectId: string): TaskSear
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
     const parsedStatus = status(item.status), typed = resourceType(item);
     if (typed.type === "goal" && parsedStatus === "proposed") return malformed();
-    return { id: id(item.id), ...typed, projectId: itemProject, title: text(item.title, true), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
+    return { id: id(item.id), ...typed, projectId: itemProject, title: text(item.title, true), tags: parseTagReferences(item.tags), status: parsedStatus, cancelledAt: cancellationTime(parsedStatus, item.cancelledAt), context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > 100 || new Set(items.map((item) => item.id)).size !== items.length || items.length > total) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);

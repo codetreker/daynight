@@ -119,8 +119,8 @@ Task 包含以下持久化字段：
 |---|---|
 | `id` | 服务生成的 UUID |
 | `projectId` | 所属 project，创建后不可变 |
-| `type` | 必填资源类型；当前公开创建只产生 `task` |
-| `parentId` | 必填、可空的父资源 UUID；当前公开创建为 null，公开写入不接受此字段 |
+| `type` | 必填资源类型，公开创建支持 `task` 或 `goal` |
+| `parentId` | 必填、可空的父 Goal UUID；普通 Task 创建和更新可指定 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL，最多 1024 bytes |
 | `description` | 不含 NUL 的 UTF-8 描述，最多 65536 bytes；省略时为空字符串，允许更新为空字符串 |
 | `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
@@ -133,7 +133,9 @@ Task 包含以下持久化字段：
 | `startedAt`、`completedAt`、`cancelledAt` | 只读UTC执行起止与取消时间，字段必填但允许`null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
 
-完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。现有公开写入口不接受 `type` 或 `parentId`，不产生 Goal。
+完整 REST Task、列表、ready、搜索结果和同步摘要，以及 MCP Task 完整和摘要结果包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联，不继承或汇总父子标签。REST 和 MCP 创建可用 `tagIds` 指定本项目标签的完整 ID 集合，省略或 `[]` 表示无标签；创建与关联原子提交，成功回执包含规范化集合的实际引用。失效、已删除或跨项目 ID、权限及响应容量拒绝均不留下部分创建。REST PATCH 和 MCP `task_update` 可用 `tagIds` 指定完整集合：省略保留，`[]` 清空；无效 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。标签改名或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
+
+完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。
 
 单个 Task GET 成功返回完整 Task 和必填 `Daynight-Task-Epoch` UUID 响应头；权限、Task 与 epoch 属于同一只读快照，快照失败不能返回成功。未授权响应不暴露 epoch；404、410 和 `no-store` 保持既有语义。
 
@@ -330,8 +332,10 @@ Project 列表默认返回当前主体全部可访问项目；单值 `teamId` �
 
 Task 列表的 `type` 缺省为 `task`，可显式选择 `goal`；`parentId` 缺省不筛选，`none` 只匹配无 Parent，UUID 匹配直接孩子。Goal 不能选择非空 Parent。筛选在分页前执行，游标绑定类型及 Parent。Task 列表支持单个五状态 status、ready/allowAgents/platformSpecific 布尔值、compatiblePlatform=windows|linux|macos、assignedTo=UUID|me|unassigned，以及可选 UUID workerId。布尔只接受 true/false。compatiblePlatform 匹配 null 或同值要求；platformSpecific=true 仅匹配非 null 平台要求，false 仅匹配 null，与兼容条件组合可分别选择当前平台专用和不限平台任务。各条件省略时不筛选；platformSpecific 仅属于普通列表，不加入搜索或单次 ready 查询合同。assignedTo 的 me 先解析为认证用户 UUID，unassigned 匹配原生 NULL；指定 UUID 不要求其当前仍为成员。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
+普通列表及 ready 支持 `tagIds`、`tagMatch` 和 `untagged`。GET 的 `tagIds` 为逗号分隔 UUID 集合，规范化后去重排序；`tagMatch` 为 `all`（默认）或 `any`，分别要求全部或任一关联。`untagged=true` 只匹配无关联条目，不能与非空 ID 集合组合；省略 ID 且不选择无标签时不增加标签条件。全部标签必须在当前 Project 存在；不存在、跨项目或已删除 ID 返回 `400 invalid_tag_filter`。资格与选页在同一读取快照完成，标签条件与现有条件 AND 组合，在排序、分页和 ready 候选限制前执行。Task 与 Goal 只按自身关联匹配，Parent 条件保持。cursor 绑定规范化集合、模式与无标签选择的摘要，改变条件后不能续页；ID 顺序或重复不改变范围。既有 query、request-target 和 cursor 大小限制继续适用，不增加标签数量配额。
+
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
-Task 列表 cursor 使用版本2，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版本1 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
+Task 列表 cursor 使用版本3，必需 scope 包含解析后的 all/unassigned/user:UUID 选择；账号级 `/api/v1/me/workers` 保持版本1。me 与同一 UUID 的 scope 相同，其他账号的 me 不得续用；旧版 Task cursor 拒绝并从第一页重读。Cursor 还绑定列表类型、所属 project 和其他规范化筛选；platformSpecific 的省略、true 和 false 是不同范围，不能跨范围续页，排序位置仍为 createdAt、id。指定 workerId 时绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。
 单次响应中的 task、依赖和派生字段保持一致；多次翻页不承诺跨请求快照。
 

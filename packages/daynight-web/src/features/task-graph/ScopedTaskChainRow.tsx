@@ -1,20 +1,22 @@
+import { completionProgress } from './completion-progress';
 import { latestScopedCompletion } from '../task-completion/model';
 import { useCompletionTime } from '../task-completion/useCompletionTime';
 import { ChainCompletionTime } from '../task-completion/ChainCompletionTime';
 import { forwardRef, memo, useCallback, useMemo } from 'react';
-import type { WorkerClaim } from '../../api/types';
+import type { TaskSummary, WorkerClaim } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { compareTaskMembers } from '../projects/task-order';
 import { SessionStatus } from '../task-session-summary/SessionStatus';
 import { useChainSessionSummary, useSessionChainVisibility } from '../task-session-summary/TaskSessionSummaryProvider';
 import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
-import { ChainMemberRow } from './ChainMemberRow';
+import { TaskMemberRow } from './TaskMemberRow';
 import type { GraphIndex } from './model';
 import type { ScopedChainProgress } from './scoped-chain-progress';
 
 export type ScopedTaskChainRowProps = {
   readonly projectId: string;
   readonly index: GraphIndex;
+  readonly summaries?: ReadonlyMap<string, TaskSummary>;
   readonly rootId: string;
   readonly memberIds: readonly string[];
   readonly progress: ScopedChainProgress;
@@ -28,8 +30,9 @@ export type ScopedTaskChainRowProps = {
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 };
 
-export const ScopedTaskChainRow = memo(forwardRef<HTMLLIElement, ScopedTaskChainRowProps>(function ScopedTaskChainRow({ projectId, index, rootId, memberIds, progress, workerMachines, instanceId, expanded, onExpandedChange, open, onOpenChain, onOpenTask, onOpenSession }, ref) {
+export const ScopedTaskChainRow = memo(forwardRef<HTMLLIElement, ScopedTaskChainRowProps>(function ScopedTaskChainRow({ projectId, index, summaries, rootId, memberIds, progress, workerMachines, instanceId, expanded, onExpandedChange, open, onOpenChain, onOpenTask, onOpenSession }, ref) {
   const { messages: { graph: m } } = useI18n();
+  const displayProgress = completionProgress(progress);
   const label = index.nodes.get(rootId)!;
   const completion = useCompletionTime(latestScopedCompletion(index, memberIds));
   const title = `${label.titlePreview}${label.titleTruncated ? '…' : ''}`;
@@ -52,10 +55,10 @@ export const ScopedTaskChainRow = memo(forwardRef<HTMLLIElement, ScopedTaskChain
         </button>
         <div className="task-assignee-row-meta chain-summary-meta"><span className="chain-summary-context" id={`chain-meta-${instanceId}`}><span className="root-meta">{m.childTasks({ count: memberIds.length })}</span><ActiveWorkerIndicator memberIds={index.components.get(rootId)!.memberIds} workerMachines={workerMachines} /></span><ChainCompletionTime value={completion} title={title} /></div>
       </div>
-      <span className="root-progress" id={`chain-progress-${instanceId}`}><span className="root-progress-label">{m.progress({ done: progress.done, cancelled: progress.cancelled, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${(progress.done + progress.cancelled) / progress.total * 100}%` }} /></span></span>
+      <span className="root-progress" id={`chain-progress-${instanceId}`}><span className="root-progress-label">{m.progress({ done: displayProgress.displayDone, total: displayProgress.displayTotal })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${displayProgress.widthPercent}%` }} /></span></span>
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={childrenId} {...(sessionIndicator === null ? {} : { onActivate: () => onExpandedChange(true) })} />
       <button className="button goal-graph-button" type="button" id={`task-chain-graph-${instanceId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined} onClick={(event) => onOpenChain(memberIds[0]!, event.currentTarget)}>{m.viewDependencies}</button>
     </div>
-    <div id={childrenId} hidden={!expanded} className="goal-children"><ul className="goal-task-list">{tasks.map((task) => <ChainMemberRow key={task.id} projectId={projectId} task={task} instanceId={instanceId} workerMachine={workerMachines.get(task.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul></div>
+    <div id={childrenId} hidden={!expanded} className="goal-children"><ul className="goal-task-list">{tasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} {...(summaries?.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={instanceId} workerMachine={workerMachines.get(task.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul></div>
   </li>;
 }));

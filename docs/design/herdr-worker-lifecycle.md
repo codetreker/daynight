@@ -1,6 +1,6 @@
 # macOS Herdr Worker 持久运行生命周期
 
-本文拥有 macOS `herdr` 模式的运行身份、输入准入、停止证明和恢复机制；[输入仲裁设计](herdr-input-arbitration.md)拥有持久操作、人工控制和严格终端传输。[Worker 需求](../spec/daynight-worker.md)定义必须满足的结果，[Worker 架构](daynight-worker.md)定义调度、claim 与 Git 工作区。Linux、Windows 继续使用共享私有 Herdr 的既有路径；Web Controller 的 ticket、journal 与恢复契约由 [Task Session 设计](task-session-protocol.md)拥有，不能充当 Herdr 的执行证据。
+本文拥有 macOS `herdr` 模式的运行身份、输入准入、停止证明和恢复机制；[输入仲裁设计](herdr-input-arbitration.md)拥有持久操作、人工控制和严格终端传输。[Worker 需求](../spec/daynight-worker.md)定义必须满足的结果，[Worker 架构](daynight-worker.md)定义调度、claim 与 Git 工作区。[Herdr 工具启动设计](herdr-tool-launch.md)拥有三平台冻结 launch、pane 映射和 Linux/Windows 共享私有实例切换；Web Controller 的 ticket、journal 与恢复契约由 [Task Session 设计](task-session-protocol.md)拥有，不能充当 Herdr 的执行证据。
 
 ## 隔离与能力范围
 
@@ -20,8 +20,8 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 | `sessionId`、`registrationId` | 同一 claim 的 Session v2 身份与注册标识 |
 | `connectionEpoch`、`registrationRequest` | 已确认连接代次与尚待观察的原注册请求 |
 | `controlEpoch`、`admission` | 本地控制失效边界和单次自动输入准入 |
-| `preparation` | 尚未建立完整运行绑定时的实例目录、启动意图与原 daemon 证明 |
-| `runs` | 每代 binding、运行阶段、由提交结果与观察校验的 `nativeLaunch` 事实、原 daemon/shell/agent 身份、停止操作与停止证明 |
+| `preparation` | 尚未建立完整运行绑定时的实例目录、启动意图、冻结 Agent/Herdr launch 与原 daemon 证明 |
+| `runs` | 每代 binding、运行阶段、冻结双 launch/观察、由提交结果与观察校验的 `nativeLaunch` 事实、原 daemon/shell/helper/native 身份、停止操作与停止证明 |
 | `segments` | 段序号、所属 generation/binding、起止边界及显式 restart gap |
 | `initialAssignment`、`initialPrompt`、`automationBlocked` | 原首次输入、提交结果及未知结果造成的自动输入阻断 |
 | `ledgerRequest` | 发送前保存的完整 ledger 消息及原 connection epoch；未知结果必须先观察，不重放 |
@@ -29,19 +29,19 @@ Session v2 注册使用原 Worker 的 PAT 和 owner，不使用 Web Controller t
 
 进程身份包含 boot identity、PID、微秒出生标识、audit token、父进程、进程组与 session。PID 或命令行相同不能代替出生身份；同一出生进程的 exec 也可能改变 audit identity。原始证明不可被后来观察的 foreground 进程覆盖，只能按已验证的连续父子关系追加证据。
 
-lifecycle SQLite 格式 3 为每代保留 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；普通 patch、取消或准入等待不能将 requested、observed 或 unknown 回退为 not_submitted。唯一的明确拒绝转换来自实际 `agent.start` 返回被识别的 `agent_pane_busy`：发送者先同步调用 `onRejected`，由 `confirmNativeLaunchRejected` 核对同一代、同一 binding、最新版本/CAS，以及该代没有 agent、采集段、输入/admission 或停止事实，才把原未启动运行恢复为 prepared/not_submitted；此前代的首次 assignment 与输入历史保持不变。此确认先于下一次准入等待，存储恢复后仍使用原 run；observed、unknown 或证据不足不能使用该转换。迁移先严格校验旧行的字段、身份和版本。旧 prepared 只有原 daemon 和唯一 shell 完整、没有 agent、segment、admission 或停止意图时才确认为 not_submitted；旧 launch_requested 保留 requested，已捕获 agent 的记录为 observed。缺原 agent 的旧关闭或 unknown 记录，以及证据不完整的旧 prepared，保持 unknown，不从空 native ID、空画面或进程消失补出未启动事实。迁移不改原停止证明、待确认 ledger、版本与哈希；损坏数据拒绝迁移并保留原库。旧二进制不能读取新格式，attach 仍只读且不执行迁移。
+lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际观察，旧缺失字段保持缺失，禁止从当前目标补造历史身份。该格式延续格式 3 为每代保留的 `nativeLaunch`：`not_submitted`、`requested`、`observed` 或 `unknown`。关闭阶段不覆盖该事实；普通 patch、取消或准入等待不能将 requested、observed 或 unknown 回退为 not_submitted。唯一的明确拒绝转换来自实际 `agent.start` 返回被识别的 `agent_pane_busy`：发送者先同步调用 `onRejected`，由 `confirmNativeLaunchRejected` 核对同一代、同一 binding、最新版本/CAS，以及该代没有 agent、采集段、输入/admission 或停止事实，才把原未启动运行恢复为 prepared/not_submitted；此前代的首次 assignment 与输入历史保持不变。此确认先于下一次准入等待，存储恢复后仍使用原 run；observed、unknown 或证据不足不能使用该转换。迁移先严格校验旧行的字段、身份和版本。旧 prepared 只有原 daemon 和唯一 shell 完整、没有 agent、segment、admission 或停止意图时才确认为 not_submitted；旧 launch_requested 保留 requested，已捕获 agent 的记录为 observed。缺原 agent 的旧关闭或 unknown 记录，以及证据不完整的旧 prepared，保持 unknown，不从空 native ID、空画面或进程消失补出未启动事实。迁移不改原停止证明、待确认 ledger、版本与哈希；损坏数据拒绝迁移并保留原库。旧二进制不能读取新格式，attach 仍只读且不执行迁移。
 
 只有本次明确成功取得的新 claim 能通过 `lifecycle.registerClaim` 创建空运行记录。顺序为主索引 pending、持久启动来源、active、资源创建。完整库存只能找回 claim，远端摘要为空不能证明该 claim 从未启动；缺少 lifecycle 记录的旧 claim 保持未知，不自动补建运行。
 
 ## 启动与首次输入
 
-首次启动先确认原 claim，再保存 preparation，记录 daemon 启动意图并捕获实际 daemon 身份。建立 workspace 后读取原 shell 的真实进程身份，将完整绑定与 `nativeLaunch=not_submitted` 同一事务提交为 `prepared`。Session 注册与运行 ledger 同步失败时，保留已经产生的资源和责任，不以新实例代替。
+首次启动先确认原 claim，并在原 Task 配置中冻结 Agent 与 Herdr launch，再保存带相同选择的 preparation，记录 daemon 启动意图并捕获实际 daemon 身份。建立 workspace 后读取原 shell 的真实进程身份，将完整绑定与 `nativeLaunch=not_submitted` 同一事务提交为 `prepared`。Session 注册与运行 ledger 同步失败时，保留已经产生的资源和责任，不以新实例代替。
 
-具有 not_submitted 事实的 `prepared` 运行可以重新接入。`HerdrAgentManager.launch` 先完成 preflight、调用者 `beforeStart` 的异步前提及 `readOwned`/`realpath` 对原 daemon、端点、shell 出生身份与 cwd 的核对；每次真实 `agent.start`（包括明确 shell busy 后的重试）都重做这些新鲜前提，变化时不发出下一次请求。全部 await 完成后重查动态准入，再由同步 `onSubmitting` 将 `launch_requested` 与 `nativeLaunch=requested` 同一事务持久化，紧接着派发 RPC；准入检查、意图记录与请求调用之间没有新的 await。该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功前提。取得原 native agent 的进程身份时，将追加身份、`active` 与 `nativeLaunch=observed` 同一事务保存，建立采集段后才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。普通前提检查失败、准入关闭或某次 not-submitted 异常都不能证明完整启动历史从未提交，已经写入的 requested 仍保留。只有上述实际明确拒绝经专用同步 CAS 确认后，才能在等待下一次准入时保留原 prepared/not_submitted 运行；再次启动仍核对原身份和新鲜准入，不能泛化为回滚未知请求。
+具有 not_submitted 事实的 `prepared` 运行可以重新接入。`HerdrAgentManager.launch` 先完成 preflight、调用者 `beforeStart` 的异步前提及 `readOwned`/`realpath` 对原 daemon、端点、shell 出生身份与 cwd 的核对；每次真实 `agent.start`（包括明确 shell busy 后的重试）都重做这些新鲜前提，变化时不发出下一次请求。全部 await 完成后重查动态准入，再由同步 `onSubmitting` 将 `launch_requested` 与 `nativeLaunch=requested` 同一事务持久化，紧接着派发 RPC；准入检查、意图记录与请求调用之间没有新的 await。该调用只启动原生进程，不发送 assignment，也不以 `nativeSessionId` 出现作为启动成功前提。受控 mapping receipt 必须关联原 owner、nonce、selectionKey 与逻辑 argv；捕获原 shell→helper→loader/native 的完整连续父子链，不用 helper 名称代替 Herdr 对 native 的 kind 识别。取得这些进程的原身份时，将追加身份、`active` 与 `nativeLaunch=observed` 同一事务保存，建立采集段后才进入输入阶段。启动结果尚未持久确认的崩溃恢复为 `stop_unknown`，不能再次启动。普通前提检查失败、准入关闭或某次 not-submitted 异常都不能证明完整启动历史从未提交，已经写入的 requested 仍保留。只有上述实际明确拒绝经专用同步 CAS 确认后，才能在等待下一次准入时保留原 prepared/not_submitted 运行；再次启动仍核对原身份和新鲜准入，不能泛化为回滚未知请求。
 
 首次 assignment 保存为 `pending`，递交前写 `dispatching` 和本次 admission。`submitInitialPrompt`、后续 `submitPrompt`、网页输入和 cleanup 进入同一持久仲裁器；`durable.ts` 不使用 legacy `agent.prompt` 递交正文。严格 terminal 输入每帧之前再次核对原 claim、运行身份、服务端控制状态和 admission，并按输入用途检查 paused：自动输入受暂停约束，人工输入仍须通过原有身份、lease 和 fence 校验。明确未发送可回到 pending；任务暂停、合法人工控制或挂起以及已知菜单/禁用输入的零写入等待须保留明确的内部类型。仲裁器已登记时输入 journal 先登记 rejected，生命周期再清除本次 admission 并为首次 assignment 保留 pending，不能因跨层序列化而计作执行失败。成功传输保存为 `transport_completed`；一旦可能已写，任何失败仍保存为 unknown 并阻断重放。独立人工处置可以授权继续，但不会改写原始 unknown。这里的成功仅表示输入传输完成，不证明业务完成或模型已处理正文。
 
-`nativeSessionId` 可以在首次输入之后补齐，但已知值不可更换。输入后的观察与普通轮询负责同步补齐后的完整 ledger，未确认请求继续读回对账；确认后恢复同段缓存画面的投递。快照的 ledger hash 与 fence 校验始终保留，已传输输入不因 ledger 同步失败而重发。重连不重发 assignment；恢复已确认停止的运行时仍使用原 native conversation；只有原自动状态安全、身份有效且 `resume` 用途的输入检查通过时才恢复自动 continuation，人工状态继续 suspended。恢复自动执行的真实空字段证明与日常 automatic/cleanup 的已知阻塞排除不同；后者报告 composer unavailable，不能被用于把未知布局或草稿推断为空。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
+`nativeSessionId` 可以在最多一次首次输入之后补齐，但启动成功必须等待原官方 integration 向同一 pane 报告符合原 kind 的合法 UUID，并复核原进程身份。错误来源、缺失事件、进程变化及未知输入均保持未确认，不重发、不换会话、不人工补报；已知值不可更换。输入后的观察与普通轮询负责同步补齐后的完整 ledger，未确认请求继续读回对账；确认后恢复同段缓存画面的投递。快照的 ledger hash 与 fence 校验始终保留，已传输输入不因 ledger 同步失败而重发。重连不重发 assignment；恢复已确认停止的运行时仍使用原 native conversation；只有原自动状态安全、身份有效且 `resume` 用途的输入检查通过时才恢复自动 continuation，人工状态继续 suspended。恢复自动执行的真实空字段证明与日常 automatic/cleanup 的已知阻塞排除不同；后者报告 composer unavailable，不能被用于把未知布局或草稿推断为空。自动输入未知、原生 ID 未知或原运行未确认停止，都不能通过新开对话规避。
 
 ## Session 连接与采集段
 
@@ -88,12 +88,12 @@ Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdow
 
 Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止证明提交后释放执行槽，本地封段及 ledger 确认后可以结束本机执行行；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。正常归档删除和显式 delete 都必须从原持久删除记录收敛对应本机任务与清理计划；崩溃在删除确认与 SQLite 更新之间时，调度恢复继续该收敛，不将已删除资源变成永久占槽或缺失原始证据。
 
-`worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再使用原实例目录打开 Herdr client。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 journal 的安装保留 legacy attach。
+`worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再校验并使用原实例目录及冻结 Herdr launch 打开 client。缺少原工具身份或文件变化时拒绝新 client，不使用当前目标替代；已有 endpoint 的停止和归档不依赖 executable 仍可启动。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 lifecycle journal 时只读共享实例的原 launch 和 daemon 证明；缺历史工具身份时拒绝新 client。
 
 ## 实现接口与验证
 
 - `herdr/durable.ts` 组合 lifecycle store、Session 客户端、原生进程控制与现有 Herdr adapter；`WorkerHerdrLifecycle` 向协调器提供登记、准入、责任查询、条件 cleanup、停止和停止确认；`WorkerHerdrInput` 提供控制状态、授权控制请求及输入操作入口。
-- `herdr/agents.ts` 提供分离的 `launch`、`processInfo`、`submitInitialPrompt` 和 `submitPrompt`；legacy `start` 保留其他平台调用路径。
+- `herdr/agents.ts` 提供分离的 `launch`、`processInfo`、`submitInitialPrompt` 和 `submitPrompt`；共享路径的 `start` 同样消费冻结 mapping，并在单次初始输入后确认官方 Session。
 - `herdr/lifecycle-store.ts` 校验不可变身份、状态迁移和追加历史，并提供 attach 专用只读读取；`session-connection.ts` 拥有注册、读回和 ledger 确认。
 - `herdr/native-macos.ts` 拥有原进程身份与独占停止；`execution.ts`、`cleanup.ts`、`coordinator.ts` 消费持久准入和停止结果。
 

@@ -121,7 +121,7 @@ expiration after it returns preserves the completed phase and pending allocation
 This adds explicit physical peak accounting and maintenance sequencing without
 changing Session protocols, resource paths, input origins or native execution.
 
-The production journal uses canonical v10 and these components through the original
+The production journal uses these components through the original
 role-specific preparation entry. Generated stress data documents its own content and operating conditions; absent
 original incident bytes, it cannot establish exact incident replay or an
 equivalent performance result.

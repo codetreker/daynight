@@ -37,7 +37,7 @@ export const workspace: WorkspaceMessages = {
     heading: "Overall progress", standalone: "Standalone tasks", standaloneScope: "Unfinished tasks + tasks completed today or in the previous 6 days",
     allCompleted: "No recent tasks", allCompletedDetail: "There are no unfinished tasks or tasks completed today or in the previous 6 days.",
     targetUnavailable: "That task group is no longer visible. Choose a task from the task list.",
-    rowLabel: ({ title, done, cancelled, total, percent }) => cancelled === 0 ? `${title}, ${number(done)} / ${number(total)} complete, ${number(percent)}%, view task list` : `${title}, ${number(done + cancelled)} / ${number(total)} ended, ${number(done)} completed, ${number(cancelled)} cancelled, ${number(percent)}%, view task list`,
+    rowLabel: ({ title, done, total, percent }) => `${title}, ${number(done)} / ${number(total)} completed, ${number(percent)}%, view task list`,
   },
   standalone: {
     list: "Standalone task list",
@@ -49,9 +49,9 @@ export const workspace: WorkspaceMessages = {
     label: ({ list }) => `${list} pagination`, range: ({ start, end, total }) => `${number(start)}–${number(end)} of ${number(total)}`,
     page: ({ page, pages }) => `Page ${number(page)} of ${number(pages)}`, previous: "Previous", next: "Next",
   },
-  sections: { label: "Project views", overview: "Overview", tasks: "Task list", overviewDescription: "View overall progress and current task status.", tasksDescription: "Browse standalone tasks and dependency chains." },
+  sections: { tags: "Tags", label: "Project views", overview: "Overview", tasks: "Task list", prs: "PR list", overviewDescription: "View overall progress and current task status.", tasksDescription: "Browse standalone tasks and dependency chains." },
   tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", goals: "Goals", unfinishedCount: "Unfinished task count" },
-  goals: { details: "Goal details", detailsLabel: ({ title }) => `${title}, Goal details`, toggle: ({ title, expanded }) => `${expanded ? "Collapse" : "Expand"} Goal: ${title}`, standalone: "Standalone tasks", chains: "Task chains", emptyTasks: "No tasks in this Goal.", list: "Goals", empty: "No goals yet", emptyDetail: "Goals will appear here.", summary: ({ shown, total }) => `${number(shown)} of ${number(total)} goals`, composition: ({ chains, standalone }) => `${number(chains)} chains · ${number(standalone)} standalone tasks` },
+  goals: { details: "Goal details", detailsLabel: ({ title }) => `${title}, Goal details`, toggle: ({ title, expanded }) => `${expanded ? "Collapse" : "Expand"} Goal: ${title}`, emptyTasks: "No tasks in this Goal.", list: "Goals", empty: "No goals yet", emptyDetail: "Goals will appear here.", summary: ({ shown, total }) => `${number(shown)} of ${number(total)} goals`, composition: ({ count }) => `${number(count)} tasks` },
   preferences: {
     section: { read: "The saved project view could not be read. You can continue browsing.", invalid: "The saved project view is invalid. Overview is shown by default. You can continue browsing.", write: "The project view could not be saved. It may not return after a reload. You can continue browsing." },
     tab: { read: "The saved task tab could not be read. You can continue browsing.", invalid: "The saved task tab is invalid. Task chains are shown by default. You can continue browsing.", write: "The task tab could not be saved. It may not return after a reload. You can continue browsing." },

@@ -47,7 +47,7 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 			if input.Query != "cache" || input.Limit != 1 || input.Cursor != nil {
 				t.Fatalf("first input=%+v", input)
 			}
-			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: firstID, Type: model.TaskTypeTask, ParentID: &parentID, ProjectID: projectID, Title: "Cache title", Status: model.TaskTodo, UpdatedAt: testTime, Context: &tasksearch.Context{TaskID: testTaskID, Title: "Goal"}, Match: tasksearch.Match{Fields: []string{"title"}}}}, NextCursor: &cursor}, nil
+			return tasksearch.Page{ProjectID: projectID, Total: 2, NodeCount: 3, Items: []tasksearch.Item{{ID: firstID, Type: model.TaskTypeTask, ParentID: &parentID, ProjectID: projectID, Title: "Cache title", Status: model.TaskTodo, UpdatedAt: testTime, Tags: []model.TagReference{{ID: "tag-id", Name: "<&标签"}}, Context: &tasksearch.Context{TaskID: testTaskID, Title: "Goal"}, Match: tasksearch.Match{Fields: []string{"title"}}}}, NextCursor: &cursor}, nil
 		case 2:
 			if input.Query != "cache" || input.Limit != 1 || input.Cursor == nil || *input.Cursor != cursor {
 				t.Fatalf("continuation=%+v", input)
@@ -63,12 +63,18 @@ func TestTaskSearchHTTPContract(t *testing.T) {
 	response := projectRequest(h, http.MethodPost, path, `{"query":"cache","limit":1}`)
 	page := decodeResponse[api.TaskSearchPage](t, response, 200)
 	captureSearchFixture(t, "first-page", response.Body.Bytes())
+	if !strings.Contains(response.Body.String(), `"tags":[{"id":"tag-id","name":"\u003c\u0026标签"}]`) {
+		t.Fatalf("search tag projection: %s", response.Body)
+	}
 	if page.ProjectID != testProjectID || page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != firstID || page.Items[0].Type != "task" || page.Items[0].ParentID == nil || *page.Items[0].ParentID != testTaskID || page.NextCursor == nil || *page.NextCursor != cursor || page.Items[0].Context == nil || page.Items[0].Context.TaskID != testTaskID {
 		t.Fatalf("first=%+v", page)
 	}
 	response = projectRequest(h, http.MethodPost, path, jsonBody(t, map[string]any{"query": "cache", "limit": 1, "cursor": *page.NextCursor}))
 	next := decodeResponse[api.TaskSearchPage](t, response, 200)
 	captureSearchFixture(t, "next-page", response.Body.Bytes())
+	if !strings.Contains(response.Body.String(), `"tags":[]`) {
+		t.Fatalf("empty search tags: %s", response.Body)
+	}
 	if next.Total != 2 || len(next.Items) != 1 || next.Items[0].ID != secondID || next.Items[0].Type != "task" || next.Items[0].ParentID != nil || next.NextCursor != nil || next.Items[0].Match.DescriptionSnippet == nil || *next.Items[0].Match.DescriptionSnippet != snippet || !strings.Contains(response.Body.String(), `"parentId":null`) {
 		t.Fatalf("next=%+v", next)
 	}

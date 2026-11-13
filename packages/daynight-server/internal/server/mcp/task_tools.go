@@ -29,6 +29,7 @@ type taskResourceOperations interface {
 	Create(context.Context, model.Principal, string, taskcore.CreateTask) (model.Task, error)
 	Get(context.Context, model.Principal, string, string) (model.Task, error)
 	UpdatePartitionedDependencies(context.Context, model.Principal, string, string, taskcore.UpdateTask, *[]string, *[]string) (model.Task, error)
+	ReplaceTags(context.Context, model.Principal, string, string, int64, *[]string) (model.Task, error)
 	SetStatus(context.Context, model.Principal, string, string, taskcore.SetTaskStatus) (model.Task, error)
 	Delete(context.Context, model.Principal, string, string, taskcore.DeleteTask) error
 	SetProperty(context.Context, model.Principal, string, string, string, string, int64) (model.Task, error)
@@ -47,6 +48,7 @@ type taskArguments struct {
 	AllowAgents       *bool               `json:"allowAgents"`
 	DependsOn         *[]string           `json:"dependsOn"`
 	ExternalDependsOn *[]string           `json:"externalDependsOn"`
+	TagIDs            *[]string           `json:"tagIds"`
 	IfVersion         *string             `json:"ifVersion"`
 	View              string              `json:"view"`
 	ReturnView        string              `json:"returnView"`
@@ -87,7 +89,7 @@ func RegisterTaskTools(e *Entry, tasks taskResourceOperations, observations task
 				return ToolResult{}, err
 			}
 			var input taskArguments
-			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "ifVersion", "view", "returnView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
+			fields, err := jsonobject.Decode(raw, "tool arguments", "projectId", "taskId", "type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "ifVersion", "view", "returnView", "status", "claimId", "removeDepends", "mode", "name", "valueText")
 			if err != nil {
 				return ToolResult{}, &model.Fault{Code: "invalid_input", Message: err.Error()}
 			}
@@ -114,7 +116,7 @@ func taskBusinessLimit(name string, fields map[string]json.RawMessage, version i
 		return nil
 	}
 	body := map[string]json.RawMessage{}
-	for _, key := range []string{"type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "status", "claimId", "removeDepends"} {
+	for _, key := range []string{"type", "parentId", "title", "description", "assignedTo", "requiredPlatform", "allowAgents", "dependsOn", "externalDependsOn", "tagIds", "status", "claimId", "removeDepends"} {
 		if value, ok := fields[key]; ok {
 			body[key] = value
 		}
@@ -188,7 +190,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		if !assignedPresent && in.Type != model.TaskTypeGoal {
 			assigned = &actor.Principal.UserID
 		}
-		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent}
+		input := taskcore.CreateTask{Type: in.Type, ParentID: in.ParentID, Title: *in.Title, AssignedTo: assigned, AssignedToPresent: assignedPresent, RequiredPlatform: in.RequiredPlatform, RequiredPlatformPresent: platformPresent, TagIDs: in.TagIDs}
 		if _, exists := fields["status"]; exists {
 			input.Status = &in.Status
 		}
@@ -252,7 +254,7 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 	var task model.Task
 	switch name {
 	case "task_update":
-		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents}
+		input := taskcore.UpdateTask{Version: version, Title: in.Title, Description: in.Description, AllowAgents: in.AllowAgents, TagIDs: in.TagIDs}
 		if _, ok := fields["parentId"]; ok {
 			input.ParentID = &in.ParentID
 		}
@@ -262,7 +264,11 @@ func handleTaskTool(ctx context.Context, actor RequestActor, tasks taskResourceO
 		if _, ok := fields["requiredPlatform"]; ok {
 			input.RequiredPlatform = &in.RequiredPlatform
 		}
-		task, err = tasks.UpdatePartitionedDependencies(ctx, actor.Principal, in.ProjectID, in.TaskID, input, in.DependsOn, in.ExternalDependsOn)
+		if in.TagIDs != nil && in.Title == nil && in.Description == nil && in.AllowAgents == nil && input.ParentID == nil && input.AssignedTo == nil && input.RequiredPlatform == nil && in.DependsOn == nil && in.ExternalDependsOn == nil {
+			task, err = tasks.ReplaceTags(ctx, actor.Principal, in.ProjectID, in.TaskID, version, in.TagIDs)
+		} else {
+			task, err = tasks.UpdatePartitionedDependencies(ctx, actor.Principal, in.ProjectID, in.TaskID, input, in.DependsOn, in.ExternalDependsOn)
+		}
 	case "task_set_status":
 		task, err = tasks.SetStatus(ctx, actor.Principal, in.ProjectID, in.TaskID, taskcore.SetTaskStatus{Version: version, Status: in.Status, ClaimID: in.ClaimID})
 	case "task_delete":

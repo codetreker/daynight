@@ -149,7 +149,22 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await expect.poll(async () => JSON.parse((await cli(["task", "show", task.id, "--project", projectId!, "--json"])).stdout).status).toBe("in_progress");
   const observed = JSON.parse((await cli(["task", "show", task.id, "--project", projectId!, "--json"])).stdout) as Task;
   expect(observed).toMatchObject({ id: task.id, title: name, description: "Shared E2E content" });
+
+  await page.goto(`${topology.baseURL}/my-tasks`);
+  await expect(page.getByRole("heading", { name: "In-progress tasks", exact: true })).toBeVisible();
+  const projectGroup = page.getByRole("region", { name: `${name} · Personal · ${projectId}` });
+  await expect(projectGroup).toContainText("1 in progress");
+  await expect(projectGroup.getByText(referenceTitle, { exact: true })).toHaveCount(0);
+  await expect(projectGroup).toContainText("No Session");
+  await projectGroup.getByRole("link", { name, exact: true }).click();
+  await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(detail.getByText("Shared E2E content", { exact: true })).toBeVisible();
+  await expect(detail.getByRole("button", { name: "In progress", exact: true })).toBeVisible();
+
   await cli(["task", "set-status", task.id, "done", "--project", projectId!, "--if-version", String(observed.version)]);
+  await expect(projectGroup).toHaveCount(0, { timeout: 30_000 });
+  await expect(detail.getByRole("heading", { name, exact: true })).toBeVisible();
+  await page.goto(`${topology.baseURL}/projects/${projectId}`);
   await page.reload();
   await page.getByRole("tab", { name: "Task list" }).click();
   const refreshedSearch = page.getByRole("textbox", { name: "Search task IDs, titles and descriptions" });

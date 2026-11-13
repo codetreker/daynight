@@ -1,3 +1,4 @@
+import { parseTagFilter } from "./tag-filter.js";
 import { ApiError } from "../../api/client.js";
 import { canonicalId } from "../../api/parse.js";
 import type { TaskFilters, TaskSearchItem } from "../../api/types.js";
@@ -15,6 +16,7 @@ type Command = Extract<ParsedCommand, { readonly kind: "run" }>;
 // Both renderers consume the same explicit projection, independently of wire additions.
 const projectResults = (items: readonly TaskSearchItem[]): TaskSearchItem[] => items.map((item) => ({
   id: item.id, type: item.type, parentId: item.parentId, projectId: item.projectId, title: item.title, status: item.status, cancelledAt: item.cancelledAt,
+  tags: item.tags.map(({ id, name }) => ({ id, name })),
   context: item.context === null ? null : { taskId: item.context.taskId, title: item.context.title },
   match: { fields: [...item.match.fields], descriptionSnippet: item.match.descriptionSnippet },
 }));
@@ -27,6 +29,7 @@ const renderText = (project: string, items: readonly TaskSearchItem[]): string =
     `Type: ${item.type}`,
     `Parent: ${item.parentId === null ? "none" : terminalText(item.parentId)}`,
     `Title: ${terminalText(item.title)}`,
+    ...(item.tags.length === 0 ? ["Tags: none"] : ["Tags:", ...item.tags.map(({ name }) => `  ${terminalText(name)}`)]),
     `Status: ${terminalText(item.status)}`,
     `Goal: ${item.context === null ? "none" : `${terminalText(item.context.taskId)}  ${terminalText(item.context.title)}`}`,
     `Match: ${item.match.fields.length === 0 ? "negative condition" : item.match.fields.join(", ")}`,
@@ -51,6 +54,7 @@ export const runTaskSearchCommand = async (command: Command, context: CliContext
   const type = command.options.get("--type") as "task" | "goal" | undefined;
   const parentId = await parseParent(command.options.get("--parent") as string | undefined, help);
   const filters: TaskFilters = {
+    ...parseTagFilter(command, help),
     ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }),
     ...(assignedTo === undefined ? {} : { assignedTo }), ...(status === undefined ? {} : { status }),
     ...(command.options.has("--ready") ? { ready: true } : {}),

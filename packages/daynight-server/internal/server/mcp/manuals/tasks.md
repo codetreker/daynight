@@ -71,9 +71,11 @@ Ready limit defaults to 5, maximum 20. Permission/platform filters precede the l
 {"name":"task_list","arguments":{"projectId":"11111111-1111-4111-8111-111111111111","parentId":"33333333-3333-4333-8333-333333333333","all":true,"view":"summary"}}
 ```
 
+Both queries accept `tagIds` as Project tag UUIDs, `tagMatch: "all" | "any"` (default `all`), and `untagged: true` for resources without tags. A nonempty `tagIds` set conflicts with `untagged: true`; an empty set without `untagged` adds no tag condition. Filters combine with the other selected conditions before pagination or the ready limit. Malformed UUIDs return `invalid_input`; nonexistent, deleted, or cross-Project tags return `invalid_tag_filter`. Remove the invalid selection and restart the query. Duplicate IDs do not change the selection.
+
 List filters combine before pagination. Without `all: true` or explicit `status`, done/cancelled are excluded. `all: true` and a selected status are mutually exclusive. `assignedTo` accepts a user UUID, `me` or `unassigned`; readiness, automatic permission and platform are independent filters. List limit defaults to 50, maximum 100. Ordering groups in-progress, ready todo, blocked todo, proposed and selected terminal work, then creation time/UUID; it is not relevance ranking.
 
-List data contains `items`, `nextCursor` and `projection`. Pass a non-null opaque `nextCursor` as `cursor`, preserving caller/Project/type/parent/filters/view; continue until null. The cursor binds ordering and a Project-wide typed resource revision fence, including changes outside the selected type or Parent that affect the result. Malformed/mismatched tokens fail `invalid_input`; a changed Project fence returns `list_changed`. Discard that traversal and restart without a cursor before claiming a complete inventory. There is no promised reusable cursor lifetime.
+List data contains `items`, `nextCursor` and `projection`. Pass a non-null opaque `nextCursor` as `cursor`, preserving caller/Project/type/parent/filters/view (including the normalized tag selection); continue until null. The cursor binds ordering and a Project-wide typed resource revision fence, including changes outside the selected type or Parent that affect the result. Malformed/mismatched tokens fail `invalid_input`; a changed Project fence returns `list_changed`. Discard that traversal and restart without a cursor before claiming a complete inventory. There is no promised reusable cursor lifetime.
 
 Task show, graph and material reads are new observations outside the list fence. Do not present an old list version and later-read content as one snapshot. Scope changes require a new traversal.
 
@@ -94,6 +96,8 @@ Set an ordinary Task's `parentId` at creation or with `task_update`; it must nam
 ## Ordinary Task lifecycle
 
 New Tasks default to `proposed`, automatic execution disabled, and omitted assignee set to the current account. Explicit creation status supports proposed/todo; use todo when registering confirmed work. Registration does not start execution. `task_create` has no allowAgents input; later automatic permission requires its separate authorized update. Dependencies follow [Dependencies](daynight://manuals/dependencies.md).
+
+Task and Goal creation and updates accept `tagIds`, a complete array of Project tag UUIDs. Omitted on creation means no tags; omitted on update preserves the current set, and `[]` clears it. Task full and summary results include `tags` as `{id,name}` references, or `[]`. Read the current Task and version before deciding how to reconcile an unknown write outcome; do not blindly repeat it.
 
 | Ordinary Task status | Meaning |
 | --- | --- |

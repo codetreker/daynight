@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, rm, stat, open, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
+import { controllerMetadataBudget, CONTROLLER_SETTLEMENT_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
 import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -27,14 +27,20 @@ test("real SQLite pages, WAL and resource metadata share the normal and settleme
     expect(content.timeline.totals()).toMatchObject({ entryCount: 1 });
     expect(pendingBytes).toBeGreaterThan(0);
     expect(await readdir(pending)).not.toContain("timeline");
-    const remaining = CONTROLLER_METADATA_BYTES - budget.bytes();
+    const remaining = budget.ceiling() - CONTROLLER_SETTLEMENT_BYTES - budget.bytes();
     expect(() => budget.assert(remaining)).not.toThrow();
     expect(() => budget.assert(remaining + 1)).toThrow("metadata budget");
     expect(() => budget.assert(remaining + CONTROLLER_SETTLEMENT_BYTES, true)).not.toThrow();
     expect(() => budget.assert(remaining + CONTROLLER_SETTLEMENT_BYTES + 1, true)).toThrow("metadata budget");
-    await mkdir(`${file}.history-sync`, { mode: 0o700 }); const frozen = await open(path.join(`${file}.history-sync`, `${randomUUID()}.json`), "wx", 0o400); try { await frozen.truncate(1048576); } finally { await frozen.close(); }
+    await mkdir(`${file}.history-sync`, { mode: 0o700 }); const syncId = randomUUID(), filename = path.join(`${file}.history-sync`, `${syncId}.json`), frozen = await open(filename, "wx", 0o400); try { await frozen.truncate(1048576); } finally { await frozen.close(); }
     expect(budget.bytes()).toBe(physical + pendingBytes + 1048576);
+    const before = budget.ceiling();
+    db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run("active_history_sync", JSON.stringify({ syncId, filename, byteLength: "1048576" }));
+    expect(budget.ceiling()).toBe(before + 1048576);
+    db.prepare("DELETE FROM image_runtime_state WHERE key=?").run("active_history_sync");
+    expect(budget.ceiling()).toBe(before);
+    const beforePin = budget.bytes();
     await writeFile(path.join(pending, "resource-pins.json"), "x".repeat(1024));
-    expect(budget.bytes()).toBe(physical + pendingBytes + 1048576 + 1024);
+    expect(budget.bytes()).toBe(beforePin + 1024);
   } finally { closeControllerTestDatabase(db); }
 });

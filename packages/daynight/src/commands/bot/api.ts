@@ -11,7 +11,7 @@ export type CleanupResult = { readonly state: "pending" | "completed" | "failed"
 export type BotDeletion = { readonly deletionId: string; readonly requestedVersion: string; readonly workerCleanup: CleanupResult; readonly serverCleanup: CleanupResult };
 type BotIdentity = { readonly id: string; readonly workerId: string; readonly version: string };
 export type ActiveBot = BotIdentity & {
-  readonly deletion: null; readonly ownerUserId: string; readonly name: string; readonly creationOrder: string;
+  readonly deletion: null; readonly ownerUserId: string; readonly name: string; readonly creationOrder: string; readonly attentionCount?: number;
   readonly requestedOverrides: BotOverrides;
   readonly resolvedConfiguration: BotConfiguration;
   readonly roleConfiguration: { readonly instructions: string; readonly revision: string; readonly digest: string } | null;
@@ -64,7 +64,7 @@ const result = <T extends string>(value: unknown, states: readonly T[]): { state
   return { state: data.state as T, code };
 };
 export const parseBot = (value: unknown, expectedId?: string, ownerId?: string): Bot => {
-  const data = fields(value, ["id", "workerId", "version", "deletion", "ownerUserId", "name", "creationOrder", "requestedOverrides", "resolvedConfiguration", "roleConfiguration", "sessionId", "testExecutionId", "startupResult", "createdAt", "updatedAt"]);
+  const data = fields(value, ["id", "workerId", "version", "deletion", "ownerUserId", "name", "creationOrder", "attentionCount", "requestedOverrides", "resolvedConfiguration", "roleConfiguration", "sessionId", "testExecutionId", "startupResult", "createdAt", "updatedAt"]);
   const identity = { id: id(data.id), workerId: id(data.workerId), version: botVersion(data.version) };
   if (expectedId !== undefined && identity.id !== expectedId) return malformed();
   if (data.deletion !== null) {
@@ -74,6 +74,7 @@ export const parseBot = (value: unknown, expectedId?: string, ownerId?: string):
     if (BigInt(parsed.requestedVersion) >= BigInt(identity.version)) return malformed();
     return { ...identity, deletion: parsed };
   }
+  if (data.attentionCount !== undefined && (typeof data.attentionCount !== "number" || !Number.isSafeInteger(data.attentionCount) || data.attentionCount < 0)) return malformed();
   const requestedOverrides = botOverrides(data.requestedOverrides);
   const config = fields(data.resolvedConfiguration, ["workerId", "cwd", "provider", "model", "args", "reasoningEffort", "selection"]);
   const model = config.model === null ? null : config.selection === undefined ? nullableText(config.model) : botNativeChoice(config.model, 256);
@@ -88,7 +89,7 @@ export const parseBot = (value: unknown, expectedId?: string, ownerId?: string):
     roleConfiguration = { instructions: text(role.instructions, true), revision: text(role.revision, true), digest: text(role.digest, true) };
     if (Buffer.byteLength(roleConfiguration.instructions) > 65_536 || createHash("sha256").update(roleConfiguration.instructions).digest("hex") !== roleConfiguration.digest) return malformed();
   }
-  const parsed: ActiveBot = { ...identity, deletion: null, ownerUserId: id(data.ownerUserId), name: botName(data.name), creationOrder: botVersion(data.creationOrder), requestedOverrides, resolvedConfiguration, roleConfiguration, sessionId: data.sessionId === null ? null : id(data.sessionId), testExecutionId: data.testExecutionId === null ? null : id(data.testExecutionId), startupResult: result(data.startupResult, ["pending", "ready", "failed"]), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  const parsed: ActiveBot = { ...identity, deletion: null, ownerUserId: id(data.ownerUserId), name: botName(data.name), creationOrder: botVersion(data.creationOrder), ...(data.attentionCount === undefined ? {} : { attentionCount: data.attentionCount as number }), requestedOverrides, resolvedConfiguration, roleConfiguration, sessionId: data.sessionId === null ? null : id(data.sessionId), testExecutionId: data.testExecutionId === null ? null : id(data.testExecutionId), startupResult: result(data.startupResult, ["pending", "ready", "failed"]), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
   if (parsed.name !== data.name || ownerId !== undefined && parsed.ownerUserId !== ownerId || (parsed.sessionId === null) !== (parsed.testExecutionId === null) || (parsed.sessionId === null) !== (parsed.roleConfiguration === null) || parsed.startupResult.state === "ready" && parsed.sessionId === null) return malformed();
   return parsed;
 };

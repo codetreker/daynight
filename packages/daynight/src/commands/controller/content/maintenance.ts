@@ -11,6 +11,7 @@ import { parseTimelineEntry } from "../../../session/protocol.js";
 import { controllerJournalFormat, type JournalMigrationContext } from "../journal-format.js";
 import { preflightPendingTimeline } from "../pending-content.js";
 import { CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES, controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
+import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
 import { controllerStorageMediaUsage, assertControllerStorageCapacity, isControllerStorageCapacityError, reserveControllerStoragePeak } from "../storage-capacity.js";
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
 import { assertControllerStorageRole, controllerStorageExecutionRow, controllerTimelineCleanupPending, observeControllerStorage, reportControllerStorageEvent, type ControllerStorageObservation, type ControllerStoragePreparation, type ControllerStorageRequest } from "../storage-preparation.js";
@@ -63,7 +64,7 @@ export const createTimelineMaintenanceReservation = (db: Database.Database, opti
         const entry = parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
         const bytes = Buffer.byteLength(JSON.stringify(entry)), backupBytes = Buffer.byteLength(JSON.stringify(row));
         serializedTimelineBytes += bytes + (entryCount > 0 ? 1 : 0); entryCount++; bodyBytes += bytes;
-        if (entryCount > 100000 || serializedTimelineBytes > 64 * 1048576) throw new Error("Pending session timeline budget exceeded.");
+        if (entryCount > 100000 || serializedTimelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
         exportBytes += bytes * 2 + backupBytes;
         largestWrite = Math.max(largestWrite, bytes + backupBytes + 16384);
       }

@@ -7,7 +7,7 @@ const taskId = "22222222-2222-4222-8222-222222222222";
 const parent = "33333333-3333-4333-8333-333333333333";
 const user = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const time = "2026-11-10T01:02:03.123456Z";
-const task = { id: taskId, type: "task", parentId: null, projectId: project, title: "Task", description: "", properties: {}, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
+const task = { id: taskId, type: "task", parentId: null, projectId: project, title: "Task", description: "", tags: [], properties: {}, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const goal = { ...task, type: "goal", ready: false, assignedTo: user, progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } };
 const operations: Operation[] = [];
 const json = (body: unknown, status = 200) => new Response(stringifyApiJson(body), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": user } });
@@ -90,7 +90,7 @@ describe("Goal and parent API contract", () => {
 
   it("sends search Parent as JSON null or UUID and retains the actual parent context", async () => {
     const match = { fields: ["title"], descriptionSnippet: null };
-    const item = { id: taskId, type: "task", parentId: parent, projectId: project, title: "Task", status: "todo", cancelledAt: null, assignedTo: null, updatedAt: time, context: { taskId: parent, title: "Parent Goal" }, match };
+    const item = { id: taskId, type: "task", parentId: parent, projectId: project, title: "Task", status: "todo", cancelledAt: null, tags: [], assignedTo: null, updatedAt: time, context: { taskId: parent, title: "Parent Goal" }, match };
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(json({ projectId: project, total: 1, items: [item], nextCursor: null }))
       .mockResolvedValueOnce(json({ projectId: project, total: 0, items: [], nextCursor: null }));

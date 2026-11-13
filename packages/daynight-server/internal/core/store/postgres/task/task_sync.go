@@ -52,8 +52,13 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 	if err != nil {
 		return nil, err
 	}
+	tags, err := pg.LoadTaskTagsBatch(ctx, s.tx, projectID, ids)
+	if err != nil {
+		return nil, err
+	}
 	for index := range tasks {
 		tasks[index].Properties = properties[tasks[index].ID]
+		tasks[index].Tags = tags[tasks[index].ID]
 	}
 	return tasks, nil
 }

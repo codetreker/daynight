@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
-import type { ProviderState } from "../../../src/commands/controller/providers/types.js";
+import type { ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 
 let nativeHome: string;
 beforeEach(async () => { const base = join(process.cwd(), ".tmp"); await mkdir(base, { recursive: true }); nativeHome = await mkdtemp(join(base, "codex-provider-home-")); vi.stubEnv("CODEX_HOME", nativeHome); });
@@ -39,6 +39,50 @@ test("Codex rejects an empty ordinary message before native dispatch", async () 
     const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(requests.filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
   } finally { await provider.close(); }
+});
+
+test("Codex preserves an accounting error raised at the native send boundary", async () => {
+  const log = join(nativeHome, "requests.jsonl");
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back" });
+  let fenced = false;
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {},
+    assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  try {
+    fenced = true;
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
+    const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(requests.filter(request => ["turn/start", "turn/steer"].includes(request.method))).toEqual([]);
+  } finally { await provider.close(); }
+});
+
+test.each([null, "native-thread"])("Codex startup does not start or resume a thread after its spawn callback fences dispatch (resume=%s)", async resumeNativeSessionId => {
+  const log = join(nativeHome, "requests.jsonl"), failure = new Error("accounting failure"); let fenced = false;
+  const opening = openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {},
+    onSpawn: () => { fenced = true; }, assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  await expect(opening).rejects.toBe(failure);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(requests.filter(request => ["thread/start", "thread/resume"].includes(request.method))).toEqual([]);
+});
+
+test("Codex startup does not persist settings after its seeded state fences dispatch", async () => {
+  const log = join(nativeHome, "requests.jsonl"), failure = new Error("accounting failure"); let fenced = false;
+  const opening = openCodexProvider({ cwd: process.cwd(), model: "selected-model", args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_REQUEST_LOG: log },
+    executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onSpawn: () => {},
+    onState: state => { if (state.nativeSessionId && state.controls) fenced = true; },
+    assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  await expect(opening).rejects.toBe(failure);
+  const requests = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(requests.filter(request => request.method === "thread/start")).toHaveLength(1);
+  expect(requests.filter(request => request.method === "thread/settings/update")).toEqual([]);
 });
 
 test("Codex startup waits past an empty settings acknowledgement until the matching native record is complete", async () => {
@@ -192,6 +236,28 @@ test("a late turn/start receipt does not resurrect a completed native turn", asy
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: s => states.push(s), onSpawn: () => {} });
   try { const receipt = await provider.send(textNativeInput("test"), randomUUID(), null); await provider.waitForTurn(receipt.turnId!, Date.now() + 1000); expect(states.at(-1)).toMatchObject({ activity: "idle", currentTurnId: null }); }
   finally { await provider.close(); }
+});
+
+test.each(["notifications", "unsupported request", "foreign request", "invalid form"])("natural native exit drains %s and preserves terminal evidence before runtime shutdown", async mode => {
+  const entries: Parameters<ProviderOptions["onTimeline"]>[0][] = [], events: string[] = [], states: ProviderState[] = [];
+  const fatal = Promise.withResolvers<void>();
+  let shutdown: Promise<void> | undefined;
+  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    env: { ...process.env, CODEX_TEST_EXIT_BURST: mode }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)),
+    onTimeline: entry => { entries.push(entry); if (entry.kind === "assistant_message" && entry.content.some(part => part.type === "text" && part.text === "final answer before exit")) events.push("final projection"); },
+    onState: state => states.push(state), onSpawn: () => {},
+    onFatalError: () => { events.push("EOF"); shutdown = provider.close(); fatal.resolve(); },
+  });
+  try {
+    const receipt = await provider.send(textNativeInput("exit after output"), randomUUID(), null).then(value => { events.push("receipt"); return value; });
+    expect(receipt).toEqual({ disposition: "started", turnId: "native-turn" });
+    await provider.waitForTurn("native-turn", Date.now() + 1000);
+    await fatal.promise; await shutdown;
+    expect(events).toEqual(["final projection", "receipt", "EOF"]);
+    expect(entries.filter(entry => entry.kind === "assistant_message")).toHaveLength(1001);
+    if (mode === "unsupported request") expect(entries).toContainEqual(expect.objectContaining({ kind: "error", code: "unsupported_interaction", message: "Unsupported native interaction: unsupported/request" }));
+    expect(states.at(-1)).toMatchObject({ currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
+  } finally { await provider.close(); }
 });
 
 test("concurrent idle sends cannot both pass native turn admission", async () => {

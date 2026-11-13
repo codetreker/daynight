@@ -35,6 +35,7 @@ type TaskPropertySchema struct {
 }
 
 type CreateTaskRequest struct {
+	TagIDs                  *[]string              `json:"tagIds,omitempty"`
 	Type                    *string                `json:"type,omitempty"`
 	ParentID                **string               `json:"parentId,omitempty"`
 	AssignedToPresent       bool                   `json:"-"`
@@ -60,6 +61,7 @@ type UpdateTaskRequest struct {
 	Title             *string              `json:"title,omitempty"`
 	Description       *string              `json:"description,omitempty"`
 	DependsOn         *[]string            `json:"dependsOn,omitempty"`
+	TagIDs            *[]string            `json:"tagIds,omitempty"`
 }
 
 type TaskDeleteRequest struct {

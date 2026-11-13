@@ -27,10 +27,10 @@ func (r *workReader) DueGitHubProjects(ctx context.Context, appID int64, now tim
 	// ordered by work priority, due time, and Project ID, with a bounded result.
 	rows, err := r.pool.Query(ctx, `SELECT g.project_id::text FROM project_github g JOIN projects p ON p.id=g.project_id AND p.deleted_at IS NULL
  JOIN LATERAL (SELECT priority,due FROM (
- SELECT 1 AS priority,$2::timestamptz AS due WHERE g.app_id <> $1 OR g.access_hint_id IS NOT NULL
+ SELECT 1 AS priority,$2::timestamptz AS due WHERE g.app_id <> $1 OR (g.access_hint_id IS NOT NULL AND g.next_access_check_at IS NULL)
  UNION ALL SELECT 1,g.next_access_check_at WHERE g.next_access_check_at <= $2
- UNION ALL SELECT 2,g.next_poll_at WHERE g.app_id=$1 AND g.access_state='available' AND g.next_poll_at <= $2
- UNION ALL SELECT 3,min(q.next_attempt_at) FROM project_github_pending_prs q WHERE g.app_id=$1 AND g.access_state='available' AND q.project_id=g.project_id AND q.generation=g.generation AND q.next_attempt_at <= $2 HAVING count(*)>0
+ UNION ALL SELECT 2,g.next_poll_at WHERE g.app_id=$1 AND g.access_hint_id IS NULL AND g.access_state='available' AND g.next_poll_at <= $2
+ UNION ALL SELECT 3,min(q.next_attempt_at) FROM project_github_pending_prs q WHERE g.app_id=$1 AND g.access_hint_id IS NULL AND g.access_state='available' AND q.project_id=g.project_id AND q.generation=g.generation AND q.next_attempt_at <= $2 HAVING count(*)>0
  ) c ORDER BY priority LIMIT 1) work ON true
  WHERE g.enabled AND (g.access_state<>'unavailable' OR g.access_reason IS DISTINCT FROM 'app_changed')
  AND (g.app_id<>$1 OR g.access_state<>'unavailable' OR g.access_reason IS DISTINCT FROM 'installation_missing')
@@ -77,7 +77,7 @@ func (s *signalWriter) SignalAccess(ctx context.Context, p store.GitHubAccessSig
 	tag, err := s.tx.Exec(ctx, `WITH locked AS MATERIALIZED (
  SELECT g.project_id FROM project_github g WHERE g.enabled AND g.app_id=$1 AND g.installation_id=$2
  AND EXISTS (SELECT 1 FROM projects p WHERE p.id=g.project_id AND p.deleted_at IS NULL) ORDER BY g.project_id FOR UPDATE OF g)
- UPDATE project_github g SET access_hint_id=$3,access_delivery_id=$4,next_access_check_at=$5,claim_token=NULL,claim_kind=NULL,claim_until=NULL,revision=g.revision+1,updated_at=clock_timestamp()
+ UPDATE project_github g SET access_hint_id=$3,access_delivery_id=$4,next_access_check_at=$5,last_webhook_received_at=GREATEST(g.last_webhook_received_at,$5::timestamptz),claim_token=NULL,claim_kind=NULL,claim_until=NULL,revision=g.revision+1,updated_at=clock_timestamp()
  FROM locked l WHERE g.project_id=l.project_id AND g.enabled AND g.app_id=$1 AND g.installation_id=$2`, p.AppID, p.InstallationID, p.HintID, p.DeliveryID, p.ReceivedAt)
 	if err != nil {
 		return 0, pg.QueryError("record github access signal", err)

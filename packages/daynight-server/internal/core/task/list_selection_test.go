@@ -38,6 +38,10 @@ func selectionCopyPointer[T any](value *T) *T {
 }
 
 func selectionCopyQuery(value store.TaskQuery) store.TaskQuery {
+	value.TagFilter.TagIDs = append([]string{}, value.TagFilter.TagIDs...)
+	if value.TagFilter.TagMatch == "" {
+		value.TagFilter.TagMatch = "all"
+	}
 	value.Status = selectionCopyPointer(value.Status)
 	value.Ready = selectionCopyPointer(value.Ready)
 	value.AllowAgents = selectionCopyPointer(value.AllowAgents)

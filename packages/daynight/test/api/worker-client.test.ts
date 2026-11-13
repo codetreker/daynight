@@ -16,7 +16,7 @@ const time = "2026-10-24T12:34:56.123456789Z";
 const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
 const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
 const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({ type: "task", parentId: null,
-  id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
+  id: taskId, projectId, title: "Claimed task", description: "", tags: [], properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
   allowAgents: true, requiredPlatform: null, assignedTo: null, version, startedAt: worker?.state === "active" ? time : null,
   completedAt: worker?.state === "completed" ? time : null, cancelledAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined,

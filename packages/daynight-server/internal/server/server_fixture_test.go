@@ -283,6 +283,10 @@ func (f *taskHTTPFixture) expectList(want []store.TaskQuery, pages []store.TaskP
 	pages = copyTaskHTTPSlice(pages)
 	for index := range want {
 		query := &want[index]
+		query.TagFilter.TagIDs = append([]string{}, query.TagFilter.TagIDs...)
+		if query.TagFilter.TagMatch == "" {
+			query.TagFilter.TagMatch = "all"
+		}
 		query.Page.After = copyTaskHTTPPointer(query.Page.After)
 		query.Status = copyTaskHTTPPointer(query.Status)
 		query.Ready = copyTaskHTTPPointer(query.Ready)
@@ -2559,8 +2563,12 @@ func startupTaskModel(value api.Task) model.Task {
 		v := model.TaskPlatform(*value.RequiredPlatform)
 		platform = &v
 	}
+	var tags []model.TagReference
+	for _, tag := range value.Tags {
+		tags = append(tags, model.TagReference{ID: tag.ID, Name: tag.Name})
+	}
 	return model.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description,
-		Properties: taskproperty.Clone(value.Properties), Status: model.TaskStatus(value.Status), Version: value.Version,
+		Properties: taskproperty.Clone(value.Properties), Tags: tags, Status: model.TaskStatus(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt,
 		CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn,
 		BlockedBy: value.BlockedBy, RequiredPlatform: platform, AssignedTo: value.AssignedTo, AllowAgents: value.AllowAgents, Ready: value.Ready}
@@ -2843,7 +2851,11 @@ func startupTaskDocument(t *testing.T, value model.Task) api.Task {
 		v := string(*value.RequiredPlatform)
 		platform = &v
 	}
-	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Status: string(value.Status), Version: value.Version,
+	tags := make([]taskprotocol.RESTTagReference, 0, len(value.Tags))
+	for _, tag := range value.Tags {
+		tags = append(tags, taskprotocol.RESTTagReference{ID: tag.ID, Name: tag.Name})
+	}
+	return api.Task{ID: value.ID, ProjectID: value.ProjectID, Title: value.Title, Description: value.Description, Properties: taskproperty.Clone(value.Properties), Tags: tags, Status: string(value.Status), Version: value.Version,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt, StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CancelledAt: value.CancelledAt, DependsOn: value.DependsOn, ExternalDependsOn: value.ExternalDependsOn, BlockedBy: value.BlockedBy, AssignedTo: value.AssignedTo, RequiredPlatform: platform, AllowAgents: value.AllowAgents, Ready: value.Ready}
 }
 

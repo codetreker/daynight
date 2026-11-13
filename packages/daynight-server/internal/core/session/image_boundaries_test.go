@@ -557,7 +557,7 @@ func (d *occurrenceBoundaryDAO) SessionMediaRequest(ctx context.Context, s, id s
 }
 
 func TestImageOccurrenceObservationsAndRetriesPreserveFailedAdmission(t *testing.T) {
-	for _, kind := range []string{"observe rate", "observe capture", "observe media", "observe failure receipt", "retry rate", "retry capture", "retry history", "retry offline", "retry usage", "retry capacity", "retry volume", "retry save", "retry invalid result"} {
+	for _, kind := range []string{"observe rate", "observe capture", "observe media", "observe failure receipt", "retry rate", "retry capture", "retry history", "retry offline", "retry usage", "retry save", "retry invalid result"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newImageRuleFixture(t, []byte("original"))
 			c := failOccurrenceFixture(f, registerOccurrenceFixture(t, f), "invalid_image")
@@ -588,10 +588,6 @@ func TestImageOccurrenceObservationsAndRetriesPreserveFailedAdmission(t *testing
 				f.r.Live = nil
 			case "retry usage":
 				d.imageBoundaryDAO.point = "usage"
-			case "retry capacity":
-				f.d.usage.UploadIdentities = sp.MaxUploadIdentities
-			case "retry volume":
-				f.files.free = 0
 			case "retry save":
 				d.point = "capture save"
 			case "retry invalid result":

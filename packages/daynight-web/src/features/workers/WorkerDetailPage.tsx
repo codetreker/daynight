@@ -1,6 +1,7 @@
 import { useId, useLayoutEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { WorkerExecutableProbe, WorkerHerdrProbe, WorkerProbe, WorkerTaskSnapshot } from '../../api/workers';
 import type { WorkerAgent } from '../../api/types';
+import type { Tool, ToolPathTelemetry } from '../../api/worker-tool-paths';
 import { useWorkerHistory } from '../../app/use-page-history';
 import { taskDetailUrl } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -10,6 +11,7 @@ import { WorkerStatusBadge } from './WorkerStatusBadge';
 import { followWorkerLink, formatWorkerBytes, WorkerReadNotice, WorkerReadState, WorkerRefresh, WorkerTimestamp } from './presentation';
 import { WorkerEditingPanels } from './configuration/WorkerEditingPanels';
 import { WorkerMonitoring } from './WorkerMonitoring';
+import { WorkerToolPathDetails } from './WorkerToolPathDetails';
 import { useWorkerPageAnchor } from './useWorkerPageAnchor';
 import { useWorkerMonitoring } from './useWorkerMonitoring';
 import './workers.css';
@@ -37,6 +39,23 @@ const SoftwareRow = ({ name, probe }: { readonly name: string; readonly probe: W
   return <div className="worker-info-row"><dt>{name}</dt><dd>
     {probe.state === 'ok' ? <span className="worker-software-version">{probe.value}</span> : probe.state === 'error' ? <ProbeFailure probe={probe} software /> : <span className="worker-software-unavailable">{probe.state === 'not_installed' ? m.notInstalled : m.notRunning}</span>}
     <CheckedAt value={probe.checkedAt} />
+  </dd></div>;
+};
+
+const ToolSoftwareRow = ({ tool, telemetry, online, probe }: { readonly tool: Tool; readonly telemetry: ToolPathTelemetry | undefined; readonly online: boolean | null; readonly probe: WorkerExecutableProbe | WorkerHerdrProbe }) => {
+  const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
+  const name = tool === 'herdr' ? 'Herdr' : agentNames[tool];
+  if (telemetry === undefined) return <SoftwareRow name={name} probe={probe} />;
+  const entries = telemetry.entries.filter(entry => entry.tool === tool);
+  return <div className="worker-info-row worker-software-tool-paths" data-tool={tool}><dt>{name}</dt><dd>
+    {entries.length === 0 ? <span className="worker-software-unavailable">{m.state.not_checked}</span> : entries.map(entry => <p className="worker-tool-version" key={entry.context}>
+      <span>{entry.context === 'web' ? 'Web' : 'Herdr'}</span>{' · '}<span className="worker-software-version">{entry.actual?.version ?? m.state.not_checked}</span>
+    </p>)}
+    <p className="worker-checked-at worker-tool-connection">
+      <span className={online === false ? undefined : 'concealed'} aria-hidden={online !== false}>{m.state.offline}</span>
+      <span className={online === null ? undefined : 'concealed'} aria-hidden={online !== null}>{m.state.unconfirmed}</span>
+    </p>
+    <details className="worker-tool-software-details"><summary>{m.details}</summary><WorkerToolPathDetails tool={tool} telemetry={telemetry} online={online} /></details>
   </dd></div>;
 };
 
@@ -115,7 +134,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
         </dl></section>
         <section className="worker-panel"><h2 className="worker-panel-heading">{m.software}</h2><dl className="worker-info-list">
           <div className="worker-info-row"><dt>Daynight CLI</dt><dd className="worker-software-version">{worker.telemetry.versions.daynight}</dd></div>
-          <SoftwareRow name="Herdr" probe={worker.telemetry.versions.herdr} /><SoftwareRow name="Codex" probe={worker.telemetry.versions.codex} /><SoftwareRow name="Copilot" probe={worker.telemetry.versions.copilot} />
+          {(['herdr', 'codex', 'copilot'] as const).map(tool => <ToolSoftwareRow key={tool} tool={tool} telemetry={worker.telemetry.toolPaths} online={state.stale ? null : online} probe={worker.telemetry.versions[tool]} />)}
         </dl></section>
       </div>
       <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
@@ -129,7 +148,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
     </>}
     </section>
     {!configurationOpened && <><section id={`${id}-panel-configuration`} data-worker-panel="configuration" role="tabpanel" aria-labelledby={`${id}-tab-configuration`} hidden inert /><section id={`${id}-panel-prompt`} data-worker-panel="prompt" role="tabpanel" aria-labelledby={`${id}-tab-prompt`} hidden inert /></>}
-    {configurationOpened && <WorkerEditingPanels id={id} workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform } : {})} section={section} onContinueEditing={editor => selectSection(editor, true)} readEnabled={readEnabled} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} />}
+    {configurationOpened && <WorkerEditingPanels id={id} workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform, ...(worker.telemetry.toolPaths === undefined ? {} : { toolPaths: worker.telemetry.toolPaths }) } : {})} section={section} onContinueEditing={editor => selectSection(editor, true)} readEnabled={readEnabled} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} />}
     </div>
   </div>;
 };

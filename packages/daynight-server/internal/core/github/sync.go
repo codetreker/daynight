@@ -43,7 +43,13 @@ func WorkKind(c githubpr.Connection, appID int64, now time.Time, pendingDue bool
 	if c.AccessState == "unavailable" && c.AccessReason != nil && *c.AccessReason == "installation_missing" {
 		return ""
 	}
-	if c.AccessHintID != nil || due(c.NextAccessCheckAt, now) {
+	if c.AccessHintID != nil {
+		if c.NextAccessCheckAt == nil || due(c.NextAccessCheckAt, now) {
+			return WorkAccess
+		}
+		return ""
+	}
+	if due(c.NextAccessCheckAt, now) {
 		return WorkAccess
 	}
 	if c.AccessState != "available" {

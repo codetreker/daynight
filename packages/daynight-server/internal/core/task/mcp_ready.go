@@ -6,6 +6,7 @@ import (
 )
 
 type MCPReadyRequest struct {
+	TagFilter          store.TagFilter
 	Parent             *string
 	Limit              int
 	AllowAgents        *bool
@@ -14,6 +15,10 @@ type MCPReadyRequest struct {
 }
 
 func SelectMCPReady(request MCPReadyRequest) (store.TaskPriorityQuery, error) {
+	filter, err := NormalizeTagFilter(request.TagFilter)
+	if err != nil {
+		return store.TaskPriorityQuery{}, err
+	}
 	kind, parent, err := ResourceFilter(model.TaskTypeTask, request.Parent)
 	if err != nil {
 		return store.TaskPriorityQuery{}, err
@@ -29,7 +34,7 @@ func SelectMCPReady(request MCPReadyRequest) (store.TaskPriorityQuery, error) {
 	}
 	status, ready := model.TaskTodo, true
 	return store.TaskPriorityQuery{
-		Type: kind, Parent: parent,
+		TagFilter: filter, Type: kind, Parent: parent,
 		AssignedTo: model.TaskAssignmentFilter{Mode: model.TaskAssignmentAll},
 		Status:     &status, Ready: &ready, AllowAgents: request.AllowAgents,
 		CompatiblePlatform: request.CompatiblePlatform, Limit: request.Limit,

@@ -40,7 +40,9 @@ altering existing rows, versions, timestamps or materials. Historical migrations
 including the original proposed-to-todo conversion, remain unchanged. Protocol
 readers, graph summaries, filters and progress explicitly recognize proposed.
 All-proposed ordinary components aggregate as proposed; unstarted proposed/todo
-mixtures aggregate as todo. Only done/cancelled contribute to ended progress.
+mixtures aggregate as todo. Only done/cancelled contribute to the ended count;
+the [completion-progress decision](../bug-fix/2026-11-13-completion-progress-excludes-cancelled.md)
+separately excludes cancelled from completion presentation.
 
 The [status requirements](../../../../docs/spec/daynight-task-status.md) and
 [architecture](../../../../docs/design/daynight-task-status.md) own the complete

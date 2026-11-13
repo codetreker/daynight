@@ -131,7 +131,7 @@ describe("coordinator monitoring", () => {
 
   it("keeps an unconfirmed claim from becoming a successful search", async () => {
     const f = fixture();
-    const task: Task = { type: "task", parentId: null, id: uuid(20), projectId: project.projectId, title: "fixture", description: "", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: {}, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
+    const task: Task = { type: "task", parentId: null, id: uuid(20), projectId: project.projectId, title: "fixture", description: "", tags: [], status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: {}, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
     f.candidates.mockImplementationOnce(async function* () { yield task; });
     f.claim.mockRejectedValueOnce(new Error("unconfirmed"));
     await f.coordinator.tick();

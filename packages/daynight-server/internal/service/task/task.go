@@ -49,6 +49,7 @@ func NewTasks(database taskStore, capture ...Capturer) *Tasks {
 }
 
 type TaskListRequest struct {
+	TagFilter  store.TagFilter
 	Type       model.TaskType
 	Parent     *string
 	AssignedTo *string
@@ -91,7 +92,7 @@ func (s *Tasks) Create(ctx context.Context, principal model.Principal, projectID
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+	return s.writeTagged(ctx, principal, projectID, input.TagIDs, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
 		mutation, err := s.writeOperations.prepareCreate(ctx, tx.TaskDAO(), id.String(), values)
 		return mutation, err
 	})
@@ -105,7 +106,7 @@ func (s *Tasks) Update(ctx context.Context, principal model.Principal, projectID
 	if err := taskcore.ValidateUpdateFields(input); err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+	return s.writeTagged(ctx, principal, projectID, input.TagIDs, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
 		mutation, err := s.writeOperations.prepareUpdate(ctx, tx.TaskDAO(), id, input)
 		return mutation, err
 	})
@@ -121,7 +122,7 @@ func (s *Tasks) UpdatePartitionedDependencies(ctx context.Context, principal mod
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx store.ProjectWriteScope, _ model.Task) (taskcore.Mutation, error) {
+	return s.versionedWriteTagged(ctx, principal, projectID, id, input.Version, input.TagIDs, func(tx store.ProjectWriteScope, _ model.Task) (taskcore.Mutation, error) {
 		all, ext, err := PartitionDependencies(ordinary, external)
 		if err != nil {
 			return taskcore.Mutation{}, err
@@ -132,6 +133,10 @@ func (s *Tasks) UpdatePartitionedDependencies(ctx context.Context, principal mod
 }
 
 func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID string, prepare func(store.ProjectWriteScope) (taskcore.Mutation, error)) (model.Task, error) {
+	return s.writeTagged(ctx, principal, projectID, nil, prepare)
+}
+
+func (s *Tasks) writeTagged(ctx context.Context, principal model.Principal, projectID string, requested *[]string, prepare func(store.ProjectWriteScope) (taskcore.Mutation, error)) (model.Task, error) {
 	var result model.Task
 	var refusal *model.Fault
 	completion, err := s.store.WriteProject(ctx, projectID, func(tx store.ProjectWriteScope) error {
@@ -143,24 +148,57 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 		}
 		mutation, err := prepare(tx)
 		if err != nil {
+			if requested != nil {
+				return err
+			}
 			if refusal = taskWriteFault(err); refusal != nil {
 				return nil
 			}
 			return err
 		}
-		recordTaskWriteMetadata(ctx, mutation)
-		if !mutation.Changed {
-			applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
-			result = applied.Task
+		var ids []string
+		var tagsChanged bool
+		if requested != nil {
+			if mutation.Create {
+				ids, err = prepareCreateTags(ctx, tx, *requested)
+				tagsChanged = len(ids) != 0
+			} else {
+				ids, tagsChanged, err = prepareTagReplacement(ctx, tx, mutation.Current, mutation.Current.Version, requested)
+			}
 			if err != nil {
 				return err
+			}
+		}
+		recordTaskWriteMetadata(ctx, mutation)
+		if !mutation.Changed {
+			if tagsChanged {
+				observed, err := tx.TaskDAO().ObservedAt(ctx)
+				if err != nil {
+					return err
+				}
+				if err := tx.TaskTagDAO().ReplaceTaskTags(ctx, mutation.ID, ids); err != nil {
+					return err
+				}
+				if err := tx.TaskDAO().TouchTask(ctx, mutation.ID, observed); err != nil {
+					return err
+				}
+				result, err = tx.TaskDAO().Task(ctx, mutation.ID)
+				if err != nil {
+					return err
+				}
+			} else {
+				applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
+				result = applied.Task
+				if err != nil {
+					return err
+				}
 			}
 			values := []model.Task{result}
 			if err := decorateGoalProgress(ctx, tx.TaskDAO(), projectID, values); err != nil {
 				return err
 			}
 			result = values[0]
-			return admitTaskResponse(ctx, result, false)
+			return admitTaskResponse(ctx, result, tagsChanged)
 		}
 		if mutation.Delete {
 			applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
@@ -184,13 +222,29 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 		}
 		mutation, err = enforceAssignmentTransition(ctx, tx, mutation)
 		if err != nil {
+			if requested != nil {
+				return err
+			}
 			if refusal = taskWriteFault(err); refusal != nil {
 				return nil
 			}
 			return err
 		}
+		if tagsChanged && !mutation.Create {
+			if err := tx.TaskTagDAO().ReplaceTaskTags(ctx, mutation.ID, ids); err != nil {
+				return err
+			}
+		}
 		applied, err := taskcore.ApplyMutation(ctx, tx.TaskDAO(), mutation)
 		result = applied.Task
+		if err == nil && mutation.Create && tagsChanged {
+			if err = tx.TaskTagDAO().ReplaceTaskTags(ctx, mutation.ID, ids); err == nil {
+				result, err = tx.TaskDAO().Task(ctx, mutation.ID)
+			}
+		}
+		if err == nil && mutation.Create && !taskcore.MatchesTagIDs(result.Tags, ids) {
+			return errors.New("created task tag references do not match requested identities")
+		}
 		if err == nil {
 			var parent taskcore.Mutation
 			parent, err = taskcore.PrepareParentStart(ctx, tx.TaskDAO(), mutation)
@@ -238,11 +292,15 @@ func (s *Tasks) write(ctx context.Context, principal model.Principal, projectID 
 }
 
 func (s *Tasks) versionedWrite(ctx context.Context, principal model.Principal, projectID, id string, version int64, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
+	return s.versionedWriteTagged(ctx, principal, projectID, id, version, nil, prepare)
+}
+
+func (s *Tasks) versionedWriteTagged(ctx context.Context, principal model.Principal, projectID, id string, version int64, requested *[]string, prepare func(store.ProjectWriteScope, model.Task) (taskcore.Mutation, error)) (model.Task, error) {
 	projectID, id, err := taskWriteIdentity(principal, projectID, id, version)
 	if err != nil {
 		return model.Task{}, err
 	}
-	return s.write(ctx, principal, projectID, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
+	return s.writeTagged(ctx, principal, projectID, requested, func(tx store.ProjectWriteScope) (taskcore.Mutation, error) {
 		current, err := tx.TaskDAO().Task(ctx, id)
 		if errors.Is(err, model.ErrNotFound) {
 			return taskcore.Mutation{}, taskcore.NotFound(err)

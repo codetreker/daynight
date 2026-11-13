@@ -14,7 +14,7 @@ const otherTask = '20000000-0000-4000-8000-000000000002';
 const dependency = '20000000-0000-4000-8000-000000000003';
 const version = 9007199254740993n;
 const stamp = '2026-10-22T00:00:00Z'; const nextStamp = '2026-10-22T00:01:00Z';
-const initial: TaskDetail = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: 'linux', allowAgents: false, externalDependsOn: [dependency], startedAt: null, completedAt: null, cancelledAt: null, id: task, projectId: project, version,
+const initial: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: 'linux', allowAgents: false, externalDependsOn: [dependency], startedAt: null, completedAt: null, cancelledAt: null, id: task, projectId: project, version,
   title: 'Reviewed task', description: 'Complete original description', properties: { pullRequests: [{ title: 'Original PR', url: 'https://example.com/pr/1' }] },
   status: 'todo', dependsOn: [dependency], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp };
 const source = (status: TaskStatus): TaskDetail => ({ ...initial, status, ready: status === 'todo', startedAt: status === 'todo' ? null : stamp, completedAt: status === 'done' ? stamp : null, cancelledAt: status === 'cancelled' ? stamp : null });

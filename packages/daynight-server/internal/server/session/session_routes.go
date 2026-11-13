@@ -186,6 +186,9 @@ func (h *Routes) Result(w http.ResponseWriter, r *http.Request, status int, valu
 	}
 }
 func ReadBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	return readBody(w, r, sp.MaxFrameBytes, "Session request exceeds the 2 MiB limit.")
+}
+func readBody(w http.ResponseWriter, r *http.Request, maxBytes int64, limitMessage string) ([]byte, error) {
 	if _, err := httpx.QueryValues(r); err != nil {
 		return nil, err
 	}
@@ -193,11 +196,11 @@ func ReadBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if err != nil || kind != "application/json" || parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8") {
 		return nil, httpx.InvalidInput("Content-Type must be application/json with UTF-8 encoding.")
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, sp.MaxFrameBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
 	if err != nil {
 		var limit *http.MaxBytesError
 		if errors.As(err, &limit) {
-			return nil, &model.Fault{Code: "payload_too_large", Message: "Session request exceeds the 2 MiB limit."}
+			return nil, &model.Fault{Code: "payload_too_large", Message: limitMessage}
 		}
 		return nil, httpx.InvalidInput("Unable to read session request.")
 	}
@@ -406,6 +409,9 @@ func (h *Routes) accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn
 		h.mutex.Unlock()
 		h.active.Done()
 		return nil, nil, nil, protocolErr
+	}
+	if protocol == sp.Protocol {
+		w.Header().Set("Daynight-Session-Direct-Upload-Version", "1")
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{protocol}, InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {

@@ -7,7 +7,7 @@ export const graph: GraphMessages = {
   rootSummary: ({ total, remaining }) => `${number(total)} 个任务 · ${number(remaining)} 个未完成`,
   inProgressCount: ({ count }) => `${number(count)} 进行中`,
   chainList: '任务链列表',
-  progress: ({ done, cancelled, total }) => cancelled === 0 ? `${number(done)}/${number(total)} 已完成` : `${number(done + cancelled)}/${number(total)} 已结束 · ${number(done)} 完成 · ${number(cancelled)} 取消`,
+  progress: ({ done, total }) => `${number(done)}/${number(total)} 已完成`,
   chainTitle: '任务链',
   goalTitle: 'Goal 整体依赖图',
   goalGraph: '查看整体图',

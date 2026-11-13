@@ -9,7 +9,7 @@ import { taskSyncQuery, taskSyncResponse, TEST_VIEWER_ID, viewerHeaders } from '
 const timestamp = '2026-10-22T10:00:00Z';
 export const detailFixture = (projectId: string, taskId: string, changes: Partial<TaskDetail> = {}): TaskDetail => ({ assignedTo: null,
   id: taskId, type: 'task', parentId: null, projectId, title: '完整任务详情', description: '', status: 'todo', version: 1n,
-  allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
+  allowAgents: false, requiredPlatform: null, tags: [], dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
   startedAt: null, completedAt: null, cancelledAt: null, properties: { pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
 export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
@@ -34,7 +34,7 @@ export const snapshotFixture = (details: readonly TaskDetail[], revision = 1): G
   const summaries = new Map(graph.tasks.map((task) => {
     const detail = details.find((item) => item.id === task.id)!;
     const { blockedBy: _blockedBy, ready: _ready, ...intrinsic } = task;
-    return [task.id, { ...intrinsic, version: detail.version, properties: detail.properties }] as const;
+    return [task.id, { ...intrinsic, version: detail.version, properties: detail.properties, tags: detail.tags }] as const;
   }));
   return { graph, index: buildGraphIndex(graph), summaries, workerMachines: new Map(), pausedTaskIds: new Set(details.filter((task) => readTaskPaused(task.properties) === true).map((task) => task.id)), revision, observedAt: graph.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now() };
 };
@@ -47,7 +47,7 @@ export const withDetailResources = (projectId: string, taskId: string, fallback:
   (url: string, options?: RequestInit): Response | Promise<Response> => {
     const task = detailFixture(projectId, taskId, changes);
     const parsed = new URL(url, location.origin);
-    if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, propertiesForTask: () => task.properties, viewerId: typeof viewer === 'string' ? viewer : viewer() });
+    if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, propertiesForTask: () => task.properties, tagsForTask: () => task.tags, viewerId: typeof viewer === 'string' ? viewer : viewer() });
     if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return resourceResponse(task, typeof viewer === 'string' ? viewer : viewer());
     if (parsed.pathname === `/api/v1/projects/${projectId}/tasks/${taskId}/sessions`) return resourceResponse({ items: [], nextCursor: null }, typeof viewer === 'string' ? viewer : viewer());
     return fallback(url, options);

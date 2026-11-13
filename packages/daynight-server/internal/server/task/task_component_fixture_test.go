@@ -951,6 +951,10 @@ func (f *taskHTTPFixture) expectList(want []store.TaskQuery, pages []store.TaskP
 	pages = copyTaskHTTPSlice(pages)
 	for index := range want {
 		query := &want[index]
+		if query.TagFilter.TagMatch == "" {
+			query.TagFilter.TagMatch = "all"
+		}
+		query.TagFilter.TagIDs = append([]string{}, query.TagFilter.TagIDs...)
 		query.Page.After = copyTaskHTTPPointer(query.Page.After)
 		query.Status = copyTaskHTTPPointer(query.Status)
 		query.Ready = copyTaskHTTPPointer(query.Ready)

@@ -123,3 +123,115 @@ func TestTypedTaskReadSchemas(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskTagSchemas(t *testing.T) {
+	var definitions []sdk.Tool
+	for _, source := range [][]byte{taskToolDefinitions, taskQueryToolDefinitions} {
+		var tools []sdk.Tool
+		if err := json.Unmarshal(source, &tools); err != nil {
+			t.Fatal(err)
+		}
+		definitions = append(definitions, tools...)
+	}
+	for _, tool := range definitions {
+		switch tool.Name {
+		case "task_create", "task_update", "task_set_status", "task_set_property", "task_remove_property", "task_show", "task_list", "task_ready":
+		default:
+			continue
+		}
+		schema, err := resolveSchema(tool.OutputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, view := range []string{"summary", "full"} {
+			for _, tags := range [][]model.TagReference{nil, {{ID: testTargetID, Name: "<&标签"}, {ID: testProjectID, Name: "Other"}}} {
+				task := taskFixtureTask()
+				task.Tags = tags
+				var projection any = MapTaskSummary(task)
+				if view == "full" {
+					projection = MapTaskFull(task)
+				}
+				raw, err := json.Marshal(projection)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var item map[string]any
+				if err := json.Unmarshal(raw, &item); err != nil {
+					t.Fatal(err)
+				}
+				if tool.Name == "task_show" || tool.Name == "task_list" {
+					item["session"] = observationFixture()
+				}
+				if tool.Name == "task_list" && view == "full" {
+					delete(item, "description")
+				}
+				envelope := func(item map[string]any) []byte {
+					var data any = item
+					if tool.Name == "task_list" {
+						data = map[string]any{"items": []any{item}, "nextCursor": nil, "projection": view}
+					} else if tool.Name == "task_ready" {
+						data = map[string]any{"items": []any{item}, "projection": view}
+					}
+					meta := map[string]any{"requestId": "request", "observedAt": "2026-11-01T02:03:04Z", "partial": false, "refs": map[string]any{}}
+					result, err := json.Marshal(map[string]any{"data": data, "meta": meta})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return result
+				}
+				if err := validateJSON(schema, envelope(item)); err != nil {
+					t.Fatalf("%s %s tags=%v: %v", tool.Name, view, tags, err)
+				}
+				delete(item, "tags")
+				if err := validateJSON(schema, envelope(item)); err == nil {
+					t.Errorf("%s %s accepted missing tags", tool.Name, view)
+				}
+				item["tags"] = []any{map[string]any{"id": testTargetID}}
+				if err := validateJSON(schema, envelope(item)); err == nil {
+					t.Errorf("%s %s accepted tag without name", tool.Name, view)
+				}
+			}
+		}
+	}
+}
+
+func TestTaskTagInputSchemas(t *testing.T) {
+	var definitions []sdk.Tool
+	if err := json.Unmarshal(taskToolDefinitions, &definitions); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range definitions {
+		if tool.Name != "task_create" && tool.Name != "task_update" {
+			continue
+		}
+		schema, err := resolveSchema(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name string
+			tags any
+			want bool
+		}{
+			{"empty", []string{}, true},
+			{"multiple", []string{testTargetID, testProjectID}, true},
+			{"duplicates", []string{testTargetID, testTargetID}, true},
+			{"null", nil, false},
+			{"invalid item", []any{42}, false},
+		} {
+			input := map[string]any{"projectId": testProjectID, "tagIds": tc.tags}
+			if tool.Name == "task_create" {
+				input["title"] = "Task"
+			} else {
+				input["taskId"] = testTargetID
+			}
+			raw, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := validateJSON(schema, raw) == nil; got != tc.want {
+				t.Errorf("%s %s: valid=%v, want %v", tool.Name, tc.name, got, tc.want)
+			}
+		}
+	}
+}

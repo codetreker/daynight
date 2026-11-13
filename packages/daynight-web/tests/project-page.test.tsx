@@ -6,6 +6,9 @@ import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getTask, getTaskSync } from "../src/api/client";
+import { getProject } from "../src/api/project-settings";
+import { getProjectAccess } from "../src/api/auth";
+import { directAccessFixture } from "./helpers/taskSync";
 import { searchTasks, TaskSearchError } from "../src/api/task-search";
 import type { GraphTask, TaskDetail, TaskGraph, TaskStatus } from "../src/api/types";
 import { ProjectPage } from "../src/features/projects/ProjectPage";
@@ -20,6 +23,8 @@ const render: typeof localeRender = (ui, options) => localeRender(ui, { ...optio
 
 vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
 vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
+vi.mock("../src/api/project-settings", async (original) => ({ ...await original<typeof import("../src/api/project-settings")>(), getProject: vi.fn() }));
+vi.mock("../src/api/auth", async (original) => ({ ...await original<typeof import("../src/api/auth")>(), getProjectAccess: vi.fn() }));
 vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, representativeIds, openGraphTarget, onOpenChain, onCloseChain, onOpenTask, onOpenSession }: {
   index: GraphIndex; representativeIds: readonly string[]; openGraphTarget: { kind: 'chain'; witnessTaskId: string; rootId: string } | null; onOpenChain: (id: string, trigger: HTMLElement) => void; onCloseChain: () => void; onOpenTask: (id: string, trigger: HTMLElement) => void; onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => <div data-testid="root-list" data-index-roots={index.representativeIds.join(",")}>{representativeIds.map((root) => <div key={root}>
@@ -77,6 +82,7 @@ const deferred = <T,>() => {
 };
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const detailRequest = vi.mocked(getTask);
+const waitForGraph = () => waitFor(() => expect(document.querySelector(".snapshot-time time")).not.toBeNull());
 const sectionTabs = () => within(document.querySelector<HTMLElement>(".project-section-tabs")!);
 const taskTabs = () => within(document.querySelector<HTMLElement>(".project-task-tabs")!);
 const titleActions = () => within(document.querySelector<HTMLElement>(".project-title-actions")!);
@@ -101,6 +107,8 @@ const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
   window.history.replaceState(null, "", `/projects/${projectId}`);
+  vi.mocked(getProject).mockReset().mockImplementation(async (id) => graph(seeds, id).project);
+  vi.mocked(getProjectAccess).mockReset().mockImplementation(async (id, _signal, admission) => directAccessFixture(id, admission.userId));
   vi.mocked(searchTasks).mockReset();
   syncFixture.reset();
   servedGraphs.clear(); servedVersions.clear();
@@ -117,9 +125,9 @@ beforeEach(() => {
   graphRequest.mockReset().mockImplementation(async (id) => servedGraphs.get(id)!); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
-    if (id === X) return { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+    if (id === X) return { tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
       id, projectId: project, title: 'New task', description: '文本', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
-    return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
+    return { ...task!, tags: [], id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
   });
 });
 
@@ -132,7 +140,7 @@ describe("project dashboard", () => {
     fireEvent.change(input, { target: { value: "unfinished search" } });
     input.focus();
     await act(async () => { pending.resolve(graph()); });
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     expect(searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" })).toBe(input);
     expect(input).toHaveValue("unfinished search");
     expect(input).toHaveFocus();
@@ -140,7 +148,7 @@ describe("project dashboard", () => {
 
   it("keeps search available without a graph and opens a hit with direct observation", async () => {
     graphRequest.mockRejectedValue(new ApiError("network"));
-    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["id", "description"], descriptionSnippet: "匹配描述" } }] });
+    vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ tags: [], id: X, projectId, title: "完整的历史任务", status: "done", assignedTo: null, updatedAt: time, cancelledAt: null, context: { taskId: A, title: "原任务链" }, match: { fields: ["id", "description"], descriptionSnippet: "匹配描述" } }] });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.click(searchForm().getByRole("button", { name: "搜索语法" }));
@@ -178,7 +186,7 @@ describe("project dashboard", () => {
   it("clears an applied search when the draft is deleted, cancelling an in-flight read", async () => {
     const user = userEvent.setup();
     const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
-    const hit = { id: X, projectId, title: "搜索命中", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    const hit = { tags: [], id: X, projectId, title: "搜索命中", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
     graphRequest.mockResolvedValue(graph());
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 1, items: [hit], nextCursor: null }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
@@ -224,10 +232,10 @@ describe("project dashboard", () => {
   it("retains pagination focus while the next page is loading and after it arrives", async () => {
     graphRequest.mockResolvedValue(graph());
     const pending = deferred<Awaited<ReturnType<typeof searchTasks>>>();
-    const item = { id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
+    const item = { tags: [], id: A, projectId, title: "第一页", status: "todo" as const, assignedTo: null, updatedAt: time, cancelledAt: null, context: null, match: { fields: ["title" as const], descriptionSnippet: null } };
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 16, items: Array.from({ length: 15 }, (_, index) => ({ ...item, id: `page-one-${index}`, title: index === 0 ? item.title : `第一页 ${index}` })), nextCursor: "next" }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.change(input, { target: { value: "页" } }); fireEvent.submit(input.closest("form")!);
     await waitFor(() => searchResults().getByRole("button", { name: "打开任务：第一页" }));
@@ -242,7 +250,7 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValue(graph());
     vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.change(input, { target: { value: "缓存" } }); fireEvent.submit(input.closest("form")!);
     await screen.findByText("未找到匹配任务");
@@ -269,7 +277,7 @@ describe("project dashboard", () => {
       throw failure;
     });
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" }) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "😀中 )" } }); fireEvent.submit(input.closest("form")!);
     await screen.findByText("搜索语法第 4 个字符：多余的右括号。");
@@ -301,7 +309,7 @@ describe("project dashboard", () => {
     expect(screen.getByRole("status", { name: "正在加载任务图" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
     await act(async () => { pending.resolve(graph()); });
-    expect(await screen.findByRole("heading", { name: "核心项目" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "核心项目" })).toBeTruthy(); await waitForGraph();
     expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["4", "1", "3", "0", "2", "1"]);
     expect(screen.getByText("完成比例 25%")).toBeTruthy();
     expect(screen.getAllByText("待处理的子集")).toHaveLength(2);
@@ -319,7 +327,7 @@ describe("project dashboard", () => {
     const pending = deferred<TaskGraph>();
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     fireEvent.click(listButton("另一任务链"));
     const receipt = screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime");
     fireEvent.click(titleActions().getByRole("button", { name: "刷新" }));
@@ -329,7 +337,7 @@ describe("project dashboard", () => {
     await waitForState(() => expect(graphRequest).toHaveBeenCalledTimes(2));
     await act(async () => { pending.reject(new ApiError("server", 500, "internal_error", "refresh-request")); });
     expect((await screen.findByRole("alert")).textContent).toContain("仍显示上次成功读取的数据");
-    expect(screen.getByText("refresh-request")).toBeTruthy();
+    expect(within(screen.getByRole("alert")).getByText("refresh-request")).toBeTruthy();
     expect(screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime")).toBe(receipt);
     expect(screen.getByTestId(`chain-${C}`)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "重试刷新" }));
@@ -341,7 +349,7 @@ describe("project dashboard", () => {
     const pending = deferred<TaskGraph>();
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise);
     const first = render(<ProjectPage projectId={projectId} />);
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     first.unmount();
 
     render(<ProjectPage projectId={projectId} />); selectTasks();
@@ -459,7 +467,7 @@ describe("project dashboard", () => {
     const pending = deferred<TaskGraph>();
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise);
     const view = render(<ProjectPage projectId={projectId} />); selectTasks();
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
     act(() => browserNavigation().navigate(`/projects/${otherProject}`));
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks();
     expect(screen.queryByRole("heading", { name: "核心项目" })).toBeNull();
@@ -485,10 +493,10 @@ describe("project dashboard", () => {
     graphRequest.mockRejectedValueOnce(failure).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     expect((await screen.findByRole("alert")).textContent).toContain(heading);
-    expect(screen.getByText(message)).toBeTruthy();
+    expect(within(screen.getByRole("alert")).getByText(message)).toBeTruthy();
     expect(screen.queryByText("任务总数")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
-    await screen.findByRole("heading", { name: "核心项目" });
+    await screen.findByRole("heading", { name: "核心项目" }); await waitForGraph();
   });
 
   it("shows generic read failures and rejects malformed graph snapshots", async () => {
@@ -504,7 +512,8 @@ describe("project dashboard", () => {
   });
 
   it("renders untrusted project values as plain text and preserves modified return clicks", async () => {
-    graphRequest.mockResolvedValue({ ...graph([]), project: { ...graph().project, name: "<img src=x onerror=alert(1)>", repoUrl: "javascript:alert(1)" } });
+    graphRequest.mockResolvedValue(graph([]));
+    vi.mocked(getProject).mockResolvedValue({ ...graph().project, name: "<img src=x onerror=alert(1)>", repoUrl: "javascript:alert(1)" });
     const view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "<img src=x onerror=alert(1)>" });
     expect(screen.getByText("javascript:alert(1)")).toBeTruthy();

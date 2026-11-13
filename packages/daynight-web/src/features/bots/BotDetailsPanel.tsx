@@ -1,5 +1,5 @@
 import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react';
 import type { BotDefinition, BotWorkerDefaults } from '../../api/bots';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { dialogFocusables } from '../task-detail/focus';
@@ -14,8 +14,8 @@ import { useBotMessages } from './messages';
 import './details-panel.css';
 
 /** A responsive information panel; the Session stays in its original sibling. */
-export function BotDetailsPanel({ id, bot, worker, stale, opener, onClose, cache, onDelete, deleteDisabled = false, modalBlocked = false }: {
-  readonly id: string;
+export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener, onClose, cache, onDelete, deleteDisabled = false, modalBlocked = false }: {
+  readonly assistantTasks?: ReactNode; readonly id: string;
   readonly bot: BotDefinition | null;
   readonly worker: BotWorkerDefaults | undefined;
   readonly stale: boolean;
@@ -102,6 +102,7 @@ export function BotDetailsPanel({ id, bot, worker, stale, opener, onClose, cache
     <header><h2>{m.details}</h2>{narrow && <AccountRefreshNotice />}<button ref={close} className="button quiet" type="button" aria-label={m.closeDetails} onClick={onClose}>×</button></header>
     <div className="bot-details-scroll">
       {bot === null ? <p role="status">{m.loading}</p> : <>
+        {assistantTasks}
         <div className="bot-details-profile"><span>{m.name}</span><strong>{bot.name}</strong></div>
         <section className="bot-details-section"><h3>{m.runInformation}</h3><dl>
           <div><dt>{m.botStartup}</dt><dd><span>{m[bot.startupResult.state]}</span>{bot.startupResult.code !== null ? <p>{m.reason(bot.startupResult.code)}</p> : null}</dd></div>

@@ -1,3 +1,6 @@
+// GitHub settings has its own component and route-lifecycle coverage.
+vi.mock('../src/features/github-integration/GitHubSettings', () => ({ GitHubSettings: () => null }));
+
 import { directAccessFixture } from "./helpers/taskSync";
 import { TestTaskCacheBoundary } from "./helpers/taskCache";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -110,11 +113,41 @@ describe("project settings form", () => {
     expect(parseWarningDraft("2147483647")).toBe(2147483647); expect(parseWarningDraft("1")).toBe(1); expect(parseWarningDraft(" 60 ")).toBeNull(); expect(parseWarningDraft("NaN")).toBeNull();
   });
 
-  it("disables controls while loading and guards synchronous duplicate submissions", async () => {
-    const saving = deferred<Response>(); const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(project()));
+  it("saves a newer draft against the confirmed snapshot without duplicate writes", async () => {
+    const saving = deferred<Response>(); let writes = 0;
+    const fetcher = install((url, init) => init.method === "PATCH" ? ++writes === 1 ? saving.promise : json(project(110, 9_007_199_254_740_995n)) : url.endsWith("/members") ? json(members()) : json(project()));
     mount(); await ready(); change(); submit(); fireEvent.submit(screen.getByRole("button", { name: "正在保存…" }).closest("form")!);
-    expect(screen.getByLabelText("提醒阈值")).toBeDisabled(); expect(screen.getByRole("button", { name: "取消" })).toBeDisabled(); await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
-    await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n)))); await screen.findByText("设置已保存。");
+    const field = screen.getByLabelText("提醒阈值");
+    expect(field).toBeEnabled(); expect(screen.getByRole("button", { name: "取消" })).toBeDisabled();
+    await waitFor(() => expect(writes).toBe(1));
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")[0]![1].body).toBe('{"version":9007199254740993,"executionWarningMinutes":90}');
+    change("110");
+    await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).toBeEnabled());
+    expect(field).toHaveValue(110);
+    expect(screen.getByText(/存在未保存的修改/)).toBeVisible();
+    expect(screen.queryByText("设置已保存。")).toBeNull();
+    submit();
+    await waitFor(() => expect(writes).toBe(2));
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")[1]![1].body).toBe('{"version":9007199254740994,"executionWarningMinutes":110}');
+    await screen.findByText("设置已保存。");
+    expect(field).toHaveValue(110);
+  });
+
+  it("keeps a later draft conflicted when a return read observes a newer external version", async () => {
+    const saving = deferred<Response>(); let external = false;
+    const fetcher = install((url, init) => init.method === "PATCH" ? saving.promise : url.endsWith("/members") ? json(members()) : json(external ? project(120, 9_007_199_254_740_995n) : project()));
+    const view = mount(); await ready(); change(); submit();
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
+    change("110");
+    view.rerender(<ProjectSettingsPanel projectId={id} user={user} active={false} onRoute={false} />);
+    external = true;
+    await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
+    view.rerender(<ProjectSettingsPanel projectId={id} user={user} active onRoute />);
+    expect(await screen.findByText(/离开期间设置已变更/)).toBeVisible();
+    expect(screen.getByLabelText("提醒阈值")).toHaveValue(110);
+    expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
+    expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
   });
 
   it("keeps an unsubmitted draft editable while identity and permissions are checked", async () => {
@@ -373,7 +406,8 @@ describe("project settings form", () => {
     await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(1));
     expect(screen.queryByText("设置已保存。")).toBeNull();
     holdPermission = false; await act(async () => permission.resolve(json(members())));
-    await screen.findByText("设置已保存。");
+    await screen.findByText(/存在未保存的修改/);
+    expect(screen.queryByText("设置已保存。")).toBeNull();
     expect(screen.getByLabelText("提醒阈值")).toHaveValue(110);
     await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).toBeEnabled());
     submit();
@@ -480,7 +514,7 @@ describe("project settings form", () => {
 
 describe("settings navigation and authenticated identity", () => {
   it("parses canonical sibling routes and rejects malformed identifiers", () => {
-    expect(parseAuthRoute(`/projects/${id}/settings`)).toEqual({ kind: "settings", projectId: id }); expect(parseAuthRoute("/projects/invalid/settings")).toEqual({ kind: "notFound" }); expect(parseAuthRoute(`/projects/${id}/settings/extra`)).toEqual({ kind: "notFound" });
+    expect(parseAuthRoute(`/projects/${id}/settings`)).toEqual({ kind: "settings", projectId: id, selection: { kind: "tab", tab: "execution" } }); expect(parseAuthRoute("/projects/invalid/settings")).toEqual({ kind: "notFound" }); expect(parseAuthRoute(`/projects/${id}/settings/extra`)).toEqual({ kind: "notFound" });
   });
 
   it("renders localized route title, breadcrumbs and active project navigation", async () => {

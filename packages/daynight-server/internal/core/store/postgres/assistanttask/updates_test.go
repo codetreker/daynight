@@ -189,3 +189,31 @@ func TestTransferOnlyMovesOpenItemsAndPreservesIdentity(t *testing.T) {
 		return nil
 	})
 }
+
+func TestDeletedAppendixPersistsEmptySourceRecords(t *testing.T) {
+	f := setup(t)
+	f.create(t)
+	ctx := t.Context()
+	appendix := model.AssistantTaskAppendix{ID: uuid.NewString(), OwnerUserID: f.owner, TaskID: f.task.ID, Text: "Evidence", State: "edited", SourceRecords: []string{uuid.NewString()}, Version: 2, CreatedAt: f.task.CreatedAt, UpdatedAt: f.task.CreatedAt}
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		_, err := d.InsertAppendix(ctx, appendix)
+		return err
+	})
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		appendix.Text, appendix.State = "", "deleted"
+		appendix.SourceRecords = []string{}
+		appendix.Version = 3
+		ok, err := d.SaveAppendix(ctx, appendix, 2)
+		if err == nil && !ok {
+			t.Fatal("matching appendix deletion refused")
+		}
+		return err
+	})
+	f.write(t, func(d store.AssistantTaskDAO) error {
+		got, err := d.Appendix(ctx, f.owner, f.task.ID, appendix.ID)
+		if err == nil && (got.State != "deleted" || got.Text != "" || got.SourceRecords == nil || len(got.SourceRecords) != 0 || got.Version != 3) {
+			t.Fatalf("deleted appendix readback differs: %#v", got)
+		}
+		return err
+	})
+}

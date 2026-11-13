@@ -3,8 +3,9 @@ import { decodeStrictSessionJson } from "./v2/values.js";
 import { parseImageError, verifyTimelineImageMetadata, type ImageError } from "./image-values.js";
 
 // Archives are inert display records, never native resume or command inputs.
-export const SESSION_ARCHIVE_HISTORY_MAX_BYTES = 67_125_248;
 export const SESSION_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
+export const SESSION_ARCHIVE_TIMELINE_MAX_BYTES = 128 * 1024 * 1024;
+export const SESSION_ARCHIVE_HISTORY_MAX_BYTES = SESSION_ARCHIVE_TIMELINE_MAX_BYTES + 16 * 1024;
 export const SESSION_ARCHIVE_RESOURCE_MAX_BYTES = 8 * 1024 * 1024;
 export const SESSION_ARCHIVE_MANIFEST_MAX_BYTES = 4 * 1024 * 1024;
 export const SESSION_ARCHIVE_BLOB_MAX_BYTES = 10 * 1024 * 1024;
@@ -95,7 +96,7 @@ export const parseSessionArchiveManifest = (value: unknown): SessionArchiveManif
   if (uuid(data.recordId) !== binding.sessionId) return invalid();
   if (data.nativeSessionId !== null && (typeof data.nativeSessionId !== "string" || !data.nativeSessionId.trim() || !data.nativeSessionId.isWellFormed() || /\p{Cc}/u.test(data.nativeSessionId) || new TextEncoder().encode(data.nativeSessionId).length > 256)) return invalid();
   const file = exact(data.timeline, ["fileId", "sha256", "byteLength"]), byteLength = sequence(file.byteLength);
-  if (BigInt(byteLength) > BigInt(SESSION_ARCHIVE_MAX_BYTES) || !Array.isArray(data.resources) || data.resources.length > 1000) return invalid();
+  if (BigInt(byteLength) > BigInt(SESSION_ARCHIVE_TIMELINE_MAX_BYTES) || !Array.isArray(data.resources) || data.resources.length > 1000) return invalid();
   const ids = new Set<string>(); let bytes = 0n;
   const resources = data.resources.map(raw => { const item = exact(raw, ["resource", "blobId"]), resource = parseSessionResource(item.resource);
     if (ids.has(resource.resourceId) || resource.status === "pending") return invalid(); ids.add(resource.resourceId);
@@ -109,7 +110,7 @@ export const parseSessionArchiveManifest = (value: unknown): SessionArchiveManif
 
 export const parseSessionArchiveTimeline = (value: unknown): SessionArchiveTimeline => {
   const data = exact(value, ["entries"]);
-  if (!Array.isArray(data.entries) || data.entries.length > 100000 || new TextEncoder().encode(JSON.stringify(data)).length > SESSION_ARCHIVE_MAX_BYTES) return invalid();
+  if (!Array.isArray(data.entries) || data.entries.length > 100000 || new TextEncoder().encode(JSON.stringify(data)).length > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) return invalid();
   const entries = data.entries.map(parseTimelineEntry), ids = new Set<string>(); let previous = 0n;
   for (const entry of entries) { if (ids.has(entry.entryId) || BigInt(entry.entrySeq) <= previous) return invalid(); ids.add(entry.entryId); previous = BigInt(entry.entrySeq); }
   return { entries };
@@ -132,7 +133,7 @@ export const sessionArchiveReferences = (entries: readonly TimelineEntry[], requ
 const digest = async (bytes: Uint8Array): Promise<string> => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes))), value => value.toString(16).padStart(2, "0")).join("");
 export const verifySessionArchiveMetadata = async (manifest: SessionArchiveManifest, bytes: Uint8Array): Promise<SessionArchiveTimeline> => {
   if (String(bytes.byteLength) !== manifest.timeline.byteLength || await digest(bytes) !== manifest.timeline.sha256) return invalid();
-  let raw: unknown; try { raw = decodeStrictSessionJson(bytes, SESSION_ARCHIVE_MAX_BYTES); } catch { return invalid(); }
+  let raw: unknown; try { raw = decodeStrictSessionJson(bytes, SESSION_ARCHIVE_TIMELINE_MAX_BYTES); } catch { return invalid(); }
   const timeline = parseSessionArchiveTimeline(raw), refs = sessionArchiveReferences(timeline.entries), descriptors = new Map(manifest.resources.map(ref => [ref.resource.resourceId, ref]));
   for (const entry of timeline.entries) await verifyTimelineImageMetadata(entry);
   for (const id of refs.resources) if (!descriptors.has(id)) return invalid();

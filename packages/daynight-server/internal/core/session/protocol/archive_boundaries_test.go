@@ -19,16 +19,18 @@ func archiveBoundaryResource() Resource {
 
 func TestArchiveManifestRejectsInvalidResourceClosureMetadata(t *testing.T) {
 	id := uuid.NewString()
-	for _, variant := range []string{"valid", "unknown-field", "oversized-timeline", "resources-not-array", "malformed-reference", "duplicate", "missing-blob", "invalid-blob", "oversized-original", "failed-with-blob", "invalid-native"} {
+	for _, variant := range []string{"valid", "timeline-at-limit", "unknown-field", "oversized-timeline", "resources-not-array", "malformed-reference", "duplicate", "missing-blob", "invalid-blob", "oversized-original", "failed-with-blob", "invalid-native"} {
 		t.Run(variant, func(t *testing.T) {
 			resource, blob := archiveBoundaryResource(), uuid.NewString()
 			ref := map[string]any{"resource": resource, "blobId": blob}
 			doc := map[string]any{"schemaVersion": 3, "contentKind": "native_timeline", "recordId": id, "fence": Fence{SessionID: id, ClaimID: uuid.NewString(), ExecutionGeneration: "1"}, "provider": "codex", "nativeSessionId": "original", "controllerId": uuid.NewString(), "controllerInstanceId": uuid.NewString(), "timeline": ArchiveFileReference{FileID: uuid.NewString(), SHA256: strings.Repeat("a", 64), ByteLength: "1"}, "resources": []any{ref}, "completeness": "complete"}
 			switch variant {
+			case "timeline-at-limit":
+				doc["timeline"] = ArchiveFileReference{FileID: uuid.NewString(), SHA256: strings.Repeat("a", 64), ByteLength: strconv.Itoa(MaxArchiveTimelineBytes)}
 			case "unknown-field":
 				doc["other"] = true
 			case "oversized-timeline":
-				doc["timeline"] = ArchiveFileReference{FileID: uuid.NewString(), SHA256: strings.Repeat("a", 64), ByteLength: strconv.Itoa(MaxArchiveBytes + 1)}
+				doc["timeline"] = ArchiveFileReference{FileID: uuid.NewString(), SHA256: strings.Repeat("a", 64), ByteLength: strconv.Itoa(MaxArchiveTimelineBytes + 1)}
 			case "resources-not-array":
 				doc["resources"] = map[string]any{}
 			case "malformed-reference":
@@ -51,7 +53,7 @@ func TestArchiveManifestRejectsInvalidResourceClosureMetadata(t *testing.T) {
 				doc["nativeSessionId"] = "native\nother"
 			}
 			body, _ := json.Marshal(doc)
-			if _, e := DecodeArchiveManifest(body); (e == nil) != (variant == "valid") {
+			if _, e := DecodeArchiveManifest(body); (e == nil) != (variant == "valid" || variant == "timeline-at-limit") {
 				t.Fatal(variant, e)
 			}
 		})

@@ -71,10 +71,12 @@ const digestCapacity = 128;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const ordered = (artifacts: ToolArtifact[]) => [...artifacts].sort((a, b) => compare(a.role, b.role) || compare(a.path, b.path));
+const commandIdentity = (command: ResolvedToolLaunch["command"]) => ({ file: command.file, prefixArgs: command.prefixArgs });
+const artifactIdentity = (artifact: ToolArtifact) => ({ role: artifact.role, path: artifact.path, realPath: artifact.realPath, size: artifact.size, sha256: artifact.sha256 });
 export const toolSelectionKey = (launch: Omit<ResolvedToolLaunch, "selectionKey">): string => hash({
   schemaVersion: launch.schemaVersion, tool: launch.tool, context: launch.context,
   canonicalEntryPath: launch.canonicalEntryPath, executablePath: launch.executablePath, interpreterPath: launch.interpreterPath,
-  command: launch.command, artifacts: ordered(launch.artifacts),
+  command: commandIdentity(launch.command), artifacts: ordered(launch.artifacts).map(artifactIdentity),
   ...(launch.runtimeProfile === undefined ? {} : { runtimeProfile: {
     kind: launch.runtimeProfile.kind, sourceSelectionKey: launch.runtimeProfile.sourceLaunch.selectionKey,
     materializationKey: launch.runtimeProfile.materializationKey, root: launch.runtimeProfile.root,
@@ -212,7 +214,7 @@ export const probeResourceKey = (launch: ResolvedToolLaunch, scope: { cwd: strin
   const artifacts = launch.artifacts.map(({ role, realPath, size, sha256 }) => ({ role, realPath, size, sha256 }));
   artifacts.sort((a, b) => compare(a.role, b.role) || compare(a.realPath, b.realPath));
   const environment = captureToolEnvironment(scope.environment);
-  return hash({ tool: launch.tool, command: launch.command, artifacts, cwd: scope.cwd,
+  return hash({ tool: launch.tool, command: commandIdentity(launch.command), artifacts, cwd: scope.cwd,
     ...(launch.runtimeProfile === undefined ? {} : { runtimeProfile: launch.runtimeProfile.kind }),
     // PATH selects an entry only at resolution. Reintroducing it here would let
     // auto and an absolute alias evade the same unresolved cleanup owner.

@@ -6,7 +6,7 @@ if (process.env.CI) throw new Error("CLI stress tests run only on local machines
 
 const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
-const task: Task = { type: "task", parentId: null, id: "abcdefab-2222-4222-8333-123456789abc", projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task: Task = { type: "task", parentId: null, id: "abcdefab-2222-4222-8333-123456789abc", projectId, title: "Task title", description: "Description", tags: [], properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 
 describe("task rendering stress", () => {
   it("renders full values in linear space despite an outlier title or description", () => {

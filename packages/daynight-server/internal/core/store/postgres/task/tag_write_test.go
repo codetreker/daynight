@@ -60,6 +60,10 @@ func TestTaskTagAssociationsAndTouch(t *testing.T) {
 		if !reflect.DeepEqual(refs, []model.TagReference{{ID: tag1, Name: "One"}, {ID: tag2, Name: "Two"}}) {
 			t.Fatalf("references: %#v", refs)
 		}
+		readback, err := scope.TaskDAO().Task(ctx, live.ID)
+		if err != nil || !reflect.DeepEqual(readback.Tags, refs) {
+			t.Fatalf("task readback references: %#v, %v", readback.Tags, err)
+		}
 		for _, id := range []string{deleted.ID, hiddenChildID} {
 			hidden, err := dao.TaskTags(ctx, id)
 			if err != nil {
@@ -166,5 +170,43 @@ func TestTaskTagWriteFailures(t *testing.T) {
 	}
 	if err := dao.ClearTagAssociations(ctx, tagID); !errors.Is(err, pgx.ErrTxClosed) {
 		t.Fatalf("clear closed transaction: %v", err)
+	}
+}
+
+func TestTaskReceiptsLoadCurrentTagsInTransaction(t *testing.T) {
+	db := readerStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	project := readerProject(t, db, 1)
+	taskID, tagID := readerID(11), readerID(21)
+	readerExec(t, db, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES ($1,$2,'name','name',now(),now())`, tagID, project.ID)
+	want := []model.TagReference{{ID: tagID, Name: "name"}}
+	if err := readerWriteProject(db, ctx, project.ID, func(scope ProjectWriteScope) error {
+		created, err := scope.TaskDAO().CreateTask(ctx, taskID, TaskWrite{Title: "created", Status: model.TaskTodo})
+		if err != nil {
+			return err
+		}
+		if len(created.Tags) != 0 {
+			t.Fatalf("new task tags: %#v", created.Tags)
+		}
+		if err := scope.TaskTagDAO().ReplaceTaskTags(ctx, taskID, []string{tagID}); err != nil {
+			return err
+		}
+		updated, err := scope.TaskDAO().UpdateTask(ctx, taskID, TaskWrite{Title: "updated", Status: model.TaskTodo})
+		if err != nil || !reflect.DeepEqual(updated.Tags, want) {
+			t.Fatalf("updated receipt: %#v, %v", updated.Tags, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		got, err := scope.TaskDAO().Task(ctx, project.ID, taskID)
+		if err != nil || !reflect.DeepEqual(got.Tags, want) {
+			t.Fatalf("committed task: %#v, %v", got.Tags, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

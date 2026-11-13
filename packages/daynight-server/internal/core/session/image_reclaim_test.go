@@ -48,7 +48,7 @@ func TestReleaseCompletedUnsentUploadReclaimsOriginalAndQuotaButRetainsIdentity(
 		t.Fatal("reclamation lost immutable upload tombstone")
 	}
 	usage, err := f.d.SessionResourceUsage(t.Context(), f.r.Snapshot.SessionID)
-	if err != nil || usage.Bytes != 0 || usage.Resources != 0 || usage.ReservedBytes != 0 {
+	if err != nil || usage.Bytes != 0 || usage.Resources != 0 {
 		t.Fatal("physical reclaim did not return quota", usage, err)
 	}
 }
@@ -506,8 +506,8 @@ func TestArchiveExpiryRequiresMatchingOriginalControllerRelease(t *testing.T) {
 				t.Fatal("expiry treated unknown or mismatched Controller release as cleanup", err)
 			}
 			usage, err := f.d.SessionResourceUsage(t.Context(), op.id)
-			if err != nil || usage.ReservedBytes != number(f.spec.ByteLength) {
-				t.Fatal("unconfirmed remote cleanup returned reservation", usage, err)
+			if err != nil || usage.Bytes != 0 || usage.Resources != 0 {
+				t.Fatal("unconfirmed remote cleanup changed accepted content", usage, err)
 			}
 			object, err := f.files.Open(t.Context(), sessionresource.Bucket, path)
 			if err != nil {

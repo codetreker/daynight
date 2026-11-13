@@ -102,7 +102,7 @@ Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reje
 | metadata / 结构 | 每帧 16 MiB、深度 64、100000 tokens。已知文字沿原文字截断并标识，不能截断 JSON 后 parse。 |
 | 整帧 | 总输入 128 MiB、绝对解析期限 30 秒。超限关闭该私有连接，未决操作 unknown；已保存历史保留。 |
 
-完成队列最多两帧，stdout 背压。RPC 回执分发不等待服务 capture 网络；暂存不足的图可保留容量错误，不能拖死控制消息。自有回显若已可信关联原件，可验证格式/摘要后丢弃冗余 inline bytes。只读重取工具图片绑定已知 item/turn 和待采 part 索引，避免已采图占满暂存；没有可信身份的实时帧按其准入结果处理，绝不重新执行工具。未通过完整帧验证的文件不能关联消息；释放须等 reader/writer 停止及实际 unlink。
+完成队列最多两帧，stdout 背压。RPC reader 将 OS chunk 以至多 64 KiB 的 subarray 片段交给同一个惰性 decoder，每帧和片段末尾等待一次 ref'ed setImmediate，覆盖无完整帧和 UTF-8 分割。每帧先分发，再让微任务取得独立媒体 lease，最后释放帧引用；I/O 让步前同步原绝对帧 timer，完成帧清除旧 timer。显式释放、原生错误或期限失败后停止派发及 timer 重设；自然进程关闭立即禁止新写入，已收到的 stdout 由 reader 排空后再触发 Provider 收尾。已安排 immediate 正常结算并 join rpc.stopped，decoder 清理不释放消费者持有的 lease。完整调度及 IPC 合同由[Controller 输出消费](task-session-protocol.md#codex-输出消费与-io)拥有。RPC 回执分发不等待服务 capture 网络；暂存不足的图可保留容量错误，不能拖死控制消息。自有回显若已可信关联原件，可验证格式/摘要后丢弃冗余 inline bytes。只读重取工具图片绑定已知 item/turn 和待采 part 索引，避免已采图占满暂存；没有可信身份的实时帧按其准入结果处理，绝不重新执行工具。未通过完整帧验证的文件不能关联消息；释放须等 reader/writer 停止及实际 unlink。
 
 ## Claude Code
 
@@ -189,7 +189,7 @@ Copilot matcher 保存可恢复的原请求意图，随后调用共享 `publishN
 
 提交返回不可变 receipt 与当前 view。receipt 的 `publicationRevision` 和 `sourceSequence` 固定，view 的 revision 可以因后续 capture 更高。`ProviderImageProjector.adoptCommitted` 接管当前 view，不再次发布旧 timeline 或 occurrence。若先前 capture 终态已持久而对应 part 尚未写入 timeline 就中断，通过 `patchNativeImagePart` 在当前 SQL entry 上补写同 imageId 的持久 part；不重新 register、读取来源或发送原生输入。该单槽入口也防止异步捕获回调以旧整条消息覆盖刚提交的原件槽；写失败保留已确认 capture 终态，不改成未知采集结果。重复同身份返回原 receipt 和当前 view，不加槽、不推进 revision；同身份异请求拒绝。unknown 只通过 `queryNativeInputAssociation` 查询原身份；权威 absent 后才允许恢复同一元数据提交，不能再次 native send。旧 Provider publication 仅作恢复意图，缺少共享提交证据时不能冒充已提交。
 
-少数迟到情况显示两种真实来源，即使同摘要也不能改绑已公开身份。原接纳时须按每图最坏双槽预留统一 timeline 的元数据空间及132 MiB保守归档额度，正常早回执释放余量；不能等迟到后因历史已满丢原图。原生 capture 另按资源预算准入，不足时原生槽不可用，已保存原上传图仍可在可信迟到关联后读取。
+少数迟到情况显示两种真实来源，即使同摘要也不能改绑已公开身份。这些关联和 retained 内容在完整历史实际发布时按统一 Session 内容总量检查，不为未来双槽或归档预留空间。超限保留上一已接受历史及原身份，不删除已保存原图；原生 capture 的实际资源提交同样检查总量，已保存原上传图仍可按原权限读取。
 
 原 send 的响应丢失、空 ID、传输错误、接受证据提交未知均保持 unknown，只查询原操作。`omittedReason` 仅表示历史 bytes 缺失，不自动证明模型未收到；真正部分交付失败按共同规则持久可见并关闭 profile。blob 不传 native 路径，但只有 SDK 读取/序列化结束且无读者的证据才能释放调用 pin；unknown 与服务历史 pin 独立。
 
@@ -217,7 +217,7 @@ bridge 失败只暂停媒体并留下当前连接未知；是否恢复/停止遵
 
 ## 来源提交、平台与验证
 
-三者全部来源遵守同一两阶段次序：Controller 先持久 entry/出现位置，经原 timeline/source outbox 得到覆盖该位置的服务 ACK，再 `image_capture register` 原子登记来源映射并预留。收到 reserved 才读源；未知只 query 原 captureId。自有输入回显同样在位置 ACK 后以 resource locator register，已 available 同 Session 原件直接 committed，只增加出现引用和可信 nativeSource，不复制 blob、不重计资源槽，也不凭此确认输入。
+三者全部来源遵守同一两阶段次序：Controller 先持久 entry/出现位置，经原 timeline/source outbox 得到覆盖该位置的服务 ACK，再 `image_capture register` 原子登记来源映射和身份。收到兼容 reserved 回执才读源，该状态不表示服务端容量预留；未知只 query 原 captureId。自有输入回显同样在位置 ACK 后以 resource locator register，已 available 同 Session 原件直接 committed，只增加出现引用和可信 nativeSource，不复制 blob、不重计资源槽，也不凭此确认输入。
 
 canonical aliases 只由可信 native ID 关联事务添加，不能用 hash 猜并。已 committed 永远读服务原件，格式错误、源消失、权限变化保留原位置与安全错误。结束时停止新源 IO，结算原捕获；unknown 或已保存 bytes 损坏不能伪装“从未采集”。
 

@@ -130,7 +130,7 @@ it("persists segment ownership and rejects ordinal reuse or post-stop additions"
 
 it("refuses corrupted persisted evidence and future schemas without resetting responsibility", () => {
     const f = fixture(); active(f); close(f.store);
-    const db = new Database(f.file); db.pragma("user_version = 4"); db.close();
+    const db = new Database(f.file); db.pragma("user_version = 5"); db.close();
     expect(() => open(f.file)).toThrow();
     const inspect = new Database(f.file); expect(inspect.prepare("SELECT count(*) AS n FROM executions").get()).toEqual({ n: 1 }); inspect.pragma("user_version = 3"); inspect.prepare("UPDATE executions SET data = ?").run('{"broken":true}'); inspect.close();
     expect(() => open(f.file).list()).toThrow();

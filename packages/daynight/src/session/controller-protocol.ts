@@ -1,5 +1,5 @@
 import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChunk, parseImageReadRequest, parseImageReadChunk, parseImageError, parseProviderImageCapabilities, parseImageCapabilities, type ImageCapabilities, imageObject, imageId, imageDecimal, imageInteger, imageSha, type ImageUploadSpec, type LocalImagePreparation, type ImageReadRequest, type ImageReadChunk, type PreparedImageChunk, type ProviderImageCapabilities, type ImageError } from "./image-values.js";
-import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage } from "./image-values.js";
+import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, parseDirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage, type DirectCaptureSubmission } from "./image-values.js";
 import { sessionControlKeys, parseSessionControlFields } from "./protocol.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "./startup.js";
 import { HISTORY_CHUNK_BYTES, HISTORY_RESPONSE_BYTES, historyCursorText, parseInspectionPage, parseEntryChunk, type InspectionPage, type EntryChunk } from "./history.js";
@@ -51,6 +51,7 @@ export type ImageAction = keyof ImageActionBody;
 export type ImageRequest = { [K in ImageAction]: Wire & ControllerFence & {readonly type:"image_request";readonly requestId:string;readonly action:K;readonly body:ImageActionBody[K]} }[ImageAction];
 export type ImageResponse = Wire & ControllerFence & {readonly type:"image_response";readonly requestId:string;readonly action:ImageAction;readonly result:LocalImagePreparation|PreparedImageChunk|ImageReadChunk|ValidatedImage|null;readonly error:ImageError|null};
 export type ImageCaptureBody = {
+  submit: DirectCaptureSubmission;
   register: ImageCaptureRequest;
   query: { readonly captureId: string };
   commit: { readonly captureId: string; readonly attemptId: string; readonly validated: ValidatedImage };
@@ -293,13 +294,14 @@ export const parseImageResponse = (v:unknown):ImageResponse => {
   return {type:"image_response",protocol:protocol(o.protocol),...fence(o),requestId:id(o.requestId),action,result,error:nullable(o.error,parseImageError)};
 };
 
-const captureActions: readonly ImageCaptureAction[] = ["register", "query", "commit", "failed"];
+const captureActions: readonly ImageCaptureAction[] = ["register", "query", "commit", "failed", "submit"];
 export const parseImageCaptureMessage = (v: unknown): ImageCaptureMessage => {
   const o = obj(v, ["type", "protocol", ...fenceKeys(v), "requestId", "action", "body"]);
   if (o.type !== "image_capture") return fail();
   const action = choice(o.action, captureActions);
   let body: ImageCaptureBody[ImageCaptureAction];
-  if (action === "register") body = parseImageCaptureRequest(o.body);
+  if (action === "submit") body = parseDirectCaptureSubmission(o.body);
+  else if (action === "register") body = parseImageCaptureRequest(o.body);
   else if (action === "query") { const b = imageObject(o.body, ["captureId"]); body = { captureId: imageId(b.captureId) }; }
   else if (action === "commit") { const b = imageObject(o.body, ["captureId", "attemptId", "validated"]); body = { captureId: imageId(b.captureId), attemptId: imageId(b.attemptId), validated: parseValidatedImage(b.validated) }; }
   else { const b = imageObject(o.body, ["captureId", "attemptId", "error"]); body = { captureId: imageId(b.captureId), attemptId: imageId(b.attemptId), error: parseImageError(b.error) }; }

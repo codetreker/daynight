@@ -33,6 +33,7 @@ export function BotListItem({ bot, selected, disabled, worker, stale, follow, on
     <a href={`/bots/${bot.id}`} onClick={follow} aria-current={selected ? 'page' : undefined}>
       <span className="bot-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3V6a2 2 0 0 1 1-2Z" /><path d="M8 9h9M8 13h6" /></svg></span>
       <span className="bot-list-label"><strong title={bot.name}>{bot.name}</strong><BotStatus bot={bot} worker={worker} stale={stale} compact /></span>
+      {bot.attentionCount > 0 ? <span className="bot-attention-count" aria-label={m.attentionCount.replace('{count}', String(bot.attentionCount))}>{bot.attentionCount}</span> : null}
     </a>
     <button type="button" className="button quiet bot-more" ref={trigger} disabled={disabled} aria-label={m.actionsFor.replace('{name}', bot.name)} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)} onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); } }}>···</button>
     {open && <div id={id} role="menu" aria-label={m.actionsFor.replace('{name}', bot.name)} className="bot-action-menu" ref={menu} popover="auto" onKeyDown={event => {

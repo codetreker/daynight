@@ -20,6 +20,8 @@ import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.j
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 import { nativeMenuScreens } from "../../fixtures/native-menu-screens.js";
+import { frozenToolLaunch } from "../../helpers/tool-launch.js";
+import type { HerdrToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
 
 const uuid = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const staleId = uuid(8);
@@ -30,7 +32,7 @@ const roots: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
-const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => {
+const fixture = async (agent: "codex" | "copilot", sessionId: string | null, managerOptions: Partial<Parameters<typeof createHerdrAgentManager>[0]> = {}) => {
   const base = path.resolve("../../.tmp/execution-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "r-")); roots.push(root);
   const project: WorkerProject = { projectId: uuid(1), repoUrl: "https://example.test/owner/repo", localPath: path.join(root, "repo") };
@@ -59,10 +61,13 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   let blockedLaunch = false;
   let firstTurnCompletion: "idle" | "done" | undefined;
   let hook: { paneId: string; sessionId: string; remaining: number } | undefined;
+  let holdSessionDiscovery = false;
+  let heldSessionSnapshots = 0;
   const rpc: HerdrRpcClient = { request: async (method, params, operation): Promise<HerdrRpcResult> => {
     operation.check(); calls.push({ method, params: structuredClone(params) });
     if (method === "session.snapshot") {
-      if (hook !== undefined && hook.remaining-- === 0) {
+      if (hook !== undefined && holdSessionDiscovery) heldSessionSnapshots++;
+      if (hook !== undefined && !holdSessionDiscovery && hook.remaining-- === 0) {
         agents.find((entry) => entry.pane_id === hook!.paneId)!.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: hook.sessionId };
         hook = undefined;
       }
@@ -105,11 +110,11 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
     }
     throw new Error(`Unexpected RPC ${method}`);
   } };
-  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: vi.fn(async () => {}) }, workspaceEnvironment: nativeEnvironment, processExecuting: async (pid) => executing.has(pid), pollIntervalMs: 1 });
+  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: vi.fn(async () => {}) }, workspaceEnvironment: nativeEnvironment, processExecuting: async (pid) => executing.has(pid), pollIntervalMs: 1, ...managerOptions });
   const events: WorkerEvent[] = [];
   const git = { resolveWorktreeBinding: vi.fn(async () => worktree), prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
   const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = { type: "task", parentId: null,
-    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null,
+    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", tags: [], status: "in_progress", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null,
     version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: owner.claimId, state: "active", userId: uuid(6), workerId: uuid(5), machine: { id: uuid(7), name: "fixture" }, platform: "linux", agent, agentControlMode: "herdr", worktreeId: owner.worktreeId, phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-10-27T00:00:00Z" } },
   };
@@ -117,10 +122,52 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, readTask, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
   const input: ExecutionInput = { task, project, owner, title: "Task execution", configuration };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
-  return { root, store, input, context, manager, rpc, resources, events, calls, screen, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, readTask, remoteTask, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
+  return { holdSessionDiscovery: () => { holdSessionDiscovery = true; }, releaseSessionDiscovery: () => { holdSessionDiscovery = false; }, heldSessionSnapshots: () => heldSessionSnapshots, root, store, input, context, manager, rpc, resources, events, calls, screen, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, readTask, remoteTask, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
 };
 
 describe("execution from current Herdr resources", () => {
+  it.each(["confirmed", "deadline"] as const)("keeps a mapped shared deferred first input closed until official Session confirmation: %s", async outcome => {
+    let mapping: HerdrToolLaunchMapping;
+    const f = await fixture("codex", null, { toolMapping: async () => mapping });
+    const launch = frozenToolLaunch("codex", "herdr"), nonce = uuid(20), manifestPath = path.join(f.root, "manifest.json");
+    f.input.configuration.toolLaunch = launch;
+    const receipt = { schemaVersion: 1 as const, owner: f.input.owner, nonce, selectionKey: launch.selectionKey, logicalArgvDigest: "a".repeat(64), file: launch.command.file, prefixArgs: [], helperPid: 101, childPid: 102 };
+    mapping = { manifestPath, nonce, selectionKey: launch.selectionKey, environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: manifestPath }, verifyReady: async () => {}, verifyReceipt: async () => receipt, readReceipt: async () => receipt, captureProcesses: async pids => [...pids], verifyProcesses: async () => {}, confirmStopped: async () => true, stopProcesses: async () => {}, releaseFrozen: async () => {}, retire: async () => {} };
+    f.workspaces.splice(0); f.panes.splice(0);
+    const readyScreen = f.screen.text; f.screen.text = nativeMenuScreens[0]!.screen;
+    await f.driver.advance(f.input);
+    expect(f.agents[0]).not.toHaveProperty("agent_session");
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(0);
+    expect(f.store.getTask(f.input.task)?.sessionId).toBeNull();
+    f.screen.text = readyScreen;
+    const operation = createOperation();
+    try { await expect(f.manager.submitPrompt(f.context, { session: "w", workspaceId: String(f.agents[0]!.workspace_id), paneId: String(f.agents[0]!.pane_id), terminalId: String(f.agents[0]!.terminal_id) }, "ordinary continuation must remain closed", operation)).rejects.toMatchObject({ promptSubmission: "not-submitted" }); }
+    finally { operation.dispose(); }
+    f.holdSessionDiscovery();
+    if (outcome === "deadline") {
+      const submit = f.manager.submitInitialPrompt.bind(f.manager);
+      vi.spyOn(f.manager, "submitInitialPrompt").mockImplementationOnce(async (context, binding, prompt, _operation, guard, completed) => {
+        const deadline = createOperation({ limits: { totalMs: 100 } });
+        try { return await submit(context, binding, prompt, deadline, guard, completed); }
+        finally { deadline.dispose(); }
+      });
+    }
+    let completed = false;
+    const advance = f.driver.advance(f.input).finally(() => { completed = true; });
+    const expected = outcome === "deadline" ? expect(advance).rejects.toMatchObject({ promptSubmission: "submitted", submission: "unknown" }) : undefined;
+    await vi.waitFor(() => expect(f.heldSessionSnapshots()).toBeGreaterThanOrEqual(3));
+    expect(completed).toBe(false);
+    expect(f.store.getTask(f.input.task)?.sessionId).toBeNull();
+    expect(f.events.filter(event => event.kind === "started" || event.kind === "reconnected")).toHaveLength(0);
+    if (expected !== undefined) await expected;
+    f.releaseSessionDiscovery();
+    if (outcome === "confirmed") await expect(advance).resolves.toMatchObject({ kind: "observed" });
+    await f.driver.advance(f.input); await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt").map(call => call.params.text)).toEqual(["managed assignment"]);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    expect(f.store.getTask(f.input.task)?.sessionId).toBe(freshId);
+  });
+
   it("reports native progress only when its observed state changes", async () => {
     const f = await fixture("codex", staleId);
     const current: Entry = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
@@ -592,6 +639,37 @@ describe("execution from current Herdr resources", () => {
     delete f.remoteTask.properties.paused;
     await f.driver.advance(f.input);
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it.each(["paused", "claim changed", "read failure"] as const)("keeps mapped continuation unsent when task authority becomes %s during process verification", async change => {
+    let mapping: HerdrToolLaunchMapping;
+    const f = await fixture("copilot", staleId, { toolMapping: async () => mapping });
+    const launch = frozenToolLaunch("copilot", "herdr"), nonce = uuid(20), manifestPath = path.join(f.root, "manifest.json");
+    const receipt = { schemaVersion: 1 as const, owner: f.input.owner, nonce, selectionKey: launch.selectionKey, logicalArgvDigest: "a".repeat(64), file: launch.command.file, prefixArgs: [], helperPid: 101, childPid: 102 };
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const verifyProcesses = vi.fn(async () => { await gate; });
+    mapping = { manifestPath, nonce, selectionKey: launch.selectionKey, environment: { DAYNIGHT_HERDR_TOOL_MANIFEST: manifestPath }, verifyReady: async () => {}, verifyReceipt: async () => receipt, readReceipt: async () => receipt, captureProcesses: async pids => [...pids], verifyProcesses, confirmStopped: async () => true, stopProcesses: async () => {}, releaseFrozen: async () => {}, retire: async () => {} };
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const original = readWorkerClaim(f.remoteTask.properties)!, failure = new Error("current task authority unavailable");
+    const pending = f.driver.advance(f.input);
+    try {
+      await vi.waitFor(() => expect(verifyProcesses).toHaveBeenCalledOnce());
+      if (change === "paused") f.remoteTask.properties.paused = true;
+      else if (change === "claim changed") f.remoteTask.properties.worker = { ...original, claimId: uuid(21) };
+      else f.readTask.mockRejectedValueOnce(failure);
+      release();
+      if (change === "read failure") await expect(pending).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
+      else await pending;
+      expect(f.calls.filter(call => call.method === "agent.prompt")).toEqual([]);
+      expect(f.store.getTask(f.input.task)).toEqual(f.input.task);
+      expect(f.launches).toEqual([]);
+    } finally { release(); await pending.catch(() => {}); }
+    delete f.remoteTask.properties.paused; f.remoteTask.properties.worker = { ...original };
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.calls.filter(call => call.method === "agent.prompt")).toHaveLength(1);
+    expect(f.calls.filter(call => ["workspace.close", "workspace.create", "agent.start"].includes(call.method))).toEqual([]);
   });
 
   it("checks fresh pause state after visible input inspection", async () => {

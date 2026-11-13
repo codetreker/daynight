@@ -12,6 +12,7 @@ const taskIdentity = (task: Task): readonly string[] => [
   `Type: ${task.type}`,
   `Parent: ${task.parentId === null ? "none" : terminalText(task.parentId)}`,
   `Title: ${terminalText(task.title)}`,
+  ...(task.tags.length === 0 ? ["Tags: none"] : ["Tags:", ...task.tags.map(({ name }) => `  ${terminalText(name)}`)]),
 ];
 
 const taskProperties = (task: Task): readonly string[] => [

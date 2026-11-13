@@ -93,6 +93,8 @@ export type JsonValue = null | boolean | number | string | readonly JsonValue[] 
 export type TaskProperties = Readonly<Record<string, JsonValue>>;
 export type WritableTaskProperties = TaskProperties;
 
+export type TaskTag = { readonly id: string; readonly name: string };
+
 export type TaskDetail = {
   readonly id: string;
   readonly type: TaskType;
@@ -101,6 +103,7 @@ export type TaskDetail = {
   readonly title: string;
   readonly description: string;
   readonly properties: TaskProperties;
+  readonly tags: readonly TaskTag[];
   readonly status: TaskStatus;
   readonly version: bigint;
   readonly dependsOn: readonly string[];
@@ -133,6 +136,7 @@ export type AttachmentPage = {
 export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
   readonly version: bigint;
   readonly properties: TaskProperties;
+  readonly tags: readonly TaskTag[];
 };
 
 export type TaskListSessionState = "working" | "notice" | "warning" | "pending";

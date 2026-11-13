@@ -100,33 +100,11 @@ func (d *imageRuleDAO) InsertSessionUploadChunk(_ context.Context, c store.Sessi
 }
 func (d *imageRuleDAO) SessionResourceUsage(context.Context, string) (store.SessionResourceUsage, error) {
 	u := d.usage
-	u.UploadIdentities += len(d.uploads)
 	for _, r := range d.resources {
-		u.Bytes += number(*r.Resource.ByteLength)
-		u.Resources++
-	}
-	for _, r := range d.uploads {
-		if !r.StorageReleased && r.Receipt.State != "complete" {
-			u.ReservedBytes += number(r.Spec.ByteLength)
-			u.ReservedResources++
+		if r.Resource.Status == "available" {
+			u.Bytes += number(*r.Resource.ByteLength)
+			u.Resources++
 		}
-	}
-	for _, c := range d.captures {
-		if _, exists := d.uploads[c.Request.CaptureID]; !exists {
-			u.UploadIdentities++
-		}
-		if c.Receipt.State != "reserved" && c.Receipt.State != "copying" {
-			continue
-		}
-		if _, exists := d.uploads[c.Receipt.AttemptID]; exists {
-			continue
-		}
-		size := int64(sp.MaxImageBytes)
-		if c.Validated != nil {
-			size = number(c.Validated.ByteLength)
-		}
-		u.ReservedBytes += size
-		u.ReservedResources++
 	}
 	return u, nil
 }
@@ -404,7 +382,7 @@ func newImageRuleFixture(t *testing.T, raw []byte) imageRuleFixture {
 }
 func (f imageRuleFixture) prepare(t *testing.T) sp.ImageUploadReceipt {
 	t.Helper()
-	u, created, e := f.s.prepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false)
+	u, created, e := f.s.prepareUploadIdentity(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false)
 	if e != nil || !created {
 		t.Fatalf("prepare: %+v %v %v", u, created, e)
 	}
@@ -423,12 +401,12 @@ func TestImageUploadRulesPublishOnlyVerifiedDurableOriginal(t *testing.T) {
 	raw := bytes.Repeat([]byte("image"), 110000)
 	f := newImageRuleFixture(t, raw)
 	first := f.prepare(t)
-	if retry, created, e := f.s.prepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false); e != nil || created || retry.ExpiresAt != first.ExpiresAt {
+	if retry, created, e := f.s.prepareUploadIdentity(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false); e != nil || created || retry.ExpiresAt != first.ExpiresAt {
 		t.Fatal("same prepare did not retain original identity/TTL", retry, created, e)
 	}
 	changed := f.spec
 	changed.Name = "other"
-	if _, _, e := f.s.prepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, changed, false); e == nil {
+	if _, _, e := f.s.prepareUploadIdentity(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, changed, false); e == nil {
 		t.Fatal("conflicting identity accepted")
 	}
 	if _, e := f.write(t, raw[imageChunkBytes:], imageChunkBytes); e == nil {
@@ -484,8 +462,32 @@ func TestImageUploadRulesPublishOnlyVerifiedDurableOriginal(t *testing.T) {
 		t.Fatal("release", receipt, e)
 	}
 }
+func TestImageIdentityDoesNotReserveFutureCapacity(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("image"))
+	f.files.free = 0
+	f.d.usage.Bytes = sp.MaxSessionResourceBytes
+	f.d.usage.Resources = sp.MaxSessionResources
+	receipt, created, err := f.s.prepareUploadIdentity(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false)
+	if err != nil || !created || receipt.State != "receiving" || f.d.uploads[f.spec.UploadID].Spec != f.spec {
+		t.Fatal("identity registration depended on future capacity", receipt, err)
+	}
+	if f.r.Snapshot.ImageBudget.ReservedBytes != "0" || f.r.Snapshot.ImageBudget.ReservedResources != 0 {
+		t.Fatal("identity registration reserved content", f.r.Snapshot.ImageBudget)
+	}
+}
+
+func TestLegacyPrepareRegistersWithoutHistoryCheckpoint(t *testing.T) {
+	f := newImageRuleFixture(t, []byte("image"))
+	f.d.bundle = store.ArchiveBundle{}
+	f.files.free = 0
+	receipt, created, err := f.s.PrepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec)
+	if err != nil || !created || receipt.State != "receiving" || f.d.uploads[f.spec.UploadID].Spec != f.spec {
+		t.Fatal("legacy identity registration required a capacity checkpoint", receipt, err)
+	}
+}
+
 func TestImageAdmissionExpiryAndFailureRetainFacts(t *testing.T) {
-	for _, kind := range []string{"actor", "origin", "native", "fence", "revision", "space", "bytes", "resources", "identities", "deleting", "frozen"} {
+	for _, kind := range []string{"actor", "origin", "native", "fence", "revision", "deleting", "frozen"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newImageRuleFixture(t, []byte("image"))
 			switch kind {
@@ -500,20 +502,12 @@ func TestImageAdmissionExpiryAndFailureRetainFacts(t *testing.T) {
 				f.spec.Target.Fence.ExecutionGeneration = "2"
 			case "revision":
 				f.r.Snapshot.ContentRevision = 0
-			case "space":
-				f.files.free = 1
-			case "bytes":
-				f.d.usage.Bytes = sp.MaxSessionResourceBytes
-			case "resources":
-				f.d.usage.Resources = sp.MaxSessionResources
-			case "identities":
-				f.d.usage.UploadIdentities = sp.MaxUploadIdentities
 			case "deleting":
 				f.d.usage.Deleting = true
 			case "frozen":
 				f.d.usage.Frozen = true
 			}
-			if _, _, e := f.s.prepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false); e == nil {
+			if _, _, e := f.s.prepareUploadIdentity(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec, false); e == nil {
 				t.Fatal("invalid admission accepted")
 			}
 			if len(f.d.uploads) != 0 {
@@ -628,8 +622,8 @@ func TestImageUploadRemoteValidationBudgetAndOriginalRelease(t *testing.T) {
 	f.r.Snapshot.Capabilities.Images = supportedImageRuleCapabilities(f.r.Snapshot.Identity.NativeSessionID)
 	f.prepare(t)
 	reservedRevision := f.r.Snapshot.ImageBudget.Revision
-	if f.r.Snapshot.ImageBudget.ReservedBytes != f.spec.ByteLength {
-		t.Fatal("prepare did not publish reserved budget")
+	if f.r.Snapshot.ImageBudget.ReservedBytes != "0" {
+		t.Fatal("prepare reserved future bytes")
 	}
 	f.d.respond = func(row store.SessionMediaRequest) store.SessionMediaRequest {
 		row.Complete = true
@@ -794,11 +788,11 @@ func TestImageMediaReconnectAndResponseKeepOriginalRequest(t *testing.T) {
 	}
 }
 
-func TestImageAdmissionRequiresCurrentCompleteHistory(t *testing.T) {
+func TestCaptureRequiresCurrentCompleteHistory(t *testing.T) {
 	f := newImageRuleFixture(t, []byte("image"))
 	f.d.bundle.Ledger = encode(archiveLedger{HistoryID: f.d.bundle.HistoryID, HistoryEpoch: f.r.Snapshot.HistoryEpoch, SourceThrough: "0", Sealable: false})
-	if _, _, e := f.s.PrepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec); e == nil {
-		t.Fatal("new image input admitted without resource closure")
+	if _, created, e := f.s.PrepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec); e != nil || !created {
+		t.Fatal("identity registration required a sealable checkpoint", e)
 	}
 	if e := requireImageHistoryLedger(t.Context(), &operationTx{dao: f.d}, f.r, true); e != nil {
 		t.Fatal("capture cannot settle a complete metadata checkpoint", e)
@@ -809,7 +803,7 @@ func TestImageAdmissionRequiresCurrentCompleteHistory(t *testing.T) {
 	}
 	f.r.SourceSeq = 0
 	f.d.bundle.Ledger = encode(archiveLedger{HistoryID: f.d.bundle.HistoryID, HistoryEpoch: f.r.Snapshot.HistoryEpoch, SourceThrough: "0", Sealable: true})
-	if _, _, e := f.s.PrepareUpload(t.Context(), f.p, "", "", f.r.Snapshot.SessionID, f.spec); e != nil {
-		t.Fatal("current complete checkpoint refused input", e)
+	if e := requireImageHistoryLedger(t.Context(), &operationTx{dao: f.d}, f.r, true); e != nil {
+		t.Fatal("current complete checkpoint refused capture", e)
 	}
 }

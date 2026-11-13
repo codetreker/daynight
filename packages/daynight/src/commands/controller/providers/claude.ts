@@ -167,7 +167,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       }
     } catch (error) { await projection.close(); await historyReader.close(); throw error; }
   }
-  try { native = queryClaudeLive({ prompt: input, options: {
+  try { options.assertNativeDispatch?.(); native = queryClaudeLive({ prompt: input, options: {
 
     ...(options.resumeNativeSessionId ? { resume: nativeId } : { sessionId: nativeId }), cwd: options.cwd,
     ...(options.instructions !== undefined ? { systemPrompt: { type: "preset", preset: "claude_code", append: options.instructions } as const } : {}),
@@ -193,7 +193,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       return response.kind === "form" ? { action: "accept", content: Object.fromEntries(response.values.map(v => [v.fieldId, Array.isArray(v.value) ? [...v.value] : v.value as string | number | boolean])) } : { action: "decline" };
     }, stderr: line => options.onDiagnostic?.(line),
   } }, options); } catch (error) { await projection.close(); await historyReader?.close(); throw error; }
-  controls = new ClaudeControls(native as ClaudeControlQuery, options.resumeNativeSessionId ? null : options.model, options.resumeNativeSessionId ? undefined : config.effort, state, options.onControlConfirmed, !!options.resumeNativeSessionId, options.controlsRevisionFloor);
+  controls = new ClaudeControls(native as ClaudeControlQuery, options.resumeNativeSessionId ? null : options.model, options.resumeNativeSessionId ? undefined : config.effort, state, options.onControlConfirmed, !!options.resumeNativeSessionId, options.controlsRevisionFloor, options.assertNativeDispatch);
   const disconnect = (error: Error) => {
     if (disconnected || closed) return;
     disconnected = true; controls?.close(); input.close(); native?.close(); identityReject(error);
@@ -240,6 +240,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     throw failure;
   }
   const submit = async (inputValue: NativeInput, operationId: string, text: string) => {
+    options.assertNativeDispatch?.();
     try {
       if (inputValue.content.some(part => part.type === "image")) assertNativeImageAdmission(inputValue, controls!.imageCapabilities(verified ? nativeId : null, native?.profile ?? null, !!options.imageRuntime), null);
       if (native?.submit) await native.submit({ uuid: operationId, sessionId: nativeId, input: inputValue });
@@ -297,7 +298,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
       let waiter!: { resolve(): void; reject(error: Error): void };
       const stopped = new Promise<void>((resolve, reject) => { waiter = { resolve, reject }; cancelWaiters.add(waiter); }); void stopped.catch(() => {});
       const attempt = { turnId: currentTurnId, acknowledged: false, result: undefined as unknown }; cancellation = attempt;
-      try { const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
+      try { options.assertNativeDispatch?.(); const interrupt = native!.interrupt.bind(native) as (options?: { cancelQueued: boolean }) => Promise<unknown>;
         const result = await deadline(interrupt(capabilities.steer ? { cancelQueued: true } : undefined), "Claude interrupt receipt is unconfirmed.");
         if (closed || disconnected) throw new Error("Native Claude closed before interrupt confirmation.");
         attempt.acknowledged = true;
@@ -308,6 +309,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     },
     async respond(interactionId, revision, response): Promise<ProviderReceipt> {
       const pending = interactions.get(interactionId); if (!pending || pending.submitted || pending.interaction.revision !== revision) throw new NativeRpcError(-32602, "Native interaction is stale."); validateResponse(pending.interaction, response);
+      options.assertNativeDispatch?.();
       const confirmation = new Promise<void>((resolve, reject) => { pending.confirm = resolve; pending.rejectConfirmation = reject; });
       pending.submitted = true; pending.resolve(response);
       // A resolved SDK callback is not a native receipt. The matching tool result,

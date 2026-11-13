@@ -185,7 +185,7 @@ test("a current SQL snapshot can finish opening across an already-barriered lega
     vi.spyOn(fs, "existsSync").mockImplementation(file => {
       if (!retired && file === f.legacyFile) {
         retired = true;
-        // The barrier precedes this new v10 snapshot; its file inventory can
+        // The barrier precedes this new current-format snapshot; its file inventory can
         // still be captured immediately before the owner publishes retirement.
         retireLegacyTimelineReferences(f.file, f.ticket.sessionId);
         fs.unlinkSync(f.legacyFile); syncDirectory(path.dirname(f.legacyFile));
@@ -246,7 +246,7 @@ test("isolated upgrade preserves stopped evidence and original files, then real 
     expect(fs.readdirSync(path.join(`${f.file}.pending-content`, "entries"))).toEqual([]);
     expect(openTimelineStore(db, { assertWrite: () => { throw new Error("read only"); } }).get(f.entry.entryId)).toEqual(f.entry);
     expect(fs.statSync(f.file).size).toBe(Number(db.pragma("page_count", { simple: true })) * Number(db.pragma("page_size", { simple: true })));
-    expect(charge(f)).toBe(136 * 1048576); expect(beforeCharge).toBeGreaterThan(fs.statSync(f.file).size);
+    expect(charge(f)).toBe(144 * 1048576); expect(beforeCharge).toBeGreaterThan(fs.statSync(f.file).size);
     expect(() => acquireControllerStoragePermit(f.file)).toThrow();
   } finally { idle.close(); db.close(); f.permit.release(); }
 });
@@ -271,7 +271,7 @@ test("an incident source beyond the ordinary metadata ceiling imports using its 
   fs.truncateSync(f.old, CONTROLLER_METADATA_BYTES + 1048576);
   try {
     expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
-    expect(fs.existsSync(f.old)).toBe(false); expect(charge(f)).toBe(136 * 1048576);
+    expect(fs.existsSync(f.old)).toBe(false); expect(charge(f)).toBe(144 * 1048576);
   } finally { f.permit.release(); }
 });
 
@@ -295,7 +295,7 @@ test.each(["unlink", ...(process.platform === "win32" ? [] : ["fsync"]), "vacuum
       vi.spyOn(db, "exec").mockImplementation(source => { if (source === "VACUUM") throw failure; return exec(source); });
     }
     expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toThrow();
-    expect(db.pragma("user_version", { simple: true })).toBe(10); expect(marker(db)).toBe(1);
+    expect(db.pragma("user_version", { simple: true })).toBe(11); expect(marker(db)).toBe(1);
     expect(openTimelineStore(db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);
     restoreMocks();
     const fsync = vi.spyOn(fs, "fsyncSync");
@@ -325,7 +325,7 @@ test("an unknown successful marker COMMIT is read back and preserves the high re
     vi.spyOn(db, "exec").mockImplementation(source => { const result = exec(source); if (source === "COMMIT" && intercept) { intercept = false; throw new Error("unknown successful commit"); } return result; });
     expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toThrow(/unknown successful commit/);
     expect(marker(db)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, db).bytes());
-    restoreMocks(); expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" }); expect(charge(f)).toBe(136 * 1048576);
+    restoreMocks(); expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" }); expect(charge(f)).toBe(144 * 1048576);
   } finally { db.close(); f.permit.release(); }
 });
 
@@ -353,7 +353,7 @@ test.each(["maintenance", "preparation", "upgrade-only"] as const)("completed cl
       ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
       : prepareControllerStorage(entry === "preparation" ? f.request : { journalFile: f.file, stateDirectory: f.root, mode: "upgrade-only" }, f.permit, () => {});
     expect(result).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
-    expect(charge(f)).toBe(136 * 1048576);
+    expect(charge(f)).toBe(144 * 1048576);
   } finally { db.close(); f.permit.release(); }
 });
 
@@ -479,7 +479,7 @@ test("preparation close failure retains an unknown cleanup marker outcome after 
     expect(causes[1]).toMatchObject({ kind: "cleanup-failed", outcome: "unknown" });
     restoreMocks();
     const actual = new Database(f.file);
-    try { expect(actual.pragma("user_version", { simple: true })).toBe(10); expect(marker(actual)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, actual).bytes()); }
+    try { expect(actual.pragma("user_version", { simple: true })).toBe(11); expect(marker(actual)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, actual).bytes()); }
     finally { actual.close(); }
     expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
   } finally { restoreMocks(); f.permit.release(); }
@@ -512,7 +512,7 @@ test("isolated preparation recognizes only a pure wrapped capacity refusal as wa
   } finally { f.permit.release(); }
 });
 
-test("current v10 cannot adopt SQL rows or retained files without the original execution", () => {
+test("current v11 cannot adopt SQL rows or retained files without the original execution", () => {
   const f = fixture(), db = upgrade(f);
   try {
     db.prepare("DELETE FROM execution").run(); db.close();
@@ -538,7 +538,7 @@ test("stopped archive storage preserves a held legacy reader and completes maint
   const original = (db: Database.Database) => expect(JSON.parse((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)).toEqual(f.snapshot);
   const action = () => withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: original }, db => {
     invoked = true;
-    expect(db.pragma("user_version", { simple: true })).toBe(10); expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(false);
+    expect(db.pragma("user_version", { simple: true })).toBe(11); expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(false);
     expect(openTimelineStore(db, { assertWrite: () => { throw new Error("Archive readback is read-only."); } }).get(f.entry.entryId)).toEqual(f.entry);
   });
   try {

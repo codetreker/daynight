@@ -1,13 +1,15 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused, subscribeAuthPause } from '../../../api/client';
 import { getWorkerConfiguration, saveWorkerConfiguration, type WorkerConfigurationResource, type WorkerConfigurationValue } from '../../../api/worker-configuration';
+import type { ExecutionPlatform } from '../../../api/types';
+import type { WorkerCloudToolPaths } from '../../../api/worker-tool-paths';
 import { useTaskCacheScope, type TaskCacheScope } from '../../task-cache/TaskCacheProvider';
 import { isRetryableTaskCacheLifecycleChange } from '../../task-cache/project-cache';
 import { configurationDraftsEqual, configurationValuesEqual, draftFromValue, mergeConfigurationResources, parseConfigurationDraft, type ConfigurationDraft } from './model';
 
 export type ConfigurationNotice = 'saved' | 'conflict' | 'reconciled' | 'notSaved' | null;
 export type ConfigurationDraftUpdate = ConfigurationDraft | ((draft: ConfigurationDraft) => ConfigurationDraft);
-type Submission = { readonly value: WorkerConfigurationValue; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
+type Submission = { readonly value: WorkerConfigurationValue; readonly revision: string; readonly draft: ConfigurationDraft; readonly controlModeSupported: boolean; readonly toolPathsSupported: boolean; readonly draftRevision: number; dispatched: boolean; receipt: WorkerConfigurationResource | null; rejection: ApiError | null };
 type State = {
   readonly scope: TaskCacheScope; readonly workerId: string; readonly resource: WorkerConfigurationResource | null;
   readonly draft: ConfigurationDraft | null; readonly baselineDraft: ConfigurationDraft | null; readonly baselineRevision: string | null;
@@ -15,15 +17,43 @@ type State = {
   readonly uncertain: boolean; readonly unavailable: boolean; readonly submission: Submission | null; readonly abandoned: boolean; readonly protectedDraft: boolean;
 };
 const initialState = (scope: TaskCacheScope, workerId: string): State => ({ scope, workerId, resource: null, draft: null, baselineDraft: null, baselineRevision: null, refreshing: false, pending: false, error: null, errorSource: null, notice: null, uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false });
-const submittedBaseline = (state: State, submission: Submission): ConfigurationDraft => submission.controlModeSupported ? submission.draft
-  : { ...submission.draft, agentControlMode: state.baselineDraft?.agentControlMode };
+const submittedBaseline = (state: State, submission: Submission): ConfigurationDraft => {
+  const { toolPaths: _tools, ...draft } = submission.draft;
+  const toolPaths = submission.toolPathsSupported ? submission.draft.toolPaths : state.baselineDraft?.toolPaths;
+  return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }) };
+};
+const reconcileOmittedToolPaths = (state: State, submission: Submission, latest: WorkerCloudToolPaths | undefined) => {
+  const baselineDraft = submittedBaseline(state, submission);
+  if (submission.toolPathsSupported || latest === undefined || state.draft === null) return { draft: state.draft, baselineDraft, conflict: false };
+  const toolPaths = { ...latest };
+  let conflict = false;
+  for (const tool of ['codex', 'copilot', 'herdr'] as const) {
+    const baseline = state.baselineDraft?.toolPaths?.[tool], local = state.draft.toolPaths?.[tool];
+    if (JSON.stringify(local) === JSON.stringify(baseline)) continue;
+    // Omitted fields were not saved. Preserve their local edits and compare
+    // each against the original baseline before adopting a newer revision.
+    if (local !== undefined) toolPaths[tool] = local;
+    if (JSON.stringify(latest[tool]) !== JSON.stringify(baseline) && JSON.stringify(latest[tool]) !== JSON.stringify(local)) conflict = true;
+  }
+  return { draft: { ...state.draft, toolPaths }, baselineDraft: { ...baselineDraft, toolPaths: structuredClone(latest) }, conflict };
+};
+const mergeConfigurationReceipt = (current: WorkerConfigurationResource | null, receipt: WorkerConfigurationResource): WorkerConfigurationResource => {
+  const merged = mergeConfigurationResources(current, receipt);
+  if (current === null) return merged;
+  // Reads discover tool capability. A delayed or legacy PUT receipt cannot
+  // replace a newer read's capability decision when its result is published.
+  const { toolPathsSupported: _tools, ...resource } = merged;
+  return { ...resource, ...(current.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
+};
 type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly abandon: () => void; readonly save: () => Promise<void> };
 const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, abandon: () => {}, save: async () => {} };
 
-export const useWorkerConfiguration = (workerId: string, { readEnabled }: { readonly readEnabled: boolean }) => {
+export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPathsEditable = false, platform }: { readonly readEnabled: boolean; readonly toolPathsEditable?: boolean; readonly platform?: ExecutionPlatform }) => {
   const scope = useTaskCacheScope();
   const [state, setState] = useState<State>(() => initialState(scope, workerId));
   const stateRef = useRef(state), actions = useRef<Actions>(emptyActions);
+  const toolAccess = useRef({ editable: toolPathsEditable, platform });
+  useLayoutEffect(() => { toolAccess.current = { editable: toolPathsEditable, platform }; }, [toolPathsEditable, platform]);
   const setDraft = useCallback((update: ConfigurationDraftUpdate) => actions.current.setDraft(update), []);
   const refresh = useCallback(() => actions.current.refresh(), []);
   const loadLatest = useCallback(() => actions.current.loadLatest(), []);
@@ -69,9 +99,13 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
         // Establish its baseline without replacing any existing field edits.
         old = { ...old, draft: { ...old.draft, agentControlMode: mode }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, agentControlMode: mode } };
       }
+      const tools = resource.desired?.value.toolPaths;
+      if (resource.toolPathsSupported === true && tools !== undefined && old.draft !== null && old.draft.toolPaths === undefined) {
+        old = { ...old, draft: { ...old.draft, toolPaths: structuredClone(tools) }, baselineDraft: old.baselineDraft === null ? null : { ...old.baselineDraft, toolPaths: structuredClone(tools) } };
+      }
       if (!old.pending && old.submission?.receipt !== null && old.submission?.receipt !== undefined) {
         const submitted = old.submission;
-        const merged = mergeConfigurationResources(resource, submitted.receipt!);
+        const merged = mergeConfigurationReceipt(resource, submitted.receipt!);
         if (old.abandoned && merged.desired !== null) {
           const draft = draftFromValue(merged.desired.value);
           return { ...old, resource: merged, draft, baselineDraft: draft, baselineRevision: merged.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
@@ -80,12 +114,22 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       }
       if (old.uncertain && !old.pending && old.submission !== null) {
         const submitted = old.submission;
+        const observedTools = incoming.toolPathsSupported === true && incoming.desired?.revision === resource.desired?.revision ? incoming.desired?.value.toolPaths : undefined;
+        // A legacy or stale projection cannot authorize retained paths against
+        // a newer revision, even when those paths were omitted from the PUT.
+        if ((submitted.toolPathsSupported || old.baselineDraft?.toolPaths !== undefined || old.draft?.toolPaths !== undefined) && observedTools === undefined) {
+          return { ...old, resource, refreshing: false, error: null, errorSource: null, unavailable: false };
+        }
         if (old.abandoned && resource.desired !== null) {
           const draft = draftFromValue(resource.desired.value);
           return { ...old, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
-        if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value, submitted.controlModeSupported)) {
-          return { ...old, resource, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: submittedBaseline(old, submitted), baselineRevision: resource.desired.revision, protectedDraft: false };
+        if (resource.desired !== null && configurationValuesEqual(resource.desired.value, submitted.value, submitted.controlModeSupported, submitted.toolPathsSupported)) {
+          const reconciled = reconcileOmittedToolPaths(old, submitted, observedTools);
+          if (reconciled.conflict) {
+            return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'conflict', uncertain: false, unavailable: false, submission: null, protectedDraft: true };
+          }
+          return { ...old, resource, draft: reconciled.draft, refreshing: false, error: null, errorSource: null, notice: 'reconciled', uncertain: false, unavailable: false, submission: null, baselineDraft: reconciled.baselineDraft, baselineRevision: resource.desired.revision, protectedDraft: false };
         }
         const conflict = resource.desired !== null && resource.desired.revision !== submitted.revision;
         const protectedDraft = conflict && old.draft !== null && !configurationDraftsEqual(old.draft, submitted.draft) &&
@@ -112,7 +156,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       if (explicit) update(old => ({ ...old, refreshing: true }));
       try {
         await waitForAdmission(signal);
-        const resource = await getWorkerConfiguration(workerId, signal, admission);
+        const resource = await getWorkerConfiguration(workerId, signal, { ...admission, toolPathsSupported: true });
         await waitForAdmission(signal);
         if (current()) acceptRead(resource);
       } catch (error) {
@@ -176,9 +220,11 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       if (old.pending || old.uncertain || old.notice === 'conflict' || old.submission !== null || old.draft === null || old.baselineRevision === null || old.resource?.desired === null || old.resource === null) return;
       if (old.resource.desired.revision !== old.baselineRevision) { update(value => ({ ...value, notice: 'conflict' })); return; }
       const controlModeSupported = old.resource.controlModeSupported === true;
-      const parsed = parseConfigurationDraft(old.draft, controlModeSupported);
-      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported)) return;
-      const submitted: Submission = { value: parsed.value, revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, draftRevision, dispatched: false, receipt: null, rejection: null };
+      const toolPathsSupported = old.resource.toolPathsSupported === true && toolAccess.current.editable;
+      const parsed = parseConfigurationDraft(old.draft, controlModeSupported, { toolPathsSupported, ...(toolAccess.current.platform === undefined ? {} : { platform: toolAccess.current.platform }) });
+      if (parsed.value === null || old.baselineDraft !== null && configurationDraftsEqual(old.draft, old.baselineDraft, controlModeSupported, toolPathsSupported)) return;
+      const submitted: Submission = { value: parsed.value, revision: old.baselineRevision, draft: structuredClone(old.draft), controlModeSupported, toolPathsSupported, draftRevision, dispatched: false, receipt: null, rejection: null };
+      const toolsAdmitted = () => !submitted.toolPathsSupported || toolAccess.current.editable && currentState().resource?.toolPathsSupported === true;
       publication?.abort(); publication = null;
       const controller = new AbortController(); write = controller;
       const signal = AbortSignal.any([controller.signal, scope.signal]);
@@ -190,7 +236,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
         void publish(async () => {
           if (!owns()) return;
           update(value => {
-            const resource = mergeConfigurationResources(value.resource, incoming);
+            const resource = mergeConfigurationReceipt(value.resource, incoming);
             if (value.abandoned && resource.desired !== null) {
               const draft = draftFromValue(resource.desired.value);
               return { ...value, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, abandoned: false, protectedDraft: false };
@@ -202,7 +248,15 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
       try {
         await abortable(waitForAdmission(signal), signal);
         signal.throwIfAborted();
-        const incoming = await abortable(saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, onDispatch: () => { submitted.dispatched = true; }, onConfirmed: receipt => { submitted.receipt = receipt; }, onRejected: error => { submitted.rejection = error; } }), signal);
+        if (!toolsAdmitted()) {
+          update(value => ({ ...value, pending: false, submission: null }));
+          return;
+        }
+        const incoming = await abortable(saveWorkerConfiguration(workerId, submitted.revision, submitted.value, signal, { ...admission, controlModeSupported: submitted.controlModeSupported, toolPathsSupported: submitted.toolPathsSupported, onDispatch: () => {
+          // The API can wait for identity again after the scope admission above.
+          if (!toolsAdmitted()) throw new Error('Worker tool path editing is unavailable.');
+          submitted.dispatched = true;
+        }, onConfirmed: receipt => { submitted.receipt = receipt; }, onRejected: error => { submitted.rejection = error; } }), signal);
         settleConfirmed(incoming);
       } catch (error) {
         if (!owns()) return;
@@ -287,7 +341,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled }: { read
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
     dirty, publicationPending: !current.pending && !current.uncertain && current.submission !== null,
-    saveableDirty: dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, current.resource?.controlModeSupported === true),
+    saveableDirty: dirty && current.draft !== null && current.baselineDraft !== null && !configurationDraftsEqual(current.draft, current.baselineDraft, current.resource?.controlModeSupported === true, current.resource?.toolPathsSupported === true && toolPathsEditable),
     conflict,
     setDraft, refresh, loadLatest, save, discard: loadLatest, abandon,
   };

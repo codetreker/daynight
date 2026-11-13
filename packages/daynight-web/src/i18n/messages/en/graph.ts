@@ -8,7 +8,7 @@ export const graph: GraphMessages = {
   rootSummary: ({ total, remaining }) => `${count(total, 'task', 'tasks')} · ${number(remaining)} unfinished`,
   inProgressCount: ({ count }) => `${number(count)} in progress`,
   chainList: 'Task chains',
-  progress: ({ done, cancelled, total }) => cancelled === 0 ? `${number(done)}/${number(total)} completed` : `${number(done + cancelled)}/${number(total)} ended · ${number(done)} completed · ${number(cancelled)} cancelled`,
+  progress: ({ done, total }) => `${number(done)}/${number(total)} completed`,
   chainTitle: 'Task chain',
   goalTitle: 'Goal dependency graph',
   goalGraph: 'View graph',

@@ -27,7 +27,6 @@ export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoa
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenListChain: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
 } & GraphProps) => {
-  const openChainId = openGraphTarget?.kind === 'chain' ? openGraphTarget.rootId : null;
   const { locale, messages: { workspace: { goals: m }, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focused = useRef<HTMLElement | null>(null);
@@ -41,7 +40,7 @@ export const GoalList = ({ projectId, index, goals, total, onOpenGoal, onOpenGoa
     <div className="task-view-toolbar"><span className="task-view-summary">{m.summary({ shown: pagination?.total ?? goals.length, total })}</span><button className="button primary" type="button" onClick={() => setCreating(true)}>{locale === 'zh-CN' ? '新建 Goal' : 'New Goal'}</button></div>
     {total === 0 ? <div className="state-box"><h3>{m.empty}</h3><p>{m.emptyDetail}</p></div>
       : goals.length === 0 ? <div className="state-box"><h3>{assignment.noMatches}</h3></div>
-        : <ul className="goal-list">{goals.map((goal) => <GoalItem key={goal.id} projectId={projectId} index={index} goal={goal} workerMachines={workerMachines} openChainId={openChainId} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+        : <ul className="goal-list">{goals.map((goal) => <GoalItem key={goal.id} projectId={projectId} index={index} goal={goal} {...(summaries === undefined ? {} : { summaries })} workerMachines={workerMachines} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenListTask={onOpenListTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     {pagination !== undefined && <ListPagination label={m.list} {...pagination} />}
     {creating && <GoalCreate projectId={projectId} onClose={() => setCreating(false)} onRefreshGraph={onRefreshGraph ?? (() => {})} />}
     {openGraphTarget !== null && <ProjectListGraphHost projectId={projectId} index={index} {...(summaries === undefined ? {} : { summaries })} target={openGraphTarget} onOpenTask={onOpenTask} onOpenGoalTask={onOpenGoalGraphTask} graphError={graphError} {...(onRefreshGraph === undefined ? {} : { onRefreshGraph })} {...(onNavigateExternalTask === undefined ? {} : { onNavigateExternalTask })} onOpenChain={(id, trigger) => onOpenListChain(id, trigger, null)} onClose={onCloseChain} onRestoreFocus={onRestoreGraphFocus ?? (() => {})} {...(renderNested === undefined ? {} : { renderNested })} {...(onGraphRootChange === undefined ? {} : { onRootChange: onGraphRootChange })} />}

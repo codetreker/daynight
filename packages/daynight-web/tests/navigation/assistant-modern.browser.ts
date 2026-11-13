@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { BOT_TIME, BOT_USER, botDefaults, botDefinition, botId } from '../helpers/bots';
+import { BOT_TIME, BOT_USER, botAttentionHeaders, botDefaults, botDefinition, botId } from '../helpers/bots';
 import { focusBotControl } from '../helpers/bot-heading';
 import type { BotViewportOptions } from './bots-viewport-session';
 
@@ -14,7 +14,7 @@ async function install(page: Page, options?: BotViewportOptions) {
   const writes: string[] = [];
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER } });
+    const send = (json: unknown, status = 200) => route.fulfill({ json, status, headers: { 'Daynight-User-ID': BOT_USER, ...botAttentionHeaders(route.request().headers(), status) } });
     if (request.method() !== 'GET') {
       writes.push(`${request.method()} ${path}`);
       return send({ error: { code: 'method_not_allowed', message: 'No HTTP writes are expected.', requestId: 'assistant-browser-fixture' } }, 405);

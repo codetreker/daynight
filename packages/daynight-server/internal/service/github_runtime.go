@@ -39,6 +39,14 @@ func (a *App) assembleGitHub(db store.Transactions, c githubconfig.Config, logge
 	if !ok {
 		return errors.New("github work reader unavailable")
 	}
+	signals, ok := db.(store.GitHubSignalTransaction)
+	if !ok {
+		return errors.New("github signal transaction unavailable")
+	}
+	receiver, err := githubservice.NewWebhookReceiver(signals, c.AppID, logger)
+	if err != nil {
+		return err
+	}
 	key, err := c.PrivateKey()
 	if err != nil {
 		return err
@@ -58,6 +66,7 @@ func (a *App) assembleGitHub(db store.Transactions, c githubconfig.Config, logge
 		return err
 	}
 	a.GitHubManager = githubservice.NewManager(db, client, c.AppID)
+	a.GitHubWebhook = receiver
 	g := &githubRuntime{runner: runner, client: client, logger: logger}
 	a.githubRuntime = g
 	ready := a.Ready

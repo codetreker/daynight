@@ -13,10 +13,10 @@ const boundProject = (data: unknown, id: string): Project => {
   return value;
 };
 
-export const getProject = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<Project> => {
+export const getProject = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission, onDispatch?: () => void): Promise<Project> => {
   const id = requestId(projectId);
   if (admission === undefined) return read(`/api/v1/projects/${id}`, signal, (data) => boundProject(data, id), decodeProjectJson);
-  return request(`/api/v1/projects/${id}`, signal, { headers: { Accept: "application/json" } }).then((response) => {
+  return request(`/api/v1/projects/${id}`, signal, { headers: { Accept: "application/json" } }, onDispatch).then((response) => {
     assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
     return json(response, signal, (data) => boundProject(data, id), decodeProjectJson);
   });

@@ -5,7 +5,7 @@ import { canonicalId } from "../../api/parse.js";
 import { IMAGE_LIMITS } from "../../session/image-values.js";
 import { ControllerMediaBudgetError, openMediaBudgetLedger } from "./media/budget-ledger.js";
 import { controllerMediaDiskBytes } from "./media/disk-budget.js";
-import { CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES, controllerMetadataBudget, ControllerMetadataBudgetError } from "./media/metadata-budget.js";
+import { controllerMetadataBudget, ControllerMetadataBudgetError } from "./media/metadata-budget.js";
 
 export class ControllerStorageFreeSpaceError extends Error {
   constructor() { super("Controller media storage free-space budget exceeded."); this.name = "ControllerStorageFreeSpaceError"; }
@@ -58,8 +58,9 @@ export const reserveControllerStoragePeak = (file: string, stateDirectory: strin
 /** A reservation replaces the execution's absolute charge, including durable unfinished uploads. */
 export const assertControllerStorageCapacity = (file: string, db: Database.Database, stateDirectory: string, executionId: string | undefined, additionalBytes = 0, deadline?: number): void => {
   if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) throw new TypeError("Controller storage growth must be a nonnegative safe integer.");
-  controllerMetadataBudget(file, db).assert(additionalBytes);
+  const metadata = controllerMetadataBudget(file, db);
+  metadata.assert(additionalBytes);
   if (db.memory) return;
   const media = controllerStorageMediaUsage(file, db);
-  reserveControllerStoragePeak(file, stateDirectory, executionId, media.reservedBytes + CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES, Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes, deadline);
+  reserveControllerStoragePeak(file, stateDirectory, executionId, media.reservedBytes + metadata.reservationCeiling(), Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes, deadline);
 };

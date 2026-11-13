@@ -28,8 +28,10 @@ The design separates occurrence, resource, upload and operation identities.
 Complete upload means both full decoders agree and the service has durably
 published the original and its owner reference. Native acceptance requires the
 provider's exact oracle. Unknown dispatch retains its original identity and
-pins, with observation instead of replay. Logical image capacity, physical
-storage and both complete archive representations are reserved before admission.
+pins, with observation instead of replay. The original design reserved logical image capacity, physical storage and both
+complete archive representations before admission. The later [actual content
+capacity decision](2026-11-13-session-actual-content-capacity.md) replaces
+that reservation while retaining the identity and publication guarantees.
 
 Service and Controller run the same packaged Node.js 24 and sharp/libvips
 validation helper independently. The helper accepts only caller-owned file

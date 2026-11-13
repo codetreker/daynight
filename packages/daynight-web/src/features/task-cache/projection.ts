@@ -1,5 +1,6 @@
 import type { Project, TaskDependencyState, TaskGraph, TaskGraphSummary, TaskSummary, WorkerClaim } from "../../api/types";
 import { readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
+import { sameTaskTags } from "../../api/task-tags";
 import { buildGraphIndex, GraphDataError, type GraphIndex } from "../task-graph/model";
 
 export const compareTimestamps = (left: string, right: string): number => {
@@ -25,7 +26,7 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&
-  sameTaskProperties(left.properties, right.properties) &&
+  sameTaskProperties(left.properties, right.properties) && sameTaskTags(left.tags, right.tags) &&
   sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) && sameTime(left.cancelledAt, right.cancelledAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
@@ -41,7 +42,7 @@ export const projectSummaries = (project: Project, summaries: readonly TaskSumma
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
   const ordinary = ordered.filter((task) => task.type === "task");
   const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordinary.length, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
-  const tasks = ordinary.map(({ version, properties: _properties, ...task }) => {
+  const tasks = ordinary.map(({ version, properties: _properties, tags: _tags, ...task }) => {
     const state = dependencyStates.get(task.id);
     if (state === undefined || state.taskVersion !== version) throw new GraphDataError();
     const { blockedBy, ready } = state;

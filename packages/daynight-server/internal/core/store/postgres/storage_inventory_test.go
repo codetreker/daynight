@@ -2,10 +2,14 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/google/uuid"
 )
@@ -118,5 +122,113 @@ func TestBackupInventoryRetainsMigrationAndSkipsReleasedStagingTombstones(t *tes
 	})
 	if e != nil || calls != 1 {
 		t.Fatal(calls, e)
+	}
+}
+
+func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		offset   int64
+		optional bool
+	}{
+		{"receiving", 0, true}, {"failed", 0, true}, {"failed newline", 0, true}, {"failed tab", 0, true}, {"expired", 0, true}, {"released", 0, true},
+		{"confirmed", 0, false}, {"partially confirmed", 0, false}, {"nonfirst", 1, false},
+		{"verifying zero", 0, false}, {"complete zero", 0, false}, {"missing offset", 0, false},
+		{"numeric offset", 0, false}, {"noncanonical offset", 0, false}, {"missing state", 0, false},
+		{"bad hash", 0, false}, {"bad path", 0, false}, {"bad length", 0, false}, {"bad spec", 0, false}, {"bad receipt", 0, false}, {"wrong actor", 0, false}, {"invalid failure", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := isolatedStore(t)
+			ctx := t.Context()
+			owner, id, execution, upload := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+			if _, err := database.Pool.Exec(ctx, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id) VALUES($1,$2,$1,'{}','{}','test',$3)`, id, owner, execution); err != nil {
+				t.Fatal(err)
+			}
+			image := uuid.NewString()
+			actor := owner
+			if tc.name == "wrong actor" {
+				actor = uuid.NewString()
+			}
+			expiry := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
+			spec := sp.ImageUploadSpec{UploadID: upload, ImageID: image, Target: sp.ImageTarget{ServerOrigin: "https://daynight.cc", ActorUserID: actor, Fence: sp.Fence{SessionID: id, TestExecutionID: execution, ExecutionGeneration: "1"}}, Name: "original.png", MediaType: "image/png", ByteLength: "2", SHA256: strings.Repeat("a", 64)}
+			receipt := sp.ImageUploadReceipt{UploadID: upload, ImageID: image, Target: spec.Target, State: "receiving", AcceptedOffset: "0", Spec: sp.ImageUploadMetadata{Name: spec.Name, MediaType: spec.MediaType, ByteLength: spec.ByteLength, SHA256: spec.SHA256}, ExpiresAt: expiry.Format(time.RFC3339Nano)}
+			switch tc.name {
+			case "failed", "expired":
+				receipt.State, receipt.Error = tc.name, &sp.ImageError{Code: "storage_unavailable", Message: "Storage unavailable."}
+			case "failed newline":
+				receipt.State, receipt.Error = "failed", &sp.ImageError{Code: "storage_unavailable", Message: "Storage\nunavailable."}
+			case "failed tab":
+				receipt.State, receipt.Error = "failed", &sp.ImageError{Code: "storage_unavailable", Message: "Storage\tunavailable."}
+			case "invalid failure":
+				receipt.State, receipt.Error = "failed", &sp.ImageError{Code: "storage_unavailable", Message: " "}
+			case "released":
+				receipt.State = tc.name
+			case "confirmed", "partially confirmed":
+				receipt.AcceptedOffset = "1"
+			case "verifying zero":
+				receipt.State = "verifying"
+			case "complete zero":
+				receipt.State = "complete"
+			}
+			specRaw, _ := json.Marshal(spec)
+			receiptRaw, _ := json.Marshal(receipt)
+			var receiptFields map[string]any
+			_ = json.Unmarshal(receiptRaw, &receiptFields)
+			switch tc.name {
+			case "missing offset":
+				delete(receiptFields, "acceptedOffset")
+			case "numeric offset":
+				receiptFields["acceptedOffset"] = 0
+			case "noncanonical offset":
+				receiptFields["acceptedOffset"] = "00"
+			case "missing state":
+				delete(receiptFields, "state")
+			case "bad receipt":
+				receiptFields["uploadId"] = uuid.NewString()
+			case "bad spec":
+				spec.UploadID = uuid.NewString()
+				specRaw, _ = json.Marshal(spec)
+			}
+			receiptRaw, _ = json.Marshal(receiptFields)
+			if _, err := database.Pool.Exec(ctx, `INSERT INTO session_image_uploads(session_id,upload_id,actor_id,image_id,blob_id,spec,receipt,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, id, upload, actor, image, uuid.NewString(), specRaw, receiptRaw, expiry); err != nil {
+				t.Fatal(err)
+			}
+			length := 1
+			if tc.name == "partially confirmed" {
+				length = 2
+			}
+			if tc.name == "bad length" {
+				length = 0
+			}
+			digest := strings.Repeat("a", 64)
+			if tc.name == "bad hash" {
+				digest = "not-a-sha256"
+			}
+			namespace, err := sessionresource.NewNamespace("", owner, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, err := namespace.ChunkPath(upload, tc.offset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "bad path" {
+				path = "wrong/path"
+			}
+			if _, err := database.Pool.Exec(ctx, `INSERT INTO session_image_chunks(session_id,upload_id,chunk_offset,byte_length,sha256,blob_path) VALUES($1,$2,$3,$4,$5,$6)`, id, upload, tc.offset, length, digest, path); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			err = database.VerifyStorageInventory(ctx, func(v store.StorageInventory) error {
+				calls++
+				if len(v.Objects) != 1 || v.Objects[0].Path != path || v.Objects[0].ByteLength != int64(length) || v.Objects[0].Optional != tc.optional {
+					t.Fatal("chunk or its confirmation status changed", v.Objects)
+				}
+				return nil
+			})
+			if calls != 1 || err != nil {
+				t.Fatal("inventory failed", calls, err)
+			}
+		})
 	}
 }

@@ -44,3 +44,15 @@ test("accepts an empty legacy blob receipt only with its canonical zero offset a
     expect(() => archive.parseSessionArchiveFileReceipt({ ...receipt, ...changed })).toThrow();
   }
 });
+
+test("bounds schema3 timeline and history separately from legacy archives", () => {
+  const maximum = archive.SESSION_ARCHIVE_TIMELINE_MAX_BYTES;
+  for (const length of [64 * 1024 * 1024 + 1, maximum]) {
+    expect(archive.parseSessionArchiveManifest({ ...manifest(), timeline: { ...manifest().timeline, byteLength: String(length) } }).timeline.byteLength).toBe(String(length));
+  }
+  expect(() => archive.parseSessionArchiveManifest({ ...manifest(), timeline: { ...manifest().timeline, byteLength: String(maximum + 1) } })).toThrow();
+  const receipt = { fileId: id(8), state: "complete", acceptedOffset: String(archive.SESSION_ARCHIVE_HISTORY_MAX_BYTES), byteLength: String(archive.SESSION_ARCHIVE_HISTORY_MAX_BYTES), sha256: digest("body"), error: null };
+  expect(archive.parseSessionArchiveFileReceipt(receipt)).toEqual(receipt);
+  expect(() => archive.parseSessionArchiveFileReceipt({ ...receipt, byteLength: String(archive.SESSION_ARCHIVE_HISTORY_MAX_BYTES + 1), acceptedOffset: String(archive.SESSION_ARCHIVE_HISTORY_MAX_BYTES + 1) })).toThrow();
+  expect(() => archive.parseSessionArchiveStatus({ state: "ready", sha256: digest("legacy"), byteLength: String(64 * 1024 * 1024 + 1), errorCode: null })).toThrow();
+});

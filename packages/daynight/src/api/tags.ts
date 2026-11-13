@@ -16,16 +16,20 @@ export type TagDeletionReceipt = { readonly projectId: string; readonly tagId: s
 // The service trims Unicode White_Space and preserves all other presentation spelling.
 export const normalizedTagName = (name: string): string => name.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 
+export const parseTagName = (value: unknown): string => {
+  const name = text(value, true);
+  if (name !== normalizedTagName(name) || Array.from(name).length > 64 || /[\p{Cc}\u2028\u2029]/u.test(name)) return malformed();
+  return name;
+};
+
 export const parseTag = (value: unknown, projectId: string, tagId?: string): Tag => {
   const data = fields(value, ["id", "projectId", "name", "version", "createdAt", "updatedAt", "usage"]);
   const usage = fields(data.usage, ["tasks", "goals"]);
   const result = {
-    id: id(data.id), projectId: id(data.projectId), name: text(data.name, true), version: resourceVersion(data.version),
+    id: id(data.id), projectId: id(data.projectId), name: parseTagName(data.name), version: resourceVersion(data.version),
     createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt), usage: { tasks: count(usage.tasks), goals: count(usage.goals) },
   };
-  if (result.projectId !== projectId || tagId !== undefined && result.id !== tagId
-    || result.name !== normalizedTagName(result.name) || Array.from(result.name).length > 64
-    || /[\p{Cc}\u2028\u2029]/u.test(result.name)) return malformed();
+  if (result.projectId !== projectId || tagId !== undefined && result.id !== tagId) return malformed();
   return result;
 };
 

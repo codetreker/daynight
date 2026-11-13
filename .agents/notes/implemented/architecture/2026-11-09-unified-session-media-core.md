@@ -60,10 +60,9 @@ Releasing an unused complete upload retires its preparation pin and retains its
 upload tombstone. A resource with no remaining references receives a durable
 `gc_pending` marker under the Session lock. New references and covering leases
 cannot revive it; existing exact reader and writer locks remain held through
-physical cleanup and the final database confirmation. Its row and quota remain
-until those barriers finish. A cleanup error or unknown commit therefore leaves
-the original identity available for reconciliation rather than returning space
-that might still be occupied. Cleanup sweeps the exact typed upload namespace,
+physical cleanup and the final database confirmation. Its row remains until
+those barriers finish, preserving both its content accounting and original identity
+for reconciliation after cleanup errors or unknown commits. Cleanup sweeps the exact typed upload namespace,
 not only paths with committed chunk rows: durable file publication can precede
 a failed or uncertain chunk-row commit. A shared upload payload gate joins late
 read-response writers before the durable sweep and final accounting decision.
@@ -79,8 +78,8 @@ including lazy media-directory and budget-ledger initialization before a local
 release can begin. Typed storage, metadata-capacity and local reader-busy failures
 remain separate from identity, format, safety and native-use refusals. Only that release-specific response keeps the original durable service
 request pending for cleanup under the same request ID, body and fence. Existing
-terminal results remain immutable. Files and quota stay charged through unknown,
-cancelled and failed cleanup until all release barriers confirm completion.
+terminal results remain immutable. Files and cleanup responsibility remain
+through unknown, cancelled and failed cleanup until all barriers confirm completion.
 Fixed upload expiry follows the same mechanism;
 stopped archive preparation and sealing reconcile abandoned uploads without the
 original client. Occupied operation, unknown, message, record and native-resume
@@ -114,9 +113,8 @@ New media tables keep identity and concurrency uniqueness in PostgreSQL while
 protocol, state, expiry and rate policy belong to core. Account token buckets
 retain a short owner/category row lock so a preparation can debit control and
 prepare buckets together without replaying the authorized operation on a second
-bucket conflict. Aggregate volume and transfer admission retain deployment locks
-because a single resource version cannot cover occupancy added by other
-Sessions. These locks end before I/O. Core supplies the lease occupancy limits as explicit
+bucket conflict. Transfer lease admission retains its deployment lock because a single resource
+version cannot cover concurrent occupancy across Sessions. The lock ends before I/O. Core supplies the lease occupancy limits as explicit
 atomic conditions and decides capture transitions before a compare-and-swap of
 the original request, receipt and validation facts. Source ACK retention likewise
 belongs to core: original identity/hash checks precede its bounded prune and
@@ -137,9 +135,9 @@ the shared archive permit and timeline read lease survive until response
 delivery. No legacy archive copy or second competing archive admission is needed.
 
 A source retry retains its capture, occurrence and locator while a new attempt
-fences private staging and every subsequent commit. Its reservation and durable
-Controller request commit together, so cancellation cannot strand a reserved
-attempt without a recoverable request. Controller decoding has one active slot
+fences private staging and every subsequent commit. Its attempt and durable
+Controller request commit together, so cancellation cannot strand an attempt
+without a recoverable request. Controller decoding has one active slot
 and a bounded queue of metadata requests; transient capacity rejection leaves
 the original durable request pending rather than permanently poisoning that
 identity. Observation reconciles existing work and does not create source IO.
@@ -175,7 +173,8 @@ An active connection handoff persists its latest target history epoch together
 with the consumed grant. It retains acknowledged entries, source hashes and
 file identities, allowing stopped synchronization to finish that verified
 connection without accepting arbitrary epoch changes or reverting the chain.
-The 132 MiB archive reservation remains a conservative capacity commitment.
+The [actual content capacity decision](2026-11-13-session-actual-content-capacity.md)
+replaces the former fixed archive and future-volume reservations.
 Deletion closes admission and joins physical operations before its final sweep.
 Ordinary media admission also reaps crash-orphaned leases across the deployment.
 It ends the listing transaction before trying each original filesystem lock,
@@ -220,8 +219,8 @@ rule while allowing display snapshots to preserve unresolved history.
 **Publish a deterministic schema1 archive copy for old readers.** This was the
 earlier compatibility plan. It duplicates metadata, creates a second hash and
 publication boundary and constrains current records to two complete projections.
-Requiring the unified reader for new records keeps one authoritative closure;
-the conservative reservation is retained rather than assuming immediate savings.
+Requiring the unified reader for new records keeps one authoritative closure.
+The later actual content capacity decision replaces the former reservation.
 
 **Store only local paths, or collect originals when a Session ends.** Sources may
 change or disappear and a Controller may stop before that point. Upload and
@@ -229,7 +228,7 @@ capture success therefore include service persistence before archive sealing.
 
 **Keep raw media chunks in completed database requests.** This makes relay
 replay convenient but retains originals after upload release outside resource
-accounting. Bounded metadata plus the already reserved shared files preserves
+accounting. Bounded metadata plus shared staging files preserves
 cross-instance replay without a permanent database copy. A transient mailbox
 alone cannot carry that durable responsibility across relay instances.
 

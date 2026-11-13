@@ -34,8 +34,10 @@ behavior, retaining real database and cross-Worker acceptance where needed.
 This note originally delivered the design decision without runtime support.
 The [server implementation](2026-11-12-assistant-task-server.md) applies the
 contract to the API and persistence layer. The [CLI implementation](../feature/2026-11-13-assistant-task-cli.md)
-provides private operation records and single-writer coordination; Worker
-continuous execution still requires its own implementation and evidence.
+provides private operation records and single-writer coordination. The
+[Worker runtime](2026-11-13-assistant-task-worker-runtime.md) uses them for
+continuous renewal, transfer reception and application cancellation; its
+cross-Worker behavior has separate acceptance evidence.
 
 ## Alternatives
 

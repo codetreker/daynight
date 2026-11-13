@@ -8,7 +8,7 @@
 
 - 单图 10 MiB 的输入上限必须贯穿上传、Provider 输入、在线资源读取和归档。不能出现前端接受，而后续层仍按 8 MiB 无法读取或保存的状态。
 - 大图片使用有界的传输和内存，不阻塞已有命令、回执与时间线读取；一次传输失败不破坏文本会话。服务器、Controller、浏览器和持久化格式需要有明确兼容行为。
-- 现有单归档 64 MiB JSON 限制包含 Base64 膨胀，不能直接视作 64 MiB 图片容量。图片存储不得因图片内容大小而轻易使仍符合已发布会话容量要求的记录无法归档。方案需要给出会话图片预算、超限可见结果和归档存储方式，使“已接受图片可历史回看”的要求成立。
+- 旧 schema1 归档的 64 MiB JSON 上限包含 Base64 膨胀；schema3 将图片原件外置。已接受图片须可历史回看，超过 Session 实际内容总量或真实磁盘不足时明确拒绝新增内容。
 - 老版本 Controller 或客户端不具备图片能力时，明确阻止图片操作并保留文本能力；不能通过严格协议拒绝造成整个 Session 无法读取。具体版本协商与发布顺序由方案定义。
 - 原型中的模拟上传和回显仅用于界面评审，不能证明真实 Provider、网络、存储、权限或平台验收。
 
@@ -20,13 +20,13 @@
 | --- | --- |
 | 单条输入 | 最多 8 张，每图 10,485,760 bytes，全部图片合计 20,971,520 bytes；任一图片失败整条拒绝，无截断、剩余子集或仅文字发送。 |
 | 输入与显示格式 | 输入 PNG/JPEG/WebP；显示保留 PNG/JPEG/GIF/WebP/AVIF。SVG、HTML、空、伪装、截断和损坏内容明确拒绝，不转码替换原件。 |
-| Session 原件 | committed + reserved 不超过 1,073,741,824 bytes 且不超过 1000 resource；未知长度先预留单图上限。同 resourceId 多引用计一次，不同 resourceId 即使相同摘要仍分别计量；出现数不等于资源数。超限拒绝新接纳，已有图片仍可读。 |
-| 完整历史 | 现行 timeline 与旧数据边界的 schema1 envelope 各自不超过 67,108,864 bytes，最多 100,000 entries；全部文本、reasoning、工具、失败图片、bindings、retained 和撤回容器计入。预留后并发文字不能挤占已承诺空间。 |
-| 归档 | manifest 不超过 4,194,304 bytes、1000 项；新图片原件不内嵌 Base64。完整同步最多 67,125,248 bytes，不放宽其中 timeline 的 64 MiB 上限；大单条正文可完整同步，不能用显示分页截短代替。 |
-| 服务存储准入 | 覆盖暂存与原件最坏两份空间，空闲高于 max(1 GiB, 卷容量 5%)；每图片 Session 另计 132 MiB 归档元数据和最坏暂存增量。实占与预留不双计，跨卷复制计峰值；ENOSPC 明确失败，不删除历史原件腾空间。 |
-| 上传身份与保留 | 上传准备资格为 24 小时；GET 或重传不续期。最多 10,000 个上传身份 tombstone，达到限制拒绝新身份但保留查询、释放、文本和历史。过期不清除 operation unknown、消息、记录或 native/resume 的有效引用。 |
+| Session 实际内容 | 正文、完整索引、不同已提交 resourceId 的原件、已提交 descriptor 与已发布 manifest 合计不超过 134,217,728 bytes；同 resourceId 多引用只计一次，不同 resourceId 即使摘要相同分别计量。临时副本、数据库内部空间和无内容控制记录不计入；旧大记录保持可读，已确认重放不重复计量。 |
+| 完整历史 | schema3 timeline 的完整 UTF-8 编码最多 134,217,728 bytes、100,000 entries；全部文字、reasoning、工具、失败图片、bindings、retained 和撤回容器计入 Session 总量。旧 schema1/2 保持 67,108,864 bytes 边界。 |
+| 归档 | manifest 最多 4,194,304 bytes、1000 项；新图片原件不内嵌 Base64。schema3 完整同步 envelope 最多 134,234,112 bytes，其 timeline 和整个 Session 仍须满足实际内容总量。显示分页截短不能代替完整历史。 |
+| 服务存储准入 | 不为未来原件、正文、索引、归档或暂存预留额度，也不按卷空闲水位拒绝旧容量申请。实际存储不足或写入失败必须明确返回，保留原身份和清理责任，不删除历史原件腾空间。 |
+| 上传身份与保留 | 上传准备资格为 24 小时；GET 或重传不续期。身份 tombstone 保留原查询和去重职责，不以累计数量作为容量申请拒绝条件。过期不清除 operation unknown、消息、记录或 native/resume 的有效引用。 |
 | 服务传输 | 图片块最多 524,288 原字节；同 Session 全方向和全部连接代次合计最多 2 个媒体块在途，账户最多 8、部署最多 64。归档文件块 1–1,048,576 bytes，同 Session 最多 1 个，仍占公共媒体额度。控制、查询、删除和回执在块边界可进展。 |
-| Controller | 每 execution 媒体 2200 MiB，stateDirectory 媒体 8 GiB，卷空闲 512 MiB；元数据 128 MiB 加 8 MiB 结算余量；当前正文替换只计最新版本，DB/WAL/SHM、未退休旧文件和同步文件仍计真实占用。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
+| Controller | 每 execution 媒体 2200 MiB，stateDirectory 媒体 8 GiB，卷空闲 512 MiB；控制元数据 128 MiB 加 8 MiB 结算余量；已提交正文及原身份匹配的完整同步文件提供实际字节对应的额外空间，未登记孤儿不豁免。当前正文替换只计最新版本，DB/WAL/SHM、未退休旧文件和同步文件仍计真实占用。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
 | 通用完整解码 | 单轴最多 16,384，画布最多 33,554,432 像素，最多 256 帧，累计最多 67,108,864 像素，RGBA8 输出最多 268,435,456 bytes，单图最多 15 秒。完整遍历所有帧；静态为 1 帧。每解码子进程 512 MiB RSS 为监控目标，不能称为硬内存隔离。 |
 | 浏览器持久草稿 | 每账户 256 MiB，总量 512 MiB；editable 和 frozen 引用不因淘汰页面缓存而被删除。配额、事务或 Blob 错误明确阻止含图发送并保留实际编辑状态。 |
 | 浏览器页面原件 | 页面 128 MiB/32 项、owner 64 MiB/16 项；前景保留 40 MiB/2 槽，后台 88 MiB/30 项、owner 后台 24 MiB/14 项；在途缓冲计入。背景满时一个 10 MiB 预览和一个下载仍有前景准入。 |
@@ -104,9 +104,9 @@ Codex 接受必须关联原 start 返回的合法 turn.id，或 steer 返回的�
 
 ## 性能、证据记录与完成条件
 
-容量和有界性验证记录空载与负载对照、最坏并发、RSS（含子进程和 native allocation）、heap、FD、队列、对象 URL、文件/数据库用量及控制回执/历史请求进展。媒体忙碌不能饿死原控制操作；首次打开不全量载入 1 GiB 原件。沿已确认准入值验证，不擅自增加毫秒 SLA，也不把监控目标、Node heap 或画布估算当作硬内存上限。来源结算 60 秒到期不能证明 writer 停止或 commit 未发生。
+容量和有界性验证记录空载与负载对照、最坏并发、RSS（含子进程和 native allocation）、heap、FD、队列、对象 URL、文件/数据库用量及控制回执/历史请求进展。媒体忙碌不能饿死原控制操作；首次打开不全量载入图片原件。沿已确认准入值验证，不擅自增加毫秒 SLA，也不把监控目标、Node heap 或画布估算当作硬内存上限。来源结算 60 秒到期不能证明 writer 停止或 commit 未发生。
 
-Controller 当前正文采用的容量验收还须验证重复累计更新仅保留一行、无新候选文件，重开后的完整字节/hash/seq/revision/totals 一致；精确 64 MiB/100000 上界、+1 拒绝和替换不累计，同时满足实际物理准入。大体积、989 版本和 100000 条探针独立于普通 CI，记录生成数据的内容/顺序、outbox/ACK、reader 条件和 DB/WAL/SHM 实测峰值。生成探针不能冒充未取得的原事故 trace，也不能与隔离模型宣称等同性能。
+Controller 当前正文采用的容量验收还须验证重复累计更新仅保留一行、无新候选文件，重开后的完整字节/hash/seq/revision/totals 一致；精确 128 MiB/100000 上界、+1 拒绝和替换不累计，同时满足实际物理准入。大体积、989 版本和 100000 条探针独立于普通 CI，记录生成数据的内容/顺序、outbox/ACK、reader 条件和 DB/WAL/SHM 实测峰值。生成探针不能冒充未取得的原事故 trace，也不能与隔离模型宣称等同性能。
 
 正式结果记录 caseId、requirementIds、layer、result、reason、productionCommit、testCommit、combinedTree、platform、nativeVersion、sdkVersion、backend、effectiveModel、capabilityProfile、fixtureSha256、byteLength、mediaType、dimensions、imageOrder、nativeCallCount、receiptEvidence、historyEvidence、archiveHashes、measuredLimits 和 limitations。未知事实写 null 并解释；稳定脱敏身份须保持关联，不能记录认证令牌、全量 Base64、敏感路径或未授权正文。此为验收结果格式，不是产品 API。
 

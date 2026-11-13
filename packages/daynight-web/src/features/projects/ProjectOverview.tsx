@@ -1,3 +1,4 @@
+import { completionProgress } from '../task-graph/completion-progress';
 import { TaskPauseCount } from "../task-pause/TaskPause";
 import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { useId } from "react";
@@ -22,14 +23,17 @@ export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate, on
   const pausedTask = snapshot.graph.tasks.find((task) => pausedSummaryIds.has(task.id));
   const headingId = useId();
   const completion = summary.total === 0 ? 0 : Math.round((summary.done + summary.cancelled) * 100 / summary.total);
-  const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => <button className="overview-progress-row task-status-surface" data-task-status={value.status} type="button"
-    aria-label={overview.rowLabel({ title, ...value })} onClick={() => onNavigate(target)}>
+  const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => {
+    const display = completionProgress(value);
+    return <button className="overview-progress-row task-status-surface" data-task-status={value.status} type="button"
+    aria-label={overview.rowLabel({ title, done: display.displayDone, total: display.displayTotal, percent: display.percent })} onClick={() => onNavigate(target)}>
     <span className="overview-progress-title">{title}{scope !== undefined && <span className="overview-progress-scope">{scope}</span>}</span>
-    <span className="overview-progress-metric"><span>{format.number(value.ended)} / {format.number(value.total)}</span>
+    <span className="overview-progress-metric"><span>{format.number(display.displayDone)} / {format.number(display.displayTotal)}</span>
       <span className="root-progress-track" aria-hidden="true"><i style={{ width: `${value.percent}%` }} /></span></span>
     <span className="overview-progress-percent">{format.number(value.percent)}%</span>
     <svg className="overview-progress-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
   </button>;
+  };
   const rows = progress.chains.map((chain) => ({ status: chain.status,
     element: <li key={chain.taskId}>{row(`${chain.title}${chain.titleTruncated ? "…" : ""}`, chain, { kind: "chain", taskId: chain.taskId })}</li> }));
   if (progress.standalone !== null) rows.push({ status: progress.standalone.status,

@@ -14,7 +14,7 @@
 
 ## 私有状态与协调
 
-`state.ts` 复用 Session 操作恢复的私有文件实现，使用同一任务锁协调 CLI 与后续 bot host 调用。POSIX 使用文件锁、0700 目录与 0600 文件；Windows 使用已有私有 ACL 与原生文件锁实现。原子替换前同步文件，替换后同步目录；持久化失败时不发送认领请求。
+`state.ts` 复用 Session 操作恢复的私有文件实现，使用同一任务锁协调 CLI 与 [bot host](worker-bot-runtime.md#助手任务维护) 调用。POSIX 使用文件锁、0700 目录与 0600 文件；Windows 使用已有私有 ACL 与原生文件锁实现。原子替换前同步文件，替换后同步目录；持久化失败时不发送认领请求。
 
 `DAYNIGHT_BOT_STATE_DIR/assistant-claims/<origin-sha256>/<owner>.<bot>/` 保存任务状态、任务锁和以任务 ID 与操作 ID 命名的请求记录。用户转交与释放使用配置状态根中的 `assistant-tasks`，身份目录以 `user` 区分。状态包括格式版本、服务 origin、owner、Bot、任务 ID、当前凭据和待核对操作；读取核对这些身份。凭据保留令牌、代次、绑定操作 ID 与是否必须续约。独立操作文件保留完整请求意图、指纹及 prepared/confirmed/refused/not_submitted 状态。
 

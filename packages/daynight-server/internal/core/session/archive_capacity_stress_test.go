@@ -82,7 +82,7 @@ func TestArchiveMaximumLegalMetadataCapacity(t *testing.T) {
 	if len(ledger.Entries) != count || len(ledger.Occurrences) != count || len(ledger.Resources) != 1000 || estimate > maxArchiveLedgerBytes {
 		t.Fatal("legal capacity was truncated", len(ledger.Entries), len(ledger.Occurrences), len(ledger.Resources), estimate)
 	}
-	result := map[string]any{"entries": count, "occurrences": count, "resources": 1000, "timelineBytes": len(timeline), "historyBytes": len(history), "historyMaxBytes": sp.MaxArchiveHistoryBytes, "ledgerJSONBytes": len(encoded), "ledgerPostgresBoundBytes": estimate, "ledgerMaxBytes": maxArchiveLedgerBytes, "persistentReserveBytes": sp.ArchiveResourceReserve}
+	result := map[string]any{"entries": count, "occurrences": count, "resources": 1000, "timelineBytes": len(timeline), "historyBytes": len(history), "historyMaxBytes": sp.MaxArchiveHistoryBytes, "ledgerJSONBytes": len(encoded), "ledgerPostgresBoundBytes": estimate, "ledgerMaxBytes": maxArchiveLedgerBytes}
 	if url := os.Getenv("DAYNIGHT_TEST_DATABASE_URL"); url != "" {
 		// The test runner bounds CPU fixture construction; the database budget starts with database work.
 		ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)

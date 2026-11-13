@@ -68,7 +68,7 @@ export const useTaskGraph = (projectId: string) => {
     });
   }, [projectId, scope]);
   const request = useCallback(async (automatic = false, historyRetry = false, confirmationRetry = false) => {
-    if (automatic && active.current !== null) return;
+    if (automatic && (active.current !== null || access?.projectReadInFlight())) return;
     active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
@@ -82,6 +82,7 @@ export const useTaskGraph = (projectId: string) => {
       return { projectId, scope, snapshot, status: snapshot !== null ? "ready" : error === null ? "loading" : "error", refreshing: snapshot !== null && !automatic, error };
     });
     let ticket: TaskSyncTicket | null = null;
+    let projectReadRevision = scope.getProjectReadRevision(projectId);
     try {
       ticket = await scope.beginSync(projectId, signal);
       if (receipt.current === null && ticket.epoch !== null && scope.canPreviewProject(projectId)) {
@@ -101,6 +102,7 @@ export const useTaskGraph = (projectId: string) => {
       }
       const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
       const accessTicket = access?.beginObservation();
+      projectReadRevision = scope.getProjectReadRevision(projectId);
       const sessionAdmission = authRequestsPauseRevision();
       const { sync: response, receivedMonotonic } = await getTaskSync(projectId, query, scope.userId, signal, scope.principalMismatch);
       const receivedAt = Date.now();
@@ -123,7 +125,7 @@ export const useTaskGraph = (projectId: string) => {
         changed: result.changedTaskIds.length, duplicate: response.tasks.length - result.changedTaskIds.length,
         cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
-      if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess);
+      if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess, automatic);
       if (sessionAdmission === authRequestsPauseRevision()) {
         sessionStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, response), sessions: response.sessions, receivedMonotonic });
       }
@@ -132,10 +134,16 @@ export const useTaskGraph = (projectId: string) => {
       publish(result.project, true);
     } catch (error) {
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch || isAbortError(error)) return;
-      sessionStore.clear();
       console.warn("Task sync failed", { cycle_id: cycleId, project_id: projectId, ...taskCacheFailureDiagnostic(error) });
       const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
       if (missing) {
+        if (ticket !== null && !scope.canRevokeProjectRead(ticket, projectReadRevision)) {
+          setState(previous => previous.projectId === projectId && previous.scope === scope ? { ...previous, refreshing: false } : previous);
+          if (access !== null) { access.requireProjectReadRecheck(); access.retryProjectRead(); }
+          else if (!confirmationRetry) void request(false, historyRetry, true);
+          return;
+        }
+        sessionStore.clear();
         try { if (ticket !== null && !await scope.revokeProject(ticket, signal, true, error as ApiError)) return; }
         catch (storageError) { if (!isAbortError(storageError)) error = storageError; }
         if (scope.hasIdentityMismatch) return;
@@ -143,6 +151,7 @@ export const useTaskGraph = (projectId: string) => {
         setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error });
       }
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
+      if (!missing) sessionStore.clear();
       setState((previous) => {
         const snapshot = missing ? null : previous.projectId === projectId && previous.scope === scope ? previous.snapshot : null;
         return { projectId, scope, snapshot, status: snapshot === null ? "error" : "ready", refreshing: false, error };

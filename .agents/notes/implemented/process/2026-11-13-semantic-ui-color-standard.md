@@ -21,10 +21,13 @@ source-bound checks establish whether each consumer conforms.
 
 Tinted lifecycle rows use lavender for proposed, near-white for todo, blue for
 in_progress, green for done and neutral gray for cancelled. Mixed ended summaries
-remain neutral and retain done/cancelled counts. Attention uses orange and errors
+remain neutral; real ended statistics retain done/cancelled counts. Attention uses orange and errors
 use red. Actual activity, runtime health, execution policy and keyboard focus
 retain separate meanings and independent visual cues. Dark task/status focus
 indicators and selection outlines do not redefine unrelated brand treatments.
+Completion tracks use the done green because the [completion-progress decision](../bug-fix/2026-11-13-completion-progress-excludes-cancelled.md)
+excludes cancelled tasks from the display ratio. The real ended count still
+includes done and cancelled and remains distinct from completion progress.
 
 The [original row palette](../../archived/feature/2026-10-28-task-status-backgrounds.md)
 and [graph reuse](../../archived/feature/2026-11-04-graph-status-backgrounds.md)

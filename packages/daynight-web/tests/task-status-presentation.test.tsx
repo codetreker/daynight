@@ -6,7 +6,7 @@ import { TaskStatusFeedback } from '../src/features/task-detail/TaskStatus';
 import type { TaskMutationState } from '../src/features/task-detail/TaskDetailSession';
 import { LanguageSelector } from '../src/i18n/LanguageSelector';
 import { renderWithLocale } from './helpers/renderWithLocale';
-const detail: TaskDetail = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'task', projectId: 'project', version: 1n, title: 'Task content', description: '', properties: { pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: '', updatedAt: '' };
+const detail: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null, id: 'task', projectId: 'project', version: 1n, title: 'Task content', description: '', properties: { pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: '', updatedAt: '' };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
 const operation = { action: 'status' as const, status: 'in_progress' as const, version: 1n };
 const mount = (mutation = idle, task = detail) => { const onReconcile = vi.fn(); const view = renderWithLocale(<><LanguageSelector /><TaskStatusFeedback detail={task} mutation={mutation} onReconcile={onReconcile} /></>, { locale: 'en' }); return { ...view, onReconcile }; };

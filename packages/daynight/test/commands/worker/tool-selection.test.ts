@@ -14,11 +14,11 @@ const op = () => { const result = createOperation({ limits: { totalMs: 5000 } })
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
 const targets = (label: string, revision = "1") => ({ source: "cloud" as const, revision, choices: { codex: { kind: "path" as const, path: path.resolve(`/tools/${label}`) }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } } });
 const launch = (label: string): ResolvedToolLaunch => ({ schemaVersion: 1, tool: "codex", context: "web", source: "explicit", entryPath: path.resolve(`/tools/${label}`), canonicalEntryPath: path.resolve(`/tools/${label}`), executablePath: path.resolve(`/tools/${label}`), interpreterPath: null, command: { file: path.resolve(`/tools/${label}`), prefixArgs: [] }, artifacts: [], selectionKey: label.charCodeAt(0).toString(16).padStart(64, "0") });
-const create = (options: { probe?: Partial<ToolSelectionProbe>; readActiveSelections?: () => readonly ActiveToolSelection[]; verify?: (value: ResolvedToolLaunch) => Promise<void>; resolve?: (input: { choice: { kind: "path"; path: string } | { kind: "auto" } }) => Promise<ResolvedToolLaunch> } = {}) => {
+const create = (options: { probe?: Partial<ToolSelectionProbe>; readActiveSelections?: () => readonly ActiveToolSelection[]; verify?: (value: ResolvedToolLaunch) => Promise<void>; resolve?: (input: { choice: { kind: "path"; path: string } | { kind: "auto" } }) => Promise<ResolvedToolLaunch>; admitHerdr?: (value: ResolvedToolLaunch, operation: Operation) => Promise<{ state: "applied"; version: string; checkedAt: string } | { state: "pending"; reason: "active_instance" | "cleanup_unconfirmed" }> } = {}) => {
   const checked: string[] = [];
   const manager = new ToolSelectionManager({ environment: {}, cwd: path.resolve("/work"), now: () => now, readActiveSelections: options.readActiveSelections ?? (() => []),
     resolve: async input => options.resolve ? options.resolve(input) : ({ ...launch(input.choice.kind === "path" ? path.basename(input.choice.path) : "A"), tool: input.tool, context: input.context, source: input.choice.kind === "path" ? "explicit" : "path" }),
-    verify: options.verify ?? (async () => {}), probe: { check: async value => { checked.push(value.entryPath); return { version: "1.2.3", checkedAt: now }; }, close: async () => {}, ...options.probe } });
+    ...(options.admitHerdr ? { admitHerdr: options.admitHerdr } : {}), verify: options.verify ?? (async () => {}), probe: { check: async value => { checked.push(value.entryPath); return { version: "1.2.3", checkedAt: now }; }, close: async () => {}, ...options.probe } });
   return { manager, checked };
 };
 const entry = (manager: ToolSelectionManager) => manager.snapshot().entries.find(value => value.tool === "codex" && value.context === "web")!;
@@ -210,4 +210,50 @@ test("an incomplete cloud target revokes new launches while preserving frozen ve
   await expect(manager.selectForNewExecution("codex", "web", op())).rejects.toThrow("configuration is unavailable");
   await manager.verifyFrozen(frozen, op()); manager.setTargets(targets("A", "2"));
   expect((await manager.selectForNewExecution("codex", "web", op())).selectionKey).toBe(frozen.selectionKey);
+});
+
+
+test("Herdr candidates wait for the original shared instance and publish its handshake version", async () => {
+  let busy = true;
+  const { manager } = create({ admitHerdr: async () => busy ? { state: "pending", reason: "active_instance" } : { state: "applied", version: "0.9.5", checkedAt: now } });
+  await manager.prepare("herdr", "herdr", op());
+  const observed = () => manager.snapshot().entries.find(value => value.tool === "herdr")!;
+  expect(observed()).toMatchObject({ state: "pending", reason: "active_instance", actual: null, candidate: { version: "1.2.3" } });
+  await expect(manager.selectForNewExecution("herdr", "herdr", op())).rejects.toThrow("active_instance");
+  busy = false;
+  const chosen = await manager.selectForNewExecution("herdr", "herdr", op());
+  expect(observed()).toMatchObject({ state: "applied", reason: null, candidate: null, actual: { version: "0.9.5" } });
+  expect(manager.observationFor(chosen)).toEqual({ version: "0.9.5", checkedAt: now });
+  expect(parseToolPathTelemetry(manager.snapshot())).toEqual(manager.snapshot());
+});
+
+test.each(["active_instance", "cleanup_unconfirmed"] as const)("a refreshed Herdr candidate retains the old instance while admission reports %s", async reason => {
+  let current = "A", blocked = true;
+  const events: string[] = [];
+  const recipe = (label: string): ResolvedToolLaunch => ({ ...launch(label), tool: "herdr", context: "herdr", source: "path", entryPath: path.resolve("/tools/stable") });
+  const { manager } = create({
+    resolve: async () => recipe(current),
+    verify: async value => { if (value.selectionKey !== recipe(current).selectionKey) throw new ToolSelectionError(value.tool, value.context, "verify", "tool_identity_changed"); },
+    probe: {
+      reconcile: async value => { events.push(`reconcile ${value.selectionKey}`); return value.selectionKey; },
+      admit: (value, receipt) => { expect(receipt).toBe(value.selectionKey); events.push(`admit ${value.selectionKey}`); },
+      check: async value => { events.push(`check ${value.selectionKey}`); return { version: `probe-${current}`, checkedAt: now }; },
+    },
+    admitHerdr: async value => { events.push(`instance ${value.selectionKey}`); return current === "B" && blocked ? { state: "pending", reason } : { state: "applied", version: `instance-${current}`, checkedAt: now }; },
+    readActiveSelections: () => [{ tool: "herdr", context: "herdr", launch: recipe("A"), version: "instance-A", checkedAt: now, executionCount: 1, instanceCount: 1, unconfirmedCount: 0 }],
+  });
+  const original = await manager.selectForNewExecution("herdr", "herdr", op());
+  events.length = 0; current = "B";
+  await expect(manager.selectForNewExecution("herdr", "herdr", op())).rejects.toThrow(reason);
+  expect(events).toEqual([`reconcile ${original.selectionKey}`, `reconcile ${recipe("B").selectionKey}`, `admit ${recipe("B").selectionKey}`, `check ${recipe("B").selectionKey}`, `instance ${recipe("B").selectionKey}`]);
+  const observed = manager.snapshot().entries.find(value => value.tool === "herdr")!;
+  expect(observed).toMatchObject({ state: "pending", reason, actual: { version: "instance-A" }, candidate: { version: "probe-B" }, activeSelectionCount: 1 });
+  expect(observed.activeSelections[0]?.actual.selectionKey).toBe(original.selectionKey);
+  expect(manager.currentSelection("herdr", "herdr")).toBeUndefined();
+  await expect(manager.verifyFrozen(original, op())).rejects.toMatchObject({ code: "tool_identity_changed" });
+  blocked = false;
+  const selected = await manager.selectForNewExecution("herdr", "herdr", op());
+  expect(selected.selectionKey).toBe(recipe("B").selectionKey);
+  expect(manager.observationFor(selected)).toEqual({ version: "instance-B", checkedAt: now });
+  expect(parseToolPathTelemetry(manager.snapshot())).toEqual(manager.snapshot());
 });

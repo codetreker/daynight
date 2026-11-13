@@ -218,6 +218,17 @@ func (h *handler) clearAttention(w http.ResponseWriter, r *http.Request, a core.
 		TargetBotID string `json:"targetBotId"`
 	}{target}, err
 }
+func (h *handler) botAttentionSeen(w http.ResponseWriter, r *http.Request, a core.Actor, _, id string) (any, error) {
+	p := decode(w, r)
+	if p.err != nil {
+		return nil, p.err
+	}
+	err := h.tasks.ClearAttention(r.Context(), a, id)
+	return struct {
+		TargetBotID string `json:"targetBotId"`
+	}{id}, err
+}
+
 func (h *handler) ask(w http.ResponseWriter, r *http.Request, a core.Actor, taskID, _ string) (any, error) {
 	p := decode(w, r, "id", "itemId", "question")
 	input := core.InquiryInput{Mutation: p.mutation(taskID, "", false), ItemID: p.optionalID("itemId"), Question: p.text("question", true)}

@@ -5,15 +5,18 @@ import { lstat, mkdir, open, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { gte, valid } from "semver";
 import type { Operation } from "../../../api/operation.js";
 import { replaceFileAtomically } from "../../../platform/files.js";
+import { toolCommand, verifyToolLaunch, type ResolvedToolLaunch } from "../../../platform/tool-executables.js";
 import type { WorkerPaths } from "../paths.js";
 import { createHerdrRpcClient, herdrIpcAddress } from "./rpc.js";
 import type { HerdrRpcResult } from "./rpc.js";
 import { runHerdrCommand, spawnHerdrProcess, terminateOwnedHerdrProcess } from "./command.js";
 import type { HerdrSpawn } from "./command.js";
+import { optionalOwnedJson, posixToolMappingRc, publishOwnedJson } from "./tool-launch.js";
 
 const session = "w";
 const managedConfiguration = "onboarding = false\n\n[session]\nresume_agents_on_restore = false\n";
@@ -22,10 +25,11 @@ const isolatedConfiguration = `${managedConfiguration}\n[update]\nversion_check 
 const legacyManagedShell = '#!/bin/sh\nexec /bin/bash --noprofile --norc -p "$@"\n';
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const managedShell = (rc: string): string => `#!/bin/sh\nexec /bin/bash --noprofile --rcfile ${shellQuote(rc)} -p "$@"\n`;
-const managedShellRc = (readyDirectory: string): string => `builtin unset PROMPT_COMMAND
+const managedShellRc = (readyDirectory: string, mapping = false, runtime?: { nodeExecutable: string; childEntry: string }): string => `builtin unset PROMPT_COMMAND
 PS1='bash$ '
 PS2='> '
 PS4='+ '
+${mapping ? posixToolMappingRc(runtime) : ""}\
 if [[ "\${DAYNIGHT_HERDR_SHELL_NONCE-}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
   daynight_startup_umask=$(builtin umask)
   daynight_startup_options=$-
@@ -45,6 +49,7 @@ const inheritedIdentity = new Set([
   "HERDR_ACTIVE_PANE_ID", "HERDR_ACTIVE_TAB_ID", "HERDR_ACTIVE_WORKSPACE_ID", "HERDR_ACTIVE_PANE_CWD", "HERDR_PANE_RUNTIME_ID",
   "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
   "DAYNIGHT_HERDR_SHELL_NONCE",
+  "DAYNIGHT_HERDR_TOOL_MANIFEST",
 ]);
 
 export type HerdrInstancePaths = {
@@ -264,6 +269,7 @@ const killOwnedChild = (owned: OwnedChild): void => {
 export const createHerdrInstance = (options: {
   paths: Pick<WorkerPaths, "herdrDirectory" | "logsDirectory">;
   executable?: string;
+  toolLaunch?: ResolvedToolLaunch;
   environment?: NodeJS.ProcessEnv;
   spawnProcess?: HerdrSpawn;
   onDaemonSpawn?: (pid: number) => Promise<void>;
@@ -271,12 +277,18 @@ export const createHerdrInstance = (options: {
   isolatedRun?: boolean;
 }) => {
   const paths = resolveHerdrInstancePaths(options.paths);
-  const shellFile = options.isolatedRun && process.platform === "darwin" ? path.join(paths.privateDirectory, "shell") : null;
+  if (options.toolLaunch !== undefined && (options.toolLaunch.tool !== "herdr" || options.toolLaunch.context !== "herdr")) throw new TypeError("A private Herdr instance requires a frozen Herdr launch.");
+  const mappedShell = options.toolLaunch !== undefined && process.platform !== "win32";
+  const shellFile = (options.isolatedRun && process.platform === "darwin" || mappedShell) ? path.join(paths.privateDirectory, "shell") : null;
   const shellRcFile = path.join(paths.privateDirectory, "shell.rc"), shellReadyDirectory = path.join(paths.privateDirectory, "shell-ready");
+  const baseConfiguration = options.isolatedRun ? isolatedConfiguration : managedConfiguration;
   const legacyShellConfiguration = `${isolatedConfiguration}\n[terminal]\ndefault_shell = ${JSON.stringify(shellFile)}\nshell_mode = "non_login"\n`;
+  const previousShellConfiguration = `${isolatedConfiguration}\n# Managed shell startup protocol: 1\n[terminal]\ndefault_shell = ${JSON.stringify(shellFile)}\nshell_mode = "non_login"\n`;
   const configuration = shellFile === null ? options.isolatedRun ? isolatedConfiguration : managedConfiguration
-    : `${isolatedConfiguration}\n# Managed shell startup protocol: 1\n[terminal]\ndefault_shell = ${JSON.stringify(shellFile)}\nshell_mode = "non_login"\n`;
+    : `${baseConfiguration}\n# Managed shell startup protocol: ${mappedShell ? 2 : 1}\n[terminal]\ndefault_shell = ${JSON.stringify(shellFile)}\nshell_mode = "non_login"\n`;
   const executable = options.executable === undefined ? "herdr" : options.executable;
+  const command = (args: readonly string[]) => options.toolLaunch === undefined ? { file: executable, args: [...args] } : toolCommand(options.toolLaunch, args);
+  const verifyLaunch = async (operation: Operation) => { if (options.toolLaunch !== undefined) await verifyToolLaunch(options.toolLaunch, operation); };
   if (executable.trim() === "" || /[\r\n\0]/.test(executable)) throw new Error("The Herdr executable must be nonempty without line breaks or NUL.");
   const environment = createHerdrEnvironment(paths, options.environment === undefined ? process.env : options.environment);
   const attachmentEnvironment: NodeJS.ProcessEnv = { XDG_CONFIG_HOME: paths.configHome, XDG_STATE_HOME: paths.stateHome, HERDR_CONFIG_PATH: paths.configurationFile, HISTFILE: paths.shellHistoryFile };
@@ -288,6 +300,16 @@ export const createHerdrInstance = (options: {
   let owned: OwnedChild | null = null;
   let starting: Promise<HerdrInstanceReady> | null = null;
   let managedShellReady = false;
+  let mappingRuntime = { nodeExecutable: process.execPath, childEntry: fileURLToPath(new URL("./tool-launch-child.js", import.meta.url)) };
+  const loadMappingRuntime = async (create: boolean): Promise<void> => {
+    const file = path.join(paths.privateDirectory, "shell-tool-runtime.json");
+    let value = await optionalOwnedJson(file);
+    if (value === null && create) { try { await publishOwnedJson(file, mappingRuntime); } catch (cause) { if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause; } value = await optionalOwnedJson(file); }
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "childEntry,nodeExecutable") throw new Error("The original controlled Herdr shell runtime metadata is missing or invalid.");
+    const row = value as { nodeExecutable: string; childEntry: string };
+    if (![row.nodeExecutable, row.childEntry].every(item => typeof item === "string" && path.isAbsolute(item) && !/[\0\r\n]/.test(item))) throw new Error("The original controlled Herdr shell runtime paths must be absolute data.");
+    mappingRuntime = { ...row };
+  };
   const endpoints = async (operation: Operation) => {
     const results = await Promise.allSettled([probeEndpoint(paths.apiEndpoint, operation), probeEndpoint(paths.clientEndpoint, operation)]);
     const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason as unknown);
@@ -304,19 +326,25 @@ export const createHerdrInstance = (options: {
     return { ...version, snapshot: result.snapshot };
   };
   const verifyExistingConfiguration = async (): Promise<void> => {
-    const current = await verifyConfiguration(paths, configuration, shellFile === null ? [] : [isolatedConfiguration, legacyShellConfiguration]);
+    const current = await verifyConfiguration(paths, configuration, shellFile === null ? [] : [baseConfiguration, isolatedConfiguration, legacyShellConfiguration, previousShellConfiguration]);
     if (shellFile !== null) {
       if (current) {
+        if (mappedShell) await loadMappingRuntime(false);
         await verifyManagedShell(shellFile, managedShell(shellRcFile), true);
-        await verifyManagedShell(shellRcFile, managedShellRc(shellReadyDirectory), false);
+        await verifyManagedShell(shellRcFile, managedShellRc(shellReadyDirectory, mappedShell, mappingRuntime), false);
         const directory = await lstat(shellReadyDirectory);
         if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0) throw new Error("The private Herdr shell readiness directory must be an ordinary owner-only directory.");
-      } else if (await readFile(paths.configurationFile, "utf8") === legacyShellConfiguration) await verifyManagedShell(shellFile, legacyManagedShell, true);
+      } else {
+        const existing = await readFile(paths.configurationFile, "utf8");
+        if (existing === legacyShellConfiguration) await verifyManagedShell(shellFile, legacyManagedShell, true);
+        if (existing === previousShellConfiguration) { await verifyManagedShell(shellFile, managedShell(shellRcFile), true); await verifyManagedShell(shellRcFile, managedShellRc(shellReadyDirectory), false); }
+      }
     }
     managedShellReady = current && shellFile !== null;
   };
   const version = async (operation: Operation): Promise<void> => {
-    const result = await runHerdrCommand({ file: executable, args: ["--version"], environment }, operation, start);
+    await verifyLaunch(operation);
+    const result = await runHerdrCommand({ ...command(["--version"]), environment }, operation, start);
     const match = /^herdr\s+(\S+)\s*$/.exec(result.stdout);
     if (match === null || valid(match[1]) === null || !gte(match[1]!, "0.9.5")) throw new Error("Herdr 0.9.5 or newer is required before starting the private instance.");
   };
@@ -339,7 +367,8 @@ export const createHerdrInstance = (options: {
         await ensureConfiguration(paths, configuration);
         if (shellFile !== null) {
           await ordinaryDirectory(shellReadyDirectory);
-          await ensureManagedShell(shellRcFile, managedShellRc(shellReadyDirectory), false);
+          if (mappedShell) await loadMappingRuntime(true);
+          await ensureManagedShell(shellRcFile, managedShellRc(shellReadyDirectory, mappedShell, mappingRuntime), false);
           await ensureManagedShell(shellFile, managedShell(shellRcFile), true);
         }
         await verifyExistingConfiguration();
@@ -350,7 +379,9 @@ export const createHerdrInstance = (options: {
         try {
           stderr = openSync(paths.stderrLogFile, "a", 0o600);
           const spawnEnvironment = Object.freeze({ ...environment });
-          owned = observeChild(start(executable, ["--session", session, "server"], { env: spawnEnvironment, detached: true, windowsHide: true, stdio: ["ignore", stdout, stderr] }), spawnEnvironment);
+          await verifyLaunch(scope);
+          const launch = command(["--session", session, "server"]);
+          owned = observeChild(start(launch.file, launch.args, { env: spawnEnvironment, detached: true, windowsHide: true, shell: false, stdio: ["ignore", stdout, stderr] }), spawnEnvironment);
           startedHere = owned;
           if (options.onDaemonSpawn) {
             await once(owned.child, "spawn");
@@ -385,7 +416,8 @@ export const createHerdrInstance = (options: {
   };
   return {
     paths, environment, rpc,
-    createShellStartup: (): { nonce: string; executable: "/bin/bash"; isReady(pid: number): Promise<boolean> } | undefined => {
+    toolMappingRuntime: () => ({ ...mappingRuntime }),
+    createShellStartup: (): { nonce: string; executable: string; isReady(pid: number): Promise<boolean> } | undefined => {
       if (!managedShellReady) return undefined;
       const nonce = randomUUID();
       return { nonce, executable: "/bin/bash", isReady: async pid => {
@@ -401,7 +433,7 @@ export const createHerdrInstance = (options: {
         } finally { await handle.close(); }
       } };
     },
-    attachment: { executable, arguments: ["--session", session], environment: attachmentEnvironment, unsetEnvironment: [...inheritedIdentity] } satisfies HerdrAttachment,
+    attachment: { executable: command([]).file, arguments: command(["--session", session]).args, environment: attachmentEnvironment, unsetEnvironment: [...inheritedIdentity] } satisfies HerdrAttachment,
     ensure,
     assertIntegrationEnvironment: (root: string): void => {
       if (!liveOwnedChild(owned)) throw new Error("Cannot safely install the Codex integration: the private daemon is not a live process started by this worker. Stop the worker and its private daemon, then restart the worker before repairing the integration.");

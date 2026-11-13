@@ -9,8 +9,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
-const requestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256"
-const exposedHeaders = "Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Worker-Configuration"
+const requestHeaders = "Authorization, Content-Type, Accept, If-None-Match, X-Request-ID, Daynight-Worker-Protocol, Daynight-Worker-Configuration, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Bot-Attention, Daynight-Worker-Prompts, Daynight-Session-Protocol, X-Daynight-Startup-Version, Daynight-Browser-Client, Daynight-Session-Content-Revision, Daynight-Chunk-SHA256"
+const exposedHeaders = "Daynight-User-ID, Daynight-Task-Epoch, X-Request-ID, Location, ETag, Content-Disposition, Retry-After, Allow, WWW-Authenticate, Daynight-Worker-Control-Mode, Daynight-Worker-Tool-Paths, Daynight-Bot-Attention, Daynight-Worker-Configuration, Daynight-Session-Direct-Upload-Version"
 
 // Wrap decorates user REST responses before authentication and path validation.
 // Route lookup never runs a handler or authenticates a preflight request.
@@ -143,6 +143,9 @@ func registeredMethod(method, pattern string) bool {
 	// adapters. Methodless fallbacks elsewhere are never accepted.
 	if pattern == "/api/v1/me/bots/{botId}" {
 		return method == "GET" || method == "HEAD" || method == "DELETE"
+	}
+	if pattern == "/api/v1/bots/{id}/attention/seen" {
+		return method == http.MethodPost
 	}
 	for _, base := range []string{"/api/v1/me/webhooks", "/api/v1/teams/{teamId}/webhooks"} {
 		suffix, ok := strings.CutPrefix(pattern, base)

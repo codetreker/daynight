@@ -10,7 +10,7 @@ const claimId = '30000000-0000-4000-8000-00000000000c';
 const otherId = '40000000-0000-4000-8000-00000000000d';
 const time = '2026-10-24T00:00:00Z';
 const version = 9_007_199_254_740_993n;
-const result: TaskDetail = { type: 'task', parentId: null, assignedTo: null,
+const result: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null,
   id: taskId, projectId, title: 'Claimed task', description: 'Keep its delivery materials.',
   properties: { pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },
   status: 'todo', version: version + 1n, requiredPlatform: 'macos', allowAgents: false, ready: true,

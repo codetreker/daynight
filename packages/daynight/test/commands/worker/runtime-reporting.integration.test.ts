@@ -71,6 +71,7 @@ vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadSto
 vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", async original => ({ ...await original<object>(), createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr/shared.js", () => ({ createSharedWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/herdr/durable.js", async original => {
   const actual = await original<typeof import("../../../src/commands/worker/herdr/durable.js")>();
   return { ...actual, createDurableWorkerHerdr: (...args: Parameters<typeof actual.createDurableWorkerHerdr>) => mocks.durable.getMockImplementation() ? mocks.durable(...args) : actual.createDurableWorkerHerdr(...args) };
@@ -1628,7 +1629,7 @@ it("admits another task through the real coordinator after a stop wake with both
   const resources = new Map<string, any>();
   const worktrees = new Map<string, any>();
   const grants = new Map<string, any>(); const trace: string[] = []; let stopped = false, originalEnded = false;
-  const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+  const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", tags: [], status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
   const candidates = [task(owner.taskId), task(uuid(30))];
   const started = vi.fn(async (context: any, nativeBinding: any) => ({ ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null }));
   const tasks = {

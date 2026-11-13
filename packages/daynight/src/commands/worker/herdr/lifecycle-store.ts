@@ -7,7 +7,9 @@ import { assertTerminalBinding, isPreparedSessionV2StopProof, parseSessionV2Mess
 import { bool, canonicalSessionJson, choice, decodeStrictSessionJson, exact, hash, integer, list, nativeText, nullable, seq, text, timestamp, unique, uuid } from "../../../session/v2/values.js";
 import type { SessionV2Owner, SessionV2Payloads, SessionV2Run } from "../../../session/v2/types.js";
 import type { ClaimIdentity } from "../types.js";
-import type { HerdrLifecycleRecord, HerdrLocalRun, HerdrLocalSegment, HerdrNativeLaunchRejection, HerdrPreparation, HerdrRunPhase, MacProcessIdentity } from "./lifecycle-types.js";
+import { parseResolvedToolLaunch } from "../../../platform/tool-launch-record.js";
+import { parseFrozenToolObservation } from "../tool-observation.js";
+import type { HerdrExecutionTools, HerdrInstanceObservation, HerdrLifecycleRecord, HerdrLocalRun, HerdrLocalSegment, HerdrNativeLaunchRejection, HerdrPreparation, HerdrRunPhase, MacProcessIdentity } from "./lifecycle-types.js";
 import { createHerdrLifecycleStoreFormat, herdrLifecycleStoreFormat } from "./lifecycle-store-format.js";
 
 const same = (left: unknown, right: unknown): boolean => canonicalSessionJson(left) === canonicalSessionJson(right);
@@ -20,6 +22,20 @@ export const herdrLedgerHash = (record: Pick<HerdrLifecycleRecord, "runs">): str
 const phases: readonly HerdrRunPhase[] = ["prepared", "launch_requested", "active", "stop_intent", "close_requested", "stopped_confirmed", "stop_unknown"];
 const closing = (phase: HerdrRunPhase): boolean => ["stop_intent", "close_requested", "stopped_confirmed", "stop_unknown"].includes(phase);
 const processKey = (value: MacProcessIdentity): string => canonicalSessionJson([value.role, value.bootId, value.pid, value.birthToken]);
+const toolFields = (value: unknown): string[] => value !== null && typeof value === "object" ? ["launches", "instanceObservation"].filter(field => Object.hasOwn(value, field)) : [];
+const parseTools = (value: unknown): HerdrExecutionTools => {
+  const o = exact(value, ["agent", "agentObservation", "herdr", "herdrObservation"]);
+  const agent = nullable(o.agent, value => parseResolvedToolLaunch(value, { context: "herdr" }));
+  if (agent?.tool === "herdr" || (agent === null) !== (o.agentObservation === null)) return reject("The original Herdr agent launch and observation must agree.");
+  return { agent, agentObservation: nullable(o.agentObservation, parseFrozenToolObservation), herdr: parseResolvedToolLaunch(o.herdr, { tool: "herdr", context: "herdr" }), herdrObservation: parseFrozenToolObservation(o.herdrObservation) };
+};
+export const parseHerdrExecutionTools = parseTools;
+const parseInstanceObservation = (value: unknown): HerdrInstanceObservation => {
+  const o = exact(value, ["version", "checkedAt", "protocol"]);
+  if (o.protocol !== 22) return reject("A private Herdr observation requires protocol 22.");
+  return { ...parseFrozenToolObservation({ version: o.version, checkedAt: o.checkedAt }), protocol: 22 };
+};
+const parseToolFields = (o: Record<string, unknown>) => ({ ...(Object.hasOwn(o, "launches") ? { launches: parseTools(o.launches) } : {}), ...(Object.hasOwn(o, "instanceObservation") ? { instanceObservation: parseInstanceObservation(o.instanceObservation) } : {}) });
 export const parseMacProcessIdentity = (value: unknown): MacProcessIdentity => {
   const o = exact(value, ["role", "pid", "birthToken", "bootId", "auditToken", "ppid", "pgid", "sid"]);
   const result = { role: choice(o.role, ["daemon", "shell", "agent"]), pid: integer(o.pid, 1, 2147483647), birthToken: nativeText(o.birthToken), bootId: nativeText(o.bootId), auditToken: list(o.auditToken, n => integer(n, 0, 4294967295), 8, 8), ppid: integer(o.ppid, 0, 2147483647), pgid: integer(o.pgid, 1, 2147483647), sid: integer(o.sid, 1, 2147483647) };
@@ -27,15 +43,15 @@ export const parseMacProcessIdentity = (value: unknown): MacProcessIdentity => {
   return result;
 };
 const parsePreparation = (value: unknown): HerdrPreparation => {
-  const o = exact(value, ["instanceId", "instanceDirectory", "phase", "daemon"]);
-  const result = { instanceId: nativeText(o.instanceId), instanceDirectory: absolute(o.instanceDirectory), phase: choice(o.phase, ["prepared", "launch_requested"]), daemon: nullable(o.daemon, parseMacProcessIdentity) };
+  const o = exact(value, ["instanceId", "instanceDirectory", "phase", "daemon", ...toolFields(value)]);
+  const result = { instanceId: nativeText(o.instanceId), instanceDirectory: absolute(o.instanceDirectory), phase: choice(o.phase, ["prepared", "launch_requested"]), daemon: nullable(o.daemon, parseMacProcessIdentity), ...parseToolFields(o) };
   if (result.daemon !== null && result.daemon.role !== "daemon") return reject("Preparation requires the original daemon identity.");
   return result;
 };
 const localRunKeys = ["run", "phase", "instanceDirectory", "daemon", "processes", "stopOperationId", "stopReason", "error", "admission"] as const;
 const parseLocalRun = (value: unknown, run: SessionV2Run, legacy: boolean): HerdrLocalRun => {
-  const o = exact(value, legacy ? localRunKeys : [...localRunKeys, "nativeLaunch"]);
-  const result: HerdrLocalRun = { run, nativeLaunch: legacy ? "unknown" : choice(o.nativeLaunch, ["not_submitted", "requested", "observed", "unknown"]), phase: choice(o.phase, phases), instanceDirectory: absolute(o.instanceDirectory), daemon: nullable(o.daemon, parseMacProcessIdentity), processes: unique(list(o.processes, parseMacProcessIdentity), processKey), stopOperationId: nullable(o.stopOperationId, uuid), stopReason: nullable(o.stopReason, v => choice(v, ["shutdown", "terminal"])), error: nullable(o.error, v => text(v, 16_384)), admission: nullable(o.admission, uuid) };
+  const o = exact(value, [...(legacy ? localRunKeys : [...localRunKeys, "nativeLaunch"]), ...toolFields(value)]);
+  const result: HerdrLocalRun = { run, nativeLaunch: legacy ? "unknown" : choice(o.nativeLaunch, ["not_submitted", "requested", "observed", "unknown"]), phase: choice(o.phase, phases), instanceDirectory: absolute(o.instanceDirectory), daemon: nullable(o.daemon, parseMacProcessIdentity), processes: unique(list(o.processes, parseMacProcessIdentity), processKey), stopOperationId: nullable(o.stopOperationId, uuid), stopReason: nullable(o.stopReason, v => choice(v, ["shutdown", "terminal"])), error: nullable(o.error, v => text(v, 16_384)), admission: nullable(o.admission, uuid), ...parseToolFields(o) };
   if (result.daemon !== null && result.daemon.role !== "daemon" || result.processes.some(p => p.role === "daemon")) return reject("Daemon and native process responsibilities must remain distinct.");
   if (result.daemon !== null && result.processes.some(p => p.bootId !== result.daemon!.bootId)) return reject("A native runtime cannot combine process evidence from different boots.");
   if ((result.stopOperationId === null) !== (result.stopReason === null)) return reject("A stop operation requires its original reason.");
@@ -78,10 +94,13 @@ const parseSegment = (value: unknown): HerdrLocalSegment => {
 };
 const parseLifecycleRecord = (value: unknown, legacy = false): HerdrLifecycleRecord => {
   const o = exact(value, ["owner", "claimId", "cwd", "sessionId", "registrationId", "connectionEpoch", "registrationRequest", "ledgerRequest", "publishedLedgerHash", "controlEpoch", "initialAssignment", "initialPrompt", "automationBlocked", "preparation", "runs", "segments", "version"]);
-  const raws = list(o.runs, value => exact(value, legacy ? localRunKeys : [...localRunKeys, "nativeLaunch"]));
+  const raws = list(o.runs, value => exact(value, [...(legacy ? localRunKeys : [...localRunKeys, "nativeLaunch"]), ...toolFields(value)]));
   const runs = raws.length === 0 ? [] : parseSessionV2Runs(raws.map(raw => raw.run), String(raws.length), false);
   const record: HerdrLifecycleRecord = { owner: parseSessionV2Owner(o.owner), claimId: uuid(o.claimId), cwd: absolute(o.cwd), sessionId: uuid(o.sessionId), registrationId: uuid(o.registrationId), connectionEpoch: nullable(o.connectionEpoch, seq), registrationRequest: null, ledgerRequest: null, publishedLedgerHash: nullable(o.publishedLedgerHash, hash), controlEpoch: seq(o.controlEpoch, true), initialAssignment: choice(o.initialAssignment, ["pending", "dispatching", "transport_completed", "unknown", "unconfirmed"]), initialPrompt: nullable(o.initialPrompt, v => text(v, 1024 * 1024)), automationBlocked: bool(o.automationBlocked), preparation: nullable(o.preparation, parsePreparation), runs: raws.map((raw, index) => parseLocalRun(raw, runs[index]!, legacy)), segments: unique(list(o.segments, parseSegment), segment => segment.segmentId), version: integer(o.version, 1, Number.MAX_SAFE_INTEGER) };
   if (record.runs.some(run => !same(run.run.owner, record.owner))) return reject("Every run must retain its original execution owner.");
+  for (const local of [...record.runs, ...(record.preparation === null ? [] : [record.preparation])]) {
+    if (local.launches && (record.owner.provider === "claude" ? local.launches.agent !== null : local.launches.agent?.tool !== record.owner.provider)) return reject("Frozen Herdr launches must retain their original provider.");
+  }
   if (o.registrationRequest !== null) {
     const request = parseSessionV2Message(o.registrationRequest);
     if (request.type !== "registration" || request.sessionId !== record.sessionId || request.claimId !== record.claimId || request.payload.registrationId !== record.registrationId || !same(request.payload.owner, record.owner)) return reject("The pending registration belongs to another execution.");
@@ -139,6 +158,7 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
   if (after.runs.length < before.runs.length || after.runs.length > before.runs.length + 1) reject("Runtime history is append-only, one generation at a time.");
   for (const [index, previous] of before.runs.entries()) {
     const next = after.runs[index]!;
+    if (!same(previous.launches ?? null, next.launches ?? null) || !same(previous.instanceObservation ?? null, next.instanceObservation ?? null)) reject("The original runtime launch selections and handshake cannot change.");
     if (!launchTransitions[previous.nativeLaunch].includes(next.nativeLaunch)) reject("Native launch provenance cannot be downgraded or reconstructed.");
     if (previous.nativeLaunch !== next.nativeLaunch && (previous.nativeLaunch === "not_submitted" ? previous.phase !== "prepared" || next.phase !== "launch_requested" : previous.phase !== "launch_requested" || next.phase !== "active")) reject("Native launch provenance must follow its original launch boundary.");
     if (!transitions[previous.phase].includes(next.phase)) reject("The runtime transition bypasses a durable lifecycle boundary.");
@@ -163,6 +183,7 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
     const previous = before.runs.at(-1), next = after.runs.at(-1)!;
     if (next.phase !== "prepared" || next.nativeLaunch !== "not_submitted" || next.run.stopProof !== null) reject("A new run starts at its durable preparation boundary.");
     if (previous !== undefined) {
+      if (!same(previous.launches ?? null, next.launches ?? null)) reject("Recovery must retain the original claim's launch selections.");
       const native = previous.run.stopProof?.binding.nativeSessionId;
       if (previous.phase !== "stopped_confirmed" || isPreparedSessionV2StopProof(previous.run.stopProof!) || native === null || native === undefined || native !== next.run.binding.nativeSessionId) reject("Replacement requires the confirmed original stop and native session identity.");
     }
@@ -171,10 +192,12 @@ const validateChange = (before: HerdrLifecycleRecord, after: HerdrLifecycleRecor
     const old = before.preparation, next = after.preparation;
     if (next === null) {
       const run = after.runs.at(-1);
-      if (run?.run.binding.instanceId !== old.instanceId || run.instanceDirectory !== old.instanceDirectory || old.daemon !== null && !same(old.daemon, run.daemon)) reject("Clearing preparation requires its original registered runtime.");
+      if (run?.run.binding.instanceId !== old.instanceId || run.instanceDirectory !== old.instanceDirectory || old.daemon !== null && !same(old.daemon, run.daemon) || !same(old.launches ?? null, run.launches ?? null) || !same(old.instanceObservation ?? null, run.instanceObservation ?? null)) reject("Clearing preparation requires its original registered runtime and launch selections.");
     } else if (old.instanceId !== next.instanceId || old.instanceDirectory !== next.instanceDirectory || old.phase === "launch_requested" && next.phase !== old.phase || old.daemon !== null && !same(old.daemon, next.daemon)) reject("The original pre-binding preparation cannot be replaced.");
+    else if (!same(old.launches ?? null, next.launches ?? null) || old.instanceObservation !== undefined && !same(old.instanceObservation, next.instanceObservation)) reject("The original preparation launch selections and handshake cannot change.");
   } else if (after.preparation !== null) {
     const previous = before.runs.at(-1);
+    if (previous !== undefined && !same(previous.launches ?? null, after.preparation.launches ?? null)) reject("Recovery preparation must retain the original claim's launch selections.");
     if (previous !== undefined && (previous.phase !== "stopped_confirmed" || previous.run.stopProof === null || isPreparedSessionV2StopProof(previous.run.stopProof) || previous.run.stopProof.binding.nativeSessionId == null)) reject("Replacement preparation requires the confirmed original stop and native session.");
   }
   if (after.segments.length < before.segments.length) reject("Capture segment history cannot be removed.");

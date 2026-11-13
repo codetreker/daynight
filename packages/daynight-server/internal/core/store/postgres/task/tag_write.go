@@ -16,26 +16,7 @@ func NewTagWriter(tx pgx.Tx, projectID string) store.TaskTagWriteDAO {
 }
 
 func (tx *Writer) TaskTags(ctx context.Context, taskID string) ([]model.TagReference, error) {
-	rows, err := tx.tx.Query(ctx, `SELECT p.id::text, p.name FROM task_tags a
-		JOIN project_tags p ON p.project_id=a.project_id AND p.id=a.tag_id
-		JOIN task_resource_rows t ON t.project_id=a.project_id AND t.id=a.task_id
-		WHERE a.project_id=$1 AND a.task_id=$2 AND t.effective_deleted_at IS NULL ORDER BY p.id`, tx.projectID, taskID)
-	if err != nil {
-		return nil, pg.QueryError("read task tags", err)
-	}
-	defer rows.Close()
-	refs := make([]model.TagReference, 0)
-	for rows.Next() {
-		var ref model.TagReference
-		if err := rows.Scan(&ref.ID, &ref.Name); err != nil {
-			return nil, pg.QueryError("read task tags", err)
-		}
-		refs = append(refs, ref)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, pg.QueryError("read task tags", err)
-	}
-	return refs, nil
+	return pg.LoadTaskTags(ctx, tx.tx, tx.projectID, taskID)
 }
 
 func (tx *Writer) ReplaceTaskTags(ctx context.Context, taskID string, tagIDs []string) error {

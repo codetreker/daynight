@@ -168,10 +168,10 @@ func TestWriteErrorMappingsAndDetails(t *testing.T) {
 		code   string
 		status int
 	}{
-		{"unauthenticated", 401}, {"forbidden", 403}, {"invalid_input", 400}, {"payload_too_large", 413}, {"controller_offline", 503},
+		{"unauthenticated", 401}, {"forbidden", 403}, {"invalid_input", 400}, {"invalid_tag_filter", 400}, {"payload_too_large", 413}, {"controller_offline", 503},
 		{"unsupported_native_selection", 409}, {"unsupported_selection", 409}, {"unknown_default", 409}, {"stale_configuration", 409},
 		{"capability_error", 503}, {"cleanup_unknown", 503}, {"io_error", 503}, {"offline", 503}, {"unsupported", 501}, {"timeout", 504}, {"cancelled", 409}, {"busy", 429}, {"limit_exceeded", 413}, {"invalid_cursor", 400}, {"invalid_path", 400},
-		{"content_unavailable", 502}, {"rate_limited", 429}, {"capacity_exhausted", 503}, {"task_deleted", 410}, {"not_found", 404}, {"write_outcome_unknown", 503},
+		{"content_unavailable", 502}, {"rate_limited", 429}, {"capacity_exhausted", 503}, {"task_deleted", 410}, {"not_found", 404}, {"tag_not_found", 404}, {"write_outcome_unknown", 503},
 		{"github_repository_mismatch", 409},
 		{"archive_conflict", 409}, {"archive_incomplete", 409},
 		{"invalid_image", 400}, {"image_integrity", 400}, {"image_decode_failed", 400}, {"component_unsupported", 409}, {"quota_exceeded", 409}, {"resource_in_use", 409}, {"capability_changed", 409}, {"media_outcome_unknown", 503}, {"resource_busy", 429},

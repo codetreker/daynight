@@ -119,9 +119,9 @@ Web 直接图模型与缓存摘要投影显式处理五态，共享前置满足�
 
 TaskDetailSession以原审阅身份、version与cacheGeneration核验取消。validStatusTiming显式要求实际取消保留startedAt/completedAt、新cancelledAt非空；不能落入done时间分支。成功精确+1，同状态+0；无效完整响应进入既有未知核对，后续仅GET、不重放。旧历史迟到结果不能覆盖新操作、解锁较新防重或设置删除终态。
 
-状态筛选显式支持proposed/cancelled，同时保留完整普通分量、Goal进度分母和依赖；取消前置摘要经普通delta即可使后继派生就绪性更新。状态与筛选不改变资料读取权限或原有数据保全。
+状态筛选显式支持 proposed/cancelled，同时保留完整普通分量、Goal 进度范围和依赖；取消前置摘要经普通delta即可使后继派生就绪性更新。状态与筛选不改变资料读取权限或原有数据保全。
 
-Goal以ended/total显示进度，同时区分done/cancelled结果。UI汇总类型TaskProgressStatus把全部done表示为done、全部cancelled表示为cancelled、混合终态表示为ended；ended不进入TaskStatus协议。全部普通成员均为 proposed 时汇总为 proposed；未开始的 proposed/todo 混合分量汇总为 todo。完整普通分量保留取消节点，外部上下文不计入进度。全部结束使用所有成员当前终态时间的最大值；最近七个本地日历日、纳秒精度、未知时间和 DST 行为沿用现有时间 owner。后台同步保留菜单、阅读、滚动、图视口和焦点。
+Web 完成进度以 done / (total - cancelled) 展示；共享纯投影及零分母处理见 [Web 设计](daynight-web.md#图投影与统计)。真实统计仍保留 ended、done 和 cancelled，Goal 自身状态独立于子任务进度。UI汇总类型TaskProgressStatus把全部done表示为done、全部cancelled表示为cancelled、混合终态表示为ended；ended不进入TaskStatus协议。全部普通成员均为 proposed 时汇总为 proposed；未开始的 proposed/todo 混合分量汇总为 todo。完整普通分量保留取消节点，外部上下文不计入进度。全部结束使用所有成员当前终态时间的最大值；最近七个本地日历日、纳秒精度、未知时间和 DST 行为沿用现有时间 owner。后台同步保留菜单、阅读、滚动、图视口和焦点。
 
 ## Worker 与资源清理
 

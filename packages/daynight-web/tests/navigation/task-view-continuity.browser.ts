@@ -12,7 +12,8 @@ const time = '2026-10-20T09:00:00Z';
 const row = (n: number, title: string, dependsOn: string[] = []) => detailFixture(projectId, id(n), { title, version: 1n, dependsOn, blockedBy: dependsOn, ready: dependsOn.length === 0 });
 
 async function install(page: Page, initial: TaskDetail[]) {
-  const state = { tasks: initial, writes: [] as string[] };
+  const gate = Promise.withResolvers<void>();
+  const state = { tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, graph = graphFixture(state.tasks);
@@ -20,10 +21,15 @@ async function install(page: Page, initial: TaskDetail[]) {
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) {
+      if (state.graphMode === 'pending') await gate.promise;
+      if (state.graphMode === 'error') return send({ error: { code: 'internal_error', message: 'unavailable', requestId: 'graph-failure' } }, 500);
+      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
+    }
     const base = `/api/v1/projects/${projectId}/tasks/`;
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
@@ -39,6 +45,56 @@ const select = async (page: Page, name: string) => {
   await page.keyboard.press('Enter');
 };
 const position = (page: Page) => page.evaluate(() => new Promise<number>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(scrollY)))));
+
+for (const width of [1100, 390]) test(`project header and navigation survive a pending and failed graph at ${width}px`, async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  state.graphMode = 'pending';
+  await page.setViewportSize({ width, height: 700 });
+  try {
+    await page.goto(`/projects/${projectId}`);
+    await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
+    await expect(page.getByText('https://github.com/example/project', { exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Project members', exact: true })).toBeVisible();
+    const overview = page.getByRole('tab', { name: 'Overview', exact: true });
+    const tasks = page.getByRole('tab', { name: 'Task list', exact: true });
+    await expect(page.getByRole('tab')).toHaveCount(4);
+    await expect(page.getByRole('status', { name: 'Loading task graph' })).toBeVisible();
+    await tasks.click();
+    await expect(tasks).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('textbox', { name: /search/i })).toBeVisible();
+    state.graphMode = 'error'; state.releaseGraph();
+    await expect(page.getByRole('alert')).toContainText('graph-failure');
+    await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: /search/i })).toBeVisible();
+    await page.goBack();
+    await expect(overview).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('alert')).toContainText('graph-failure');
+    await page.goForward();
+    await expect(tasks).toHaveAttribute('aria-selected', 'true');
+    state.graphMode = 'normal';
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Task chains', exact: true })).toBeVisible();
+    expect(state.writes).toEqual([]);
+  } finally { state.releaseGraph(); }
+});
+
+test('project management remains available when the task cache cannot open', async ({ page }) => {
+  const state = await install(page, [row(10, 'Task')]);
+  await page.addInitScript(() => {
+    const open = IDBFactory.prototype.open;
+    IDBFactory.prototype.open = function (name, version) {
+      if (name === 'daynight-task-cache') throw new DOMException('Unavailable', 'InvalidStateError');
+      return open.call(this, name, version);
+    };
+  });
+  await page.goto(`/projects/${projectId}`);
+  await expect(page.getByRole('heading', { name: '任务项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Project settings', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Project members', exact: true })).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
 
 test('category switching preserves real scroll and only the browser clamps shorter content', async ({ page }) => {
   const chains = Array.from({ length: 25 }, (_, i) => [row(100 + i * 2, `Chain ${i}`), row(101 + i * 2, `Chain child ${i}`, [id(100 + i * 2)])]).flat();
@@ -60,7 +116,7 @@ test('category switching preserves real scroll and only the browser clamps short
       }
       const pagination = page.getByRole('navigation', { name: 'Standalone task list pagination' });
       await pagination.getByRole('button', { name: 'Next', exact: true }).click();
-      await expect(page.locator('.standalone-row')).toHaveCount(7);
+      await expect(page.locator('.standalone-row')).toHaveCount(2);
       const shortExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
       await select(page, 'Task chains'); const longExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
       expect(longExtent).toBeGreaterThan(shortExtent);

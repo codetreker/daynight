@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -28,7 +30,18 @@ type taskQueryObservations interface {
 	ObserveGraph(context.Context, model.Principal, string, string) (taskservice.ObservedGraph, error)
 }
 
+type tagFilterInput struct {
+	TagIDs   []string `json:"tagIds"`
+	TagMatch string   `json:"tagMatch"`
+	Untagged bool     `json:"untagged"`
+}
+
+func (in tagFilterInput) filter() store.TagFilter {
+	return store.TagFilter{TagIDs: in.TagIDs, TagMatch: in.TagMatch, Untagged: in.Untagged}
+}
+
 type listInput struct {
+	tagFilterInput
 	ProjectID          string              `json:"projectId"`
 	Type               model.TaskType      `json:"type"`
 	ParentID           *string             `json:"parentId"`
@@ -44,6 +57,7 @@ type listInput struct {
 }
 
 type readyInput struct {
+	tagFilterInput
 	ProjectID          string              `json:"projectId"`
 	ParentID           *string             `json:"parentId"`
 	Limit              int                 `json:"limit"`
@@ -90,6 +104,9 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 		switch tool.Name {
 		case "task_list":
 			err = registerTaskListTool(entry, tool, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+				if err := queryBusinessLimit(raw); err != nil {
+					return ToolResult{}, err
+				}
 				var in listInput
 				if err := json.Unmarshal(raw, &in); err != nil {
 					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
@@ -99,6 +116,9 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 			})
 		case "task_ready":
 			err = registerTaskListTool(entry, tool, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+				if err := queryBusinessLimit(raw); err != nil {
+					return ToolResult{}, err
+				}
 				var in readyInput
 				if err := json.Unmarshal(raw, &in); err != nil {
 					return ToolResult{}, &model.Fault{Code: "invalid_input", Message: "Tool arguments could not be decoded."}
@@ -120,6 +140,24 @@ func registerTaskQueryTools(entry *Entry, tasks taskQueryService) error {
 		if err != nil {
 			return fmt.Errorf("register %s: %w", tool.Name, err)
 		}
+	}
+	return nil
+}
+
+// Query business fields use the same encoded JSON boundary as REST Task input;
+// routing identity and the MCP projection choice are not business fields.
+func queryBusinessLimit(raw json.RawMessage) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return httpx.InvalidInput("request body must be valid JSON within the 1 MiB limit")
+	}
+	delete(fields, "projectId")
+	delete(fields, "view")
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(fields); err != nil || encoded.Len()-1 > httpx.MaxJSONBody {
+		return httpx.InvalidInput("request body must be valid JSON within the 1 MiB limit")
 	}
 	return nil
 }
@@ -157,7 +195,7 @@ func listTool(ctx context.Context, actor RequestActor, in listInput, tasks taskQ
 		in.Limit = 50
 	}
 	data := listData{Items: make([]json.RawMessage, 0, in.Limit), Projection: in.View}
-	page, err := tasks.ObservedMCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{Type: in.Type, Parent: in.ParentID, All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View})
+	page, err := tasks.ObservedMCPList(ctx, actor.Principal, in.ProjectID, taskcore.MCPListRequest{TagFilter: in.filter(), Type: in.Type, Parent: in.ParentID, All: in.All, Status: in.Status, AssignedTo: in.AssignedTo, Ready: in.Ready, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, Limit: in.Limit, Cursor: in.Cursor, View: in.View})
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -196,7 +234,7 @@ func readyTool(ctx context.Context, actor RequestActor, in readyInput, tasks tas
 		in.Limit = 5
 	}
 	items, err := tasks.MCPReady(ctx, actor.Principal, in.ProjectID, taskcore.MCPReadyRequest{
-		Parent: in.ParentID, Limit: in.Limit, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View,
+		TagFilter: in.filter(), Parent: in.ParentID, Limit: in.Limit, AllowAgents: in.AllowAgents, CompatiblePlatform: in.CompatiblePlatform, View: in.View,
 	})
 	if err != nil {
 		return ToolResult{}, err

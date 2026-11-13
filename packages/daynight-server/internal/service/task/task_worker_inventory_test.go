@@ -53,7 +53,7 @@ func workerInventoryTask(t *testing.T, principal model.Principal, workerID strin
 }
 
 func workerInventoryQuery(principal model.Principal, workerID string) store.TaskQuery {
-	return store.TaskQuery{Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: principal.UserID, WorkerID: workerID}}
+	return store.TaskQuery{TagFilter: store.TagFilter{TagIDs: []string{}, TagMatch: "all"}, Page: store.Page{Limit: 1}, Worker: &store.WorkerQuery{UserID: principal.UserID, WorkerID: workerID}}
 }
 
 func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T) {

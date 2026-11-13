@@ -29,8 +29,9 @@ start, blue for work in progress, green for successful completion, and gray for
 cancellation. Cancelled items retain readable content and their reading actions;
 their styling does not make the entire item disabled or strike through its title.
 
-`ended` is a neutral summary of mixed completed and cancelled work, with explicit
-done/cancelled counts. It is not a TaskStatus or a claim that every item succeeded.
+`ended` is a neutral summary of mixed completed and cancelled work. Real ended
+statistics retain done/cancelled counts. It is not a TaskStatus or a claim that
+every item succeeded.
 Shared Steps map `todo`, `in_progress`, and `done` to the corresponding roles;
 `skipped` reuses the neutral cancelled palette with its own label. These mappings
 do not add lifecycle states or change transition rules.
@@ -70,10 +71,11 @@ control selection cues.
 
 ### Progress and interaction hierarchy
 
-A single aggregate bar combining done and cancelled uses neutral `#64748B` to
-express the ended fraction, with both outcome counts retained. Existing Goal
-segments use done green `#256A48` and cancelled gray `#59616C`; retain their
-existing structure and scope.
+Completion progress tracks use done green `#256A48` for the completed portion.
+Cancelled tasks do not contribute a segment or enter the completion denominator.
+Real ended statistics still include both done and cancelled; the [Web progress
+requirements](spec/daynight-web.md#项目整体进度) define the display projection
+and its zero-denominator behavior.
 
 Use title text `#172132` and helper text `#556176` on the affected task/status
 surfaces, including graph metadata, completion labels, and assignee information.

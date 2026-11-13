@@ -43,7 +43,7 @@ const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(
 const projectId = id(100);
 const timestamp = '2026-10-20T09:00:00.123456789Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '测试项目', repoUrl: 'https://github.com/example/project', createdAt: timestamp, updatedAt: timestamp };
-const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
+const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
   properties: { pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
@@ -815,6 +815,8 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: '编辑标签' })).toHaveFocus();
     await user.tab();
     expect(links[0]).toHaveFocus();
     await user.tab();

@@ -275,11 +275,14 @@ export type CreateTaskInput = {
   readonly parentId?: string | null;
   readonly status?: TaskStatus;
   readonly assignedTo?: string | null;
+  readonly tagIds?: readonly string[];
 };
 
 export const createTask = async (projectId: string, input: CreateTaskInput, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskDetail> => {
   const project = requestId(projectId);
-  const body = { ...input,
+  const tagIds = (input.tagIds ?? []).map(requestId);
+  if (new Set(tagIds).size !== tagIds.length) throw new ApiError("protocol");
+  const body = { ...input, tagIds,
     ...(input.parentId === undefined ? {} : { parentId: input.parentId === null ? null : requestId(input.parentId) }),
     ...(input.assignedTo === undefined ? {} : { assignedTo: input.assignedTo === null ? null : requestId(input.assignedTo) }) };
   const response = await request(`/api/v1/projects/${project}/tasks`, signal, {
@@ -292,18 +295,21 @@ export const createTask = async (projectId: string, input: CreateTaskInput, sign
     if (response.status !== 201 || result.type !== (body.type ?? "task") || result.parentId !== (body.parentId ?? null) ||
       result.title !== body.title || result.description !== (body.description ?? "") ||
       result.status !== (body.status ?? (result.type === "goal" ? "todo" : "proposed")) ||
-      body.assignedTo !== undefined && result.assignedTo !== body.assignedTo) throw new ApiError("protocol", response.status);
+      body.assignedTo !== undefined && result.assignedTo !== body.assignedTo ||
+      result.tags.length !== tagIds.length || result.tags.some(tag => !tagIds.includes(tag.id))) throw new ApiError("protocol", response.status);
     return result;
   });
 };
 
 export const updateTaskFields = async (
-  projectId: string, taskId: string, fields: { readonly title?: string; readonly description?: string; readonly parentId?: string | null },
+  projectId: string, taskId: string, fields: { readonly title?: string; readonly description?: string; readonly parentId?: string | null; readonly tagIds?: readonly string[] },
   exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<TaskDetail> => {
   const project = requestId(projectId), task = requestId(taskId);
-  if (!isTaskVersion(exactVersion) || fields.title === undefined && fields.description === undefined && fields.parentId === undefined) throw new ApiError("protocol");
-  const body = { ...fields, ...(fields.parentId === undefined ? {} : { parentId: fields.parentId === null ? null : requestId(fields.parentId) }) };
+  if (!isTaskVersion(exactVersion) || fields.title === undefined && fields.description === undefined && fields.parentId === undefined && fields.tagIds === undefined) throw new ApiError("protocol");
+  const tagIds = fields.tagIds?.map(requestId);
+  if (tagIds !== undefined && new Set(tagIds).size !== tagIds.length) throw new ApiError("protocol");
+  const body = { ...fields, ...(fields.parentId === undefined ? {} : { parentId: fields.parentId === null ? null : requestId(fields.parentId) }), ...(tagIds === undefined ? {} : { tagIds }) };
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, ...body }),
@@ -314,7 +320,8 @@ export const updateTaskFields = async (
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.version !== exactVersion && result.version !== exactVersion + 1n ||
       body.title !== undefined && result.title !== body.title || body.description !== undefined && result.description !== body.description ||
-      body.parentId !== undefined && result.parentId !== body.parentId) throw new ApiError("protocol", response.status);
+      body.parentId !== undefined && result.parentId !== body.parentId ||
+      tagIds !== undefined && (result.tags.length !== tagIds.length || result.tags.some(tag => !tagIds.includes(tag.id)))) throw new ApiError("protocol", response.status);
     return result;
   }, undefined, false, admission.onWriteRejected);
 };

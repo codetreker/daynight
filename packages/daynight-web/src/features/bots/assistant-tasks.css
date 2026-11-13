@@ -1,0 +1,62 @@
+.assistant-task-section { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+.assistant-task-list { list-style: none; padding: 0; margin: 0; }
+.assistant-task-list a { display: flex; align-items: center; gap: 10px; min-height: 66px; padding: 10px; text-decoration: none; color: inherit; border-radius: 9px; }
+.assistant-task-list a:hover, .assistant-task-list a[aria-current] { background: #eeeef9; }
+.assistant-task-list a[aria-current] strong { color: var(--indigo); }
+.assistant-task-icon { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 34px; border-radius: 9px; border: 1px solid #d5e5dd; background: #edf7f0; color: #38745f; font-size: 20px; }
+.assistant-task-list-actions { display: flex; flex-wrap: wrap; margin-top: 8px; gap: 4px; }
+.assistant-task-list-actions .button { font-size: 11px; white-space: normal; }
+.assistant-task-badge { display: inline-flex; border: 1px solid #d9e3df; background: #eef6f2; color: #3e6c5a; border-radius: 12px; padding: 2px 8px; font-size: 11px; line-height: 1.4; }
+.assistant-task-owned { padding-left: 18px; }
+.assistant-task-owned li { overflow-wrap: anywhere; margin-block: 8px; }
+.assistant-task-owned span { display: block; font-size: 12px; color: var(--muted); }
+.assistant-task-detail { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; background: #fdfdfe; overscroll-behavior: contain; }
+.bot-conversation-body[hidden] { display: none; }
+.assistant-task-heading { padding: 20px 28px 0; border-bottom: 1px solid var(--line); }
+.assistant-task-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.assistant-task-title h1 { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 20px; margin: 0; }
+.assistant-task-heading p { font-size: 13px; overflow-wrap: anywhere; }
+.assistant-task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin-block: 8px; }
+.assistant-task-registry { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.assistant-task-registry dt { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.assistant-task-registry dd { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.assistant-task-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-block: 12px; }
+.assistant-task-actions .button { min-height: 34px; }
+.assistant-task-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-block: 14px 0; }
+.assistant-task-tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 10px 12px; color: var(--muted); cursor: pointer; font: inherit; font-size: 13px; }
+.assistant-task-tabs button[aria-pressed=true] { border-color: var(--indigo); color: var(--indigo); background: #f5f4fe; }
+.assistant-task-body { padding: 20px 28px; min-width: 0; }
+.assistant-task-panel, .assistant-task-entry, .assistant-task-proposal, .assistant-task-record-section { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: #fff; margin-block: 14px; overflow-wrap: anywhere; min-width: 0; }
+.assistant-task-panel > header, .assistant-task-entry > header, .assistant-task-record-section > header { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.assistant-task-panel h3, .assistant-task-entry h3, .assistant-task-record-section h3 { margin: 0 0 12px; font-size: 14px; }
+.assistant-task-panel pre, .assistant-task-rules { overflow: auto; max-width: 100%; padding: 12px; border-radius: 7px; background: #f5f6fa; font-size: 12px; }
+.assistant-task-panel img, .assistant-task-proposal img { max-width: 100%; }
+.assistant-task-appendix, .assistant-task-history, .assistant-task-records { padding: 0; list-style: none; }
+.assistant-task-form { display: grid; gap: 14px; min-width: 0; }
+.assistant-task-form label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
+.assistant-task-form :is(textarea,input,select), .assistant-task-filters select { max-width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--line); border-radius: 7px; padding: 9px; font: inherit; background: #fff; color: var(--ink); }
+.assistant-task-form textarea { width: 100%; resize: vertical; min-height: 96px; }
+.assistant-task-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; }
+.assistant-task-filters label { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.assistant-task-record { padding: 12px 0; border-top: 1px dashed var(--line); overflow-wrap: anywhere; }
+.assistant-task-record p { white-space: pre-wrap; }
+.assistant-task-record:target, .assistant-task-record:focus { outline: 2px solid var(--indigo); outline-offset: 3px; }
+.assistant-task-empty { padding: 24px 12px; color: var(--muted); text-align: center; }
+.assistant-task-widens, .assistant-task-widening { border-color: #e2c895; }
+.assistant-task-widening { padding: 10px; background: #fff6e5; color: #77551c; border-radius: 8px; }
+.assistant-task-evidence { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.assistant-task-dialog { width: min(660px,calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 0; }
+.assistant-task-dialog form { display: contents; }
+.assistant-task-dialog .dialog-body { overflow: auto; }
+.assistant-task-pending { max-height: 120px; overflow: auto; border-bottom: 1px solid var(--line); padding: 4px 8px; font-size: 12px; }
+.assistant-task-pending .button { white-space: normal; overflow-wrap: anywhere; text-align: left; font-size: 12px; }
+.assistant-task-detail :is(button,a,input,select,textarea):focus-visible, .assistant-task-section a:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+@container bots-workspace (max-width: 650px) {
+  .assistant-task-heading { padding: 14px 12px 0; }
+  .assistant-task-body { padding: 12px; }
+  .assistant-task-registry { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px 10px; }
+  .assistant-task-detail .button, .assistant-task-tabs button, .assistant-task-list-actions .button { min-height: 44px; }
+  .assistant-task-tabs { gap: 0; }
+  .assistant-task-tabs button { padding-inline: 8px; }
+  .assistant-task-panel, .assistant-task-entry, .assistant-task-proposal, .assistant-task-record-section { padding: 12px; }
+}

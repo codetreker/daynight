@@ -824,7 +824,7 @@ func resourceScopeRead(t *testing.T, tx *httpTestStore, actor model.Principal, a
 	}, TasksFn: func(_ context.Context, id string, query store.TaskQuery) (store.TaskPage, error) {
 		plan.Called("tasks")
 		projectHTTPCheck(t, id, project.ID)
-		projectHTTPCheck(t, query, store.TaskQuery{Page: store.Page{Limit: 50}})
+		projectHTTPCheck(t, query, store.TaskQuery{TagFilter: store.TagFilter{TagIDs: []string{}, TagMatch: "all"}, Page: store.Page{Limit: 50}})
 		return store.TaskPage{Items: []model.Task{resourceScopeTaskCopy(task)}}, nil
 	}, TaskPresenceFn: func(_ context.Context, projectID, id string) (store.TaskPresence, error) {
 		plan.Called("presence")

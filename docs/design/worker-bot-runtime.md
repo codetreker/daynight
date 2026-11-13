@@ -60,6 +60,30 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 目录清理复用受限物理目录遍历和 inode 校验，拒绝符号链接、Git 元数据和替换后的目标。计划同时检查冻结 cwd、各正式 ticket 的 cwd 与 native home，拒绝把这些目录本身或包含它们的目录作为删除目标；检查包括原路径与物理解析路径。单个 ticket、临时文件与 socket 按原文件身份删除。每项成功后由 `completeDeletionTarget` 持久保存进度；再次处理同一 `deletionId` 时跳过已经完成的目标，不能因为旧路径被新文件占用而重复清理。journal 所在执行目录排在其它私有目标之后。文件或权限错误保留未完成目标和停证，不删除普通 cwd、native home、Task 或 worktree，也不调用 cleanup prompt、StopTest 或归档上传。
 
-无持久 intent 时没有可供跨重启定位的执行文件计划。当前进程仍持有的 preflight 清理句柄可以重试释放探针与别名；Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现。该边界不影响已持久登记的执行资料按原身份完成删除，也不把共享别名根扫描变成 Bot 清理权限。
+无持久 intent 时仍可由配置根和 Bot ID 精确定位 `bots/<botId>/state`，其认领与通知状态进入删除计划；其他执行文件没有可供跨重启定位的计划。当前进程仍持有的 preflight 清理句柄可以重试释放探针与别名；Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现。该边界不影响已持久登记的执行资料按原身份完成删除，也不把共享别名根扫描变成 Bot 清理权限。
 
 所有本地目标完成后，`finishDeletion` 原子裁剪库存定义、角色和执行资料，只留下删除投影及不含对话正文的责任。`completeDeletion` 提交原 `{deletionId, stop, result}`；本地现存 intent 可校验完整 fence，裁剪后使用持久 receipt 保持完全相同的请求。停止失败报告 `execution_stop_unproven`，文件清理失败报告 `private_cleanup_failed`，失败报告自身不确定时一并保留原错误。服务端响应必须确认相同删除身份和 workerCleanup 结果，serverCleanup 仍可为 pending 或 failed。客户端不把传输失败解释为拒绝，也不自动重复 POST；下一轮先读取原删除状态，再决定是否提交相同回执。服务端的 admission barrier、回执 digest 与历史清理机制由[助手设计](assistant.md)拥有。
+
+## 助手任务维护
+
+`createWorkerBotHost` 装配 `assistant-tasks.ts`，由 `createManagedAssistantRuntime` 同时启动和停止。助手及其助手任务不计入项目 Task 的 `maxConcurrent`。四个独立循环每 60 秒启动一轮，使用可注入的时钟；同一循环不重入，各 Bot 独立处理失败。网络请求有单次和操作预算；事件分页每页使用独立预算，避免合法历史累计超过一次操作的字节上限。慢请求不通过重叠执行追赶周期。它不包含 Watchdog 评估器。
+
+每个助手的 `DAYNIGHT_BOT_ID` 为自身 ID，`DAYNIGHT_BOT_STATE_DIR` 固定为 Worker 配置根下 `bots/<botId>/state`。目录沿用私有文件机制的归属、权限及符号链接检查；普通停止和恢复保留状态。认领与 CLI 共用[私有状态和锁](assistant-task-cli.md)，不另外保存或轮换令牌。同一进程内按 Bot 和任务串行协调各循环的认领读写，避免固定同拍的续约与触发反复争抢非阻塞文件锁；跨进程仍由原文件锁保护。应用启动、停止及其业务动作不持有这个本进程队列，避免取消与凭据读取互相等待。每轮先查询原待核对操作，再根据权威任务决定续约。原回执缺失不会直接清除意图或重发：共享认领状态机重新读取权威代次，只有旧操作可能产生的代次已被超越或失效，才允许退役旧意图；同代有效认领仍保留未知结果。转交的 pending 认领先绑定本地生成的凭据，再续约。只有原 Controller 的新鲜认证观察显示 ready/working、启动成功且未停止或出错，才维护租约。暂停任务继续续约，但不启动应用或定时事件。
+
+自动接手只选择健康的本机助手，对 `takeover=auto`、active 且 unowned/expired 的任务重读版本和代次后认领。服务端条件写入决定并发竞争结果。旧 holder 恢复时不会抢夺有效认领；服务端在过期接手或转交事务中生成新旧 holder 的通知，Worker 不重复创建系统事件。首次认领无人负责的任务没有历史空档，不产生接手事件。
+
+`registerApplication(name, factory)` 在 runtime 启动前注册应用。factory 接收任务、Bot ID、取消 signal 和 `withClaim`；每项有外部影响的动作必须经 `withClaim` 重查健康状态、active 状态、原代次与私有凭据。续约确认后启动或保持应用，暂停、丢失认领、健康检查失败、租约期限或 Worker 停止会取消应用。异步续约、健康检查与 guard 绑定原 Bot、认领代次及应用实例；迟到失败只能取消该实例，不能按任务 ID 取消后继持有者的应用；迟到成功快照的认领代次低于当前应用时，不替换当前应用。等待旧应用退出后重新比较当前实例及代次，避免等待期间的新持有者被覆盖。factory 必须响应取消并等待其自有工作结束；停止会等待 factory 返回，不宣称忽略取消的应用已经退出。
+
+删除路径先 `stopBot`，禁止该 Bot 新的维护工作，取消应用并等待已开始的维护写入结束，再进入原 Controller 停止和文件删除。这样私有状态被删除后不会被后台循环重新创建。Worker 总退出先停止助手任务维护，再停止 Controllers；前一步失败仍继续其余停止尝试并聚合错误。
+
+## 通知与定时事件
+
+事件循环按目标 Bot 和 pending 状态过滤，每页最多读取一个完整事件。任务和事件分页的单响应预算为 32 MiB：事件覆盖合法 1 MiB 输入的 JSON HTML 转义，任务还覆盖分次更新后多个大字段的组合。每页使用独立操作预算；单任务认领动作的累计预算为 256 MiB，覆盖同一动作中至多五次完整任务读取及精简认领回执，不随任务或事件历史总量累计。只有同步、在线、active、idle、没有当前回合且允许发送时，才将事件合为一条 `payload.origin=daynight` 的输入；提交前再次检查 Session fence 和空闲状态，不能 steer 正在工作的助手。通知包含事件类型、任务与事件 ID、事件时间、关键事实及读取手册和记录的 CLI 指引。接手通知要求助手说明从 `previousLeaseUntil` 到事件时间的租约空档；前者不早于后者时没有过期租约空档。历史事件时间不由当前认领时间替代，也不据租约推断助手实际停止工作的时间。大 payload 使用明确标识的摘要并保留完整事件读取指引；一批文本最多 512 KiB，积压超限时停止继续分页并保留后续事件，下一个空闲轮次继续。
+
+每批先持久化完整 Session 命令、固定 operation ID 和事件集合，再发送一次。accepted/offered/dispatching、unknown、运输中断及重启后都只查询原操作。只有 provider_accepted/confirmed 才确认事件；确认时只扫描目标 Bot 的 pending 事件，逐项确认该批引用，找齐即停止，不要求重新读取 delivered 历史；每次 ACK 使用独立有界操作。部分 ACK 成功或响应丢失不会再次发送 Session 输入。仅当没有 providerResult，且回执为服务端派发前的 rejected/permission_or_state_changed，或没有 error 的 expired 时，才清除该批意图并在下一空闲轮重新选择事件；该固定拒绝证明仅由服务端派发前的授权检查持久生成，普通 Controller 错误仍不落库；历史拒绝缺少证明时不补造证明。原生错误、failed 及其他未证明没有派发的终态保留原操作供核对。历史 generation 的结果仍沿原 Session 和操作身份读取。
+
+通知与触发 journal 位于 Bot 私有状态内，按 origin 和 owner 隔离。manifest 以原子替换指向带 SHA-256 校验的分块内容；两组交替写入的分块各自最多 4 MiB，只有新组完整落盘后才切换。中途失败保留原完整意图，每个 journal 的内容存储上限为两组，不随每轮替换无限增长。Bot 删除时连同其他私有状态精确清理。
+
+定时配置遵循[助手任务服务端](assistant-task.md)：interval 从任务创建时间按分钟计算，daily 使用 IANA 时区的本地日期与 HH:MM，每个本地日期最多一次，夏令时重复小时不重复触发。每轮只选择最近到期的一次，不回放离线期间的全部积压；暂停时不触发。事件 ID 由任务、配置和到期标识确定，跨重启或接手保持相同。本地 journal 已确认当前到期事件时不再扫描历史；否则逐页查找已存在的事件，找到即停止，再保存待核对意图；未知响应只读核对该事件，不重复 POST。同一到期事件已存在时，新的 holder 不重复生成它。
+
+实现取舍见[维护循环决策](../../.agents/notes/implemented/architecture/2026-11-13-assistant-task-worker-runtime.md)。

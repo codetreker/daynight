@@ -1,7 +1,7 @@
 [
   {
     "name": "task_create",
-    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or dependencies.",
+    "description": "Create a Task or Goal. Task defaults to proposed and Goal to todo; omitted assignee is the current account. Goal permits an explicit null assignee and has no execution platform or dependencies. Supply tagIds as the complete Project tag UUID set.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -83,6 +83,14 @@
             "null"
           ],
           "format": "uuid"
+        },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Complete Project tag UUID set; omit to preserve on update, or supply an empty array to clear."
         }
       },
       "required": [
@@ -171,8 +179,31 @@
             "version": {
               "type": "string",
               "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
             }
-          }
+          },
+          "required": [
+            "tags"
+          ]
         },
         "meta": {
           "type": "object",
@@ -632,6 +663,26 @@
                     "null"
                   ],
                   "format": "uuid"
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -649,7 +700,8 @@
                 "titleTruncated",
                 "blockedByCount",
                 "type",
-                "parentId"
+                "parentId",
+                "tags"
               ],
               "additionalProperties": false,
               "allOf": [
@@ -1128,6 +1180,26 @@
                     "unfinished"
                   ],
                   "additionalProperties": false
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -1153,7 +1225,8 @@
                 "externalDependsOn",
                 "blockedBy",
                 "type",
-                "parentId"
+                "parentId",
+                "tags"
               ],
               "additionalProperties": false,
               "allOf": [
@@ -1299,7 +1372,7 @@
   },
   {
     "name": "task_update",
-    "description": "Atomically change fields and dependency classification. Omission preserves; null clears nullable fields.",
+    "description": "Atomically change fields and dependency classification. Omission preserves; null clears nullable fields. Supply tagIds as the complete Project tag UUID set.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1383,6 +1456,14 @@
           ],
           "format": "uuid",
           "description": "Omit to retain, null to clear, or a Goal UUID to assign."
+        },
+        "tagIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": "Complete Project tag UUID set; omit to preserve on update, or supply an empty array to clear."
         }
       },
       "required": [
@@ -1430,6 +1511,11 @@
           "required": [
             "parentId"
           ]
+        },
+        {
+          "required": [
+            "tagIds"
+          ]
         }
       ]
     },
@@ -1451,8 +1537,31 @@
             "version": {
               "type": "string",
               "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
             }
-          }
+          },
+          "required": [
+            "tags"
+          ]
         },
         "meta": {
           "type": "object",
@@ -1608,8 +1717,31 @@
             "version": {
               "type": "string",
               "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
             }
-          }
+          },
+          "required": [
+            "tags"
+          ]
         },
         "meta": {
           "type": "object",
@@ -1997,8 +2129,31 @@
             "version": {
               "type": "string",
               "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
             }
-          }
+          },
+          "required": [
+            "tags"
+          ]
         },
         "meta": {
           "type": "object",
@@ -2127,8 +2282,31 @@
             "version": {
               "type": "string",
               "pattern": "^[1-9][0-9]{0,18}$"
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "additionalProperties": false
+              }
             }
-          }
+          },
+          "required": [
+            "tags"
+          ]
         },
         "meta": {
           "type": "object",

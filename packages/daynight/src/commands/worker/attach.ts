@@ -7,6 +7,9 @@ import type { HerdrLocalRun } from "./herdr/lifecycle-types.js";
 import { createHerdrInstance } from "./herdr/instance.js";
 import { spawnHerdrProcess } from "./herdr/command.js";
 import { resolveWorkerPaths } from "./paths.js";
+import { toolCommand, ToolSelectionError, verifyToolLaunch } from "../../platform/tool-executables.js";
+import { readHerdrSharedInstance } from "./herdr/shared-instance-store.js";
+import { inspectProcessProof } from "../controller/process-proof.js";
 
 export const attachWorker = async (options: { homeDirectory: string }): Promise<void> => {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("daynight worker attach requires an interactive terminal.");
@@ -32,9 +35,16 @@ export const attachWorker = async (options: { homeDirectory: string }): Promise<
     run = selected.runs.at(-1)!;
     if (run.daemon === null) throw new Error("The original Herdr daemon identity is unavailable; attachment is prohibited.");
   }
-  const instance = createHerdrInstance(run === undefined ? { paths } : { paths: { ...paths, herdrDirectory: run.instanceDirectory, logsDirectory: path.join(run.instanceDirectory, "logs") }, isolatedRun: true });
+  const shared = run === undefined ? readHerdrSharedInstance(paths) : null;
+  const toolLaunch = run === undefined ? shared?.current?.launch ?? undefined : run.launches?.herdr;
+  const instance = createHerdrInstance({ ...(run === undefined ? { paths } : { paths: { ...paths, herdrDirectory: run.instanceDirectory, logsDirectory: path.join(run.instanceDirectory, "logs") }, isolatedRun: true }), ...(toolLaunch === undefined ? {} : { toolLaunch }) });
   const native = run === undefined ? undefined : createMacProcessControl();
   const verifyDaemon = async (): Promise<void> => {
+    if (shared !== null) {
+      const current = shared.current;
+      if (shared.pending === null && current?.phase === "ready" && current.launch === null) throw new ToolSelectionError("herdr", "herdr", "launch", "legacy_tool_identity_missing");
+      if (shared.pending !== null || current?.phase !== "ready" || current.daemon === null || await inspectProcessProof(current.daemon) !== "running") throw new Error("The original shared Herdr daemon cannot be verified; attachment is prohibited.");
+    }
     if (run === undefined || native === undefined) return;
     const original = run.daemon!;
     if (await native.observe(original) !== "same") throw new Error("The original Herdr daemon cannot be verified; attachment is prohibited.");
@@ -44,14 +54,20 @@ export const attachWorker = async (options: { homeDirectory: string }): Promise<
     }
   };
   const operation = createOperation({ limits: { totalMs: 30_000 } });
-  try { await verifyDaemon(); await instance.connect(operation); await verifyDaemon(); }
+  try {
+    await verifyDaemon(); await instance.connect(operation); await verifyDaemon();
+    if (toolLaunch === undefined) throw new ToolSelectionError("herdr", "herdr", "launch", "legacy_tool_identity_missing");
+    await verifyToolLaunch(toolLaunch, operation);
+    await verifyDaemon();
+  }
   finally { operation.dispose(); }
   const attachment = instance.attachment;
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !attachment.unsetEnvironment.some((key) => key.toUpperCase() === name.toUpperCase())));
   Object.assign(environment, attachment.environment);
   // The explicit client connects only to an existing daemon, including if it exits after the probe.
   // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/main.rs#L573-L577
-  const child = spawnHerdrProcess(attachment.executable, [...attachment.arguments, "client"], { env: environment, stdio: "inherit", detached: false, windowsHide: false });
+  const command = toolCommand(toolLaunch!, ["--session", "w", "client"]);
+  const child = spawnHerdrProcess(command.file, command.args, { env: environment, stdio: "inherit", detached: false, windowsHide: false, shell: false });
   const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM", "SIGHUP"];
   let failure: Error | undefined;
   const listeners = signals.map((signal) => {

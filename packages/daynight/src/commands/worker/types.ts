@@ -21,6 +21,8 @@ export type ExecutionConfiguration = {
   validateNativeSelection?: true;
   toolLaunch?: ResolvedToolLaunch;
   toolObservation?: FrozenToolObservation;
+  herdrLaunch?: ResolvedToolLaunch;
+  herdrObservation?: FrozenToolObservation;
 };
 export type ResourceOwner = ClaimIdentity & { worktreeId: string };
 export type CleanupSchedule = {

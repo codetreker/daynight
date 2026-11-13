@@ -358,7 +358,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
     const chain = page.locator(`[data-chain-id="${taskId}"]`), header = chain.locator('.goal-header');
     await expect(header).toHaveCSS('background-color', roleColors.proposed[0]);
-    await expect(header.locator('.root-progress-track i')).toHaveCSS('background-color', 'rgb(100, 116, 139)');
+    await expect(header.locator('.root-progress-track i')).toHaveCSS('background-color', roleColors.done[3]);
     await header.locator('[aria-expanded]').click();
     await expect(chain.locator('.goal-task-row')).toHaveCSS('background-color', roleColors.proposed[0]);
     await page.locator(`#task-chain-graph-${taskId}`).click();

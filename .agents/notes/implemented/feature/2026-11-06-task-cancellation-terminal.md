@@ -66,8 +66,9 @@ clear refusal and retains existing stop confirmation.
 
 ## Consequences
 
-Dependency satisfaction and ended progress include done and cancelled; successful
-delivery counts only done. Cancellation can release successors without changing
+Dependency satisfaction and ended counts include done and cancelled; successful
+delivery counts only done. The [completion-progress decision](../bug-fix/2026-11-13-completion-progress-excludes-cancelled.md)
+uses that distinction in Web presentation. Cancellation can release successors without changing
 their versions or states. Web consumes the server's retained dependency facts
 rather than inferring readiness from visible nodes; the [dependency-state
 decision](../architecture/2026-11-11-task-sync-dependency-states.md) records

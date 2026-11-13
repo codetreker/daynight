@@ -53,6 +53,13 @@ func (tx *DAO) SaveSessionArchiveFile(ctx context.Context, v store.ArchiveBundle
 	}
 	return err
 }
+func (tx *DAO) FailSessionArchiveFile(ctx context.Context, v store.ArchiveBundleFile, resource json.RawMessage) error {
+	result, err := tx.tx.Exec(ctx, `UPDATE session_archive_files SET state='failed',resource=$12 WHERE session_id=$1 AND file_id=$2 AND purpose=$3 AND sha256=$4 AND byte_length=$5 AND accepted_offset=$6 AND state='receiving' AND object_path=$8 AND resource=$9 AND timeline_revision=$10 AND staging_released=$11 AND $7='receiving'`, v.SessionID, v.FileID, v.Purpose, v.SHA256, v.ByteLength, v.AcceptedOffset, v.State, v.Path, archiveFileResource(v.Resource), archiveFileRevision(v.TimelineRevision), v.StagingReleased, resource)
+	if err == nil && result.RowsAffected() != 1 {
+		return errors.New("archive identity conflict")
+	}
+	return err
+}
 func (tx *DAO) SessionArchiveFiles(ctx context.Context, id string) ([]store.ArchiveBundleFile, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT file_id::text,purpose,sha256,byte_length,accepted_offset,state,object_path,resource,timeline_revision,staging_released FROM session_archive_files WHERE session_id=$1 ORDER BY file_id`, id)
 	if err != nil {

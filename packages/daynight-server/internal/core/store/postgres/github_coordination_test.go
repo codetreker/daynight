@@ -619,6 +619,54 @@ func TestGitHubCoordinationDueProjects(t *testing.T) {
 	}
 }
 
+func TestGitHubAccessHintRetryAndNewSignalWake(t *testing.T) {
+	s := isolatedStore(t)
+	project := queryProject(t, s, 1)
+	b2Configure(t, s, project.ID, 10, 20, 30)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	initialHint, nextHint := uuid.NewString(), uuid.NewString()
+	if n := b2Signal(t, s, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}); n != 1 {
+		t.Fatalf("PR signal count: %d", n)
+	}
+	mustQueryExec(t, s, `UPDATE project_github SET access_hint_id=$2,next_access_check_at=$3,next_poll_at=$4 WHERE project_id=$1`, project.ID, initialHint, now.Add(time.Minute), now)
+	got, err := s.DueGitHubProjects(t.Context(), 10, now, 10)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("future access retry must block poll and PR: %v %v", got, err)
+	}
+	got, err = s.DueGitHubProjects(t.Context(), 10, now.Add(time.Minute), 10)
+	if err != nil || !reflect.DeepEqual(got, []string{project.ID}) {
+		t.Fatalf("access retry due: %v %v", got, err)
+	}
+	limit := now.Add(30 * time.Second)
+	mustQueryExec(t, s, `UPDATE project_github SET not_before=$2 WHERE project_id=$1`, project.ID, limit)
+	completion, err := s.WriteGitHubSignals(t.Context(), func(w store.GitHubSignalWriter) error {
+		n, e := w.SignalAccess(t.Context(), store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: nextHint, DeliveryID: "new", ReceivedAt: now})
+		if e != nil || n != 1 {
+			return fmt.Errorf("access signal: %d %w", n, e)
+		}
+		return nil
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("access signal: %+v %v", completion, err)
+	}
+	var actualHint string
+	var actualNext, actualLimit time.Time
+	if err := s.Pool.QueryRow(t.Context(), `SELECT access_hint_id::text,next_access_check_at,not_before FROM project_github WHERE project_id=$1`, project.ID).Scan(&actualHint, &actualNext, &actualLimit); err != nil {
+		t.Fatal(err)
+	}
+	if actualHint != nextHint || !actualNext.Equal(now) || !actualLimit.Equal(limit) {
+		t.Fatalf("new signal state: %s %v %v", actualHint, actualNext, actualLimit)
+	}
+	got, err = s.DueGitHubProjects(t.Context(), 10, now, 10)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("rate limit bypassed: %v %v", got, err)
+	}
+	got, err = s.DueGitHubProjects(t.Context(), 10, limit, 10)
+	if err != nil || !reflect.DeepEqual(got, []string{project.ID}) {
+		t.Fatalf("new signal not due after limit: %v %v", got, err)
+	}
+}
+
 func TestGitHubCoordinationRuntimeAndConditionalRetries(t *testing.T) {
 	s := isolatedStore(t)
 	project := queryProject(t, s, 1)
