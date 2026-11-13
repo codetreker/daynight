@@ -29,7 +29,8 @@ changes, a delivery is verified, or a significant blocker affects the objective.
 Record achieved outcomes, remaining scope and material blockers or limitations;
 keep command chronology and temporary execution context in Session. The service's
 `progress` counts direct child Tasks; it does not synchronize conclusions or
-establish delivery or acceptance. Goal status remains independently controlled.
+establish delivery or acceptance. A child entering `in_progress` starts a `todo`
+Goal; other Goal status changes remain explicit.
 
 The target project's workflow determines required files, discussion Tasks,
 confirmation and delivery gates. Material ownership does not require a fixed
