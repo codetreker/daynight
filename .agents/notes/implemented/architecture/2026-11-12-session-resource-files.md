@@ -15,13 +15,13 @@ resource must not invalidate committed history or native input publications.
 `content/resource-files.ts` owns Session-bound descriptors, blobs, the shared
 resource index, persistent pins, process-local leases, file validation and
 resource budgets. It exposes the existing resource operations without owning
-timeline entries. The production v9 pending-content composition retains timeline candidate
-files and SQL visibility described in the [atomic publication
-decision](2026-11-10-atomic-content-publication.md), and uses the resource
-owner's descriptor byte count for its combined metadata budget. The independently
-callable SQL composition uses the same file owner and guards; its current-row,
-conversion and maintenance responsibilities belong to the
-[SQL content decision](2026-11-12-session-sqlite-content-components.md).
+timeline entries. `content/session-content.ts` combines the file owner with
+canonical v10 SQL current rows and uses the owner's descriptor byte count for
+logical metadata measurement. The [atomic publication
+decision](2026-11-10-atomic-content-publication.md) preserves the historical
+candidate-file rationale; the [SQL activation decision](2026-11-12-session-sqlite-activation.md)
+records its replacement. Current-row, conversion and maintenance responsibilities
+belong to the [SQL content decision](2026-11-12-session-sqlite-content-components.md).
 
 The composition checks both committed timeline references and
 `native_input_publication_images` in its synchronous read transaction before
@@ -65,4 +65,4 @@ Resource-only consumers can reuse the file owner without loading timeline
 content; resource descriptors remain a bounded in-memory map. The composition
 must always supply guarded deletion to callers that can release resources.
 Separating these responsibilities does not change the durable file format,
-resource limits or existing v8 publication behavior.
+resource limits or the original publication atomicity guarantee.

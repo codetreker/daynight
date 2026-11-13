@@ -1,5 +1,5 @@
 import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
-import type { PendingContent } from "./pending-content.js";
+import type { SessionContent } from "./content/session-content.js";
 import { createHash } from "node:crypto";
 import { parseSessionResource, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
 import type { TimelinePage } from "../../session/controller-protocol.js";
@@ -14,7 +14,7 @@ const sequence = (value: string): bigint => {
 
 type ContentTransactions = { read: <T>(action: () => T) => T; write: <T>(action: () => T) => T };
 
-export const createLocalSessionContent = (store: PendingContent, sessionId: string, transactions: ContentTransactions) => {
+export const createLocalSessionContent = (store: SessionContent, sessionId: string, transactions: ContentTransactions) => {
   const inspection = createInspectionContent(store, sessionId);
   const resources = store.resourceFiles;
   const resourcesFor = (items: readonly TimelineEntry[]): SessionResource[] => {
@@ -27,7 +27,7 @@ export const createLocalSessionContent = (store: PendingContent, sessionId: stri
   const content = {
     readTimeline(query: LocalTimelineQuery): Omit<TimelinePage, "sessionId" | "lastEventSeq"> & { kind: "timeline" } {
       if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 200 || !["tail", "before", "after"].includes(query.direction)) throw new Error("Invalid local timeline page.");
-      let pivot = 0n;
+      let pivot: string | null = null;
       if (query.direction === "tail") {
         if (query.cursor !== null) throw new Error("Tail must not contain a cursor.");
       } else {
@@ -35,13 +35,12 @@ export const createLocalSessionContent = (store: PendingContent, sessionId: stri
         try {
           const values: unknown = JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8"));
           if (!Array.isArray(values) || values.length !== 3 || values[0] !== sessionId || values[1] !== query.historyEpoch || typeof values[2] !== "string") throw new Error();
-          pivot = sequence(values[2]);
+          sequence(values[2]); pivot = values[2];
         } catch { throw new Error("Invalid local timeline cursor."); }
       }
       const ascending = query.direction === "after";
-      const ordered = [...store.entries.values()].sort((a, b) => sequence(a.entrySeq) < sequence(b.entrySeq) ? -1 : 1);
-      const eligible = ordered.filter(entry => query.direction === "tail" || (ascending ? sequence(entry.entrySeq) > pivot : sequence(entry.entrySeq) < pivot));
-      const rows = (ascending ? eligible : eligible.reverse()).slice(0, query.limit);
+      const selected = store.timeline.page({ direction: query.direction, pivot, limit: query.limit });
+      const rows = ascending ? selected : selected.toReversed();
       const items: TimelineEntry[] = [];
       // Leave room for the envelope and resource descriptors in the WS frame.
       let bytes = 1024;
@@ -57,13 +56,16 @@ export const createLocalSessionContent = (store: PendingContent, sessionId: stri
       if (!ascending) items.reverse();
       const first = items[0]?.entrySeq, last = items.at(-1)?.entrySeq;
       const cursor = (seq: string | undefined): string | null => seq === undefined ? null : Buffer.from(JSON.stringify([sessionId, query.historyEpoch, seq])).toString("base64url");
-      const hasBefore = first !== undefined && ordered.some(entry => sequence(entry.entrySeq) < sequence(first));
-      const hasAfter = last !== undefined && ordered.some(entry => sequence(entry.entrySeq) > sequence(last));
+      const hasBefore = first !== undefined && store.timeline.hasBefore(first);
+      const hasAfter = last !== undefined && store.timeline.hasAfter(last);
       return { kind: "timeline", historyEpoch: query.historyEpoch, items, resources: resourcesFor(items), beforeCursor: cursor(first), afterCursor: cursor(last), hasMoreBefore: hasBefore, hasMoreAfter: hasAfter };
     },
     pendingInteractions(): TimelineEntry[] {
-      const rows = [...store.entries.values()].filter(entry => entry.kind === "interaction" && entry.interaction.state === "pending").sort((a,b) => sequence(a.entrySeq) < sequence(b.entrySeq) ? -1 : 1);
-      if (rows.length > 100) throw new Error("Too many pending native interactions to synchronize safely.");
+      const rows: TimelineEntry[] = [];
+      store.timeline.iterate(entry => {
+        if (entry.kind === "interaction" && entry.interaction.state === "pending") rows.push(entry);
+        if (rows.length > 100) throw new Error("Too many pending native interactions to synchronize safely.");
+      });
       return rows;
     },
     saveResource(resource: SessionResource, content?: Uint8Array): void {

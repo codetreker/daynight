@@ -13,7 +13,7 @@ const fixture = () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/controller-tests"); mkdirSync(base, { recursive: true });
   const root = mkdtempSync(path.join(base, "session-sql-content-")); roots.push(root);
   const file = path.join(root, "journal.sqlite"), db = new Database(file); connections.push(db);
-  db.exec("CREATE TABLE execution(id INTEGER PRIMARY KEY); CREATE TABLE content_index(id TEXT PRIMARY KEY); CREATE TABLE native_input_publication_images(resource_id TEXT);" + loadSqliteSql(new URL("../../../src/commands/controller/content/timeline-schema.sql", import.meta.url)));
+  db.exec("CREATE TABLE execution(id INTEGER PRIMARY KEY); CREATE TABLE content_index(id TEXT PRIMARY KEY); CREATE TABLE native_input_publication_images(resource_id TEXT);" + loadSqliteSql(new URL("../../../src/commands/controller/sqlite/journal/010-timeline-content.sql", import.meta.url)));
   let writing = false;
   const read = <T>(action: () => T): T => db.inTransaction ? action() : db.transaction(action).deferred();
   const write = <T>(action: () => T): T => db.transaction(() => { writing = true; try { return action(); } finally { writing = false; } }).immediate();

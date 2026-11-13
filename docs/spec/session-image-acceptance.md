@@ -26,7 +26,7 @@
 | 服务存储准入 | 覆盖暂存与原件最坏两份空间，空闲高于 max(1 GiB, 卷容量 5%)；每图片 Session 另计 132 MiB 归档元数据和最坏暂存增量。实占与预留不双计，跨卷复制计峰值；ENOSPC 明确失败，不删除历史原件腾空间。 |
 | 上传身份与保留 | 上传准备资格为 24 小时；GET 或重传不续期。最多 10,000 个上传身份 tombstone，达到限制拒绝新身份但保留查询、释放、文本和历史。过期不清除 operation unknown、消息、记录或 native/resume 的有效引用。 |
 | 服务传输 | 图片块最多 524,288 原字节；同 Session 全方向和全部连接代次合计最多 2 个媒体块在途，账户最多 8、部署最多 64。归档文件块 1–1,048,576 bytes，同 Session 最多 1 个，仍占公共媒体额度。控制、查询、删除和回执在块边界可进展。 |
-| Controller | 每 execution 媒体 2200 MiB，stateDirectory 媒体 8 GiB，卷空闲 512 MiB；元数据 128 MiB 加 8 MiB 结算余量。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
+| Controller | 每 execution 媒体 2200 MiB，stateDirectory 媒体 8 GiB，卷空闲 512 MiB；元数据 128 MiB 加 8 MiB 结算余量；当前正文替换只计最新版本，DB/WAL/SHM、未退休旧文件和同步文件仍计真实占用。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
 | 通用完整解码 | 单轴最多 16,384，画布最多 33,554,432 像素，最多 256 帧，累计最多 67,108,864 像素，RGBA8 输出最多 268,435,456 bytes，单图最多 15 秒。完整遍历所有帧；静态为 1 帧。每解码子进程 512 MiB RSS 为监控目标，不能称为硬内存隔离。 |
 | 浏览器持久草稿 | 每账户 256 MiB，总量 512 MiB；editable 和 frozen 引用不因淘汰页面缓存而被删除。配额、事务或 Blob 错误明确阻止含图发送并保留实际编辑状态。 |
 | 浏览器页面原件 | 页面 128 MiB/32 项、owner 64 MiB/16 项；前景保留 40 MiB/2 槽，后台 88 MiB/30 项、owner 后台 24 MiB/14 项；在途缓冲计入。背景满时一个 10 MiB 预览和一个下载仍有前景准入。 |
@@ -78,7 +78,7 @@ Provider 验收应分别注明原生版本、模型和运行平台；受控测�
 | A2/A4 原生 | Codex、Copilot 分别测试纯图、混合、不同图顺序与重复同图；第二图不可读时零次原生调用，派发后丢回执时最多一次调用且仅查询原操作。无图片模型、能力 unknown、模型/权限/上下文变化及回合中输入保持一致拒绝。 |
 | A5 草稿与上传 | 上传各阶段响应丢失、连续块确认与精确重传、100% 仍验证中、事务 abort、缺 Blob、quota、多标签竞争、冻结/派发/接受/清理间崩溃。接受仅清原版本；后继草稿保留，unknown 不重发、不被新 draftId 绕过。 |
 | A6/A7 来源与显示 | 用户、Agent、工具、Markdown 本地与外部图及五种显示格式；真实 AST 节点、引用式和链接图片，代码/raw JSON/HTML 不触发读取。路径越界、符号链接替换、损坏图、重定向、DNS 变化、私网和凭据隔离须观察源打开/HTTP 请求与字节数。 |
-| A8 历史 | 原图 A 保存后路径/URL 改为 B 或删除、Controller 停止，历史、预览及下载仍为 A 的完整摘要，源请求为零。完整分页、原生恢复、正文撤回与迟到关联、归档提交丢回执、备份恢复、已保存原件损坏分别验证；unknown 或损坏不能冒充 partial。 |
+| A8 历史 | 原图 A 保存后路径/URL 改为 B 或删除、Controller 停止，历史、预览及下载仍为 A 的完整摘要，源请求为零。完整分页、页外 coverage、跨 revision 的完整条目 content_changed、原生恢复、正文撤回与迟到关联、归档提交丢回执、备份恢复、已保存原件损坏分别验证。正文/totals/Markdown/图片/outbox 写入及提交故障只暴露完整旧或新视图；活动同步、stopped source-tail、schema3 与旧 ready receipt 保持原字节和身份，网络阶段无 SQL 快照或已关闭连接访问；unknown 或损坏不能冒充 partial。 |
 | A9 全入口 | Task 弹窗、独立页、Test、Bot、每个 live 全屏及 Task 双层全屏；历史选择器与附件原生记录只读。核对实际 resolver、目标 fence、草稿/operation 身份及网络次数，不以同样外观代替接线证据。 |
 | A10 阅读与交互 | 桌面及 390px、多图、大图四边、长名、流式更新、工具折叠、权限无变化复核、真实键盘/触屏/滚轮、软键盘、旋转和缩放；媒体锚点偏差≤2 CSS px、原文字 prepend≤1 CSS px，关键触控≥44 CSS px。 |
 | A11 身份与清理 | 换账户、Task generation、native 身份、Team/项目撤权、Bot 父凭据失效、删除与迟到写入竞争、冷 pane 淘汰、缓存命中及排队下载撤权。旧回执不误投，敏感预览撤下，有效消息/归档/native/unknown 引用不误删，取消实际结束后才清理。 |
@@ -105,6 +105,8 @@ Codex 接受必须关联原 start 返回的合法 turn.id，或 steer 返回的�
 ## 性能、证据记录与完成条件
 
 容量和有界性验证记录空载与负载对照、最坏并发、RSS（含子进程和 native allocation）、heap、FD、队列、对象 URL、文件/数据库用量及控制回执/历史请求进展。媒体忙碌不能饿死原控制操作；首次打开不全量载入 1 GiB 原件。沿已确认准入值验证，不擅自增加毫秒 SLA，也不把监控目标、Node heap 或画布估算当作硬内存上限。来源结算 60 秒到期不能证明 writer 停止或 commit 未发生。
+
+Controller 当前正文采用的容量验收还须验证重复累计更新仅保留一行、无新候选文件，重开后的完整字节/hash/seq/revision/totals 一致；精确 64 MiB/100000 上界、+1 拒绝和替换不累计，同时满足实际物理准入。大体积、989 版本和 100000 条探针独立于普通 CI，记录生成数据的内容/顺序、outbox/ACK、reader 条件和 DB/WAL/SHM 实测峰值。生成探针不能冒充未取得的原事故 trace，也不能与隔离模型宣称等同性能。
 
 正式结果记录 caseId、requirementIds、layer、result、reason、productionCommit、testCommit、combinedTree、platform、nativeVersion、sdkVersion、backend、effectiveModel、capabilityProfile、fixtureSha256、byteLength、mediaType、dimensions、imageOrder、nativeCallCount、receiptEvidence、historyEvidence、archiveHashes、measuredLimits 和 limitations。未知事实写 null 并解释；稳定脱敏身份须保持关联，不能记录认证令牌、全量 Base64、敏感路径或未授权正文。此为验收结果格式，不是产品 API。
 

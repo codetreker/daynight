@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { ProviderImageProjector } from "../../../src/commands/controller/providers/image-projector.js";
 import type { ProviderEntry, ProviderOptions } from "../../../src/commands/controller/providers/types.js";
-import type { ImageCaptureReceipt, ImageCaptureRequest } from "../../../src/session/image-values.js";
+import type { ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart } from "../../../src/session/image-values.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
 import type { NativeInputPublicationView, NativeImageProjectionState } from "../../../src/commands/controller/media/native-publication-types.js";
 
@@ -27,6 +27,69 @@ const fixture = () => {
   const slot = { index: 1, label: "Native image", native: { provider: "codex" as const, nativeSessionId: "native", nativeMessageId: "message", nativePartId: "content/1" }, payload: { kind: "file" as const, path: "/private/controlled-spool", byteLength: "3", sha256: "a".repeat(64), release } };
   return { options, states, calls, entries, entry, slot, release, resourceId, acknowledge: () => { acknowledged = true; } };
 };
+
+// Retained capture state is inspected because callback output cannot prove that
+// an otherwise unreachable historical body was released.
+const retainedMapValues = (projector: ProviderImageProjector): unknown[] => Object.values(projector).flatMap(value => value instanceof Map ? [...value.values()] : []);
+
+test("text history is not retained and fallback bodies live only with active captures", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options);
+  try {
+    for (let index = 0; index < 20; index++) projector.publish({ ...f.entry, entryId: randomUUID() }, [], { format: "markdown", complete: true, truncated: false });
+    await projector.settled();
+    expect(retainedMapValues(projector)).toEqual([]);
+    projector.publish(f.entry, [f.slot], { format: "markdown", complete: true, truncated: false });
+    await projector.settled();
+    expect(retainedMapValues(projector)).toHaveLength(1);
+    expect(retainedMapValues(projector)[0]).toMatchObject({ projection: { entry: { entryId: f.entry.entryId }, metadata: { complete: true } } });
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(retainedMapValues(projector)).toEqual([]);
+    projector.publish(f.entry, [f.slot]); await projector.settled();
+    expect(retainedMapValues(projector)).toEqual([]);
+    expect(f.options.stageImageCapture).toHaveBeenCalledOnce();
+  } finally { await projector.close(); }
+});
+
+test("journal-owned capture retains no body and patches the current text after a later revision", async () => {
+  const f = fixture();
+  let current: ProviderEntry = f.entry;
+  const publish = f.options.onTimeline;
+  f.options.onTimeline = (entry, metadata) => { current = structuredClone(entry); publish(entry, metadata); };
+  const patch = vi.fn((occurrence: ImageOccurrence, part: ImagePart | ImageUnavailablePart) => {
+    if (current.kind !== "assistant_message") throw new Error("Expected current assistant body");
+    current = { ...current, content: current.content.map(value => (value.type === "image" || value.type === "image_unavailable") && value.imageId === occurrence.imageId ? part : value) };
+    return { ...current, entrySeq: "1" };
+  });
+  f.options.imageRuntime!.patchNativeImagePart = patch;
+  const projector = new ProviderImageProjector(f.options);
+  try {
+    projector.publish(f.entry, [f.slot], { format: "markdown", complete: true, truncated: false }); await projector.settled();
+    expect(retainedMapValues(projector)).toHaveLength(1);
+    expect(retainedMapValues(projector)[0]).toMatchObject({ projection: null });
+    if (current.kind !== "assistant_message") throw new Error("Expected current assistant body");
+    current = { ...current, revision: "3", content: [{ type: "text", text: "new current text" }, ...current.content.slice(1)] };
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(current).toMatchObject({ revision: "3", content: [{ text: "new current text" }, { type: "image", resourceId: f.resourceId }, { text: "after" }] });
+    expect(patch).toHaveBeenCalledOnce();
+    expect(f.entries).toHaveLength(1);
+    expect(retainedMapValues(projector)).toEqual([]);
+  } finally { await projector.close(); }
+});
+
+test("fallback captures for one entry share updates without reverting another image slot", async () => {
+  const f = fixture(), projector = new ProviderImageProjector(f.options), release = vi.fn();
+  try {
+    projector.publish(f.entry, [f.slot, { ...f.slot, index: 2, native: { ...f.slot.native, nativePartId: "content/2" }, payload: { ...f.slot.payload, release } }]);
+    await projector.settled();
+    const retained = retainedMapValues(projector) as Array<{ projection: unknown }>;
+    expect(retained).toHaveLength(2); expect(retained[0]!.projection).toBe(retained[1]!.projection);
+    f.acknowledge(); projector.acknowledged(); await projector.settled();
+    expect(f.entries.at(-1)).toMatchObject({ content: [{ text: "before" }, { type: "image", resourceId: f.resourceId }, { type: "image", resourceId: f.resourceId }] });
+    expect(f.release).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+    expect(retainedMapValues(projector)).toEqual([]);
+  } finally { await projector.close(); }
+});
 
 test("unchanged text publishes its Markdown completion transition", async () => {
   const f = fixture(), onTimeline = vi.fn(), projector = new ProviderImageProjector({ ...f.options, onTimeline });

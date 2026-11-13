@@ -1,12 +1,14 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { nativeEntryId } from "../../../src/commands/controller/native-identity.js";
-import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
+import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
+import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { observeNativeInput } from "../../../src/commands/controller/recovery.js";
 import type { NativeImageProjectionState, NativeInputPublicationRequest } from "../../../src/commands/controller/media/native-publication-types.js";
 import { canonicalImageJson } from "../../../src/session/image-values.js";
@@ -14,6 +16,13 @@ import { createMarkdownTimelinePipeline } from "../../../src/commands/controller
 import { createMarkdownImageProjector, type MarkdownProjectionState } from "../../../src/commands/controller/markdown/projection.js";
 import type { ImageOccurrence } from "../../../src/session/image-values.js";
 import type { SessionCommand, SessionResource } from "../../../src/session/protocol.js";
+
+const timelineRows = (db: Database.Database): unknown[] => db.prepare("SELECT id,CAST(entry_seq AS TEXT) AS entry_seq,CAST(revision AS TEXT) AS revision,kind,value,content_hash,byte_length FROM timeline_entries ORDER BY timeline_entries.entry_seq").all();
+const timelineTotals = (db: Database.Database): unknown[] => db.prepare("SELECT id,entry_count,byte_length FROM timeline_totals ORDER BY id").all();
+const candidateFiles = async (file: string): Promise<string[]> => {
+  const directory = `${file}.pending-content/entries`;
+  return existsSync(directory) ? readdir(directory) : [];
+};
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
@@ -91,9 +100,9 @@ test.each(["analysis", "receipt"])("a failed Markdown %s publication rolls its s
     f.publishNative(); const pipeline = createMarkdownTimelinePipeline({ journal, captures, onError: error => { errors.push(error); } });
     pipeline.accept({ ...f.request.seed.entry, revision: "1", imageProjectionError: null }, { complete: true, format: "markdown", truncated: false });
     if (phase === "receipt") await pipeline.drain();
-    const before = journal.getTimelineEntry(f.request.identity.entryId), state = journal.markdownStore.get<MarkdownProjectionState>("projection", f.request.identity.entryId), events = journal.pendingEvents();
+    const before = journal.getTimelineEntry(f.request.identity.entryId), state = journal.markdownStore.get<MarkdownProjectionState>("projection", f.request.identity.entryId), events = journal.pendingEvents(), rows = timelineRows(f.db), totals = timelineTotals(f.db);
     const prepare = f.db.prepare.bind(f.db), fault = vi.spyOn(f.db, "prepare").mockImplementation(sql => {
-      if (sql.startsWith("INSERT INTO outbox(")) throw new Error("Controlled Markdown outbox failure after candidate staging");
+      if (sql.startsWith("INSERT INTO outbox(")) throw new Error("Controlled Markdown outbox failure after SQL body update");
       return prepare(sql);
     });
     try {
@@ -106,6 +115,7 @@ test.each(["analysis", "receipt"])("a failed Markdown %s publication rolls its s
     expect(errors).toHaveLength(1);
     expect(journal.markdownStore.get("projection", f.request.identity.entryId)).toEqual(state);
     expect(journal.getTimelineEntry(f.request.identity.entryId)).toEqual(before); expect(journal.pendingEvents()).toEqual(events);
+    expect(timelineRows(f.db)).toEqual(rows); expect(timelineTotals(f.db)).toEqual(totals);
     journal.close(); sources.clear(); journal = openControllerLifecycleStore(f.file, f.ticket, { contentOwnedLocally: true });
     const recovered = createMarkdownTimelinePipeline({ journal, captures, onError: error => { errors.push(error); } }); await recovered.drain(); await recovered.stop();
     expect(sources.size).toBe(1); expect(errors).toHaveLength(1);
@@ -131,7 +141,7 @@ test("a lost Markdown publication acknowledgement defers source work until the c
     expect(committed.parts[0]!.status).toBe("complete");
     const observer = new Database(f.file, { readonly: true });
     try {
-      const visible = openPendingContent(f.file, f.ticket.sessionId, observer).getEntry(f.request.identity.entryId);
+      const visible = openTimelineStore(observer, { assertWrite: () => { throw new Error("Observer timeline is read-only."); } }).get(f.request.identity.entryId);
       expect(visible).toMatchObject({ content: [{ bindings: [{ imageId: original.imageId }] }, { imageId: f.nativeImageId }] });
       const row = observer.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`markdown:projection:${f.request.identity.entryId}`) as { value: string };
       expect(JSON.parse(row.value)).toEqual(committed);
@@ -196,8 +206,11 @@ test("reopened publication references retain the original even after every visib
     try {
       const query = reopened.queryNativeInputAssociation(f.request.identity);
       expect(query).toMatchObject({ state: "committed", receipt: result.receipt, view: { entry: { revision: "2", content: [result.view.entry.content[0], part] } } });
-      const content = openPendingContent(f.file, f.ticket.sessionId, db);
-      expect(() => content.releaseResource(f.resourceId)).toThrow("Resource is referenced by session history");
+      const content = openSessionContent(f.file, f.ticket.sessionId, db, {
+        read: action => db.transaction(action).deferred(),
+        assertWrite: () => { throw new Error("Reference verification is read-only."); },
+      });
+      expect(() => content.resourceFiles.releaseResource(f.resourceId)).toThrow("Resource is referenced by session history");
       expect(reopened.readResource(f.resourceId, "0", 100).resource).toEqual(f.resource);
     } finally { reopened.close(); }
   } finally { f.journal.close(); }
@@ -229,18 +242,21 @@ test("publication queries preserve the original commit revision while returning 
   } finally { f.journal.close(); }
 });
 
-test("a SQL failure after entry staging rolls back aliases, the visible pointer, occurrences and outbox together", async () => {
+test("a SQL failure after updating a body rolls back aliases, current rows, totals, occurrences and outbox together", async () => {
   const f = await fixture();
   try {
-    f.publishNative(); const before = f.timeline(), events = f.journal.pendingEvents();
-    const directory = `${f.file}.pending-content/entries`, candidates = await readdir(directory);
+    f.publishNative(); const before = f.timeline(), events = f.journal.pendingEvents(), rows = timelineRows(f.db), totals = timelineTotals(f.db);
+    const aliases = f.db.prepare("SELECT key,value FROM image_runtime_state ORDER BY key").all();
+    expect(await candidateFiles(f.file)).toEqual([]);
     const prepare = f.db.prepare.bind(f.db), injected = vi.spyOn(f.db, "prepare").mockImplementation(sql => {
-      if (sql.startsWith("INSERT INTO native_input_publications ")) throw new Error("Controlled publication failure after entry staging");
+      if (sql.startsWith("INSERT INTO native_input_publications ")) throw new Error("Controlled publication failure after SQL body update");
       return prepare(sql);
     });
     const result = f.journal.publishNativeInputAssociation(f.request); injected.mockRestore();
-    expect(result).toMatchObject({ state: "not_committed", error: { message: "Controlled publication failure after entry staging" } });
-    expect((await readdir(directory)).length).toBe(candidates.length + 1);
+    expect(result).toMatchObject({ state: "not_committed", error: { message: "Controlled publication failure after SQL body update" } });
+    expect(await candidateFiles(f.file)).toEqual([]);
+    expect(timelineRows(f.db)).toEqual(rows); expect(timelineTotals(f.db)).toEqual(totals);
+    expect(f.db.prepare("SELECT key,value FROM image_runtime_state ORDER BY key").all()).toEqual(aliases);
     expect(f.timeline()).toEqual(before); expect(f.journal.pendingEvents()).toEqual(events);
     expect(f.db.prepare("SELECT 1 FROM image_occurrences WHERE image_id=?").get(f.imageId)).toBeUndefined();
     expect(f.journal.queryNativeInputAssociation(f.request.identity)).toEqual({ state: "absent" });
@@ -349,7 +365,7 @@ test("a publication without its exact durable acceptance observation does not cr
     f.db.prepare("DELETE FROM input_observations WHERE operation_id=?").run(f.request.identity.operationId);
     expect(f.journal.publishNativeInputAssociation(f.request)).toMatchObject({ state: "not_committed", error: { code: "publication_conflict" } });
     expect(f.journal.queryNativeInputAssociation(f.request.identity)).toEqual({ state: "absent" });
-    expect(f.db.prepare("SELECT 1 FROM content_index WHERE id=?").get(f.request.identity.entryId)).toBeUndefined();
+    expect(f.db.prepare("SELECT 1 FROM timeline_entries WHERE id=?").get(f.request.identity.entryId)).toBeUndefined();
   } finally { f.journal.close(); }
 });
 
@@ -370,7 +386,8 @@ test("an unresolved commit and rollback failure never exposes the connection's u
   const f = await fixture();
   const observer = new Database(f.file, { readonly: true });
   try {
-    f.publishNative(); const before = f.timeline();
+    f.publishNative(); const before = f.timeline(), rows = timelineRows(observer), totals = timelineTotals(observer);
+    const raw = observer.prepare("SELECT value FROM timeline_entries WHERE id=?").get(f.request.identity.entryId) as { value: string };
     const exec = f.db.exec.bind(f.db), injected = vi.spyOn(f.db, "exec").mockImplementation(sql => {
       if (sql === "COMMIT" || sql === "ROLLBACK") throw new Error(`Controlled ${sql} failure before execution`);
       return exec(sql);
@@ -379,7 +396,8 @@ test("an unresolved commit and rollback failure never exposes the connection's u
     try { result = f.journal.publishNativeInputAssociation(f.request); } finally { injected.mockRestore(); }
     expect(result.state).toBe("unknown");
     expect(observer.prepare("SELECT 1 FROM native_input_publications").get()).toBeUndefined();
-    expect(observer.prepare("SELECT revision FROM content_index WHERE id=?").get(f.request.identity.entryId)).toEqual({ revision: before.revision });
+    expect(observer.prepare("SELECT CAST(revision AS TEXT) AS revision FROM timeline_entries WHERE id=?").get(f.request.identity.entryId)).toEqual({ revision: before.revision });
+    expect(timelineRows(observer)).toEqual(rows); expect(timelineTotals(observer)).toEqual(totals);
     expect(f.journal.queryNativeInputAssociation(f.request.identity).state).toBe("unknown");
     expect(() => f.timeline()).toThrow();
     expect(() => f.journal.readNativeImageState(f.key)).toThrow();
@@ -389,8 +407,10 @@ test("an unresolved commit and rollback failure never exposes the connection's u
     f.journal.close();
     expect(observer.prepare("SELECT 1 FROM native_input_publications").get()).toBeUndefined();
     expect(observer.prepare("SELECT owner_pid FROM execution WHERE id=1").get()).toEqual({ owner_pid: process.pid });
-    const pointer = observer.prepare("SELECT content_file FROM content_index WHERE id=?").get(f.request.identity.entryId) as { content_file: string };
-    expect(JSON.parse(await readFile(path.join(`${f.file}.pending-content/entries`, pointer.content_file), "utf8"))).toEqual(before);
+    const current = observer.prepare("SELECT value FROM timeline_entries WHERE id=?").get(f.request.identity.entryId) as { value: string };
+    expect(current.value).toBe(raw.value); expect(JSON.parse(current.value)).toEqual(before);
+    expect(timelineRows(observer)).toEqual(rows); expect(timelineTotals(observer)).toEqual(totals);
+    expect(await candidateFiles(f.file)).toEqual([]);
   } finally {
     observer.close();
     if (f.db.open && f.db.inTransaction) f.db.exec("ROLLBACK");

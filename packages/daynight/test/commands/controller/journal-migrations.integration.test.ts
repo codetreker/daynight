@@ -1,13 +1,15 @@
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, readCurrentControllerSnapshot, readProvenWindowsStoppedControllerGeneration, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
-import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
 
@@ -122,7 +124,7 @@ test("atomically records a Windows lease stop proof and reuses it after reopenin
   expect(stopped.windowsJobStopProof).toMatchObject({ version: 1, ticketHash: expect.stringMatching(/^[a-f0-9]{64}$/), snapshotHash: expect.stringMatching(/^[a-f0-9]{64}$/) });
   expect(proof.stopped).toHaveBeenCalledExactlyOnceWith(stopped.controllerProcess, stopped.nativeProcesses, deadline, jobLease);
   const db = new Database(f.file, { readonly: true });
-  expect(db.pragma("user_version", { simple: true })).toBe(9); db.close();
+  expect(db.pragma("user_version", { simple: true })).toBe(journalVersion); db.close();
   expect(readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toEqual(stopped);
   proof.stopped.mockClear();
   expect(await recordStoppedControllerGeneration(f.file, f.ticket, { stateDirectory: f.home })).toEqual(stopped);
@@ -239,6 +241,22 @@ const historical = (file: string, version: number, ticket: ControllerLaunchTicke
   return { snapshot, operation };
 };
 
+const legacyCandidateSource = async (f: Awaited<ReturnType<typeof fixture>>) => {
+  const db = new Database(f.file);
+  const entry = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "reasoning", text: "original execution history" }, body = JSON.stringify(entry), filename = `${randomUUID()}.json`;
+  const snapshot = JSON.stringify({ executionId: f.ticket.executionId, ...sessionBinding(f.ticket), sessionId: f.ticket.sessionId, executionGeneration: "1", controllerInstanceId: f.ticket.controllerInstanceId, controllerProcess: null });
+  try {
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 9)) db.exec(step.sql);
+    db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,NULL,?)").run(controllerPayloadHash(f.ticket), snapshot);
+    db.prepare("INSERT INTO content_index VALUES(?,?,?,?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq, filename, createHash("sha256").update(body).digest("hex"), Buffer.byteLength(body));
+    db.pragma("user_version=9");
+  } finally { db.close(); }
+  openResourceFiles(f.file, f.ticket.sessionId);
+  const directory = path.join(`${f.file}.pending-content`, "entries");
+  await mkdir(directory, { mode: 0o700 }); await writeFile(path.join(directory, filename), body, { mode: 0o600 });
+  return { snapshot, body, file: path.join(directory, filename) };
+};
+
 test("Windows stop-proof reads do not migrate an older journal", async () => {
   const f = await fixture(); historical(f.file, 1, f.ticket);
   expect(() => readProvenWindowsStoppedControllerGeneration(f.file, f.ticket)).toThrow(/current journal format/);
@@ -246,16 +264,16 @@ test("Windows stop-proof reads do not migrate an older journal", async () => {
   expect(db.pragma("user_version", { simple: true })).toBe(1); db.close();
 });
 
-test("current controller snapshot verifies the full ticket without writing the v9 journal", async () => {
+test("current controller snapshot verifies the full ticket without writing the current journal", async () => {
   const f = await currentStopFixture();
   const before = new Database(f.file, { readonly: true });
   const row = before.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get();
-  expect(before.pragma("user_version", { simple: true })).toBe(9); before.close();
+  expect(before.pragma("user_version", { simple: true })).toBe(journalVersion); before.close();
   expect(readCurrentControllerSnapshot(f.file, f.ticket)).toMatchObject({ executionId: f.ticket.executionId });
   expect(() => readCurrentControllerSnapshot(f.file, { ...f.ticket, ipcSecret: "b".repeat(64) })).toThrow(/conflicts/);
   const after = new Database(f.file, { readonly: true });
   expect(after.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get()).toEqual(row);
-  expect(after.pragma("user_version", { simple: true })).toBe(9); after.close();
+  expect(after.pragma("user_version", { simple: true })).toBe(journalVersion); after.close();
 });
 
 test("current controller snapshot rejects malformed retained process evidence and expired reads", async () => {
@@ -268,8 +286,14 @@ test("current controller snapshot rejects malformed retained process evidence an
 });
 
 test("current controller snapshot rejects v8 without migrating it", async () => {
-  const f = await currentStopFixture(), db = new Database(f.file);
-  db.exec("DROP TABLE input_message_origins"); db.pragma("user_version=8"); db.close();
+  const f = await currentStopFixture();
+  const current = new Database(f.file, { readonly: true });
+  const original = current.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string };
+  current.close(); await rm(f.file);
+  const db = new Database(f.file);
+  for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 8)) db.exec(step.sql);
+  db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(original.ticket_hash, original.owner_pid, original.snapshot);
+  db.pragma("user_version=8"); db.close();
   expect(() => readCurrentControllerSnapshot(f.file, f.ticket)).toThrow(/current journal format/);
   const after = new Database(f.file, { readonly: true });
   expect(after.pragma("user_version", { simple: true })).toBe(8);
@@ -286,7 +310,7 @@ test.each([1, 2, 3, 4])("readonly helpers upgrade journal v%s without claiming o
     expect(db.prepare("SELECT owner_pid,snapshot,ticket_hash,last_sequence,last_acknowledged,source_floor,projection_gap FROM execution").get()).toEqual({ owner_pid: null, snapshot: original.snapshot, ticket_hash: "old-ticket", last_sequence: 3, last_acknowledged: 0, source_floor: 0, projection_gap: null });
     expect(db.prepare("SELECT value,acknowledged FROM operations").get()).toEqual({ value: original.operation, acknowledged: 0 });
     expect(db.prepare("SELECT value FROM outbox").get()).toEqual({ value: '{ "kind": "state", "payload": { "original": true } }' });
-    expect(db.prepare("SELECT count(*) AS total FROM content_index").get()).toEqual({ total: 0 });
+    expect(db.prepare("SELECT count(*) AS total FROM timeline_entries").get()).toEqual({ total: 0 });
   } finally { db.close(); }
 });
 
@@ -331,7 +355,7 @@ test.each(["snapshot", "operation", "writer"] as const)("%s resets an unknown un
   try {
     expect(check.pragma("user_version", { simple: true })).toBe(journalVersion);
     expect(check.prepare("SELECT name FROM sqlite_schema WHERE name='original_data'").get()).toBeUndefined();
-    expect(check.prepare("SELECT count(*) AS total FROM content_index").get()).toEqual({ total: 0 });
+    expect(check.prepare("SELECT count(*) AS total FROM timeline_entries").get()).toEqual({ total: 0 });
   } finally { check.close(); }
 });
 
@@ -350,33 +374,31 @@ test("current journal reads do not recreate or rewrite pending content files", a
   expect(() => openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} })).toThrow("Pending archive source is missing");
 });
 
-test("unversioned reset retains unrelated pending content instead of silently adopting another session", async () => {
+test("unversioned reset preserves unrelated pending source and rejects a new session", async () => {
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} }); store.close();
   const manifest = `${f.file}.pending-content/manifest.json`, retained = await readFile(manifest);
   const evidence = `${f.file}.pending-content/evidence.txt`; await writeFile(evidence, "retained source");
   const db = new Database(f.file); db.pragma("user_version=0"); db.close();
-  expect(() => openControllerLifecycleStore(f.file, { ...f.ticket, sessionId: randomUUID() }, { onMigration: () => {} })).toThrow("another session");
+  expect(() => openControllerLifecycleStore(f.file, { ...f.ticket, sessionId: randomUUID() }, { onMigration: () => {} })).toThrow(expect.objectContaining({ kind: "migration-failed", cause: expect.objectContaining({ cause: expect.objectContaining({ message: "Pending archive source has no original controller execution." }) }) }));
   expect(await readFile(manifest)).toEqual(retained);
   expect(await readFile(evidence, "utf8")).toBe("retained source");
   const check = new Database(f.file); try { expect(check.pragma("user_version", { simple: true })).toBe(0); } finally { check.close(); }
 });
 
-test.each([false, true])("unversioned reset cannot adopt nonempty history into a new execution after read reset=%s", async resetByRead => {
-  const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
-  store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "original execution history" }] });
-  store.close();
+test.each([false, true])("unversioned reset preserves nonempty legacy history after read attempt=%s", async resetByRead => {
+  const f = await fixture(), source = await legacyCandidateSource(f);
   const pending = `${f.file}.pending-content`, manifest = await readFile(`${pending}/manifest.json`);
   const database = new Database(f.file); database.pragma("user_version=0"); database.close();
-  if (resetByRead) expect(readControllerSnapshot(f.file)).toBeNull();
+  if (resetByRead) expect(() => readControllerSnapshot(f.file)).toThrow(expect.objectContaining({ kind: "migration-failed", cause: expect.objectContaining({ cause: expect.objectContaining({ message: "Pending archive source has no original controller execution." }) }) }));
   const next = { ...f.ticket, executionId: randomUUID(), claimId: randomUUID() };
-  expect(() => openControllerLifecycleStore(f.file, next, { onMigration: () => {} })).toThrow("no original controller execution");
+  expect(() => openControllerLifecycleStore(f.file, next, { onMigration: () => {} })).toThrow(expect.objectContaining({ kind: "migration-failed", cause: expect.objectContaining({ cause: expect.objectContaining({ message: "Pending archive source has no original controller execution." }) }) }));
   expect(await readFile(`${pending}/manifest.json`)).toEqual(manifest);
+  expect(await readFile(source.file, "utf8")).toBe(source.body);
   const check = new Database(f.file);
   try {
-    expect(check.pragma("user_version", { simple: true })).toBe(resetByRead ? journalVersion : 0);
-    const row = check.prepare("SELECT snapshot FROM execution").get() as { snapshot: string } | undefined;
-    if (resetByRead) expect(row).toBeUndefined();
-    else expect(JSON.parse(row!.snapshot).executionId).toBe(f.ticket.executionId);
+    expect(check.pragma("user_version", { simple: true })).toBe(0);
+    expect(check.prepare("SELECT snapshot FROM execution").get()).toEqual({ snapshot: source.snapshot });
+    expect(check.prepare("SELECT content_file FROM content_index").get()).toEqual({ content_file: path.basename(source.file) });
   } finally { check.close(); }
 });
 

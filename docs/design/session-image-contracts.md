@@ -511,7 +511,7 @@ GET 通过原 Session 的历史读取 scope 复核认证、项目访问与 uploa
 
 ### 私有文件与 journal
 
-资源 descriptor、blob、pin 与 lease 由 `content/resource-files.ts` 统一拥有，路径不依赖正文表示。生产候选正文组合与可独立调用的 SQL 正文组合均须在原同步 SQL 读快照中核对当前正文和 `native_input_publication_images` 后才能释放资源，再由文件拥有者核对 pin/lease。[SQL 正文设计](session-sqlite-content.md)拥有隔离组件的转换、退休和压缩；生产 journal 当前仍为 v9。
+资源 descriptor、blob、pin 与 lease 由 `content/resource-files.ts` 统一拥有，路径不依赖正文表示。`content/session-content.ts` 组合这一文件拥有者与 journal v10 的 SQL 当前正文；释放资源前在原同步 SQL 读快照中核对当前正文和 `native_input_publication_images`，再由文件拥有者核对 pin/lease。[SQL 正文设计](session-sqlite-content.md)拥有当前行、编号转换、退休和压缩。
 
 沿 `controllerExecutionDirectory`，媒体暂存与 pending-content 同属于原 execution，原件不写入 journal 的 Base64 字段。
 
@@ -526,8 +526,8 @@ journal.sqlite.history-sync/
 journal.sqlite.pending-content/
   manifest.json
   index.json
-  timeline/          # retained legacy migration source
-  entries/           # immutable entry candidates selected by SQLite
+  timeline/          # legacy source retained only until stopped maintenance
+  entries/           # legacy candidates retained only until stopped maintenance
   resources/
   blobs/
   resource-pins.json
@@ -537,11 +537,13 @@ journal.sqlite.pending-content/
 
 根及已有父组件须可信，拒绝 symlink/reparse；exclusive create、禁跟随打开、fstat 核验 regular file 与登记身份。来源模块交付已授权打开的 stream，存储模块不能重新按不可信 path 打开。native 仅可硬链接已经复制、完整验证且由 Controller 私有持有的不可变原件，不能硬链接用户可变文件；native pin 保留该 inode 到准确的原生恢复引用解除。
 
-journal 格式迁移007、008与精确 schema 检查拥有以下表；状态和错误存于对应身份记录，不另建重复资源内核。
+journal 格式迁移007–010与精确 schema 检查拥有以下表；状态和错误存于对应身份记录，不另建重复资源内核。
 
 | 表 | 持久事实 |
 | --- | --- |
-| content_index | 当前 entry 的不可变候选文件、长度/摘要、真实 revision 与稳定 entrySeq；读取以同一 SQL 快照为准 |
+| timeline_entries | 每个 entryId 的当前规范正文、稳定 entrySeq、真实 revision、UTF-8 长度与 hash |
+| timeline_totals | 与正文同事务维护的当前条数和 JSON 字节总量 |
+| input_message_origins | 原 operation/entry 身份及 user/daynight 来源 |
 | native_input_publications | 原 operation/native identity 的不可变关联回执、实际 publication revision 与 source sequence |
 | native_input_publication_images | 原 operation+imageId 对应的稳定原件资源及槽位 |
 | input_intents | operationId 的完整规范 intent 与 SHA-256；旧 intent/hash 原样保留 |
@@ -553,9 +555,9 @@ journal 格式迁移007、008与精确 schema 检查拥有以下表；状态和�
 | image_runtime_state | 持久能力 revision、active_history_sync、active_history_checkpoint，以及 Markdown projection/source/context、来源请求计费和 capture-source 私有预留等运行状态 |
 | image_captures | captureId/attemptId/imageId 的私有文件及完整验证结果 |
 
-pending-content 的 timeline 候选先完成文件及适用平台的目录持久化，再在同一 SQLite 事务提交指针。未被指针引用的文件不得由目录扫描自动公开；SQL 回滚保留旧完整视图。所有 timeline、inspection、完整历史同步、归档及引用判断读取同一连接的提交快照。旧 WAL 快照可能仍引用旧候选，因此保守保留并计入真实元数据预算；没有跨 reader 生命周期证明时不在线删除旧文件。v8 迁移精确校验旧 SQL 与文件，不接纳超前或未知来源。缺失、损坏、路径或摘要不符明确失败。
+timeline 当前行、totals、Markdown projection、原生图片接收证据/槽位/关联和 outbox 在原 SQLite 写事务中提交或回滚。所有 timeline、inspection、完整历史同步、归档及引用判断读取同一连接的提交快照；普通路径不写候选正文或维护正文 Map。v8–9 已提交候选仅由编号010验证并导入，未引用文件不得公开。导入后旧 WAL 快照仍可能引用旧文件，只有停止维护的成功 TRUNCATE 屏障后才可退休；缺失、损坏、路径或摘要不符明确失败。
 
-Controller 的 `content/resource-files.ts` 负责 descriptor、blob、持久 pin、进程内 lease、资源文件校验和共享资源索引；它不加载正文或初始化 timeline 目录。`pending-content.ts` 组合资源所有者与生产候选正文，并以 descriptor UTF-8 字节数计入原有总元数据预算。资源删除由组合层先在同步读事务中检查 `native_input_publication_images` 和当前正文引用，再交给资源所有者检查 lease/pin 和删除文件；媒体导入收尾也使用这一受保护的入口。停止后的 SQL 正文维护在旧读者屏障后，通过同一资源拥有者耐久清空共享索引的旧 `entries`，保留完整 `resources` 清单，之后才删除旧 timeline 文件。资源目录、Session 绑定、旧资源导出及其校验保持原格式，资源和正文不各自维护一份独立资源索引。新读者跨过退休发布时，只能根据一次确实改变且完整有效的新索引继续打开，未改变或仍不完整的来源继续失败。[资源所有权决策](../../.agents/notes/implemented/architecture/2026-11-12-session-resource-files.md)记录拆分的原因。
+Controller 的 `content/resource-files.ts` 负责 descriptor、blob、持久 pin、进程内 lease、资源文件校验和共享资源索引；它不加载正文或初始化 timeline 目录。`content/session-content.ts` 组合 SQL 正文与资源，以当前正文和 descriptor UTF-8 字节数计量逻辑元数据，并把 SQL 引用保护后的删除入口交给媒体导入收尾。停止维护在旧读者屏障后，通过同一资源拥有者耐久清空共享索引的旧 `entries`，保留完整 `resources` 清单，之后才删除旧 timeline 文件。资源目录、Session 绑定、旧资源导出及其校验保持原格式，资源和正文不各自维护一份独立资源索引。新读者跨过退休发布时，只能根据一次确实改变且完整有效的新索引继续打开，未改变或仍不完整的来源继续失败。[资源所有权决策](../../.agents/notes/implemented/architecture/2026-11-12-session-resource-files.md)记录拆分的原因。
 
 具名 `publishNativeInputAssociation` 验证已存在的原接受证据及完整 intent，基于当前 entry 保留原生槽并绑定或追加原件，在同一事务提交 alias、实际引用、occurrence、真实 revision 和确切 outbox 水位。`queryNativeInputAssociation` 返回原不可变回执与当前视图；后续 capture 可以推进当前 revision，不能改变 publication revision。未知结果只查原身份，不重发原生输入。若 COMMIT 与 ROLLBACK 都未确认且连接仍有事务，隔离该连接的所有业务读取和写入；同连接的未提交行不能充当 committed 查询结果。关闭连接不清除原 writer 身份，后续由独立生命周期恢复核对。原生来源采集继续遵守位置 ACK 后 register，不扩张为跨服务的分布式事务。Provider 接线由[Provider 设计](session-image-providers.md#copilot)拥有。存储的 canonical intent 不含传输 `requestId`；本地恢复仅补解析所需的该字段，再重核原 operationId、规范编码及 SHA，不改持久 intent，不把恢复对象当作新的发送请求。
 

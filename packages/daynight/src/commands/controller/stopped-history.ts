@@ -30,7 +30,7 @@ export const replayStoppedControllerHistory = async (options: {
     if (!row || !s || row.owner_pid !== null || !s.nativeStopped || s.lifecycle !== "stopped" || s.executionId !== ticket.executionId || s.sessionId !== ticket.sessionId || s.claimId !== ticket.claimId || s.testExecutionId !== ticket.testExecutionId || s.executionGeneration !== ticket.executionGeneration || s.controllerInstanceId !== ticket.controllerInstanceId || row.ticket_hash !== controllerPayloadHash(ticket) || original !== undefined && row.snapshot !== original) throw new Error("Source replay requires the unchanged original stopped controller generation.");
     original = row.snapshot;
   };
-  try { inspectSqlite(initial, controllerJournalFormat); assertStopped(initial); }
+  try { initial.transaction(() => { inspectSqlite(initial, controllerJournalFormat); assertStopped(initial); }).deferred(); }
   finally { initial.close(); }
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
   const stateKey = "stopped_source_tail";

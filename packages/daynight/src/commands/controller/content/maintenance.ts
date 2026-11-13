@@ -1,21 +1,19 @@
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
-import { accessSync, chmodSync, constants, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { accessSync, constants, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { canonicalId } from "../../../api/parse.js";
 import { syncDirectory } from "../../../platform/durable-json.js";
-import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationEvent, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
+import { runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationEvent, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../../../platform/sqlite-error.js";
 import { inspectSqlite } from "../../../platform/sqlite-format.js";
 import { parseTimelineEntry } from "../../../session/protocol.js";
-import { assertJournalMigrationAllowed, type JournalMigrationContext } from "../journal-format.js";
+import { controllerJournalFormat, type JournalMigrationContext } from "../journal-format.js";
 import { preflightPendingTimeline } from "../pending-content.js";
-import { type ControllerSnapshot } from "../lifecycle-store.js";
 import { CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES, controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
 import { controllerStorageMediaUsage, assertControllerStorageCapacity, isControllerStorageCapacityError, reserveControllerStoragePeak } from "../storage-capacity.js";
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
-import { assertControllerStorageRole, controllerStorageExecutionRow, type ControllerStoragePreparation, type ControllerStorageRequest } from "../storage-preparation.js";
-import { assertNoOrphanTimelineSource, controllerTimelineFormat, controllerTimelineFormatForMigration } from "./migration.js";
+import { assertControllerStorageRole, controllerStorageExecutionRow, controllerTimelineCleanupPending, observeControllerStorage, reportControllerStorageEvent, type ControllerStorageObservation, type ControllerStoragePreparation, type ControllerStorageRequest } from "../storage-preparation.js";
 import { openTimelineStore } from "./timeline-store.js";
 import { retireLegacyTimelineReferences } from "./resource-files.js";
 
@@ -25,11 +23,6 @@ const timeout = (deadline?: number): number => {
   return Math.min(5000, remaining);
 };
 const warn = (message: string, cause: unknown): void => { process.emitWarning(`${message} ${JSON.stringify(serializeSqliteError(cause))}`); };
-const capacityCause = (cause: unknown): Error | undefined => {
-  if (isControllerStorageCapacityError(cause)) return cause;
-  if (cause instanceof AggregateError || cause instanceof SqliteAccessError && cause.kind === "cleanup-failed") return undefined;
-  return cause instanceof Error ? capacityCause(cause.cause) : undefined;
-};
 const hasTable = (db: Database.Database, name: string): boolean => db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(name) !== undefined;
 const size = (file: string): number => {
   try { const stat = lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Controller maintenance source is not a private regular file."); return stat.size; }
@@ -242,7 +235,7 @@ const vacuum = (db: Database.Database, deadline?: number): void => {
 
 const validateCommitted = (db: Database.Database): ReturnType<ReturnType<typeof openTimelineStore>["totals"]> => {
   const check = (reader: Database.Database) => reader.transaction(() => {
-    if (inspectSqlite(reader, controllerTimelineFormat).kind !== "current") throw new Error("Controller timeline maintenance requires the complete current schema.");
+    if (inspectSqlite(reader, controllerJournalFormat).kind !== "current") throw new Error("Controller timeline maintenance requires the complete current schema.");
     return openTimelineStore(reader, { assertWrite: () => { throw new Error("Controller maintenance readback is read-only."); } }).totals();
   }).deferred();
   if (db.memory) return check(db);
@@ -254,11 +247,6 @@ const validateCommitted = (db: Database.Database): ReturnType<ReturnType<typeof 
   if (failure !== undefined) throw failure;
   return value!;
 };
-const pending = (db: Database.Database): boolean => {
-  const row = db.prepare("SELECT legacy_timeline_cleanup_pending AS pending FROM execution WHERE id=1").get() as { pending: number } | undefined;
-  if (row !== undefined && row.pending !== 0 && row.pending !== 1) throw new Error("Controller timeline cleanup marker is invalid.");
-  return row?.pending === 1;
-};
 
 /** Operate an already committed v10 connection under its original permit; the caller retains both handles. */
 export const maintainControllerTimeline = (options: {
@@ -268,27 +256,34 @@ export const maintainControllerTimeline = (options: {
   const { db, request, storagePermit } = options;
   assertControllerStoragePermit(storagePermit, request.journalFile);
   if (db.inTransaction || db.memory || db.name !== request.journalFile) throw new Error("Controller timeline maintenance requires its original idle connection.");
-  const snapshot = assertControllerStorageRole(request, controllerStorageExecutionRow(db));
+  const observation: ControllerStorageObservation = { role: request.mode, roleResult: "pending" };
+  observeControllerStorage(observation, db, request.mode === "writer" ? request.ticket : undefined);
+  let snapshot: ReturnType<typeof assertControllerStorageRole>;
+  try { snapshot = assertControllerStorageRole(request, controllerStorageExecutionRow(db)); observation.roleResult = "admitted"; }
+  catch (cause) {
+    observation.roleResult = "rejected";
+    reportControllerStorageEvent({ migrationId: randomUUID(), database: controllerJournalFormat.name, file: request.journalFile, kind: "failed", phase: "storage-admission", fromVersion: 10, toVersion: 10, durationMs: 0, outcome: "not-started", error: serializeSqliteError(cause) }, observation, options.onMigration);
+    throw cause;
+  }
   if (db.pragma("journal_mode", { simple: true }) !== "wal") throw new Error("Controller timeline maintenance requires its original WAL journal.");
   db.pragma("synchronous = FULL"); db.pragma("wal_autocheckpoint = 1000");
   const reservation = options.reservation ?? createTimelineMaintenanceReservation(db, { ...request, storagePermit, ...(snapshot === null ? {} : { executionId: snapshot.executionId }) });
   const started = Date.now(), migrationId = randomUUID();
   const report = (phase: string, kind: SqliteMigrationEvent["kind"], metrics: Record<string, number | string | boolean> = {}, outcome: SqliteOutcome = "committed", cause?: unknown): void => {
-    const event: SqliteMigrationEvent = { migrationId, database: controllerTimelineFormat.name, file: request.journalFile, kind, phase, fromVersion: 10, toVersion: 10, durationMs: Date.now() - started, outcome, storage: metrics, ...(cause === undefined ? {} : { error: serializeSqliteError(cause) }) };
-    try { if (options.onMigration !== undefined) options.onMigration(event); else process.stderr.write(`${JSON.stringify(event)}\n`); }
-    catch (cause) { warn("Controller timeline maintenance reporting failed.", cause); }
+    const event: SqliteMigrationEvent = { migrationId, database: controllerJournalFormat.name, file: request.journalFile, kind, phase, fromVersion: 10, toVersion: 10, durationMs: Date.now() - started, outcome, storage: metrics, ...(cause === undefined ? {} : { error: serializeSqliteError(cause) }) };
+    reportControllerStorageEvent(event, observation, options.onMigration);
   };
   let phase = "storage-admission", maintenanceOutcome: SqliteOutcome = "committed";
   try {
     const totals = validateCommitted(db);
-    if (!pending(db)) { reservation.settleNormalAdmission(); report(phase, "completed", { ...totals, pending: false }); return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false }; }
+    if (!controllerTimelineCleanupPending(db)) { reservation.settleNormalAdmission(); report(phase, "completed", { ...totals, pending: false }); return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false }; }
     reservation.refresh();
     if (snapshot === null) throw new Error("Controller timeline cleanup has no original execution.");
     phase = "legacy-timeline-retirement"; report(phase, "started", { ...totals });
     const sources = retirementSources(request.journalFile, snapshot.sessionId);
     const before = controllerMetadataBudget(request.journalFile, db).bytes();
     const first = checkpoint(db, request.deadline);
-    report(phase, "started", { ...first, oldFileBytes: sources.reduce((sum, source) => sum + source.bytes, 0) });
+    report(phase, "started", { ...first, remainingFrames: first.logFrames - first.checkpointedFrames, oldFileBytes: sources.reduce((sum, source) => sum + source.bytes, 0) });
     retireLegacyTimelineReferences(request.journalFile, snapshot.sessionId);
     retire(sources, request.journalFile);
     if (retirementSources(request.journalFile, snapshot.sessionId).length !== 0) throw new Error("Controller timeline retirement left recognized source files.");
@@ -303,84 +298,34 @@ export const maintainControllerTimeline = (options: {
     if (physical.databaseBytes !== pageBytes || physical.walBytes !== 0 || physical.journalBytes !== 0) throw new Error("Controller journal compaction has not reached the physical database file.");
     validateCommitted(db);
     if (retirementSources(request.journalFile, snapshot.sessionId).length !== 0) throw new Error("Controller timeline sources reappeared during compaction.");
-    report(phase, "completed", { ...physical, preCheckpointBusy: pre.busy, postCheckpointBusy: post.busy, reclaimedBytes: before - controllerMetadataBudget(request.journalFile, db).bytes() });
+    report(phase, "completed", { ...physical, preCheckpointBusy: pre.busy, preCheckpointLogFrames: pre.logFrames, preCheckpointedFrames: pre.checkpointedFrames, preCheckpointRemainingFrames: pre.logFrames - pre.checkpointedFrames, postCheckpointBusy: post.busy, postCheckpointLogFrames: post.logFrames, postCheckpointedFrames: post.checkpointedFrames, postCheckpointRemainingFrames: post.logFrames - post.checkpointedFrames, reclaimedBytes: before - controllerMetadataBudget(request.journalFile, db).bytes() });
     phase = "storage-admission"; report(phase, "started");
     try { runSqliteImmediate(db, () => { db.prepare("UPDATE execution SET legacy_timeline_cleanup_pending=0 WHERE id=1 AND legacy_timeline_cleanup_pending=1").run(); }); }
     catch (cause) {
       maintenanceOutcome = sqliteTransactionOutcome(cause);
-      const uncertainClear = (failure: unknown): SqliteAccessError => new SqliteAccessError("cleanup-failed", { database: controllerTimelineFormat.name, file: request.journalFile, phase: "timeline-cleanup-marker", fromVersion: 10, toVersion: 10 }, { cause: failure, outcome: maintenanceOutcome, connectionClosed: !db.open });
+      const uncertainClear = (failure: unknown): SqliteAccessError => new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file: request.journalFile, phase: "timeline-cleanup-marker", fromVersion: 10, toVersion: 10 }, { cause: failure, outcome: maintenanceOutcome, connectionClosed: !db.open });
       // The actual marker is observed before another caller can decide whether
       // retirement or settlement remains; an unknown COMMIT is never replayed.
       if (maintenanceOutcome === "unknown" && db.open && !db.inTransaction) {
-        try { maintenanceOutcome = pending(db) ? "rolled-back" : "committed"; validateCommitted(db); }
+        try { maintenanceOutcome = controllerTimelineCleanupPending(db) ? "rolled-back" : "committed"; validateCommitted(db); }
         catch (readback) { throw uncertainClear(new AggregateError([cause, readback], "Controller timeline cleanup commit outcome and readback are uncertain.", { cause })); }
       }
       if (maintenanceOutcome === "unknown") throw uncertainClear(cause);
       throw cause;
     }
     validateCommitted(db);
-    if (pending(db)) throw new Error("Controller timeline cleanup marker did not commit.");
+    if (controllerTimelineCleanupPending(db)) throw new Error("Controller timeline cleanup marker did not commit.");
     reservation.settleNormalAdmission();
     report(phase, "completed", { ...controllerJournalPhysicalBytes(request.journalFile, db), pending: false });
     return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false };
   } catch (cause) {
+    if (cause instanceof TimelineReaderBusyError || isControllerStorageCapacityError(cause)) observation.roleResult = "waiting";
     let pendingObservation: boolean | string = "unknown";
-    try { if (db.open && !db.inTransaction) pendingObservation = pending(db); }
+    try { if (db.open && !db.inTransaction) pendingObservation = controllerTimelineCleanupPending(db); }
     catch (observation) { warn("Controller timeline failure marker observation failed.", observation); }
-    report(phase, "failed", { pending: pendingObservation, ...(cause instanceof TimelineReaderBusyError ? { checkpointBusy: cause.busy, logFrames: cause.logFrames, checkpointedFrames: cause.checkpointedFrames } : {}) }, cause instanceof SqliteAccessError ? cause.outcome : maintenanceOutcome, cause);
+    report(phase, "failed", { pending: pendingObservation, ...(cause instanceof TimelineReaderBusyError ? { checkpointBusy: cause.busy, logFrames: cause.logFrames, checkpointedFrames: cause.checkpointedFrames, remainingFrames: cause.logFrames - cause.checkpointedFrames } : {}) }, cause instanceof SqliteAccessError ? cause.outcome : maintenanceOutcome, cause);
     if (cause instanceof TimelineReaderBusyError) return { kind: "waiting", reason: "reader_busy", cause };
     if (isControllerStorageCapacityError(cause)) return { kind: "waiting", reason: "physical_capacity", cause };
     throw cause;
   }
-};
-
-/** Isolated v10 preparation is callable without adopting it in ordinary Controller openers. */
-export const prepareControllerTimelineStorage = (request: ControllerStorageRequest, storagePermit: ControllerStoragePermit, onMigration?: SqliteMigrationReporter): ControllerStoragePreparation => {
-  assertControllerStoragePermit(storagePermit, request.journalFile);
-  let db: Database.Database | undefined, migrationConnection: Database.Database | undefined, reservation: TimelineMaintenanceReservation | undefined, snapshot: ControllerSnapshot | null = null;
-  let outcome: SqliteOutcome = "not-started", failure: unknown, result: ControllerStoragePreparation | undefined;
-  const context = (connection: Database.Database): JournalMigrationContext => {
-    migrationConnection = connection;
-    if (reservation === undefined) reservation = createTimelineMaintenanceReservation(connection, { ...request, storagePermit, ...(request.mode === "upgrade-only" ? {} : { executionId: request.ticket.executionId }) });
-    return reservation;
-  };
-  const format = controllerTimelineFormatForMigration(context);
-  const importReporter: SqliteMigrationReporter = event => {
-    let storage: Record<string, number | string | boolean> | undefined;
-    if (event.kind === "completed" && migrationConnection !== undefined && migrationConnection.open) {
-      try { storage = { ...openTimelineStore(migrationConnection, { assertWrite: () => { throw new Error("Controller import statistics are read-only."); } }).totals(), ...controllerJournalPhysicalBytes(request.journalFile, migrationConnection) }; }
-      catch (cause) { warn("Controller timeline import statistics failed.", cause); }
-    }
-    const imported = { ...event, phase: "timeline-import", ...(storage === undefined ? {} : { storage }) };
-    try { if (onMigration !== undefined) onMigration(imported); else process.stderr.write(`${JSON.stringify(imported)}\n`); }
-    catch (cause) { warn("Controller timeline import reporting failed.", cause); }
-  };
-  try {
-    db = openSqliteDatabase({ file: request.journalFile, format, allowCreate: request.mode === "writer", timeoutMs: timeout(request.deadline), onMigration: importReporter,
-      assertMigrationAllowed: (connection, source) => { assertJournalMigrationAllowed(connection, source, 10); if (source.version !== 0) assertControllerStorageRole(request, controllerStorageExecutionRow(connection)); },
-      onReady: connection => {
-        snapshot = assertControllerStorageRole(request, controllerStorageExecutionRow(connection));
-        if (snapshot === null) {
-          assertNoOrphanTimelineSource(request.journalFile);
-          if (openTimelineStore(connection, { assertWrite: () => { throw new Error("Controller admission is read-only."); } }).totals().entryCount !== 0) throw new Error("SQL timeline source has no original controller execution.");
-        }
-        if (!connection.memory) chmodSync(request.journalFile, 0o600);
-      },
-    });
-    outcome = "committed";
-    reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit, ...(request.mode === "upgrade-only" ? {} : { executionId: request.ticket.executionId }) });
-    validateCommitted(db);
-    if (request.mode === "upgrade-only") {
-      const cleanupPending = pending(db);
-      if (cleanupPending) reservation.refresh(); else reservation.settleNormalAdmission();
-      result = { kind: "prepared", snapshot, legacyTimelineCleanupPending: cleanupPending };
-    } else result = maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });
-  } catch (cause) { failure = cause; if (outcome !== "committed" || cause instanceof SqliteAccessError && cause.outcome === "unknown") outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); }
-  if (db !== undefined && db.open) try { closeSqliteDatabase(db, { file: request.journalFile, format }, outcome); }
-  catch (close) { throw new SqliteAccessError("cleanup-failed", { database: format.name, file: request.journalFile, phase: "timeline-preparation-close" }, { cause: failure === undefined ? close : new AggregateError([failure, close], "Controller timeline preparation and close failed."), outcome, connectionClosed: !db.open }); }
-  if (failure !== undefined) {
-    if (capacityCause(failure) !== undefined && failure instanceof Error) return { kind: "waiting", reason: "physical_capacity", cause: failure };
-    throw failure;
-  }
-  return result!;
 };

@@ -5,7 +5,7 @@ import { withStoppedControllerStorage } from "./stopped-storage.js";
 import { acquireControllerStoragePermit } from "./storage-lock.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { sessionBinding } from "../../session/protocol.js";
+import { parseSessionResource, sessionBinding, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
 import { parseSessionArchive, parseSessionArchiveManifest, parseSessionArchivePreparation, parseSessionArchiveFileReceipt, parseSessionArchiveStatus, parseSessionArchiveTimeline, sessionArchiveReferences, SESSION_ARCHIVE_RESOURCE_MAX_BYTES, type SessionArchiveStatus, type SessionArchiveFileReceipt } from "../../session/archive.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerSnapshot } from "./lifecycle-store.js";
@@ -13,7 +13,8 @@ import { assertJournalMigrationAllowed, controllerJournalFormat } from "./journa
 import { assertCurrentSqlite, currentSqliteVersion, inspectSqlite } from "../../platform/sqlite-format.js";
 import { closeSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import { finalizePendingMigration, reconcilePendingContent, openPendingContent } from "./pending-content.js";
+import { openSessionContent } from "./content/session-content.js";
+import type { ControlledResourceLease, ResourceFiles } from "./content/resource-files.js";
 import { writeDurableJson } from "../../platform/durable-json.js";
 import { replayStoppedControllerHistory, type StoppedSourceTailReceipt } from "./stopped-history.js";
 
@@ -63,6 +64,28 @@ type ArchiveIntent = {
   resources: { resourceId: string; fileId: string }[];
 };
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
+const withFrozenResource = async <T>(source: Pick<ResourceFiles, "acquireResource">, expected: SessionResource, action: (lease: ControlledResourceLease) => T | Promise<T>): Promise<T> => {
+  const lease = source.acquireResource(expected.resourceId);
+  let failed = false, failure: unknown;
+  try {
+    if (JSON.stringify(parseSessionResource(lease.resource)) !== JSON.stringify(expected) || expected.status !== "available" || expected.byteLength === null || expected.sha256 === null) throw new Error("Frozen archive resource differs from its original descriptor.");
+    const hash = createHash("sha256"), length = BigInt(expected.byteLength);
+    let offset = 0n;
+    while (offset < length) {
+      const block = lease.read(String(offset), 524288);
+      if (block.length === 0 || offset + BigInt(block.length) > length) throw new Error("The original archive resource content changed.");
+      hash.update(block); offset += BigInt(block.length);
+    }
+    if (hash.digest("hex") !== expected.sha256) throw new Error("The original archive resource content changed.");
+    // The verified FD remains the source for this resource's status, retry and
+    // chunk sequence. Acquiring it does not establish a new SQL snapshot.
+    return await action(lease);
+  } catch (error) { failed = true; failure = error; throw error; }
+  finally {
+    try { lease.close(); }
+    catch (close) { throw failed ? new AggregateError([failure, close], "Archive resource operation and lease shutdown failed.", { cause: failure }) : close; }
+  }
+};
 const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<void> => {
   signal.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
@@ -137,27 +160,36 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   }
   const admission = await probeStoppedControllerArchive({ journalPath, ticket, signal: roundSignal });
   if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
-  const frozen = local(db => {
-   if (existsSync(`${journalPath}.pending-content/manifest.json`)) finalizePendingMigration(db,openPendingContent(journalPath,ticket.sessionId,db));
-   return runSqliteImmediate(db, () => {
-    assertCurrentSqlite(db, controllerJournalFormat); assertOriginal(db); assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
+  const readContent = (db: Database.Database) => {
     if (!existsSync(`${journalPath}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
-    const content = openPendingContent(journalPath, ticket.sessionId, db); reconcilePendingContent(db, content);
+    return openSessionContent(journalPath, ticket.sessionId, db, {
+      read: action => db.inTransaction ? action() : db.transaction(action).deferred(),
+      assertWrite: () => { throw new Error("Archive reads cannot publish timeline entries."); },
+    });
+  };
+  const materializeTimeline = (content: ReturnType<typeof readContent>) => {
+    const entries: TimelineEntry[] = [];
+    content.timeline.iterate(entry => { entries.push(entry); });
+    return parseSessionArchiveTimeline({ entries });
+  };
+  const frozen = local(db => db.transaction(() => {
+    assertCurrentSqlite(db, controllerJournalFormat); assertOriginal(db); assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
+    const content = readContent(db);
     const source = db.prepare("SELECT CAST(last_sequence AS TEXT) AS sourceThrough,CAST(last_acknowledged AS TEXT) AS acknowledgedThrough,projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { sourceThrough:string; acknowledgedThrough:string; projection_gap:string|null; archive_incomplete:number };
     const repairCode = archiveRepairCode(source);
     if (repairCode !== null) throw new ArchiveRepairRequiredError(repairCode);
-    const timeline = parseSessionArchiveTimeline({ entries: [...content.entries.values()].sort((a,b) => BigInt(a.entrySeq) < BigInt(b.entrySeq) ? -1 : 1) });
-    const allResources = [...content.resources.values()].map(value => value.resource).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
-    const refs = sessionArchiveReferences(timeline.entries), resources = [...refs.resources].sort().map(id => { const resource = content.resources.get(id)?.resource; if (!resource || resource.status === "pending") throw new Error("Pending archive resource is incomplete."); return resource; });
+    const timeline = materializeTimeline(content);
+    const allResources = [...content.resourceFiles.resources.values()].map(value => parseSessionResource(JSON.parse(JSON.stringify(value.resource)))).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
+    const refs = sessionArchiveReferences(timeline.entries), resources = [...refs.resources].sort().map(id => { const resource = allResources.find(resource => resource.resourceId === id); if (!resource || resource.status === "pending") throw new Error("Pending archive resource is incomplete."); return resource; });
     const epochRow = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as {value:string}|undefined;
-    return { content, timeline, resources, allResources, refs, source, historyEpoch: epochRow ? JSON.parse(epochRow.value) as string : null };
-  }); });
+    const resourceSource = { acquireResource: content.resourceFiles.acquireResource };
+    return { resourceSource, timeline, resources, allResources, refs, source, historyEpoch: epochRow ? JSON.parse(epochRow.value) as string : null };
+  }).deferred());
   const assertFrozen = (requireAcknowledged = true): void => inspectOriginal(current => {
     const source = current.prepare("SELECT CAST(last_sequence AS TEXT) AS through,CAST(last_acknowledged AS TEXT) AS acknowledged FROM execution WHERE id=1").get() as {through:string;acknowledged:string};
     if (source.through !== frozen.source.sourceThrough || source.acknowledged !== (requireAcknowledged ? source.through : frozen.source.acknowledgedThrough)) throw new Error("The stopped source checkpoint was not completely acknowledged.");
-    const pending = openPendingContent(journalPath, ticket.sessionId, current);
-    const timeline = {entries:[...pending.entries.values()].sort((a,b)=>BigInt(a.entrySeq)<BigInt(b.entrySeq)?-1:1)};
-    const resources = [...pending.resources.values()].map(value => value.resource).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
+    const content = readContent(current), timeline = materializeTimeline(content);
+    const resources = [...content.resourceFiles.resources.values()].map(value => value.resource).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
     if (JSON.stringify(timeline) !== JSON.stringify(frozen.timeline) || JSON.stringify(resources) !== JSON.stringify(frozen.allResources)) throw new Error("The stopped archive source changed during transfer.");
   });
   const intentPath = `${journalPath}.archive-intent-${ticket.executionGeneration}.json`;
@@ -178,13 +210,12 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     if (String(length) !== existing.migration.sourceByteLength) throw new Error("Server archive migration differs from the original legacy source.");
     for (const value of resources) {
       if (value.resource.status !== "available") continue;
-      const lease = frozen.content.acquireResource(value.resource.resourceId);
-      try {
+      await withFrozenResource(frozen.resourceSource, value.resource, lease => {
         const bytes = Buffer.alloc(Number(value.resource.byteLength!));
         for (let offset = 0; offset < bytes.length;) { const block = lease.read(String(offset), 524288); block.copy(bytes, offset); offset += block.length; }
         if (sha256(bytes) !== value.resource.sha256) throw new Error("The original legacy resource content changed.");
         value.data = bytes.toString("base64");
-      } finally { lease.close(); }
+      });
     }
     const bytes = Buffer.from(JSON.stringify(parseSessionArchive(source)));
     if (sha256(bytes) !== existing.migration.sourceSha256 || String(bytes.length) !== existing.migration.sourceByteLength) throw new Error("Server archive migration differs from the original legacy source.");
@@ -257,9 +288,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     }));
     for (const resourceIntent of intent.resources) {
       const resource=frozen.resources.find(resource=>resource.resourceId===resourceIntent.resourceId)!;
-      const lease=frozen.content.acquireResource(resource.resourceId);
-      try { await transfer("resource",{fileId:resourceIntent.fileId,sha256:resource.sha256!,byteLength:resource.byteLength!},(offset,limit)=>lease.read(offset,limit),resource); }
-      finally { lease.close(); }
+      await withFrozenResource(frozen.resourceSource, resource, lease => transfer("resource",{fileId:resourceIntent.fileId,sha256:resource.sha256!,byteLength:resource.byteLength!},(offset,limit)=>lease.read(offset,limit),resource));
     }
   }
   const sealed=parseSessionArchivePreparation(await call("POST","/seal",true));

@@ -1,27 +1,55 @@
 import Database from "better-sqlite3";
-import { mkdtemp, mkdir, rm, readdir, unlink, stat, readFile, writeFile, open } from "node:fs/promises";
+import sharp from "sharp";
+import { mkdtemp, mkdir, rm, unlink, stat, readFile, writeFile, open } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
+import { openControllerLifecycleStore, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
+import * as processProof from "../../../src/commands/controller/process-proof.js";
+import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import * as archives from "../../../src/commands/controller/archive-upload.js";
-import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
+import * as resourceFiles from "../../../src/commands/controller/content/resource-files.js";
+import * as sqliteAccess from "../../../src/platform/sqlite-access.js";
+import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion, upgradeSqlite } from "../../../src/platform/sqlite-format.js";
 import { controllerJournalWriteOptions } from "../../../src/commands/controller/storage-preparation.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
-import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { parseTimelineEntry } from "../../../src/session/protocol.js";
 const errorCauses = (error: unknown): Error[] => {
   const values: Error[] = [];
   for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
   return values;
 };
 const roots: string[] = [], readers: Database.Database[] = [];
-const pending = (file: string, sessionId: string) => { const db = new Database(file, { readonly: true }); readers.push(db); return openPendingContent(file, sessionId, db); };
-afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-const fixture = async () => {
+const pending = (file: string, sessionId: string) => {
+  const db = new Database(file, { readonly: true }); readers.push(db);
+  return openSessionContent(file, sessionId, db, { read: action => db.transaction(action).deferred(), assertWrite: () => { throw new Error("Read only."); } });
+};
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); Object.defineProperty(process, "platform", platform); for (const db of readers.splice(0)) if (db.open) db.close(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
+const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
+const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket, stateDirectory: string): Promise<void> => {
+  if (process.platform !== "win32") return;
+  const db = new Database(journalPath);
+  try {
+    const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string };
+    const snapshot = JSON.parse(row.snapshot);
+    db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...snapshot, lifecycle: "stopping", nativeStopped: false, stoppedAt: null, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` } }));
+  } finally { db.close(); }
+  const jobLease = {} as ControllerJobLease;
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
+  try {
+    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory, jobLease });
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(stopped.controllerProcess, stopped.nativeProcesses, undefined, jobLease);
+    expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
+  } finally { confirm.mockRestore(); }
+};
+const fixture = async ({ finalizeStop = true }: { finalizeStop?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
@@ -29,7 +57,8 @@ const fixture = async () => {
   const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "durable answer" }] };
   store.projectTimeline(entry); const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
-  return { home, ticket, journalPath, entry, sourceThrough };
+  if (finalizeStop) await completeFixtureStop(journalPath, ticket, home);
+  return { home, ticket, journalPath, entry, sourceThrough, completeStop: () => completeFixtureStop(journalPath, ticket, home) };
 };
 const migrate = (db: Database.Database, stateDirectory: string): void => {
   const permit = acquireControllerStoragePermit(db.name);
@@ -39,7 +68,8 @@ const migrate = (db: Database.Database, stateDirectory: string): void => {
   } finally { permit.release(); }
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
-test("retries confirmed archive busy responses with the same request until the upload completes", async () => {
+test.each(fixturePlatforms)("retries confirmed archive busy responses with the same request until the upload completes (%s)", async fixturePlatform => {
+  selectFixturePlatform(fixturePlatform);
   const f = await fixture(), bodies: string[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });
   const attempts = new Map<string, { body: unknown; count: number }>();
@@ -100,11 +130,14 @@ test.each([
     return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: retryAfter === null ? {} : { "Retry-After": retryAfter } });
   });
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
-  await vi.advanceTimersByTimeAsync(expectedMs - 1);
-  expect(request).toHaveBeenCalledOnce();
-  await vi.advanceTimersByTimeAsync(1);
-  expect((await result).state).toBe("ready");
-  expect(request.mock.calls.length).toBeGreaterThan(1);
+  const joined = Promise.allSettled([result]);
+  try {
+    await vi.advanceTimersByTimeAsync(expectedMs - 1);
+    expect(request).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await result).state).toBe("ready");
+    expect(request.mock.calls.length).toBeGreaterThan(1);
+  } finally { await vi.runAllTimersAsync(); await joined; }
 });
 
 test("archive busy keeps its error identity when the shared 60 second budget expires", async () => {
@@ -113,11 +146,14 @@ test("archive busy keeps its error identity when the shared 60 second budget exp
   const request = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "120" } }));
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
   const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
-  await vi.advanceTimersByTimeAsync(59_999);
-  expect(request).toHaveBeenCalledOnce();
-  await vi.advanceTimersByTimeAsync(1);
-  await failed;
-  expect(request).toHaveBeenCalledOnce();
+  const joined = Promise.allSettled([result, failed]);
+  try {
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(request).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    await failed;
+    expect(request).toHaveBeenCalledOnce();
+  } finally { await vi.runAllTimersAsync(); await joined; }
 });
 
 test("cancelling an archive busy wait prevents another request", async () => {
@@ -127,11 +163,14 @@ test("cancelling an archive busy wait prevents another request", async () => {
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request, signal: controller.signal });
   const reason = new Error("Worker stopping.");
   const failed = expect(result).rejects.toBe(reason);
-  await vi.advanceTimersByTimeAsync(100);
-  controller.abort(reason);
-  await failed;
-  await vi.advanceTimersByTimeAsync(5000);
-  expect(request).toHaveBeenCalledOnce();
+  const joined = Promise.allSettled([result, failed]);
+  try {
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort(reason);
+    await failed;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(request).toHaveBeenCalledOnce();
+  } finally { controller.abort(reason); await vi.runAllTimersAsync(); await joined; }
 });
 
 test.each(["history", "content"])("exhausted %s busy retries retain the original error without a reconciliation request", async stage => {
@@ -163,22 +202,24 @@ test("archive requests share the same round deadline across upload stages", asyn
   });
   const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
   const failed = expect(result).rejects.toMatchObject({ status: 429, code: "resource_busy" });
-  await vi.advanceTimersByTimeAsync(60_000);
-  await failed;
-  expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET", "GET", "POST"]);
+  const joined = Promise.allSettled([result, failed]);
+  try {
+    await vi.advanceTimersByTimeAsync(60_000);
+    await failed;
+    expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET", "GET", "POST"]);
+  } finally { await vi.runAllTimersAsync(); await joined; }
 });
 
 test.each(["archive_incomplete", "projection_gap"] as const)("rejects %s before reading pending content and preserves source bytes", async code => {
   const f = await fixture(), db = new Database(f.journalPath);
   db.prepare("UPDATE execution SET archive_incomplete=?,projection_gap=?").run(code === "archive_incomplete" ? 1 : 0, code === "projection_gap" ? "Native history was lost." : null);
-  const pointer = db.prepare("SELECT content_file FROM content_index WHERE id=?").get(f.entry.entryId) as { content_file: string }; db.close();
-  const entryFile = path.join(`${f.journalPath}.pending-content`, "entries", pointer.content_file);
-  await writeFile(entryFile, "unreadable pending content");
+  db.prepare("UPDATE timeline_entries SET value=? WHERE id=?").run("unreadable SQL content", f.entry.entryId); db.close();
   const before = await readFile(f.journalPath), request = vi.fn<typeof fetch>();
   for (let i = 0; i < 3; i++) await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ name: "ArchiveRepairRequiredError", code });
   expect(request).not.toHaveBeenCalled();
   expect(await readFile(f.journalPath)).toEqual(before);
-  expect(await readFile(entryFile, "utf8")).toBe("unreadable pending content");
+  const current = new Database(f.journalPath, { readonly: true });
+  try { expect(current.prepare("SELECT value FROM timeline_entries WHERE id=?").get(f.entry.entryId)).toEqual({ value: "unreadable SQL content" }); } finally { current.close(); }
 });
 
 test.each(["archive_incomplete", "projection_gap"] as const)("probes a stopped source without mutating its journal or pending inventory: %s", async code => {
@@ -299,40 +340,41 @@ test("an unknown manifest response queries the same identity and retry preserves
  const f=await fixture(),bodies:string[]=[];let fail=true;
  const receiver=archiveTestReceiver({bodies,sourceThrough:f.sourceThrough,fail:()=>fail});
  await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request})).rejects.toThrow("503");
- expect(pending(f.journalPath,f.ticket.sessionId).entries.size).toBe(1);
- // A crash candidate has no SQL commit and cannot change the original upload.
+ expect(pending(f.journalPath,f.ticket.sessionId).timeline.totals().entryCount).toBe(1);
+ // An unreferenced legacy candidate cannot change the frozen SQL upload.
+ await mkdir(`${f.journalPath}.pending-content/entries`, { mode: 0o700 });
  await writeFile(path.join(`${f.journalPath}.pending-content/entries`, `${randomUUID()}.json`), "incomplete candidate");fail=false;
  await uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request});expect(bodies).toHaveLength(2);expect(bodies[1]).toBe(bodies[0]);
 });
-test("lost pending entry cannot become a ready empty archive", async () => {
-  const f = await fixture(); const directory = `${f.journalPath}.pending-content/entries`;
-  await unlink(path.join(directory, (await readdir(directory))[0]!));
+test("a lost SQL row cannot become a ready empty archive", async () => {
+  const f = await fixture(), db = new Database(f.journalPath);
+  db.prepare("DELETE FROM timeline_entries WHERE id=?").run(f.entry.entryId); db.close();
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: emptyStatus }));
   const failure = await uploadStoppedControllerArchive({ ...f, serverToken: "test", request }).then(() => null, (error: unknown) => error);
-  expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("incomplete") })]));
+  expect(errorCauses(failure)).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining("totals") })]));
   expect(request.mock.calls.every(call => call[1]?.method === "POST")).toBe(true);
 });
 test("legacy completed SQL history migrates atomically and is readable after worktree deletion", async () => {
   const f = await fixture(); const content = pending(f.journalPath, f.ticket.sessionId);
-  const original = content.entries.get(f.entry.entryId)!;
+  const original = content.timeline.get(f.entry.entryId)!;
   const db = new Database(f.journalPath);
   for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
-  db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
   migrate(db, f.home);
   const migrated = pending(f.journalPath, f.ticket.sessionId);
-  expect(migrated.entries.get(original.entryId)).toEqual(original);
+  expect(migrated.timeline.get(original.entryId)).toEqual(original);
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
   expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('projection','resources')").all()).toEqual([]);
   db.close();
-  expect(pending(f.journalPath, f.ticket.sessionId).entries.get(original.entryId)).toEqual(original);
+  expect(pending(f.journalPath, f.ticket.sessionId).timeline.get(original.entryId)).toEqual(original);
 });
 test("failed legacy migration retains SQL originals and safely resumes an already written file", async () => {
   const f = await fixture(); const db = new Database(f.journalPath); const content = pending(f.journalPath, f.ticket.sessionId);
-  const original = content.entries.get(f.entry.entryId)!;
+  const original = content.timeline.get(f.entry.entryId)!;
   for (const row of db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND (name GLOB 'image_*' OR name GLOB 'input_*' OR name GLOB 'native_*')").all() as {name:string}[]) db.exec(`DROP TABLE ${row.name}`);
-  db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   const originalExec=Database.prototype.exec;const fail=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this:Database.Database,sql:string){if(this===db&&sql.includes("CREATE TABLE content_index"))throw new Error("Injected content schema failure");return originalExec.call(this,sql)});
   expect(() => migrate(db, f.home)).toThrow();fail.mockRestore();
@@ -342,7 +384,7 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); db.close();
 });
 test("an outbox rollback preserves the committed timeline in memory and after restart", async () => {
-  const f = await fixture();
+  const f = await fixture({ finalizeStop: false });
   let store = openControllerLifecycleStore(f.journalPath, f.ticket, { maxOutboxBytes: 256 });
   const next = { ...f.entry, content: [{ type: "text" as const, text: "x".repeat(1000) }] };
   expect(() => store.projectTimeline(next)).toThrow("capacity");
@@ -355,28 +397,29 @@ test("an outbox rollback preserves the committed timeline in memory and after re
 });
 
 test("a delivered relay gap remains a permanent incomplete-archive marker", async () => {
-  const f = await fixture(); const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const f = await fixture({ finalizeStop: false }); const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   store.markProjectionGap("A native event could not be captured.");
-  expect(store.drainProjectionGap()).not.toBeNull(); store.close();
+  expect(store.drainProjectionGap()).not.toBeNull(); store.close(); await f.completeStop();
   const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ archive: emptyStatus }));
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("unresolved projection gap");
   expect(request.mock.calls.every(call => call[1]?.method === "POST")).toBe(true);
 });
 test("archive migrates an original resource into the common blob model and rejects a mismatching receipt",async()=>{
- const f=await fixture(),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
+ const f=await fixture({ finalizeStop: false }),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
  const bytes=Buffer.from("binary artifact"),resource={resourceId:randomUUID(),name:"output.txt",status:"available" as const,mediaType:"text/plain",byteLength:String(bytes.length),sha256:createHash("sha256").update(bytes).digest("hex"),error:null};
- store.saveResource(resource,bytes);store.projectTimeline({...f.entry,content:[{type:"resource",resourceId:resource.resourceId,label:"artifact"}]});const through=store.getLastSourceSequence();store.close();
+ store.saveResource(resource,bytes);store.projectTimeline({...f.entry,content:[{type:"resource",resourceId:resource.resourceId,label:"artifact"}]});const through=store.getLastSourceSequence();store.close();await f.completeStop();
  const bodies:string[]=[];const receiver=archiveTestReceiver({bodies,sourceThrough:through,onManifest:body=>Response.json({archive:{state:"ready",schemaVersion:3,completeness:"complete",sha256:"0".repeat(64),byteLength:String(Buffer.byteLength(body)),errorCode:null}})});
  await expect(uploadStoppedControllerArchive({...f,serverToken:"test",request:receiver.request})).rejects.toThrow("matching integrity");
  const manifest=JSON.parse(bodies[0]!);expect(manifest.resources[0].resource).toEqual(resource);expect(manifest.resources[0].blobId).toBeTypeOf("string");expect(manifest.resources[0]).not.toHaveProperty("data");expect(receiver.files.get(manifest.resources[0].blobId)?.equals(bytes)).toBe(true);
- expect(pending(f.journalPath,f.ticket.sessionId).resources.get(resource.resourceId)?.data).toBeNull();
+ expect(pending(f.journalPath,f.ticket.sessionId).resourceFiles.resources.get(resource.resourceId)?.data).toBeNull();
 });
-test("stopped archival retains and retries an available zero-byte legacy resource", async () => {
-  const f = await fixture(), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+test.each(fixturePlatforms)("stopped archival retains and retries an available zero-byte legacy resource (%s)", async fixturePlatform => {
+  selectFixturePlatform(fixturePlatform);
+  const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const bytes = Buffer.alloc(0), resource = { resourceId: randomUUID(), name: "empty.txt", status: "available" as const, mediaType: "text/plain", byteLength: "0", sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
   store.saveResource(resource, bytes);
   store.projectTimeline({ ...f.entry, content: [{ type: "resource", resourceId: resource.resourceId, label: "empty original" }] });
-  const sourceThrough = store.getLastSourceSequence(); store.close();
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
   const bodies: string[] = [], offsets: string[] = [];
   const receiver = archiveTestReceiver({ bodies, sourceThrough });
   const request: typeof fetch = async (input, init) => {
@@ -395,13 +438,13 @@ test("stopped archival retains and retries an available zero-byte legacy resourc
   expect(bodies).toHaveLength(1);
 });
 test("an available resource cannot be published without retained original bytes",async()=>{
- const f=await fixture(),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
+ const f=await fixture({ finalizeStop: false }),store=openControllerLifecycleStore(f.journalPath,f.ticket,{contentOwnedLocally:true});
  try { expect(()=>store.saveResource({resourceId:randomUUID(),name:"missing.txt",status:"available",mediaType:"text/plain",byteLength:"1",sha256:"0".repeat(64),error:null})).toThrow("incomplete"); }finally{store.close()}
 });
 
 // A long conversation must not rewrite a growing timeline manifest on every insert.
-test("timeline growth keeps file inventory writes bounded while SQL detects deleted entries", async () => {
-  const f = await fixture();
+test("timeline growth keeps file inventory writes bounded while SQL detects deleted rows", async () => {
+  const f = await fixture({ finalizeStop: false });
   const store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
   const inventory = `${f.journalPath}.pending-content/index.json`;
   const before = await stat(inventory);
@@ -410,10 +453,9 @@ test("timeline growth keeps file inventory writes bounded while SQL detects dele
   expect(after.size).toBe(before.size);
   expect(after.mtimeMs).toBe(before.mtimeMs);
   store.close();
-  const db = new Database(f.journalPath, { readonly: true });
-  const file = (db.prepare("SELECT content_file FROM content_index ORDER BY entry_seq LIMIT 1 OFFSET 6").get() as { content_file: string }).content_file; db.close();
-  await unlink(path.join(`${f.journalPath}.pending-content/entries`, file));
-  expect(() => openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true })).toThrow("incomplete");
+  const db = new Database(f.journalPath);
+  db.exec("DELETE FROM timeline_entries WHERE id=(SELECT id FROM timeline_entries ORDER BY entry_seq LIMIT 1 OFFSET 6)"); db.close();
+  expect(() => openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true })).toThrow("totals");
 });
 
 
@@ -432,4 +474,132 @@ test.each([0, 129])("all archive transport phases release local ownership with %
   };
   expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).state).toBe("ready");
   expect(requests).toBeGreaterThan(5);
+});
+
+
+test.each(["none", "transport", "close", "acquire", "descriptor", "verify", "read", "lease-close", "read-close", "response-loss"] as const)("resource transfers validate lazy leases after SQL closes and release them (failure: %s)", async failure => {
+  const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const bytes = Buffer.from("frozen resource bytes"), resource = { resourceId: randomUUID(), status: "available" as const, name: "original.txt", mediaType: "text/plain", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
+  store.saveResource(resource, bytes);
+  store.projectTimeline({ ...f.entry, content: [{ type: "resource", resourceId: resource.resourceId, label: "original" }] });
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
+  const connections = new Set<Database.Database>(), prepare = Database.prototype.prepare;
+  vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, sql: string) {
+    if (this.name === f.journalPath) connections.add(this);
+    return prepare.call(this, sql);
+  });
+  const acquireFailure = new Error("Resource acquire failed"), readFailure = new Error("Resource read failed"), leaseCloseFailure = new Error("Resource close failed");
+  const leases: { closed: boolean }[] = [], openFiles = resourceFiles.openResourceFiles;
+  let validatedSnapshots = 0;
+  vi.spyOn(resourceFiles, "openResourceFiles").mockImplementation((file, sessionId) => {
+    expect([...connections].some(connection => connection.open && connection.inTransaction)).toBe(true);
+    const files = openFiles(file, sessionId); validatedSnapshots++;
+    return { ...files, get resources() { return files.resources; }, acquireResource: id => {
+      expect([...connections].every(connection => !connection.open)).toBe(true);
+      if (failure === "acquire") throw acquireFailure;
+      const lease = files.acquireResource(id), state = { closed: false }; leases.push(state);
+      return { ...lease, resource: failure === "descriptor" ? { ...lease.resource, name: "changed-descriptor.txt" } : lease.resource, read: (offset, limit) => {
+        if (failure === "read" || failure === "read-close") throw readFailure;
+        const block = lease.read(offset, limit);
+        if (failure === "verify" && block.length > 0) block[0] = block[0]! ^ 1;
+        return block;
+      }, close: () => { lease.close(); state.closed = true; if (failure === "lease-close" || failure === "read-close") throw leaseCloseFailure; } };
+    } };
+  });
+  const closeFailure = new Error("SQL close report lost"), close = sqliteAccess.closeSqliteDatabase;
+  if (failure === "close") vi.spyOn(sqliteAccess, "closeSqliteDatabase").mockImplementation((db, options, outcome) => {
+    close(db, options, outcome);
+    if (db.name === f.journalPath && validatedSnapshots > 0) throw closeFailure;
+  });
+  const receiver = archiveTestReceiver({ bodies: [], sourceThrough });
+  let requests = 0, resourceRetried = false;
+  const request: typeof fetch = async (input, init) => {
+    requests++;
+    expect(connections.size).toBeGreaterThan(0);
+    expect([...connections].every(connection => !connection.open)).toBe(true);
+    const permit = acquireControllerStoragePermit(f.journalPath);
+    try {
+      await Promise.resolve();
+      const url = new URL(String(input));
+      if (failure === "transport" && url.pathname.includes("/files/")) throw new Error("Transport response lost");
+      if (!resourceRetried && init?.method === "PUT" && url.searchParams.get("purpose") === "resource") {
+        resourceRetried = true;
+        if (failure === "none") return Response.json({ error: { code: "resource_busy" } }, { status: 429, headers: { "Retry-After": "0" } });
+        if (failure === "response-loss") { await receiver.request(input, init); throw new Error("Resource response lost after commit"); }
+      }
+      return await receiver.request(input, init);
+    } finally { permit.release(); }
+  };
+  const upload = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  if (failure === "transport") await expect(upload).rejects.toThrow("Transport response lost");
+  else if (failure === "close") {
+    await expect(upload).rejects.toMatchObject({ kind: "cleanup-failed", connectionClosed: true, cause: closeFailure });
+    expect(requests).toBe(0);
+  } else if (failure === "acquire") await expect(upload).rejects.toBe(acquireFailure);
+  else if (failure === "descriptor") await expect(upload).rejects.toThrow("original descriptor");
+  else if (failure === "verify") await expect(upload).rejects.toThrow("resource content changed");
+  else if (failure === "read") await expect(upload).rejects.toBe(readFailure);
+  else if (failure === "lease-close") await expect(upload).rejects.toBe(leaseCloseFailure);
+  else if (failure === "read-close") await expect(upload).rejects.toMatchObject({ cause: readFailure, errors: [readFailure, leaseCloseFailure] });
+  else {
+    expect((await upload).state).toBe("ready");
+    expect(requests).toBeGreaterThan(5);
+    expect([...receiver.files.values()].some(content => content.equals(bytes))).toBe(true);
+    expect(resourceRetried).toBe(true);
+  }
+  expect(validatedSnapshots).toBeGreaterThan(0);
+  expect(leases).toHaveLength(failure === "close" || failure === "acquire" ? 0 : 1);
+  expect(leases.every(lease => lease.closed)).toBe(true);
+});
+
+test("multiple valid PNG resources archive with one controlled resource lease at a time", async () => {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWNgZGL+DwABFAEG9O6t0QAAAABJRU5ErkJggg==", "base64");
+  expect(png.length).toBe(91);
+  expect(await sharp(png).metadata()).toMatchObject({ format: "png", width: 1, height: 1 });
+  expect(await sharp(png).raw().toBuffer()).toEqual(Buffer.from([1, 2, 3, 255]));
+  const f = await fixture({ finalizeStop: false }), store = openControllerLifecycleStore(f.journalPath, f.ticket, { contentOwnedLocally: true });
+  const content = [];
+  for (let index = 0; index < 3; index++) {
+    const resourceId = randomUUID();
+    store.saveResource({ resourceId, status: "available", name: "pixel.png", mediaType: "image/png", byteLength: String(png.length), sha256: createHash("sha256").update(png).digest("hex"), error: null }, png);
+    content.push({ type: "resource" as const, resourceId, label: "pixel.png" });
+  }
+  store.projectTimeline({ ...f.entry, content });
+  const sourceThrough = store.getLastSourceSequence(); store.close(); await f.completeStop();
+  const openFiles = resourceFiles.openResourceFiles;
+  let active = 0, peak = 0, acquired = 0;
+  vi.spyOn(resourceFiles, "openResourceFiles").mockImplementation((file, sessionId) => {
+    const files = openFiles(file, sessionId);
+    return { ...files, get resources() { return files.resources; }, acquireResource: id => {
+      const lease = files.acquireResource(id); acquired++; active++; peak = Math.max(peak, active);
+      let closed = false;
+      return { ...lease, close: () => { lease.close(); if (!closed) { active--; closed = true; } } };
+    } };
+  });
+  const bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough });
+  expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver.request })).state).toBe("ready");
+  expect(acquired).toBe(3);
+  expect(peak).toBe(1);
+  expect(active).toBe(0);
+  expect([...receiver.files.values()].filter(bytes => bytes.equals(png))).toHaveLength(3);
+  expect(receiver.entries(bodies[0]!)).toHaveLength(1);
+}, 30000);
+
+test("archive freeze validation rereads current SQL bodies after asynchronous status", async () => {
+  const f = await fixture(), bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough: f.sourceThrough });
+  let changed = false;
+  const request: typeof fetch = async (input, init) => {
+    if (!changed && init?.method === "GET") {
+      changed = true;
+      const db = new Database(f.journalPath), original = JSON.parse((db.prepare("SELECT value FROM timeline_entries WHERE id=?").get(f.entry.entryId) as { value: string }).value), replacement = parseTimelineEntry({ ...original, revision: "2", content: [{ type: "text", text: "changed after the freeze" }] }), value = JSON.stringify(replacement);
+      try { db.transaction(() => {
+        db.prepare("UPDATE timeline_entries SET revision=2,value=?,content_hash=?,byte_length=? WHERE id=?").run(value, controllerPayloadHash(replacement), Buffer.byteLength(value), f.entry.entryId);
+        db.prepare("UPDATE timeline_totals SET byte_length=? WHERE id=1").run(Buffer.byteLength(value));
+      }).immediate(); } finally { db.close(); }
+    }
+    return receiver.request(input, init);
+  };
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toThrow("archive source changed during transfer");
+  expect(bodies).toEqual([]);
+  await expect(stat(`${f.journalPath}.archive-receipt-1.json`)).rejects.toMatchObject({ code: "ENOENT" });
 });

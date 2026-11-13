@@ -11,13 +11,20 @@ registerHooks({ resolve(specifier, context, next) {
   }
   return next(specifier, context);
 } });
-const { openPendingContent } = await import("../../src/commands/controller/pending-content.ts");
+const { openSessionContent } = await import("../../src/commands/controller/content/session-content.ts");
+const { acquireControllerStoragePermit, assertControllerStoragePermit } = await import("../../src/commands/controller/storage-lock.ts");
+const { controllerMetadataBudget } = await import("../../src/commands/controller/media/metadata-budget.ts");
 const [file, sessionId, encoded, phase] = process.argv.slice(2);
+const permit = acquireControllerStoragePermit(file, undefined, { fileMustExist: true });
 const db = new Database(file);
 db.pragma("synchronous=FULL");
-const content = openPendingContent(file, sessionId, db);
+const budget = controllerMetadataBudget(file, db);
+const content = openSessionContent(file, sessionId, db, {
+  assertWrite(additional) { if (!db.inTransaction) throw new Error("Publication requires the original write transaction."); assertControllerStoragePermit(permit, file); budget.assert(additional, true); },
+  read: action => db.inTransaction ? action() : db.transaction(action).deferred(),
+});
 db.exec("BEGIN IMMEDIATE");
-content.saveEntry(JSON.parse(encoded));
+content.timeline.save(JSON.parse(encoded));
 db.prepare("UPDATE image_runtime_state SET value='new' WHERE key='publication'").run();
 if (phase === "after") db.exec("COMMIT");
 process.send(phase);

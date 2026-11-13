@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import type { TimelineEntry } from "../../../src/session/protocol.js";
 import { syncControllerImageHistory } from "../../../src/commands/controller/media/history-sync.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -37,7 +38,7 @@ const receiver = (failOnce = false) => {
   return { request, rows, calls };
 };
 
-test("active history uses the original grant and exact full pending history in one MiB chunks", async () => {
+test("active history uses the original grant and exact current SQL history in one MiB chunks", async () => {
   const text = "x".repeat(1048576), f = await fixture(2, text), server = receiver();
   try {
     await syncControllerImageHistory({ ...f, request: server.request });
@@ -69,6 +70,9 @@ test("lost chunk receipt survives journal reopen and resumes only the original s
   const f = await fixture(2, "x".repeat(1048576)), server = receiver(true);
   await expect(syncControllerImageHistory({ ...f, request: server.request })).rejects.toThrow("Lost committed");
   const intent = f.journal.prepareImageHistorySync()!, bytes = await readFile(intent.filename); expect((await stat(intent.filename)).mode & 0o222).toBe(0);
+  const first = (JSON.parse(bytes.toString()) as { entries: TimelineEntry[] }).entries[0]!;
+  f.journal.projectTimeline({ ...first, revision: "2", kind: "assistant_message", content: [{ type: "text", text: "later committed SQL revision" }] });
+  f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
   f.journal.close(); const journal = openControllerLifecycleStore(f.file, f.ticket, { contentOwnedLocally: true });
   try {
     expect(journal.prepareImageHistorySync()).toEqual(intent);
@@ -77,6 +81,10 @@ test("lost chunk receipt survives journal reopen and resumes only the original s
     expect([...server.rows.values()][0]!.bytes.equals(bytes)).toBe(true);
     expect(server.calls.filter(call => call.method === "PUT").map(call => call.offset)).toEqual([0, 1048576, 2097152]);
     await expect(readFile(intent.filename)).rejects.toMatchObject({ code: "ENOENT" });
+    const next = journal.prepareImageHistorySync()!;
+    expect(next.syncId).not.toBe(intent.syncId);
+    expect(BigInt(next.sourceThrough)).toBeGreaterThan(BigInt(intent.sourceThrough));
+    expect((JSON.parse((await readFile(next.filename)).toString()) as { entries: TimelineEntry[] }).entries[0]).toMatchObject({ revision: "2", content: [{ type: "text", text: "later committed SQL revision" }] });
   } finally { journal.close(); }
 });
 

@@ -3,13 +3,14 @@ import { SESSION_ARCHIVE_HISTORY_MAX_BYTES, sessionArchiveReferences } from "../
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
-import type { PendingContent } from "../pending-content.js";
+import type { SessionContent } from "../content/session-content.js";
+import type { TimelineEntry } from "../../../session/protocol.js";
 import { writeDurableJson } from "../../../platform/durable-json.js";
 import type { controllerMetadataBudget } from "./metadata-budget.js";
 export type ImageHistorySyncIntent = { syncId: string; historyEpoch: string; sourceThrough: string; sha256: string; byteLength: string; filename: string };
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
 const uuid = "[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}";
-export const createImageHistorySource = (file: string, db: Database.Database, content: PendingContent, transactions: Transactions, budget: ReturnType<typeof controllerMetadataBudget>) => {
+export const createImageHistorySource = (file: string, db: Database.Database, content: SessionContent, transactions: Transactions, budget: ReturnType<typeof controllerMetadataBudget>) => {
   const root = `${file}.history-sync`, key = "active_history_sync", checkpoint = "active_history_checkpoint";
   const syncDirectory = () => { if (process.platform !== "win32") { const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } } };
   const intent = (): ImageHistorySyncIntent | null => {
@@ -35,9 +36,10 @@ export const createImageHistorySource = (file: string, db: Database.Database, co
     // every file while an original intent is still pending or unknown.
     for (const name of readdirSync(root)) if (new RegExp(`^${uuid}\\.json(?:\\.${uuid}\\.tmp)?$`).test(name)) { const p = path.join(root, name); const stat = lstatSync(p); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Invalid frozen controller history file."); unlinkSync(p); }
     syncDirectory();
-    const entries = [...content.entries.values()].sort((a, b) => BigInt(a.entrySeq) < BigInt(b.entrySeq) ? -1 : 1);
+    const entries: TimelineEntry[] = [];
+    content.timeline.iterate(entry => { entries.push(entry); });
     const resources = [...sessionArchiveReferences(entries, false).resources].sort().map(id => {
-      const resource = content.resources.get(id)?.resource;
+      const resource = content.resourceFiles.resources.get(id)?.resource;
       if (!resource) throw new Error("Controller history references a missing resource descriptor.");
       return resource;
     });

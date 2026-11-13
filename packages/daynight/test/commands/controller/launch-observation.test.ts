@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { unlinkSync } from "node:fs";
 import os from "node:os";
 import { createServer } from "node:net";
@@ -146,12 +146,20 @@ it("does not migrate the preceding v8 journal when classifying an exited bootstr
   const old = new Database(f.journalFile);
   old.exec("DROP TABLE input_message_origins"); old.pragma("user_version=8");
   const before = old.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get(); old.close();
+  const originalBytes = await readFile(f.journalFile);
   await stopControllerBootstrap(f.proof, Date.now() + 15_000);
-  await expect(f.observe()).rejects.toThrow(/current format/);
+  const failure: unknown = await f.observe().catch(error => error);
+  expect(failure).toBeInstanceOf(ControllerLaunchJournalObservationError);
+  const cause = (failure as ControllerLaunchJournalObservationError).journalCause;
+  expect(cause).toBeInstanceOf(SqliteAccessError);
+  expect(cause).toMatchObject({ kind: "invalid-format", context: { database: "controller-journal", phase: "inspect", fromVersion: 8, toVersion: 10 } });
+  expect(isControllerJournalIoFailure(failure)).toBe(false);
+  expect(hasUnsafeControllerObservationFailure(failure)).toBe(true);
   const after = new Database(f.journalFile, { readonly: true });
   expect(after.pragma("user_version", { simple: true })).toBe(8);
   expect(after.prepare("SELECT snapshot,ticket_hash FROM execution WHERE id=1").get()).toEqual(before);
   expect(after.prepare("SELECT name FROM sqlite_schema WHERE name='input_message_origins'").get()).toBeUndefined(); after.close();
+  expect(await readFile(f.journalFile)).toEqual(originalBytes);
 }, 30_000);
 
 

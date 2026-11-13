@@ -12,7 +12,7 @@ afterEach(() => {
   for (const db of connections.splice(0)) if (db.open) db.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-const schema = loadSqliteSql(new URL("../../../src/commands/controller/content/timeline-schema.sql", import.meta.url));
+const schema = loadSqliteSql(new URL("../../../src/commands/controller/sqlite/journal/010-timeline-content.sql", import.meta.url));
 const entry = (entrySeq = "1", revision = "1", text = "正文 😀", entryId: string = randomUUID()): TimelineEntry => ({ entryId, entrySeq, revision, kind: "assistant_message", content: [{ type: "text", text }] });
 const fixture = () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/controller-tests"); mkdirSync(base, { recursive: true });

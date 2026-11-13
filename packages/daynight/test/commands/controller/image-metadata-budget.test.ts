@@ -4,19 +4,19 @@ import { mkdir, mkdtemp, rm, stat, open, readdir, writeFile } from "node:fs/prom
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
-import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
+import { openSessionContent } from "../../../src/commands/controller/content/session-content.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
-test("real SQLite pages, WAL and pending timeline share the normal and settlement metadata limits", async () => {
+test("real SQLite pages, WAL and resource metadata share the normal and settlement metadata limits", async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-metadata-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "m-")); roots.push(root);
   const file = path.join(root, "journal.sqlite"), db = openControllerTestDatabase({ file, allowCreate: true, onMigration: () => {} });
   try {
     db.pragma("journal_mode=WAL"); db.pragma("wal_autocheckpoint=0");
     db.exec("CREATE TABLE retained(value BLOB); INSERT INTO retained VALUES(zeroblob(1048576))");
-    const content = openPendingContent(file, "session", db);
-    db.transaction(() => content.saveEntry({ entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Retained history" }] })).immediate();
+    const content = openSessionContent(file, "session", db, { read: action => db.inTransaction ? action() : db.transaction(action).deferred(), assertWrite: additional => { if (!db.inTransaction) throw new Error("Publication requires the original write transaction."); controllerMetadataBudget(file, db).assert(additional); } });
+    db.transaction(() => content.timeline.save({ entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Retained history" }] })).immediate();
     const budget = controllerMetadataBudget(file, db);
     const physical = (await Promise.all([file, `${file}-wal`, `${file}-shm`].map(filename => stat(filename)))).reduce((sum, item) => sum + item.size, 0);
     const pending = `${file}.pending-content`;
@@ -24,7 +24,9 @@ test("real SQLite pages, WAL and pending timeline share the normal and settlemen
     let pendingBytes = 0;
     for (const entry of metadata) { const info = await stat(entry); pendingBytes += info.isFile() ? info.size : (await Promise.all((await readdir(entry)).map(name => stat(path.join(entry, name))))).reduce((sum, item) => sum + item.size, 0); }
     expect(budget.bytes()).toBe(physical + pendingBytes);
-    expect(pendingBytes).toBeGreaterThan(content.metadataBytes());
+    expect(content.timeline.totals()).toMatchObject({ entryCount: 1 });
+    expect(pendingBytes).toBeGreaterThan(0);
+    expect(await readdir(pending)).not.toContain("timeline");
     const remaining = CONTROLLER_METADATA_BYTES - budget.bytes();
     expect(() => budget.assert(remaining)).not.toThrow();
     expect(() => budget.assert(remaining + 1)).toThrow("metadata budget");

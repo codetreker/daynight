@@ -22,13 +22,15 @@ implementation, retaining its existing API. Controller helpers pass an existing
 permit through local work and validate its owner, path and unreleased state.
 
 Preparation separates format upgrade, maintenance of a proven stopped generation,
-and admission of a new writer. The current numbered SQL sequence remains the
-single schema owner at v9. A local migration context supplies the original permit
-and reserved-write check; current-format reads require neither. This preserves
-the message-origin migration and production file-backed candidate body publication.
-The independently callable [SQL content components](2026-11-12-session-sqlite-content-components.md)
-reuse the permit and role owners for historical import and stopped maintenance;
-their staged DDL does not enter numbered production discovery. The
+and admission of a new writer. The numbered SQL sequence is the single schema
+owner, now ending at canonical 010. A local migration context supplies the original
+permit and reserved-write check; current-format reads require neither. The
+[SQL activation decision](2026-11-12-session-sqlite-activation.md) adopts current
+body rows while preserving message origins. The
+[SQL content components](2026-11-12-session-sqlite-content-components.md) reuse the
+permit and role owners for historical import and stopped maintenance; pending
+cleanup, actual physical admission and settlement finish before a new writer
+commits its generation. The
 [protocol design](../../../../docs/design/task-session-protocol.md#controller-与原生会话)
 owns the role, capacity and failure contracts.
 
@@ -78,6 +80,6 @@ handle closure remain visible and retain the evidence needed for recovery.
 
 Local ownership adds short gate operations around writable phases and durable
 capacity reservation checks before migration writes. It does not change public
-Session protocols, image resource ownership, native input deduplication, journal
-v9 or candidate body files. The permit governs cooperating local code; it does
+Session protocols, image resource ownership or native input deduplication.
+Body format and retirement belong to the SQL content owner. The permit governs cooperating local code; it does
 not authenticate stored data against a malicious local writer.

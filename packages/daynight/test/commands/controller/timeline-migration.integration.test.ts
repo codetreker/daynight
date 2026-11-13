@@ -1,11 +1,11 @@
 import Database from "better-sqlite3";
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { controllerTimelineFormat, controllerTimelineFormatForMigration } from "../../../src/commands/controller/content/migration.js";
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
-import { controllerJournalFormat, assertJournalMigrationAllowed, type JournalMigrationContext } from "../../../src/commands/controller/journal-format.js";
+import { controllerJournalFormat, controllerJournalFormatForMigration, assertJournalMigrationAllowed, type JournalMigrationContext } from "../../../src/commands/controller/journal-format.js";
 import { controllerPayloadHash } from "../../../src/commands/controller/launch-ticket.js";
 import { acquireControllerStoragePermit, type ControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { currentSqliteVersion, inspectSqlite, upgradeSqlite } from "../../../src/platform/sqlite-format.js";
@@ -57,7 +57,7 @@ const fixture = async (version: number, withExecution = true) => {
   const permit = acquireControllerStoragePermit(file, undefined, { fileMustExist: true }); permits.push(permit);
   const assertReservedWrite = vi.fn<(additional: number) => void>(), assertPendingWrite = vi.fn<(additional: number) => void>();
   const context: JournalMigrationContext = { storagePermit: permit, assertReservedWrite, assertPendingWrite };
-  const format = controllerTimelineFormatForMigration(() => context);
+  const format = controllerJournalFormatForMigration(() => context);
   const migrate = () => runSqliteImmediate(db, () => { const source = inspectSqlite(db, format); assertJournalMigrationAllowed(db, source); return upgradeSqlite(db, format); });
   return { root, file, db, sessionId, snapshot, entry, body, bodyFile, pending, permit, context, format, migrate, assertReservedWrite, assertPendingWrite };
 };
@@ -65,7 +65,7 @@ const fixture = async (version: number, withExecution = true) => {
 test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical chain without changing original execution evidence", async version => {
   const f = await fixture(version), before = f.db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence FROM execution").get();
   expect(f.migrate()).toMatchObject({ fromVersion: version, toVersion: 10 });
-  expect(inspectSqlite(f.db, controllerTimelineFormat)).toEqual({ kind: "current", version: 10 });
+  expect(inspectSqlite(f.db, controllerJournalFormat)).toEqual({ kind: "current", version: 10 });
   expect(f.db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence FROM execution").get()).toEqual(before);
   expect(f.db.prepare("SELECT legacy_timeline_cleanup_pending FROM execution").get()).toEqual({ legacy_timeline_cleanup_pending: 1 });
   expect(f.db.prepare("SELECT value FROM operations").get()).toEqual({ value: '{ "state": "unknown", "initial": true }' });
@@ -82,11 +82,25 @@ test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical
   }
 });
 
-test("isolated v10 does not alter production discovery or rewrite the published origins migration", async () => {
-  expect(currentSqliteVersion(controllerJournalFormat)).toBe(9);
-  expect(currentSqliteVersion(controllerTimelineFormat)).toBe(10);
+test("canonical discovery adopts the unchanged complete v10 DDL after the published origins migration", async () => {
+  expect(currentSqliteVersion(controllerJournalFormat)).toBe(10);
   const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
-  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  const repository = path.resolve(import.meta.dirname, "../../../../..");
+  for (const [version, name, expectedHash] of [
+    [9, "009-message-origins.sql", "f3c16ac2b559f1ed684566a6ede5bf82c7fc84b3870a84bee7d6ff3bdc158d76"],
+    [10, "010-timeline-content.sql", "537649e624dbe080aff7657a08b05eb837b1579e5558481cb7c63d3f01703bcc"],
+  ] as const) {
+    const resource = `packages/daynight/src/commands/controller/sqlite/journal/${name}`;
+    const canonical = execFileSync("git", ["show", `HEAD:${resource}`], { cwd: repository, timeout: 10000 });
+    const checkout = await readFile(path.join(repository, resource));
+    // Published bytes belong to Git; checkout EOL conversion must preserve both
+    // their canonical content and the exact bytes consumed by resource loading.
+    expect(hash(canonical)).toBe(expectedHash);
+    expect(canonical.includes(13)).toBe(false);
+    expect(Buffer.from(steps.find(step => step.version === version)!.sql, "utf8")).toEqual(checkout);
+    expect(Buffer.from(checkout.toString("utf8").replaceAll("\r\n", "\n"), "utf8")).toEqual(canonical);
+  }
 });
 
 test("imports only the committed v9 pointer while retaining an orphan newer candidate", async () => {
