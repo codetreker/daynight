@@ -64,8 +64,8 @@ const fixture = async (version: number, withExecution = true) => {
 
 test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical chain without changing original execution evidence", async version => {
   const f = await fixture(version), before = f.db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence FROM execution").get();
-  expect(f.migrate()).toMatchObject({ fromVersion: version, toVersion: 10 });
-  expect(inspectSqlite(f.db, controllerJournalFormat)).toEqual({ kind: "current", version: 10 });
+  expect(f.migrate()).toMatchObject({ fromVersion: version, toVersion: 11 });
+  expect(inspectSqlite(f.db, controllerJournalFormat)).toEqual({ kind: "current", version: 11 });
   expect(f.db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence FROM execution").get()).toEqual(before);
   expect(f.db.prepare("SELECT legacy_timeline_cleanup_pending FROM execution").get()).toEqual({ legacy_timeline_cleanup_pending: 1 });
   expect(f.db.prepare("SELECT value FROM operations").get()).toEqual({ value: '{ "state": "unknown", "initial": true }' });
@@ -83,10 +83,12 @@ test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical
 });
 
 test("canonical discovery adopts the unchanged complete v10 DDL after the published origins migration", async () => {
-  expect(currentSqliteVersion(controllerJournalFormat)).toBe(10);
+  expect(currentSqliteVersion(controllerJournalFormat)).toBe(11);
   const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
-  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   const repository = path.resolve(import.meta.dirname, "../../../../..");
+  const accounting = await readFile(path.join(repository, "packages/daynight/src/commands/controller/sqlite/journal/011-outbox-accounting.sql"));
+  expect(hash(Buffer.from(accounting.toString("utf8").replaceAll("\r\n", "\n"), "utf8"))).toBe("8ccff911653736b9af8c346ce75d127291deba9d0082ee8e96521942ff61a462");
   for (const [version, name, expectedHash] of [
     [9, "009-message-origins.sql", "f3c16ac2b559f1ed684566a6ede5bf82c7fc84b3870a84bee7d6ff3bdc158d76"],
     [10, "010-timeline-content.sql", "537649e624dbe080aff7657a08b05eb837b1579e5558481cb7c63d3f01703bcc"],
@@ -183,7 +185,7 @@ test.each(["import", "before-commit", "after-commit"] as const)("%s failure expo
   expect(failure).toBeInstanceOf(Error);
   expect(sqliteTransactionOutcome(failure)).toBe(phase === "after-commit" ? "unknown" : "rolled-back");
   vi.restoreAllMocks();
-  expect(f.db.pragma("user_version", { simple: true })).toBe(phase === "after-commit" ? 10 : 9);
+  expect(f.db.pragma("user_version", { simple: true })).toBe(phase === "after-commit" ? 11 : 9);
   expect(await readFile(f.bodyFile!, "utf8")).toBe(f.body);
   if (phase !== "after-commit") { expect(f.db.prepare("SELECT COUNT(*) AS count FROM content_index").get()).toEqual({ count: 1 }); f.migrate(); }
   expect(openTimelineStore(f.db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);

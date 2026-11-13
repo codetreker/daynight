@@ -20,7 +20,7 @@ export class CodexControls {
   private closed = false;
   private turnModel: string | null = null;
   private settingInFlight = false;
-  constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, private readonly changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); }
+  constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, private readonly changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); }
   beginTurn(): void { this.turnModel = string(this.native.model) || null; }
   imageCapabilities(profile: CodexImageProfile | null): Omit<ProviderImageCapabilities, "revision"> {
     const model = string(this.native.model) || null;
@@ -111,11 +111,13 @@ export class CodexControls {
     if (id === "model") { const selected = this.models.find(item => item.model === value), efforts = Array.isArray(selected?.supportedReasoningEfforts) ? selected.supportedReasoningEfforts.map(item => string(record(item).reasoningEffort)) : []; const effort = string(this.native.effort); if (!efforts.includes(effort) && selected?.defaultReasoningEffort) patch.effort = selected.defaultReasoningEffort; }
     const turnId = this.turn(); let liveApplied = false;
     if (turnId && ["model", "effort"].includes(id)) {
+      this.assertNativeDispatch?.();
       const result = record(await this.rpc.request("turn/settings/update", { threadId: this.session(), turnId, ...patch }));
       if (result.status !== "applied") throw new NativeRpcError(-32602, "Native live model switching is unavailable. Wait for the current turn to finish.");
       if (id === "model") this.turnModel = value;
       liveApplied = true;
     }
+    this.assertNativeDispatch?.();
     let resolve!: () => void, reject!: (error: Error) => void;
     const confirmation = new Promise<void>((done, fail) => { resolve = done; reject = fail; }); void confirmation.catch(() => {}); this.pending.set(operationId, { patch, resolve, reject });
     try { await this.rpc.request("thread/settings/update", { threadId: this.session(), ...patch }); }

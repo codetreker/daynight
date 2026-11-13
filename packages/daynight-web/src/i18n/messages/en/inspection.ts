@@ -155,6 +155,7 @@ export const inspection: InspectionMessages = {
     successorsMissing: "This task is not in the current graph. Refresh the task graph to see its successors.", noSuccessors: "No successor tasks",
     created: "Created", updated: "Updated", taskId: "Task ID",
     copyTaskId: "Copy task ID", copyTaskTitle: "Copy task title", copied: "Copied",
+    goalId: "Goal ID", copyGoalId: "Copy Goal ID", copyGoalIdFailed: "Could not copy the Goal ID. Select and copy it manually.",
     copyFailed: "Could not copy the task ID. Select and copy it manually.", copyTitleFailed: "Could not copy the task title. Select and copy it manually.",
     countedHeading: ({ label, count }) => `${label} · ${count}`,
   },

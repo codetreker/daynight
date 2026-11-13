@@ -43,7 +43,7 @@ it.each(['timeline', 'inspect_page'] as const)('hydrates over real WebSockets af
     let through = floor, serverSequence = 0n;
     const received: ReturnType<typeof parseControllerMessage>[] = [];
     const connection = once(server, 'connection');
-    relay = createControllerRelay(ticket, journal, { onConnection() {}, onCommand: async () => { throw new Error('Unexpected native input'); }, onError: error => errors.push(error) });
+    relay = createControllerRelay(ticket, journal, { onConnection() {}, onCommand: async () => { throw new Error('Unexpected native input'); }, onError: error => errors.push(String(error)) });
     const [socket, request] = await connection;
     expect(request.headers['x-daynight-content-read-version']).toBe('1');
     socket.on('message', (raw: Buffer) => {
@@ -86,6 +86,66 @@ it.each(['timeline', 'inspect_page'] as const)('hydrates over real WebSockets af
     socket.close();
     const [, reconnectedRequest] = await reconnect;
     expect(reconnectedRequest.headers['x-daynight-content-read-version']).toBe('1');
+  } finally {
+    relay?.close(); journal.close();
+    for (const client of server.clients) client.terminate();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+it('propagates the original accounting error on an online partial ACK without deleting the tail', async () => {
+  const base = path.resolve(import.meta.dirname, '../../../../../.tmp/controller-tests');
+  await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, 'online-accounting-'));
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Missing test relay address');
+  const ticket: ControllerLaunchTicket = {
+    schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(),
+    sessionId: randomUUID(), executionGeneration: '1', serverOrigin: `http://127.0.0.1:${address.port}`,
+    projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(),
+    provider: 'codex', cwd: home, nativeHome: path.join(home, '.codex'), configuration: { agent: 'codex', agentControlMode: 'web', model: null, args: [], recoveryLimit: 2 },
+    initialOperationId: randomUUID(), initialPrompt: 'Initial input', resumeNativeSessionId: null, credentialFile: path.join(home, 'grant.json'),
+    ipcEndpoint: path.join(home, 'c.sock'), ipcSecret: 'a'.repeat(64), createdAt: new Date().toISOString(),
+  };
+  await writeFile(ticket.credentialFile, JSON.stringify({ token: 'local-test-token', expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }), { mode: 0o600 });
+  const database = createMemoryDatabase();
+  const journal = openControllerLifecycleStore(path.join(home, 'journal.sqlite'), ticket, { database, contentOwnedLocally: true });
+  const fence = { protocol: 'daynight.session.v1', sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: '1', connectionEpoch: '1' };
+  const errors: unknown[] = [];
+  let originalError: unknown;
+  const acknowledge = journal.acknowledgeEvents;
+  journal.acknowledgeEvents = sequence => {
+    try { acknowledge(sequence); } catch (error) { originalError = error; throw error; }
+  };
+  let relay: ReturnType<typeof createControllerRelay> | undefined;
+  try {
+    journal.projectTimeline({ entryId: randomUUID(), revision: '1', kind: 'reasoning', text: 'Original retained event 中文' });
+    const connection = once(server, 'connection', { signal: AbortSignal.timeout(3000) });
+    relay = createControllerRelay(ticket, journal, { onConnection() {}, onCommand: async () => { throw new Error('Unexpected native input'); }, onError: error => errors.push(error) });
+    const [socket] = await connection;
+    socket.on('message', (raw: Buffer) => {
+      const message = parseControllerMessage(JSON.parse(raw.toString()));
+      if (message.type === 'hello') {
+        const session = { ...snapshotFixture, ...fence, historyEpoch: randomUUID(), lastEventSeq: '0', lastTimelineSeq: '0', identity: { ...snapshotFixture.identity, projectId: ticket.projectId, taskId: ticket.taskId, workerId: ticket.workerId, worktreeId: ticket.worktreeId, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId } };
+        socket.send(JSON.stringify({ type: 'welcome', protocol: fence.protocol, connectionEpoch: '1', session, lastAckedSourceSeq: '0', limits: RELAY_LIMITS }));
+      } else if (message.type === 'reconcile') {
+        socket.send(JSON.stringify({ ...fence, type: 'reconcile_result', operations: [] }));
+      } else if (message.type === 'events') {
+        expect(message.events).toHaveLength(1);
+        journal.projectTimeline({ entryId: randomUUID(), revision: '1', kind: 'reasoning', text: 'Retained suffix' });
+        database.prepare('UPDATE outbox_totals SET byte_length=1 WHERE id=1').run();
+        socket.send(JSON.stringify({ ...fence, type: 'events_ack', sourceEpoch: message.sourceEpoch, batchId: message.batchId, lastAckedSourceSeq: message.events[0]!.sourceSeq, lastEventSeq: '1' }));
+      }
+    });
+    await vi.waitFor(() => expect(originalError).toBeDefined());
+    expect(originalError).toMatchObject({ kind: 'invalid-format', context: { phase: 'outbox-ack' } });
+    expect(errors).toContain(originalError);
+    expect(database.prepare('SELECT sequence FROM outbox ORDER BY sequence').all()).toEqual([{ sequence: 1 }, { sequence: 2 }]);
+    expect(database.prepare('SELECT byte_length FROM outbox_totals WHERE id=1').get()).toEqual({ byte_length: 1 });
+    expect(journal.getLastAcknowledgedSequence()).toBe('0');
   } finally {
     relay?.close(); journal.close();
     for (const client of server.clients) client.terminate();

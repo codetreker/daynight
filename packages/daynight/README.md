@@ -3153,7 +3153,7 @@ input/results and stopped/closed/deleted flags, preserving cleanup intent,
 identity and deadline. Version 0 resets its schema and data through the common
 SQLite policy. Private launch tickets and Controller
 journals live under `~/.daynight/controller/`; journals retain their independent
-format version 10. Both Worker stores must open successfully before scheduling.
+format version 11. Both Worker stores must open successfully before scheduling.
 Web restart reconnects to a surviving Controller. Starting a new generation
 requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
@@ -3172,6 +3172,13 @@ retain their evidence. The journal stores one current SQL row per timeline entry
 body, UTF-8 totals, Markdown/image state, original input origins and outbox commit
 in the original transaction. Replaced body revisions do not create candidate files.
 Historical candidates remain only until reader-safe stopped maintenance finishes.
+
+The outbox stores its exact encoded UTF-8 byte total in the same journal
+transaction as every queue mutation. Capacity reads use the singleton total;
+partial acknowledgements measure only deleted rows, while full drains and clears
+bulk-delete and reset the total. Normal reopen and recovery do not recount the
+queue. Version 11 initializes the total once from old encoded text during the
+original migration transaction, independent of the SQLite file encoding.
 
 Version 10 imports only committed historical body pointers and preserves the
 original execution, native identity, operations and message origins. Upgrade-only

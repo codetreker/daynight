@@ -105,4 +105,5 @@ func serverAPITaskTagsNormalFlow(t *testing.T, f *fixture) {
 	if len(searchSeen) != 2 || !searchSeen[task.ID] || !searchSeen[second.ID] {
 		t.Fatalf("filtered search identities differ: %+v", searchSeen)
 	}
+	serverAPIMCPTaskSearchNormalFlow(t, f, project.ID, tag.ID, other.ID, goal.ID, task.ID, second.ID, child.ID)
 }

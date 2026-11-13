@@ -2158,9 +2158,19 @@ navigation. A Goal presents Description, Attachments and Discussion in that
 order, with `description` and `overview` selecting Description. Its child tasks
 and scoped chains remain in the project Goal list. Description uses the Goal's
 Markdown and attachment owner and shows the existing empty state when empty.
-Its information aside displays the Goal's creation and modification times in the
-selected language and browser timezone, together with direct-child standalone,
-chain, total, done, cancelled and unfinished counts. Classification uses the
+Its information aside starts General information with the complete, selectable
+Goal ID and a localized copy button. Copy uses the shared Task clipboard button
+and a notification host owned by the Goal frame: pending disables repeated
+submission, success confirms the copy, and rejection or unavailable clipboard
+access shows a Goal-specific error while preserving manual selection and retry.
+Results arriving after resource replacement or unmount cannot notify a new Goal.
+Copy remains available for any readable Goal, independently of edit permission,
+status, empty children or graph loading and failure; existing unavailable-resource
+boundaries still apply. The UUID wraps without horizontal overflow at 320px and
+390px, and the copy button remains reachable. The aside also displays the Goal's
+creation and modification times in the selected language and browser timezone,
+together with direct-child standalone, chain, total, done, cancelled and unfinished
+counts. Classification uses the
 complete ordinary graph before Parent projection; external edges do not merge
 chains. The description scroll owner contains both desktop columns, stacked on
 narrow screens. Unknown graph state is distinct from zero tasks, and a failed

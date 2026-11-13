@@ -7,7 +7,7 @@ import { CopilotControls } from "../../../src/commands/controller/providers/cont
 import type { NativeRpc } from "../../../src/commands/controller/providers/native-rpc.js";
 import type { CopilotSession } from "@github/copilot-sdk";
 afterEach(() => vi.useRealTimers());
-function codex(floor = "0") {
+function codex(floor = "0", guard?: () => void) {
   let turn: string | null = null;
   const request = vi.fn(async (method: string, _params: unknown): Promise<unknown> => {
     if (method === "model/list") return { data: [{ model: "model-a", displayName: "Model A", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }], defaultReasoningEffort: "low" }, { model: "model-b", displayName: "Model B", supportedReasoningEfforts: [{ reasoningEffort: "low" }], defaultReasoningEffort: "low" }] };
@@ -16,7 +16,7 @@ function codex(floor = "0") {
     if (method === "turn/settings/update") return { status: "applied" };
     return {};
   });
-  const confirmed = vi.fn(), controls = new CodexControls({ request } as unknown as NativeRpc, () => "thread", () => turn, "/work", "/does-not-exist", vi.fn(), confirmed, floor);
+  const confirmed = vi.fn(), controls = new CodexControls({ request } as unknown as NativeRpc, () => "thread", () => turn, "/work", "/does-not-exist", vi.fn(), confirmed, floor, guard);
   controls.seed({ model: "model-a", reasoningEffort: "high", approvalPolicy: "on-request", sandbox: { type: "workspaceWrite", writableRoots: ["/allowed"], networkAccess: true } });
   return { controls, request, confirmed, setTurn(value: string | null) { turn = value; } };
 }
@@ -67,6 +67,18 @@ test("Codex settings remain unconfirmed until matching native notification, incl
   expect(f.confirmed).toHaveBeenCalledWith(id); expect(f.request).toHaveBeenCalledWith("turn/settings/update", { threadId: "thread", turnId: "turn", model: "model-b", effort: "low" });
   expect(f.request.mock.calls.some(([method]) => method === "turn/interrupt")).toBe(false);
 });
+test("Codex does not issue future-turn settings after a fence during a live update", async () => {
+  const failure = new Error("accounting failure"); let fenced = false, release!: (value: unknown) => void;
+  const f = codex("0", () => { if (fenced) throw failure; }); await f.controls.refresh(); f.setTurn("turn");
+  f.request.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  const pending = f.controls.set("model", "model-b", randomUUID(), f.controls.store.value.revision);
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  fenced = true; release({ status: "applied" });
+  await expect(pending).rejects.toBe(failure);
+  expect(f.request.mock.calls.filter(([method]) => method === "turn/settings/update")).toHaveLength(1);
+  expect(f.request.mock.calls.some(([method]) => method === "thread/settings/update")).toBe(false);
+  expect(f.confirmed).not.toHaveBeenCalled();
+});
 test("Codex unknown settings time out without replay and accept late native confirmation", async () => {
   vi.useFakeTimers(); const f = codex(); await f.controls.refresh(); const id = randomUUID();
   const pending = f.controls.set("approval", "never", id, f.controls.store.value.revision); const rejected = expect(pending).rejects.toThrow("not confirmed");
@@ -86,10 +98,10 @@ test("Codex remembers exact native sandbox roots and treats equivalent key order
   await Promise.resolve(); expect(f.request.mock.calls.at(-1)?.[1]).toEqual({ threadId: "thread", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/allowed"], networkAccess: true } });
   f.controls.observe({ sandboxPolicy: { networkAccess: true, writableRoots: ["/allowed"], type: "workspaceWrite" } }); await pending;
 });
-function claude(floor = "0", resumed = false) {
+function claude(floor = "0", resumed = false, guard?: () => void) {
   let model = "native-default", effort: string | null = null;
   const native = { supportedModels: vi.fn(async () => [{ value: "default", displayName: "Default", supportsEffort: true, supportedEffortLevels: ["low", "high"] }, { value: "model-b", displayName: "Model B" }]), supportedCommands: vi.fn(async () => [{ name: "review", description: "Review code" }, { name: "compact", description: "Compact" }, { name: "logout", description: "Logout" }]), reloadSkills: vi.fn(async () => ({})), getSettings: vi.fn(async () => ({ applied: { model, effort } })), setModel: vi.fn(async (value: string) => { model = value; }), setPermissionMode: vi.fn(async () => {}), applyFlagSettings: vi.fn(async (settings: { effortLevel?: string | null }) => { if (settings.effortLevel !== undefined) effort = settings.effortLevel; }) };
-  const confirmed = vi.fn(), controls = new ClaudeControls(native as unknown as ClaudeControlQuery, null, undefined, vi.fn(), confirmed, resumed, floor); controls.observe({ type: "system", subtype: "init", model, permissionMode: "default" });
+  const confirmed = vi.fn(), controls = new ClaudeControls(native as unknown as ClaudeControlQuery, null, undefined, vi.fn(), confirmed, resumed, floor, guard); controls.observe({ type: "system", subtype: "init", model, permissionMode: "default" });
   return { controls, native, confirmed };
 }
 test("Claude resume describes native applied effort without a launch override", async () => {
@@ -145,10 +157,21 @@ test("Claude does not report permissions before native confirmation and applies 
   await f.controls.set("permissions", "default", randomUUID(), f.controls.store.value.revision);
   expect(f.native.applyFlagSettings).toHaveBeenLastCalledWith({ sandbox: null });
 });
-function copilot(floor = "0") {
+test("Claude does not issue a later permission update after a fence while sandbox change is pending", async () => {
+  const failure = new Error("accounting failure"); let fenced = false, release!: () => void;
+  const f = claude("0", false, () => { if (fenced) throw failure; }); await f.controls.refresh();
+  f.native.applyFlagSettings.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+  const pending = f.controls.set("permissions", "default", randomUUID(), f.controls.store.value.revision);
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+  fenced = true; release(); await expect(pending).rejects.toBe(failure);
+  expect(f.native.applyFlagSettings).toHaveBeenCalledOnce();
+  expect(f.native.setPermissionMode).not.toHaveBeenCalled();
+  expect(f.confirmed).not.toHaveBeenCalled();
+});
+function copilot(floor = "0", guard?: () => void) {
   let modelId = "model-a", effort: string | undefined;
   const rpc = { model: { getCurrent: vi.fn(async () => ({ modelId, reasoningEffort: effort })), list: vi.fn(async () => ({ list: [{ id: "model-a", name: "A", supportedReasoningEfforts: ["low", "high"] }, { id: "model-b", name: "B", supportedReasoningEfforts: ["low"] }] })), switchTo: vi.fn(async () => ({ deferred: true })), setReasoningEffort: vi.fn(async ({ reasoningEffort }: { reasoningEffort: string }) => { effort = reasoningEffort; return { reasoningEffort }; }) }, permissions: { setApproveAll: vi.fn(async () => ({ success: true })) }, skills: { ensureLoaded: vi.fn(async () => ({})), list: vi.fn(async () => ({ skills: [{ name: "review", description: "Review", enabled: true, userInvocable: true }, { name: "hidden", description: "Hidden", enabled: true, userInvocable: false }] })) }, commands: { invoke: vi.fn(async () => ({ kind: "text", text: "native command result" })) } };
-  const confirmed = vi.fn(), controls = new CopilotControls({ rpc } as unknown as CopilotSession, vi.fn(), confirmed, floor);
+  const confirmed = vi.fn(), controls = new CopilotControls({ rpc } as unknown as CopilotSession, vi.fn(), confirmed, floor, null, guard);
   return { controls, rpc, confirmed, applyModel(value: string) { modelId = value; } };
 }
 test("Copilot restored permission and omitted effort remain unknown instead of guessed defaults", async () => {
@@ -178,6 +201,14 @@ test("Copilot permission rejection leaves an unknown value and commands use nati
   await expect(f.controls.set("tool_approval", "allow", randomUUID(), f.controls.store.value.revision)).rejects.toThrow("confirm");
   expect(f.controls.store.value.settings.find(s => s.id === "tool_approval")?.value).toBeNull();
   await f.controls.invoke("review", "scope", f.controls.store.value.revision); expect(f.rpc.commands.invoke).toHaveBeenCalledWith({ name: "review", input: "scope" });
+});
+test("Copilot rejects settings and command RPCs after the dispatch fence", async () => {
+  const failure = new Error("accounting failure"); let fenced = false;
+  const f = copilot("0", () => { if (fenced) throw failure; }); await f.controls.initialize(false);
+  f.rpc.permissions.setApproveAll.mockClear(); fenced = true;
+  await expect(f.controls.set("tool_approval", "allow", randomUUID(), f.controls.store.value.revision)).rejects.toBe(failure);
+  await expect(f.controls.invoke("review", "scope", f.controls.store.value.revision)).rejects.toBe(failure);
+  expect(f.rpc.permissions.setApproveAll).not.toHaveBeenCalled(); expect(f.rpc.commands.invoke).not.toHaveBeenCalled();
 });
 
 test("Codex partial live update remains unknown and reports the applied current-turn effect", async () => {

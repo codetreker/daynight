@@ -1,4 +1,5 @@
 import { createOperation } from "../../../api/operation.js";
+import { isOutboxFailure } from "../outbox-diagnostic.js";
 import { toolCommand, verifyToolLaunch } from "../../../platform/tool-executables.js";
 import { nativeInputText, textNativeInput, validateNativeInput, verifyNativeImageFiles } from "./native-input.js";
 import type { NativeInput } from "./types.js";
@@ -39,6 +40,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
   const childEnvironment = { ...(options.env ?? process.env) };
   if (options.onNativeReadPolicy) childEnvironment.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   const nativeHome = codexNativeHome(childEnvironment, options.cwd);
+  options.assertNativeDispatch?.();
   const child: ChildProcessWithoutNullStreams = spawn(command.file, command.args, { cwd: options.cwd, env: childEnvironment, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false });
   options.onSpawn(child); child.stderr.on("data", data => options.onDiagnostic?.(String(data)));
   let nativeId = "", currentTurnId: string | null = null, activity: ProviderState["activity"] = "initializing", closed = false, closing = false, sending = false;
@@ -179,8 +181,8 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     stopped: transport.stopped,
   };
   if (options.onNativeReadPolicy) authority = new CodexReadAuthority({ cwd: options.cwd, request: transport.request.bind(transport), publish: options.onNativeReadPolicy,
-    ...(options.drainNativeReadPolicy ? { drain: options.drainNativeReadPolicy } : {}) });
-  controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor);
+    ...(options.drainNativeReadPolicy ? { drain: options.drainNativeReadPolicy } : {}), ...(options.assertNativeDispatch ? { assertNativeDispatch: options.assertNativeDispatch } : {}) });
+  controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor, options.assertNativeDispatch);
   child.once("close", () => {
     authority?.invalidate();
     initialSettingsAbort.abort(new Error("Native Codex closed before initial settings persistence was confirmed."));
@@ -219,6 +221,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     const aliasOverrides = options.agentCliEnvironment
       ? codexAgentCliOverrides(options.agentCliEnvironment, await rpc.request("config/read", { cwd: options.cwd, includeLayers: false }))
       : {};
+    options.assertNativeDispatch?.();
     const response = record(await rpc.request(options.resumeNativeSessionId ? "thread/resume" : "thread/start", { ...(options.resumeNativeSessionId ? { threadId: options.resumeNativeSessionId, excludeTurns: true } : {}), cwd: options.cwd, ...(options.instructions !== undefined ? { developerInstructions: options.instructions } : {}), ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && options.unattended ? { sandbox: "danger-full-access", approvalPolicy: "never" } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.sandbox ? { sandbox: config.sandbox } : {}), ...(!options.resumeNativeSessionId && !options.unattended && config.approvalPolicy ? { approvalPolicy: config.approvalPolicy } : {}), config: { "features.default_mode_request_user_input": true, ...(!options.resumeNativeSessionId && config.effort ? { model_reasoning_effort: config.effort } : {}), ...aliasOverrides } }));
     const thread = record(response.thread); nativeId = string(thread.id);
     if (!nativeId || options.resumeNativeSessionId && nativeId !== options.resumeNativeSessionId || await realpath(string(thread.cwd)) !== await realpath(options.cwd)) throw new Error("Native Codex session identity or working directory mismatch.");
@@ -265,7 +268,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
             env: childEnvironment,
             readConfiguration: async () => { const [config, requirements] = await Promise.all([rpc.request("config/read", { cwd: options.cwd, includeLayers: false }), rpc.request("configRequirements/read", {})]); return { config, requirements }; },
             expected: { ...(options.model ? { model: options.validateNativeSelection ? string(response.model) : options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }, signal: initialSettingsAbort.signal,
-            update: () => rpc.request("thread/settings/update", { threadId: nativeId, ...(options.model ? { model: options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }) });
+            update: () => { options.assertNativeDispatch?.(); return rpc.request("thread/settings/update", { threadId: nativeId, ...(options.model ? { model: options.model } : {}), ...(config.effort ? { effort: config.effort } : {}) }); } });
         } finally { awaitingInitialSettings = false; }
       }
     }
@@ -294,6 +297,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
         const matched = imageInputs.accepted(operationId, turnId);
         if (matched) imageProjection.acceptedInput(matched, inputValue);
       };
+      options.assertNativeDispatch?.();
       dispatched = true;
       if (images.length && !expectedTurnId) startingImageTurns = observedStartTurns;
       const result = record(await rpc.request(expectedTurnId ? "turn/steer" : "turn/start", { threadId: nativeId, ...(expectedTurnId ? { expectedTurnId } : {}), clientUserMessageId: operationId, input: [...encodeCodexInput(inputValue), ...(skill ? [{ type: "skill", ...skill }] : [])], ...(!expectedTurnId && (controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort)) ? { effort: controls.store.value.settings.find(item => item.id === "effort")?.value ?? (options.resumeNativeSessionId ? undefined : config.effort) } : {}) }, images.length ? response => { if ("result" in response) observeReceipt(response.result); } : undefined));
@@ -304,6 +308,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
       if (turn.status === "inProgress" && !turns.isComplete(string(turn.id))) { currentTurnId = string(turn.id); activity = "working"; state(); }
       return { disposition: "started", turnId: string(turn.id) };
       } catch (error) {
+        if (isOutboxFailure(error)) throw error;
         if (!dispatched && !(error instanceof NativeRpcError)) throw new NativeRpcError(-32602, "Native input preparation failed before dispatch.");
         if (error instanceof NativeRpcError) interruptions.rejected(operationId);
         throw error;
@@ -316,14 +321,15 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
       if (closed || sending || currentTurnId !== null || expectedTurnId !== null || pending.size) throw new NativeRpcError(-32602, "Codex commands require an idle session.");
       const command = controls.command(id, revision);
-      if (command.kind === "compact") { if (args.trim()) throw new NativeRpcError(-32602, "Compact does not accept arguments."); await rpc.request("thread/compact/start", { threadId: nativeId }); return { disposition: "handled" }; }
+      if (command.kind === "compact") { if (args.trim()) throw new NativeRpcError(-32602, "Compact does not accept arguments."); options.assertNativeDispatch?.(); await rpc.request("thread/compact/start", { threadId: nativeId }); return { disposition: "handled" }; }
       if (command.kind === "skill") return send(textNativeInput(args), operationId, null, { name: command.name, path: command.path });
       if (/\$(?!ARGUMENTS\b)(?:[A-Za-z_0-9{]|\$)/.test(command.body) || args.trim() && !command.body.includes("$ARGUMENTS")) throw new NativeRpcError(-32602, "This prompt supports only $ARGUMENTS placeholders.");
       return send(textNativeInput(command.body.replace(/\$ARGUMENTS\b/g, () => args)), operationId, null);
     },
-    async cancel(expectedTurnId) { if (currentTurnId !== expectedTurnId) throw new NativeRpcError(-32602, "Native turn changed."); await rpc.request("turn/interrupt", { threadId: nativeId, turnId: expectedTurnId }); await turns.wait(expectedTurnId, Date.now() + 30_000).catch(error => { if (!turns.isComplete(expectedTurnId)) throw error; }); return { disposition: "handled" }; },
+    async cancel(expectedTurnId) { if (currentTurnId !== expectedTurnId) throw new NativeRpcError(-32602, "Native turn changed."); options.assertNativeDispatch?.(); await rpc.request("turn/interrupt", { threadId: nativeId, turnId: expectedTurnId }); await turns.wait(expectedTurnId, Date.now() + 30_000).catch(error => { if (!turns.isComplete(expectedTurnId)) throw error; }); return { disposition: "handled" }; },
     async respond(interactionId, revision, response): Promise<ProviderReceipt> {
       const p = pending.get(interactionId); if (!p || revision !== p.interaction.revision || p.settled) throw new NativeRpcError(-32602, "Native interaction is stale."); validateResponse(p.interaction, response);
+      options.assertNativeDispatch?.();
       const confirmed = new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("Native interaction result is unknown.")), 30_000); p.settled = () => { clearTimeout(timer); resolve(); }; p.rejected = error => { clearTimeout(timer); reject(error); }; });
       rpc.respond(p.nativeId, p.result(response)); await confirmed; return { disposition: "handled" };
     }, waitForTurn: (turnId, deadline) => turns.wait(turnId, deadline), close,

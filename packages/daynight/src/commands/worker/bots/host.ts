@@ -1,4 +1,5 @@
-import type { Operation } from "../../../api/operation.js";
+import { createOperation, type Operation } from "../../../api/operation.js";
+import { createAssistantTaskClient } from "../../../api/assistant-task.js";
 import type { CodexProbeOwner } from "../codex-probe-owner.js";
 import type { WorkerEvent } from "../execution.js";
 import { workerSqliteMigrationEvent } from "../diagnostics.js";
@@ -18,6 +19,11 @@ import { createManagedAssistantRuntime } from "./runtime.js";
 import { createBotSessionApi } from "./session-api.js";
 import { openBotStore } from "./store.js";
 import type { BotOwner } from "./types.js";
+import { createAssistantTaskRuntime } from "./assistant-tasks.js";
+import { createAssistantTaskSessionTransport } from "./assistant-task-session.js";
+import { prepareBotStateDirectory } from "./environment.js";
+import { ControllerIpcOutcomeUnknownError } from "../../controller/local-client.js";
+import { ASSISTANT_TASK_OPERATION_BYTES, ASSISTANT_TASK_RESPONSE_BYTES } from "./assistant-task-pages.js";
 
 /** The Worker lock protects both stores until all Bot jobs and writers have joined. */
 export const createWorkerBotHost = (options: {
@@ -45,7 +51,28 @@ export const createWorkerBotHost = (options: {
       return value;
     } });
     const deletion = createBotDeletion({ ...options, store, executions, process: botProcess, sessionApi, remote });
+    const assistantTasks = createAssistantTaskRuntime({ owner: options.owner, bots: () => store.list(options.owner),
+      stateDirectory: botId => prepareBotStateDirectory(options.paths, botId),
+      healthy: async (record, signal) => {
+        try {
+          const snapshot = await botProcess.observe(record, AbortSignal.any([signal, AbortSignal.timeout(10_000)]));
+          return snapshot.startup?.state === "ready" && ["ready", "working"].includes(snapshot.lifecycle) && !snapshot.nativeStopped && snapshot.error === null;
+        } catch (error) { signal.throwIfAborted(); if (error instanceof ControllerIpcOutcomeUnknownError) return false; throw error; }
+      },
+      idle: async (record, signal) => {
+        const snapshot = await sessionApi.readSession(record, signal);
+        return snapshot.synchronized && snapshot.connectionState === "connected" && snapshot.lifecycle === "active" && snapshot.activity === "idle" && snapshot.currentTurnId === null && snapshot.operations.canSend;
+      },
+      withApi: async (botId, signal, action) => {
+        const operation = createOperation({ signal, limits: { totalMs: 45_000, requestMs: 10_000, responseBytes: ASSISTANT_TASK_RESPONSE_BYTES, totalBytes: ASSISTANT_TASK_OPERATION_BYTES } });
+        try { return await action(createAssistantTaskClient({ serverUrl: options.owner.serverOrigin, serverToken: options.serverToken, expectedUserId: options.owner.ownerUserId, operation, ...(botId === undefined ? {} : { botId }) })); }
+        finally { operation.dispose(); }
+      },
+      sessions: createAssistantTaskSessionTransport({ owner: options.owner, serverToken: options.serverToken, sessionApi }),
+      onError: (message, botId) => options.emit({ kind: "bot-unavailable", message: botId === null ? message : `Bot ${botId}: ${message}` }),
+    });
     const runtime = createManagedAssistantRuntime({ owner: options.owner, store, remote, sessionApi, process: botProcess, deletion,
+      assistantTasks,
       canAdmitNewExecution: options.canAdmitNewExecution,
       pollIntervalMs: () => options.pollIntervalMs() ?? 1000,
       onError: (message, botId) => options.emit({ kind: "bot-unavailable", message: botId === null ? message : `Bot ${botId}: ${message}` }),
@@ -70,6 +97,7 @@ export const createWorkerBotHost = (options: {
     return {
       run: runtime.run,
       shutdown: runtime.shutdown,
+      registerApplication: assistantTasks.registerApplication,
       requiresCopilot: (): boolean => store.list(options.owner).some(record => record.observed.deletion === null && record.definition?.resolvedConfiguration.provider === "copilot"),
       collect: async (operation: Operation, codexProbes?: CodexProbeOwner): Promise<AssistantHostSample | undefined> => {
         const current = options.configuration();
