@@ -20,6 +20,7 @@ const readingPdf = readFileSync(new URL('./fixtures/reading.pdf', import.meta.ur
 const html = '<!doctype html><html><head><link rel="stylesheet" href="style.css"><script defer src="app.js"></script></head><body style="height:2000px"><button id="counter">0</button><p id="data"></p><img src="icon.svg" alt="Relative image"></body></html>';
 const script = `document.querySelector('#counter').addEventListener('click', event => { event.target.textContent = String(Number(event.target.textContent) + 1); }); fetch('data.json').then(response => response.json()).then(data => { document.querySelector('#data').textContent = data.label; });`;
 const files = [
+  { path: 'acceptance-evidence.json', contentType: 'application/json', sizeBytes: 19916, createdAt: time, updatedAt: time },
   { path: 'reading.txt', contentType: 'text/plain', sizeBytes: longText.length, createdAt: time, updatedAt: time },
   { path: 'interactive.html', contentType: 'text/html', sizeBytes: html.length, createdAt: time, updatedAt: time },
   { path: 'brief.pdf', contentType: 'application/pdf', sizeBytes: pdf.length, createdAt: time, updatedAt: time },
@@ -34,21 +35,19 @@ async function install(page: Page, linked = false, claimed = false) {
   const task = detailFixture(projectId, taskId, { title: 'Attachment reading', version: 5n, ...(claimed ? { status: 'in_progress', startedAt: time, ready: false, assignedTo: TEST_VIEWER_ID, allowAgents: true, properties: { worker } } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Linked successor', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false });
   const graph = graphFixture(linked ? [task, successor] : [task]);
-  const state = { writes: [] as string[], resources: [] as string[], identityReads: 0, holdIdentity: null as Promise<void> | null, files: files.map(file => ({ ...file })) };
+  const state = { writes: [] as string[], resources: [] as string[], accessReads: 0, holdAccess: null as Promise<void> | null, files: files.map(file => ({ ...file })) };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === '/api/v1/me') {
-      state.identityReads++;
-      if (state.holdIdentity) await state.holdIdentity;
       return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     }
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
-    if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
+    if (path === `/api/v1/projects/${projectId}/access`) { state.accessReads++; if (state.holdAccess) await state.holdAccess; return send(directAccessFixture(projectId)); }
     if (path === `/api/v1/projects/${projectId}/members`) return send({ actorAccess: directAccessFixture(projectId), items: [{ inheritedFrom: null, userId: TEST_VIEWER_ID, profile: { name: 'Reader', email: null, avatarUrl: null }, effectiveRole: 'admin', directGrant: directAccessFixture(projectId).directGrant }] });
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Reader', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => task.version, propertiesForTask: () => task.properties }));
@@ -67,8 +66,9 @@ async function install(page: Page, linked = false, claimed = false) {
     if (path === `${root}/preview/app.js`) return route.fulfill({ body: script, headers: { 'Content-Type': 'text/javascript' } });
     if (path === `${root}/preview/data.json`) return route.fulfill({ body: JSON.stringify({ label: 'Relative JSON loaded' }), headers: { 'Content-Type': 'application/json' } });
     if (path === `${root}/preview/icon.svg`) return route.fulfill({ body: svg, headers: { 'Content-Type': 'image/svg+xml', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    if (path === `${root}/attachments/files/acceptance-evidence.json`) return route.fulfill({ body: '{}', headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === `${root}/attachments/files/reading.txt`) return route.fulfill({ body: longText, headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
-    if (path === `${root}/attachments/files/${longPath}`) return route.fulfill({ body: 'long', headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
+    if (path === `${root}/attachments/files/${longPath}`) return route.fulfill({ body: longText, headers: { 'Content-Type': 'text/plain', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === `${root}/preview/reading.pdf`) return route.fulfill({ body: request.method() === 'HEAD' ? '' : readingPdf, headers: { 'Content-Type': 'application/pdf', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === `${root}/preview/brief.pdf`) return route.fulfill({ body: request.method() === 'HEAD' ? '' : pdf, headers: { 'Content-Type': 'application/pdf', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === `${root}/preview/interactive.html`) return route.fulfill({ body: request.method() === 'HEAD' ? '' : html, headers: { 'Content-Type': 'text/html', 'Daynight-User-ID': TEST_VIEWER_ID } });
@@ -77,10 +77,25 @@ async function install(page: Page, linked = false, claimed = false) {
   return state;
 }
 
+async function checkDuringForeground(page: Page, state: Awaited<ReturnType<typeof install>>, check: () => Promise<void>) {
+  const gate = Promise.withResolvers<void>();
+  state.holdAccess = gate.promise;
+  const reads = state.accessReads;
+  try {
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(() => state.accessReads).toBeGreaterThan(reads);
+    await check();
+    const completed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/access`);
+    state.holdAccess = null; gate.resolve(); await completed;
+    await check();
+  } finally { state.holdAccess = null; gate.resolve(); }
+}
+
 for (const locale of ['en', 'zh-CN'] as const) for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) for (const claimed of [false, true]) {
   test(`attachment timestamps fit ${viewport.width}x${viewport.height} in ${locale}${claimed ? ' with claim' : ''}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const state = await install(page, false, claimed);
+    state.files = state.files.map(file => file.path === longPath ? { ...file, contentType: `application/${'long-mime-'.repeat(30)}json` } : file);
     await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/${longPath.split('/').map(encodeURIComponent).join('/')}`);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     const surface = page.locator('.task-detail-page'), header = surface.locator('.attachment-preview-header');
@@ -91,6 +106,8 @@ for (const locale of ['en', 'zh-CN'] as const) for (const viewport of [{ width: 
       const labels = header.locator('.attachment-timestamps dt'), values = header.locator('.attachment-timestamps time');
       await expect(labels).toHaveText(locale === 'en' ? ['Created', 'Last modified'] : ['创建时间', '最后修改时间']);
       await expect(values).toHaveCount(2);
+      const starts = await values.evaluateAll(elements => elements.map(element => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect().left; }));
+      expect(Math.abs(starts[0]! - starts[1]!)).toBeLessThanOrEqual(1);
       for (const value of await values.all()) await expect(value).toHaveAttribute('datetime', time);
       for (const item of await header.locator('.attachment-timestamps dt,.attachment-timestamps time,.attachment-preview-actions a').all()) {
         await expect(item).toBeVisible();
@@ -118,6 +135,28 @@ for (const locale of ['en', 'zh-CN'] as const) for (const viewport of [{ width: 
   });
 }
 
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`short attachment information uses its content width in ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 800 });
+    await install(page);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/acceptance-evidence.json`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const header = page.locator('.attachment-preview-header');
+    await expect(header.locator('h5')).toHaveText('acceptance-evidence.json');
+    await expect(header.locator('.attachment-file-information p')).toHaveText('application/json · 19,916 B');
+    const boxes = await header.evaluate(element => {
+      const info = element.querySelector('.attachment-file-information')!.getBoundingClientRect();
+      const dates = element.querySelector('.attachment-timestamps')!.getBoundingClientRect();
+      const title = element.querySelector('h5')!;
+      const range = document.createRange(); range.selectNodeContents(title);
+      return { width: info.width, textWidth: range.getBoundingClientRect().width, gap: dates.left - info.right };
+    });
+    expect(boxes.width).toBeLessThanOrEqual(240);
+    expect(Math.abs(boxes.width - boxes.textWidth)).toBeLessThanOrEqual(1);
+    expect(Math.abs(boxes.gap - 16)).toBeLessThanOrEqual(1);
+  });
+}
+
 test('attachment timestamps follow API selection and refreshed metadata', async ({ page }) => {
   const state = await install(page);
   const created = '2026-10-19T10:20:30Z', changed = '2026-10-21T11:22:33Z', refreshed = '2026-10-22T12:23:34Z';
@@ -140,11 +179,12 @@ test('attachment timestamps follow API selection and refreshed metadata', async 
   expect(state.writes).toEqual([]);
 });
 
-for (const locale of ['en', 'zh-CN'] as const) {
-  test(`compact claim header keeps timestamps and actions separate at 320x240 in ${locale}`, async ({ page }) => {
+for (const locale of ['en', 'zh-CN'] as const) for (const path of ['reading.txt', longPath]) {
+  test(`compact claim header keeps timestamps and actions separate at 320x240 in ${locale}, ${path === longPath ? 'long' : 'short'} metadata`, async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 240 });
-    await install(page, false, true);
-    await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/reading.txt`);
+    const state = await install(page, false, true);
+    state.files = state.files.map(file => file.path === longPath ? { ...file, contentType: `text/plain; ${'long-mime-'.repeat(30)}` } : file);
+    await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/${path.split('/').map(encodeURIComponent).join('/')}`);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     const surface = page.locator('.task-detail-page'), header = surface.locator('.attachment-preview-header');
     await expect(surface).toHaveClass(/task-detail-has-claim/);
@@ -165,9 +205,15 @@ for (const locale of ['en', 'zh-CN'] as const) {
         expect(item.top).toBeGreaterThanOrEqual(rects.header.top - 1);
         expect(item.bottom).toBeLessThanOrEqual(rects.header.bottom + 1);
       }
+      expect(Math.abs(rects.times[0]!.left - rects.times[1]!.left)).toBeLessThanOrEqual(1);
       for (const timeRect of [...rects.labels, ...rects.times]) for (const action of rects.actions) {
         expect(timeRect.right <= action.left + 1 || action.right <= timeRect.left + 1 || timeRect.bottom <= action.top + 1 || action.bottom <= timeRect.top + 1).toBe(true);
       }
+      const body = surface.locator('.attachment-preview-body');
+      await expect(body.locator('pre')).toHaveText(longText);
+      const reading = await body.evaluate(element => { element.scrollTop = element.scrollHeight; return { height: element.clientHeight, atEnd: element.scrollTop + element.clientHeight >= element.scrollHeight - 1 }; });
+      expect(reading.height).toBeGreaterThan(0);
+      expect(reading.atEnd).toBe(true);
       await page.screenshot({ path: test.info().outputPath(fullscreen ? 'compact-fullscreen.png' : 'compact-claim.png') });
     }
   });
@@ -212,6 +258,7 @@ for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 
     expect(scroll.slice(1).filter(entry => entry.scrollHeight > entry.height + 1)).toEqual([]);
     await body.focus(); await page.keyboard.press('PageDown');
     await expect.poll(() => body.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    expect(await body.evaluate(element => { element.scrollTop = element.scrollHeight; return element.scrollTop + element.clientHeight >= element.scrollHeight - 1; })).toBe(true);
     await dialog.getByRole('button', { name: 'Close task details', exact: true }).click();
     await expect(dialog).toHaveCount(0); await expect(trigger).toBeFocused();
     expect(await page.evaluate(() => ({ document: document.documentElement.style.overflow, body: document.body.style.overflow }))).toEqual(before);
@@ -285,7 +332,6 @@ test('preserves an interactive HTML document before its pending subresource fini
     headers: { 'Content-Type': 'text/html', 'Daynight-User-ID': TEST_VIEWER_ID },
   }));
   const { attachments } = await openDialog(page);
-  const identityGate = Promise.withResolvers<void>();
   try {
     await attachments.getByRole('button', { name: /^interactive\.html/ }).click();
     const frame = attachments.locator('iframe');
@@ -294,25 +340,15 @@ test('preserves an interactive HTML document before its pending subresource fini
     await input.fill('unsaved');
     expect(await input.evaluate(element => element.ownerDocument.readyState)).not.toBe('complete');
     const originalDocument = await input.evaluateHandle(element => element.ownerDocument);
-    state.holdIdentity = identityGate.promise;
-    const reads = state.identityReads;
-    await page.evaluate(() => {
-      Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false });
-      window.dispatchEvent(new Event('blur')); Reflect.deleteProperty(document, 'hasFocus');
-      window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange'));
+    await checkDuringForeground(page, state, async () => {
+      expect(await frame.evaluate((element: HTMLIFrameElement, original) => element.contentDocument === original, originalDocument)).toBe(true);
+      await expect(input).toHaveValue('unsaved');
     });
-    await expect.poll(() => state.identityReads).toBeGreaterThan(reads);
-    expect(await frame.evaluate((element: HTMLIFrameElement, original) => element.contentDocument === original, originalDocument)).toBe(true);
-    await expect(input).toHaveValue('unsaved');
-    const completed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/me');
-    state.holdIdentity = null; identityGate.resolve(); await completed;
-    expect(await frame.evaluate((element: HTMLIFrameElement, original) => element.contentDocument === original, originalDocument)).toBe(true);
-    await expect(input).toHaveValue('unsaved');
     await originalDocument.dispose();
-  } finally { identityGate.resolve(); imageGate.resolve(); }
+  } finally { imageGate.resolve(); }
 });
 
-test('a pending same-account check preserves actual text selection and preview scroll', async ({ page }) => {
+test('foreground return preserves actual text selection and preview scroll', async ({ page }) => {
   const state = await install(page);
   const { dialog, attachments } = await openDialog(page);
   await attachments.getByRole('button', { name: /^reading\.txt/ }).click();
@@ -326,25 +362,12 @@ test('a pending same-account check preserves actual text selection and preview s
     const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
   });
   expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('Line 1');
-  const gate = Promise.withResolvers<void>(); state.holdIdentity = gate.promise;
-  const reads = state.identityReads;
-  await page.evaluate(() => {
-    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false });
-    window.dispatchEvent(new Event('blur')); Reflect.deleteProperty(document, 'hasFocus');
-    window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange'));
-  });
-  try {
-    await expect.poll(() => state.identityReads).toBeGreaterThan(reads);
+  await checkDuringForeground(page, state, async () => {
     await expect(dialog).toBeVisible(); await expect(pre).toHaveText(longText);
     expect(await body.evaluate(element => element.scrollTop)).toBe(top);
     expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('Line 1');
-    const completed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/me');
-    state.holdIdentity = null; gate.resolve(); await completed;
-    await expect(pre).toHaveText(longText);
-    expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('Line 1');
-    expect(await body.evaluate(element => element.scrollTop)).toBe(top);
-    expect(state.writes).toEqual([]);
-  } finally { gate.resolve(); }
+  });
+  expect(state.writes).toEqual([]);
 });
 
 // The colored rectangle is part of the small source PDF. Checking its actual
@@ -463,21 +486,11 @@ test('standalone relation navigation and foreground verification preserve the cu
   await html.evaluate(element => { element.scrollTop = 500; });
   const top = await html.evaluate(element => element.scrollTop); expect(top).toBeGreaterThan(0);
   const reads = state.resources.filter(path => path.endsWith('/interactive.html')).length;
-  const gate = Promise.withResolvers<void>(); state.holdIdentity = gate.promise; const identityReads = state.identityReads;
-  await page.evaluate(() => {
-    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => false });
-    window.dispatchEvent(new Event('blur')); Reflect.deleteProperty(document, 'hasFocus');
-    window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('visibilitychange'));
-  });
-  try {
-    await expect.poll(() => state.identityReads).toBeGreaterThan(identityReads);
+  await checkDuringForeground(page, state, async () => {
     expect(await handle!.evaluate(element => element === document.querySelector('.task-attachments iframe'))).toBe(true);
     await expect(counter).toHaveText('1'); expect(await html.evaluate(element => element.scrollTop)).toBe(top);
-    const completed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/v1/me');
-    state.holdIdentity = null; gate.resolve(); await completed;
-    await expect(counter).toHaveText('1'); expect(await html.evaluate(element => element.scrollTop)).toBe(top);
     expect(state.resources.filter(path => path.endsWith('/interactive.html')).length).toBe(reads);
-  } finally { gate.resolve(); }
+  });
   await handle!.dispose(); expect(state.writes).toEqual([]);
 });
 

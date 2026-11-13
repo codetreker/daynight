@@ -220,8 +220,8 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
               {selected !== undefined && <header className="attachment-preview-header">
                 <div className="attachment-file-information"><h5 title={selected.path}>{selected.path}</h5><p title={m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}>{m.fileMetadata({ contentType: selected.contentType, size: format.bytes(selected.sizeBytes) })}</p></div>
                 <dl className="attachment-timestamps">
-                  <div><dt>{m.created}</dt><dd><time dateTime={selected.createdAt}>{format.dateTime(selected.createdAt)}</time></dd></div>
-                  <div><dt>{m.lastModified}</dt><dd><time dateTime={selected.updatedAt}>{format.dateTime(selected.updatedAt)}</time></dd></div>
+                  <dt>{m.created}</dt><dd><time dateTime={selected.createdAt}>{format.dateTime(selected.createdAt)}</time></dd>
+                  <dt>{m.lastModified}</dt><dd><time dateTime={selected.updatedAt}>{format.dateTime(selected.updatedAt)}</time></dd>
                 </dl>
                 <div className="attachment-preview-actions">
                   <a className="button" href={paused ? undefined : urls === undefined ? attachmentDownloadUrl(projectId, taskId, selected.path) : urls.download(selected.path)} download={paused ? undefined : true} aria-disabled={paused || undefined} role={paused ? "link" : undefined} tabIndex={paused ? 0 : undefined}>{m.download}</a>
