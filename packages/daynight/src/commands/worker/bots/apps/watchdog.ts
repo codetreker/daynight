@@ -8,7 +8,7 @@ import { matchingWatchdogRule } from "./watchdog-rules.js";
 
 export type WatchdogCategory = "stalled" | "disconnected" | "waiting_input" | "no_execution" | "unobservable";
 export const WATCHDOG_DURATION: Readonly<Record<WatchdogCategory, number>> = { stalled: 600_000, disconnected: 300_000, waiting_input: 600_000, no_execution: 600_000, unobservable: 900_000 };
-export type WatchdogObservation = { projectId: string; taskId: string; title: string; inScope: boolean; session: TaskSessionObservation };
+export type WatchdogObservation = { projectId: string; taskId: string; title: string; inScope: boolean; taskStatus?: string; assignedTo?: string | null; session: TaskSessionObservation };
 export type WatchdogHistory = { complete: boolean; lastEntryId: string | null; lastAssistantText: string | null; lastInputAt: number | null };
 export type WatchdogSource = {
   /** A complete inventory; a partial project or task listing must throw. */

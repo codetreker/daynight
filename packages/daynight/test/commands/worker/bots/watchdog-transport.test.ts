@@ -18,7 +18,7 @@ describe("Watchdog production data adapter", () => {
       .mockResolvedValueOnce({ groups: [{ groupId: "h", targets: [target("c")], contributorCursor: null }], nextCursor: null });
     const getObservedTask = vi.fn(async (_project: string, taskId: string) => ({ title: taskId, status: taskId === "b" ? "done" : "in_progress", assignedTo: "owner", session: observation.session }) as ObservedTask);
     const source = setup({ listProjects: vi.fn().mockResolvedValue([{ id: "project" }]), listTaskWork, getObservedTask });
-    expect(await source.scan(signal)).toEqual(["a", "b", "c"].map(taskId => ({ ...observation, taskId, title: taskId, inScope: taskId !== "b" })));
+    expect(await source.scan(signal)).toEqual(["a", "b", "c"].map(taskId => ({ ...observation, taskId, title: taskId, taskStatus: taskId === "b" ? "done" : "in_progress", assignedTo: "owner", inScope: taskId !== "b" })));
     expect(listTaskWork.mock.calls.map(call => call[1])).toEqual([{ assignedTo: "me" }, { assignedTo: "me", groupId: "g", targetsCursor: "c" }, { assignedTo: "me", cursor: "next" }]);
   });
 

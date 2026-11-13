@@ -19,7 +19,7 @@ const source: WatchdogSource = {
     const read = async (projectId: string, taskId: string, title: string): Promise<WatchdogObservation> => {
       try {
         const task = await api.getObservedTask(projectId, taskId);
-        return { projectId, taskId, title: task.title, inScope: task.status === "in_progress" && task.assignedTo === ownerUserId, session: task.session };
+        return { projectId, taskId, title: task.title, taskStatus: task.status, assignedTo: task.assignedTo, inScope: task.status === "in_progress" && task.assignedTo === ownerUserId, session: task.session };
       } catch (error) {
         signal.throwIfAborted();
         if (!(error instanceof ApiError) || ![403, 404, 410].includes(error.status ?? 0)) throw error;
@@ -108,7 +108,7 @@ const source: WatchdogSource = {
     const { sessionId, claimId, executionGeneration, currentTurnId } = observation.session;
     if (sessionId === null || claimId === null || executionGeneration === null) throw new Error("Watchdog has no original execution identity.");
     const task = await api.getObservedTask(observation.projectId, observation.taskId);
-    const current: WatchdogObservation = { ...observation, title: task.title, inScope: task.status === "in_progress" && task.assignedTo === ownerUserId, session: task.session };
+    const current: WatchdogObservation = { ...observation, title: task.title, taskStatus: task.status, assignedTo: task.assignedTo, inScope: task.status === "in_progress" && task.assignedTo === ownerUserId, session: task.session };
     if (task.session.sessionId !== sessionId || task.session.claimId !== claimId || task.session.executionGeneration !== executionGeneration
       || task.session.currentTurnId !== currentTurnId || task.session.send.allowed !== true || classifyWatchdogObservation(current, Date.now()) !== "stalled") return "rejected";
     const history = await source.history(current, signal);
