@@ -1628,9 +1628,9 @@ decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) re
 
 The typed Goal category also expands each Goal in place. On desktop its header
 matches the task-chain header height for equivalent unwrapped content in the
-same font; wrapped content grows naturally, including on narrow screens. Its independent title
-opens Goal details, while the disclosure shows all direct standalone tasks and
-scoped chains. Classification uses the complete ordinary graph before selecting
+same font; wrapped content grows naturally, including on narrow screens. The header
+body toggles the disclosure showing all direct standalone tasks and scoped chains.
+Separate Goal details and graph buttons open their readers without changing the disclosure. Classification uses the complete ordinary graph before selecting
 the Goal, so a scoped single member of a larger component remains a chain.
 Goal and chain disclosures start closed; closing a Goal preserves its chain
 choices until that row unmounts. Scoped progress counts only its own members,

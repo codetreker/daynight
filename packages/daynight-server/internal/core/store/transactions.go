@@ -23,4 +23,5 @@ type Transactions interface {
 	AttachmentWriter
 	AttachmentMutationWriter
 	TaskSearchReader
+	AssistantTaskWriter
 }

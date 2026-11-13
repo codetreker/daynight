@@ -16,7 +16,7 @@ detail buttons, and the expanded content stays neutral with independently
 colored child rows. Auxiliary text uses the shared readable color. The earlier
 [task status background decision](../../archived/feature/2026-10-28-task-status-backgrounds.md)
 records the palette and the aggregate chain semantics; the
-[Goal browsing decision](2026-11-11-goal-browsing.md) owns the list's scope and interactions.
+[Goal browsing decision](2026-11-11-goal-browsing.md) owns the list's scope. The [Goal row disclosure decision](../bug-fix/2026-11-13-goal-row-disclosure.md) describes the current heading actions.
 
 ## Alternatives
 

@@ -417,6 +417,7 @@ func cancellationMigrationFacts(t *testing.T, database *Store) map[string]string
 	t.Helper()
 	facts := statusMigrationRelatedFacts(t, database)
 	for name, query := range map[string]string{
+		"projects":   `SELECT coalesce(jsonb_agg(to_jsonb(t)-'tag_catalog_epoch' ORDER BY id),'[]'::jsonb)::text FROM projects t`,
 		"properties": `SELECT jsonb_agg(to_jsonb(p) ORDER BY task_id,name)::text FROM task_properties p`,
 		"ledger":     `SELECT jsonb_agg(to_jsonb(m) ORDER BY version)::text FROM schema_migrations m WHERE version<46`,
 	} {

@@ -108,6 +108,7 @@ type httpTestStore struct {
 	WriteWorkerCall             func(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error)
 	ReadPromptSnapshotCall      func(ctx context.Context, fn func(store.PromptSnapshot) error) error
 	WritePromptCall             func(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error)
+	WriteAssistantTaskCall      func(context.Context, func(store.AssistantTaskScope) error) (store.Completion, error)
 	WriteBotCall                func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error)
 	WriteSessionCall            func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error)
 	WriteThreadCall             func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error)
@@ -188,6 +189,13 @@ func (s *httpTestStore) WritePrompt(ctx context.Context, fn func(store.PromptWri
 		unexpectedHTTPCall(s.t, "WritePrompt")
 	}
 	return s.WritePromptCall(ctx, fn)
+}
+
+func (s *httpTestStore) WriteAssistantTask(ctx context.Context, fn func(store.AssistantTaskScope) error) (store.Completion, error) {
+	if s.WriteAssistantTaskCall == nil {
+		unexpectedHTTPCall(s.t, "WriteAssistantTask")
+	}
+	return s.WriteAssistantTaskCall(ctx, fn)
 }
 
 func (s *httpTestStore) WriteBot(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error) {
@@ -1094,6 +1102,11 @@ func TestApplicationBeginShutdownStopsWorkerReadOnlyAdmission(t *testing.T) {
 	if err := routes.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (s *httpTestSnapshot) TagDAO() store.TagReader {
+	unexpectedHTTPCall(s.t, "SnapshotScope.TagDAO")
+	return nil
 }
 
 func (s *httpTestSnapshot) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
