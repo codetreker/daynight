@@ -19,6 +19,11 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	goal := createTask(t, f, project, "Inventory Goal", map[string]any{"type": "goal"})
 	child := createTask(t, f, project, "Inventory child", map[string]any{"parentId": goal.ID, "assignedTo": f.userID, "status": "todo"})
 	child = setStatus(t, f, child, "in_progress", nil)
+	startedGoal := requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)
+	if startedGoal.ID != goal.ID || startedGoal.ProjectID != goal.ProjectID || startedGoal.Status != "in_progress" || startedGoal.Version != goal.Version+1 {
+		t.Fatalf("parent Goal did not start with its child: %+v", startedGoal)
+	}
+	goal = startedGoal
 	access := requestJSON[api.ProjectDocument](t, f, http.MethodGet, "/api/v1/projects/"+project.ID, nil, http.StatusOK).Access
 	if access.DirectGrant == nil {
 		t.Fatal("creator grant is absent")
