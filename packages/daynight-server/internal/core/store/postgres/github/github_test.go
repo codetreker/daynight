@@ -326,3 +326,67 @@ func TestManagementReadSerializesBroadcast(t *testing.T) {
 		t.Fatalf("serialized results: %+v %v", after, err)
 	}
 }
+
+func TestPullRequestKeysetTraversalAcrossSnapshots(t *testing.T) {
+	db, id := dbFixture(t)
+	ctx := t.Context()
+	setup := begin(t, db, pgx.TxOptions{})
+	for n := 1; n <= 12; n++ {
+		state := "closed"
+		if n%2 == 0 {
+			state = "open"
+		}
+		insertPR(t, setup, id, n, state, fmt.Sprintf("PR %d", n), nil)
+	}
+	if err := setup.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each page is read in its own snapshot, as it is for separate API calls.
+	read := func(q store.GitHubPRQuery) store.GitHubPRPage {
+		t.Helper()
+		tx := begin(t, db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		page, err := github.NewReader(tx).PullRequests(ctx, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return page
+	}
+	q := store.GitHubPRQuery{ProjectID: id, State: "active", Limit: 2}
+	first := read(q)
+	if !reflect.DeepEqual(numbers(first.Items), []int64{12, 10}) || first.Total != 6 || !first.HasMore || first.UpperNumber == nil || *first.UpperNumber != 12 {
+		t.Fatalf("first page: %+v", first)
+	}
+	newer := begin(t, db, pgx.TxOptions{})
+	insertPR(t, newer, id, 13, "open", "newly observed", nil)
+	if err := newer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	q.UpperNumber, q.AnchorNumber = first.UpperNumber, ptr(int64(10))
+	second := read(q)
+	if !reflect.DeepEqual(numbers(second.Items), []int64{8, 6}) || second.Total != 7 || !second.HasMore {
+		t.Fatalf("second page: %+v", second)
+	}
+	q.AnchorNumber = ptr(int64(6))
+	third := read(q)
+	if !reflect.DeepEqual(numbers(third.Items), []int64{4, 2}) || third.Total != 7 || third.HasMore {
+		t.Fatalf("third page: %+v", third)
+	}
+	q.Previous, q.AnchorNumber = true, ptr(int64(4))
+	back := read(q)
+	if !reflect.DeepEqual(numbers(back.Items), []int64{8, 6}) || !back.HasMore {
+		t.Fatalf("previous page: %+v", back)
+	}
+	q.AnchorNumber = ptr(int64(8))
+	back = read(q)
+	if !reflect.DeepEqual(numbers(back.Items), []int64{12, 10}) || back.HasMore {
+		t.Fatalf("first page restored: %+v", back)
+	}
+	closed := read(store.GitHubPRQuery{ProjectID: id, State: "closed", Limit: 100})
+	if !reflect.DeepEqual(numbers(closed.Items), []int64{11, 9, 7, 5, 3, 1}) || closed.Total != 6 || closed.HasMore {
+		t.Fatalf("closed page: %+v", closed)
+	}
+}
