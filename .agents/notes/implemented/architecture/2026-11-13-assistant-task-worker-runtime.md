@@ -21,7 +21,12 @@ receipt does not block a newer transfer forever: the shared claim state machine
 re-reads the generation and retires only an obsolete possible outcome, retaining
 an unknown operation while its possible generation remains active. Healthy local
 Controller observations gate maintenance; applications receive cancellation and
-a guard that verifies the original claim before external effects.
+a guard that verifies the original claim before external effects. Asynchronous
+renewal and health failures retain the original Bot, claim generation and
+application instance; cancellation cannot select a successor from the task map.
+Successful responses compare exact integer claim generations before replacing an
+application, including after joining an old instance, so delayed snapshots cannot
+replace a newer holder.
 
 Each notification persists its complete command and event set before its only
 submission. Pending or ambiguous outcomes query that original operation.
@@ -67,6 +72,11 @@ belong there.
 **A second claim credential store for the Worker.** Independent tokens would
 race with CLI mutations and fail across transfer or lost replies. The existing
 private state and operation recovery already describe the shared owner.
+
+**Cancel the current application by task ID after an old request fails.** A
+new holder can start locally before the former holder receives its delayed
+failure. Instance-bound cancellation preserves the new holder while still
+joining the old application.
 
 **A new Session command after a timeout.** The previous request may have reached
 the Provider. A fresh identity could start duplicate work and make later ACKs

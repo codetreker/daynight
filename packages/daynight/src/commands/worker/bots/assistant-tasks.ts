@@ -53,8 +53,7 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
   const stoppedBots = new Set<string>(), botCancellation = new Map<string, AbortController>(), botWork = new Map<string, Set<Promise<void>>>();
   let running: Promise<void> | null = null, closed = false;
   const report = (error: unknown, botId: string | null) => options.onError(error instanceof Error ? error.message : "Assistant task maintenance failed.", botId);
-  const stopApplication = async (taskId: string): Promise<void> => {
-    const current = applications.get(taskId);
+  const stopApplication = async (taskId: string, current: Application | null = applications.get(taskId) ?? null): Promise<void> => {
     if (!current) return;
     current.cancellation.abort(); current.expiry.abort();
     await current.work;
@@ -80,20 +79,27 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     const current = localBots().find(value => value.botId === bot.botId);
     return current !== undefined && await options.healthy(current, signal);
   };
-  const guard = async <T>(bot: BotRecord, taskId: string, generation: string, signal: AbortSignal, action: (api: AssistantTaskClient, task: AssistantTask, credential: { claimToken: string; claimGeneration: string }) => Promise<T>): Promise<T> => options.withApi(bot.botId, signal, async api => {
+  const guard = async <T>(bot: BotRecord, taskId: string, application: Application, signal: AbortSignal, action: (api: AssistantTaskClient, task: AssistantTask, credential: { claimToken: string; claimGeneration: string }) => Promise<T>): Promise<T> => options.withApi(bot.botId, signal, async api => {
     signal.throwIfAborted();
     const credential = await withLocalClaim(bot.botId, taskId, signal, async () => readClaimCredential(await scope(bot, taskId, api)));
-    if (!await healthy(bot, signal)) { applications.get(taskId)?.cancellation.abort(); throw new Error("Assistant Controller is unhealthy; application work is stopped."); }
+    if (!await healthy(bot, signal)) { application.cancellation.abort(); throw new Error("Assistant Controller is unhealthy; application work is stopped."); }
     const task = await api.getTask(taskId);
-    if (task.state !== "active" || !held(task, bot.botId, clock.now()) || task.claimGeneration !== generation) { applications.get(taskId)?.cancellation.abort(); throw new Error("Assistant task is paused or its original claim is no longer active."); }
+    if (task.state !== "active" || !held(task, bot.botId, clock.now()) || task.claimGeneration !== application.generation) { application.cancellation.abort(); throw new Error("Assistant task is paused or its original claim is no longer active."); }
     signal.throwIfAborted();
     return action(api, task, credential);
   });
   const syncApplication = async (bot: BotRecord, task: AssistantTask, signal: AbortSignal): Promise<void> => {
-    signal.throwIfAborted();
-    if (stoppedBots.has(bot.botId)) return;
-    const factory = factories.get(task.application), previous = applications.get(task.id);
-    if (previous && (previous.botId !== bot.botId || previous.cancellation.signal.aborted || previous.generation !== task.claimGeneration || task.state !== "active" || !held(task, bot.botId, clock.now()) || !factory)) await stopApplication(task.id);
+    const factory = factories.get(task.application);
+    for (;;) {
+      signal.throwIfAborted();
+      if (stoppedBots.has(bot.botId)) return;
+      const previous = applications.get(task.id);
+      // Generations are canonical int64 decimal strings. A delayed successful
+      // renewal cannot replace a newer claim, including while joining an old app.
+      if (previous && BigInt(task.claimGeneration) < BigInt(previous.generation)) return;
+      if (!previous || !(previous.botId !== bot.botId || previous.cancellation.signal.aborted || previous.generation !== task.claimGeneration || task.state !== "active" || !held(task, bot.botId, clock.now()) || !factory)) break;
+      await stopApplication(task.id, previous);
+    }
     if (!factory || task.state !== "active" || !held(task, bot.botId, clock.now())) return;
     let app = applications.get(task.id);
     if (!app) {
@@ -101,8 +107,9 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       const appSignal = AbortSignal.any([cancel.signal, cancellation.signal, signal]);
       app = { botId: bot.botId, generation: task.claimGeneration, cancellation: cancel, expiry: new AbortController(), work: Promise.resolve() };
       applications.set(task.id, app);
+      const current = app;
       app.work = Promise.resolve().then(() => factory({ task, botId: bot.botId, signal: appSignal,
-        withClaim: action => guard(bot, task.id, task.claimGeneration, appSignal, action),
+        withClaim: action => guard(bot, task.id, current, appSignal, action),
       })).catch(error => { if (!appSignal.aborted) { cancel.abort(); report(error, bot.botId); } });
     }
     app.expiry.abort(); app.expiry = new AbortController();
@@ -122,8 +129,11 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     for await (const task of tasksFor(bot.botId, signal)) {
       if (task.holderBotId !== bot.botId) continue;
       seenOwnedIds.add(task.id);
+      const current = applications.get(task.id);
+      // A late renewal or health result can cancel only the application it observed.
+      const original = current?.botId === bot.botId && BigInt(current.generation) <= BigInt(task.claimGeneration) ? current : null;
       try {
-        if (!await healthy(bot, signal)) { await stopApplication(task.id); continue; }
+        if (!await healthy(bot, signal)) { await stopApplication(task.id, original); continue; }
         const renewed = await withLocalClaim(bot.botId, task.id, signal, () => options.withApi(bot.botId, signal, async api => {
           // A missing old receipt is not a replay permission. The shared claim state machine
           // re-reads the generation before retiring an obsolete operation or binding a transfer.
@@ -136,10 +146,10 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
           return currentTask;
         }));
         await syncApplication(bot, renewed, signal);
-      } catch (error) { await stopApplication(task.id); if (!signal.aborted) report(error, bot.botId); }
+      } catch (error) { await stopApplication(task.id, original); if (!signal.aborted) report(error, bot.botId); }
     }
     // Only a complete listing proves that an existing application is no longer owned.
-    for (const [taskId, app] of applications) if (app.botId === bot.botId && !seenOwnedIds.has(taskId)) await stopApplication(taskId);
+    for (const [taskId, app] of applications) if (app.botId === bot.botId && !seenOwnedIds.has(taskId)) await stopApplication(taskId, app);
   };
   const takeover = async (signal: AbortSignal): Promise<void> => {
     const bots: BotRecord[] = [];
@@ -273,7 +283,7 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
       stoppedBots.add(botId); botCancellation.get(botId)?.abort();
       for (const app of applications.values()) if (app.botId === botId) app.cancellation.abort();
       await Promise.allSettled([...(botWork.get(botId) ?? [])]);
-      for (const [taskId, app] of applications) if (app.botId === botId) await stopApplication(taskId);
+      for (const [taskId, app] of applications) if (app.botId === botId) await stopApplication(taskId, app);
     },
     run: (signal: AbortSignal): Promise<void> => {
       if (running || closed) throw new Error("Assistant task runtime cannot be started again.");
@@ -290,7 +300,7 @@ export const createAssistantTaskRuntime = (options: AssistantTaskRuntimeOptions)
     shutdown: async (): Promise<void> => {
       closed = true; cancellation.abort();
       await Promise.allSettled([...inFlight, ...(running ? [running] : [])]);
-      await Promise.all([...applications.keys()].map(stopApplication));
+      await Promise.all([...applications.keys()].map(taskId => stopApplication(taskId)));
     },
   };
 };

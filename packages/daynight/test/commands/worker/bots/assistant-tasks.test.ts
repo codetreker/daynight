@@ -231,6 +231,120 @@ describe("assistant-task managed loops", () => {
     expect(context.signal.aborted).toBe(true); expect(f.onError).toHaveBeenCalledWith(expect.stringContaining("claim_lost"), f.bot.botId);
   });
 
+  it.each(["renewal", "health"] as const)("keeps the new holder application after the former holder's delayed %s failure", async failure => {
+    const a = await fixture(), b = await fixture(4);
+    a.task.application = "watchdog";
+    b.task = { ...a.task, holderBotId: b.bot.botId, claimGeneration: "2", claimState: "pending", credentialOperationId: null };
+    a.options.stateDirectory = async botId => botId === b.bot.botId ? b.scope.stateDirectory : a.scope.stateDirectory;
+    a.options.withApi = async (botId, _signal, action) => action(botId === b.bot.botId ? b.api : a.api);
+    const runtime = a.create(), contexts: AssistantApplicationContext[] = [], replacement = deferred<AssistantApplicationContext>();
+    runtime.registerApplication("watchdog", context => {
+      contexts.push(context); if (context.botId === b.bot.botId) replacement.resolve(context);
+      return new Promise<void>(resolve => context.signal.addEventListener("abort", () => resolve(), { once: true }));
+    });
+    await runtime.tick("renew", signal());
+    const original = contexts[0]!, entered = deferred(), release = deferred();
+    if (failure === "renewal") a.claim.mockImplementationOnce(async () => { entered.resolve(); await release.promise; throw new AssistantTaskApiError(false, "claim_lost", 409, true); });
+    else a.healthy.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return false; });
+    b.listTasks.mockImplementation(async () => { await entered.promise; return { items: [{ ...b.task }], nextCursor: null, observedAt: b.task.observedAt }; });
+    b.claim.mockImplementation(async (_taskId, kind, input) => {
+      if (kind === "bind") b.task = { ...b.task, claimState: "active", credentialOperationId: input.operationId };
+      return b.claimResult(kind, input);
+    });
+    a.options.bots = () => [a.bot, b.bot];
+    const renewal = runtime.tick("renew", signal());
+    try {
+      const current = await replacement.promise;
+      expect(original.signal.aborted).toBe(true); expect(current.signal.aborted).toBe(false);
+      release.resolve(); await renewal;
+      expect(current.signal.aborted).toBe(false);
+      expect(b.claim.mock.calls.map(call => call[1])).toEqual(["bind", "renew"]);
+      const action = vi.fn(async () => {}); await current.withClaim(action); expect(action).toHaveBeenCalledOnce();
+    } finally { release.resolve(); await renewal; }
+  });
+
+  it.each(["1", "9007199254740992"])("keeps the newer holder after generation %s completes its delayed successful credential check", async generation => {
+    const a = await fixture(), b = await fixture(4), newer = String(BigInt(generation) + 1n);
+    a.task = { ...a.task, application: "watchdog", claimGeneration: generation };
+    await withClaimStorage(a.scope, async storage => { storage.state.credential!.claimGeneration = generation; await storage.save(); });
+    b.task = { ...a.task, holderBotId: b.bot.botId, claimGeneration: newer, claimState: "pending", credentialOperationId: null };
+    a.options.stateDirectory = async botId => botId === b.bot.botId ? b.scope.stateDirectory : a.scope.stateDirectory;
+    a.options.withApi = async (botId, _signal, action) => action(botId === b.bot.botId ? b.api : a.api);
+    const runtime = a.create(), contexts: AssistantApplicationContext[] = [], replacement = deferred<AssistantApplicationContext>();
+    runtime.registerApplication("watchdog", context => {
+      contexts.push(context); if (context.botId === b.bot.botId) replacement.resolve(context);
+      return new Promise<void>(resolve => context.signal.addEventListener("abort", () => resolve(), { once: true }));
+    });
+    await runtime.tick("renew", signal());
+    const original = contexts[0]!, credentialCheck = deferred(), release = deferred();
+    a.getTask.mockResolvedValueOnce({ ...a.task }).mockResolvedValueOnce({ ...a.task }).mockResolvedValueOnce({ ...a.task })
+      .mockImplementationOnce(async () => { const captured = { ...a.task }; credentialCheck.resolve(); await release.promise; return captured; });
+    b.listTasks.mockImplementation(async () => { await credentialCheck.promise; return { items: [{ ...b.task }], nextCursor: null, observedAt: b.task.observedAt }; });
+    b.claim.mockImplementation(async (_taskId, kind, input) => {
+      if (kind === "bind") b.task = { ...b.task, claimState: "active", credentialOperationId: input.operationId };
+      return b.claimResult(kind, input);
+    });
+    a.options.bots = () => [a.bot, b.bot];
+    const renewal = runtime.tick("renew", signal());
+    try {
+      const current = await replacement.promise;
+      expect(original.signal.aborted).toBe(true); expect(current.signal.aborted).toBe(false);
+      release.resolve(); await renewal;
+      expect(contexts).toHaveLength(2); expect(current.signal.aborted).toBe(false);
+      expect(current.task.claimGeneration).toBe(newer); expect(a.onError).not.toHaveBeenCalled();
+      const action = vi.fn(async () => {}); await current.withClaim(action); expect(action).toHaveBeenCalledOnce();
+    } finally { release.resolve(); await renewal; }
+  });
+
+  it.each(["health", "bind"] as const)("stops its older application when a later same-Bot claim fails %s", async failure => {
+    const f = await fixture(); f.task.application = "watchdog";
+    const runtime = f.create(), app = application(runtime);
+    await runtime.tick("renew", signal()); const original = await app.started;
+    f.task = { ...f.task, claimGeneration: "3", claimState: "pending", credentialOperationId: null };
+    if (failure === "health") f.healthy.mockResolvedValue(false);
+    else f.claim.mockRejectedValueOnce(new AssistantTaskApiError(false, "claim_lost", 409, true));
+    await runtime.tick("renew", signal());
+    expect(original.signal.aborted).toBe(true); await app.stopped;
+    if (failure === "bind") expect(f.claim.mock.calls.at(-1)![1]).toBe("bind");
+  });
+
+  it("keeps a newer same-Bot application when an older listing fails its health check", async () => {
+    const f = await fixture(); f.task = { ...f.task, application: "watchdog", claimGeneration: "3" };
+    await withClaimStorage(f.scope, async storage => { storage.state.credential!.claimGeneration = "3"; await storage.save(); });
+    const runtime = f.create(), app = application(runtime);
+    await runtime.tick("renew", signal()); const current = await app.started;
+    f.listTasks.mockResolvedValueOnce({ items: [{ ...f.task, claimGeneration: "1" }], nextCursor: null, observedAt: f.task.observedAt });
+    f.healthy.mockResolvedValueOnce(false);
+    await runtime.tick("renew", signal());
+    expect(current.signal.aborted).toBe(false);
+  });
+
+  it.each(["health", "claim"] as const)("does not cancel the replacement when an old application guard discovers changed %s", async failure => {
+    const a = await fixture(), b = await fixture(4);
+    a.task.application = "watchdog";
+    b.task = { ...a.task, holderBotId: b.bot.botId, claimGeneration: "2" };
+    await withClaimStorage(b.scope, async storage => { storage.state.credential!.claimGeneration = "2"; await storage.save(); });
+    a.options.stateDirectory = async botId => botId === b.bot.botId ? b.scope.stateDirectory : a.scope.stateDirectory;
+    a.options.withApi = async (botId, _signal, action) => action(botId === b.bot.botId ? b.api : a.api);
+    const runtime = a.create(), contexts: AssistantApplicationContext[] = [];
+    // The guard remains in flight after its original application factory has returned.
+    runtime.registerApplication("watchdog", async context => { contexts.push(context); });
+    await runtime.tick("renew", signal());
+    const original = contexts[0]!, entered = deferred(), release = deferred(), action = vi.fn(async () => {});
+    if (failure === "health") a.healthy.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return false; });
+    else a.getTask.mockResolvedValueOnce({ ...a.task }).mockImplementationOnce(async () => { entered.resolve(); await release.promise; return { ...b.task }; });
+    const guarded = original.withClaim(action).then(() => null, error => error);
+    await entered.promise;
+    try {
+      a.options.bots = () => [b.bot]; await runtime.tick("renew", signal());
+      const current = contexts[1]!;
+      expect(original.signal.aborted).toBe(true); expect(current.signal.aborted).toBe(false);
+      release.resolve(); expect(await guarded).toBeInstanceOf(Error);
+      expect(action).not.toHaveBeenCalled(); expect(current.signal.aborted).toBe(false);
+      await current.withClaim(action); expect(action).toHaveBeenCalledOnce();
+    } finally { release.resolve(); await guarded; }
+  });
+
   it("joins the original in-flight Bot work and stops its application before permitting deletion cleanup", async () => {
     const f = await fixture(); f.task.application = "watchdog"; f.events = [f.event(51)];
     const runtime = f.create(), app = application(runtime), entered = deferred<AbortSignal>(), finished = deferred();

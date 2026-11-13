@@ -72,7 +72,7 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 自动接手只选择健康的本机助手，对 `takeover=auto`、active 且 unowned/expired 的任务重读版本和代次后认领。服务端条件写入决定并发竞争结果。旧 holder 恢复时不会抢夺有效认领；服务端在过期接手或转交事务中生成新旧 holder 的通知，Worker 不重复创建系统事件。首次认领无人负责的任务没有历史空档，不产生接手事件。
 
-`registerApplication(name, factory)` 在 runtime 启动前注册应用。factory 接收任务、Bot ID、取消 signal 和 `withClaim`；每项有外部影响的动作必须经 `withClaim` 重查健康状态、active 状态、原代次与私有凭据。续约确认后启动或保持应用，暂停、丢失认领、健康检查失败、租约期限或 Worker 停止会取消应用。factory 必须响应取消并等待其自有工作结束；停止会等待 factory 返回，不宣称忽略取消的应用已经退出。
+`registerApplication(name, factory)` 在 runtime 启动前注册应用。factory 接收任务、Bot ID、取消 signal 和 `withClaim`；每项有外部影响的动作必须经 `withClaim` 重查健康状态、active 状态、原代次与私有凭据。续约确认后启动或保持应用，暂停、丢失认领、健康检查失败、租约期限或 Worker 停止会取消应用。异步续约、健康检查与 guard 绑定原 Bot、认领代次及应用实例；迟到失败只能取消该实例，不能按任务 ID 取消后继持有者的应用；迟到成功快照的认领代次低于当前应用时，不替换当前应用。等待旧应用退出后重新比较当前实例及代次，避免等待期间的新持有者被覆盖。factory 必须响应取消并等待其自有工作结束；停止会等待 factory 返回，不宣称忽略取消的应用已经退出。
 
 删除路径先 `stopBot`，禁止该 Bot 新的维护工作，取消应用并等待已开始的维护写入结束，再进入原 Controller 停止和文件删除。这样私有状态被删除后不会被后台循环重新创建。Worker 总退出先停止助手任务维护，再停止 Controllers；前一步失败仍继续其余停止尝试并聚合错误。
 
