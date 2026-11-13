@@ -21,7 +21,8 @@ submission. It reuses the existing private operation file implementation for
 atomic synchronized replacement and task-level locking, with service, owner, Bot
 and task isolation. The same exported storage and claim coordinator are usable by
 the bot host. A pending operation blocks replacement while it could still grant
-a usable credential. Recovery reads the original receipt and current claim;
+a usable credential. Proven non-submission has its own durable terminal state
+and releases the pending gate without discarding the original intent. Recovery reads the original receipt and current claim;
 it never automatically repeats a mutation. Binding requires confirmed renewal
 before protected application writes.
 

@@ -52,7 +52,7 @@ export const runClaimOperation = async (options: RunClaimOptions): Promise<Assis
   if (await storage.readOperation(options.operationId)) throw new ClaimStateError(`Operation ${options.operationId} already exists locally. Use claim-operation show to inspect its original result.`);
   if (storage.state.pending) {
     const pending = await storage.readOperation(storage.state.pending);
-    if (pending?.phase === "refused") {
+    if (pending?.phase === "refused" || pending?.phase === "not_submitted") {
       storage.state.pending = null;
       await storage.save();
     } else if (pending?.phase === "confirmed") {
@@ -92,8 +92,8 @@ export const runClaimOperation = async (options: RunClaimOptions): Promise<Assis
   let result: AssistantTaskClaimResult;
   try { result = await options.api.claim(options.taskId, options.kind, input); }
   catch (error) {
-    if (error instanceof AssistantTaskApiError && error.confirmedRefusal) {
-      saved.phase = "refused";
+    if (error instanceof AssistantTaskApiError && !error.outcomeUnconfirmed) {
+      saved.phase = error.confirmedRefusal ? "refused" : "not_submitted";
       await storage.saveOperation(saved);
       storage.state.pending = null;
       await storage.save();

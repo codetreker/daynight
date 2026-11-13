@@ -11,7 +11,7 @@ export class ClaimStateError extends Error {
 
 export type ClaimScope = { serverOrigin: string; ownerUserId: string; botId?: string; stateDirectory?: string; taskId: string };
 export type SavedCredential = { claimToken: string; claimGeneration: string; credentialOperationId: string; requiresRenew: boolean };
-export type SavedClaimOperation = { kind: AssistantTaskClaimKind; input: AssistantTaskClaimInput; fingerprint: string; phase: "prepared" | "confirmed" | "refused" };
+export type SavedClaimOperation = { kind: AssistantTaskClaimKind; input: AssistantTaskClaimInput; fingerprint: string; phase: "prepared" | "confirmed" | "refused" | "not_submitted" };
 export type ClaimState = { schemaVersion: 1; serverOrigin: string; ownerUserId: string; botId: string | null; taskId: string; credential: SavedCredential | null; pending: string | null };
 export type ClaimStorage = { state: ClaimState; save(): Promise<void>; readOperation(id: string): Promise<SavedClaimOperation | undefined>; saveOperation(operation: SavedClaimOperation): Promise<void> };
 const invalid = (): never => { throw new ClaimStateError("Assistant-task private state is invalid; preserve it and inspect the original claim operation."); };
@@ -54,7 +54,7 @@ export const withClaimStorage = async <T>(scope: ClaimScope, action: (storage: C
     const readOperation = async (operationId: string): Promise<SavedClaimOperation | undefined> => {
       const p = await readJSON(directory, `${taskId}.${assistantTaskId(operationId)}.json`);
       if (!p) return undefined;
-      if (Object.keys(p).sort().join() !== "fingerprint,input,kind,phase" || !["claim", "transfer", "bind", "renew", "release"].includes(p.kind as string) || !["prepared", "confirmed", "refused"].includes(p.phase as string)) return invalid();
+      if (Object.keys(p).sort().join() !== "fingerprint,input,kind,phase" || !["claim", "transfer", "bind", "renew", "release"].includes(p.kind as string) || !["prepared", "confirmed", "refused", "not_submitted"].includes(p.phase as string)) return invalid();
       const op = p as unknown as SavedClaimOperation;
       if (!op.input || op.input.operationId !== operationId || Object.keys(op.input).some(k => !["operationId", "ifVersion", "expectedGeneration", "claimGeneration", "claimToken", "targetBotId"].includes(k))) return invalid();
       if (op.input.claimToken !== undefined) token(op.input.claimToken);

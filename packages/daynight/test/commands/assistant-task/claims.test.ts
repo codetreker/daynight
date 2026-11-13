@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runClaimOperation, readClaimCredential, recoverClaimOperation } from "../../../src/commands/assistant-task/claims.js";
 import * as stateModule from "../../../src/commands/assistant-task/state.js";
 import { withClaimStorage } from "../../../src/commands/assistant-task/state.js";
-import { assistantTaskClaimFingerprint, type AssistantTaskClaimInput, type AssistantTaskClaimResult } from "../../../src/api/assistant-task.js";
+import { createOperation } from "../../../src/api/operation.js";
+import { createAssistantTaskClient, assistantTaskClaimFingerprint, type AssistantTaskClaimInput, type AssistantTaskClaimResult } from "../../../src/api/assistant-task.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -115,11 +116,38 @@ describe("assistant task durable claim lifecycle", () => {
     expect(api.claim).toHaveBeenCalledTimes(1);
   });
 
-  it("reconciles an interrupted refusal before a new independent claim", async () => {
+  it("records cancellation after persistence but before HTTP dispatch without blocking a new claim", async () => {
+    const { options, result } = await fixture();
+    const cancelledId = randomUUID(), abort = new AbortController();
+    const cancelled = createOperation({ signal: abort.signal }), fresh = createOperation();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => new Response(JSON.stringify(result(JSON.parse(init!.body as string))), { headers: { "Content-Type": "application/json", "Daynight-User-ID": options.ownerUserId } }));
+    const client = (operation: typeof fresh) => createAssistantTaskClient({ serverUrl: options.serverOrigin, expectedUserId: options.ownerUserId, botId: options.botId, operation, fetch });
+    const original = stateModule.withClaimStorage;
+    vi.spyOn(stateModule, "withClaimStorage").mockImplementation(async (scope, action) => original(scope, async storage => {
+      const save = storage.save;
+      storage.save = async () => { await save(); if (storage.state.pending === cancelledId) abort.abort(); };
+      return action(storage);
+    }));
+    try {
+      await expect(runClaimOperation({ ...options, api: client(cancelled), kind: "claim", operationId: cancelledId, ifVersion: "1", expectedGeneration: "0" })).rejects.toMatchObject({ outcomeUnconfirmed: false, confirmedRefusal: false });
+      expect(fetch).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+      await withClaimStorage(options, async storage => {
+        expect(storage.state.pending).toBeNull();
+        expect((await storage.readOperation(cancelledId))?.phase).toBe("not_submitted");
+      });
+      const newId = randomUUID();
+      await runClaimOperation({ ...options, api: client(fresh), kind: "claim", operationId: newId, ifVersion: "1", expectedGeneration: "0" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(fetch.mock.calls[0]![1]!.body as string).operationId).toBe(newId);
+    } finally { cancelled.dispose(); fresh.dispose(); }
+  });
+
+  it.each(["refused", "not_submitted"] as const)("reconciles an interrupted %s outcome before a new independent claim", async phase => {
     const { options, api, result } = await fixture();
     const input = { operationId: randomUUID(), ifVersion: "1", expectedGeneration: "0", claimToken: Buffer.alloc(32, 1).toString("base64url") };
     await withClaimStorage(options, async storage => {
-      await storage.saveOperation({ kind: "claim", input, phase: "refused", fingerprint: assistantTaskClaimFingerprint({ ...input, kind: "claim", ownerUserId: options.ownerUserId, taskId: options.taskId, actorBotId: options.botId }) });
+      await storage.saveOperation({ kind: "claim", input, phase, fingerprint: assistantTaskClaimFingerprint({ ...input, kind: "claim", ownerUserId: options.ownerUserId, taskId: options.taskId, actorBotId: options.botId }) });
       storage.state.pending = input.operationId;
       await storage.save();
     });

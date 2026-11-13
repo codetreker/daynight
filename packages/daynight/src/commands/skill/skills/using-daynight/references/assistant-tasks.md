@@ -60,7 +60,9 @@ Binding preserves generation and the original transfer deadline; renewal grants
 five minutes and preserves the token. This command group does not run a renewal
 loop; the Worker host owns continuous execution and its scheduling.
 
-Claim writes retain the original operation ID. A lost response, invalid receipt
+Claim writes retain the original operation ID. A proven cancellation before
+HTTP dispatch saves a terminal non-submission record and clears pending state;
+a later independent claim is allowed, without automatically retrying the old one. A lost response, invalid receipt
 or transport failure is an unknown outcome, never proof of rollback. Query
 `claim-operation show` with the original ID: this only reads the receipt and
 reconciles private state, never repeats a write. A matching historical receipt
