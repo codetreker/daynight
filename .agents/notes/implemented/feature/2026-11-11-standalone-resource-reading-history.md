@@ -76,6 +76,6 @@ cannot restore the browser's sequence of nested reading choices.
 Back and Forward restore reading choices without replaying business operations.
 The state contains no business response, draft, permissions or DOM; existing
 resource, identity and access lifecycles continue to own admission and cleanup.
-Closing does not skip older entries. Nested selections are not a cross-refresh
-or shareable-link contract, and native unnumbered entries retain the existing
-navigation limits.
+Closing does not skip older entries. Standalone nested selections are not a
+cross-refresh or shareable-link contract; overview selections restore the current
+entry on reload. Native unnumbered entries retain the existing navigation limits.
