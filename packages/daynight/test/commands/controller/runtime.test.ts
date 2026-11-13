@@ -1,7 +1,7 @@
 import { test, expect, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import path from "node:path";
-const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> } }));
+const fixture = vi.hoisted(() => ({ open: vi.fn(), capture: vi.fn(), journal: vi.fn(), close: vi.fn(), serverClose: vi.fn(), serverCreate: vi.fn(), relayClose: vi.fn(), relayCreate: vi.fn(), captureCreate: vi.fn(), synchronousRelay: false, ticketOverrides: {} as Record<string, unknown>, options: null as unknown, closed: false, provider: "codex" as "codex" | "claude" | "copilot", socketHandler: null as null | ((socket: unknown) => void), relayCallbacks: null as null | { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void } }));
 const storage = vi.hoisted(() => ({ acquire: vi.fn(), prepare: vi.fn(), release: vi.fn(), open: vi.fn(), order: [] as string[] }));
 vi.mock("../../../src/commands/controller/storage-lock.js", async importOriginal => ({ ...await importOriginal<typeof import("../../../src/commands/controller/storage-lock.js")>(), acquireControllerStoragePermit: (file: string) => storage.acquire(file), isControllerStorageLockHeld: (error: unknown) => error instanceof Error && error.message === "fixture-lock-busy" }));
 vi.mock("../../../src/commands/controller/storage-preparation.js", () => ({ prepareControllerStorage: (...args: unknown[]) => storage.prepare(...args) }));
@@ -18,7 +18,7 @@ vi.mock("../../../src/commands/controller/media/capture.js", async importOrigina
   return { ...original, createControllerCaptureBridge: (...args: Parameters<typeof original.createControllerCaptureBridge>) => { fixture.captureCreate(); return original.createControllerCaptureBridge(...args); } };
 });
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureControllerProcessProof: () => fixture.capture(), captureProcessProof: async () => ({ pid: 1 }) }));
-vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void> }) => { fixture.relayCreate(); fixture.relayCallbacks = callbacks; if (fixture.synchronousRelay) callbacks.onConnection(false); return { flush: async () => {}, close: fixture.relayClose, connected: () => true, authorize: async () => {}, receipt: vi.fn() }; } }));
+vi.mock("../../../src/commands/controller/relay.js", () => ({ createControllerRelay: (_ticket: unknown, _journal: unknown, callbacks: { onConnection(connected: boolean): void; onCommand(command: unknown): Promise<void>; onError(error: unknown): void }) => { fixture.relayCreate(); fixture.relayCallbacks = callbacks; if (fixture.synchronousRelay) callbacks.onConnection(false); return { stop: vi.fn(), flush: async () => {}, close: fixture.relayClose, connected: () => true, authorize: async () => {}, receipt: vi.fn() }; } }));
 vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCodexProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/copilot.js", () => ({ openCopilotProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
@@ -46,7 +46,7 @@ const setup = () => {
   storage.open.mockReset(); storage.open.mockImplementation(() => { storage.order.push("journal-open"); });
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
-  fixture.journal.mockReturnValue({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; storage.order.push("journal"); } });
+  fixture.journal.mockReturnValue({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], disableOutboxWrites: vi.fn(), patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; storage.order.push("journal"); } });
   fixture.capture.mockResolvedValue({ pid: 1 });
   fixture.close.mockImplementation(async () => { expect(fixture.closed).toBe(false); });
   return patch;
@@ -506,4 +506,59 @@ test("a committed journal initialization and subsequent permit release failure p
   expect(failure.cause.cause).toBe(finalization);
   expect(storage.release).toHaveBeenCalledOnce();
   expect(fixture.open).not.toHaveBeenCalled();
+});
+
+test("logs a structured outbox admission failure without changing the original failure", async () => {
+  setup();
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const cause = new Error("private event payload");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { cause, outcome: "unknown", connectionClosed: true });
+  storage.open.mockImplementationOnce(() => { throw failure; });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    await expect(runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" })).rejects.toBe(failure);
+    const line = String(log.mock.calls[0]![0]);
+    const record = JSON.parse(line.slice(line.indexOf("{")));
+    expect(record).toMatchObject({ kind: "controller-sqlite-error", component: "outbox", phase: "outbox-read", executionId: "execution", sessionId: "session", claimId: "claim", generation: "2", error: { outcome: "unknown" } });
+    expect(line).not.toContain("private event payload");
+    expect(failure.cause).toBe(cause);
+  } finally { log.mockRestore(); }
+});
+
+
+test("an outbox failure reported by the relay stops the controller with the original error", async () => {
+  const patch = setup();
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-ack" }, { outcome: "rolled-back" });
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const result = running.then(() => null, error => error);
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    fixture.relayCallbacks!.onError(failure);
+    expect(await result).toBe(failure);
+    expect(patch).toHaveBeenCalledWith(expect.objectContaining({ lifecycle: "paused" }));
+    expect(fixture.journal().disableOutboxWrites).toHaveBeenCalled();
+    expect(fixture.close).toHaveBeenCalledOnce();
+    expect(log.mock.calls.some(([line]) => String(line).includes('"phase":"outbox-ack"'))).toBe(true);
+  } finally { process.emit("SIGTERM", "SIGTERM"); await result; log.mockRestore(); }
+});
+
+
+test("an outbox relay failure during provider startup preserves the original error", async () => {
+  setup(); let opened!: (value: unknown) => void;
+  fixture.open.mockImplementation(() => new Promise(resolve => { opened = resolve; }));
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-ack" }, { outcome: "rolled-back" });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const result = running.then(() => null, error => error);
+  try {
+    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
+    fixture.relayCallbacks!.onError(failure);
+    opened({ nativeSessionId: "native", close: fixture.close });
+    expect(await result).toBe(failure);
+    expect(fixture.close).toHaveBeenCalledOnce();
+  } finally { opened({ nativeSessionId: "native", close: fixture.close }); process.emit("SIGTERM", "SIGTERM"); await result; log.mockRestore(); }
 });

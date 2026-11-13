@@ -16,7 +16,7 @@ resource must not invalidate committed history or native input publications.
 resource index, persistent pins, process-local leases, file validation and
 resource budgets. It exposes the existing resource operations without owning
 timeline entries. `content/session-content.ts` combines the file owner with
-canonical v10 SQL current rows and uses the owner's descriptor byte count for
+canonical journal SQL current rows and uses the owner's descriptor byte count for
 logical metadata measurement. The [atomic publication
 decision](2026-11-10-atomic-content-publication.md) preserves the historical
 candidate-file rationale; the [SQL activation decision](2026-11-12-session-sqlite-activation.md)

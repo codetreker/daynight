@@ -1,3 +1,4 @@
+import { formatOutboxDiagnostic, isOutboxFailure } from "./outbox-diagnostic.js";
 import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
 import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
@@ -67,6 +68,12 @@ export const runController = async (options: ControllerRuntimeOptions): Promise<
 
 const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal: bootstrapSignal, own }: ControllerRuntimeScope): Promise<void> => {
   const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
+  const diagnostic = (value: unknown): void => {
+    try {
+      const message = formatOutboxDiagnostic(value, ticket) ?? (value instanceof Error ? value.message : String(value));
+      process.stderr.write(`${new Date().toISOString()} ${message.slice(0, 4096)}\n`);
+    } catch { /* Diagnostics cannot alter the operation outcome. */ }
+  };
   if (ticket.provider !== options.provider || await realpath(ticket.cwd) !== await realpath(process.cwd())) throw new Error("Controller launch provider or working directory mismatch.");
   if (bootstrapSignal.aborted) return;
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -80,6 +87,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       let prepared;
       try { prepared = prepareControllerStorage({ journalFile, stateDirectory, mode: "writer", ticket }, storagePermit); }
       catch (error) {
+        diagnostic(error);
         if (!controllerStorageConnectionIsOpen(error)) {
           try { storagePermit.release(); } catch (release) { throw new AggregateError([error, release], "Controller storage preparation and permit release failed."); }
         }
@@ -108,7 +116,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   if (bootstrapSignal.aborted) return;
   let journal: ReturnType<typeof openControllerLifecycleStore>;
   try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true, mediaStateDirectory: stateDirectory }); }
-  catch (error) { journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
+  catch (error) { diagnostic(error); journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
   journalClosed = false; mediaClosed = false;
   own(() => { journal.close(); journalClosed = true; });
   const stopMedia = own(async () => { await journal.stopMedia?.(); mediaClosed = true; });
@@ -116,6 +124,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   let nativeReadPolicy: NativeReadPolicy | null = null;
   let nativeImages: ProviderState["images"];
   let projectionFailure: string | null = null, providerFailure: string | null = null;
+  let relayFailure: unknown;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
   let historyWork: Promise<void> | null = null, historyRequested = false;
@@ -135,7 +144,6 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Native provider shutdown and process capture failed.");
   });
-  const diagnostic = (message: string) => { process.stderr.write(`${new Date().toISOString()} ${message.slice(0, 4096)}\n`); };
   const publishState = () => {
     const s = journal.getSnapshot();
     if (!stopping && !["failed", "paused", "stopped", "stopping"].includes(s.lifecycle)) {
@@ -153,7 +161,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     return { ...(providerImages ? { providerImages } : {}), nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
   const fail = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error); diagnostic(message);
+    const message = error instanceof Error ? error.message : String(error); diagnostic(error);
     try {
       const startup = journal.getSnapshot().startup;
       // Shutdown may fail after initialization already supplied the decisive observation.
@@ -199,12 +207,21 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   const stopMarkdownTimeline = own(() => markdownTimeline.stop());
   relay = createControllerRelay(ticket, journal, {
     onConnection: connected => { synchronized = connected; if (!connected) markdownCaptures.invalidate(); if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
-    onError: diagnostic,
+    onError: error => {
+      if (!isOutboxFailure(error)) { diagnostic(error); return; }
+      relayFailure ??= error;
+      journal.disableOutboxWrites();
+      projectionFailure ??= error instanceof Error ? error.message : String(error);
+      stopping = true;
+      relay?.stop();
+      fail(error);
+      queueMicrotask(() => { void shutdown(); });
+    },
     readState,
     onAcknowledged: () => {
       provider?.acknowledgeImageOccurrences?.();
       if (historyTimer) clearTimeout(historyTimer);
-      historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(String(error))); }, 250);
+      historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(error => diagnostic(error)); }, 250);
     },
     beforeImage: () => synchronizeImageHistory(),
     onRetryCapture: (body, signal) => captureBridge.retry(body, signal),
@@ -241,6 +258,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       });
     },
   });
+  if (relayFailure !== undefined) relay.stop();
   const closeRelay = own(() => relay.close());
   // Source admission and AST analysis page the durable index independently;
   // native callbacks only persist text and never wait for media work.
@@ -308,13 +326,13 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       await closeProvider();
       await stopMarkdownTimeline();
       journal.patchSnapshot({ activity: "stopped", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
-      if (projectionFailure) {
+      if (projectionFailure && relayFailure === undefined) {
         // Drain committed events before recording a visible gap. Never discard an
         // earlier outbox row to make room for a later native callback.
         await relay.flush();
         journal.drainProjectionGap();
       }
-      publishState(); await relay.flush().catch(fail);
+      if (relayFailure === undefined) { publishState(); await relay.flush().catch(fail); }
     }
     catch (error) { fail(error); }
     finally {
@@ -322,7 +340,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       await stopMarkdownCaptures().catch(fail);
       await stopMarkdownTimeline().catch(fail);
       historyAbort.abort(new Error("Controller history synchronization stopped."));
-      await historyWork?.catch(error => diagnostic(String(error)));
+      await historyWork?.catch(error => diagnostic(error));
       try { await closeRelay(); } catch (error) { fail(error); }
       try { await stopMedia(); } catch (error) { fail(error); }
       for (const socket of sockets) socket.destroy();
@@ -534,7 +552,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         accepted = true;
         publishState();
         const receipt = journal.getOperation(operationId);
-        if (receipt?.kind === "send_message" || receipt?.kind === "execute_command") { try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); } }
+        if (receipt?.kind === "send_message" || receipt?.kind === "execute_command") { try { relay.receipt(receipt); } catch (error) { diagnostic(error); } }
         });
         return accepted;
       },
@@ -542,7 +560,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         const operation = journal.getOperation(operationId);
         if (!operation || !["update_setting", "execute_command"].includes(operation.kind) || !["dispatching", "provider_accepted", "unknown"].includes(operation.state)) return;
         const receipt = journal.recordOperation(operationId, "confirmed", { disposition: "handled" });
-        publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
+        publishState(); try { relay.receipt(receipt); } catch (error) { diagnostic(error); }
       }),
       hasTimelineEntry: entryId => journal.hasTimelineEntry(entryId),
       onTimeline: (entry, metadata) => nativeEvent(() => {
@@ -557,7 +575,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         }
         if (entry.kind === "interaction" && entry.interaction.state === "resolved") {
           for (const receipt of observeNativeInteraction(journal, entry.interaction.interactionId, ticket.executionGeneration)) {
-            try { relay.receipt(receipt); } catch (error) { diagnostic(String(error)); }
+            try { relay.receipt(receipt); } catch (error) { diagnostic(error); }
           }
         }
       }),
@@ -569,6 +587,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       : ticket.provider === "claude" ? (await import("./providers/claude.js")).openClaudeProvider(nativeOptions)
       : (await import("./providers/copilot.js")).openCopilotProvider(nativeOptions));
     await Promise.all(processCaptures);
+    if (relayFailure !== undefined) throw relayFailure;
     if (projectionFailure) throw new Error(projectionFailure);
     if (providerFailure) throw new Error(providerFailure);
     if (stopping) return;
@@ -578,6 +597,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     if (bootstrapSignal.aborted) void shutdown();
     await startup;
     await finished;
-  } catch (error) { fail(error); await shutdown(); throw error; }
+    if (relayFailure !== undefined) throw relayFailure;
+  } catch (error) { const failure = relayFailure ?? error; fail(failure); await shutdown(); throw failure; }
   finally { process.off("SIGINT", signal); process.off("SIGTERM", signal); }
 };
