@@ -181,7 +181,7 @@ export const openCodexProvider = async (options: ProviderOptions): Promise<Nativ
     stopped: transport.stopped,
   };
   if (options.onNativeReadPolicy) authority = new CodexReadAuthority({ cwd: options.cwd, request: transport.request.bind(transport), publish: options.onNativeReadPolicy,
-    ...(options.drainNativeReadPolicy ? { drain: options.drainNativeReadPolicy } : {}) });
+    ...(options.drainNativeReadPolicy ? { drain: options.drainNativeReadPolicy } : {}), ...(options.assertNativeDispatch ? { assertNativeDispatch: options.assertNativeDispatch } : {}) });
   controls = new CodexControls(rpc, () => nativeId, () => currentTurnId, options.cwd, nativeHome, state, options.onControlConfirmed, options.controlsRevisionFloor, options.assertNativeDispatch);
   child.once("close", () => {
     authority?.invalidate();
