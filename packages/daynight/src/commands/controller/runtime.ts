@@ -180,6 +180,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       if (accountingFailure !== undefined) throw accountingFailure;
       try { const result = await invoke(); const saved = journal.recordOperation(operation.operationId, "confirmed", result); nativeEvent(publishState); return saved; }
       catch (error) {
+        if (accountingFailure !== undefined) throw accountingFailure;
         if (isOutboxFailure(error)) { stopForAccountingFailure(error); throw error; }
         const observed = journal.getOperation(operation.operationId);
         if (observed && (["confirmed", "failed", "rejected", "expired"].includes(observed.state) || ["initial", "send_message", "execute_command"].includes(operation.kind) && observed.state === "provider_accepted")) { nativeEvent(publishState); return observed; }
@@ -208,6 +209,10 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     try { return action(); }
     catch (error) { if (isOutboxFailure(error)) stopForAccountingFailure(error); throw error; }
   }
+  const assertNativeDispatch = (): void => {
+    if (accountingFailure !== undefined) throw accountingFailure;
+    if (stopping) throw new Error("Controller stopped before native dispatch.");
+  };
   const captureBridge = createControllerCaptureBridge({ journal, capture: (action, body) => relay.capture(action, body), beforeCapture: () => synchronizeImageHistory(), provider: () => provider, writable: () => !stopping && !cleaning && synchronized, retrySource: (request, signal) => markdownCaptures.retry(request, signal) });
   const externalImages = createExternalImagePolicyProducer({ paths: resolveConfigurationPaths(options.homeDirectory) });
   const closeExternalImages = own(() => externalImages.close());
@@ -432,10 +437,16 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
                 const turn = journal.getSnapshot().currentTurnId;
                 if (turn !== null) {
                   await provider!.cancel(turn);
-                  while (journal.getSnapshot().currentTurnId !== null && Date.now() < action.deadline) await new Promise(resolve => setTimeout(resolve, 25));
+                  assertNativeDispatch();
+                  while (journal.getSnapshot().currentTurnId !== null && Date.now() < action.deadline) {
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                    assertNativeDispatch();
+                  }
                 }
+                assertNativeDispatch();
                 if (Date.now() >= action.deadline) throw new Error("Cleanup deadline expired before input submission.");
                 accountingBoundary(() => journal.assertInputCapacity());
+                assertNativeDispatch();
                 cleanupInputStarted = true;
                 const receipt = await provider!.send(textNativeInput(action.prompt), action.operationId, null);
                 journal.recordOperation(action.operationId, "provider_accepted", receipt);
@@ -516,6 +527,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
       ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
+      assertNativeDispatch,
       ...(ticket.configuration.validateNativeSelection === true ? { validateNativeSelection: true as const } : {}),
       onDiagnostic: diagnostic,
       onNativeReadPolicy: policy => { nativeReadPolicy = policy; if (!policy) markdownCaptures.invalidateNativeReadPolicy(); },

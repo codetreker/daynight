@@ -210,6 +210,62 @@ test("draining responds only to interactions created by the actual cleanup input
   } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
 });
 
+test("an accounting failure while cleanup awaits cancellation prevents its later native input", async () => {
+  setup(); const journal = fixture.journal();
+  journal.patchSnapshot({ initialInputState: "confirmed", activity: "working", currentTurnId: "turn" });
+  const { SqliteAccessError } = await import("../../../src/platform/sqlite-error.js");
+  const failure = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back", cause: new Error("original accounting failure") });
+  const cancelled = Promise.withResolvers<void>(), cancel = vi.fn(() => cancelled.promise), send = vi.fn(), record = vi.fn();
+  Object.assign(journal, { assertInputCapacity: vi.fn(), prepareOperation: vi.fn(() => ({ operationId: "cleanup-operation", kind: "cleanup", state: "accepted" })), markDispatching: vi.fn(), getOperation: vi.fn(() => ({ state: "dispatching" })), recordOperation: record, markProjectionGap: vi.fn() });
+  fixture.close.mockImplementation(async () => { await cancelled.promise; });
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close, cancel, send });
+  const log = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  const result = running.then(() => null, error => error);
+  try {
+    await vi.waitFor(() => expect(journal.getSnapshot().startup).toMatchObject({ state: "ready" }));
+    const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, setEncoding: () => {}, destroy: () => {}, end: vi.fn() });
+    fixture.socketHandler!(socket);
+    socket.emit("data", JSON.stringify({ requestId: "cleanup-request", action: { kind: "cleanup", operationId: "cleanup-operation", prompt: "clean up", deadline: Date.now() + 5000 } }) + "\n");
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    journal.appendEvent.mockImplementationOnce(() => { throw failure; });
+    const native = fixture.options as { onState(state: unknown): void; assertNativeDispatch(): void };
+    expect(() => native.assertNativeDispatch()).not.toThrow();
+    native.onState({ nativeSessionId: "native", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: true } });
+    expect(journal.disableOutboxWrites).toHaveBeenCalledOnce();
+    expect(() => native.assertNativeDispatch()).toThrow(failure);
+    cancelled.resolve();
+    expect(await result).toBe(failure);
+    expect(send).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  } finally { cancelled.resolve(); process.emit("SIGTERM", "SIGTERM"); await result; log.mockRestore(); }
+});
+
+test("shutdown while cleanup awaits cancellation prevents its later native input", async () => {
+  setup(); const journal = fixture.journal();
+  journal.patchSnapshot({ initialInputState: "confirmed", activity: "working", currentTurnId: "turn" });
+  const cancelled = Promise.withResolvers<void>(), cancel = vi.fn(() => cancelled.promise), send = vi.fn();
+  const record = vi.fn((_id: string, state: string) => ({ state }));
+  Object.assign(journal, { assertInputCapacity: vi.fn(), prepareOperation: vi.fn(() => ({ operationId: "cleanup-operation", kind: "cleanup", state: "accepted" })), markDispatching: vi.fn(), getOperation: vi.fn(() => ({ state: "dispatching" })), recordOperation: record });
+  fixture.close.mockImplementation(async () => { await cancelled.promise; });
+  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close, cancel, send });
+  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
+  try {
+    await vi.waitFor(() => expect(journal.getSnapshot().startup).toMatchObject({ state: "ready" }));
+    const socket = Object.assign(new EventEmitter(), { setTimeout: () => {}, setEncoding: () => {}, destroy: () => {}, end: vi.fn() });
+    fixture.socketHandler!(socket);
+    socket.emit("data", JSON.stringify({ requestId: "cleanup-request", action: { kind: "cleanup", operationId: "cleanup-operation", prompt: "clean up", deadline: Date.now() + 5000 } }) + "\n");
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    process.emit("SIGTERM", "SIGTERM");
+    expect(() => (fixture.options as { assertNativeDispatch(): void }).assertNativeDispatch()).toThrow("Controller stopped before native dispatch.");
+    cancelled.resolve();
+    await vi.waitFor(() => expect(socket.end).toHaveBeenCalled());
+    await running;
+    expect(send).not.toHaveBeenCalled();
+    expect(record).toHaveBeenCalledWith("cleanup-operation", "unknown", null, "Controller stopped before native dispatch.");
+  } finally { cancelled.resolve(); process.emit("SIGTERM", "SIGTERM"); await running.catch(() => {}); }
+});
+
 
 test.each(["codex", "claude", "copilot"] as const)("passes prepared aliases to %s without changing the parent environment", async provider => {
   setup(); fixture.provider = provider;

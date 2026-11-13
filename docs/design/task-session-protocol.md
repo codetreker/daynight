@@ -281,7 +281,7 @@ observedAt 是观测发生时间，不是心跳。读到未来时间或超过 90
 
 活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal v11 保存原生身份、完整操作记录、当前标准化 timeline、投影状态和有界 outbox。`content/session-content.ts` 组合 SQL timeline 与 `content/resource-files.ts` 的 descriptor、blob、pin 和 lease；资源保持 `journal.sqlite.pending-content/` 原路径，正文不在普通候选文件中。一次发布在原写事务中提交当前正文、totals、Markdown/原生图片状态、输入来源及 outbox。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不删除当前正文。所有在线分页、inspection、历史同步和归档均读取同一 SQL 正文所有者；资源删除先在同步读快照中核对当前正文和原生输入图片引用，再核对 pin/lease。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。[SQL 正文设计](session-sqlite-content.md)拥有当前行、分页、迁移与停止维护。
 
-sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；当前正文、统计与投递事件同事务提交，超限时仅压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
+sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；当前正文、统计与投递事件同事务提交，超限时仅压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。计量不变量失败会同步禁止后续 outbox 写入；原生副作用在异步准备后、实际派发前重新检查该状态。已派发输入保持原有结果及未知责任，不得重放。操作日志不参与 outbox 压缩。
 
 `outbox-store.ts` 在原持有 permit 的同步写事务内统一维护 outbox 行和 `outbox_totals` 的编码 UTF-8 字节数；调用方继续负责容量策略、序号、ACK 水位、occurrence 和停止身份。容量查询读取 singleton；部分 ACK 只核算实际删除的主键前缀，完整 ACK 和清空批量删除并置零。正常打开与恢复不遍历队列计量。缺失或非法 singleton、空队列与零值矛盾、扣减不足均明确失败，不自动重建。旧格式通过 011 在原迁移事务中一次读取编码文本，以 `Buffer.byteLength(value, "utf8")` 初始化；文件编码不改变，UTF-16 数据库也按相同 UTF-8 规则计量。范围合法但错误的正数不能在不扫描全部 payload 时全面检测。
 

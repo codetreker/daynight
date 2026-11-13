@@ -47,6 +47,9 @@ Capacity reads and full drains avoid a payload scan, while partial acknowledgeme
 still read the deleted prefix. Every supported writer must use the shared owner and
 its original transaction. Detectable singleton, empty-relationship and underflow
 errors fail rather than repairing data; an arbitrary positive but incorrect count
-cannot be detected without a full recount. A failed or uncertain transaction keeps
+cannot be detected without a full recount. On an accounting failure the Controller
+fences further queue writes and rechecks that fence immediately before native
+side effects, including after asynchronous preparation. Already dispatched native
+input retains its original outcome and is not replayed. A failed or uncertain transaction keeps
 the existing outcome and error rules, and the migration does not rewrite queue
 content or file encoding.

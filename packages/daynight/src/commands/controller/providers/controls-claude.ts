@@ -17,7 +17,7 @@ export class ClaudeControls {
   private actualModel: string | null = null;
   private appliedSettings = false;
   private modelReadbackRequired = false;
-  constructor(private readonly native: ClaudeControlQuery, model: string | null, effort: string | undefined, changed: () => void, private readonly confirmed?: (id: string) => void, private readonly resumed = false, revisionFloor = "0") { this.store = new ProviderControls(changed, revisionFloor); this.model = resumed ? null : model ?? "default"; this.effortDefault = effort === undefined; }
+  constructor(private readonly native: ClaudeControlQuery, model: string | null, effort: string | undefined, changed: () => void, private readonly confirmed?: (id: string) => void, private readonly resumed = false, revisionFloor = "0", private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); this.model = resumed ? null : model ?? "default"; this.effortDefault = effort === undefined; }
   observe(raw: unknown) {
     if (this.closed) return;
     const message = record(raw);
@@ -82,12 +82,14 @@ export class ClaudeControls {
       this.describe("Claude model update is awaiting native confirmation.");
     }
     const apply = async () => {
+      this.assertNativeDispatch?.();
       if (id === "model") { await this.native.setModel(value); this.model = value; this.actualModel = null; await this.readSettings(); }
       else if (id === "effort") { await this.native.applyFlagSettings({ effortLevel: value === "default" ? null : value as NonNullable<Options["effort"]> }); this.effortDefault = value === "default"; await this.readSettings(); if (value !== "default" && this.effort !== value) throw new Error("Claude did not apply the requested effort."); }
       else {
         if (value !== "bypassPermissions" && this.native.applyFlagSettings) await this.native.applyFlagSettings({ sandbox: null });
+        this.assertNativeDispatch?.();
         await this.native.setPermissionMode(value as PermissionMode); this.permission = value; this.describe();
-        if (value === "bypassPermissions") await this.native.applyFlagSettings({ sandbox: { enabled: false } });
+        if (value === "bypassPermissions") { this.assertNativeDispatch?.(); await this.native.applyFlagSettings({ sandbox: { enabled: false } }); }
       }
       if (this.closed) throw new Error("Native session closed before control confirmation.");
       this.describe(null); this.confirmed?.(operationId);

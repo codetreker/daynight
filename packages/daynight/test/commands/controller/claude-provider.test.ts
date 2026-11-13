@@ -272,6 +272,26 @@ test("Claude initializes its transport before the first prompt proves native ses
   } finally { await provider.close(); }
 });
 
+test("Claude cannot start native transport after a dispatch fence", async () => {
+  nativeFixture(); const failure = new Error("accounting failure"); sdk.query.mockClear();
+  await expect(openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline: () => {}, onState: () => {}, onSpawn: () => {}, assertNativeDispatch: () => { throw failure; },
+  })).rejects.toBe(failure);
+  expect(sdk.query).not.toHaveBeenCalled();
+});
+
+test("Claude cannot submit input when the working-state callback fences dispatch", async () => {
+  const fixture = nativeFixture(), failure = new Error("accounting failure"); let fenced = false;
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
+    onTimeline: () => {}, onState: state => { if (state.activity === "working") fenced = true; }, onSpawn: () => {},
+    assertNativeDispatch: () => { if (fenced) throw failure; },
+  });
+  try {
+    await expect(provider.send(textNativeInput("must not dispatch"), randomUUID(), null)).rejects.toBe(failure);
+    expect(fixture.inputs).toEqual([]);
+  } finally { await provider.close(); }
+});
+
 test("Claude first input defers provenance until delayed native identity is verified", async () => {
   const fixture = nativeFixture(false), entries: ProviderEntry[] = [], associations: { operationId: string; nativeSessionId: string; observedNativeId: string | null }[] = [];
   const original = sdk.query.getMockImplementation()!;

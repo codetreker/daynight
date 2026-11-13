@@ -13,7 +13,7 @@ export class CopilotControls {
   private currentModel: string | null = null;
   private unconfirmed = false;
   private unsettled: { id: string; value: string } | null = null;
-  constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null) { this.store = new ProviderControls(changed, revisionFloor); }
+  constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null, private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); }
   imageCapabilities(profile: CopilotImageProfile | null, sessionId: string | null): Omit<ProviderImageCapabilities, "revision"> {
     const matches = this.capabilityModels.filter(item => item.id === this.currentModel), model = matches.length === 1 ? matches[0] : undefined;
     const vision = record(record(model?.capabilities).supports).vision, limits = record(record(record(model?.capabilities).limits).vision);
@@ -33,12 +33,14 @@ export class CopilotControls {
   async initialize(resume: boolean, unattended = false) {
     if (!resume && unattended) {
       if (typeof this.native.rpc.permissions.configure !== "function") throw new Error("Native Copilot cannot configure unattended full access.");
+      this.assertNativeDispatch?.();
       // SDK sessions have independent path and URL managers; runtime flags and
       // setApproveAll alone do not authorize access outside the task worktree.
       const result = await controlDeadline(this.native.rpc.permissions.configure({ approveAllToolPermissionRequests: true, approveAllReadPermissionRequests: true, paths: { unrestricted: true }, urls: { unrestricted: true } }), "Copilot full access initialization");
       if (!result.success) throw new Error("Copilot did not confirm unattended full access.");
       this.toolApproval = "allow";
     } else if (!resume && typeof this.native.rpc.permissions.setApproveAll === "function") {
+      this.assertNativeDispatch?.();
       try { const result = await controlDeadline(this.native.rpc.permissions.setApproveAll({ enabled: false }), "Copilot permission initialization"); if (!result.success) throw new Error("Copilot did not confirm default tool permissions."); this.toolApproval = "ask"; }
       catch (error) { this.store.update({ settingsError: controlError(error) }); }
     }
@@ -81,6 +83,7 @@ export class CopilotControls {
   async set(id: string, value: string, operationId: string, revision: string) {
     this.store.setting(id, value, revision); if (this.closed) throw new Error("Native session closed.");
     this.invalidateImages(); this.unsettled = { id, value };
+    this.assertNativeDispatch?.();
     if (id === "tool_approval") {
       const operation = this.native.rpc.permissions.setApproveAll({ enabled: value === "allow" }).then(result => { if (!result.success) throw new Error("Copilot did not confirm tool permission update."); if (this.closed) throw new Error("Native session closed."); this.toolApproval = value; this.store.update({ settings: [...this.store.value.settings.filter(item => item.id !== id), this.permissions()] }); this.confirmed?.(operationId); });
       try { await controlDeadline(operation, "Copilot permission update"); } catch (error) { this.toolApproval = null; this.store.update({ settings: [...this.store.value.settings.filter(item => item.id !== id), this.permissions()], settingsError: controlError(error) }); throw error; }
@@ -100,6 +103,6 @@ export class CopilotControls {
     }
     await controlDeadline(confirmation, "Copilot queued model confirmation");
   }
-  async invoke(id: string, args: string, revision: string): ReturnType<CopilotSession["rpc"]["commands"]["invoke"]> { const command = this.store.command(id, revision); if (this.closed) throw new NativeRpcError(-32602, "Native session closed."); const result = await controlDeadline(this.native.rpc.commands.invoke({ name: command.name, input: args }), "Copilot command"); if (result.runtimeSettingsChanged) await this.refresh(); return result; }
+  async invoke(id: string, args: string, revision: string): ReturnType<CopilotSession["rpc"]["commands"]["invoke"]> { const command = this.store.command(id, revision); if (this.closed) throw new NativeRpcError(-32602, "Native session closed."); this.assertNativeDispatch?.(); const result = await controlDeadline(this.native.rpc.commands.invoke({ name: command.name, input: args }), "Copilot command"); if (result.runtimeSettingsChanged) await this.refresh(); return result; }
   close() { this.closed = true; if (this.pollTimer) clearInterval(this.pollTimer); for (const item of this.pending.values()) item.reject(new Error("Native Copilot closed before model confirmation.")); this.pending.clear(); }
 }

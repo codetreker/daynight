@@ -54,6 +54,8 @@ export type ProviderOptions = {
   agentCliEnvironment?: Readonly<{ PATH: string; DN_CONFIG_DIR: string }>;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
   imageRuntime?: NativeImageRuntime;
+  /** Recheck the owning Controller before a new native side effect. */
+  assertNativeDispatch?(): void;
   onTimeline(entry: ProviderEntry, metadata?: MarkdownTimelineMetadata): void;
   /** Whether this Session already durably owns a projected timeline identity. */
   hasTimelineEntry?(entryId: string): boolean;
