@@ -81,3 +81,18 @@ func prepareTagReplacement(ctx context.Context, tx store.ProjectWriteScope, curr
 	}
 	return ids, changed, nil
 }
+
+func prepareCreateTags(ctx context.Context, tx store.ProjectWriteScope, requested []string) ([]string, error) {
+	ids, err := taskcore.NormalizeTagIDs(requested)
+	if err != nil || len(ids) == 0 {
+		return ids, err
+	}
+	tags, err := tx.TagDAO().ResolveTags(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	if len(tags) != len(ids) {
+		return nil, &model.Fault{Code: "tag_not_found", Message: "One or more tags were not found."}
+	}
+	return ids, nil
+}

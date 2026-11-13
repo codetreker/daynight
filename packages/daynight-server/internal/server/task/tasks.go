@@ -113,6 +113,10 @@ func TaskResource(request *http.Request, principal model.Principal, base *slog.L
 func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, error) {
 	input := api.CreateTaskRequest{DependsOn: []string{}, Properties: api.TaskWritableProperties{}}
 	var err error
+	input.TagIDs, err = httpx.OptionalStrings(fields, "tagIds")
+	if err != nil {
+		return api.CreateTaskRequest{}, err
+	}
 	input.Type, err = httpx.OptionalString(fields, "type")
 	if err != nil {
 		return api.CreateTaskRequest{}, err
@@ -314,7 +318,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
 	}
-	fields, err := httpx.DecodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo", "status", "type", "parentId")
+	fields, err := httpx.DecodeObject(w, request, "title", "description", "dependsOn", "externalDependsOn", "properties", "requiredPlatform", "assignedTo", "status", "type", "parentId", "tagIds")
 	if err != nil {
 		httpx.WriteError(w, request, logger, "task", "create", err)
 		return
@@ -325,6 +329,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	values := taskcore.CreateTask{
+		TagIDs: input.TagIDs,
 		Status: taskStatusValue(input.Status), AssignedTo: input.AssignedTo, AssignedToPresent: input.AssignedToPresent, RequiredPlatform: platformValue(input.RequiredPlatform), RequiredPlatformPresent: input.RequiredPlatformPresent, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn, Properties: propertyValues(input.Properties),
 	}
 	if input.Type != nil {
