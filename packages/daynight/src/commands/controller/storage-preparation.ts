@@ -122,9 +122,9 @@ export const reportControllerStorageEvent = (event: SqliteMigrationEvent, observ
   try { (reporter ?? reportSqliteMigrationEvent)(reported); }
   catch (cause) { warn("Controller storage reporting failed.", cause); }
 };
-const importReporter = (observation: ControllerStorageObservation, reporter?: SqliteMigrationReporter, freshTicket?: ControllerLaunchTicket): SqliteMigrationReporter => event => {
+const journalReporter = (observation: ControllerStorageObservation, reporter?: SqliteMigrationReporter, freshTicket?: ControllerLaunchTicket): SqliteMigrationReporter => event => {
   if (event.kind === "completed" && observation.db?.open) observeControllerStorage(observation, observation.db, freshTicket);
-  return reportControllerStorageEvent({ ...event, phase: "timeline-import", storage: { ...event.storage, sqlitePhase: event.phase } }, observation, reporter);
+  return reportControllerStorageEvent({ ...event, phase: "journal-migration", storage: { ...event.storage, sqlitePhase: event.phase } }, observation, reporter);
 };
 
 export const controllerJournalStateDirectory = (file: string): string => {
@@ -141,7 +141,7 @@ export const controllerJournalWriteOptions = (file: string, permit: ControllerSt
   assertControllerStoragePermit(permit, file);
   const observation: ControllerStorageObservation = { role: "upgrade-only", roleResult: "pending" };
   const contexts = new WeakMap<Database.Database, JournalMigrationContext>();
-  return { file, onMigration: importReporter(observation, onMigration), format: controllerJournalFormatForMigration(db => {
+  return { file, onMigration: journalReporter(observation, onMigration), format: controllerJournalFormatForMigration(db => {
     if (observation.db !== db) observeControllerStorage(observation, db);
     let context = contexts.get(db);
     if (context === undefined) { context = createControllerJournalMigrationContext(db, permit, stateDirectory, executionId, deadline); contexts.set(db, context); }
@@ -161,7 +161,7 @@ export const controllerJournalReadOptions = (file: SqliteDatabaseSource, existin
   if (existingPermit !== undefined && typeof file === "string") assertControllerStoragePermit(existingPermit, file);
   return {
     file,
-    onMigration: importReporter(observation, onMigration),
+    onMigration: journalReporter(observation, onMigration),
     format: controllerJournalFormatForMigration(db => {
       if (observation.db !== db) observeControllerStorage(observation, db);
       if (heldPermit === undefined) throw new Error("Controller journal migration requires its original storage permit and reserved-write context.");
@@ -242,10 +242,10 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
   const format = controllerJournalFormatForMigration(context);
 
   try {
-    db = openSqliteDatabase({ file: request.journalFile, format, allowCreate: request.mode === "writer", timeoutMs: storageTimeout(request.deadline), onMigration: importReporter(observation, onMigration, request.mode === "writer" ? request.ticket : undefined),
+    db = openSqliteDatabase({ file: request.journalFile, format, allowCreate: request.mode === "writer", timeoutMs: storageTimeout(request.deadline), onMigration: journalReporter(observation, onMigration, request.mode === "writer" ? request.ticket : undefined),
       assertMigrationAllowed: (connection, source) => {
         observeControllerStorage(observation, connection, request.mode === "writer" ? request.ticket : undefined);
-        try { assertJournalMigrationAllowed(connection, source, 10); if (source.version !== 0) assertControllerStorageRole(request, controllerStorageExecutionRow(connection)); observation.roleResult = "admitted"; }
+        try { assertJournalMigrationAllowed(connection, source); if (source.version !== 0) assertControllerStorageRole(request, controllerStorageExecutionRow(connection)); observation.roleResult = "admitted"; }
         catch (cause) { observation.roleResult = "rejected"; throw cause; }
       },
       onReady: connection => {

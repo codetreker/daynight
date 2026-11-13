@@ -11,6 +11,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import { ControllerBootstrapReplacedError, ControllerLaunchJournalConflictError, ControllerLaunchJournalObservationError, hasUnsafeControllerObservationFailure, isControllerJournalIoFailure, reconcileSubmittedControllerLaunch, stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 import { ControllerIpcIdentityConflictError, requestController } from "../../../src/commands/controller/local-client.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { captureProcessProof, inspectProcessProof } from "../../../src/commands/controller/process-proof.js";
@@ -152,7 +154,7 @@ it("does not migrate the preceding v8 journal when classifying an exited bootstr
   expect(failure).toBeInstanceOf(ControllerLaunchJournalObservationError);
   const cause = (failure as ControllerLaunchJournalObservationError).journalCause;
   expect(cause).toBeInstanceOf(SqliteAccessError);
-  expect(cause).toMatchObject({ kind: "invalid-format", context: { database: "controller-journal", phase: "inspect", fromVersion: 8, toVersion: 10 } });
+  expect(cause).toMatchObject({ kind: "invalid-format", context: { database: "controller-journal", phase: "inspect", fromVersion: 8, toVersion: currentSqliteVersion(controllerJournalFormat) } });
   expect(isControllerJournalIoFailure(failure)).toBe(false);
   expect(hasUnsafeControllerObservationFailure(failure)).toBe(true);
   const after = new Database(f.journalFile, { readonly: true });

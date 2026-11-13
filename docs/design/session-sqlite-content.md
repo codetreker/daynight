@@ -74,6 +74,6 @@ checkpoint busy 返回 `waiting/reader_busy`，保留 pending、原文件与必�
 
 ## 可观察结果与验证
 
-组件复用 SQLite migration reporter，阶段为 `timeline-import`、`legacy-timeline-retirement`、`journal-compaction`、`storage-admission`。指标包含条目与字节数、真实文件占用、checkpoint busy/frames、回收字节和实际事务结果，不记录正文或凭据。诊断失败保留真实存储操作结果。
+组件复用 SQLite migration reporter，通用编号迁移阶段为 `journal-migration`，原 SQLite 具体阶段保留在 `storage.sqlitePhase`；维护的实际阶段为 `legacy-timeline-retirement`、`journal-compaction`、`storage-admission`。目标版本来自 canonical 格式；停止结算在连接成功准入前保留真实来源版本，之后报告实际已准入版本。指标包含条目与字节数、真实文件占用、checkpoint busy/frames、回收字节和实际事务结果，不记录正文或凭据。诊断失败保留真实存储操作结果。
 
 真实 SQLite 测试拥有当前行替换、BigInt、UTF-8、游标、统计回滚、历史来源与文件身份、资源引用及停止维护故障。held WAL reader 验证退休屏障，空闲打开连接验证 VACUUM 后置 checkpoint。100000 条、64 MiB 和大量历史修订探针独立于普通 CI；生成数据只能证明其明示的内容、顺序、outbox/ACK 和 reader 条件，不能替代未取得的原事故数据。
