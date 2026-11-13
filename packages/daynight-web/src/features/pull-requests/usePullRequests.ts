@@ -75,6 +75,7 @@ export const usePullRequests = (options: PullRequestsOptions) => {
     };
     const admission = (onDispatch: () => void) => ({ userId, onPrincipalMismatch: () => {}, onDispatch });
     const pageCursor = initialized && cursor === null && upper !== null ? firstPageCursor(projectId, initial.filter, initial.query, upper) : cursor;
+    const syntheticFirstPage = cursor === null && pageCursor !== null;
     const reads: Promise<void>[] = [
       load((signal, dispatch) => getGitHubStatus(projectId, signal, admission(dispatch)), status => {
         const previous = session.snapshot.status;
@@ -86,7 +87,7 @@ export const usePullRequests = (options: PullRequestsOptions) => {
         if (initialized && upper === null && page.items.length > 0) { publish({ ...session.snapshot, hasUpdates: true }); return; }
         if (!initialized) { session.upper = page.items[0]?.number ?? null; session.initialized = true; }
         // The synthetic first-page anchor is a read bound, not a navigable earlier page.
-        const visible = targetPage === 1 ? { ...page, previousCursor: null } : page;
+        const visible = syntheticFirstPage ? { ...page, previousCursor: null } : page;
         publish({ ...session.snapshot, page: visible, pageNumber: targetPage, error: null, refreshKey: session.snapshot.refreshKey + 1 });
       }, 'error'),
     ];

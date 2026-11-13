@@ -59,6 +59,42 @@ it('revalidates the first page with a bounded cursor and keeps previous navigati
   expect(result.current.page?.items).toEqual([]); expect(result.current.page?.previousCursor).toBe('return');
 });
 
+it('preserves genuine previous cursors when reopened PRs shift a numeric first page', async () => {
+  const cursor = (anchorNumber: string, direction: 'next' | 'previous') => btoa(JSON.stringify({ v: 1, projectId: prProjectId, state: 'active', q: '', limit: 6, upperNumber: '24', anchorNumber, direction })).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+  const second = cursor('14', 'next'), shiftedFirst = cursor('12', 'previous'), remainingFirst = cursor('23', 'previous');
+  let reopened = false;
+  const fetch = vi.fn(async (url: string) => {
+    if (isStatus(url)) return prResponse(prStatus(reopened ? '2' : '1'));
+    const requested = new URL(url, 'https://test').searchParams.get('cursor');
+    if (requested === second) return prResponse(prPage(['12', '10', '8', '6', '4', '2'], '1', null, shiftedFirst));
+    if (requested === shiftedFirst) return prResponse(prPage(['23', '22', '20', '18', '16', '14'], '2', second, remainingFirst));
+    if (requested === remainingFirst) return prResponse(prPage(['24'], '2', cursor('24', 'next')));
+    if (requested !== null) throw new Error(`Unexpected cursor: ${requested}`);
+    return prResponse(prPage(['24', '22', '20', '18', '16', '14'], reopened ? '2' : '1', second));
+  });
+  vi.stubGlobal('fetch', fetch);
+  const { result } = renderHook(() => usePullRequests(options()));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  act(() => result.current.next());
+  await waitFor(() => expect(result.current.page?.items[0]?.number).toBe('12'));
+  expect(result.current.pageNumber).toBe(2);
+  reopened = true;
+  act(() => result.current.previous());
+  await waitFor(() => expect(result.current.page?.items[0]?.number).toBe('23'));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.pageNumber).toBe(1);
+  expect(result.current.page?.previousCursor).toBe(remainingFirst);
+  act(() => result.current.reconcile());
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(fetch.mock.calls.filter(([url]) => new URL(url, 'https://test').searchParams.get('cursor') === shiftedFirst)).toHaveLength(2);
+  expect(result.current.page?.previousCursor).toBe(remainingFirst);
+  act(() => result.current.previous());
+  await waitFor(() => expect(result.current.page?.items.map(item => item.number)).toEqual(['24']));
+  expect(result.current.pageNumber).toBe(1);
+  expect(result.current.page?.previousCursor).toBeNull();
+  expect(fetch.mock.calls.some(([url]) => new URL(url, 'https://test').searchParams.get('cursor') === remainingFirst)).toBe(true);
+});
+
 it('keeps initially empty data and announces newly saved records until an explicit refresh', async () => {
   let added = false;
   vi.stubGlobal('fetch', vi.fn(async (url: string) => prResponse(isStatus(url) ? prStatus() : prPage(added ? ['1'] : [], added ? '2' : '1'))));
