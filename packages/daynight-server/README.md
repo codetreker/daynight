@@ -834,8 +834,12 @@ resolve from the configuration root. The [remote design](../../docs/design/githu
 describes token handling and the read contract. When enabled, the server starts
 the bounded synchronization worker and exposes Project administrator connection
 and settings operations. Configure the GitHub App with Pull requests read access
-and install it on the target repository. The Webhook receiver is a separate
-integration; polling remains available without it.
+and install it on the target repository. Set the App's HTTPS webhook URL to
+`/api/v1/github/webhook`, configure the same webhook secret, and subscribe to
+pull request and installation lifecycle events. The reverse proxy must allow a
+26,214,400-byte request body. The receiver persists refresh hints before
+acknowledging relevant deliveries; polling repairs missed deliveries. See the
+[connection and scheduler design](../../docs/design/github-connection-runtime.md).
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
