@@ -1041,7 +1041,7 @@ describe('project overview and task workspace', () => {
     graphRequest.mockImplementation(async (id) => snapshot([], id));
     const view = mountOverview();
     await screen.findByRole('heading', { name: project }); await waitForGraph();
-    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    expect(screen.getAllByRole('tab')).toHaveLength(3);
     fireEvent.click(sectionTab('tasks'));
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     act(() => browserNavigation().navigate(`/projects/${otherProject}`));

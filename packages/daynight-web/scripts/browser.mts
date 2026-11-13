@@ -26,6 +26,7 @@ export const browserConfigs = [
   'task-controls-playwright.config.ts',
   'graph-browser-playwright.config.ts',
   'pr-detail-browser-playwright.config.ts',
+  'pr-list-browser-playwright.config.ts',
   'my-tasks-browser-playwright.config.ts',
   'markdown-browser-playwright.config.ts',
   'claim-reading-playwright.config.ts',

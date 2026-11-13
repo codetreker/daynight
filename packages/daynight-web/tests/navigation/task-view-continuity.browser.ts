@@ -58,7 +58,7 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     await expect(page.getByRole('link', { name: 'Project members', exact: true })).toBeVisible();
     const overview = page.getByRole('tab', { name: 'Overview', exact: true });
     const tasks = page.getByRole('tab', { name: 'Task list', exact: true });
-    await expect(page.getByRole('tab')).toHaveCount(2);
+    await expect(page.getByRole('tab')).toHaveCount(3);
     await expect(page.getByRole('status', { name: 'Loading task graph' })).toBeVisible();
     await tasks.click();
     await expect(tasks).toHaveAttribute('aria-selected', 'true');
