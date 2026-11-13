@@ -18,6 +18,10 @@ import type { HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents
 import { executeHistoricalMetadataProbe, executeRawPreparationProbe, historicalWindowsInventoryCommand, preparationProbeMarker, runPreparationProbeSequence } from "./herdr-platform-probes.fixtures.js";
 import { decodeWindowsExternalScript, prepareWindowsObserverEnvironment, runWindowsPlatformQuery, windowsExternalScriptQuery, windowsProcessQuery, decodeWindowsProcessQuery, windowsConsoleQuery, decodeWindowsConsoleQuery } from "./windows-platform-query.fixtures.js";
 import { executePlatformCommand as execute, platformErrorDetails } from "./herdr-platform-command.fixtures.js";
+import { closePartialWorkspace, confirmReadinessUnchanged, isRootReadinessDeadline, isRootReadinessFailure, observePartialWorkspace, verifyReadinessDiagnostic } from "./herdr-platform-partial-workspace.fixtures.js";
+import { inspectWindowsRootReadiness } from "./herdr-platform-readiness-diagnostics.fixtures.js";
+import type { ResolvedToolLaunch } from "../../../src/platform/tool-executables.js";
+import type { HerdrRpcClient } from "../../../src/commands/worker/herdr/rpc.js";
 
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
 const outputRoot = path.resolve(packageRoot, "../../.tmp/herdr-tools/research-platform");
@@ -82,6 +86,8 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
   const operation = (totalMs = 20_000) => { const result = createOperation({ ...(cleaning ? {} : { signal: cancellation.signal }), limits: { totalMs, requestMs: 10_000 } }); operations.push(result); return result; };
   let adapter: ReturnType<typeof createWorkerHerdr> | undefined, binding: HerdrTaskBinding | undefined, daemonPid: number | undefined, linked = false;
   let preparingWorkspace = false, preparationProbeEnvironment: NodeJS.ProcessEnv | undefined;
+  let preparationFailure: unknown, rpc: HerdrRpcClient | undefined;
+  let partialMappingInput: { directory: string; owner: typeof context; launch: ResolvedToolLaunch; nativeEnvironment: NodeJS.ProcessEnv; existingOnly: true } | undefined;
   const mac = process.platform === "darwin" ? createMacProcessControl() : null;
   let daemonIdentity: MacProcessIdentity | undefined, originals: MacProcessIdentity[] = [];
   const mock = createServer((request, response) => {
@@ -119,7 +125,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     adapter = createWorkerHerdr({ paths, homeDirectory: home, environment, agentEnvironment: { PATH: environment.PATH! }, herdrLaunch, readExecutionConfiguration: () => configuration, isolatedRun: process.platform === "darwin", onDaemonSpawn: async pid => { daemonPid = pid; } });
     evidence.ready = await adapter.ensureInstance(operation());
     if (mac && daemonPid) daemonIdentity = await mac.capture(daemonPid, "daemon");
-    const rpc = createHerdrRpcClient(adapter.paths.apiEndpoint);
+    rpc = createHerdrRpcClient(adapter.paths.apiEndpoint);
     // Install only Herdr's official integration, in the already isolated native home.
     if (!argumentRoundTrip) {
       evidence.integration = await rpc.request("integration.install", { target: agent }, operation());
@@ -127,9 +133,12 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       if (agent === "codex") evidence.features = (await execute(binary, ["features", "list"], { cwd, env: environment, timeout: 10_000 })).stdout;
     }
     const startup = adapter.createShellStartup();
+    partialMappingInput = { directory: paths.herdrDirectory, owner: context, launch, nativeEnvironment: environment, existingOnly: true };
     preparingWorkspace = true;
+    evidence.resourceStage = "preparing-workspace";
     binding = await adapter.tasks.prepareWorkspace(context, "Real native platform validation", operation(), startup ? { shellNonce: startup.nonce } : undefined);
     preparingWorkspace = false;
+    evidence.resourceStage = "adapter-created";
     const before = await adapter.tasks.processInfo(context, binding, operation()); evidence.shellBefore = before;
     const preparedMapping = await createToolLaunchMapping({ directory: paths.herdrDirectory, owner: context, launch, nativeEnvironment: environment, existingOnly: true }, operation());
     if (preparedMapping) evidence.preparedProcessJournal = await readFile(path.join(path.dirname(preparedMapping.manifestPath), "processes.json"), "utf8").catch(() => null);
@@ -287,16 +296,34 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     }
     evidence.sameOriginalNativeAfterInput = true;
     evidence.afterInitialInput = await rpc.request("session.snapshot", {}, operation());
-  } catch (error) { evidence.error = errorText(error); evidence.errorDetails = platformErrorDetails(error, performance.now() - startedAt); }
+  } catch (error) { if (preparingWorkspace) preparationFailure = error; evidence.error = errorText(error); evidence.errorDetails = platformErrorDetails(error, performance.now() - startedAt); }
   finally {
     cleaning = true;
     if (adapter) {
+      let partial: Awaited<ReturnType<typeof observePartialWorkspace>> | undefined;
+      let partialInput: Parameters<typeof observePartialWorkspace>[0] | undefined;
+      let partialClosure: Awaited<ReturnType<typeof closePartialWorkspace>> | undefined;
+      let partialReadyProof: Awaited<ReturnType<typeof verifyReadinessDiagnostic>> | undefined;
+      if (!binding && preparingWorkspace && process.platform === "win32" && isRootReadinessFailure(preparationFailure) && rpc && partialMappingInput && daemonPid) {
+        try {
+          const active = operation(12_000), mapping = await createToolLaunchMapping(partialMappingInput, active);
+          if (mapping === null || mapping.windowsCommand === undefined) throw new Error("The original PowerShell mapping is missing.");
+          partialInput = { context, tasks: adapter.tasks, rpc, mapping, operation: active };
+          partial = await observePartialWorkspace(partialInput);
+          evidence.cleanup.partialWorkspaceObservation = { owner: { projectId: context.projectId, taskId: context.taskId, claimId: context.claimId, worktreeId: context.worktreeId }, binding: { ...partial.binding }, shellPid: partial.shellPid, layoutVerified: true, failurePhase: "root-readiness" };
+          const diagnostic = createOperation({ limits: { totalMs: 4000, requestMs: 2000, responseBytes: 65_536, totalBytes: 131_072 } });
+          operations.push(diagnostic);
+          try { evidence.cleanup.readinessDiagnostics = await inspectWindowsRootReadiness({ rpc, operation: diagnostic, binding: partial.binding, tabId: partial.tabId, shellPid: partial.shellPid, mapping: { manifestPath: mapping.manifestPath, nonce: mapping.nonce, windowsCommand: mapping.windowsCommand } }); }
+          catch (error) { evidence.cleanup.readinessDiagnosticError = error instanceof Error ? error.name : "unknown"; }
+        } catch (error) { evidence.cleanup.workspaceError = errorText(error); }
+      }
       if (process.platform !== "darwin") {
         try {
-          const processes = await inventory(), descendants = new Set([daemonPid!, evidence.shellBefore?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"));
+          const processes = await inventory(), descendants = new Set([daemonPid!, evidence.shellBefore?.shellPid, partial?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"));
           for (let changed = true; changed;) { changed = false; for (const process of processes) if (descendants.has(process.parent) && !descendants.has(process.pid)) { descendants.add(process.pid); changed = true; } }
           for (const process of processes) if (descendants.has(process.pid) && !ownedProcessTokens.some(original => original.pid === process.pid && original.token === process.token)) ownedProcessTokens.push(process);
-          evidence.cleanup.processCapture = { stage: "before-stop", roots: [daemonPid, evidence.shellBefore?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"), processes: ownedProcessTokens.map(process => ({ pid: process.pid, parentPid: process.parent, startToken: process.token })) };
+          evidence.cleanup.processCapture = { stage: "before-stop", roots: [daemonPid, evidence.shellBefore?.shellPid, partial?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"), processes: ownedProcessTokens.map(process => ({ pid: process.pid, parentPid: process.parent, startToken: process.token })) };
+          if (partial && (!daemonPid || daemonPid === partial.shellPid || ![daemonPid, partial.shellPid].every(pid => ownedProcessTokens.some(original => original.pid === pid)))) throw new Error("The partial workspace daemon and shell were not captured before close.");
         } catch (error) { evidence.cleanup.captureError = errorText(error); }
       }
       if (mac && daemonPid) {
@@ -305,7 +332,16 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       }
       if (binding) {
         try { await adapter.tasks.stopAndClose(context, binding, operation(12_000)); evidence.cleanup.workspaceClosed = true; } catch (error) { evidence.cleanup.workspaceError = errorText(error); }
-      } else evidence.cleanup.workspaceNotAttempted = "The original workspace binding was not confirmed.";
+      } else if (partial && partialInput && !evidence.cleanup.captureError) {
+        try {
+          if (!isRootReadinessDeadline(preparationFailure)) throw new Error("The original PowerShell readiness failure does not establish a deadline; the partial workspace remains unconfirmed.");
+          if (!evidence.cleanup.readinessDiagnostics) throw new Error("The original PowerShell readiness diagnostics are unavailable.");
+          partialReadyProof = await verifyReadinessDiagnostic(evidence.cleanup.readinessDiagnostics, partialInput.mapping, partial.shellPid, operation(4000));
+          partialClosure = await closePartialWorkspace({ ...partialInput, operation: operation(12_000) }, partial);
+          evidence.cleanup.partialWorkspaceClosure = partialClosure;
+        }
+        catch (error) { evidence.cleanup.workspaceError = errorText(error); }
+      } else if (!evidence.cleanup.workspaceError) evidence.cleanup.workspaceNotAttempted = "The original workspace binding was not confirmed.";
       try { evidence.cleanup.instance = await adapter.stopInstance(operation(12_000)); } catch (error) { evidence.cleanup.instanceError = errorText(error); }
       if (mac && daemonIdentity) {
         const remaining = await Promise.all(originals.map(async identity => ({ pid: identity.pid, observation: await mac.observe(identity) })));
@@ -323,11 +359,19 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
         } catch (error) { evidence.cleanup.processReadbackError = errorText(error); }
       }
       evidence.cleanup.apiClosed = await closedEndpoint(adapter.paths.apiEndpoint); evidence.cleanup.clientClosed = await closedEndpoint(adapter.paths.clientEndpoint);
+      if (partialInput && partialClosure && partialReadyProof) {
+        try {
+          if (evidence.cleanup.processReadbackError || !evidence.cleanup.originalProcesses?.length || !evidence.cleanup.originalProcesses.every((process: { observation: string }) => process.observation === "exited")) throw new Error("The original partial workspace processes have not stopped.");
+          await confirmReadinessUnchanged(partialInput.mapping, partialReadyProof, operation(4000));
+          evidence.cleanup.readinessVerified = true;
+          evidence.cleanup.partialWorkspace = { ...partialClosure, readyValidation: partialReadyProof.state }; evidence.cleanup.workspaceClosed = true;
+        } catch (error) { evidence.cleanup.workspaceError = errorText(error); }
+      }
     }
     await new Promise<void>(resolve => mock.close(() => resolve())); evidence.cleanup.mockClosed = true;
     if (linked) { await unlink(link!); evidence.cleanup.shortLinkRemoved = true; }
     operations.forEach(operation => operation.dispose());
-    let closed = (!adapter || evidence.cleanup.instance?.ownedChildClosed === true && evidence.cleanup.apiClosed && evidence.cleanup.clientClosed && !evidence.cleanup.captureError && !evidence.cleanup.processReadbackError && evidence.cleanup.originalProcesses?.every((process: { observation: string }) => process.observation === "exited")) && evidence.cleanup.windowsQueries.every((query: { closed: boolean; cleanupConfirmed: boolean }) => query.closed && query.cleanupConfirmed);
+    let closed = (!adapter || evidence.cleanup.instance?.ownedChildClosed === true && evidence.cleanup.apiClosed && evidence.cleanup.clientClosed && !evidence.cleanup.captureError && !evidence.cleanup.processReadbackError && !evidence.cleanup.workspaceError && (!binding && !preparingWorkspace || evidence.cleanup.workspaceClosed === true) && evidence.cleanup.originalProcesses?.every((process: { observation: string }) => process.observation === "exited")) && evidence.cleanup.windowsQueries.every((query: { closed: boolean; cleanupConfirmed: boolean }) => query.closed && query.cleanupConfirmed);
     if (closed && adapter && preparingWorkspace && evidence.error && process.platform === "win32" && !cancellation.signal.aborted && preparationProbeEnvironment && !windowsPreparationProbeAttempted) {
       windowsPreparationProbeAttempted = true;
       try {
@@ -344,7 +388,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     else evidence.cleanup.retainedDirectory = root;
     process.removeListener("SIGINT", interrupt); process.removeListener("SIGTERM", terminate);
     await persist();
-    const summary = { schemaVersion: 1, agent, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, nativeVersion: evidence.nativeVersion, frozenArtifacts: evidence.frozenArtifacts, expectedArguments: evidence.expectedArguments, argumentRoundTrip: evidence.argumentRoundTrip, externalScript: evidence.externalScript, originalShellPreserved: evidence.originalShellPreserved, platform: process.platform, architecture: process.arch, driverNode: evidence.driverNode, helperExecutable: evidence.helperExecutable, endpoints: adapter ? { api: adapter.paths.apiEndpoint, client: adapter.paths.clientEndpoint } : null, shortLink: link, daemonPid, shellPid: evidence.shellBefore?.shellPid, receipt: evidence.receipt ? { helperPid: evidence.receipt.helperPid, childPid: evidence.receipt.childPid, executable: path.basename(evidence.receipt.file) } : null, processProofCompleted: evidence.processProofCompleted, sameOriginalNativeAfterInput: evidence.sameOriginalNativeAfterInput, beforeInitialInput: evidence.beforeInitialInput, initialInputAttempts: evidence.initialInputAttempts, initialInputReceipt: evidence.initialInputReceipt, observation: evidence.observation, requestsBeforeInitialInput: evidence.requestsBeforeInitialInput, requests: evidence.requests, cleanup: evidence.cleanup, resourceStage: evidence.resourceStage, error: evidence.error, errorDetails: evidence.errorDetails };
+    const summary = { schemaVersion: 1, agent, owner: { projectId: context.projectId, taskId: context.taskId, claimId: context.claimId, worktreeId: context.worktreeId }, controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip, nativeVersion: evidence.nativeVersion, frozenArtifacts: evidence.frozenArtifacts, expectedArguments: evidence.expectedArguments, argumentRoundTrip: evidence.argumentRoundTrip, externalScript: evidence.externalScript, originalShellPreserved: evidence.originalShellPreserved, platform: process.platform, architecture: process.arch, driverNode: evidence.driverNode, helperExecutable: evidence.helperExecutable, endpoints: adapter ? { api: adapter.paths.apiEndpoint, client: adapter.paths.clientEndpoint } : null, shortLink: link, daemonPid, shellPid: evidence.shellBefore?.shellPid ?? evidence.cleanup.partialWorkspace?.shellPid, receipt: evidence.receipt ? { helperPid: evidence.receipt.helperPid, childPid: evidence.receipt.childPid, executable: path.basename(evidence.receipt.file) } : null, processProofCompleted: evidence.processProofCompleted, sameOriginalNativeAfterInput: evidence.sameOriginalNativeAfterInput, beforeInitialInput: evidence.beforeInitialInput, initialInputAttempts: evidence.initialInputAttempts, initialInputReceipt: evidence.initialInputReceipt, observation: evidence.observation, requestsBeforeInitialInput: evidence.requestsBeforeInitialInput, requests: evidence.requests, cleanup: evidence.cleanup, resourceStage: evidence.resourceStage, error: evidence.error, errorDetails: evidence.errorDetails };
     await writeFile(path.join(outputRoot, `acceptance-${argumentRoundTrip ? "argv-" : ""}${agent}-${nonce}.json`), `${JSON.stringify(summary, null, 2)}\n`);
   }
   return evidence;
