@@ -15,7 +15,7 @@
 .goal-list-meta .completion-time-label { margin-inline-start: 0; }
 .goal-list-progress { flex: none; width: 145px; font-size: 10px; color: #5c687b; text-align: right; font-variant-numeric: tabular-nums; }
 .goal-list-track { display: flex; height: 4px; overflow: hidden; margin-top: 7px; border-radius: 4px; background: #edf0f4; }
-.goal-list-track i { background: #78ac94; }
+.goal-list-track i { background: #256a48; }
 .goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); padding: 16px 18px 18px 52px; }
 .goal-list-contents section + section { margin-top: 20px; }
 .goal-list-contents h3 { margin: 0 0 10px; font-size: 11px; font-weight: 500; color: #758196; }

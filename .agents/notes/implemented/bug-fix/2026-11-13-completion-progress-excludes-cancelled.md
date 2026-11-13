@@ -17,8 +17,9 @@ A zero denominator displays 0/0 and 0%, with an empty track. Goal and chain
 tracks retain the precise ratio; overview percentages are floored. Labels and
 accessible names use the same projected counts. The projection neither assigns
 status nor changes actual membership, terminal counts, ordering or recent
-visibility. Goal details retain their real total, completed, cancelled and
-unfinished statistics. The [Web requirements](../../../../docs/spec/daynight-web.md#项目整体进度)
+visibility. The [semantic color standard](../process/2026-11-13-semantic-ui-color-standard.md)
+uses the done color for this completion-only track. Goal details retain their
+real total, completed, cancelled and unfinished statistics. The [Web requirements](../../../../docs/spec/daynight-web.md#项目整体进度)
 and [design](../../../../docs/design/daynight-web.md#图投影与统计) own the
 presentation and mechanism.
 

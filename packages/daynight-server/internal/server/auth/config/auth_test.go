@@ -84,3 +84,15 @@ func TestSessionChannelCallbackPathsReserved(t *testing.T) {
 		}
 	}
 }
+
+func TestMyTasksCallbackPathReserved(t *testing.T) {
+	config := AuthSettings{PublicOrigin: "https://example.com"}
+	for _, path := range []string{"/my-tasks", "/my-tasks/child"} {
+		if _, _, err := ValidateAuthSettings(config, config.PublicOrigin+path); err == nil {
+			t.Fatalf("callback overlaps My Tasks path %s", path)
+		}
+	}
+	if _, got, err := ValidateAuthSettings(config, config.PublicOrigin+"/my-tasks-callback"); err != nil || got != "/my-tasks-callback" {
+		t.Fatalf("distinct callback got %q, %v", got, err)
+	}
+}
