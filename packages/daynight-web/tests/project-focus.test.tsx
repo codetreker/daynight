@@ -119,10 +119,11 @@ describe('project dialog focus restoration', () => {
     const index = buildGraphIndex(graph([{ ...task(rootId, '原任务链'), parentId: goalId }]));
     root.innerHTML = `<section id="project-goal-list" tabindex="-1"><div data-goal-id="${goalId}"><button class="goal-list-toggle">展开</button></div></section>`;
     const toggle = root.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
-    expect(focusProjectList('goals', null, rootId, index)).toBe(true);
+    const target = { kind: 'chain' as const, witnessTaskId: rootId, rootId };
+    expect(focusProjectList('goals', null, target, index)).toBe(true);
     expect(toggle).toHaveFocus();
     toggle.closest('[data-goal-id]')!.remove();
-    expect(focusProjectList('goals', null, rootId, index)).toBe(true);
+    expect(focusProjectList('goals', null, target, index)).toBe(true);
     expect(root.querySelector('#project-goal-list')).toHaveFocus();
   });
   it('restores focus to the graph trigger on Back and opens the detail on Forward', async () => {

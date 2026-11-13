@@ -1,19 +1,21 @@
 import { useCallback, type ComponentProps } from 'react';
 import { TaskChainDialog } from './TaskChainDialog';
+import { resolveProjectGraphTarget, type ProjectGraphTarget } from '../projects/project-graph-target';
 
-type ProjectListGraphHostProps = Omit<ComponentProps<typeof TaskChainDialog>, 'onNavigateExternalTask'> & {
+type ProjectListGraphHostProps = Omit<ComponentProps<typeof TaskChainDialog>, 'onNavigateExternalTask' | 'rootId'> & {
+  readonly target: ProjectGraphTarget;
   readonly onNavigateExternalTask?: (id: string, trigger: HTMLElement) => void;
   readonly onOpenChain: (id: string, trigger: HTMLElement) => void;
 };
 
-export const ProjectListGraphHost = ({ onOpenChain, onNavigateExternalTask, ...dialog }: ProjectListGraphHostProps) => {
+export const ProjectListGraphHost = ({ target, onOpenChain, onNavigateExternalTask, ...dialog }: ProjectListGraphHostProps) => {
   const navigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
     if (onNavigateExternalTask !== undefined) onNavigateExternalTask(id, trigger);
     else {
-      const representative = dialog.index.componentByTask.get(id)!;
-      if (dialog.index.components.get(representative)!.memberIds.size > 1) onOpenChain(representative, trigger);
+      const destination = resolveProjectGraphTarget(id, dialog.index);
+      if (destination !== null) onOpenChain(destination.rootId, trigger);
       else { dialog.onClose(); dialog.onOpenTask(id, trigger); }
     }
   }, [dialog.index, dialog.onClose, dialog.onOpenTask, onOpenChain, onNavigateExternalTask]);
-  return <TaskChainDialog {...dialog} onNavigateExternalTask={navigateExternalTask} />;
+  return <TaskChainDialog {...dialog} rootId={target.rootId} onNavigateExternalTask={navigateExternalTask} />;
 };
