@@ -1,3 +1,4 @@
+import { stringifyAssistantTaskJson } from '../../api/assistant-tasks';
 import { useId, useState } from 'react';
 import type { AssistantTask, AssistantTaskAppendix, AssistantTaskManual as Manual, AssistantTaskProposal } from '../../api/assistant-tasks';
 import { AssistantTaskEvidence, AssistantTaskMarkdown } from './AssistantTaskProposalPanel';
@@ -25,7 +26,7 @@ export function AssistantTaskManual({ task, manual, appendices, histories, propo
     <div className="assistant-task-tabs" role="group" aria-label={m.body}>
       {(['body', 'appendix', 'history'] as const).map(value => <button key={value} type="button" className="button quiet" aria-pressed={tab === value} onClick={() => setTab(value)}>{m[value]}{value === 'appendix' ? ` (${active.length})` : value === 'history' ? ` · v${task.manualVersion}` : ''}</button>)}
     </div>
-    <div hidden={tab !== 'body'}><section className="assistant-task-panel"><header><h3>{m.body}</h3><span className="assistant-task-badge">v{manual.version}</span></header><AssistantTaskMarkdown text={manual.body} /></section><section className="assistant-task-panel"><h3>{m.rules}</h3><pre className="assistant-task-rules">{JSON.stringify(manual.rules, null, 2)}</pre></section></div>
+    <div hidden={tab !== 'body'}><section className="assistant-task-panel"><header><h3>{m.body}</h3><span className="assistant-task-badge">v{manual.version}</span></header><AssistantTaskMarkdown text={manual.body} /></section><section className="assistant-task-panel"><h3>{m.rules}</h3><pre className="assistant-task-rules">{stringifyAssistantTaskJson(manual.rules, 2)}</pre></section></div>
     <div hidden={tab !== 'appendix'}><p className="assistant-task-meta">{m.appendixBoundary}</p>
       {active.length === 0 ? <p className="assistant-task-empty">{m.noAppendix}</p> : <ul className="assistant-task-appendix">{active.map(entry => <AppendixEntry key={entry.id} entry={entry} taskVersion={task.version} disabled={disabled} onEdit={onAppendixEdit} onDelete={onAppendixDelete} {...(onRecords ? { onRecords } : {})} />)}</ul>}
     </div>
@@ -36,7 +37,7 @@ export function AssistantTaskManual({ task, manual, appendices, histories, propo
         <header><span className="assistant-task-badge">{m[proposal.status]}</span><span>{m.base.replace('{version}', proposal.baseVersion)}</span><time dateTime={proposal.decidedAt ?? proposal.createdAt}>{new Date(proposal.decidedAt ?? proposal.createdAt).toLocaleString(m.locale)}</time></header>
         <AssistantTaskMarkdown text={proposal.reason} />{proposal.decisionNote ? <><h4>{m.decisionNote}</h4><AssistantTaskMarkdown text={proposal.decisionNote} /></> : null}
         <AssistantTaskEvidence ids={proposal.evidenceRecords} {...(onRecords ? { onRecords } : {})} />
-        <details><summary>{m.proposedBody}</summary><AssistantTaskMarkdown text={proposal.body} /><pre className="assistant-task-rules">{JSON.stringify(proposal.rules, null, 2)}</pre></details>
+        <details><summary>{m.proposedBody}</summary><AssistantTaskMarkdown text={proposal.body} /><pre className="assistant-task-rules">{stringifyAssistantTaskJson(proposal.rules, 2)}</pre></details>
       </article>)}
     </div>
   </section>;
@@ -69,7 +70,7 @@ function HistoryEntry({ manual, taskVersion, current, disabled, onRollback }: { 
   const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false);
   return <li className="assistant-task-entry">
     <header><strong>v{manual.version}</strong>{current ? <span className="assistant-task-badge">{m.current}</span> : null}<span>{manual.source === 'rollback' ? m.rollbackSource : m[manual.source]}</span><time dateTime={manual.createdAt}>{new Date(manual.createdAt).toLocaleString(m.locale)}</time></header>
-    <details><summary>{m.body}</summary><AssistantTaskMarkdown text={manual.body} /><h4>{m.rules}</h4><pre className="assistant-task-rules">{JSON.stringify(manual.rules, null, 2)}</pre></details>
+    <details><summary>{m.body}</summary><AssistantTaskMarkdown text={manual.body} /><h4>{m.rules}</h4><pre className="assistant-task-rules">{stringifyAssistantTaskJson(manual.rules, 2)}</pre></details>
     {!current ? confirming ? <div role="group" aria-label={m.confirmRollback}><p>{m.rollbackConfirm.replace('{version}', manual.version)}</p><div className="assistant-task-actions"><button className="button primary" type="button" disabled={disabled || busy} onClick={async () => { if (busy || disabled) return; setBusy(true); try { if (await onRollback(manual.version, observedVersion)) setConfirming(false); } finally { setBusy(false); } }}>{m.confirmRollback}</button><button className="button" type="button" disabled={busy} onClick={() => setConfirming(false)}>{m.cancel}</button></div></div> : <button className="button" type="button" disabled={disabled} onClick={() => { setObservedVersion(taskVersion); setConfirming(true); }}>{m.rollback.replace('{version}', manual.version)}</button> : null}
   </li>;
 }

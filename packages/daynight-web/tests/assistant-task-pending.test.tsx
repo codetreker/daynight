@@ -19,7 +19,7 @@ const proposal = { id: botId(88), taskId, baseVersion: '1', body: 'Proposed manu
 const paged = (items: unknown[]) => ({ items, nextCursor: null, observedAt: BOT_TIME });
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 function install() {
-  const state = { failEvents: false, closed: false };
+  const state = { failEvents: false, closed: false, followerBotId: botId(1) };
   const fetch = vi.fn(async (url: string, options?: RequestInit) => {
     if (options?.method && options.method !== 'GET') throw new Error('Pending presentation must not mutate events');
     const path = String(url).split('?')[0]!;
@@ -28,7 +28,7 @@ function install() {
     if (path.endsWith('/manual/versions')) return botResponse(paged([manual]));
     if (path.endsWith('/proposals')) return botResponse(paged([proposal]));
     if (path.endsWith('/events')) return state.failEvents ? botError(503, 'unavailable') : botResponse(paged([event(escalationId, openItem, 'escalation'), event(botId(84), closedItem, 'result_unknown')]));
-    if (path.endsWith('/items')) return botResponse(paged([item(openItem, state.closed ? 'closed' : 'open'), item(closedItem, 'closed')]));
+    if (path.endsWith('/items')) return botResponse(paged([{ ...item(openItem, state.closed ? 'closed' : 'open'), followerBotId: state.followerBotId }, item(closedItem, 'closed')]));
     if (path.endsWith('/records') || path.endsWith('/appendix')) return botResponse(paged([]));
     throw new Error(`Unexpected read ${path}`);
   }); vi.stubGlobal('fetch', fetch);
@@ -64,4 +64,24 @@ it('excludes work owned by another assistant', async () => {
   const f = install();
   renderWithLocale(<AssistantTaskPendingStrip botId={botId(2)} tasks={[task]} enabled />, { locale: 'en', taskCache: { viewerId: BOT_USER } });
   expect(screen.queryByRole('button')).toBeNull(); expect(f.fetch).not.toHaveBeenCalled();
+});
+
+it('moves unresolved decisions to the new holder even when delivery targeted the previous assistant', async () => {
+  const f = install();
+  const transferred: AssistantTask = { ...task, holderBotId: botId(2), claimGeneration: '2', claimState: 'pending', credentialOperationId: null };
+  const view = renderWithLocale(<AssistantTaskPendingStrip botId={botId(1)} tasks={[task]} enabled />, { locale: 'en', taskCache: { viewerId: BOT_USER } });
+  await screen.findByRole('button', { name: 'Coordination · Escalation' });
+  f.state.followerBotId = botId(2);
+  view.rerender(<AssistantTaskPendingStrip botId={botId(1)} tasks={[transferred]} enabled />);
+  expect(screen.queryByRole('button', { name: 'Coordination · Escalation' })).toBeNull();
+  view.rerender(<AssistantTaskPendingStrip botId={botId(2)} tasks={[transferred]} enabled />);
+  const escalation = await screen.findByRole('button', { name: 'Coordination · Escalation' });
+  expect(screen.queryByRole('button', { name: /Result unknown/ })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Coordination · Pending proposals (1)' })).toBeVisible();
+  fireEvent.click(escalation);
+  expect(browserNavigation().snapshot().search).toBe(`?tab=records&eventId=${escalationId}`);
+  f.state.closed = true;
+  fireEvent(document, new Event('visibilitychange'));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Coordination · Escalation' })).toBeNull());
+  expect(f.fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
 });

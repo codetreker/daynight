@@ -127,3 +127,28 @@ it.each(['transfer', 'release'] as const)('checks an unknown %s receipt and curr
   await waitFor(() => expect(screen.getByRole('button', { name: operation === 'release' ? 'Release' : 'Assign assistant' })).toBeEnabled());
   expect(f.writes).toHaveLength(1);
 });
+
+it('keeps task controls available and displays application JSON numbers without rounding', async () => {
+  const f = fixture(), original = f.fetch.getMockImplementation()!;
+  const raw = (value: unknown) => new Response(JSON.stringify(value).replaceAll('"raw-number"', '9007199254740993'), { headers: botResponse({}).headers });
+  const itemId = botId(95);
+  f.fetch.mockImplementation(async (url, options) => {
+    const path = String(url).split('?')[0]!;
+    if (path.endsWith('/manual')) return raw({ ...manual, rules: { externalId: 'raw-number' } });
+    if (path.endsWith('/manual/versions')) return raw(page([{ ...manual, rules: { externalId: 'raw-number' } }]));
+    if (path.endsWith('/items')) return raw(page([{ id: itemId, taskId, key: 'Large external identity', episode: '1', state: 'open', category: '', followerBotId: null, appState: { externalId: 'raw-number' }, version: '1', createdAt: BOT_TIME, updatedAt: BOT_TIME }]));
+    if (path.endsWith('/records')) return raw(page([{ id: botId(96), taskId, itemId, author: 'system', authorBotId: null, kind: 'fact', text: 'External evidence', refs: { externalId: 'raw-number' }, createdAt: BOT_TIME }]));
+    return original(url, options);
+  });
+  const view = mount();
+  const detail = await screen.findByRole('region', { name: 'Coordination task' });
+  expect(within(detail).getByRole('button', { name: 'Pause' })).toBeEnabled();
+  expect(within(detail).getAllByText(/"externalId": 9007199254740993/)[0]).toBeVisible();
+  view.select(taskId, 'records');
+  await screen.findByText('External evidence');
+  const records = screen.getByRole('region', { name: 'Work records' });
+  fireEvent.click(within(records).getByText('References'));
+  expect(within(records).getByText(/"externalId": 9007199254740993/)).toBeVisible();
+  expect(screen.queryByText(/9007199254740992/)).toBeNull();
+  expect(f.writes).toEqual([]);
+});

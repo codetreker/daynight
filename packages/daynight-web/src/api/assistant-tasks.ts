@@ -1,8 +1,13 @@
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
+import { jsonContainerSources, jsonObjectSources } from './json-source';
 import { array, boolean, id, malformed, nullableTimestamp, record, string, timestamp } from './validation';
 import type { WorkerReadAdmission } from './workers';
 
-export type AssistantTaskJson = null | boolean | number | string | readonly AssistantTaskJson[] | { readonly [key: string]: AssistantTaskJson };
+class AssistantTaskJsonNumber {
+  constructor(readonly source: string) { Object.freeze(this); }
+  toJSON(): never { throw new TypeError('Use stringifyAssistantTaskJson to preserve the JSON number.'); }
+}
+export type AssistantTaskJson = null | boolean | number | string | AssistantTaskJsonNumber | readonly AssistantTaskJson[] | { readonly [key: string]: AssistantTaskJson };
 export type AssistantTaskTrigger = null | { readonly kind: 'interval'; readonly minutes: number } | { readonly kind: 'daily'; readonly time: string; readonly timeZone: string };
 export type AssistantTaskClaim = {
   readonly holderBotId: string | null; readonly credentialOperationId: string | null;
@@ -43,10 +48,59 @@ const uuid = (value: unknown): string => { const result = id(value); return resu
 const nullableId = (value: unknown) => value === null ? null : uuid(value);
 const decimal = (value: unknown, zero = false): string => { const result = string(value); return /^(0|[1-9][0-9]{0,18})$/.test(result) && (zero || result !== '0') && BigInt(result) <= 9_223_372_036_854_775_807n ? result : malformed(); };
 const jsonValue = (value: unknown): AssistantTaskJson => {
+  if (value instanceof AssistantTaskJsonNumber) return value;
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
   if (typeof value === 'number') return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value)) ? value : malformed();
   if (Array.isArray(value)) return value.map(jsonValue);
   return Object.fromEntries(Object.entries(record(value)).map(([key, entry]) => [key, jsonValue(entry)]));
+};
+/** Preserve application JSON numbers that cannot round-trip through a JavaScript number. */
+export const parseAssistantTaskJson = (source: string): AssistantTaskJson => {
+  const parsed: unknown = JSON.parse(source);
+  const restore = (value: unknown, source: string): AssistantTaskJson => {
+    if (typeof value === 'number') {
+      const token = source.trim();
+      return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value)) && JSON.stringify(value) === token ? value : new AssistantTaskJsonNumber(token);
+    }
+    if (Array.isArray(value)) {
+      const sources = jsonContainerSources(source);
+      return value.map((entry, index) => restore(entry, sources[index]!));
+    }
+    if (value !== null && typeof value === 'object') {
+      const sources = jsonObjectSources(source);
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, restore(entry, sources.get(key)!)]));
+    }
+    return jsonValue(value);
+  };
+  return restore(parsed, source);
+};
+/** Encode application JSON without changing numeric tokens, optionally indenting containers. */
+export const stringifyAssistantTaskJson = (value: unknown, space = 0): string => {
+  const gap = ' '.repeat(Math.min(10, Math.max(0, Math.trunc(space))));
+  const encode = (value: AssistantTaskJson, indent: string): string => {
+    if (value instanceof AssistantTaskJsonNumber) return value.source;
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    const next = indent + gap, isArray = Array.isArray(value);
+    const members = isArray ? value.map(entry => encode(entry, next)) : Object.entries(value).map(([key, entry]) => `${JSON.stringify(key)}:${gap ? ' ' : ''}${encode(entry, next)}`);
+    const [open, close] = isArray ? ['[', ']'] : ['{', '}'];
+    return members.length === 0 ? `${open}${close}` : gap ? `${open}\n${next}${members.join(`,\n${next}`)}\n${indent}${close}` : `${open}${members.join(',')}${close}`;
+  };
+  return encode(jsonValue(value), '');
+};
+const decodeAssistantTaskJson = async (response: Response): Promise<unknown> => {
+  const source = await response.text(), parsed: unknown = JSON.parse(source);
+  const restore = (value: unknown, source: string): unknown => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+    const data = record(value), sources = jsonObjectSources(source);
+    // Only application-owned JSON fields use numeric tokens; protocol fields keep their strict types.
+    for (const key of ['rules', 'appState', 'refs', 'payload']) if (Object.hasOwn(data, key)) data[key] = parseAssistantTaskJson(sources.get(key)!);
+    if (Array.isArray(data.items)) {
+      const items = jsonContainerSources(sources.get('items')!);
+      data.items = data.items.map((entry, index) => restore(entry, items[index]!));
+    }
+    return data;
+  };
+  return restore(parsed, source);
 };
 const trigger = (value: unknown): AssistantTaskTrigger => {
   if (value === null) return null;
@@ -151,7 +205,7 @@ async function read<T>(url: string, signal: AbortSignal, admission: AssistantTas
   const user = target(admission.userId);
   const response = await request(url, signal, { headers: { Accept: 'application/json' } }, admission.onDispatch);
   assertResponsePrincipal(response, user, admission.onPrincipalMismatch);
-  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parse(value); });
+  return json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parse(value); }, decodeAssistantTaskJson);
 }
 const page = <T>(value: unknown, parse: (value: unknown) => T, key: (entry: T) => string, query: AssistantTaskQuery): AssistantTaskPage<T> => {
   const data = fields(value, ['items', 'nextCursor', 'observedAt']), items = array(data.items, parse);
@@ -198,7 +252,7 @@ export class AssistantTaskWriteUnknown extends Error {
 }
 async function write<T>(taskId: string, suffix: string, method: string, body: Record<string, unknown>, signal: AbortSignal, admission: AssistantTaskAdmission, parse: (value: unknown) => T): Promise<T> {
   const expected = target(admission.userId), task = target(taskId), url = suffix === 'create' ? base : suffix === 'watchdog' ? '/api/v1/assistant-task-presets/watchdog' : `${path(task)}${suffix}`;
-  const encoded = JSON.stringify(body), original = Object.freeze(JSON.parse(encoded) as Record<string, unknown>);
+  const encoded = stringifyAssistantTaskJson(body), original = Object.freeze(record(parseAssistantTaskJson(encoded)));
   let dispatched = false;
   try {
     const response = await request(url, signal, { method, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: encoded }, () => { dispatched = true; admission.onDispatch?.(); });
@@ -206,7 +260,7 @@ async function write<T>(taskId: string, suffix: string, method: string, body: Re
     // authenticated JSON adapter runs; this is a refusal, not a lost receipt.
     if (suffix === 'watchdog' && (response.status === 404 || response.status === 405)) throw new ApiError('server', response.status, 'preset_unavailable');
     assertResponsePrincipal(response, expected, admission.onPrincipalMismatch);
-    return await json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parse(value); });
+    return await json(response, signal, value => { if (response.status !== 200) throw new ApiError('protocol', response.status); return parse(value); }, decodeAssistantTaskJson);
   } catch (error) {
     if (dispatched && !(error instanceof ApiError && error.kind === 'server' && error.status !== null && error.status >= 400 && error.status < 500)) throw new AssistantTaskWriteUnknown(task, method, url, original, error);
     throw error;

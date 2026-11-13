@@ -19,6 +19,65 @@ const transferInput = () => ({ operationId, ifVersion: task().version, expectedG
 const claimResult = () => ({ operation: { operationId, kind: 'transfer', taskId, actorBotId: null, requestFingerprint: 'a'.repeat(64), admittedAt: BOT_TIME, resultingVersion: '9007199254740994', resultingGeneration: '1', holderBotId: holder, credentialOperationId: null, leaseUntil: '2026-11-04T12:05:00Z' }, currentClaim: { ...unowned(), holderBotId: holder, claimGeneration: '1', claimState: 'pending', claimedAt: BOT_TIME, leaseUntil: '2026-11-04T12:05:00Z' } });
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
+describe('assistant task application JSON precision', () => {
+  const applicationJson = '{"externalId":9007199254740993,"nested":[-9007199254740993,{"decimal":1.234567890123456789,"large":1e400,"small":1e-400,"zero":-0}],"ordinary":[1,0.5,true,null,"9007199254740993"]}';
+  const rawResponse = (source: string) => new Response(source, { headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': BOT_USER } });
+  const withApplicationJson = (value: unknown, key: string) => JSON.stringify(value).replace(`"${key}":null`, `"${key}":${applicationJson}`);
+
+  it('round-trips numeric tokens and nested JSON without requiring browser raw JSON or reviver support', () => {
+    const parsed = api.parseAssistantTaskJson(applicationJson);
+    expect(api.stringifyAssistantTaskJson(parsed)).toBe(applicationJson);
+    expect(api.stringifyAssistantTaskJson(api.parseAssistantTaskJson(api.stringifyAssistantTaskJson(parsed, 2)))).toBe(applicationJson);
+    expect(api.stringifyAssistantTaskJson(parsed, 2)).toContain('"externalId": 9007199254740993');
+    expect(() => JSON.stringify(parsed)).toThrow('stringifyAssistantTaskJson');
+    expect(api.parseAssistantTaskJson('{"number":0.5,"count":1}')).toEqual({ number: 0.5, count: 1 });
+    expect(api.stringifyAssistantTaskJson(api.parseAssistantTaskJson('{"__proto__":{"n":9007199254740993},"quote\\\"":1e20,"empty":[{},[]]}'))).toBe('{"__proto__":{"n":9007199254740993},"quote\\\"":1e20,"empty":[{},[]]}');
+    for (const source of ['9007199254740993', '-9007199254740993', '1.234567890123456789', '1e400', '1e-400', '-0', '1e1']) expect(api.stringifyAssistantTaskJson(api.parseAssistantTaskJson(source))).toBe(source);
+    for (const source of ['NaN', 'Infinity', '01', '[1,]', '{"x":1e}']) expect(() => api.parseAssistantTaskJson(source)).toThrow();
+  });
+
+  it('reads exact application numbers in records, items, manuals, proposals and event payloads', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(rawResponse(withApplicationJson(page([{ ...record(), refs: null }]), 'refs')))
+      .mockResolvedValueOnce(rawResponse(withApplicationJson(page([{ ...item(), appState: null }]), 'appState')))
+      .mockResolvedValueOnce(rawResponse(withApplicationJson({ ...manual(), rules: null }, 'rules')))
+      .mockResolvedValueOnce(rawResponse(withApplicationJson(page([{ ...proposal(), rules: null }]), 'rules')))
+      .mockResolvedValueOnce(rawResponse(withApplicationJson(page([{ ...event(), payload: null }]), 'payload')));
+    vi.stubGlobal('fetch', fetch);
+    const refs = (await api.listAssistantTaskRecords(taskId, {}, signal(), admission())).items[0]!.refs;
+    const appState = (await api.listAssistantTaskItems(taskId, {}, signal(), admission())).items[0]!.appState;
+    const rules = (await api.getAssistantTaskManual(taskId, signal(), admission())).rules;
+    const proposedRules = (await api.listAssistantTaskProposals(taskId, {}, signal(), admission())).items[0]!.rules;
+    const payload = (await api.listAssistantTaskEvents({ taskId }, signal(), admission())).items[0]!.payload;
+    for (const value of [refs, appState, rules, proposedRules, payload]) expect(api.stringifyAssistantTaskJson(value)).toBe(applicationJson);
+  });
+
+  it('retains strict protocol numeric types independently of application numbers', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(rawResponse(JSON.stringify({ ...task(), trigger: null }).replace('"trigger":null', '"trigger":{"kind":"interval","minutes":9007199254740993}')))
+      .mockResolvedValueOnce(rawResponse(JSON.stringify(task()).replace('"version":"9007199254740993"', '"version":9007199254740993')))
+      .mockResolvedValueOnce(rawResponse(JSON.stringify({ ...task(), trigger: null }).replace('"trigger":null', '"trigger":{"kind":"interval","minutes":1e1}')));
+    vi.stubGlobal('fetch', fetch);
+    await expect(api.getAssistantTask(taskId, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(api.getAssistantTask(taskId, signal(), admission())).rejects.toMatchObject({ kind: 'protocol' });
+    expect((await api.getAssistantTask(taskId, signal(), admission())).trigger).toEqual({ kind: 'interval', minutes: 10 });
+  });
+
+  it('sends exact edited rules and retains them in an unknown write snapshot', async () => {
+    const decided = { ...proposal(), status: 'edited', body: 'New text', rules: null, decidedAt: BOT_TIME };
+    const fetch = vi.fn().mockResolvedValueOnce(rawResponse(withApplicationJson(decided, 'rules'))).mockRejectedValueOnce(new Error('Lost response'));
+    vi.stubGlobal('fetch', fetch);
+    const input = { ifVersion: task().version, decision: 'edited' as const, body: decided.body, rules: api.parseAssistantTaskJson(applicationJson) };
+    const result = await api.decideAssistantTaskProposal(taskId, entryId, input, signal(), admission());
+    expect(api.stringifyAssistantTaskJson(result.rules)).toBe(applicationJson);
+    expect(fetch.mock.calls[0]![1].body).toContain(`"rules":${applicationJson}`);
+    const unknown = await api.decideAssistantTaskProposal(taskId, entryId, input, signal(), admission()).catch(error => error as unknown);
+    expect(unknown).toBeInstanceOf(api.AssistantTaskWriteUnknown);
+    expect(api.stringifyAssistantTaskJson((unknown as api.AssistantTaskWriteUnknown).input.rules)).toBe(applicationJson);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('assistant task response contracts', () => {
   it('preserves int64 versions, task status and independent claim state', () => {
     expect(api.parseAssistantTask(task(), BOT_USER, taskId)).toEqual(task());

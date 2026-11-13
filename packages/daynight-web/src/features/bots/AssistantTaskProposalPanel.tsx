@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
 import type { AssistantTaskDecisionInput, AssistantTaskJson, AssistantTaskProposal } from '../../api/assistant-tasks';
+import { parseAssistantTaskJson, stringifyAssistantTaskJson } from '../../api/assistant-tasks';
 import { ChatMarkdown } from '../../ui/ChatMarkdown';
 import { useAssistantTaskContentMessages } from './assistant-task-messages';
 import '../../styles/markdown.css';
@@ -24,7 +25,7 @@ function Proposal({ proposal, taskVersion, disabled, onDecide, onRecords }: Omit
   const m = useAssistantTaskContentMessages(), formId = useId();
   const [observedVersion, setObservedVersion] = useState(taskVersion);
   const [mode, setMode] = useState<'view' | 'edited' | 'rejected'>('view');
-  const [body, setBody] = useState(proposal.body), [rules, setRules] = useState(JSON.stringify(proposal.rules, null, 2));
+  const [body, setBody] = useState(proposal.body), [rules, setRules] = useState(stringifyAssistantTaskJson(proposal.rules, 2));
   const [note, setNote] = useState(''), [invalid, setInvalid] = useState(false), [busy, setBusy] = useState(false);
   const decide = async (decision: AssistantTaskDecision) => {
     if (busy || disabled || mode !== 'view' && observedVersion !== taskVersion) return;
@@ -38,17 +39,17 @@ function Proposal({ proposal, taskVersion, disabled, onDecide, onRecords }: Omit
     <h4>{m.reason}</h4><AssistantTaskMarkdown text={proposal.reason} />
     <AssistantTaskEvidence ids={proposal.evidenceRecords} {...(onRecords ? { onRecords } : {})} />
     <details><summary>{m.proposedBody}</summary><AssistantTaskMarkdown text={proposal.body} /></details>
-    <details><summary>{m.proposedRules}</summary><pre className="assistant-task-rules">{JSON.stringify(proposal.rules, null, 2)}</pre></details>
+    <details><summary>{m.proposedRules}</summary><pre className="assistant-task-rules">{stringifyAssistantTaskJson(proposal.rules, 2)}</pre></details>
     {mode === 'view' ? <div className="assistant-task-actions">
       <button className="button primary" type="button" disabled={disabled || busy} onClick={() => void decide({ decision: 'approved' })}>{m.approve}</button>
-      <button className="button" type="button" disabled={disabled || busy} onClick={() => { setObservedVersion(taskVersion); setBody(proposal.body); setRules(JSON.stringify(proposal.rules, null, 2)); setNote(''); setInvalid(false); setMode('edited'); }}>{m.editApprove}</button>
+      <button className="button" type="button" disabled={disabled || busy} onClick={() => { setObservedVersion(taskVersion); setBody(proposal.body); setRules(stringifyAssistantTaskJson(proposal.rules, 2)); setNote(''); setInvalid(false); setMode('edited'); }}>{m.editApprove}</button>
       <button className="button danger" type="button" disabled={disabled || busy} onClick={() => { setObservedVersion(taskVersion); setNote(''); setMode('rejected'); }}>{m.reject}</button>
     </div> : <form className="assistant-task-form" onSubmit={event => {
       event.preventDefault();
       if (mode === 'rejected') { void decide({ decision: 'rejected', note }); return; }
       let parsed: AssistantTaskJson;
-      try { parsed = JSON.parse(rules) as AssistantTaskJson; } catch { setInvalid(true); return; }
-      setInvalid(false); void decide({ decision: 'edited', body, rules: parsed, note });
+      try { parsed = parseAssistantTaskJson(rules); } catch { setInvalid(true); return; }
+      setInvalid(false); void decide({ decision: 'edited', body, ...(proposal.rules === null && parsed === null ? {} : { rules: parsed }), note });
     }}>
       {observedVersion !== taskVersion ? <p role="status">{m.staleDraft}</p> : null}
       {mode === 'edited' ? <>

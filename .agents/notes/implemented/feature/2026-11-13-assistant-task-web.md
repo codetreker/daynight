@@ -25,9 +25,18 @@ original request before dispatch in account-keyed session storage, with an
 in-memory fallback. Reads of current facts never identify an uncertain write as
 their cause. The browser does not act as a Bot or hold claim credentials.
 
-Pending escalations follow unfinished items and event expiry, independently of
-notification read markers. Their links open the corresponding event; proposal
+Pending escalations follow the current task holder, unfinished items and event
+expiry, independently of notification read markers or the historical delivery
+target. Transferring responsibility must not hide an unresolved decision from
+both assistants. Their links open the corresponding event; proposal
 evidence links open records, including records beyond the first page.
+
+Application-defined JSON retains numeric source tokens when JavaScript numbers
+cannot reproduce them exactly. Dedicated parsing and serialization preserve
+these values through reads, display, edited decisions and unknown-result
+snapshots. Protocol counters and identifiers retain their stricter validation.
+An omitted proposal rule set remains omitted in a body-only edited decision,
+so the server can preserve the current rules rather than reject explicit null.
 
 ## Alternatives
 
@@ -44,6 +53,12 @@ reconciliation after a conflict but preserves the user's actual decision.
 application's initial manual and falsely imply application availability. The
 frontend uses a dedicated preset contract and reports unavailable servers;
 application integration remains separately verifiable.
+
+**Decode application JSON with ordinary JavaScript numbers.** This would round
+large external identities or long decimals before the user sees or resubmits
+them. Rejecting those values would instead make valid task materials unavailable.
+Preserving numeric tokens keeps the server's application JSON contract while
+requiring its consumers to use the dedicated serializer.
 
 Appendix deletion clears references to an explicit empty slice in the core
 candidate. A nil slice reaches the PostgreSQL JSONB parameter as SQL NULL and

@@ -1,3 +1,4 @@
+import { stringifyAssistantTaskJson } from '../../api/assistant-tasks';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import { listAssistantTaskItems, listAssistantTaskRecords, type AssistantTaskItem, type AssistantTaskRecord } from '../../api/assistant-tasks';
@@ -76,7 +77,7 @@ export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = nu
       return <section className="assistant-task-panel" key={groupId}><header><h3>{groupId ? item?.key ?? groupId : m.general}</h3>{item ? <span className="assistant-task-badge">{m[item.state]}</span> : null}</header>
         <ol className="assistant-task-records">{entries.map(entry => <li id={`record-${entry.id}`} tabIndex={-1} key={entry.id} className="assistant-task-record">
           <header><span className="assistant-task-badge" data-kind={entry.kind}>{m[entry.kind]}</span><span>{name(entry.authorBotId ?? 'system')}</span><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString(m.locale)}</time></header><AssistantTaskMarkdown text={entry.text} />
-          {entry.refs !== null && JSON.stringify(entry.refs) !== '[]' && JSON.stringify(entry.refs) !== '{}' ? <details><summary>{m.references}</summary><pre className="assistant-task-rules">{JSON.stringify(entry.refs, null, 2)}</pre></details> : null}
+          {entry.refs !== null && stringifyAssistantTaskJson(entry.refs) !== '[]' && stringifyAssistantTaskJson(entry.refs) !== '{}' ? <details><summary>{m.references}</summary><pre className="assistant-task-rules">{stringifyAssistantTaskJson(entry.refs, 2)}</pre></details> : null}
         </li>)}</ol>
       </section>;
     })}

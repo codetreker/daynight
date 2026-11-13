@@ -1,14 +1,14 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { AssistantTask, AssistantTaskAppendix, AssistantTaskManual as Manual, AssistantTaskProposal, AssistantTaskRecord } from '../src/api/assistant-tasks';
-import { listAssistantTaskItems, listAssistantTaskRecords } from '../src/api/assistant-tasks';
+import { listAssistantTaskItems, listAssistantTaskRecords, parseAssistantTaskJson, stringifyAssistantTaskJson } from '../src/api/assistant-tasks';
 import { AssistantTaskManual } from '../src/features/bots/AssistantTaskManual';
-import { AssistantTaskProposalPanel } from '../src/features/bots/AssistantTaskProposalPanel';
+import { AssistantTaskProposalPanel, type AssistantTaskDecision } from '../src/features/bots/AssistantTaskProposalPanel';
 import { AssistantTaskRecords } from '../src/features/bots/AssistantTaskRecords';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { BOT_TIME, BOT_USER, botDefinition, botId } from './helpers/bots';
 
-vi.mock('../src/api/assistant-tasks', () => ({ listAssistantTaskItems: vi.fn(), listAssistantTaskRecords: vi.fn() }));
+vi.mock(import('../src/api/assistant-tasks'), async importOriginal => ({ ...await importOriginal(), listAssistantTaskItems: vi.fn(), listAssistantTaskRecords: vi.fn() }));
 const taskId = botId(30);
 const task: AssistantTask = { id: taskId, ownerUserId: BOT_USER, name: 'Coordination', purpose: '', scope: '', application: '', kind: 'once', state: 'active', takeover: 'manual', trigger: null, version: '7', manualVersion: '2', claimGeneration: '0', claimState: 'unowned', holderBotId: null, credentialOperationId: null, claimedAt: null, renewedAt: null, leaseUntil: null, observedAt: BOT_TIME, createdAt: BOT_TIME, updatedAt: BOT_TIME };
 const manual: Manual = { taskId, version: '2', body: 'Current **manual**', rules: [], source: 'revision', proposalId: botId(31), createdAt: BOT_TIME };
@@ -68,6 +68,35 @@ it('labels widened actions, retains edits after failure and rejects invalid rule
   view.rerender(<AssistantTaskProposalPanel taskVersion="7" proposals={[{ ...proposal }]} disabled={true} onDecide={decide} />);
   expect(screen.getByRole('textbox', { name: 'Proposed manual' })).toHaveValue('Reviewed manual');
   expect(screen.getByRole('button', { name: 'Edit and approve' })).toBeDisabled();
+});
+
+it('preserves omitted proposal rules when editing only the body and submits newly supplied rules', async () => {
+  const withoutRules = { ...proposal, rules: null };
+  const decide = vi.fn(async () => false);
+  renderWithLocale(<AssistantTaskProposalPanel taskVersion="7" proposals={[withoutRules]} disabled={false} onDecide={decide} />, { locale: 'en' });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit and approve' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Proposed manual' }), { target: { value: 'Reviewed manual' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit and approve' }));
+  await waitFor(() => expect(decide).toHaveBeenCalledWith(withoutRules, { decision: 'edited', body: 'Reviewed manual', note: '' }, '7'));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Edit and approve' })).toBeEnabled());
+  fireEvent.change(screen.getByRole('textbox', { name: 'Proposed structured rules' }), { target: { value: '[]' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit and approve' }));
+  await waitFor(() => expect(decide).toHaveBeenLastCalledWith(withoutRules, { decision: 'edited', body: 'Reviewed manual', rules: [], note: '' }, '7'));
+});
+
+it('preserves exact rule numbers when approving an edited manual body', async () => {
+  const source = '{"limit":9223372036854775807,"ratio":0.12345678901234567890123456789}';
+  const preciseProposal = { ...proposal, rules: parseAssistantTaskJson(source) };
+  const decide = vi.fn<(proposal: AssistantTaskProposal, decision: AssistantTaskDecision, ifVersion: string) => Promise<boolean>>(async () => true);
+  renderWithLocale(<AssistantTaskProposalPanel taskVersion="7" proposals={[preciseProposal]} disabled={false} onDecide={decide} />, { locale: 'en' });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit and approve' }));
+  const rules = screen.getByRole('textbox', { name: 'Proposed structured rules' });
+  expect(rules).toHaveValue('{\n  "limit": 9223372036854775807,\n  "ratio": 0.12345678901234567890123456789\n}');
+  fireEvent.change(screen.getByRole('textbox', { name: 'Proposed manual' }), { target: { value: 'Reviewed manual' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit and approve' }));
+  await waitFor(() => expect(decide).toHaveBeenCalledOnce());
+  const decision = vi.mocked(decide).mock.calls[0]?.[1];
+  expect(stringifyAssistantTaskJson(decision?.rules)).toBe(source);
 });
 
 it('requires a rejection reason and prevents duplicate decisions while the original request is pending', async () => {

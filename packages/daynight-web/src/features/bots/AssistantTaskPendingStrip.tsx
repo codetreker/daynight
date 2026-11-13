@@ -16,10 +16,10 @@ export function AssistantTaskPendingStrip({botId,tasks,enabled}: {readonly botId
         collectAssistantPages(cursor=>listAssistantTaskEvents({taskId,limit:200,...(cursor?{cursor}:{})},signal,admission),e=>e.id),
         collectAssistantPages(cursor=>listAssistantTaskItems(taskId,{limit:200,...(cursor?{cursor}:{})},signal,admission),i=>i.id),
       ]);
-      return {taskId,proposals:proposals.filter(p=>p.status==='pending').length,events:events.filter(e=>e.targetBotId===botId && e.state!=='expired' && ['escalation','result_unknown'].includes(e.type) && !items.some(i=>i.id===assistantTaskEventItem(e.payload)&&i.state==='closed'))};
+      return {taskId,proposals:proposals.filter(p=>p.status==='pending').length,events:events.filter(e=>e.state!=='expired' && ['escalation','result_unknown'].includes(e.type) && !items.some(i=>i.id===assistantTaskEventItem(e.payload)&&i.state==='closed'))};
     }));
     return results;
-  },[ids,botId]);
+  },[ids]);
   const read=useBotRead(`assistant-pending:${botId}:${ids}`,enabled && !!ids,load);
   if (!ids || !read.error && !read.value?.some(v=>v.proposals || v.events.length)) return null;
   return <div className="assistant-task-pending" aria-label={m.pendingDecisions}>
