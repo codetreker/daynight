@@ -29,7 +29,7 @@ func requireImageHistoryLedger(ctx context.Context, tx *operationTx, r *record, 
 		return nil
 	}
 	var ledger archiveLedger
-	if bundle.Phase != "active" || bundle.HistoryID == "" || json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.HistoryEpoch != r.Snapshot.HistoryEpoch || ledger.SourceThrough != decimal(r.SourceSeq) || ledger.HistoryID != bundle.HistoryID {
+	if bundle.Phase != "active" || bundle.HistoryID == "" || json.Unmarshal(bundle.Ledger, &ledger) != nil || ledger.HistoryEpoch != r.Snapshot.HistoryEpoch || ledger.SourceThrough != decimal(r.SourceSeq) || ledger.HistoryID != bundle.HistoryID || ledger.TargetSourceEpoch != "" || ledger.SourceEpoch != "" && ledger.SourceEpoch != sourceEpoch(r) {
 		return fault("capability_changed", "The complete source metadata checkpoint must precede image capture.")
 	}
 	return nil
