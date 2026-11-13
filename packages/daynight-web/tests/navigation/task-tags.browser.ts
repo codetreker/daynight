@@ -17,11 +17,11 @@ const chained = detailFixture(projectId, id(14), { title: 'Chain child', parentI
 const time = '2026-10-22T10:00:00Z';
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, writes: [] as string[], observedAt: time };
+  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], observedAt: time };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/resolve')) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const graph = () => ({ ...graphFixture(state.tasks), observedAt: state.observedAt });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
@@ -33,6 +33,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Reader', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     const catalogPath = `/api/v1/projects/${projectId}/tags`;
     if (path === catalogPath && request.method() === 'GET') {
+      if (state.holdCatalog) { state.holdCatalog = false; state.heldCatalog = true; await new Promise<void>(resolve => { state.releaseCatalog = resolve; }); state.heldCatalog = false; }
       const query = url.searchParams.get('query')?.toLowerCase() ?? '';
       return send({ items: state.tags.filter(tag => tag.name.toLowerCase().includes(query)).map(tag => ({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: id(999), nextCursor: null });
     }
@@ -103,13 +104,11 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const card = page.locator(`[data-goal-id="${goal.id}"]`);
   await expect(card.locator('.goal-list-toggle .task-tag')).toHaveText(['Goal label']);
   await card.locator('.goal-list-toggle').click();
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText(['Child label']);
   await expect(childRow.locator('.task-tag')).not.toContainText('Goal label');
-  const chainToggle = card.locator(`#task-root-goal-${goal.id}-chain-${root.id}`);
-  await chainToggle.click();
-  await expect(card.locator(`#chain-task-goal-${goal.id}-chain-${root.id}-${root.id} .task-tag`)).toHaveText(['Root label']);
-  const emptyRow = card.locator(`#chain-task-goal-${goal.id}-chain-${root.id}-${chained.id}`);
+  await expect(card.locator(`#chain-task-goal-${goal.id}-${root.id} .task-tag`)).toHaveText(['Root label']);
+  const emptyRow = card.locator(`#chain-task-goal-${goal.id}-${chained.id}`);
   await expect(emptyRow.locator('.task-tag')).toHaveCount(0);
   await card.locator(`#project-goal-detail-${goal.id}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
@@ -126,7 +125,7 @@ test('delta updates each row without losing expanded state or clearing content w
   await page.locator('#project-task-tab-goals').click();
   const card = page.locator(`[data-goal-id="${goal.id}"]`), toggle = card.locator('.goal-list-toggle');
   await toggle.click(); await toggle.focus();
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText(['Child label']);
   state.hold = true;
   await page.locator('.project-title-actions>button').evaluate((element: HTMLButtonElement) => element.click());
@@ -145,8 +144,7 @@ test('delta updates each row without losing expanded state or clearing content w
     await expect(childRow.locator('.task-tag')).toHaveCount(0);
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await expect(toggle).toBeFocused();
-    await card.locator(`#task-root-goal-${goal.id}-chain-${root.id}`).click();
-    await expect(card.locator(`#chain-task-goal-${goal.id}-chain-${root.id}-${root.id} .task-tag`)).toHaveText(['Renamed root label']);
+    await expect(card.locator(`#chain-task-goal-${goal.id}-${root.id} .task-tag`)).toHaveText(['Renamed root label']);
     expect(state.writes).toEqual([]);
   } finally { state.release(); }
 });
@@ -207,7 +205,7 @@ test('changing Parent preserves the Task own tags', async ({ page }) => {
   await page.locator('#project-task-tab-goals').click();
   const card = page.locator(`[data-goal-id="${goal.id}"]`);
   await card.locator('.goal-list-toggle').click();
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText(['Child label']);
   state.observedAt = '2026-10-22T10:00:04Z';
   state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, parentId: null, version: 2n, updatedAt: '2026-10-22T10:00:02Z' } : item);
@@ -234,14 +232,14 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
   const outline = await toggle.evaluate(element => { const style = getComputedStyle(element); return { style: style.outlineStyle, width: parseFloat(style.outlineWidth) }; });
   expect(outline.style).not.toBe('none'); expect(outline.width).toBeGreaterThan(0);
   await page.keyboard.press('Enter');
-  const childRow = card.locator(`#goal-${goal.id}-task-${child.id}`);
+  const childRow = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
   await expect(childRow.locator('.task-tag')).toHaveText([longName]);
   for (const tag of [toggle.locator('.task-tag'), childRow.locator('.task-tag')]) {
     await expect(tag).toBeVisible();
     const dimensions = await tag.evaluate(element => ({ w: element.clientWidth, sw: element.scrollWidth, h: element.clientHeight, sh: element.scrollHeight }));
     expect(dimensions.sw).toBeLessThanOrEqual(dimensions.w + 1); expect(dimensions.sh).toBeLessThanOrEqual(dimensions.h + 1);
   }
-  for (const control of [toggle.locator('.goal-list-title'), toggle.locator('.root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph'), childRow.locator('.root-title'), childRow.locator('.root-status')]) {
+  for (const control of [toggle.locator('.goal-list-title'), toggle.locator('.root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph'), childRow.locator('.root-title'), childRow.locator('..').locator('.root-status')]) {
     await expect(control).toBeVisible();
     const box = await control.boundingBox(); expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(321);
@@ -253,12 +251,56 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
     expect(overlap).toBe(false);
   }
   const childTagBox = (await childRow.locator('.task-tag').boundingBox())!;
-  const childStatusBox = (await childRow.locator('.root-status').boundingBox())!;
+  const childStatusBox = (await childRow.locator('..').locator('.root-status').boundingBox())!;
   const childOverlap = Math.min(childTagBox.x + childTagBox.width, childStatusBox.x + childStatusBox.width) > Math.max(childTagBox.x, childStatusBox.x) && Math.min(childTagBox.y + childTagBox.height, childStatusBox.y + childStatusBox.height) > Math.max(childTagBox.y, childStatusBox.y);
   expect(childOverlap).toBe(false);
   await expect(childRow).toHaveAccessibleName(new RegExp(longName));
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   expect(state.writes).toEqual([]);
+});
+
+
+for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale);
+  const childLongName = `${longName}X`;
+  state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, tags: [{ id: id(93), name: childLongName }] } : item);
+  state.tags = state.tags.map(tag => tag.id === id(93) ? { ...tag, name: childLongName } : tag);
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-goals').click();
+  const main = page.locator('.task-search-workspace > .tag-filter-wrap > .tag-filter');
+  const mainTrigger = main.locator('summary');
+  await mainTrigger.focus(); await page.keyboard.press('Enter');
+  await expect(main).toHaveAttribute('open', '');
+  const mainBounds = await main.locator('.tag-filter-panel').boundingBox();
+  expect(mainBounds).not.toBeNull(); expect(mainBounds!.x).toBeGreaterThanOrEqual(0); expect(mainBounds!.x + mainBounds!.width).toBeLessThanOrEqual(width + 1);
+  await page.keyboard.press('Escape'); await expect(mainTrigger).toBeFocused();
+  const card = page.locator(`[data-goal-id="${goal.id}"]`);
+  await card.locator('.goal-list-toggle').click();
+  const filter = card.locator('.tag-filter'), trigger = filter.locator('summary');
+  await trigger.focus(); await page.keyboard.press('Enter');
+  await expect(filter).toHaveAttribute('open', '');
+  const search = filter.locator('input[type="search"]');
+  await search.focus(); await search.fill('Unbroken');
+  await expect(filter.getByText(childLongName, { exact: true })).toBeVisible();
+  const option = filter.getByLabel(childLongName); await option.check();
+  await search.focus(); await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 4));
+  const bounds = await filter.locator('.tag-filter-panel').boundingBox();
+  expect(bounds).not.toBeNull(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  state.holdCatalog = true;
+  try {
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(() => state.heldCatalog).toBe(true);
+    await expect(filter).toHaveAttribute('open', ''); await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
+    expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
+    await expect(option).toBeChecked();
+    await expect(card.locator(`#chain-task-goal-${goal.id}-${child.id}`)).toBeVisible();
+    state.releaseCatalog();
+    await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
+    await page.keyboard.press('Escape'); await expect(trigger).toBeFocused(); await expect(filter).not.toHaveAttribute('open', '');
+  } finally { state.releaseCatalog(); }
 });
 
 for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`edit Task and Goal tags with keyboard and retain independently created tags at ${width}px in ${locale}`, async ({ page }) => {
@@ -373,7 +415,7 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await page.locator('#project-task-tab-goals').click();
     const card = page.locator(`[data-goal-id="${goal.id}"]`);
     await card.locator('.goal-list-toggle').click();
-    await expect(card.locator(`#goal-${goal.id}-task-${created.id} .task-tag`)).toHaveText(['Goal label', 'Child label']);
+    await expect(card.locator(`#chain-task-goal-${goal.id}-${created.id} .task-tag`)).toHaveText(['Goal label', 'Child label']);
   } else {
     await expect(page.locator(`[data-goal-id="${created.id}"] .goal-list-toggle .task-tag`)).toHaveText(['Goal label', 'Child label']);
   }

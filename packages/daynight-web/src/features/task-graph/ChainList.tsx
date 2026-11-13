@@ -17,7 +17,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from './model';
 import { ProjectListGraphHost } from './ProjectListGraphHost';
 import type { ProjectGraphTarget } from '../projects/project-graph-target';
-import { ChainMemberRow } from './ChainMemberRow';
+import { TaskMemberRow } from './TaskMemberRow';
 import { ActiveWorkerIndicator } from './ActiveWorkerIndicator';
 import { ScopedTaskChainRow } from './ScopedTaskChainRow';
 import { scopedChainProgress } from './scoped-chain-progress';
@@ -113,7 +113,7 @@ const ChainRow = memo(({ projectId, index, workerMachines, rootId, revealTaskId,
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
         <RepresentativeDetail task={task} rootId={rootId} title={title} onOpenTask={onOpenTask} />
       </div>
-      <ul className="goal-task-list">{members.map((member) => <ChainMemberRow key={member.id} projectId={projectId} task={member} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
+      <ul className="goal-task-list">{members.map((member) => <TaskMemberRow key={member.id} projectId={projectId} task={member} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>
   </li>;
 });

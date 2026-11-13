@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, authRequestsPaused, isAbortError, subscribeAuthPause } from "../../api/client";
 import { browserNavigation, type BrowserLocation } from "../../app/navigation";
 import { deleteProject, isConfirmedProjectDeletionRefusal, previewProjectDeletion, type ProjectDeletionPreview, type ProjectDeletionReceipt } from "../../api/project-deletion";
@@ -30,9 +30,10 @@ const abortable = <T,>(work: Promise<T>, signal: AbortSignal): Promise<T> => new
 });
 
 type Result = { readonly kind: "rejected" | "unknown"; readonly error: unknown } | null;
-export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRetentionChange, guard, onDeleted, onOutcome }: {
+export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRetentionChange, onStateChange, presentationGeneration, guard, onDeleted, onOutcome }: {
   readonly projectId: string; readonly active: boolean; readonly onRoute: boolean; readonly unavailable: boolean;
   readonly onRetentionChange?: ((retain: boolean) => void) | undefined; readonly guard: ProjectManagementGuard;
+  readonly onStateChange?: ((state: { dirty: boolean; pending: boolean; needsAttention: boolean }) => void) | undefined; readonly presentationGeneration?: number | undefined;
   readonly onDeleted?: ((receipt: ProjectDeletionReceipt, finish: (signal?: AbortSignal) => Promise<void | "skipped">, location: BrowserLocation, canFinalize: () => boolean) => void) | undefined;
   readonly onOutcome?: ((kind: "unknown" | "rejected", error: unknown, check: () => Promise<"available" | "unavailable">) => void) | undefined;
 }) => {
@@ -40,11 +41,11 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
   const { locale, messages: { inspection: { claim } } } = useI18n(), m = labels(locale === "zh-CN");
   const [dialog, setDialog] = useState(false), [preview, setPreview] = useState<ProjectDeletionPreview | null>(null);
   const [typed, setTyped] = useState(""), [loading, setLoading] = useState(false), [readError, setReadError] = useState<unknown>(null);
-  const [pending, setPending] = useState(false), [result, setResult] = useState<Result>(null), [checked, setChecked] = useState<"available" | "unavailable" | null>(null);
+  const [pending, setPending] = useState(false), [settling, setSettling] = useState(false), [result, setResult] = useState<Result>(null), [checked, setChecked] = useState<"available" | "unavailable" | null>(null);
   const read = useRef<AbortController | null>(null), operation = useRef<{ controller: AbortController; dispatched: boolean } | null>(null);
   const publication = useRef<AbortController | null>(null);
   const revision = useRef(0);
-  const latest = useRef({ active, onRoute, dialog }); latest.current = { active, onRoute, dialog };
+  const latest = useRef({ active, onRoute, dialog, presentationGeneration }); latest.current = { active, onRoute, dialog, presentationGeneration };
   const resultRef = useRef<Result>(null);
   useEffect(() => () => { read.current?.abort(); operation.current?.controller.abort(); publication.current?.abort(); }, []);
   useEffect(() => { if (!onRoute) { read.current?.abort(); setLoading(false); if (operation.current !== null && !operation.current.dispatched) operation.current.controller.abort(); } }, [onRoute]);
@@ -109,8 +110,8 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
     if (!active || !onRoute || selected === null || selected.nextCursor !== null || selected.activeClaims.length !== 0 || !matchesName(typed, selected.project.name) || operation.current !== null || resultRef.current?.kind === "unknown" || !guard.tryAcquire("delete")) return;
     publication.current?.abort(); publication.current = null;
     const op = { controller: new AbortController(), dispatched: false }; operation.current = op;
-    const submittedRevision = revision.current, location = browserNavigation().snapshot();
-    const canFinalize = () => revision.current === submittedRevision && browserNavigation().snapshot() === location;
+    const submittedRevision = revision.current, submittedPresentation = presentationGeneration, location = browserNavigation().snapshot();
+    const canFinalize = () => revision.current === submittedRevision && latest.current.presentationGeneration === submittedPresentation && browserNavigation().snapshot() === location;
     const stillEditing = () => latest.current.dialog && canFinalize();
     let paused = authRequestsPaused();
     const stopPause = subscribeAuthPause(() => { paused = true; if (!op.dispatched) op.controller.abort(); });
@@ -125,8 +126,10 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
       const receipt = await deleteProject(projectId, scope.userId, signal, scope.principalMismatch, () => { op.dispatched = true; });
       const confirmedTicket = ticket;
       let cleanupStarted = false;
+      setSettling(true);
       const finish = async (publicationSignal: AbortSignal = scope.signal): Promise<void | "skipped"> => {
-        if (!cleanupStarted && !stillEditing()) { guard.release("delete"); onRetentionChange?.(false); return "skipped"; }
+        setSettling(true);
+        try {
         publicationSignal.throwIfAborted();
         const work = cleanupStarted ? scope.retryDeniedProjectCleanup(confirmedTicket, publicationSignal) : scope.revokeProject(confirmedTicket, publicationSignal, true, undefined, true, () => { cleanupStarted = true; }, { confirmedDeletion: true });
         const revoked = await work;
@@ -134,6 +137,7 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
         if (revoked && stillEditing()) setDialog(false);
         guard.release("delete"); onRetentionChange?.(false);
         if (!revoked) return "skipped";
+        } finally { if (!scope.isInvalidated) setSettling(false); }
       };
       if (onDeleted !== undefined) onDeleted(receipt, finish, location, canFinalize);
       else {
@@ -178,25 +182,25 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
         } finally { stop(); stopWithdrawal(); }
       };
       if (kind === "rejected") guard.release("delete");
-      const controller = new AbortController(); publication.current = controller;
+      const controller = new AbortController(); publication.current = controller; setSettling(true);
       const publicationSignal = AbortSignal.any([controller.signal, scope.signal]);
       void (async () => {
         try {
           await scope.ready(publicationSignal);
           if (publicationSignal.aborted || scope.isInvalidated || publication.current !== controller) return;
-          if (stillEditing()) setResult(next);
+          if (latest.current.dialog && revision.current === submittedRevision) setResult(next);
           onOutcome?.(kind, error, check);
           if (kind === "rejected") onRetentionChange?.(false);
-          if (kind === "rejected" && !paused && stillEditing()) {
+          if (kind === "rejected" && !paused) {
             if (isConfirmedProjectDeletionRefusal(error) && error.status === 404 && ticket !== null && projectReadRevision !== null && scope.canRevokeProjectRead(ticket, projectReadRevision)) {
               await scope.revokeProject(ticket, publicationSignal);
             }
-            if (publicationSignal.aborted || scope.isInvalidated || authRequestsPaused() || !stillEditing()) return;
+            if (publicationSignal.aborted || scope.isInvalidated || authRequestsPaused()) return;
             if (error instanceof ApiError && (error.status === 403 || error.status === 404)) void access.session.revalidate();
-            if (error instanceof ApiError && error.status === 409) { setPreview(null); if (latest.current.active) load(); }
+            if (stillEditing() && error instanceof ApiError && error.status === 409) { setPreview(null); if (latest.current.active) load(); }
           }
         } catch (failure) { if (!publicationSignal.aborted && !scope.isInvalidated) setReadError(failure); }
-        finally { if (publication.current === controller) publication.current = null; }
+        finally { if (publication.current === controller) { publication.current = null; if (!scope.isInvalidated) setSettling(false); } }
       })();
     } finally {
       stopPause();
@@ -205,6 +209,10 @@ export const ProjectDeletion = ({ projectId, active, onRoute, unavailable, onRet
     } })();
   };
   const unknown = result?.kind === "unknown", canDelete = access.access?.teamRole === "admin";
+  const dirty = dialog && typed !== "" && result?.kind !== "unknown";
+  const needsAttention = readError !== null || result !== null;
+  const summaryPending = pending || settling;
+  useLayoutEffect(() => { onStateChange?.({ dirty, pending: summaryPending, needsAttention }); }, [dirty, summaryPending, needsAttention, onStateChange]);
   const error = result?.error;
   const detail = error instanceof ApiError && error.code === "forbidden" ? m.denied : error instanceof ApiError && error.code === "active_worker_claims" ? m.blocked : m.rejected;
   return <section className="panel project-settings-panel" aria-labelledby="project-delete-title"><div className="panel-heading"><div><h2 id="project-delete-title">{m.title}</h2><p>{m.description}</p></div></div><div className="panel-body">

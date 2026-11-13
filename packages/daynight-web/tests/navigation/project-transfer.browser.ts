@@ -66,7 +66,7 @@ const install = async (page: Page): Promise<State> => {
 };
 
 const start = async (page: Page) => {
-  await page.goto(`/projects/${projectId}/settings`);
+  await page.goto(`/projects/${projectId}/settings?tab=management`);
   await expect(page.getByRole('button', { name: 'Transfer project', exact: true })).toBeVisible();
 };
 
@@ -100,18 +100,19 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
   test(`background identity and access checks retain settings and transfer interaction (${locale})`, async ({ page }, testInfo) => {
     const state = await install(page); state.paginated = true;
     await page.setViewportSize(locale === 'en-US' ? { width: 1280, height: 900 } : { width: 390, height: 844 });
-    await start(page);
+    await page.goto(`/projects/${projectId}/settings`);
     if (locale === 'zh-CN') await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     const field = page.locator('.project-settings-panel input');
     await field.fill('95'); await field.focus();
     await field.evaluate((element) => { (window as unknown as { retainedField: Element }).retainedField = element; });
     const before = await field.boundingBox();
-    const me = Promise.withResolvers<void>(), accessGate = Promise.withResolvers<void>();
-    state.holdMe = me.promise; state.holdAccess = accessGate.promise;
+    const accessGate = Promise.withResolvers<void>();
+    state.holdAccess = accessGate.promise;
     const meCount = state.requests.filter((value) => value === 'GET /api/v1/me').length;
     const accessCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length;
     const firstOther = await leaveAndReturn(page);
-    await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/me').length).toBeGreaterThan(meCount);
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(accessCount);
+    expect(state.requests.filter((value) => value === 'GET /api/v1/me')).toHaveLength(meCount);
     const checkSettings = async () => {
       await expect(field).toBeVisible(); await expect(field).toBeFocused(); await expect(field).toHaveValue('95');
       expect(await field.evaluate((element) => element === (window as unknown as { retainedField: Element }).retainedField)).toBe(true);
@@ -119,13 +120,11 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
     };
     await checkSettings();
     await firstOther.close();
-    me.resolve();
-    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(accessCount);
-    await checkSettings();
-    accessGate.resolve(); state.holdMe = null; state.holdAccess = null;
+    accessGate.resolve(); state.holdAccess = null;
     await expect(page.locator('.project-settings-panel button[type=submit]')).toBeEnabled();
     await checkSettings();
 
+    await page.getByRole('link', { name: locale === 'en-US' ? 'Project management' : '项目管理' }).click();
     await page.getByRole('button', { name: locale === 'en-US' ? 'Transfer project' : '转移项目', exact: true }).click();
     const dialog = page.getByRole('dialog');
     const targetInput = dialog.locator('#transfer-target');
@@ -134,13 +133,14 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
     await choices.selectOption(targetId);
     await targetInput.focus(); await targetInput.evaluate((element: HTMLInputElement) => { element.setSelectionRange(3, 10); (window as unknown as { retainedInput: Element }).retainedInput = element; });
     const dialogBox = await dialog.boundingBox();
-    const secondMe = Promise.withResolvers<void>(), secondAccess = Promise.withResolvers<void>(), teamsGate = Promise.withResolvers<void>();
-    state.holdMe = secondMe.promise; state.holdAccess = secondAccess.promise; state.holdTeams = teamsGate.promise;
+    const secondAccess = Promise.withResolvers<void>(), teamsGate = Promise.withResolvers<void>();
+    state.holdAccess = secondAccess.promise; state.holdTeams = teamsGate.promise;
     const previousMe = state.requests.filter((value) => value === 'GET /api/v1/me').length;
     const previousAccess = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length;
     const previousTeams = state.requests.filter((value) => value === 'GET /api/v1/teams').length;
     const secondOther = await leaveAndReturn(page);
-    await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/me').length).toBeGreaterThan(previousMe);
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(previousAccess);
+    expect(state.requests.filter((value) => value === 'GET /api/v1/me')).toHaveLength(previousMe);
     const checkDialog = async () => {
       await expect(dialog).toBeVisible(); await expect(targetInput).toBeFocused(); await expect(targetInput).toHaveValue(targetId); await expect(choices).toHaveValue(targetId);
       expect(await targetInput.evaluate((element: HTMLInputElement) => ({ same: element === (window as unknown as { retainedInput: Element }).retainedInput, start: element.selectionStart, end: element.selectionEnd }))).toEqual({ same: true, start: 3, end: 10 });
@@ -148,11 +148,9 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
     };
     await checkDialog();
     await page.screenshot({ path: testInfo.outputPath(`project-check-${locale}.png`) });
-    secondMe.resolve();
-    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(previousAccess);
     await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/teams').length).toBeGreaterThan(previousTeams);
     await checkDialog();
-    secondAccess.resolve(); state.holdMe = null; state.holdAccess = null;
+    secondAccess.resolve(); state.holdAccess = null;
     await checkDialog();
     teamsGate.resolve(); state.holdTeams = null;
     await expect(dialog.locator('#transfer-known')).toBeEnabled();
@@ -166,11 +164,12 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
 test('project-only admin cannot transfer and the existing alert setting remains usable', async ({ page }) => {
   const state = await install(page); state.directOnly = true;
   await page.goto(`/projects/${projectId}/settings`);
-  await expect(page.getByText('Only an admin of the owner Team can transfer this project.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Transfer project', exact: true })).toHaveCount(0);
   await expect(page.getByRole('spinbutton')).toBeEnabled();
   await expect(page.locator('section[aria-labelledby="threshold-title"]')).toHaveCount(1);
   await expect(page.locator('section[aria-labelledby="threshold-title"]').getByRole('spinbutton')).toBeVisible();
+  await page.getByRole('link', { name: 'Project management' }).click();
+  await expect(page.getByText('Only an admin of the owner Team can transfer this project.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Transfer project', exact: true })).toHaveCount(0);
   await expect(page.locator('.project-ownership-panel')).toHaveCount(1);
   await expect(page.locator('.project-ownership-panel').getByRole('heading', { name: 'Project ownership' })).toBeVisible();
   expect(state.previews).toHaveLength(0); expect(state.writes).toHaveLength(0);
@@ -236,8 +235,8 @@ test('retained direct access keeps the project open with the receipt owner', asy
   await expect(dialog).toContainText('Your project access after transfer');
   await dialog.getByRole('button', { name: 'Confirm transfer' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Project transferred to Destination Team.' })).toContainText('Administrator');
-  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`));
-  await expect(page.locator('section').filter({ has: page.getByRole('heading', { name: 'Project ownership' }) })).toContainText('Destination Team');
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings\\?tab=management$`));
+  await expect(page.locator('.project-ownership-panel')).toContainText('Destination Team');
   expect(state.writes).toHaveLength(1);
 });
 
@@ -248,7 +247,7 @@ test('network failure checking source preserves success and retries; confirmed s
   const notice = page.getByRole('status').filter({ hasText: 'Project transferred to Destination Team.' });
   await expect(notice).toContainText('no longer have access');
   await expect(notice.getByRole('alert')).toContainText('transfer succeeded');
-  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`));
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings\\?tab=management$`));
   state.sourceRead = 'missing'; await notice.getByRole('button', { name: 'Retry' }).click();
   await expect(page).toHaveURL(new RegExp(`/teams/${personalId}$`));
   await expect(notice).toContainText('Project transferred to Destination Team.');
@@ -269,7 +268,7 @@ test('a 403 after source admin loss refreshes access and invalidates the old con
 test('leaving during a submitted transfer and returning retains an unknown result without replay', async ({ page }) => {
   const state = await install(page);
   await page.goto('/projects');
-  await page.evaluate((path) => { history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')); }, `/projects/${projectId}/settings`);
+  await page.evaluate((path) => { history.pushState({}, '', path); window.dispatchEvent(new PopStateEvent('popstate')); }, `/projects/${projectId}/settings?tab=management`);
   await expect(page.getByRole('button', { name: 'Transfer project', exact: true })).toBeVisible();
   await open(page); const dialog = await preview(page);
   const gate = Promise.withResolvers<void>(); state.hold = gate.promise; state.loseResponse = true;
@@ -277,7 +276,7 @@ test('leaving during a submitted transfer and returning retains an unknown resul
   await expect.poll(() => state.writes.length).toBe(1);
   await page.goBack(); await expect(page).toHaveURL(/\/projects$/);
   gate.resolve(); await page.goForward();
-  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`));
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings\\?tab=management$`));
   const resumed = page.getByRole('dialog');
   await expect(resumed.getByRole('alert').first()).toContainText('result is unknown');
   await resumed.getByRole('button', { name: 'Check current state' }).click();

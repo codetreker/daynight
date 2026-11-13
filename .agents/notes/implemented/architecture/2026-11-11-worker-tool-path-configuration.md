@@ -93,6 +93,8 @@ authenticated read to detect upgrades without restarting the Worker.
 The [runtime integration decision](2026-11-12-worker-frozen-tool-runtime.md)
 connects Web Task/Bot launches and a snapshot source to these API and cache seams;
 Herdr instance mapping remains separate. The default collector emits no tool-path
-facts without that source. Web configuration API tool support is opt-in until its
-form preserves and edits these fields; legacy saves remain safe. Real Provider
-startup and the tool-path form retain their own delivery and acceptance boundaries.
+facts without that source. The [Web consumer](../feature/2026-11-12-worker-tool-path-web.md)
+negotiates the extension and preserves the three-state drafts and submitted
+projection. Legacy saves remain safe. Real Provider startup retains its own
+acceptance boundary; controlled browser results prove presentation and
+configuration handling only.

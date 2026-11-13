@@ -1,6 +1,7 @@
 import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
 import { browserNavigation } from './navigation';
+import { projectSettingsSelection, type ProjectSettingsSelection } from './project-settings-route';
 
 export type TaskDetailTab = "description" | "overview" | "steps" | "attachments" | "discussion" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
@@ -67,7 +68,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "account" | "invitations" | "teamInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "oauthConsent"; readonly requestId: string | null }
-  | { readonly kind: "members" | "settings"; readonly projectId: string };
+  | { readonly kind: "settings"; readonly projectId: string; readonly selection: ProjectSettingsSelection };
 export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
 
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
@@ -157,7 +158,9 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   const management = /^(\/projects\/[^/]+)\/(members|settings)$/.exec(pathname);
   if (management !== null) {
     const project = parseRoute(management[1]!);
-    return project.kind === "project" ? { kind: management[2] as "members" | "settings", projectId: project.projectId } : { kind: "notFound" };
+    if (project.kind !== "project") return { kind: "notFound" };
+    return management[2] === "members" ? { kind: "settings", projectId: project.projectId, selection: { kind: "tab", tab: "members" } }
+      : { kind: "settings", projectId: project.projectId, selection: projectSettingsSelection(search) };
   }
   return parseRoute(pathname, search);
 };

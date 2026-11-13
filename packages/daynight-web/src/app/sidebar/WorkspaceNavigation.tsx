@@ -29,7 +29,7 @@ export const WorkspaceNavigation = ({ route, team, expanded, webhooksAvailable, 
   const teamLink = (target: (teamId: string) => string) => team.readyTeamId === null
     ? { role: "link", "aria-disabled": true as const }
     : { href: target(team.readyTeamId), onClick: follow };
-  const activeProjectId = route.kind === "project" || route.kind === "members" || route.kind === "settings" ? route.projectId : null;
+  const activeProjectId = route.kind === "project" || route.kind === "settings" ? route.projectId : null;
   return <nav aria-label={app.mainNavigation}>
     <div className="sidebar-group">
       <TeamSelector personalId={team.personalId} selectedId={team.readyTeamId} visibilityTeamId={team.visibilityTeamId} onNavigate={onNavigate} {...(onCreateTeam ? { onCreate: onCreateTeam } : {})} />

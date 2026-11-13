@@ -187,6 +187,11 @@ failure state so unsupported browsers can still download verified originals.
 Animation requires complete frame decoding. A static-only fallback cannot accept
 unknown or multiple frames. Cancellation revokes publication immediately but
 returns capacity only after the actual reader or decoder has stopped.
+New consumers of an original whose abandoned read is still draining wait for
+that work to finish, then recheck authorization through ordinary acquisition.
+They do not inherit the previous consumer's cancellation. Their own cancellation
+or asset/scope invalidation ends the wait without starting another read; concurrent
+surviving consumers still share one replacement read.
 
 Original reservations follow their remaining preview and download consumers.
 Sharing a Blob does not let a finished operation retain the other operation's
@@ -196,6 +201,12 @@ version is admitted, preserving existing image frames without authorizing new
 bindings.
 
 ## Alternatives
+
+**Reject a new consumer with the abandoned read's cancellation.** This avoids a
+drain waiter but makes scrolling an image back into view produce a read error
+despite valid access. Starting a replacement immediately instead would overlap
+readers and return capacity before the old work stops. Waiting preserves both
+the consumer's lifetime and the original reservation.
 
 **Keep attachments in memory or encode them in sessionStorage.** Reloads and
 independent text/image writes can lose bytes or submission identity, and Base64

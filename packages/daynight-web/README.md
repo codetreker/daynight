@@ -698,9 +698,10 @@ returns 404; checking current state never replays the transfer. See the
 
 ## Project execution-warning settings
 
-`/projects/{projectId}/settings` is a sibling of the members page, linked from
-the project and shared project-management navigation. Direct GET/HEAD entry and
-reload use the embedded application. Every member can read the saved threshold;
+`/projects/{projectId}/settings` opens the project settings workspace from the
+project header. Execution and reminders is the default section; members and
+invitations share the workspace, and `/projects/{projectId}/members` opens that
+section directly. Direct GET/HEAD entry and reload use the embedded application. Every member can read the saved threshold;
 only an explicitly resolved administrator can edit and submit it. The form uses
 integer minutes from 1 through 2147483647, initially 60, with save, cancel,
 pending, validation and localized error/recovery states that remain usable on
@@ -769,9 +770,9 @@ active Worker claims; those observations are not DELETE conditions. Names with
 control characters use reversible JSON escaping. A confirmed receipt is retained
 independently of local completion and preserves a success notice across navigation. During an admission pause, deletion settles
 locally without cleanup, automatic reads or navigation. On admission, cleanup
-uses the original cache generation. Withdrawal is not started, and navigation
-and dialog closure are skipped, when the submitted dialog, input or route has
-since changed. If persistent cleanup fails after withdrawal, retry targets the
+uses the original cache generation. A confirmed receipt withdraws only the original admitted cache generation.
+Navigation and dialog closure are skipped when the submitted dialog, input,
+section or route has since changed. If persistent cleanup fails after withdrawal, retry targets the
 matching user, Project, user fence and denied generation without broadcasting
 withdrawal again or resending DELETE. The denial may use a different ticket;
 a stale ticket cannot clear a newer generation. Cleanup and navigation
@@ -1308,9 +1309,9 @@ clock without per-row timers or requests. Chain headers never claim an individua
 task's duration as aggregate execution time.
 
 While access initially loads, the project heading reserves the geometry of the
-localized members and settings links. Its inaccessible placeholder is replaced
-by the links without narrowing the title or moving the restored page position.
-The header does not display the current user's role; the members page retains
+localized settings link. Its inaccessible placeholder is replaced by the link
+without narrowing the title or moving the restored page position. The header does
+not display the current user's role; the members and invitations section retains
 role details. The
 [header-role decision](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md) records this choice and the earlier layout rationale; the existing
 [shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.

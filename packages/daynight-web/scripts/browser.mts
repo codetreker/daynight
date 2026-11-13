@@ -20,6 +20,7 @@ export const browserConfigs = [
   'team-management-identity-playwright.config.ts',
   'project-grants-playwright.config.ts',
   'github-settings-playwright.config.ts',
+  'project-settings-workspace-playwright.config.ts',
   'project-transfer-playwright.config.ts',
   'project-withdrawal-playwright.config.ts',
   'project-deletion-layout-playwright.config.ts',
@@ -51,6 +52,7 @@ export const browserConfigs = [
   'session-keyboard-playwright.config.ts',
   'session-record-layout-playwright.config.ts',
   'worker-configuration-navigation-playwright.config.ts',
+  'worker-tool-paths-playwright.config.ts',
   'bots-viewport-playwright.config.ts',
 ] as const;
 

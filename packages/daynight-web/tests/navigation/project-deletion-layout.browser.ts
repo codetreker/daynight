@@ -68,7 +68,7 @@ test('a collapsed deletion result reserves space for the task Session composer',
   await expect.poll(() => page.locator('.session-header').evaluate(node => ({ x: node.getBoundingClientRect().left, y: node.getBoundingClientRect().top }))).toEqual({ x: 30, y: 70 });
   expect(await page.locator('.task-agent-session').boundingBox()).toEqual({ x: 0, y: 0, ...page.viewportSize()! });
   await page.locator('.session-fullscreen-toggle').click();
-  await page.goto(`/projects/${deleting}/settings`);
+  await page.goto(`/projects/${deleting}/settings?tab=management`);
   await page.getByRole('button', { name: 'Delete project', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Delete this project?' });
   await dialog.getByLabel('Enter the project name to confirm').fill('Project');

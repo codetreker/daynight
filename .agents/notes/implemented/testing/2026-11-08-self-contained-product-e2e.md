@@ -20,6 +20,10 @@ The normal journey also reads the device-issued CLI PAT by its actual identity
 in the browser account list after a successful CLI request. It checks the
 recorded approximate and full local time across the assembled system; detailed
 credential lifecycle and failure cases remain with their owning module tests.
+The tag journey creates independently tagged Goal and child Tasks through the
+CLI, edits and filters them in Web, and checks renamed and deleted catalog entries
+and their associations across both clients after reload. Module and store tests
+retain the error, concurrency and capacity matrices.
 
 Every run owns an internal database network, a private ingress bridge, a
 PostgreSQL instance and data volume, an application container, private
