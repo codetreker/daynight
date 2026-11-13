@@ -2187,8 +2187,7 @@ test('Goal overview retires an invalidated Goal and rejects the late old snapsho
   await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
   fixture.releaseSync();
   await expect.poll(fixture.heldSyncFinished).toBe(true);
-  const outcome = await requestOutcome;
-  console.log(`Held task-sync request ${outcome}`);
+  expect(await requestOutcome).toBe('failed');
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
 });
