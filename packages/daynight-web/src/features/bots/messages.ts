@@ -44,3 +44,23 @@ export const useBotMessages = () => {
     return `${m.unavailable} (${code})`;
   } };
 };
+
+const assistantTaskEn = {
+  title: 'Assistant tasks', empty: 'No assistant tasks yet', search: 'Search assistants or tasks', pending: 'Need attention', create: 'Create assistant task', name: 'Name', purpose: 'Purpose', scope: 'Scope', body: 'Initial manual', kind: 'Kind', continuous: 'Continuous', once: 'One-time',
+  active: 'Responsible', paused: 'Paused', expired: 'Claim expired', unowned: 'Unassigned', binding: 'Waiting for assistant', deleted: 'Deleted', holder: 'Responsible assistant', claimed: 'Claimed', renewed: 'Last renewed', expires: 'Valid until', selectBot: 'Choose an assistant', owned: 'Responsible assistant tasks',
+  transfer: 'Transfer', assign: 'Assign assistant', release: 'Release', pause: 'Pause', resume: 'Resume', remove: 'Delete task', confirmDelete: 'Delete this task, its manual, appendices and work records?', confirmRelease: 'Release the responsible assistant?', confirmTransfer: 'The selected assistant will bind the claim before starting work.',
+  manual: 'Work manual', records: 'Work records', proposals: 'Pending proposals', pendingDecisions: 'Waiting for you', escalation: 'Escalation', unknownResult: 'Result unknown',
+  cancel: 'Cancel', save: 'Save', confirm: 'Confirm', close: 'Close', back: 'Back to assistants', refresh: 'Refresh', loading: 'Loading…', error: 'Could not load assistant tasks.', retry: 'Retry', more: 'Load more',
+  writeError: 'The change was not accepted.', conflict: 'This task changed. The latest content has been requested; review it before saving again.', unknown: 'The write result is unknown. Check the current task before making another change.', check: 'Check current result', checked: 'Current data was read. It does not prove which request changed it.', reviewed: 'I reviewed the current result', saved: 'Saved', unavailable: 'This task is no longer available.',
+  watchdog: 'Enable Watchdog', watchdogDescription: 'Watchdog follows your in-progress tasks. Choose the assistant responsible for it.', watchdogUnavailable: 'Watchdog is not available on this server yet.', noBots: 'Create an assistant first.',
+};
+const assistantTaskZh: typeof assistantTaskEn = {
+  title: '助手任务', empty: '还没有助手任务', search: '搜索助手或助手任务', pending: '项待处理', create: '创建助手任务', name: '名称', purpose: '目的', scope: '范围', body: '初始工作手册', kind: '类型', continuous: '持续性任务', once: '一次性任务',
+  active: '负责中', paused: '已暂停', expired: '认领已失效', unowned: '无人负责', binding: '等待助手接手', deleted: '已删除', holder: '负责助手', claimed: '认领于', renewed: '最近续约', expires: '有效期', selectBot: '选择负责助手', owned: '负责的助手任务',
+  transfer: '转交', assign: '指定负责助手', release: '释放', pause: '暂停', resume: '恢复', remove: '删除任务', confirmDelete: '删除这个助手任务及其手册、附录与工作记录？', confirmRelease: '释放当前负责助手？', confirmTransfer: '所选助手绑定认领后才会开始工作。',
+  manual: '工作手册', records: '工作记录', proposals: '待决定的修订', pendingDecisions: '待你决定', escalation: '升级', unknownResult: '结果未知',
+  cancel: '取消', save: '保存', confirm: '确认', close: '关闭', back: '返回助手列表', refresh: '刷新', loading: '正在加载…', error: '无法读取助手任务。', retry: '重试', more: '加载更多',
+  writeError: '变更未受理。', conflict: '任务已变化。正在重读最新内容；请核对后重新保存。', unknown: '写入结果未知。请先核对任务当前状态，再决定下一步。', check: '核对当前结果', checked: '已读取当前内容，不能据此确定是哪次请求造成了变化。', reviewed: '我已核对当前结果', saved: '已保存', unavailable: '这个助手任务已不可访问。',
+  watchdog: '开启 Watchdog', watchdogDescription: 'Watchdog 关注分配给你的进行中任务。请选择负责助手。', watchdogUnavailable: '此服务器尚未提供 Watchdog。', noBots: '请先创建助手。',
+};
+export const useAssistantTaskMessages = () => useI18n().locale === 'zh-CN' ? assistantTaskZh : assistantTaskEn;
