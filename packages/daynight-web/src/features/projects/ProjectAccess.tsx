@@ -36,9 +36,34 @@ export class ProjectAccessSession {
     for (const listener of this.listeners) listener();
   }
   beginObservation = (): number => ++this.sequence;
+  // Project GET is independently authorized. Order its receipts with access and
+  // task-sync observations so an older denial cannot withdraw newer access.
+  publishProjectRead = (ticket: number): boolean => {
+    if (!this.live() || ticket < this.barrier || ticket < this.accepted) return false;
+    this.accepted = ticket;
+    this.scope.markProjectReadable(this.projectId);
+    if (this.read !== null) this.refreshAfterRead = true;
+    return true;
+  };
+  withdrawProjectRead = (ticket: number, history: SyncTicket | null, error: ApiError): boolean => {
+    if (!this.live() || ticket < this.barrier || ticket < this.accepted) return false;
+    if (history !== null) {
+      if (!this.scope.canRevokeProject(history)) return false;
+      // Revocation publishes its generation before asynchronous durable cleanup.
+      void this.scope.revokeProject(history, this.scope.signal, true, error).catch(() => {});
+    } else {
+      // A cold read has no generation to withdraw safely; isolate locally until
+      // access verification can identify its persistent generation.
+      this.scope.suspendProject(this.projectId);
+      this.scope.reportUnboundProjectDenial(this.projectId);
+    }
+    void this.revalidateAfterMutation();
+    return true;
+  };
   publishSync = (ticket: number, access: ProjectAccess): boolean => {
     if (!this.live() || ticket < this.barrier || ticket < this.accepted) return false;
     this.accepted = ticket;
+    this.scope.markProjectReadable(this.projectId);
     this.lastObservation = performance.now();
     this.update({ access, status: 'ready', refreshing: this.read !== null, error: null });
     this.schedule();
@@ -102,6 +127,7 @@ export class ProjectAccessSession {
         if (!this.live() || ticket < this.barrier || cacheTicket.scopeRevision !== this.scope.getProjectRevision(this.projectId)) return null;
         if (ticket >= this.accepted) {
           this.accepted = ticket;
+          this.scope.markProjectReadable(this.projectId);
           this.scope.resumeProject(this.projectId);
           this.update({ access, status: 'ready', refreshing: true, error: null });
         }

@@ -24,6 +24,7 @@ import { focusProjectList, focusVisible, type ProjectListOrigin } from "./projec
 import { useProjectAssigneeFilter, useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
+import { useProjectPageRead } from "./useProjectPageRead";
 import { compareTaskStatus } from "./task-order";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { useProjectAssigneeReceipt } from "../task-assignees/TaskAssignees";
@@ -58,6 +59,7 @@ const visibleTaskFilters = (tasks: readonly GraphTask[], assignee: AssigneeFilte
 
 const ProjectView = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => {
   const graph = useTaskGraph(projectId);
+  const projectRead = useProjectPageRead(projectId);
   const graphOwner = useRef(Symbol());
   useProjectAssigneeReceipt(projectId, graphOwner.current, graph.snapshot?.revision ?? 0);
   const viewer = useTaskCacheScope();
@@ -65,7 +67,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const [statusFilter, setStatusFilter] = useState<TaskStatus | "all">("all");
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
-  const { locale, messages: { workspace: { project: m, projects, app, preferences, overview } }, format } = useI18n();
+  const { locale, messages: { workspace: { project: m, projects, app, preferences, overview }, auth: { shell: auth } }, format } = useI18n();
   const { section: preferredSection, onSectionChange, issue: sectionIssue } = useProjectSection(projectId);
   const { activeView: preferredView, onViewChange, issue: tabIssue } = useTaskView(projectId);
   const history = useProjectHistory(viewer.userId, projectId, true, { section: preferredSection, view: preferredView }, viewer);
@@ -289,14 +291,18 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     history.select({ ...selection, view, projectGraphWitness: null }, false, () => onViewChange(view));
   }, [activeView, history.select, selection, onViewChange]);
 
+  const saveSectionPosition = useCallback(() => {
+    if (section === "tasks") savePosition();
+    else if (section === "overview" && snapshotReady) overviewPosition.current = window.scrollY;
+  }, [section, savePosition, snapshotReady]);
+
   const selectSection = useCallback((next: ProjectSection) => {
     if (next === section) return;
     history.select({ ...selection, section: next, projectGraphWitness: null }, false, () => {
-      if (section === "tasks") savePosition();
-      else if (snapshotReady) overviewPosition.current = window.scrollY;
+      saveSectionPosition();
       onSectionChange(next);
     });
-  }, [section, savePosition, snapshotReady, onSectionChange, history.select, selection]);
+  }, [section, saveSectionPosition, onSectionChange, history.select, selection]);
 
   const clearTargetHighlight = useCallback(() => {
     if (highlightedTarget.current === null) return;
@@ -338,13 +344,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (originalTrigger.current === null) originalTrigger.current = trigger;
       if (search.applied !== null) search.clear();
       setNotice(null); setAssigneeFilter({ kind: "all" }); setStatusFilter("all");
-      if (section !== "tasks") { if (snapshotReady) overviewPosition.current = window.scrollY; onSectionChange("tasks"); }
+      if (section === "overview") { saveSectionPosition(); onSectionChange("tasks"); }
       if (view !== activeView) onViewChange(view);
       setNavigationWitness(id);
     };
     if (section === "tasks" && activeView === view && openChainWitness === null && detailSelection === null) commit();
     else history.select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
-  }, [snapshot, detailSelection, activeView, openChainId, openChainWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, section, snapshotReady, onSectionChange, onViewChange]);
+  }, [snapshot, detailSelection, activeView, openChainId, openChainWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, section, saveSectionPosition, onSectionChange, onViewChange]);
 
   const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
@@ -374,11 +380,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         if (detailSelection !== null) suppressRestore.current = true;
         if (originalTrigger.current === null) originalTrigger.current = trigger;
         setNotice(null);
-        if (section !== "tasks") { if (snapshotReady) overviewPosition.current = window.scrollY; onSectionChange("tasks"); }
+        if (section === "overview") { saveSectionPosition(); onSectionChange("tasks"); }
         if (activeView !== view) onViewChange(view);
       });
     }
-  }, [snapshot, onNavigateExternalTask, detailSelection, openChainId, history.select, selection, activeView, section, snapshotReady, onSectionChange, onViewChange]);
+  }, [snapshot, onNavigateExternalTask, detailSelection, openChainId, history.select, selection, activeView, section, saveSectionPosition, onSectionChange, onViewChange]);
 
   const onOpenChainTask = useCallback((id: string, trigger: HTMLElement) => {
     if (trigger.closest(".task-chain-dialog") !== null && snapshot?.index.nodes.get(id)?.parentId != null) onNavigateExternalTask(id, trigger);
@@ -407,9 +413,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       }
       setListTarget(target);
       if (view !== activeView) onViewChange(view);
-      if (section !== "tasks") { if (snapshotReady) overviewPosition.current = window.scrollY; onSectionChange("tasks"); }
+      if (section === "overview") { saveSectionPosition(); onSectionChange("tasks"); }
     });
-  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, snapshotReady, onSectionChange]);
+  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
   useEffect(() => {
     if (snapshot === null || (!window.location.hash.startsWith("#task=") && !window.location.hash.startsWith("#chain="))) return;
@@ -482,6 +488,20 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     goalChildren={detailSelection.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...selection, detail: { ...detailSelection, goalChildren } }, options?.replace)}
     onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} goalGraphError={graph.error} onNavigateExternalTask={onNavigateExternalTask} onNavigateExternalChain={onNavigateExternalChain} /></ProjectDraftHost>;
 
+  const graphState = <>
+    {graph.status === "loading" && <section className="state-box" role="status" aria-label={m.loading}>
+      <span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2><p>{m.loadingDetail}</p>
+    </section>}
+    {graph.status === "error" && <section className="state-box" role="alert">
+      <h2>{projectGraphErrorTitle(graph.error, m)}</h2><ProjectGraphErrorDetail error={graph.error} />
+      <button className="button primary" type="button" onClick={graph.refresh}>{projects.retry}</button>
+      <a className="back-link" href="/projects" onClick={backToProjects}>{app.returnToProjects}</a>
+    </section>}
+    {snapshot !== null && graph.error !== null && <section className="snapshot-error" role="alert"><h2>{m.refreshFailed}</h2><p>{m.showingSnapshot}</p><ProjectGraphErrorDetail error={graph.error} />
+      <button className="button" type="button" onClick={graph.refresh}>{m.retryRefresh}</button>
+    </section>}
+  </>;
+
   return (
     <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
       {history.error && <div className="notice error" role="alert">{locale === "zh-CN" ? "页面导航状态无效。" : "Invalid page navigation state."}</div>}
@@ -496,12 +516,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         <div>
           <p className="eyebrow">{app.projectTasks}</p>
           <div className="project-title-line">
-            <h1 ref={heading} tabIndex={-1}>{snapshot === null ? app.projectTasks : snapshot.graph.project.name}</h1>
-            {snapshot !== null && <p className="project-repository">{snapshot.graph.project.repoUrl}</p>}
+            <h1 ref={heading} tabIndex={-1}>{projectRead.project?.name ?? app.projectTasks}</h1>
+            {projectRead.project !== null && <p className="project-repository">{projectRead.project.repoUrl}</p>}
           </div>
         </div>
-        <div className="project-title-actions">{snapshot !== null && renderActions?.(snapshot.graph.project)}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><TaskOrganization projectId={projectId} snapshot={snapshot} onRefreshGraph={graph.refresh} /></div>
+        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><TaskOrganization projectId={projectId} snapshot={snapshot} onRefreshGraph={graph.refresh} /></div>
       </div>
+      {projectRead.error !== null && <section className="snapshot-error" role="alert">
+        <p>{locale === "zh-CN" ? "无法读取项目信息。" : "Could not read project information."}</p>
+        <button className="button" type="button" onClick={projectRead.retry}>{projects.retry}</button>
+      </section>}
       <div className="project-layout">
         <ProjectSectionTabs section={section} onChange={selectSection} />
         <div className="project-section-content">
@@ -509,23 +533,6 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}
           {assigneeIssue !== null && <p className="snapshot-notice" role="status">{preferences.assignee[assigneeIssue.kind]}</p>}
           {scrollIssue !== null && <p className="snapshot-notice" role="status">{preferences.scroll[scrollIssue.kind]}</p>}
-          {graph.status === "loading" && (
-            <section className="state-box" role="status" aria-label={m.loading}>
-              <span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2><p>{m.loadingDetail}</p>
-            </section>
-          )}
-          {graph.status === "error" && (
-            <section className="state-box" role="alert">
-              <h2>{projectGraphErrorTitle(graph.error, m)}</h2><ProjectGraphErrorDetail error={graph.error} />
-              <button className="button primary" type="button" onClick={graph.refresh}>{projects.retry}</button>
-              <a className="back-link" href="/projects" onClick={backToProjects}>{app.returnToProjects}</a>
-            </section>
-          )}
-          {snapshot !== null && graph.error !== null && (
-            <section className="snapshot-error" role="alert"><h2>{m.refreshFailed}</h2><p>{m.showingSnapshot}</p><ProjectGraphErrorDetail error={graph.error} />
-              <button className="button" type="button" onClick={graph.refresh}>{m.retryRefresh}</button>
-            </section>
-          )}
           {snapshot !== null && notice?.kind === "selected-task-removed" && <div className="snapshot-notice snapshot-notice-dismissible" role="status">
             <span className="snapshot-notice-message">{m.selectedTaskRemoved}</span>
             <button className="snapshot-notice-dismiss" type="button" aria-label={m.dismissNotice} title={m.dismissNotice}
@@ -534,10 +541,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
+            {section === "overview" && graphState}
             {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} onOpenTask={onOpenTask} />}
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
+            {section === "tasks" && graphState}
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
             <div hidden={searchActive} inert={searchActive}>
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}

@@ -43,7 +43,7 @@ export type SessionHistoryStore = IDBPObjectStore<TaskCacheSchema, [...typeof TA
 type HistorySettlement = { readonly taskId: string; readonly token: string; readonly outcome: "saved" | "failed" | "cancelled" };
 type HistoryUncertain = { readonly taskId: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound?: true; readonly origin?: symbol };
 export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly accessRestored?: true; readonly scopeSuspended?: true; readonly revokedGeneration?: string; readonly unknownAncestors?: true; readonly cacheGenerationChanged?: true; readonly historyChanged?: true; readonly historyHint?: true; readonly directAccessUncertain?: true; readonly directAccessRecheck?: true; readonly taskNotFound?: true; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string; readonly origin?: symbol }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain };
-type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true } };
+type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string; readonly cacheGeneration?: string; readonly generationAncestors?: readonly string[]; readonly unknownAncestors?: boolean; readonly retiredEpoch?: string; readonly uncertainEpoch?: string; readonly sessionHistoryCleared?: { readonly taskId: string; readonly token: string }; readonly sessionHistorySettled?: HistorySettlement; readonly sessionHistoryUncertain?: HistoryUncertain; readonly directSessionDenied?: { readonly taskId: string; readonly epoch: string; readonly manifestAbsent?: true }; readonly unboundProjectDenial?: true };
 export class TaskCacheLifecycleChanged extends DOMException {
   constructor(readonly retryable = true) { super("The task cache lifecycle changed.", "AbortError"); }
 }
@@ -104,6 +104,8 @@ export class TaskCacheScope {
   private readonly uncertainHistory = new Map<string, { readonly userFence: string; readonly cacheGeneration: string; readonly expectedToken: string | null; readonly expectedPaginationToken?: string | null; readonly expectedLeaseExpiresAt?: number | null; readonly unbound: boolean; readonly revision: number; readonly allowedToken: string | null }>();
   private uncertaintyRevision = 0;
   private readonly suspendedProjects = new Set<string>();
+  private readonly unboundProjectDenials = new Map<string, { readonly revision: number; isolated: boolean; timer: ReturnType<typeof setTimeout> | null }>();
+  private readonly readableProjects = new Map<string, number>();
   private readonly pendingUnknownProjects = new Map<string, { count: number; readonly baseRevision: number; readonly isolationRevision: number }>();
   private readonly projectRevisions = new Map<string, number>();
   private readonly directRevisions = new Map<string, number>();
@@ -167,7 +169,12 @@ export class TaskCacheScope {
       const hint = event.data;
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;
       if (hint.projectId !== null && typeof hint.projectId !== "string") return;
-      if (this.identityMismatch && !("revokedGeneration" in hint)) return;
+      if (this.identityMismatch && !("revokedGeneration" in hint) && !("unboundProjectDenial" in hint)) return;
+      if ("unboundProjectDenial" in hint) {
+        if (hint.unboundProjectDenial !== true || typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId) return;
+        this.receiveUnboundProjectDenial(hint.projectId);
+        return;
+      }
       if ("uncertainEpoch" in hint) {
         if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId ||
           !("userFence" in hint) || hint.userFence !== this.userFence || typeof hint.uncertainEpoch !== "string" || canonicalId(hint.uncertainEpoch) !== hint.uncertainEpoch) return;
@@ -479,7 +486,7 @@ export class TaskCacheScope {
       this.projectionFailure = null;
       this.corruptProjectionProjects = corrupt;
       this.projectionSnapshotCorrupt.set(generations, corrupt);
-      this.projectionSnapshotSuspended.set(generations, new Set([...this.suspendedProjects, ...this.pendingUnknownProjects.keys()]));
+      this.projectionSnapshotSuspended.set(generations, new Set([...this.suspendedProjects, ...[...this.unboundProjectDenials].filter(([, value]) => value.isolated).map(([id]) => id), ...this.pendingUnknownProjects.keys()]));
       this.projectionSnapshotAncestors.set(generations, histories);
       return generations;
     } catch (error) {
@@ -512,7 +519,7 @@ export class TaskCacheScope {
   get projectionError(): TaskCacheError | null { return this.projectionFailure ?? (this.corruptProjectionProjects.size ? new TaskCacheError("corrupt") : null); }
   get hasGlobalProjectionFailure(): boolean { return this.projectionFailure !== null; }
   isProjectionDenied(projectId: string): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.has(projectId) || this.deniedProjects.has(projectId) || this.isProjectSuspended(projectId); }
-  get hasProjectionDenials(): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.size !== 0 || this.deniedProjects.size !== 0 || this.suspendedProjects.size !== 0 || this.pendingUnknownProjects.size !== 0; }
+  get hasProjectionDenials(): boolean { return this.projectionFailure !== null || this.corruptProjectionProjects.size !== 0 || this.deniedProjects.size !== 0 || this.suspendedProjects.size !== 0 || [...this.unboundProjectDenials.values()].some(value => value.isolated) || this.pendingUnknownProjects.size !== 0; }
   reportTaskNotFound(projectId: string): void {
     if (this.identityMismatch) return;
     projectId = requestId(projectId);
@@ -1005,6 +1012,7 @@ export class TaskCacheScope {
     const current = this.projections.get(ticket.projectId)?.manifest ?? this.historyPreviews.get(ticket.projectId);
     if (current !== undefined && current.cacheGeneration !== ticket.cacheGeneration) revoked.add(current.cacheGeneration);
     this.withdrawnProjects.add(ticket.projectId);
+    this.readableProjects.delete(ticket.projectId);
     if (denied === undefined) this.deniedProjects.set(ticket.projectId, ticket);
     onWithdrawn?.();
     this.projections.delete(ticket.projectId); this.authorizedProjects.delete(ticket.projectId); this.historyPreviews.delete(ticket.projectId); this.clearProjectHistoryUncertainty(ticket.projectId);
@@ -1539,10 +1547,103 @@ export class TaskCacheScope {
     const preview = this.historyPreviews.get(projectId);
     return preview !== undefined && preview.userFence === this.userFence && preview.scopeRevision === this.getProjectRevision(projectId) ? preview : null;
   }
-  isProjectSuspended(projectId: string): boolean { return this.suspendedProjects.has(projectId) || this.pendingUnknownProjects.has(projectId); }
+  isProjectSuspended(projectId: string): boolean { return this.suspendedProjects.has(projectId) || this.unboundProjectDenials.get(projectId)?.isolated === true || this.pendingUnknownProjects.has(projectId); }
   private isProjectAccessBlocked(projectId: string): boolean { return this.isProjectSuspended(projectId) || this.deniedProjects.has(projectId); }
   private isDirectProjectBlocked(projectId: string): boolean {
     return this.isProjectAccessBlocked(projectId) || this.directHintCounts.has(projectId) || this.directRecheckPending.has(projectId) || this.directRecheckWorks.has(projectId) || this.directRecheckErrors.has(projectId);
+  }
+  markProjectReadable(projectId: string): void {
+    if (!this.isInvalidated && !this.identityMismatch) this.readableProjects.set(projectId, (this.readableProjects.get(projectId) ?? 0) + 1);
+  }
+  reportUnboundProjectDenial(projectId: string): void {
+    projectId = requestId(projectId);
+    if (this.isInvalidated || this.identityMismatch) return;
+    this.channel?.postMessage({ userId: this.userId, projectId, unboundProjectDenial: true } satisfies Hint);
+  }
+  private receiveUnboundProjectDenial(projectId: string): void {
+    if (this.isInvalidated) return;
+    const prior = this.unboundProjectDenials.get(projectId);
+    if (prior?.timer !== null && prior?.timer !== undefined) clearTimeout(prior.timer);
+    const observed = !this.identityMismatch && !authRequestsPaused() ? this.getObservedHistoryTicket(projectId) : null;
+    // An unbound hint cannot order itself against a peer's confirmed access.
+    const isolated = observed === null && !this.readableProjects.has(projectId);
+    const revision = this.getProjectRevision(projectId) + (isolated ? 1 : 0);
+    const history = observed === null ? null : { ...observed, scopeRevision: revision };
+    const denial = { revision, isolated, timer: null as ReturnType<typeof setTimeout> | null };
+    this.unboundProjectDenials.set(projectId, denial);
+    if (isolated) {
+      this.projectRevisions.set(projectId, revision);
+      this.fenceUncertainDirectHistory(projectId);
+      this.withdrawnProjects.add(projectId);
+      this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
+      const event: CacheEvent = { projectId, accessRevoked: true, scopeSuspended: true };
+      if (this.identityMismatch) {
+        for (const listener of this.listeners) listener(event);
+        for (const listener of this.projectionListeners) listener(event);
+      } else this.emit(event);
+    }
+    const check = () => {
+      if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+      denial.timer = null;
+      const admission = this.getAdmissionRevision(projectId);
+      const readable = this.readableProjects.get(projectId);
+      const unchanged = () => this.getProjectRevision(projectId) === revision && this.getAdmissionRevision(projectId) === admission && this.readableProjects.get(projectId) === readable;
+      void (async () => {
+        await this.ready(this.signal);
+        let captured = history;
+        if (captured === null) {
+          const preparing = new AbortController();
+          const signal = AbortSignal.any([this.signal, preparing.signal]);
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          try {
+            captured = await Promise.race([
+              this.beginSync(projectId, signal).catch(() => null),
+              new Promise<null>(resolve => { timer = setTimeout(() => { preparing.abort(); resolve(null); }, 5_000); }),
+            ]);
+          } finally { if (timer !== null) clearTimeout(timer); preparing.abort(); }
+        }
+        if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+        if (!unchanged()) { this.receiveUnboundProjectDenial(projectId); return; }
+        try {
+          await getProjectAccess(projectId, this.signal, { userId: this.userId, onPrincipalMismatch: this.principalMismatch });
+        } catch (error) {
+          if (this.unboundProjectDenials.get(projectId) === denial && unchanged() && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+            if (captured !== null && this.canRevokeProject(captured)) {
+              void this.revokeProject(captured, this.signal, true, error).catch(() => {});
+            } else if (captured === null && !denial.isolated) {
+              denial.isolated = true;
+              this.readableProjects.delete(projectId);
+              this.projectRevisions.set(projectId, revision + 1);
+              this.fenceUncertainDirectHistory(projectId);
+              this.withdrawnProjects.add(projectId);
+              this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
+              this.emit({ projectId, accessRevoked: true, scopeSuspended: true, error });
+            }
+          }
+          throw error;
+        }
+        await this.ready(this.signal);
+        if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+        if (!unchanged()) { this.receiveUnboundProjectDenial(projectId); return; }
+        if (this.deniedProjects.has(projectId)) { denial.timer = setTimeout(check, 30_000); return; }
+        this.unboundProjectDenials.delete(projectId);
+        if (denial.isolated) {
+          this.projectRevisions.set(projectId, revision + 1);
+          if (!this.isProjectSuspended(projectId)) this.emit({ projectId, accessRestored: true });
+        }
+        this.requestDirectAccessRecheck(projectId);
+      })().catch(error => {
+        if (this.isInvalidated || this.unboundProjectDenials.get(projectId) !== denial) return;
+        if (!unchanged()) {
+          if (denial.isolated) denial.timer = setTimeout(() => this.receiveUnboundProjectDenial(projectId), 30_000);
+          else this.receiveUnboundProjectDenial(projectId);
+          return;
+        }
+        if (!isAbortError(error)) this.emit(denial.isolated ? { projectId, accessRevoked: true, scopeSuspended: true, error } : { projectId, error });
+        denial.timer = setTimeout(check, 30_000);
+      });
+    };
+    check();
   }
   suspendProject(projectId: string): void {
     projectId = requestId(projectId);
@@ -1550,6 +1651,7 @@ export class TaskCacheScope {
     this.projectRevisions.set(projectId, (this.projectRevisions.get(projectId) ?? 0) + 1);
     this.fenceUncertainDirectHistory(projectId);
     this.suspendedProjects.add(projectId);
+    this.readableProjects.delete(projectId);
     this.withdrawnProjects.add(projectId);
     if (!this.revokedGenerations.has(projectId)) this.revokedGenerations.set(projectId, new Set());
     this.projections.delete(projectId); this.authorizedProjects.delete(projectId); this.historyPreviews.delete(projectId); this.clearProjectHistoryUncertainty(projectId);
@@ -1597,6 +1699,8 @@ export class TaskCacheScope {
     if (this.disposed) return Promise.resolve();
     this.invalidated = true;
     this.lifetime.abort();
+    for (const denial of this.unboundProjectDenials.values()) if (denial.timer !== null) clearTimeout(denial.timer);
+    this.unboundProjectDenials.clear();
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already committed. */ } }
     this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
@@ -1619,6 +1723,8 @@ export class TaskCacheScope {
   }
   private close(): void {
     this.disposed = true; this.lifetime.abort();
+    for (const denial of this.unboundProjectDenials.values()) if (denial.timer !== null) clearTimeout(denial.timer);
+    this.unboundProjectDenials.clear();
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already completed. */ } }
     this.pending.clear(); this.channel?.close(); this.database.close();

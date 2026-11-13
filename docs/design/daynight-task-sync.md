@@ -300,6 +300,8 @@ Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完
 
 负向 BroadcastChannel 提示携带 userId、projectId、userFence、revokedGeneration 及 ticket 的完整祖先。接收方同步封锁被撤代际及祖先，按其投影读取时捕获的历史撤回内容；新代际的撤权也能覆盖其先前投影，旧提示不能撤回可证明的后继。清理以实际持久 generation 为 CAS，不转发提示。损坏使前驱不可证明时标记 unknownAncestors；接收方核对持久 generation 或刚完成的清理记录后隔离无法比较的旧投影并重新读取。账户准入暂停时立即暂时隔离无法比较的内容；核对进行中发生的后续暂停也立即触发隔离。若恢复后核对确认提示过期，则恢复原准入并重新读取。存储无法核对时保守隔离并显示错误，可证明的后继保持准入。独立目录和 Worker 投影及存储故障行为由 [Web 设计](daynight-web.md#我的-worker-列表与详情)拥有，相关代际决策见 [投影撤回记录](../../.agents/notes/implemented/architecture/2026-11-06-web-project-projection-withdrawal.md)。
 
+项目页面的独立 Project GET 若在发出前捕获可用的项目历史 ticket，可信当前 404 使用该 ticket 按上述代际规则撤权。没有可证明代际时，来源 scope 先本地隔离并广播同账号、同项目的无代次负向提示；接收 scope 独立核验 Project 访问。已经确认访问的 peer 在核验期间及普通失败时保留内容，显示可恢复错误；尚无自身准入事实的 peer 暂时隔离并周期重试。核验前最多等待 5 秒准备持久 generation ticket，无法取得时仍执行访问读取；自身读取确认 404 且捕获 ticket 仍匹配时才按该 ticket 撤权和清理，没有 ticket 则本地隔离。Project、准入或读取事实变化时重验，旧观察不能撤销更新的准入；无代次提示本身不能永久撤销一个推测的代际。该提示是内存广播，不持久化；所有 scope 关闭且未完成可信代际清理时，后续 scope 沿用既有持久摘要预览与服务端核验规则。
+
 direct 详情的在线观察不持有项目快照代际，不能仅凭祖先链判断负向提示发生在观察之前。提示到达时先隔离对应 direct 内容并保留已派发写入的互斥所有权，再核验当前 Project 访问；确认仍可访问后重新读取 direct Task 和 Session，失败或离线保持隐藏。独立目录及 Worker 仍按各自代际接收撤回，Project 权威撤权和持久清理不因 direct 重验而跳过。历史清理不能覆盖已提交的访问撤权记录；未观察到的跨服务撤权与重新授权顺序仍遵循 direct 观察的服务端合同。
 
 持久数据不保存在线授权；身份通过核验且生命周期仍有效时，本地摘要允许先行显示，普通可恢复故障保留允许展示的同 generation 摘要及仍获准的详情。真实退出或当前有效 401 通过 invalidateScope 同步中止 scope、释放内存；观察到账户变化时保留内存并停止远程准入，直到真实刷新；持久事务只在已绑定 fence 与当前有效 fence 相同、尚未绑定或当前 fence 缺失/损坏时轮换 userFence、清除该用户内容并保留失效 manifest。已绑定 scope 不能清除其他生命周期的较新 fence 和内容；dispose 仅关闭当前 scope，保留可重用持久记录。
