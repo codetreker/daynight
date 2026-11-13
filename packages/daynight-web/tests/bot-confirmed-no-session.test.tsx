@@ -37,9 +37,9 @@ async function fixture() {
   const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
   const owner = getBotDisplaySnapshotCoordinator(scope);
   const preview: BotDisplayPreview = { schemaVersion: 1, ownerUserId: user, botId: definition.id, lastKnownBinding: previous.binding, botName: definition.name, fence: sessionFence(previous.snapshot()), historyEpoch: previous.snapshot().historyEpoch, lastEventSeq: '0', entries: [{ kind: 'assistant_message', entryId: crypto.randomUUID(), entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Previously saved history' }] }], resources: [], savedAt: 1 };
-  const save = async () => {
+  const save = async (botName = preview.botName) => {
     const lease = (await owner.store.observe(user, definition.id))!;
-    expect(await owner.store.save(lease, { source: 'verified-history', historyLoaded: true, preview })).toBe('saved');
+    expect(await owner.store.save(lease, { source: 'verified-history', historyLoaded: true, preview: { ...preview, botName } })).toBe('saved');
   };
   await save();
   const selections = vi.spyOn(BotSessionCache.prototype, 'select');
@@ -99,13 +99,14 @@ it('withdraws the resident client on confirmed no Session and admits a later con
 it('does not restore a saved preview from an in-flight read after no Session confirmation or auth recovery', async () => {
   const f = await fixture();
   const release = Promise.withResolvers<void>();
+  const captured = Promise.withResolvers<BotDisplayPreview | null>();
   let resume: (() => void) | undefined;
   try {
     await screen.findByText('Previously saved history');
     const original = f.owner.store.read.bind(f.owner.store);
-    const read = vi.spyOn(f.owner.store, 'read').mockImplementation(async (...args) => { const result = await original(...args); await release.promise; return result; });
-    await act(f.save);
-    await waitFor(() => expect(read).toHaveBeenCalled());
+    vi.spyOn(f.owner.store, 'read').mockImplementation(async (...args) => { const result = await original(...args); captured.resolve(result); await release.promise; return result; });
+    await act(() => f.save('Updated assistant'));
+    expect(await captured.promise).not.toBeNull();
     await f.answer(f.absent('pending'));
     await waitFor(() => expect(screen.queryByText('Previously saved history')).toBeNull());
     resume = pauseAuthRequests(); f.view.rerender(f.node(false));

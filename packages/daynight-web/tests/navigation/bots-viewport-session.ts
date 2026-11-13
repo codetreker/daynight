@@ -4,6 +4,8 @@ import type { SessionSnapshot } from '../../src/api/types';
 import type { SessionArchive } from '../../../daynight/src/session/archive';
 import { sessionFence } from '../../../daynight/src/session/protocol';
 import { sessionImageBytes } from '../helpers/sessionImages';
+import { BotHistorySnapshotObserver } from '../../src/features/bots/display-snapshot-coordinator';
+import { BotDisplaySnapshotStore } from '../../src/features/bots/display-snapshot';
 
 export type BotViewportOptions = {
   readonly scenario: 'empty' | 'long' | 'error' | 'archive' | 'hot-switch' | 'persistent';
@@ -19,7 +21,28 @@ export type BotViewportOptions = {
 
 // Only the Bot transport is controlled. AuthenticatedApp, the cache, client,
 // renderer, composer and pagination hooks are production implementations.
-const metrics = { tail: 0, before: 0, commands: 0, channels: 0, closed: 0, archives: 0, archiveContents: 0, resourceReads: 0, snapshotWrites: 0, snapshotEvents: [] as (string | null)[], snapshotChanges: [] as { readonly at: number; readonly writes: number; readonly oldValue: string | null; readonly newValue: string | null }[], bindings: [] as string[] };
+const metrics = { tail: 0, before: 0, commands: 0, channels: 0, closed: 0, archives: 0, archiveContents: 0, resourceReads: 0, currentCalls: [] as number[], snapshotWrites: 0, snapshotFlushes: [] as { readonly at: number; readonly observation: number; readonly source: string | null; readonly generation: number | null; readonly result?: string | null }[], snapshotReads: [] as { readonly at: number; readonly botId: string; readonly touch: boolean | undefined; complete?: boolean }[], snapshotEvents: [] as (string | null)[], snapshotChanges: [] as { readonly at: number; readonly writes: number; readonly oldValue: string | null; readonly newValue: string | null }[], bindings: [] as string[] };
+const read = BotDisplaySnapshotStore.prototype.read;
+BotDisplaySnapshotStore.prototype.read = function(owner, botId, options) {
+  const entry: (typeof metrics.snapshotReads)[number] = { at: Date.now(), botId, touch: options?.touch };
+  metrics.snapshotReads.push(entry);
+  const result = read.call(this, owner, botId, options);
+  void result.then(() => { entry.complete = true; });
+  return result;
+};
+type ObserverState = { readonly closed: boolean; readonly observation: number; readonly candidate: { readonly source: string; readonly generation: number } | null; readonly timer: unknown | null; readonly saving: Map<unknown, number> };
+const observers = new Set<BotHistorySnapshotObserver>();
+const flush = BotHistorySnapshotObserver.prototype.flush;
+BotHistorySnapshotObserver.prototype.flush = function() {
+  observers.add(this);
+  const state = this as unknown as ObserverState;
+  const entry: (typeof metrics.snapshotFlushes)[number] = { at: Date.now(), observation: state.observation, source: state.candidate?.source ?? null, generation: state.candidate?.generation ?? null };
+  metrics.snapshotFlushes.push(entry);
+  const result = flush.call(this);
+  void result.then(value => Object.assign(entry, { result: value }));
+  return result;
+};
+const observerStates = () => [...observers].map(value => value as unknown as ObserverState).filter(value => !value.closed).map(value => ({ observation: value.observation, candidate: value.candidate !== null, timer: value.timer !== null, saving: value.saving.size }));
 const setItem = Storage.prototype.setItem;
 Storage.prototype.setItem = function(key, value) { if (key.startsWith('daynight:bot-display:v1:')) metrics.snapshotWrites++; return setItem.call(this, key, value); };
 window.addEventListener('storage', event => {
@@ -35,8 +58,8 @@ const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
 const beforeGate = new Promise<void>(resolve => { releaseBefore = resolve; });
 type HistorySnapshotPatch = Partial<Pick<SessionSnapshot, 'historyEpoch' | 'executionGeneration' | 'lastEventSeq' | 'lastTimelineSeq'>>;
 const historyControls = new Map<string, { snapshot: (patch: HistorySnapshotPatch) => void; upsert: (sequence: number, revision: string, text: string) => void }>();
-declare global { interface Window { botViewport: { metrics: typeof metrics; releaseCurrent: () => void; releaseHistory: () => void; releaseBefore: () => void; publishSnapshot: (botId: string, patch: HistorySnapshotPatch) => void; upsert: (botId: string, sequence: number, revision: string, text: string) => void }; botViewportOptions?: BotViewportOptions } }
-window.botViewport = { metrics, releaseCurrent, releaseHistory, releaseBefore,
+declare global { interface Window { botViewport: { metrics: typeof metrics; observerStates: typeof observerStates; releaseCurrent: () => void; releaseHistory: () => void; releaseBefore: () => void; publishSnapshot: (botId: string, patch: HistorySnapshotPatch) => void; upsert: (botId: string, sequence: number, revision: string, text: string) => void }; botViewportOptions?: BotViewportOptions } }
+window.botViewport = { metrics, observerStates, releaseCurrent, releaseHistory, releaseBefore,
   publishSnapshot: (botId, patch) => historyControls.get(botId)!.snapshot(patch),
   upsert: (botId, sequence, revision, text) => historyControls.get(botId)!.upsert(sequence, revision, text),
 };
@@ -76,7 +99,7 @@ export function createBotSessionApi(binding: BotSessionBinding): SessionApi {
     nativeSessionId: snapshot.identity.nativeSessionId, entries: content().items, resources: [],
   });
   return {
-    current: async () => { if (options?.holdCurrent) await currentGate; return { status: 'registered', session: snapshot }; },
+    current: async () => { metrics.currentCalls.push(Date.now()); if (options?.holdCurrent) await currentGate; return { status: 'registered', session: snapshot }; },
     timeline: async (_id, direction, cursor) => {
       if (direction === 'tail') {
         metrics.tail++;

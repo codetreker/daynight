@@ -204,21 +204,75 @@ test('withdraws confirmed no-Session history and permits a later real Session', 
   await info.attach('confirmed-no-session', { path, contentType: 'application/json' });
 });
 
-test('does not feed cross-tab storage reads back into repeated LRU writes', async ({ context, page }) => {
+async function drainSnapshots(page: Page) {
+  await expect.poll(() => page.evaluate(async key => {
+    const states = window.botViewport.observerStates();
+    if (states.length === 0 || !states.every(state => !state.candidate && !state.timer && state.saving === 0)) return false;
+    // Check observer state inside the store's actual shared lock: new polls may
+    // enqueue work while a lock acquisition is pending.
+    return navigator.locks.request(key, () => window.botViewport.observerStates().every(state => !state.candidate && !state.timer && state.saving === 0));
+  }, namespace), { timeout: 10_000 }).toBe(true);
+}
+
+test('does not persist unchanged current polls after the observer and store drain', async ({ page }) => {
   await install(page);
   await page.goto(`/bots/${bots[0]!.id}`); await saved(page);
+  await drainSnapshots(page);
+  const before = await page.evaluate(() => window.botViewport.metrics.snapshotWrites);
+  const start = await page.evaluate(() => window.botViewport.metrics.currentCalls.length);
+  for (let count = start + 1; count <= start + 2; count++) {
+    const previousFlushes = await page.evaluate(() => window.botViewport.metrics.snapshotFlushes.length);
+    const observation = await page.evaluate(() => Math.max(...window.botViewport.observerStates().map(state => state.observation)));
+    await expect.poll(() => page.evaluate(() => window.botViewport.metrics.currentCalls.length), { timeout: 7_000 }).toBeGreaterThanOrEqual(count);
+    const at = await page.evaluate(index => window.botViewport.metrics.currentCalls[index]!, count - 1);
+    await expect.poll(() => page.evaluate(() => Math.max(...window.botViewport.observerStates().map(state => state.observation)))).toBeGreaterThan(observation);
+    // Wait for this publication's real flush to complete, then verify both the
+    // observer queue and the shared storage lock are idle.
+    await expect.poll(() => page.evaluate(({ index, at, observation }) => window.botViewport.metrics.snapshotFlushes.slice(index).some(item => item.at >= at && item.observation > observation && item.source !== null && item.result !== undefined), { index: previousFlushes, at, observation }), { timeout: 5_000 }).toBe(true);
+    const flushedAt = await page.evaluate(({ index, at, observation }) => window.botViewport.metrics.snapshotFlushes.slice(index).find(item => item.at >= at && item.observation > observation && item.source !== null && item.result !== undefined)!.at, { index: previousFlushes, at, observation });
+    expect(flushedAt - at).toBeGreaterThanOrEqual(2_000);
+    await drainSnapshots(page);
+    expect(await page.evaluate(() => window.botViewport.metrics.snapshotWrites)).toBe(before);
+  }
+});
+
+test('does not touch LRU when a native storage event triggers a passive cross-tab read', async ({ context, page }) => {
+  await install(page);
+  await page.goto(`/bots/${bots[0]!.id}`); await saved(page);
+  await drainSnapshots(page);
+  const before = await page.evaluate(() => window.botViewport.metrics.snapshotWrites);
   const peer = await context.newPage(); await install(peer);
   await peer.goto(`/bots/${bots[1]!.id}`); await saved(peer, bots[1]!.id);
-  // Both production observers have flushed, and both accounts have seen the
-  // other tab's real storage event. A bounded idle observation detects a
-  // read->LRU-write feedback loop without manufacturing events in the test.
-  await page.waitForTimeout(2_500);
-  const before = await Promise.all([page, peer].map(tab => tab.evaluate(() => window.botViewport.metrics.snapshotWrites)));
-  await page.waitForTimeout(500);
-  const after = await Promise.all([page, peer].map(tab => tab.evaluate(() => window.botViewport.metrics.snapshotWrites)));
-  expect(after).toEqual(before);
-  expect(after.reduce((sum, count) => sum + count, 0)).toBeLessThan(12);
+  await expect.poll(() => page.evaluate(() => window.botViewport.metrics.snapshotEvents.length)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => {
+    const event = window.botViewport.metrics.snapshotChanges.at(-1);
+    return !!event && window.botViewport.metrics.snapshotReads.some(read => read.at >= event.at && read.touch === false && read.complete);
+  })).toBe(true);
+  await drainSnapshots(peer); await drainSnapshots(page);
+  const result = await page.evaluate(key => ({ writes: window.botViewport.metrics.snapshotWrites, events: window.botViewport.metrics.snapshotEvents, disk: localStorage.getItem(key) }), namespace);
+  expect(result.writes).toBe(before);
+  expect(result.disk).toBe(result.events.at(-1));
+  expect(JSON.parse(result.disk!).records.map((record: { preview: { botId: string } }) => record.preview.botId)).toEqual([bots[0]!.id, bots[1]!.id]);
   await peer.close();
+});
+
+test('persists accepted history revisions and appends after unchanged polls', async ({ page }) => {
+  await install(page);
+  await page.goto(`/bots/${bots[0]!.id}`); await saved(page);
+  await drainSnapshots(page);
+  await page.evaluate(bot => {
+    window.botViewport.upsert(bot, 80, '2', 'Accepted revision');
+    window.botViewport.upsert(bot, 101, '1', 'Accepted append');
+  }, bots[0]!.id);
+  await expect(page.locator(`${row}[data-entry-key="${entryId(80)}"]`)).toContainText('Accepted revision');
+  await expect(page.locator(`${row}[data-entry-key="${entryId(101)}"]`)).toContainText('Accepted append');
+  await expect.poll(() => page.evaluate(({ key, target }) => {
+    const raw = localStorage.getItem(key);
+    if (!raw) return false;
+    const preview = JSON.parse(raw).records.find((record: { preview: { botId: string } }) => record.preview.botId === target)?.preview;
+    return !!preview && JSON.stringify(preview.entries).includes('Accepted revision') && JSON.stringify(preview.entries).includes('Accepted append');
+  }, { key: namespace, target: bots[0]!.id }), { timeout: 10_000 }).toBe(true);
+  await drainSnapshots(page);
 });
 
 test('keeps a product return path after access loss on a 320px cold target', async ({ page }) => {
