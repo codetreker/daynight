@@ -69,6 +69,11 @@ export const runTaskCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.path[2] === "tag") {
+    const { runTaskTagCommand } = await import("./tag.js");
+    await runTaskTagCommand(command, context, dependencies);
+    return;
+  }
   if (command.path[2] === "session") {
     const { runTaskSessionCommand } = await import("./session/registry.js");
     await runTaskSessionCommand(command, context, dependencies);
@@ -161,6 +166,14 @@ export const runTaskCommand = async (
   if (title !== undefined && !isNonemptyText(title)) throw new UsageError("Task title must be nonempty UTF-8 text without NUL characters.", help);
   if (description !== undefined && !isText(description)) throw new UsageError("Task description must be UTF-8 text without NUL characters.", help);
   const dependencyFields = await compileDependencies(dependsOn, externalDependsOn, clearDependencies, help);
+  const rawTagIds = command.options.get("--tag") as readonly string[] | undefined;
+  const clearTags = command.options.has("--clear-tags");
+  if (clearTags && rawTagIds !== undefined) throw new UsageError("--clear-tags conflicts with --tag.", help);
+  const { normalizeTaskTagIds } = await import("../../api/task-tags.js");
+  let tagIds: string[] | undefined;
+  try { tagIds = clearTags ? [] : rawTagIds === undefined ? undefined : normalizeTaskTagIds(rawTagIds); }
+  catch (cause) { throw new UsageError(cause instanceof Error ? cause.message : "Tag IDs must be hyphenated UUIDs.", help); }
+  const tagFields = tagIds === undefined ? {} : { tagIds };
   const changes: Omit<UpdateTaskInput, "version"> = {
     ...assignmentFields,
     ...(parentId === undefined ? {} : { parentId }),
@@ -169,8 +182,9 @@ export const runTaskCommand = async (
     ...(title === undefined ? {} : { title }),
     ...(description === undefined ? {} : { description }),
     ...dependencyFields,
+    ...tagFields,
   };
-  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, assignee, automatic-execution permission, platform requirement, parent, or dependency change.", help);
+  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, assignee, automatic-execution permission, platform requirement, parent, dependency, or tag change.", help);
   const rawProjectId = command.options.get("--project") as string | undefined;
   let projectId: string | undefined;
   let taskId: string | undefined;
@@ -219,7 +233,7 @@ export const runTaskCommand = async (
       }
       const createAssignment = clearAssignedTo ? { assignedTo: null } : assignedTo !== undefined ? { assignedTo } : type === "goal" ? {} : { assignedTo: (await api.getCurrentUser()).id };
       operation.check();
-      const input: CreateTaskInput = { title: title!, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(status === undefined ? {} : { status }), ...(description === undefined ? {} : { description }), ...createAssignment, ...platformFields, ...dependencyFields };
+      const input: CreateTaskInput = { title: title!, ...(type === undefined ? {} : { type }), ...(parentId === undefined ? {} : { parentId }), ...(status === undefined ? {} : { status }), ...(description === undefined ? {} : { description }), ...createAssignment, ...platformFields, ...dependencyFields, ...tagFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;

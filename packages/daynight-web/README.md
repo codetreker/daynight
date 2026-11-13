@@ -6,6 +6,14 @@ account-owned Worker observations and cloud configuration, a cross-project in-pr
 request cancellation, runtime API decoding, native browser routing and a pure
 dependency graph model with horizontal and vertical layouts. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
+Project navigation includes Overview, Task list and PR list. The independent PR
+workspace reads saved summaries in six-item cursor pages, filters by state and
+title/number, and opens the existing PR detail reader. Visible workspaces reconcile
+every 15 seconds; hidden sections retain filters, pages and selections while
+cancelling reads. Task graph errors do not block PR browsing. The
+[PR read design](../../docs/design/github-pr-reading.md) owns synchronization
+states, unknown counts, identity admission and retained-page behavior.
+
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)

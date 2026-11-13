@@ -124,6 +124,28 @@ claim authority is separate. Actual assignment, permission and platform
 changes are locked in_progress and do not change status. Task/graph JSON retain
 assignedTo as UUID/null; text shows UUID/unassigned.
 
+## Tag associations
+
+```bash
+daynight task create --title "Improve installation" --tag <tag-id> --tag <another-tag-id>
+daynight task update <task-id> --tag <tag-id> --if-version <observed-version>
+daynight task update <task-id> --clear-tags --if-version <observed-version>
+daynight task tag add <task-id> <tag-id> --if-version <observed-version>
+daynight task tag remove <task-id> <tag-id> --if-version <observed-version>
+```
+
+Create and update accept repeated tag UUIDs, normalized, deduplicated and sorted.
+Create writes the tags and metadata atomically; omission creates no associations.
+Update replaces the complete set; `--clear-tags` empties it and conflicts with
+`--tag`. Omission preserves the set. Task and Goal tags are independent.
+
+Add/remove read the current Task and PATCH the complete resulting set, including
+when unchanged. An explicit version must match that read and remains the original
+condition; otherwise the read version is used. Conflicts require a fresh decision.
+A timeout or unknown result is not rollback: read the Task to inspect the saved
+state and do not automatically replay the write. Successful receipts must contain
+the submitted IDs.
+
 ## Status and timing
 
 ```bash

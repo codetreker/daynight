@@ -58,7 +58,7 @@ describe("Bash completion rendering", () => {
   it("offers unified status command and Task status filtering without metadata status updates", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
-    expect(script).toContain("dn_children=('session' 'create' 'list' 'search' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'set-status' 'delete' 'graph' 'step' 'thread' 'attachment')");
+    expect(script).toContain("dn_children=('session' 'create' 'list' 'search' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'tag' 'set-status' 'delete' 'graph' 'step' 'thread' 'attachment')");
     expect(script).toContain("dn_value_choices=('proposed' 'todo' 'in_progress' 'done' 'cancelled')");
     const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("'--status'");
