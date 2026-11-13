@@ -91,8 +91,21 @@ func TestRecordClockExhaustionRollsBackWithoutInventedTimestamp(t *testing.T) {
 		return err
 	})
 	var clock *store.ThreadClockError
-	if completion.Outcome != store.TransactionNotCommitted || !errors.As(err, &clock) || !clock.Head.CreatedAt.Equal(future) || clock.Head.ID != headID {
-		t.Fatalf("clock exhaustion: %#v %#v %v", completion, clock, err)
+	var transaction *store.TransactionError
+	if !errors.As(err, &clock) || !errors.As(err, &transaction) || transaction.CommitAttempted || !clock.Head.CreatedAt.Equal(future) || clock.Head.ID != headID {
+		t.Fatalf("clock exhaustion: %#v clock=%#v transaction=%#v error=%v", completion, clock, transaction, err)
+	}
+	// An in-flight clock sample can close the pgx connection at its deadline.
+	// Failed rollback must remain unknown even if subsequent readback is clean.
+	expectedOutcome := store.TransactionNotCommitted
+	if transaction.CleanupFailed {
+		expectedOutcome = store.TransactionUnknown
+		if transaction.Phase != "cleanup" {
+			t.Fatalf("clock cleanup classification: %#v", transaction)
+		}
+	}
+	if completion.Outcome != expectedOutcome || transaction.Outcome != expectedOutcome {
+		t.Fatalf("clock completion classification: %#v %#v", completion, transaction)
 	}
 	var count int
 	var head time.Time

@@ -27,6 +27,10 @@ version and claim predicates. Creation uses a task-ID advisory lock because no
 row exists yet to serialize the first definition, its fingerprint and manual.
 These short transactions do not include Session sends or other network work.
 
+A record-clock sample may reach its deadline during database I/O and close the
+connection. Failed rollback retains unknown completion and the original clock
+error; later clean readback cannot replace the transaction's cleanup outcome.
+
 Database time is observed after waits and checked again before the callback
 allows completion. Receipt admission time describes that transaction's decision,
 not the exact commit instant. Record ordering uses the database clock under a
