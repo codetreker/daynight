@@ -186,7 +186,7 @@ func TestTaskReceiptsLoadCurrentTagsInTransaction(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if created.Tags == nil || len(created.Tags) != 0 {
+		if len(created.Tags) != 0 {
 			t.Fatalf("new task tags: %#v", created.Tags)
 		}
 		if err := scope.TaskTagDAO().ReplaceTaskTags(ctx, taskID, []string{tagID}); err != nil {

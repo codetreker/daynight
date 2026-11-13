@@ -39,7 +39,7 @@ func LoadTaskTags(ctx context.Context, tx pgx.Tx, projectID, taskID string) ([]m
 		return nil, QueryError("read task tags", err)
 	}
 	defer rows.Close()
-	refs := make([]model.TagReference, 0)
+	var refs []model.TagReference
 	for rows.Next() {
 		var ref model.TagReference
 		if err := rows.Scan(&ref.ID, &ref.Name); err != nil {
