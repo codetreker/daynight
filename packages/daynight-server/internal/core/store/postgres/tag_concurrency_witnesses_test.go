@@ -4,11 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	. "github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
+	taskprotocol "github.com/codetreker/daynight/packages/daynight-server/internal/protocol/task"
+	tagservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/tag"
+	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -27,6 +35,76 @@ func tagWitnessDelete(ctx context.Context, scope ProjectWriteScope, id string) e
 		return err
 	}
 	return scope.ProjectDAO().RotateTagCatalogEpoch(ctx)
+}
+
+func TestTaskTagAdmissionRollbackAndRenameReadback(t *testing.T) {
+	s, principal, _, project := membershipFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	item := queryTask(t, s, project.ID, 11, model.TaskTodo)
+	tagID := queryID(21)
+	mustQueryExec(t, s, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES($1,$2,'name','name',statement_timestamp(),statement_timestamp())`, tagID, project.ID)
+	current := snapshotTask(t, s, project.ID, item.ID)
+	reserved := current
+	reserved.Description = ""
+	reserved.Tags = []model.TagReference{{ID: tagID, Name: strings.Repeat("&", 64)}}
+	reserved.Version = math.MaxInt64
+	reserved.UpdatedAt = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+	base, err := taskprotocol.EncodeREST(io.Discard, reserved, true, taskcore.MaxTaskResponseJSONBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	safeLength := int(taskcore.MaxTaskResponseJSONBytes - base - 16)
+	if safeLength < 1 {
+		t.Fatal("fixture has no room for a description")
+	}
+	ids := []string{tagID}
+	tasks := taskservice.NewTasks(s)
+	var epoch string
+	if err := s.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&epoch); err != nil {
+		t.Fatal(err)
+	}
+	mustQueryExec(t, s, `UPDATE tasks SET description=$2 WHERE id=$1`, item.ID, strings.Repeat("x", safeLength+32))
+	before := snapshotTask(t, s, project.ID, item.ID)
+	if _, err := taskprotocol.EncodeREST(io.Discard, before, true, taskcore.MaxTaskResponseJSONBytes); err != nil {
+		t.Fatalf("unlabeled original should fit: %v", err)
+	}
+	_, err = tasks.ReplaceTags(ctx, principal, project.ID, item.ID, before.Version, &ids)
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "resource_limit_exceeded" {
+		t.Fatalf("oversize association: %v", err)
+	}
+	after := snapshotTask(t, s, project.ID, item.ID)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("failed admission changed the task or its references")
+	}
+	var count int
+	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM task_tags WHERE project_id=$1 AND task_id=$2`, project.ID, item.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("failed admission persisted association: %d %v", count, err)
+	}
+
+	mustQueryExec(t, s, `UPDATE tasks SET description=$2 WHERE id=$1`, item.ID, strings.Repeat("x", safeLength))
+	attached, err := tasks.ReplaceTags(ctx, principal, project.ID, item.ID, item.Version, &ids)
+	if err != nil || attached.Version != item.Version+1 || !reflect.DeepEqual(attached.Tags, []model.TagReference{{ID: tagID, Name: "name"}}) {
+		t.Fatalf("attach receipt: %#v %v", attached.Tags, err)
+	}
+	name := strings.Repeat("&", 64)
+	if _, err := tagservice.New(s).Rename(ctx, principal, project.ID, tagID, 1, name); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	read := snapshotTask(t, s, project.ID, item.ID)
+	if read.Version != attached.Version+1 || !reflect.DeepEqual(read.Tags, []model.TagReference{{ID: tagID, Name: name}}) {
+		t.Fatalf("renamed readback: %#v", read.Tags)
+	}
+	var afterEpoch string
+	if err := s.Pool.QueryRow(ctx, `SELECT task_cache_epoch::text FROM projects WHERE id=$1`, project.ID).Scan(&afterEpoch); err != nil || afterEpoch != epoch {
+		t.Fatalf("tag operations changed task cache epoch: %s to %s, %v", epoch, afterEpoch, err)
+	}
+	for _, extended := range []bool{false, true} {
+		if _, err := taskprotocol.EncodeREST(io.Discard, read, extended, taskcore.MaxTaskResponseJSONBytes); err != nil {
+			t.Fatalf("renamed task response extended=%v: %v", extended, err)
+		}
+	}
 }
 
 // Both operations validate after acquiring the Project lock. A deleted tag must
@@ -178,6 +256,96 @@ func TestTagDeleteRollbackAndLostCommitReceipt(t *testing.T) {
 			}
 			if lostReceipt && (tags != 0 || associations != 0 || version != task.Version+1 || epoch == originalEpoch) || !lostReceipt && (tags != 1 || associations != 1 || version != task.Version || epoch != originalEpoch) {
 				t.Fatalf("readback tag/association/version/epoch = %d/%d/%d/%s", tags, associations, version, epoch)
+			}
+		})
+	}
+}
+
+func TestTaskTagWriteRemainsVisibleToSyncAcrossLockAndCommit(t *testing.T) {
+	for _, waiting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("waitingForProjectLock=%t", waiting), func(t *testing.T) {
+			s := isolatedStore(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			project := queryProject(t, s, 1)
+			item := queryTask(t, s, project.ID, 11, model.TaskTodo)
+			tagID := queryID(21)
+			mustQueryExec(t, s, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES($1,$2,'name','name',statement_timestamp(),statement_timestamp())`, tagID, project.ID)
+
+			readSync := func(lower *time.Time) ([]model.TaskViewRecord, string, error) {
+				var rows []model.TaskViewRecord
+				var epoch string
+				err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
+					var err error
+					epoch, err = snapshot.TaskDAO().TaskCacheEpoch(ctx, project.ID)
+					if err != nil {
+						return err
+					}
+					rows, err = snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, lower, 160)
+					return err
+				})
+				return rows, epoch, err
+			}
+			var observed, releaseTime, watermark time.Time
+			var epoch string
+			attach := func(scope ProjectWriteScope) error {
+				if _, err := scope.TaskDAO().Task(ctx, item.ID); err != nil {
+					return err
+				}
+				tags, err := scope.TagDAO().ResolveTags(ctx, []string{tagID})
+				if err != nil || len(tags) != 1 {
+					return fmt.Errorf("resolve tag: %v (%d results)", err, len(tags))
+				}
+				observed, err = scope.TaskDAO().ObservedAt(ctx)
+				if err != nil {
+					return err
+				}
+				if err := scope.TaskTagDAO().ReplaceTaskTags(ctx, item.ID, []string{tagID}); err != nil {
+					return err
+				}
+				return scope.TaskDAO().TouchTask(ctx, item.ID, observed)
+			}
+			readBeforeCommit := func() error {
+				rows, currentEpoch, err := readSync(nil)
+				if err != nil {
+					return err
+				}
+				if len(rows) != 1 || rows[0].ID != item.ID || rows[0].Version != item.Version {
+					return fmt.Errorf("uncommitted write leaked into sync: %#v", rows)
+				}
+				watermark, epoch = rows[0].UpdatedAt, currentEpoch
+				return nil
+			}
+			if waiting {
+				finished := make(chan error, 1)
+				err := writeProjectForTest(s, ctx, project.ID, func(scope ProjectWriteScope) error {
+					go func() { finished <- writeProjectForTest(s, ctx, project.ID, attach) }()
+					waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE")
+					if err := readBeforeCommit(); err != nil {
+						return err
+					}
+					return s.Pool.QueryRow(ctx, `SELECT statement_timestamp()`).Scan(&releaseTime)
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := receiveQueryResult(t, ctx, finished); err != nil {
+					t.Fatal(err)
+				}
+				if observed.Before(releaseTime) {
+					t.Fatalf("timestamp was taken before the project lock: observed=%v release=%v", observed, releaseTime)
+				}
+			} else if err := writeProjectForTest(s, ctx, project.ID, func(scope ProjectWriteScope) error {
+				if err := attach(scope); err != nil {
+					return err
+				}
+				return readBeforeCommit()
+			}); err != nil {
+				t.Fatal(err)
+			}
+			rows, afterEpoch, err := readSync(&watermark)
+			if err != nil || afterEpoch != epoch || len(rows) != 1 || rows[0].ID != item.ID || rows[0].Version != item.Version+1 || !rows[0].UpdatedAt.Equal(observed) || rows[0].UpdatedAt.Before(watermark) {
+				t.Fatalf("sync missed committed tag change: rows=%#v epoch=%s/%s watermark=%v observed=%v err=%v", rows, epoch, afterEpoch, watermark, observed, err)
 			}
 		})
 	}
