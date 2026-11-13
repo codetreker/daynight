@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/filestorage/local"
+	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	coreoauth "github.com/codetreker/daynight/packages/daynight-server/internal/core/oauth"
 	coresession "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/session/imageconfig"
@@ -34,6 +35,7 @@ import (
 // App owns the shared modules and their underlying resources.
 type App struct {
 	*application.Application
+	GitHubRead           *coregithub.Reader
 	Metrics              *prometheus.Registry
 	Web                  *webresources.Resources
 	Ready                func(context.Context) error
@@ -87,6 +89,7 @@ func NewIdentityClient(c identityconfig.Config) (*uniauth.Client, error) {
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
 	app := &App{
 		Application: application.New(database, files, client, c.UniAuth.CallbackURL, c.TaskSync.Overlap, capture...),
+		GitHubRead:  coregithub.NewReader(database, c.GitHub.Enabled),
 		Web:         webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)

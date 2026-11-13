@@ -905,6 +905,26 @@ func (mock *taskReaderMock) TaskWorkTargets(context.Context, string, []string, *
 	return store.TaskWorkTargets{}, nil
 }
 
+func (mock *taskSnapshotScopeMock) TagDAO() store.TagReader {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskProjectScopeMock) TagDAO() store.TagWriteDAO {
+	mock.need("TagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *taskProjectScopeMock) TaskTagDAO() store.TaskTagWriteDAO {
+	mock.need("TaskTagDAO", false)
+	panic("unreachable")
+}
+
+func (mock *projectWriterMock) RotateTagCatalogEpoch(context.Context) error {
+	mock.need("RotateTagCatalogEpoch", false)
+	panic("unreachable")
+}
+
 func (s *taskSnapshotScopeMock) GitHubDAO() store.GitHubReadDAO { panic("unexpected GitHubDAO access") }
 
 func (s *taskProjectScopeMock) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }

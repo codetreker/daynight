@@ -346,4 +346,10 @@ func (d *writeWitnessTaskDAO) ParentTask(context.Context, string) (model.Task, e
 	panic(d.f.unexpected("TaskWriteDAO.ParentTask"))
 }
 
+func (s *writeWitnessScope) TagDAO() store.TagWriteDAO         { panic(s.f.unexpected("TagDAO")) }
+func (s *writeWitnessScope) TaskTagDAO() store.TaskTagWriteDAO { panic(s.f.unexpected("TaskTagDAO")) }
+func (d *writeWitnessProjectDAO) RotateTagCatalogEpoch(context.Context) error {
+	panic(d.f.unexpected("RotateTagCatalogEpoch"))
+}
+
 func (s *writeWitnessScope) GitHubDAO() store.GitHubWriteDAO { panic("unexpected GitHubDAO access") }

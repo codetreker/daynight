@@ -2,7 +2,7 @@
 
 The React/TypeScript Web app provides a public product introduction and a private
 workspace. The workspace implements Team creation and settings, project browsing,
-account-owned Worker observations and cloud configuration, cursor pagination,
+account-owned Worker observations and cloud configuration, a cross-project in-progress Task overview, cursor pagination,
 request cancellation, runtime API decoding, native browser routing and a pure
 dependency graph model with horizontal and vertical layouts. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
@@ -1628,13 +1628,19 @@ decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) re
 
 The typed Goal category also expands each Goal in place. On desktop its header
 matches the task-chain header height for equivalent unwrapped content in the
-same font; wrapped content grows naturally, including on narrow screens. Its independent title
-opens Goal details, while the disclosure shows all direct standalone tasks and
-scoped chains. Classification uses the complete ordinary graph before selecting
+same font; wrapped content grows naturally, including on narrow screens. The header
+body toggles the disclosure showing all direct standalone tasks and scoped chains.
+Separate Goal details and graph buttons open their readers without changing the disclosure. Classification uses the complete ordinary graph before selecting
 the Goal, so a scoped single member of a larger component remains a chain.
 Goal and chain disclosures start closed; closing a Goal preserves its chain
 choices until that row unmounts. Scoped progress counts only its own members,
-including separate done and cancelled results. List filters and 20-item pagination
+including separate done and cancelled results. The header shows a localized
+in-progress count of direct children, including zero and paused or manually
+executed tasks. It also shows the shared automatic execution indicator after the
+assignee when any direct child has an active Worker claim. Permission alone,
+Session activity and claims outside the Goal do not trigger it. Both summaries
+use the existing project snapshot, remain readable when collapsed, and update
+with status, claim and Parent changes without extra requests. List filters and 20-item pagination
 apply to Goals themselves, not their children. Graph and Task readers preserve
 the original Goal source, background list state and focus fallback.
 
