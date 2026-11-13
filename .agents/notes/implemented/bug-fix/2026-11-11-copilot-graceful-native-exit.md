@@ -29,4 +29,6 @@ ownership when the native process does not stop.
 
 Graceful shutdown can take an additional bounded interval before escalation.
 An acknowledgement is not proof of process exit, and failure to observe exit
-still leaves cleanup unconfirmed.
+still leaves cleanup unconfirmed. The [probe stop decision](2026-11-14-copilot-probe-stop-confirmation.md)
+separates a failed graceful RPC from confirmed final SDK transport and native
+process closure when deciding whether a probe result can be returned.

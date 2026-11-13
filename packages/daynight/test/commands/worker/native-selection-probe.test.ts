@@ -10,7 +10,7 @@ import { ToolSelectionError } from "../../../src/platform/tool-executables.js";
 vi.mock("../../../src/commands/worker/herdr/codex-config.js", () => ({ withCodexConfigurationRpc: vi.fn() }));
 
 
-const mocks = vi.hoisted(() => ({ current: vi.fn(), list: vi.fn(), disconnect: vi.fn(), create: vi.fn(), stop: vi.fn(), options: [] as unknown[], runtimeClose: vi.fn(), runtimeStart: vi.fn(), claude: vi.fn(), claudeModels: vi.fn(), claudeSettings: vi.fn(), claudeClose: vi.fn() }));
+const mocks = vi.hoisted(() => ({ current: vi.fn(), list: vi.fn(), disconnect: vi.fn(), create: vi.fn(), stop: vi.fn(), forceStop: vi.fn(), options: [] as unknown[], runtimeClose: vi.fn(), runtimeStart: vi.fn(), claude: vi.fn(), claudeModels: vi.fn(), claudeSettings: vi.fn(), claudeClose: vi.fn() }));
 vi.mock("../../../src/commands/controller/providers/copilot-owned-process.js", () => ({
   copilotDeadline: (promise: Promise<unknown>) => promise,
   startCopilotProcess: mocks.runtimeStart,
@@ -24,7 +24,7 @@ vi.mock("@github/copilot-sdk", () => ({
     start = async () => {};
     getStatus = async () => ({ version: "1.0.105", protocolVersion: 1 });
     rpc = { runtime: { shutdown: async () => ({}) } };
-    forceStop = async () => {};
+    forceStop = mocks.forceStop;
     createSession = mocks.create;
     stop = mocks.stop;
   },
@@ -32,6 +32,7 @@ vi.mock("@github/copilot-sdk", () => ({
 beforeEach(() => {
   vi.resetAllMocks(); mocks.options.length = 0;
   mocks.runtimeClose.mockResolvedValue(undefined);
+  mocks.forceStop.mockResolvedValue(undefined);
   mocks.runtimeStart.mockReturnValue({ ready: Promise.resolve({ port: 12345, token: "fixture-token" }), failed: new Promise(() => {}), close: mocks.runtimeClose });
   mocks.current.mockResolvedValue({ modelId: "native-model", reasoningEffort: "high" });
   mocks.list.mockResolvedValue({ list: [{ id: "native-model", supportedReasoningEfforts: ["low", "high"] }] });
@@ -127,7 +128,8 @@ it("retains discovery failure when native disconnect and client shutdown also fa
   mocks.current.mockRejectedValue(new Error("network failed"));
   mocks.disconnect.mockRejectedValue(new Error("disconnect failed"));
   mocks.stop.mockResolvedValue([new Error("stop failed")]);
-  await expect(inspectNativeCapabilities({ agent: "copilot", model: null, args: [] })).rejects.toMatchObject({ code: "cleanup_unknown", errors: [expect.objectContaining({ errors: [expect.objectContaining({ message: "network failed" }), expect.objectContaining({ message: "disconnect failed" })] }), expect.objectContaining({ message: "stop failed" })] });
+  mocks.forceStop.mockRejectedValue(new Error("transport cleanup failed"));
+  await expect(inspectNativeCapabilities({ agent: "copilot", model: null, args: [] })).rejects.toMatchObject({ code: "cleanup_unknown", errors: [expect.objectContaining({ errors: [expect.objectContaining({ message: "network failed" }), expect.objectContaining({ message: "disconnect failed" })] }), expect.objectContaining({ message: "stop failed" }), expect.objectContaining({ message: "transport cleanup failed" })] });
 });
 
 it("preserves Codex's unconfirmed inner process cleanup", async () => {
