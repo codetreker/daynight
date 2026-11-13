@@ -1,4 +1,4 @@
--- Schema snapshot version: 69
+-- Schema snapshot version: 70
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -1661,6 +1661,8 @@ CREATE INDEX "task_session_history" ON "task_sessions" USING "btree" ("project_i
 CREATE INDEX "task_sessions_project_id_id_task_idx" ON "task_sessions" USING "btree" ("project_id", "id") WHERE ("scope" = 'task'::"text");
 
 CREATE INDEX "task_thread_messages_order" ON "task_thread_messages" USING "btree" ("task_id", "created_at", "message_id");
+
+CREATE INDEX "tasks_personal_in_progress" ON "tasks" USING "btree" ("assigned_to", "project_id", "started_at" DESC NULLS LAST, "id") WHERE (("type" = 'task'::"text") AND ("status" = 'in_progress'::"text") AND ("deleted_at" IS NULL));
 
 CREATE INDEX "tasks_project_assigned_to_created_id" ON "tasks" USING "btree" ("project_id", "assigned_to", "created_at", "id") WHERE ("deleted_at" IS NULL);
 

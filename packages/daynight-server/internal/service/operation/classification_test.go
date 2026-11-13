@@ -1,10 +1,12 @@
-package operation
+package operation_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/operation"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -16,23 +18,23 @@ func TestCompletionFactsPreservesTransactionAndCleanup(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
-		want Facts
+		want operation.Facts
 	}{
-		{"ordinary refusal", refusal, Facts{}},
-		{"cancellation", context.Canceled, Facts{}},
-		{"known rollback", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: refusal}, Facts{Outcome: store.TransactionNotCommitted, Phase: "operation"}},
-		{"commit lost", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: context.Canceled}, Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
-		{"committed cleanup failure", &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true}, Facts{Outcome: store.TransactionCommitted, Phase: "cleanup", CleanupFailed: true}},
-		{"thread unknown", &store.ThreadTransactionError{Phase: "commit", CommitAttempted: true, OutcomeUnknown: true}, Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
-		{"thread cleanup", &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true}, Facts{Phase: "rollback", CleanupFailed: true}},
-		{"thread rolled back", &taskservice.ThreadMessageError{Outcome: store.TransactionNotCommitted, Cause: &store.ThreadTransactionError{Phase: "callback", Cause: refusal}}, Facts{Outcome: store.TransactionNotCommitted, Phase: "callback"}},
-		{"thread committed cleanup failure", &taskservice.ThreadMessageError{Outcome: store.TransactionCommitted, Cause: &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true}}, Facts{Outcome: store.TransactionCommitted, Phase: "rollback", CleanupFailed: true}},
-		{"thread contradictory completion", &taskservice.ThreadMessageError{Outcome: store.TransactionNotCommitted, Cause: &store.ThreadTransactionError{Phase: "commit", OutcomeUnknown: true}}, Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
-		{"conflicting facts", errors.Join(&store.TransactionError{Outcome: store.TransactionCommitted}, &store.TransactionError{Outcome: store.TransactionNotCommitted}), Facts{Outcome: store.TransactionUnknown}},
+		{"ordinary refusal", refusal, operation.Facts{}},
+		{"cancellation", context.Canceled, operation.Facts{}},
+		{"known rollback", &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: refusal}, operation.Facts{Outcome: store.TransactionNotCommitted, Phase: "operation"}},
+		{"commit lost", &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: context.Canceled}, operation.Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
+		{"committed cleanup failure", &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true}, operation.Facts{Outcome: store.TransactionCommitted, Phase: "cleanup", CleanupFailed: true}},
+		{"thread unknown", &store.ThreadTransactionError{Phase: "commit", CommitAttempted: true, OutcomeUnknown: true}, operation.Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
+		{"thread cleanup", &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true}, operation.Facts{Phase: "rollback", CleanupFailed: true}},
+		{"thread rolled back", &taskservice.ThreadMessageError{Outcome: store.TransactionNotCommitted, Cause: &store.ThreadTransactionError{Phase: "callback", Cause: refusal}}, operation.Facts{Outcome: store.TransactionNotCommitted, Phase: "callback"}},
+		{"thread committed cleanup failure", &taskservice.ThreadMessageError{Outcome: store.TransactionCommitted, Cause: &store.ThreadTransactionError{Phase: "rollback", RollbackFailed: true}}, operation.Facts{Outcome: store.TransactionCommitted, Phase: "rollback", CleanupFailed: true}},
+		{"thread contradictory completion", &taskservice.ThreadMessageError{Outcome: store.TransactionNotCommitted, Cause: &store.ThreadTransactionError{Phase: "commit", OutcomeUnknown: true}}, operation.Facts{Outcome: store.TransactionUnknown, Phase: "commit"}},
+		{"conflicting facts", errors.Join(&store.TransactionError{Outcome: store.TransactionCommitted}, &store.TransactionError{Outcome: store.TransactionNotCommitted}), operation.Facts{Outcome: store.TransactionUnknown}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := CompletionFacts(fmt.Errorf("operation: %w", tc.err)); got != tc.want {
+			if got := operation.CompletionFacts(fmt.Errorf("operation: %w", tc.err)); got != tc.want {
 				t.Fatalf("got %#v, want %#v", got, tc.want)
 			}
 		})
@@ -41,14 +43,14 @@ func TestCompletionFactsPreservesTransactionAndCleanup(t *testing.T) {
 
 func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
 	fault := &model.Fault{Code: "invalid_input", Message: "invalid"}
-	if got, ok := KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
+	if got, ok := operation.KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
 		t.Fatalf("known rollback: %v %v", got, ok)
 	}
 	for _, failure := range []*store.TransactionError{
 		{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault},
 		{Phase: "cleanup", Outcome: store.TransactionCommitted, CleanupFailed: true, Cause: fault},
 	} {
-		if got, ok := KnownFault(failure); ok {
+		if got, ok := operation.KnownFault(failure); ok {
 			t.Fatalf("exposed nested fault %#v", got)
 		}
 	}
@@ -57,10 +59,10 @@ func TestKnownFaultDoesNotExposeFailedCompletion(t *testing.T) {
 func TestKnownTransferAndMediaFaultsRequireConfirmedRollback(t *testing.T) {
 	for _, code := range []string{"transfer_conflict", "transfer_state_conflict", "capacity_unavailable", "invalid_image", "image_integrity", "image_decode_failed", "component_unsupported", "quota_exceeded", "resource_in_use", "capability_changed", "media_outcome_unknown", "archive_conflict", "archive_incomplete"} {
 		fault := &model.Fault{Code: code, Message: "refused"}
-		if got, ok := KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got.Code != code {
+		if got, ok := operation.KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got.Code != code {
 			t.Fatalf("confirmed refusal %s was suppressed", code)
 		}
-		if _, ok := KnownFault(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}); ok {
+		if _, ok := operation.KnownFault(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}); ok {
 			t.Fatalf("unknown result exposed as %s", code)
 		}
 	}
@@ -69,10 +71,10 @@ func TestKnownTransferAndMediaFaultsRequireConfirmedRollback(t *testing.T) {
 func TestKnownFaultRejectsUnsafeJoinedTransaction(t *testing.T) {
 	fault := &model.Fault{Code: "invalid_input", Message: "invalid"}
 	failure := errors.Join(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}, &store.TransactionError{Phase: "cleanup", Outcome: store.TransactionUnknown, CleanupFailed: true})
-	if _, ok := KnownFault(failure); ok {
+	if _, ok := operation.KnownFault(failure); ok {
 		t.Fatal("unsafe joined result exposed as refusal")
 	}
-	facts := CompletionFacts(failure)
+	facts := operation.CompletionFacts(failure)
 	if facts.Outcome != store.TransactionUnknown || !facts.CleanupFailed {
 		t.Fatalf("lost completion facts: %#v", facts)
 	}
@@ -85,11 +87,11 @@ func TestKnownFaultSuppressesJoinedDatabaseFailure(t *testing.T) {
 		errors.Join(fault, database),
 		&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: errors.Join(fault, database)},
 	} {
-		if got, ok := KnownFault(err); ok {
+		if got, ok := operation.KnownFault(err); ok {
 			t.Fatalf("database failure exposed as business rejection: %#v", got)
 		}
 	}
-	if got, ok := KnownFault(fault); !ok || got.Code != "invalid_search_expression" {
+	if got, ok := operation.KnownFault(fault); !ok || got.Code != "invalid_search_expression" {
 		t.Fatalf("valid search refusal lost: %#v %v", got, ok)
 	}
 }
@@ -99,7 +101,7 @@ func TestNativeSelectionFaultsRequireReliableCompletion(t *testing.T) {
 		t.Run(code, func(t *testing.T) {
 			fault := &model.Fault{Code: code, Message: "Native selection refused"}
 			for _, safe := range []error{fault, &store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}} {
-				if got, ok := KnownFault(safe); !ok || got != fault {
+				if got, ok := operation.KnownFault(safe); !ok || got != fault {
 					t.Fatalf("confirmed native refusal was suppressed: %#v %v", got, ok)
 				}
 			}
@@ -109,13 +111,13 @@ func TestNativeSelectionFaultsRequireReliableCompletion(t *testing.T) {
 				errors.Join(fault, &store.Error{DatabaseFailure: true, Cause: errors.New("database failure")}),
 				&model.BotOperationError{Operation: "create", Cause: fault},
 			} {
-				if got, ok := KnownFault(unsafe); ok {
+				if got, ok := operation.KnownFault(unsafe); ok {
 					t.Fatalf("uncertain operation exposed native fault: %#v", got)
 				}
 			}
 		})
 	}
-	if _, ok := KnownFault(&model.Fault{Code: "unregistered_native_error", Message: "private"}); ok {
+	if _, ok := operation.KnownFault(&model.Fault{Code: "unregistered_native_error", Message: "private"}); ok {
 		t.Fatal("unregistered faults became public")
 	}
 }

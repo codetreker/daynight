@@ -216,6 +216,9 @@ var projectGitHubSQL string
 //go:embed migrations/069_project_github_pending_prs.sql
 var projectGitHubPendingPRsSQL string
 
+//go:embed migrations/070_personal_in_progress.sql
+var personalInProgressSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -293,6 +296,7 @@ var schemaMigrations = []migration{
 	{version: 67, sql: apiOAuthLifetimeSQL},
 	{version: 68, sql: projectGitHubSQL},
 	{version: 69, sql: projectGitHubPendingPRsSQL},
+	{version: 70, sql: personalInProgressSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854
