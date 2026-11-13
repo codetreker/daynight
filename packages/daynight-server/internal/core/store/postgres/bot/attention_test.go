@@ -37,7 +37,7 @@ func TestBotAttentionCountsUnseenEventsAndCurrentHolderProposals(t *testing.T) {
 	for _, kind := range []string{"direct_success", "appendix_added", "resolved"} {
 		insertEvent(owner, bot.ID, kind, false, nil)
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	insertEvent(owner, bot.ID, "escalation", true, &now)
 	insertEvent(uuid.NewString(), bot.ID, "report", true, nil)
 	insertEvent(owner, other.ID, "report", true, nil)
