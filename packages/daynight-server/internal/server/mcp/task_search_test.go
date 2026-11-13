@@ -3,12 +3,14 @@ package mcp
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/tasksearch"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -208,5 +210,45 @@ func TestTaskSearchCompletionError(t *testing.T) {
 	stop()
 	if got := searchCompletionError(cancelled, operation, context.DeadlineExceeded); got != context.DeadlineExceeded {
 		t.Fatalf("caller cancellation masked: %v", got)
+	}
+}
+
+func TestTaskSearchRegistrationRequiresDependencies(t *testing.T) {
+	f := newEntryFixture(t)
+	search := func(context.Context, model.Principal, string, tasksearch.Request) (tasksearch.Page, error) {
+		t.Error("search called while registering")
+		return tasksearch.Page{}, nil
+	}
+	if err := RegisterTaskSearchTool(nil, search); err == nil {
+		t.Fatal("registered without an entry")
+	}
+	if err := RegisterTaskSearchTool(f.entry, nil); err == nil {
+		t.Fatal("registered without a search capability")
+	}
+	listing, err := f.client(t, "2026-07-28", "alice").ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range listing.Tools {
+		if tool.Name == "task_search" {
+			t.Fatal("failed registration published the tool")
+		}
+	}
+}
+
+func TestTaskSearchBusinessInputLimit(t *testing.T) {
+	f := newEntryFixture(t)
+	calls := 0
+	err := RegisterTaskSearchTool(f.entry, func(context.Context, model.Principal, string, tasksearch.Request) (tasksearch.Page, error) {
+		calls++
+		return tasksearch.Page{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	result := tagTestCall(t, client, "task_search", map[string]any{"projectId": testProjectID, "query": strings.Repeat("x", httpx.MaxJSONBody)})
+	if !result.IsError || object(t, structured(t, result)["error"])["code"] != "invalid_input" || calls != 0 {
+		t.Fatalf("oversized search reached service or was not refused: result=%+v calls=%d", structured(t, result), calls)
 	}
 }
