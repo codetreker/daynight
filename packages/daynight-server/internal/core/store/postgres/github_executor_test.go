@@ -116,6 +116,28 @@ func TestGitHubExecutorPersistsPollAndConcurrentHint(t *testing.T) {
 		t.Fatalf("complete poll: %s %v", nextSuccess, err)
 	}
 
+	// Reopening the same PR restores the retained row to the active set.
+	second.State, second.ClosedAt, second.HeadSHA = "open", nil, "reopened-head"
+	second.Description = pointerString("reopened body")
+	upstream.page = []githubpr.Observation{first, second}
+	mustQueryExec(t, db, `UPDATE project_github SET next_poll_at=clock_timestamp() WHERE project_id=$1`, project.ID)
+	if err = executor.Execute(ctx, project.ID); err != nil {
+		t.Fatalf("reopen poll: %v", err)
+	}
+	var githubID int64
+	var closedAt *time.Time
+	if err = db.Pool.QueryRow(ctx, `SELECT state,github_id,head_sha,description,github_closed_at FROM project_pull_requests WHERE project_id=$1 AND number=2`, project.ID).Scan(&state, &githubID, &sha, &body, &closedAt); err != nil || state != "open" || githubID != second.GitHubID || sha != "reopened-head" || body != "reopened body" || closedAt != nil {
+		t.Fatalf("reopened fact: state=%s id=%d head=%s body=%s closed=%v err=%v", state, githubID, sha, body, closedAt, err)
+	}
+	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM project_pull_requests WHERE project_id=$1`, project.ID).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("reopen created duplicate records: %d %v", count, err)
+	}
+	var reopenedSuccess time.Time
+	if err = db.Pool.QueryRow(ctx, `SELECT last_full_success_at FROM project_github WHERE project_id=$1`, project.ID).Scan(&reopenedSuccess); err != nil || reopenedSuccess.Before(nextSuccess) {
+		t.Fatalf("reopen poll completion: %s %v", reopenedSuccess, err)
+	}
+	nextSuccess = reopenedSuccess
+
 	request1, request2 := uuid.NewString(), uuid.NewString()
 	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: request1, DeliveryID: "one", ReceivedAt: now, NextAttemptAt: now}
 	if got := b2Signal(t, db, signal); got != 1 {
