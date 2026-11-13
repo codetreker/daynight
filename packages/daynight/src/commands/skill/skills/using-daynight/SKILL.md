@@ -25,3 +25,4 @@ current authorization.
 | Send an authorized message; recover its original result | [Session messages](references/session-messages.md); also Session reads if target/execution identity is unknown |
 | Configure Webhooks; inspect deliveries or receipts | [Webhooks](references/webhooks.md) |
 | Manage Workers; pause execution; complete an assigned claim | [Worker operations](references/worker-operations.md) |
+| Collaborate on assistant tasks, claims, manuals, records, inquiries and events | [Assistant tasks](references/assistant-tasks.md) |
