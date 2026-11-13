@@ -202,3 +202,50 @@ func TestGitHubAssemblyRejectsMissingDependencies(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGitHubAssemblyRejectsInvalidAppID(t *testing.T) {
+	c := githubTestConfig(t)
+	c.AppID = 0
+	db := githubAssemblyStore{scans: make(chan struct{}, 1)}
+	app := NewModules(config.Config{}, db, func(context.Context) error { return nil }, nil, nil)
+	if err := app.assembleGitHub(db, c, slog.Default()); err == nil {
+		t.Fatal("accepted invalid App ID")
+	}
+	if app.githubRuntime != nil {
+		t.Fatal("published incomplete runtime")
+	}
+	if err := app.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGitHubAssemblyExposesSupervisorFailureThroughReadiness(t *testing.T) {
+	db := githubAssemblyStore{scans: make(chan struct{}, 1)}
+	baseErr := errors.New("database unavailable")
+	app := NewModules(config.Config{}, db, func(context.Context) error { return baseErr }, nil, nil)
+	if err := app.assembleGitHub(db, githubTestConfig(t), slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Ready(context.Background()); !errors.Is(err, baseErr) {
+		t.Fatalf("base readiness not preserved: %v", err)
+	}
+	runner := &controlledGithubRunner{failures: make(chan error, 1), release: make(chan struct{})}
+	app.githubRuntime.runner = runner
+	if err := app.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("runner failure")
+	runner.failures <- failure
+	select {
+	case <-app.githubRuntime.done:
+	case <-time.After(time.Second):
+		t.Fatal("supervisor did not report failure")
+	}
+	if err := app.Ready(context.Background()); !errors.Is(err, failure) {
+		t.Fatalf("runner failure not exposed through readiness: %v", err)
+	}
+	close(runner.release)
+	if err := app.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
