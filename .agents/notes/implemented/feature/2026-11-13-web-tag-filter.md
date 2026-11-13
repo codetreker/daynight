@@ -16,6 +16,8 @@ uses each summary's tags over the complete graph; a chain remains visible when a
 member in its scope matches. Search sends canonical IDs, mode and type on every
 page and checks returned qualifications. Selected names survive catalog paging;
 resolve and server errors identify invalid conditions that remain until removed.
+Explicit overview navigation validates and clears a valid tag condition when it
+would hide the target; an unavailable selection remains until the user removes it.
 The [Web design](../../../../docs/design/daynight-web.md) describes the owners
 and the [Web search decision](2026-11-06-web-task-search.md) retains the search
 lifecycle rationale.

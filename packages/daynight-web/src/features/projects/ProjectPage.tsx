@@ -8,6 +8,8 @@ import { useProjectHistory } from "../../app/use-page-history";
 import { ProjectDraftHost } from "../task-detail/TaskDraftNavigation";
 import { OverlayOwnerContext } from "../../app/overlay";
 import { canonicalId } from "../../api/validation";
+import { ApiError, isAbortError } from "../../api/client";
+import { resolveProjectTags } from "../../api/task-tags";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
@@ -24,7 +26,7 @@ import { focusProjectList, focusVisible, type ProjectListOrigin } from "./projec
 import { resolveProjectGraphTarget, type ProjectGraphTarget } from "./project-graph-target";
 import { useProjectAssigneeFilter, useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
-import { useTaskGraph } from "./useTaskGraph";
+import { useTaskGraph, type GraphSnapshot } from "./useTaskGraph";
 import { useProjectPageRead } from "./useProjectPageRead";
 import { compareTaskStatus } from "./task-order";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
@@ -34,7 +36,7 @@ import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { TaskSearchWorkspace, assigneeValue } from "../task-search/TaskSearchWorkspace";
 import { useTaskSearch } from "../task-search/useTaskSearch";
 import { ProjectTags } from "../task-tags/ProjectTags";
-import { TagFilter, useTagFilter, matchesTagFilter } from "../task-tags/TagFilter";
+import { TagFilter, useTagFilter, matchesTagFilter, type TagFilterValue } from "../task-tags/TagFilter";
 import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
 import "../../styles/project.css";
 
@@ -46,7 +48,12 @@ const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
 
 const emptyIds: readonly string[] = [];
 
-type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" };
+const matchesTaskTags = (snapshot: GraphSnapshot, task: GraphTask, filter: TagFilterValue) => {
+  const summary = snapshot.summaries.get(task.id);
+  return summary === undefined ? filter.tagIds.length === 0 && !filter.untagged : matchesTagFilter(summary.tags, filter);
+};
+
+type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" | "overview-tag-check-failed" };
 
 const visibleTaskFilters = (tasks: readonly GraphTask[], assignee: AssigneeFilter, status: TaskStatus | "all", userId: string, every: boolean) => {
   const assigneeMatches = (task: GraphTask) => matchesAssignee(task.assignedTo, assignee, userId);
@@ -83,6 +90,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
   const tagFilter = useTagFilter(projectId, section === "tasks");
+  const overviewTagCheck = useRef<AbortController | null>(null);
+  useEffect(() => () => overviewTagCheck.current?.abort(), []);
+  useLayoutEffect(() => viewer.subscribe(event => {
+    if (event.projectId === projectId && (event.directAccessUncertain || event.accessRevoked || event.historyChanged || event.cacheGenerationChanged)) overviewTagCheck.current?.abort();
+  }), [viewer, projectId]);
   const invalidReceipt = useRef({ projectId, viewer, revision: 0 });
   if (invalidReceipt.current.projectId !== projectId || invalidReceipt.current.viewer !== viewer) invalidReceipt.current = { projectId, viewer, revision: 0 };
   useLayoutEffect(() => {
@@ -133,6 +145,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const overviewPosition = useRef(0);
   const prPosition = useRef(0);
   const snapshot = graph.snapshot;
+  const overviewFence = useRef({ snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid });
+  overviewFence.current = { snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid };
+  useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [selection, snapshot, assigneeFilter, statusFilter, tagFilter.value, tagFilter.invalid]);
   const snapshotReady = snapshot !== null;
   const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks" && !searchActive);
   useLayoutEffect(() => {
@@ -172,7 +187,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
       (statusFilter === "all" || task.status === statusFilter) && !tagFilter.invalid &&
-      (snapshot.summaries.has(task.id) ? matchesTagFilter(snapshot.summaries.get(task.id)!.tags, tagFilter.value) : tagFilter.value.tagIds.length === 0 && !tagFilter.value.untagged)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId, tagFilter.value, tagFilter.invalid]);
+      matchesTaskTags(snapshot, task, tagFilter.value)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId, tagFilter.value, tagFilter.invalid]);
   const scopedChainIds = (categories?.chains ?? emptyIds).filter((id) => scopedMembers.has(id));
   const scopedStandaloneIds = (categories?.standalone ?? emptyIds).filter((id) => scope?.standaloneIds.includes(id));
   const unfinishedMatches = (id: string) => {
@@ -192,6 +207,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     resetTaskPages.current();
   }, [tagFilter.value, tagFilter.invalid]);
   const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1), 20);
+  useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [overviewPagination.page]);
   const pageRootIds = rootIds.slice(chainPagination.start - 1, chainPagination.end);
   const pageStandaloneIds = standaloneIds.slice(standalonePagination.start - 1, standalonePagination.end);
   const pageGoals = goals.slice(goalPagination.start - 1, goalPagination.end);
@@ -424,30 +440,58 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [snapshot, onNavigateExternalTask, onOpenTask]);
 
   const onOverviewNavigate = useCallback((target: OverviewTaskTarget) => {
+    overviewTagCheck.current?.abort();
     if (target.kind === "chain" && snapshot?.index.nodes.get(target.taskId)?.parentId != null) {
       onNavigateExternalTask(target.taskId, document.activeElement instanceof HTMLElement ? document.activeElement : heading.current!);
       return;
     }
     const view = target.kind === "chain" ? "chains" : "standalone";
-    history.select({ ...selection, section: "tasks", view, projectGraphWitness: null }, false, () => {
+    const ids = snapshot === null ? [] : target.kind === "standalone" ? progress.recentStandaloneIds
+      : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
+    const tasks = snapshot === null ? [] : ids.map((id) => snapshot.index.nodes.get(id)!).filter((task) => task !== undefined && task.parentId === null);
+    const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
+    const matches = (task: GraphTask) => snapshot !== null && matchesAssignee(task.assignedTo, filters.assignee, viewer.userId) &&
+      (filters.status === "all" || task.status === filters.status) && matchesTaskTags(snapshot, task, tagFilter.value);
+    const tagBlocks = snapshot !== null && tasks.length > 0 && !(target.kind === "standalone" ? tasks.every(matches) : tasks.some(matches));
+    const navigateToTarget = (clearTags: boolean, blocked: boolean) => history.select({ ...selection, section: "tasks", view, projectGraphWitness: null }, false, () => {
       if (search.applied !== null) search.clear();
       setNotice(null);
       if (snapshot !== null) {
-        const ids = target.kind === "standalone" ? progress.recentStandaloneIds
-          : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
-        const tasks = ids.map((id) => snapshot.index.nodes.get(id)!).filter((task) => task !== undefined && task.parentId === null);
-        const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
         if (filters.assignee !== assigneeFilter || filters.status !== statusFilter) {
           chainPagination.onPageChange(1); standalonePagination.onPageChange(1);
           if (filters.assignee !== assigneeFilter) setAssigneeFilter(filters.assignee);
           setStatusFilter(filters.status);
         }
+        if (clearTags) tagFilter.update({ ...tagFilter.value, tagIds: [], untagged: false });
       }
-      setListTarget(target);
+      setListTarget(blocked ? null : target);
       if (view !== activeView) onViewChange(view);
       if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
     });
-  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
+    if (tagFilter.invalid) { navigateToTarget(false, true); return; }
+    if (!tagBlocks || tagFilter.value.tagIds.length === 0) { navigateToTarget(tagBlocks, false); return; }
+    const controller = new AbortController(); overviewTagCheck.current = controller;
+    const signal = AbortSignal.any([controller.signal, viewer.signal]);
+    void (async () => {
+      let missing = false, verified = false;
+      try {
+        await viewer.ready(signal);
+        if (viewer.isProjectSuspended(projectId)) return;
+        await resolveProjectTags(projectId, tagFilter.value.tagIds, signal, { userId: viewer.userId, onPrincipalMismatch: viewer.principalMismatch });
+        verified = true;
+      } catch (error) {
+        if (signal.aborted || isAbortError(error)) return;
+        missing = error instanceof ApiError && error.code === "tag_not_found";
+      }
+      try { await viewer.ready(signal); } catch { return; }
+      const current = overviewFence.current;
+      if (signal.aborted || viewer.isInvalidated || viewer.isProjectSuspended(projectId) || currentSelection.current !== selection || current.snapshot !== snapshot ||
+        current.assigneeFilter !== assigneeFilter || current.statusFilter !== statusFilter || current.value !== tagFilter.value || current.invalid !== tagFilter.invalid) return;
+      if (missing) tagFilter.markInvalid();
+      if (!verified && !missing) { setNotice({ kind: "overview-tag-check-failed" }); return; }
+      navigateToTarget(verified, missing);
+    })();
+  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
   useEffect(() => {
     if (snapshot === null || (!window.location.hash.startsWith("#task=") && !window.location.hash.startsWith("#chain="))) return;
@@ -571,6 +615,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
               onClick={() => { setNotice(null); heading.current?.focus({ preventScroll: true }); }}><span aria-hidden="true">×</span></button>
           </div>}
           {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
+          {snapshot !== null && notice?.kind === "overview-tag-check-failed" && <p className="snapshot-notice" role="alert">{locale === "zh-CN" ? "无法核对选中的标签，请重试。" : "Could not check the selected tags. Try again."}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
             {section === "overview" && graphState}
