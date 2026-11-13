@@ -61,6 +61,11 @@ for (const mode of ['dialog', 'page'] as const) {
     await expect(heading.locator('.task-claim-owner strong')).toHaveText(ownerName);
     await expect(heading.locator('.task-claim-account')).toHaveText(account);
     await expect(heading.locator('.task-claim-execution > span').first()).toContainText(machine);
+    const phase = heading.locator('.task-claim-active .task-claim-phase');
+    await expect(phase).toHaveText('Executing');
+    await expect(phase).toHaveCSS('color', 'rgb(40, 91, 159)');
+    await expect(phase).toHaveCSS('background-color', 'rgb(233, 241, 255)');
+    await expect(phase).toHaveCSS('border-color', 'rgb(182, 206, 244)');
     await page.setViewportSize({ width: 320, height: 240 });
     for (const fullscreen of [false, true]) {
       if (fullscreen) await root.locator('.task-detail-fullscreen-toggle').click();

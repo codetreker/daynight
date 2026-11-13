@@ -1,3 +1,4 @@
+import { expectTextContrast, roleColors } from './color-roles';
 import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { checkDependencyGeometry } from '../helpers/dependency-geometry';
@@ -1617,12 +1618,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
   const row = card.locator('.goal-list-row');
-  const palette = {
-    todo: ['rgb(241, 243, 246)', 'rgb(232, 236, 241)', 'rgb(216, 223, 232)', 'rgb(89, 101, 121)'],
-    in_progress: ['rgb(235, 242, 255)', 'rgb(223, 234, 255)', 'rgb(187, 207, 242)', 'rgb(48, 95, 168)'],
-    done: ['rgb(234, 246, 239)', 'rgb(221, 239, 229)', 'rgb(191, 220, 201)', 'rgb(36, 109, 74)'],
-    cancelled: ['rgb(243, 239, 247)', 'rgb(235, 229, 241)', 'rgb(214, 203, 223)', 'rgb(112, 92, 128)'],
-  } as const;
+  const palette = roleColors;
   let progress = '';
   for (const status of ['todo', 'in_progress', 'done', 'cancelled'] as const) {
     if (status !== 'todo') {
@@ -1642,13 +1638,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
       if (hover) await row.hover();
       await expect(row).toHaveCSS('background-color', palette[status][hover ? 1 : 0]);
       for (const selector of ['.goal-list-title', '.goal-list-meta', '.task-assignee-identity', '.goal-list-progress', '.root-status']) {
-      const ratio = await row.locator(selector).evaluate(element => {
-        const color = (value: string) => value.match(/\d+/g)!.slice(0, 3).map(Number).map(c => { const n = c / 255; return n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4; });
-        const luminance = (value: string) => { const [r, g, b] = color(value); return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!; };
-        const style = getComputedStyle(element); const background = style.backgroundColor === 'rgba(0, 0, 0, 0)' ? getComputedStyle(element.closest('.goal-list-row')!).backgroundColor : style.backgroundColor;
-        const a = luminance(style.color), b = luminance(background); return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-      });
-        expect(ratio, `${status} ${hover ? 'hover' : 'default'} ${selector}`).toBeGreaterThanOrEqual(4.5);
+        await expectTextContrast(row.locator(selector));
       }
     }
   }
@@ -1664,7 +1654,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await card.locator('.goal-list-toggle').focus();
   await page.keyboard.press('Tab');
   await expect(detail).toBeFocused();
-  await expect(detail).toHaveCSS('outline-color', 'rgb(119, 119, 223)');
+  await expect(detail).toHaveCSS('outline-color', 'rgb(52, 64, 84)');
   await page.keyboard.press('Enter');
   await expect(page.locator('.goal-detail-surface')).toBeVisible();
   await page.keyboard.press('Escape');
