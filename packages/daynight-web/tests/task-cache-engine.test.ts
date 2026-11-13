@@ -21,7 +21,7 @@ const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(1
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: taskId(n), version: 1n, properties: {}, tags: [], titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
 const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, sessions: {}, dependencyStates: Object.fromEntries(tasks.filter(task => task.type === "task").map(task => {
   const blockedBy = task.dependsOn.filter(id => !tasks.some(candidate => candidate.id === id && (candidate.status === "done" || candidate.status === "cancelled")));
   return [task.id, { taskVersion: task.version, blockedBy, ready: task.status === "todo" && blockedBy.length === 0 }];
@@ -490,7 +490,7 @@ it("re-reads hints for authorized projects and never relays hints or repeated co
 
 it("exposes fenced detail transactions whose detail timestamps cannot advance the project maximum", async () => {
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
-  const detail: TaskIntrinsicDetail = { type: "task", parentId: null, assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: later };
+  const detail: TaskIntrinsicDetail = { type: "task", parentId: null, assignedTo: null, id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, tags: [], version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: later };
   await cache.detailTransaction(ticket, signal(), async (details, manifest, summaries) => {
     expect(summaries.get(taskId(1))!.version).toBe(1n);
     await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
@@ -773,6 +773,36 @@ it("keeps reordered equivalent properties write-free but rejects same-version pr
     expect(stored.summaries.get(taskId(2))!.version).toBe(1n);
     expect(stored.manifest).toEqual(initial.project.manifest);
   }
+});
+
+it("applies tag rename and deletion as scoped deltas and rejects same-version contradictions", async () => {
+  const tag = { id: taskId(90), name: "Before" };
+  const cache = scope(), other = scope(otherUser);
+  const original = task(1, { tags: [tag] }), unaffected = task(2);
+  const initial = await seed(cache, [original, unaffected]);
+  await seed(cache, [original], { ...project, id: otherProject }); await seed(other, [original]);
+  const database = await inspect();
+  await addStoredDetail(database, userId, projectId); await addStoredDetail(database, userId, otherProject); await addStoredDetail(database, otherUser, projectId);
+  const manifest = initial.project.manifest;
+  await database.put("details", { userId, projectId, taskId: taskId(2), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration,
+    detail: { ...detailFixture(projectId, taskId(2)) }, byteSize: 100, lastUsedAt: 1 });
+  const history: TaskCacheSchema["sessionHistory"]["value"] = { userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, requestToken: epoch, clearedToken: null, leaseExpiresAt: null, settled: "saved", paginationToken: null, page: { items: [], nextCursor: null }, confirmedCompleteEmpty: true, observedNonEmpty: false, byteSize: 0, lastUsedAt: 1 };
+  await database.put("sessionHistory", history);
+  await expect(delta(cache, [task(2, { version: 2n, updatedAt: later }), { ...original, tags: [{ ...tag, name: "After" }] }])).rejects.toMatchObject({ kind: "protocol" });
+  expect((await cache.readProject(projectId, signal()))!.summaries.get(taskId(2))!.version).toBe(1n);
+  const renamed = { ...original, version: 2n, updatedAt: later, tags: [{ ...tag, name: "After" }] };
+  const result = await delta(cache, [renamed]);
+  expect(result.changedTaskIds).toEqual([taskId(1)]); expect(result.project.manifest.epoch).toBe(epoch);
+  expect(result.project.summaries.get(taskId(1))!.tags).toEqual(renamed.tags);
+  expect(await database.get("details", [userId, projectId, taskId(1)])).toBeUndefined();
+  expect(await database.get("details", [userId, projectId, taskId(2)])).toBeDefined();
+  expect(await database.get("details", [userId, otherProject, taskId(1)])).toBeDefined();
+  expect(await database.get("details", [otherUser, projectId, taskId(1)])).toBeDefined();
+  expect(await database.get("sessionHistory", [userId, projectId, taskId(1)])).toEqual(history);
+  const deleted = await delta(cache, [{ ...renamed, version: 3n, tags: [] }]);
+  expect(deleted.changedTaskIds).toEqual([taskId(1)]); expect(deleted.project.summaries.get(taskId(1))!.tags).toEqual([]);
+  expect((await other.readProject(projectId, signal()))!.summaries.get(taskId(1))!.tags).toEqual([tag]);
+  expect((await cache.readProject(otherProject, signal()))!.summaries.get(taskId(1))!.tags).toEqual([tag]);
 });
 
 it("rolls property replacements and the watermark back together after a partial summary write hits quota", async () => {

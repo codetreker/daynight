@@ -118,7 +118,7 @@ describe('task dependency canvas', () => {
     const data: TaskGraphData = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, parentId: task.id === 'C' ? 'g1' : task.id === 'B' ? 'g2' : null })) };
     const goal = (id: string, title: string): TaskSummary => {
       const { blockedBy: _blockedBy, ready: _ready, ...rest } = data.tasks[0]!;
-      return { ...rest, id, type: 'goal', titlePreview: title, properties: {}, version: 1n };
+      return { ...rest, tags: [], id, type: 'goal', titlePreview: title, properties: {}, version: 1n };
     };
     const summaries = new Map([['g1', goal('g1', '目标一')], ['g2', goal('g2', '目标二')]]);
     const view = render(<TaskGraph index={buildGraphIndex(data)} summaries={summaries} rootId="A" onOpenTask={noop} />);

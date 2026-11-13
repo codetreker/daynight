@@ -8,7 +8,7 @@ import { canSetStatus, canSetAgentPermission, TaskDetailSessions } from '../src/
 vi.mock('../src/api/client', async (original) => { const actual = await original<typeof import('../src/api/client')>(); const { fixtureTaskEpoch } = await import('./helpers/taskSync'); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), setTaskStatus: vi.fn(), setTaskAgentPermission: vi.fn() }; });
 const project = '10000000-0000-4000-8000-000000000001';
 const id = '20000000-0000-4000-8000-000000000001';
-const initial: TaskDetail = { type: 'task', parentId: null, assignedTo: null, requiredPlatform: 'macos', id, projectId: project, title: 'Task', description: '', status: 'todo', version: 9007199254740993n,
+const initial: TaskDetail = { tags: [], type: 'task', parentId: null, assignedTo: null, requiredPlatform: 'macos', id, projectId: project, title: 'Task', description: '', status: 'todo', version: 9007199254740993n,
   allowAgents: false, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], properties: { pullRequests: [] }, startedAt: null, completedAt: null, cancelledAt: null,
   createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z' };
 const changed = { ...initial, allowAgents: true, version: initial.version + 1n };

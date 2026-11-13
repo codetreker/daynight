@@ -22,7 +22,7 @@ const rootId = graph.tasks.find((task) => task.titlePreview === '外部上下文
 const selectedId = graph.tasks.find((task) => task.titlePreview === '外部前置 · 菱形合流')!.id;
 const detailNode = graph.tasks.find((task) => task.titlePreview === '链内最终交付')!;
 const detail: TaskDetail = {
-  ...detailNode, version: 2n, projectId: graph.project.id, title: detailNode.titlePreview,
+  ...detailNode, tags: [], version: 2n, projectId: graph.project.id, title: detailNode.titlePreview,
   description: '# Delivery notes\n\n[Read acceptance guide](docs/guide.md)', properties: { pullRequests: [] },
 };
 const attachment: Attachment = {

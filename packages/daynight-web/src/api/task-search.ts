@@ -2,13 +2,15 @@ import { ApiError, assertResponsePrincipal, request, responseSignal, requestId, 
 import { jsonObjectSources } from './json-source';
 import { parseServerError } from './parse';
 import { array, count, id, malformed, nonemptyString, nullableId, record, taskStatusFields, string, timestamp } from './validation';
-import type { TaskStatus } from './types';
+import type { TaskStatus, TaskTag } from './types';
+import { parseTaskTags } from './task-tags';
 
 export type TaskSearchFilters = { readonly status: TaskStatus | ''; readonly assignedTo: string };
 export type TaskSearchField = 'id' | 'title' | 'description';
 export type TaskSearchItem = {
   readonly id: string; readonly projectId: string; readonly title: string; readonly status: TaskStatus;
   readonly assignedTo: string | null; readonly updatedAt: string; readonly cancelledAt: string | null;
+  readonly tags: readonly TaskTag[];
   readonly context: { readonly taskId: string; readonly title: string } | null;
   readonly match: { readonly fields: readonly TaskSearchField[]; readonly descriptionSnippet: string | null };
 };
@@ -46,7 +48,7 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
     if (assignment !== undefined && assignedTo !== assignment) return malformed();
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, context, match: parseTaskSearchMatch(item.match) };
+    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, tags: parseTaskTags(item.tags), context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > limit || items.length > total || new Set(items.map(item => item.id)).size !== items.length) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);

@@ -1,4 +1,5 @@
 import { readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../api/task-properties";
+import { sameTaskTags } from "../../api/task-tags";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, subscribeAuthPause, deleteTask, getTaskObservation, isAbortError, requestId, setTaskAgentPermission, setTaskAssignedTo, setTaskRequiredPlatform, setTaskStatus, unpauseTask, updateTaskFields, withdrawWorkerClaim } from "../../api/client";
 import { addTaskStep, deleteTaskStep, editTaskStep, getTaskSteps, moveTaskStep, setTaskStepStatus, type AddStepInput, type StepPlacement, type StepStatus, type StepsResource } from "../../api/task-steps";
@@ -146,7 +147,7 @@ export const canWithdrawClaim = (state: DetailState): boolean => {
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((id) => right.includes(id));
 const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true, preserveAssignment = true): boolean => before.title === after.title && before.description === after.description &&
-  before.createdAt === after.createdAt && sameTaskProperties(before.properties, after.properties, !preserveWorker) &&
+  before.createdAt === after.createdAt && sameTaskProperties(before.properties, after.properties, !preserveWorker) && sameTaskTags(before.tags, after.tags) &&
   (!preserveAssignment || before.assignedTo === after.assignedTo) &&
   sameIds(before.dependsOn, after.dependsOn) && sameIds(before.externalDependsOn, after.externalDependsOn);
 const validStatusTiming = (before: TaskDetail, after: TaskDetail, target: TaskStatus): boolean => {

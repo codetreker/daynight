@@ -62,8 +62,8 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   graphRequest.mockResolvedValueOnce(graph(before)).mockReturnValue(refreshed.promise);
   const detached = after.find((task) => task.id === B)!;
   const initial = before.find((task) => task.id === B)!;
-  vi.mocked(getTask).mockResolvedValueOnce({ ...initial, blockedBy: [], ready: true, projectId, title: initial.titlePreview, description: '', properties: { pullRequests: [] }, version: 1n })
-    .mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { pullRequests: [] }, version: 2n });
+  vi.mocked(getTask).mockResolvedValueOnce({ ...initial, tags: [], blockedBy: [], ready: true, projectId, title: initial.titlePreview, description: '', properties: { pullRequests: [] }, version: 1n })
+    .mockResolvedValue({ ...detached, tags: [], projectId, title: detached.titlePreview, description: '', properties: { pullRequests: [] }, version: 2n });
   render(<ProjectPage projectId={projectId} />, { container: root });
   await selectTaskList();
   await screen.findByRole('button', { name: /Root.*查看依赖关系/ });
