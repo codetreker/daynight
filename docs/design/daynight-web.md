@@ -310,7 +310,8 @@ iframe 内文档纵向滚动。短视口压缩标题与间距以保留内容，�
 [居中详情决策](../../.agents/notes/archived/feature/2026-10-22-centered-task-detail-dialog.md)
 保留外壳和生命周期的理由，[分屏决策](../../.agents/notes/archived/architecture/2026-10-22-task-attachment-split-view.md)记录了页签及滚动所有权的历史取舍。
 
-描述与附件复用 `MarkdownContent` 及样式。`MarkdownAttachmentBase` 显式区分资源基准：描述使用
+描述与附件复用 `MarkdownContent` 及样式。Task 概览和 Goal 详情只在非空描述外使用共享
+`description-card` 阅读容器；Steps 和附件不使用该容器。`MarkdownAttachmentBase` 显式区分资源基准：描述使用
 任务附件根，附件使用实际文档目录，不为描述构造虚拟文件名。`TaskDetailReading` 持有一个
 `useAttachments` 控制器，描述导航与 `TaskAttachmentsPanel` 共享完整分页清单、
 选择、预览和错误。

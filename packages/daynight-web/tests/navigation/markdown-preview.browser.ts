@@ -4,6 +4,7 @@ import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TES
 import { stringifyWireJson } from '../helpers/wireJson';
 import { stableDiagrams } from './mermaid-stable-fixture';
 import { captureStableDependencyGeometry, checkDependencyGeometry, expectedDependencyTopology } from '../helpers/dependency-geometry';
+import { expectDescriptionCard } from '../helpers/description-card';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
@@ -15,12 +16,12 @@ const flow = 'flowchart LR\nA[开始] --> B{是否通过？}\nB --> C[完成]';
 const event = 'eventmodeling\n\ntf 01 ui DeleteProjectUI\ntf 02 cmd DeleteProject\ntf 03 evt ProjectDeleted';
 const description = `# Delivery\n\n[Read plan](plan.md)\n\n\`\`\`ts\n${longCode}\n\`\`\`\n\n\`\`\`mermaid\n${flow}\n\`\`\`\n\n\`\`\`mermaid\n${event}\n\`\`\``;
 
-async function install(page: Page, descriptionOverride = description, chain = false) {
+async function install(page: Page, descriptionOverride = description, chain = false, locale = 'en') {
   const task = detailFixture(projectId, taskId, { title: 'Markdown reading', description: descriptionOverride, version: 5n });
   const successor = detailFixture(projectId, '00000000-0000-4000-8000-000000000042', { title: 'Successor', dependsOn: [taskId], version: 5n });
   const graph = graphFixture(chain ? [task, successor] : [task]);
   const state = { writes: [] as string[], attachmentLists: 0 };
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
@@ -181,4 +182,27 @@ test('opening a relative attachment from graph details retains the inspected gra
   expect(await inspection()).toEqual(selected);
   expect((await page.evaluate(captureStableDependencyGeometry)).geometry).toEqual(before);
   expect(await checkDependencyGeometry(page, expected, info)).toEqual({ total: 0, examples: [] });
+});
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Task description card in page at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const source = `${description}\n\n- Reading item\n\n| Heading | Wide column |\n| --- | --- |\n| Value | ${'wide'.repeat(80)} |`;
+  await install(page, source, false, locale);
+  const check = async (surface: ReturnType<Page['locator']>) => {
+    const card = surface.locator('.description-card');
+    await expectDescriptionCard(page, card, width);
+    await expect(card.getByRole('heading', { name: 'Delivery' })).toBeVisible();
+    await expect(card.getByText('Reading item')).toBeVisible();
+    if (width === 320) {
+      for (const item of [card.locator('pre').first(), card.locator('.markdown-table'), card.locator('.mermaid-diagram').first()]) {
+        await expect.poll(() => item.evaluate(element => element.scrollWidth > element.clientWidth), { timeout: 45_000 }).toBe(true);
+        expect(await item.evaluate(element => { element.scrollLeft = 30; return element.scrollLeft; })).toBeGreaterThan(0);
+      }
+    }
+  };
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const pageSurface = page.locator('.task-detail-page');
+  await check(pageSurface);
+  await pageSurface.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+  await check(pageSurface);
 });
