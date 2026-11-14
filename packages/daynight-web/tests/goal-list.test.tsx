@@ -111,20 +111,25 @@ describe('Goal list', () => {
     expect(screen.getByRole('button', { name: 'Remove alpha' })).toBeVisible();
     expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
   });
-  it('toggles from each part of the header and keeps detail and graph actions separate', () => {
+  it('toggles from non-interactive header parts and keeps title, detail and graph actions separate', () => {
     const openGoal = vi.fn(); const openGraph = vi.fn();
     const assigned = tasks.map(task => task.id === goal.id ? { ...task, assignedTo: '12345678-0000-4000-8000-000000000001' } : task);
     createLocaleRender('en', { taskCache: true })(list(snapshot(assigned), openGoal, vi.fn(), vi.fn(), openGraph));
     const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    const title = card.querySelector<HTMLButtonElement>('.goal-list-title')!;
     const detail = document.getElementById('project-goal-detail-goal')!;
     const graph = document.getElementById('project-goal-graph-goal')!;
     const content = document.getElementById(toggle.getAttribute('aria-controls')!)!;
     expect(toggle).toHaveAccessibleDescription(/Assignee: 12345678.*2 tasks.*0\/1 completed.*To do/);
     expect(content).not.toBeVisible();
+    expect(title).toHaveAttribute('type', 'button');
+    expect(title).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(title).toHaveAttribute('id', 'project-goal-goal');
+    expect(toggle.contains(title)).toBe(false);
     expect(toggle.contains(detail)).toBe(false);
     expect(toggle.contains(graph)).toBe(false);
-    for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status']) {
+    for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-meta', '.goal-list-progress', '.root-status']) {
       const target = card.querySelector(selector)!;
       fireEvent.click(target);
       expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
@@ -142,6 +147,9 @@ describe('Goal list', () => {
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     for (const expanded of [true, false]) {
+      fireEvent.click(title);
+      expect(openGoal).toHaveBeenLastCalledWith(goal.id, title);
+      expect(toggle).toHaveAttribute('aria-expanded', String(expanded));
       fireEvent.click(detail);
       expect(openGoal).toHaveBeenLastCalledWith(goal.id, detail);
       fireEvent.click(graph);
@@ -149,8 +157,22 @@ describe('Goal list', () => {
       expect(toggle).toHaveAttribute('aria-expanded', String(expanded));
       if (expanded) fireEvent.click(toggle);
     }
-    expect(openGoal).toHaveBeenCalledTimes(2);
+    expect(openGoal).toHaveBeenCalledTimes(4);
     expect(openGraph).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens the matching Goal from titles with different states and no children', () => {
+    const openGoal = vi.fn();
+    createLocaleRender('en', { taskCache: true })(list(snapshot(tasks), openGoal));
+    for (const id of ['goal', 'other', 'empty']) {
+      const card = document.querySelector<HTMLElement>(`[data-goal-id="${id}"]`)!;
+      const title = card.querySelector<HTMLButtonElement>('.goal-list-title')!;
+      const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+      fireEvent.click(title);
+      expect(openGoal).toHaveBeenLastCalledWith(id, title);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    }
+    expect(openGoal).toHaveBeenCalledTimes(3);
   });
 
   it('opens the overall graph independently of the title and disclosure, including an empty Goal', () => {
@@ -203,7 +225,7 @@ describe('Goal list', () => {
     expect(toggle).toHaveFocus();
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(toggle).toHaveAccessibleDescription(/2 in progress.*Automatic execution active.*1\/4 completed/);
-    const indicator = toggle.querySelector('.chain-worker-active')!;
+    const indicator = card.querySelector('.chain-worker-active')!;
     expect(indicator.querySelector('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
     expect(within(indicator as HTMLElement).queryByRole('button')).toBeNull();
 

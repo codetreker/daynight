@@ -761,7 +761,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
   const toggle = card.locator('.goal-list-toggle');
-  const count = toggle.locator('.task-pause-count');
+  const count = card.locator('.task-pause-count');
   await expect(count).toHaveText(zh ? '1 已暂停' : '1 paused');
   await expect(toggle).toHaveAccessibleDescription(zh ? /1 已暂停/ : /1 paused/);
   const layout = await card.evaluate(element => {
@@ -1891,6 +1891,8 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const detail = card.locator(`#project-goal-detail-${goalId}`);
   await card.locator('.goal-list-toggle').focus();
   await page.keyboard.press('Tab');
+  await expect(card.locator('.goal-list-title')).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(detail).toBeFocused();
   await expect(detail).toHaveCSS('outline-color', 'rgb(52, 64, 84)');
   await page.keyboard.press('Enter');
@@ -1935,7 +1937,7 @@ test('Goal and task-chain headers remain compact with an assigned owner on deskt
   expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(goalHeight);
 });
 
-for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale, 'Owner');
   fixture.setGoalStatusFixture('todo', false);
@@ -1944,12 +1946,13 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
   const toggle = card.locator('.goal-list-toggle');
+  const title = card.locator('.goal-list-title');
   const detail = card.locator(`#project-goal-detail-${goalId}`);
   const graph = card.locator(`#project-goal-graph-${goalId}`);
   const content = card.locator(`#project-goal-children-${goalId}`);
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(content).toBeHidden();
-  for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status']) {
+  for (const selector of ['.goal-disclosure', '.goal-list-icon', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status']) {
     const target = card.locator('.goal-list-row').locator(selector);
     await target.click();
     await expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
@@ -1959,7 +1962,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await expect(toggle, selector).toHaveAttribute('aria-expanded', 'false');
     await expect(content).toBeHidden();
   }
-  const blank = await toggle.evaluate(element => {
+  const blank = await card.locator('.goal-list-row').evaluate(element => {
     const r = element.getBoundingClientRect();
     for (let y = r.top + 2; y < r.bottom - 2; y += 3) for (let x = r.left + 2; x < r.right - 2; x += 3) {
       if (document.elementFromPoint(x, y) === element) return { x, y };
@@ -1973,20 +1976,21 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await card.locator('.goal-list-row .root-status').click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(toggle).toBeFocused();
-  if (width === 320) {
-    const rowBlank = await card.locator('.goal-list-row').evaluate(element => {
-      const bounds = element.getBoundingClientRect();
-      const bottomOfToggle = element.querySelector('.goal-list-toggle')!.getBoundingClientRect().bottom;
-      for (let y = bottomOfToggle + 2; y < bounds.bottom - 2; y += 3) for (let x = bounds.left + 2; x < bounds.right - 2; x += 3) {
-        if (document.elementFromPoint(x, y) === element) return { x, y };
-      }
-      return null;
-    });
-    expect(rowBlank).not.toBeNull();
-    await page.mouse.click(rowBlank!.x, rowBlank!.y);
-  } else await toggle.click();
+  await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   for (const expanded of ['true', 'false'] as const) {
+    for (const activation of ['click', 'Enter', 'Space'] as const) {
+      if (activation === 'click') await title.click();
+      else { await title.focus(); await page.keyboard.press(activation); }
+      const surface = page.locator('.goal-detail-surface');
+      await expect(surface).toBeVisible();
+      await expect(surface.locator('.task-detail-title')).toHaveText('Goal reading');
+      await expect(toggle).toHaveAttribute('aria-expanded', expanded);
+      await page.keyboard.press('Escape');
+      await expect(surface).toHaveCount(0);
+      await expect(title).toBeFocused();
+      await expect(toggle).toHaveAttribute('aria-expanded', expanded);
+    }
     await detail.click();
     await expect(page.locator('.goal-detail-surface')).toBeVisible();
     await page.keyboard.press('Escape');
@@ -1999,6 +2003,16 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await expect(toggle).toHaveAttribute('aria-expanded', expanded);
     if (expanded === 'true') await toggle.click();
   }
+  await title.click();
+  await expect(page.locator('.goal-detail-surface')).toBeVisible();
+  await page.goBack();
+  await expect(page.locator('.goal-detail-surface')).toHaveCount(0);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.goForward();
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Goal reading');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#project-goal-list')).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   expect(await page.locator('button button, button a, a button').count()).toBe(0);
 });
 
@@ -2074,6 +2088,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   }
   await toggle.focus();
   await page.keyboard.press('Tab');
+  await expect(row.locator('.goal-list-title')).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(status).toBeFocused();
   await expect(status).toHaveAttribute('aria-expanded', 'false');
   await page.keyboard.press('Enter');
@@ -2099,18 +2115,17 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   const otherGoal = page.locator(`[data-goal-id="${otherGoalId}"]`);
   await expect(firstGoal.locator('.assignee-name')).toContainText('Long owner name');
   const firstHeader = firstGoal.locator('.goal-list-toggle');
-  const otherHeader = otherGoal.locator('.goal-list-toggle');
   const count = locale === 'zh-CN' ? '1 进行中' : '1 in progress';
   const active = locale === 'zh-CN' ? '自动执行中' : 'Automatic execution active';
-  await expect(firstHeader.locator('.goal-in-progress')).toHaveText(count);
-  await expect(firstHeader.locator('.chain-worker-active')).toHaveText(active);
+  await expect(firstGoal.locator('.goal-in-progress')).toHaveText(count);
+  await expect(firstGoal.locator('.chain-worker-active')).toHaveText(active);
   await expect(firstHeader).toHaveAccessibleDescription(new RegExp(`${count}.*${active}`));
-  await expect(firstHeader.locator('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
-  await expect(firstHeader.locator('.chain-worker-active button, .chain-worker-active a')).toHaveCount(0);
-  await expect(otherHeader.locator('.goal-in-progress')).toHaveText(locale === 'zh-CN' ? '0 进行中' : '0 in progress');
-  await expect(otherHeader.locator('.chain-worker-active')).toHaveCount(0);
+  await expect(firstGoal.locator('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
+  await expect(firstGoal.locator('.chain-worker-active button, .chain-worker-active a')).toHaveCount(0);
+  await expect(otherGoal.locator('.goal-in-progress')).toHaveText(locale === 'zh-CN' ? '0 进行中' : '0 in progress');
+  await expect(otherGoal.locator('.chain-worker-active')).toHaveCount(0);
   for (const selector of ['.goal-in-progress', '.chain-worker-active']) {
-    expect(await firstHeader.locator(selector).evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    expect(await firstGoal.locator(selector).evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
   }
 
   const geometry = await firstGoal.locator('.goal-list-row').evaluate(row => {
@@ -2169,11 +2184,17 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await otherToggle.focus(); await page.keyboard.press('Enter');
   await expect(firstGoal.locator('.goal-task-list > li')).toHaveCount(3);
   await expect(otherGoal.locator('.goal-task-list > li')).toHaveCount(1);
+  const title = firstGoal.locator('.goal-list-title');
+  await title.focus(); await page.keyboard.press('Enter');
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('LongGoal名称'.repeat(20));
+  await page.keyboard.press('Escape');
+  await expect(title).toBeFocused();
+  await expect(firstToggle).toHaveAttribute('aria-expanded', 'true');
   await checkOutline(firstGoal, true);
   await checkOutline(otherGoal, true);
   await expect(firstGoal.locator('.goal-list-contents')).toHaveCSS('border-top-width', '1px');
   await expect(firstGoal.locator('..')).toHaveCSS('row-gap', '8px');
-  for (const control of [firstGoal.locator('.goal-list-toggle'), firstGoal.locator(`#project-goal-detail-${goalId}`), firstGoal.locator(`#project-goal-graph-${goalId}`), firstGoal.locator('.goal-task-main').first(), firstGoal.locator('.goal-task-main').last()]) {
+  for (const control of [firstGoal.locator('.goal-list-toggle'), firstGoal.locator('.goal-list-title'), firstGoal.locator(`#project-goal-detail-${goalId}`), firstGoal.locator(`#project-goal-graph-${goalId}`), firstGoal.locator('.goal-task-main').first(), firstGoal.locator('.goal-task-main').last()]) {
     await control.scrollIntoViewIfNeeded();
     await control.focus();
     const visibleOutline = await control.evaluate(element => {
@@ -2233,6 +2254,12 @@ test('Goal empty and filtered states retain their padding and restore members', 
   await card.locator('.goal-list-toggle').click();
   await empty.locator('.goal-list-toggle').click();
   await expect(empty.locator('.goal-list-empty')).toHaveText('No tasks in this Goal.');
+  const emptyTitle = empty.locator('.goal-list-title');
+  await emptyTitle.click();
+  await expect(page.locator('.goal-detail-surface .task-detail-title')).toHaveText('Empty goal');
+  await page.keyboard.press('Escape');
+  await expect(emptyTitle).toBeFocused();
+  await expect(empty.locator('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
   const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').nth(1);
   await filter.locator('summary').click();
   await filter.getByLabel('No tags').check();
@@ -2314,8 +2341,8 @@ test('Goal summary follows snapshot membership without resetting disclosure or f
   await expect(toggle).toBeFocused();
   await expect(toggle).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
   fixture.moveActiveGoalChild(); await refresh();
-  await expect(toggle.locator('.goal-in-progress')).toHaveText('0 in progress');
-  await expect(toggle.locator('.chain-worker-active')).toHaveCount(0);
+  await expect(card.locator('.goal-in-progress')).toHaveText('0 in progress');
+  await expect(card.locator('.chain-worker-active')).toHaveCount(0);
   await expect(other.locator('.goal-list-toggle')).toHaveAccessibleDescription(/1 in progress.*Automatic execution active/);
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(toggle).toBeFocused();
@@ -2489,14 +2516,19 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const label = card.locator('.goal-list-meta time');
   await expect(label).toHaveAttribute('datetime', '2026-10-22T09:59:40Z');
   await label.hover();
-  await expect(card.getByRole('tooltip')).toBeVisible();
-  await card.getByRole('tooltip').hover();
-  await expect(card.getByRole('tooltip')).toBeVisible();
+  const hint = card.getByRole('tooltip');
+  const toggle = card.locator('.goal-list-toggle');
+  await expect(hint).toBeVisible();
+  await hint.hover();
+  await expect(hint).toBeVisible();
+  await hint.click({ clickCount: 3 });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(await page.evaluate(() => getSelection()?.toString().length ?? 0)).toBeGreaterThan(0);
   await detail.focus();
   await expect(card.getByRole('tooltip')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(card.getByRole('tooltip')).toBeHidden();
-  await card.locator('.goal-list-toggle').click();
+  await toggle.click();
   await expect(card.locator('.goal-task-row').filter({ hasText: 'Standalone task' })).toContainText(zh ? '待处理' : 'To do');
   const row = card.locator(`#chain-task-goal-${goalId}-${firstId}`);
   await expect(row.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:10Z');
