@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "vitest";
 
-test.each(["normal", "read-authority", "graceful-shutdown", "no-media", "capture-failure", "open-race", "kill-helper", "kill-native", "malformed"])("compiled Copilot bridge owns its single SDK connection and both processes: %s", async mode => {
+test.each(["admission-revoked", "admission-close", "normal", "read-authority", "graceful-shutdown", "no-media", "capture-failure", "open-race", "kill-helper", "kill-native", "malformed"])("compiled Copilot bridge owns its single SDK connection and both processes: %s", async mode => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/copilot-bridge-check"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "case-"));
   const child = spawn(process.execPath, ["--unhandled-rejections=strict", path.resolve(import.meta.dirname, "fixtures/copilot-bridge-check.mjs"), root, mode], { stdio: ["ignore", "pipe", "pipe"] });

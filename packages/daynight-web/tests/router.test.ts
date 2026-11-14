@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, replaceRoute, taskDetailUrl } from "../src/app/router";
 import { browserNavigation } from '../src/app/navigation';
+import { projectSettingsUrl, type ProjectSettingsTab } from '../src/app/project-settings-route';
 
 const taskId = "b0000000-0000-0000-0000-000000000002";
 const projectId = "a0000000-0000-0000-0000-000000000001";
@@ -138,7 +139,7 @@ describe("explicit login destinations", () => {
       expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: path })}`)).toBe(path);
       expect(new URL(loginUrl(path), window.location.origin).searchParams.get("returnPath")).toBe(path);
     }
-    expect(parseAuthRoute(`/projects/${projectId}/settings`)).toEqual({ kind: "settings", projectId });
+    expect(parseAuthRoute(`/projects/${projectId}/settings`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "execution" } });
     expect(parseAuthRoute("/projects/bad/members")).toEqual({ kind: "notFound" });
   });
 
@@ -159,6 +160,29 @@ describe("explicit login destinations", () => {
     expect(invitationLocation("/login", "?returnPath=%2Fprojects")).toBe(false);
     expect(invitationLocation("/login", "?returnPath=//elsewhere")).toBe(false);
     expect(invitationLocation("/projects", "?returnPath=%2Finvitations")).toBe(false);
+  });
+});
+
+describe("Project settings routes", () => {
+  const path = `/projects/${projectId}/settings`;
+
+  it("parses and builds each current section, preserving unrelated authentication parameters", () => {
+    for (const tab of ["execution", "prompts", "github", "members", "management"] as ProjectSettingsTab[]) {
+      const url = projectSettingsUrl(projectId, tab);
+      expect(url).toBe(tab === "execution" ? path : `${path}?tab=${tab}`);
+      expect(parseAuthRoute(path, `?tab=${tab}&authError=login_failed&other=value`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab } });
+      expect(isLoginReturnPath(url)).toBe(true);
+    }
+    expect(parseAuthRoute(path, "?authError=login_failed")).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "execution" } });
+    expect(() => projectSettingsUrl("invalid", "execution")).toThrow();
+  });
+
+  it("retains project context for invalid selections and maps the legacy members route", () => {
+    for (const search of ["?tab=", "?tab=unknown", "?tab=execution&tab=github", "?tab=%ZZ"]) {
+      expect(parseAuthRoute(path, search)).toEqual({ kind: "settings", projectId, selection: { kind: "invalid" } });
+    }
+    expect(parseAuthRoute(`/projects/${projectId}/members`, "?tab=github")).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
+    expect(parseAuthRoute("/projects/invalid/settings", "?tab=github")).toEqual({ kind: "notFound" });
   });
 });
 

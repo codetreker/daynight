@@ -12,7 +12,7 @@ export type PullRequestPage = {
 };
 type SyncError = { readonly code: string; readonly message: string; readonly at: string | null };
 export type GitHubStatus = {
-  readonly projectId: string; readonly version: string; readonly revision: string; readonly serviceAvailable: boolean;
+  readonly projectId: string; readonly version: string; readonly revision: string; readonly serviceAvailable: boolean; readonly syncEnabled: boolean;
   readonly connection: 'not_connected' | 'connected' | 'unavailable' | 'disconnected';
   readonly repository: { readonly id: string; readonly fullName: string; readonly private: boolean | null } | null;
   readonly installation: { readonly id: string; readonly accountLogin: string } | null;
@@ -51,7 +51,7 @@ export const parsePullRequestPage = (value: unknown, projectId: string): PullReq
 export const parseGitHubStatus = (value: unknown, projectId: string): GitHubStatus => {
   const data = record(value), project = id(data.projectId), poll = record(data.poll), webhook = record(data.webhook), interval = data.pollIntervalMinutes;
   if (project !== requestId(projectId) || typeof interval !== 'number' || !Number.isInteger(interval) || interval < 1 || interval > 2_147_483_647) return malformed();
-  return { projectId: project, version: decimal(data.version), revision: count(data.revision), serviceAvailable: boolean(data.serviceAvailable),
+  return { projectId: project, version: decimal(data.version), revision: count(data.revision), serviceAvailable: boolean(data.serviceAvailable), syncEnabled: boolean(data.syncEnabled),
     connection: choice(data.connection, ['not_connected', 'connected', 'unavailable', 'disconnected']),
     repository: nullable(data.repository, value => { const item = record(value); return { id: decimal(item.id), fullName: string(item.fullName), private: nullable(item.private, boolean) }; }),
     installation: nullable(data.installation, value => { const item = record(value); return { id: decimal(item.id), accountLogin: string(item.accountLogin) }; }),

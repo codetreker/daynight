@@ -1,12 +1,12 @@
 # 项目 GitHub PR 读取
 
-Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配置及持久化同步事实，通过 `GET /api/v1/projects/{projectId}/pull-requests` 读取摘要页，通过 `GET /api/v1/projects/{projectId}/pull-requests/{number}` 读取完整详情。读取不访问 GitHub；服务未配置或连接断开时仍可读取保留的数据。没有连接行时返回虚拟未连接状态，不创建存储行。部署配置决定 `serviceAvailable`，与连接和观测版本无关。
+Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配置及持久化同步事实，通过 `GET /api/v1/projects/{projectId}/pull-requests` 读取摘要页，通过 `GET /api/v1/projects/{projectId}/pull-requests/{number}` 读取完整详情。读取不访问 GitHub；服务未配置、同步关闭或连接断开时仍可读取保留的数据。没有连接行时返回虚拟未连接状态，不创建存储行。部署配置决定 `serviceAvailable`，与连接和观测版本无关；必填 boolean `syncEnabled` 表示 Project 保存的同步意愿，不随服务禁用或访问撤权自动改写。
 
 项目读取权限、连接、计数和页面或详情在同一只读快照内验证与读取。版本、revision、GitHub ID、PR number 和计数以十进制字符串输出；可空事实明确输出 null，仓库可见性未解析时也保持未知。摘要不包含 description，详情保留原始 Markdown，空字符串和 null 不合并。缺失资源、读取失败和成功空页各自表达，取消传播为错误。
 
 列表按 number 降序读取，支持 `state=active|closed|merged|all`（默认 active）、字面大小写不敏感的标题或编号子串 `q`（最多 1024 UTF-8 bytes）、`limit`（默认 20，范围 1–100）和可选 cursor。counts 独立于 q 和状态筛选，total 对应当前筛选。游标绑定 Project、条件、页大小、首次读取上界、锚点和方向，条件不匹配或格式错误予以拒绝。后续新编号不会插入已有页；已有记录变化仍可改变页面和计数，空锚定页保留返回路径。
 
-连接状态、初始化、渠道运行标记和错误来自已保存事实；完整成功属于特定 generation，旧 generation 的成功不能证明重新连接完成。读取不启动连接或后台同步。存储字段与快照约束见 [GitHub PR 存储](github-pr-storage.md)。
+连接状态、初始化、渠道运行标记和错误来自已保存事实；完整成功属于特定 generation，旧 generation 的成功不能证明新代次完成。同步关闭时 `initializing`、poll 和 webhook 的 `running` 为 false，`poll.nextAttemptAt` 为 null；历史时间和错误仍保留。读取不启动连接或后台同步。存储字段与快照约束见 [GitHub PR 存储](github-pr-storage.md)。
 
 ## Web 工作区与列表
 
@@ -14,7 +14,7 @@ Project 导航按“概览 → 任务列表 → PR 列表”排列，桌面纵�
 
 `features/pull-requests/` 拥有独立的状态与摘要 API、内存读取 session 和列表。工作区按 userId/projectId 保持挂载，不写 TaskSync 或 IndexedDB；切换 tab 通过 hidden/inert 和 active 暂停请求，保留筛选、游标页面、选中项和阅读位置。Project 独立读取资格撤销时取消请求并清空旧内容。列表或状态的权限拒绝清除当前 PR session 并要求 Project 权限复核；身份头不符进入现有身份撤销流程。
 
-默认 active 包含 Draft，支持 merged、closed、all 和标题/编号查询，每次明确请求 6 条摘要。计数和 PR 编号保留十进制字符串精度。页码和总页数只表达当前观察，前后导航使用服务端游标；记录变化导致锚定页为空时，仍保留服务端提供的上一页或下一页路径；任一游标存在时分页栏保持可见。首次同步且无保存记录时隐藏未知数字，完整成功空集合、未连接、读取失败和保留记录分别呈现。轮询和 Webhook 的失败各自显示，最近完整成功与渠道更新各自保留。
+默认 active 包含 Draft，支持 merged、closed、all 和标题/编号查询，每次明确请求 6 条摘要。计数和 PR 编号保留十进制字符串精度。页码和总页数只表达当前观察，前后导航使用服务端游标；记录变化导致锚定页为空时，仍保留服务端提供的上一页或下一页路径；任一游标存在时分页栏保持可见。首次同步且无保存记录时隐藏未知数字，完整成功空集合、未连接、读取失败和保留记录分别呈现。主要配置与同步提示最多显示一条，依次选择同步关闭、服务未配置、授权不可用、连接断开、已连接且初始化；健康或尚无状态时不显示主提示。关闭意愿优先于其他阻碍，完整健康信息仍可在设置页查看。提示保留设置入口，授权不可用使用 danger 样式。轮询和 Webhook 的诊断独立显示，历史错误与当前失败区分；状态或列表读取失败及新记录提醒也独立呈现。最近完整成功与渠道更新仍保留。开启新代次的初始化期间已有记录继续可读。刷新只重新读取保存数据，不启动同步；开关变化及后台核对保留列表、筛选、分页、详情、焦点和位置。
 
 活动且文档可见时每 15 秒核对，focus 或恢复可见时重新核对；隐藏时取消在途请求并停止读取。请求有 30 秒派发期限，generation、响应身份及精确 revision 阻止迟到页面和低版本回退。后台核对保留首次读取上界和当前锚点。初始无游标页面以合同允许的 `upperNumber + 1` next 锚点重读，只清除该合成读取产生的人工上一页游标；用户导航后的页面始终使用原服务端游标，并保留响应提供的前后路径。展示页码不决定是否位于集合边界；已有记录重新进入筛选时，即使页码为 1，服务端返回的上一页仍可继续访问上界内的记录。同时读取无游标首页以发现上界外的新记录，仅提示有更新；显式刷新才重建首页上界。初始空集合后新增记录也先提示，显式刷新后纳入。摘要始终不取 description，打开行后直接挂载详情组件。
 

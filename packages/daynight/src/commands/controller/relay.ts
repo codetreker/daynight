@@ -1,4 +1,4 @@
-import type { ImageCaptureReceipt, ValidatedImage } from "../../session/image-values.js";
+import type { ImageCaptureReceipt, ValidatedImage, ImageCapabilities } from "../../session/image-values.js";
 import type { CaptureReadPolicy, ControllerMediaBlockLease } from "./media/preparations.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./media/release-error.js";
 import { ImageCaptureNotDispatchedError, ImageCaptureRequestError } from "./media/capture-error.js";
@@ -26,6 +26,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
   let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
   let historyEpoch = "";
   let supportsImageHistory = false;
+  let supportsDirectCapture = false;
   const contentRequests: { request: ContentRequest; response: ContentResponse | null }[] = [];
   let reconciliation: ControllerOperation[][] = [];
   const mediaRequests = new Map<string, { key: string; promise: Promise<void>; controller: AbortController }>();
@@ -98,7 +99,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     mediaRequests.set(requestKey, { key, promise: work, controller }); mediaWork.add(work); void work.finally(() => mediaWork.delete(work)).catch(error => callbacks.onError(error));
   };
   let pendingBatch: { id: string; through: string } | null = null, currentToken = "", lastHeartbeat = 0, reconnectAt = 0, connecting = false;
-  const authorization = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+  const authorization = new Map<string, { resolve(value: ImageCapabilities | undefined): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   const settleDispatchRefusal = (operation: SessionOperation, required = false, currentConnection = false): void => {
     const local = journal.getOperation(operation.operationId);
     if (!required && local?.state !== "accepted") return;
@@ -119,6 +120,8 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       const grant = await readControllerGrant(ticket); if (stopped) return; currentToken = grant.token;
       const url = new URL("/api/v1/controller-channel", ticket.serverOrigin); url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}`, [CONTENT_READ_VERSION_HEADER]: "1" }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
+      supportsDirectCapture = false;
+      ws.on("upgrade", response => { if (socket === ws) supportsDirectCapture = response.headers["daynight-session-direct-upload-version"] === "1"; });
       ws.on("error", error => callbacks.onError(error.message));
       ws.on("close", () => { if (socket !== ws) return; socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
       ws.on("open", () => { if (stopped || socket !== ws) return; send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, contentRevision: 2, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
@@ -177,7 +180,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
           }
           else if (message.type === "events_ack") { if (message.sourceEpoch !== ticket.executionId || !pendingBatch || message.batchId !== pendingBatch.id || BigInt(message.lastAckedSourceSeq) < BigInt(pendingBatch.through)) throw new Error("Invalid event ACK."); journal.acknowledgeEvents(message.lastAckedSourceSeq); pendingBatch = null; callbacks.onAcknowledged?.(); }
           else if (message.type === "operation_offer") { if (!synchronized) throw new Error("Operation offered before reconciliation."); void callbacks.onCommand(message.command).catch(error => callbacks.onError(error)); }
-          else if (message.type === "operation_authorized") { const waiter = authorization.get(message.operationId); if (waiter) { authorization.delete(message.operationId); clearTimeout(waiter.timer); waiter.resolve(); } }
+          else if (message.type === "operation_authorized") { const waiter = authorization.get(message.operationId); if (waiter) { authorization.delete(message.operationId); clearTimeout(waiter.timer); waiter.resolve(message.imageAuthorization); } }
           else if (message.type === "error") { callbacks.onError(`${message.code}: ${message.message}`); ws.close(); }
         } catch (error) { callbacks.onError(error); ws.close(1008, "Invalid relay frame"); }
       });
@@ -251,6 +254,13 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     imageHistorySupported: (): boolean => supportsImageHistory && fence !== null,
     capture: <K extends ImageCaptureAction>(action: K, body: ImageCaptureBody[K]): Promise<ImageCaptureReceipt> => new Promise((resolve, reject) => {
       if (!synchronized || !supportsImageHistory) { reject(new ImageCaptureNotDispatchedError("Image capture relay is unavailable.")); return; }
+      if (action === "submit" && !supportsDirectCapture) { reject(new ImageCaptureRequestError({ code: "upgrade_required", message: "The server must support direct Session image submissions." })); return; }
+      // Check and enqueue without yielding. The server's controller-channel
+      // loop handles frames in order, so later source events cannot invalidate
+      // this complete checkpoint before the capture identity is established.
+      if (action === "submit" && (pendingBatch || journal.pendingEvents(1).length || !journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence()))) {
+        reject(new ImageCaptureNotDispatchedError("Image capture is waiting for its complete current history checkpoint.")); return;
+      }
       if (captureRequests.size >= 2) { reject(new ImageCaptureNotDispatchedError("Controller image capture request capacity is unavailable.")); return; }
       const requestId = randomUUID();
       const timer = setTimeout(() => { captureRequests.delete(requestId); reject(new Error("Image capture outcome is unknown; query the original capture.")); }, 15_000);
@@ -258,7 +268,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       try { send(parseImageCaptureMessage({ ...prefix(), type: "image_capture", requestId, action, body }) as ImageCaptureMessage); }
       catch (error) { clearTimeout(timer); captureRequests.delete(requestId); reject(error); }
     }),
-    authorize: (operationId: string): Promise<void> => new Promise((resolve, reject) => {
+    authorize: (operationId: string): Promise<ImageCapabilities | undefined> => new Promise((resolve, reject) => {
       if (!synchronized) { reject(new Error("Session relay is offline.")); return; }
       const timeout = setTimeout(() => { authorization.delete(operationId); reject(new Error("Operation authorization is unknown; native was not called.")); }, 15_000);
       authorization.set(operationId, { resolve, reject, timer: timeout });

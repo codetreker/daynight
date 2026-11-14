@@ -8,6 +8,7 @@ import { assertNoOrphanTimelineSource, importControllerTimeline } from "./conten
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 import { initializeOutboxAccounting } from "./outbox-migration.js";
 import { readControllerOutboxByteLength } from "./outbox-store.js";
+import { migrateDirectCaptureState } from "./media/capture-migration.js";
 
 const steps = loadSqliteSequence(new URL("./sqlite/journal/", import.meta.url));
 const [baseline, ...upgrades] = steps;
@@ -45,6 +46,7 @@ export const controllerJournalFormatForMigration = (context: (db: Database.Datab
       assertWrite(db, Buffer.byteLength(step.sql) + 16384);
       if (step.version === 10) return importControllerTimeline(db, context(db), step.sql);
       if (step.version === 11) return initializeOutboxAccounting(db, step.sql);
+      if (step.version === 12) return migrateDirectCaptureState(db, step.sql, bytes => assertWrite(db, bytes));
       if (step.version !== 6 && step.version !== 8) { db.exec(step.sql); return; }
       const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
       if (row === undefined) {

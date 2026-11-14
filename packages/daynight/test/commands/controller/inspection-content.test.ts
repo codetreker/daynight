@@ -6,6 +6,13 @@ import type { ControllerLaunchTicket } from "../../../src/commands/controller/la
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { SourceTimelineEntry } from "../../../src/session/controller-protocol.js";
 import { parseInspectionPage } from "../../../src/session/history.js";
+import { createWatchdogSource, type WatchdogApiScope } from "../../../src/commands/worker/bots/apps/watchdog-transport.js";
+import { createWatchdogEvaluator, watchdogHistoryIdentity, type WatchdogObservation, type WatchdogState } from "../../../src/commands/worker/bots/apps/watchdog.js";
+import type { AssistantTask, AssistantTaskClient, AssistantTaskItem, JsonValue } from "../../../src/api/assistant-task.js";
+import type { AssistantApplicationContext } from "../../../src/commands/worker/bots/assistant-tasks.js";
+import { CodexImageProjection } from "../../../src/commands/controller/providers/codex-image-projection.js";
+import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import type { CodexImageInputs } from "../../../src/commands/controller/providers/codex-image-input.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -45,6 +52,93 @@ it("returns a real empty page and validates limits before reading", async () => 
     expect(store.readInspection(query(epoch))).toMatchObject({ items: [], beforeCursor: null, hasMoreBefore: false, coverage: { state: "complete", reason: null } });
     for (const limit of [0, 201, 1.5]) expect(() => store.readInspection(query(epoch, null, limit))).toThrow();
     expect(() => store.readInspection({ ...query(epoch), responseOverhead: 262144 })).toThrow();
+  } finally { store.close(); }
+});
+
+it("supplies stable untimed input evidence to Watchdog through the real inspection producer", async () => {
+  const f = await fixture(), store = f.open(), epoch = randomUUID(), inputId = randomUUID();
+  try {
+    store.projectTimeline({ entryId: inputId, revision: "1", kind: "user_message", content: [{ type: "text", text: "Complete the assigned task." }], origin: "daynight" });
+    store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Please continue" }] });
+    const source = createWatchdogSource(f.ticket.userId, (async (_signal, action) => action({
+      readTaskSession: async () => ({ ...store.readInspection(query(epoch)), source: "live", sessionId: f.ticket.sessionId }),
+    } as never)) as WatchdogApiScope);
+    const observation = { projectId: f.ticket.projectId, taskId: f.ticket.taskId, session: { sessionId: f.ticket.sessionId } } as WatchdogObservation;
+    const history = await source.history(observation, new AbortController().signal);
+    expect(history).toMatchObject({ complete: true, lastInputAt: null, untimedInputId: `${epoch}/${inputId}/1`, lastAssistantText: "Please continue" });
+    expect(history.inputQuietSince).toBeUndefined();
+  } finally { store.close(); }
+});
+
+it.each(["reconnect", "entry", "revision", "legacy", "legacy-revision", "unknown-legacy", "empty-legacy", "partial-tool", "later-page-failure", "older-candidate", "newly-readable"])("distinguishes durable progress from reconnect and unreadable automatic input (%s)", async change => {
+  const f = await fixture(), store = f.open(), assistantId = randomUUID(), inputId = randomUUID();
+  let epoch = randomUUID();
+  let failOlder = false, overhead = change === "newly-readable" ? 40000 : 4096;
+  let now = Date.parse("2026-11-14T00:00:00Z");
+  try {
+    store.projectTimeline({ entryId: assistantId, revision: "1", kind: "assistant_message", content: [{ type: "text", text: "Please continue" }] });
+    if (["older-candidate", "newly-readable"].includes(change)) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "user_message", content: [{ type: "text", text: "h".repeat(240000) }] });
+    store.projectTimeline({ entryId: inputId, revision: "1", kind: "user_message", origin: "daynight", content: [{ type: "text", text: "x".repeat(300 * 1024) }] });
+    const projected = store.readInspection(query(epoch));
+    expect(projected.coverage.state).toBe("complete");
+    expect(projected.items.at(-1)).toMatchObject({ entryId: inputId, body: null, truncated: true });
+    const observation = { projectId: f.ticket.projectId, taskId: f.ticket.taskId, title: "Task", inScope: true,
+      session: { sessionId: f.ticket.sessionId, observation: "observed", error: null, freshUntil: null, registration: "registered", lifecycle: "active", activity: "idle", indicator: "warning", reason: "idle", send: { allowed: true } },
+    } as WatchdogObservation;
+    const source = createWatchdogSource(f.ticket.userId, (async (_signal, action) => action({
+      readTaskSession: async (_project: string, _task: string, _session: string, request: { before?: string }) => {
+        if (failOlder && request.before !== undefined) throw new Error("Older live page unavailable");
+        return { ...store.readInspection({ ...query(epoch, request.before ?? null, failOlder ? 1 : 20), responseOverhead: overhead }), source: "live", sessionId: f.ticket.sessionId };
+      },
+    } as never)) as WatchdogApiScope);
+    const history = await source.history(observation, new AbortController().signal);
+    expect(history).toMatchObject({ complete: true, untimedInputId: `${epoch}/${inputId}/1`, lastInputAt: null });
+    if (change !== "older-candidate") expect(history.lastProgressId).toBe(`${assistantId}/1`);
+    const state: WatchdogState = { schemaVersion: 1, since: now - 600_000, reportedCategory: "stalled", reportedAt: now,
+      closedAt: null, recurrence: false, observation, notices: [], attempt: { operationId: randomUUID(), ruleId: "continue", message: "Continue", at: now, followUpSince: now,
+        historyId: `${epoch}/${assistantId}/1`, observation, result: "confirmed", notifiedResult: "confirmed", escalated: false, progressed: false } };
+    if (!["legacy", "legacy-revision", "unknown-legacy", "empty-legacy"].includes(change)) {
+      state.attempt!.progressId = history.lastProgressId!;
+      state.attempt!.progressBaseline = { headSeq: history.headSeq!, entry: history.progress };
+    }
+    if (change === "unknown-legacy") state.attempt!.historyId = "unknown-old-watermark";
+    if (change === "empty-legacy") state.attempt!.historyId = null;
+    const originalHistoryId = state.attempt!.historyId, originalOperationId = state.attempt!.operationId;
+    let item = { id: randomUUID(), key: observation.taskId, taskId: randomUUID(), episode: "1", state: "open", category: "stalled", version: "1", appState: state as unknown as JsonValue } as AssistantTaskItem;
+    const events: { type: string }[] = [], records: unknown[] = [];
+    const api = {
+      listItems: async () => ({ items: [structuredClone(item)], nextCursor: null }),
+      saveItem: async (_task: string, value: Partial<AssistantTaskItem>) => { item = { ...item, ...value }; return structuredClone(item); },
+      listRecords: async () => ({ items: records, nextCursor: null }),
+      addRecord: async (_task: string, value: unknown) => { records.push(value); return value; },
+      listEvents: async () => ({ items: events, nextCursor: null }),
+      addEvent: async (_task: string, value: { type: string }) => { events.push(value); return value; },
+    } as unknown as AssistantTaskClient;
+    const task = { id: item.taskId } as AssistantTask;
+    const context: AssistantApplicationContext = { task, botId: randomUUID(), signal: new AbortController().signal,
+      withClaim: action => action(api, task, { claimToken: "fixture", claimGeneration: "1" }) };
+    const evaluator = createWatchdogEvaluator(context, { ...source, scan: async () => [observation] }, { clock: { now: () => now, wait: async () => undefined } });
+    epoch = randomUUID();
+    const reconnected = await source.history(observation, context.signal);
+    expect(reconnected.lastProgressId).toBe(history.lastProgressId);
+    expect(watchdogHistoryIdentity(observation, reconnected)).not.toBe(watchdogHistoryIdentity(observation, history));
+    if (change === "legacy-revision") store.projectTimeline({ entryId: assistantId, revision: "2", kind: "assistant_message", content: [{ type: "text", text: "New revision before legacy recovery" }] });
+    now += 599_999; await evaluator.tick(); expect(events).toEqual([]);
+    if (change === "partial-tool") {
+      const projection = new CodexImageProjection(f.ticket.sessionId, {} as ProviderOptions, {} as CodexImageInputs, { publish: entry => { store.projectTimeline(entry); } });
+      expect(projection.item({ id: "large-output", type: "functionCallOutput", output: "o".repeat(200001) }, true, "turn")).toBe(true);
+    }
+    if (["entry", "revision", "partial-tool", "later-page-failure"].includes(change)) store.projectTimeline({ entryId: change === "revision" ? assistantId : randomUUID(), revision: change === "revision" ? "2" : "1", kind: "assistant_message", content: [{ type: "text", text: "Actual new progress" }] });
+    if (change === "later-page-failure") failOlder = true;
+    if (change === "older-candidate") overhead = 40000;
+    if (change === "newly-readable") overhead = 4096;
+    if (["partial-tool", "later-page-failure"].includes(change)) expect(await source.history(observation, context.signal)).toMatchObject({ complete: false, progress: { revision: "1" }, lastAssistantText: "Actual new progress" });
+    if (change === "older-candidate") expect((await source.history(observation, context.signal)).progress?.entryId).toBe(assistantId);
+    now += 1; await evaluator.tick(); await evaluator.tick();
+    if (change === "older-candidate") { overhead = 4096; await evaluator.tick(); }
+    const progressed = ["entry", "revision", "legacy-revision", "partial-tool", "later-page-failure"].includes(change);
+    expect((item.appState as unknown as WatchdogState).attempt).toMatchObject({ progressed, escalated: !progressed, historyId: originalHistoryId, operationId: originalOperationId });
+    expect(events.map(event => event.type)).toEqual(progressed ? [] : ["escalation"]);
   } finally { store.close(); }
 });
 

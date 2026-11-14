@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
@@ -12,6 +13,31 @@ import (
 )
 
 const maxSessionIntentBytes = 2 << 20
+
+// Input limits apply to decoded originals, never to saved-image display.
+func validateInputImage(caps *sp.ImageCapabilities, image sp.ValidatedImage) error {
+	if caps == nil || caps.Send != "supported" && caps.Steer != "supported" || !caps.Geometry.Known || caps.Geometry.Version != 1 {
+		return fault("component_unsupported", "Native image input is not enabled for this provider profile.")
+	}
+	if _, err := sp.DecodeValidatedImage(encode(image)); err != nil {
+		return fault("resource_conflict", "Saved image metadata is incomplete or invalid.")
+	}
+	if !slices.Contains(caps.InputMediaTypes, image.MediaType) {
+		return fault("unsupported_media_type", "Image media type exceeds the current input profile.")
+	}
+	g := caps.Geometry
+	if number(image.ByteLength) > min(number(caps.MaxImageBytes), int64(sp.MaxImageBytes), number(caps.MaxMessageImageBytes)) || caps.MaxImagesPerMessage < 1 || image.Width > g.MaxWidth || image.Height > g.MaxHeight || image.FrameCount > g.MaxFrames || int64(image.Width) > int64(g.MaxPixels)/int64(image.Height) {
+		return fault("quota_exceeded", "Image exceeds the current input profile.")
+	}
+	return nil
+}
+
+func validatedResourceImage(resource sp.Resource) (sp.ValidatedImage, error) {
+	if resource.MediaType == nil || resource.ByteLength == nil || resource.SHA256 == nil || resource.Width == nil || resource.Height == nil || resource.FrameCount == nil {
+		return sp.ValidatedImage{}, fault("resource_conflict", "Saved image metadata is incomplete.")
+	}
+	return sp.ValidatedImage{MediaType: *resource.MediaType, ByteLength: *resource.ByteLength, SHA256: *resource.SHA256, Width: *resource.Width, Height: *resource.Height, FrameCount: *resource.FrameCount}, nil
+}
 
 func canonicalIntent(c sp.Command) ([]byte, error) {
 	raw := encode(c)
@@ -88,9 +114,16 @@ func (s *Execution) authorizeImages(ctx context.Context, tx *operationTx, r *rec
 		if !jsonEqual(encode(saved.Resource), encode(u.Receipt.Resource)) {
 			return fault("resource_conflict", "Saved image descriptor changed.")
 		}
+		validated, e := validatedResourceImage(saved.Resource)
+		if e != nil {
+			return e
+		}
+		if e = validateInputImage(caps, validated); e != nil {
+			return e
+		}
 		total += number(part.ByteLength)
 	}
-	if count > sp.MaxImagesPerMessage || total > sp.MaxMessageImageBytes {
+	if count > min(caps.MaxImagesPerMessage, sp.MaxImagesPerMessage) || total > min(number(caps.MaxMessageImageBytes), int64(sp.MaxMessageImageBytes)) {
 		return fault("quota_exceeded", "Image message exceeds its input budget.")
 	}
 	return nil

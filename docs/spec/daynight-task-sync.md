@@ -75,7 +75,7 @@ Project 内在字段含必填 ownership，同一 epoch 的 delta 中设置与归
 
 Task、Worker 和持久 Session 的读取共享既有只读数据库快照；live 活动仅从应用共享 Engine 的已提交状态取得。轻量读取不写生命周期，不推进归档、不读取完整 Current，也不改变 Worker 启动、报告、WebSocket、目录、操作、Test/Bot 或 Session 内容访问规则。查询、自然解码和编码、Engine admission、取消及事务完成失败使整个 task-sync 失败，不能变成 `pending` 或成功空集合。状态的最小集合及其判断机制由[同步架构](../design/daynight-task-sync.md#服务端-session-状态投影)拥有；现有列表呈现与入口由[Session 状态设计](../design/task-session-status.md)拥有。
 
-列表仅使用可见时现有 15 秒 task-sync 更新 Session 状态，不另建逐 Task Current 或 status 请求。初始化或同步期间的 pending 入口、完整链的全部普通成员及根任务、折叠与负责人筛选隐藏成员、warning > notice > working 优先级以及原有导航和可访问性必须保留；Goal 列表范围链以其范围内成员汇总并提供各成员入口，外部前置链不贡献当前链摘要。完整 Current 内容和操作权限继续由详情客户端核验，列表状态不能成为该授权来源。
+列表仅使用可见时现有 15 秒 task-sync 更新 Session 状态，不另建逐 Task Current 或 status 请求。初始化或同步期间的 pending 入口、完整链的全部普通成员及根任务、折叠与负责人筛选隐藏成员、warning > notice > working 优先级以及原有导航和可访问性必须保留；Goal 列表展开时直接为可见成员提供各自的 Session 状态与入口，不汇总范围链。完整 Current 内容和操作权限继续由详情客户端核验，列表状态不能成为该授权来源。
 
 状态有效期为 30 秒，从成功响应 body 读取完成的本地单调时间起算；捕获必须早于 JSON 解码、source scan 和合同校验。历史、IDB、渲染和普通缓存通知不得续期；处理到发布前已过期的观察不能短暂安装。正常同步等待保留尚有效贡献，当前失败、身份暂停、项目准入失效和执行变化撤销对应贡献，恢复后通过现有同步取得新观察。旧或被取代的响应不得撤销较新观察；身份暂停后恢复也不能让暂停前的响应重新发布已撤销的 Session 贡献。
 

@@ -1,4 +1,4 @@
-import { fireEvent, screen, within } from '@testing-library/react';
+import { fireEvent } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { GoalList } from '../src/features/projects/GoalList';
 import { StandaloneList } from '../src/features/projects/StandaloneList';
@@ -30,8 +30,6 @@ it('shows each item’s own tags and updates them without remounting an expanded
   const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   expect(toggle).toHaveAccessibleDescription(/Goal tag/);
   fireEvent.click(toggle);
-  const chainToggle = card.querySelector<HTMLButtonElement>('.root-toggle')!;
-  fireEvent.click(chainToggle);
   const childRow = card.querySelector<HTMLElement>(`.goal-task-main[id$="-${child.id}"]`)!;
   const chainRow = card.querySelector<HTMLElement>(`.goal-task-main[id$="-${chain.id}"]`)!;
   expect(childRow).toHaveTextContent('Child tag');
@@ -43,25 +41,24 @@ it('shows each item’s own tags and updates them without remounting an expanded
   summaries.set(goal.id, { ...summaries.get(goal.id)!, version: 2n, tags: [] });
   rendered.rerender(view(summaries));
   expect(toggle).toHaveAttribute('aria-expanded', 'true');
-  expect(chainToggle).toHaveAttribute('aria-expanded', 'true');
   expect(childRow).toHaveFocus();
   expect(childRow).toHaveTextContent('Renamed child');
   expect(childRow).toHaveTextContent('Another');
   expect(childRow).not.toHaveTextContent('Child tag');
-  expect(toggle).toHaveAccessibleDescription(/Untagged/);
+  expect(toggle).not.toHaveAttribute('aria-describedby', expect.stringContaining(`project-goal-tags-${goal.id}`));
+  expect(toggle.querySelector('.task-tag-list')).toBeNull();
   expect(singleRow).toHaveTextContent('Single tag');
 });
 
-it('renders an empty state in both languages and selects the newest same-task tag data', () => {
+it('omits empty tag markup in both languages and selects the newest same-task tag data', () => {
   const rendered = renderWithLocale(<TaskTagList tags={[]} />, { locale: 'en' });
-  expect(screen.getByText('Untagged')).toBeVisible();
+  expect(rendered.container).toBeEmptyDOMElement();
   rendered.setLocale('zh-CN');
-  expect(screen.getByText('无标签')).toBeVisible();
+  expect(rendered.container).toBeEmptyDOMElement();
   const summary = snapshot.summaries.get(child.id)!;
   expect(currentTaskTags(child, { ...summary, version: child.version + 1n, tags: [tag(12, 'New')] })).toEqual([tag(12, 'New')]);
   expect(currentTaskTags(child, { ...summary, version: child.version + 1n, tags: [] })).toEqual([]);
   expect(currentTaskTags(child, { ...summary, id: goal.id, version: child.version + 1n })).toEqual(child.tags);
   expect(currentTaskTags(child, { ...summary, version: child.version - 1n, tags: [] })).toEqual(child.tags);
   expect(currentTaskTags(child, undefined)).toEqual(child.tags);
-  expect(within(rendered.container).getByText('无标签')).toBeVisible();
 });

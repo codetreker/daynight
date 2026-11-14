@@ -54,4 +54,27 @@ describe.skipIf(process.env.DAYNIGHT_HERDR_PLATFORM_TEST !== "1")("real Herdr an
     expect(evidence.cleanup, context).toMatchObject({ workspaceClosed: true, apiClosed: true, clientClosed: true, mockClosed: true, runtimeDirectoryRemoved: true });
     expect(evidence.cleanup.originalProcesses.every((process: { observation: string }) => process.observation === "exited"), context).toBe(true);
   }, 120_000);
+
+  it.skipIf(process.platform !== "win32")("closes the original workspace after a controlled readiness deadline", async () => {
+    const evidence = await runHerdrToolPlatform("codex", false, true);
+    const context = JSON.stringify({ evidenceFile: evidence.evidenceFile, error: evidence.error, cleanup: evidence.cleanup });
+    expect(evidence.controlledReadinessFailure, context).toMatchObject({ kind: "after-real-readiness", realRootVerified: true, failureKind: "deadline", totalMs: 20_000, shellPid: expect.any(Number), remainingMs: expect.any(Number) });
+    expect(evidence.controlledReadinessFailure.remainingMs).toBeGreaterThan(0);
+    expect(evidence.controlledReadinessFailure.remainingMs).toBeLessThanOrEqual(20_000);
+    expect(evidence.error, context).toMatch(/The original PowerShell root readiness phase failed.*Operation deadline exceeded/);
+    expect(evidence.officialNativeIdentification).toBe(false);
+    expect(evidence.initialInputAttempts).toBe(0);
+    expect(evidence.requests).toEqual([]);
+    expect(evidence.cleanup, context).toMatchObject({ workspaceClosed: true, apiClosed: true, clientClosed: true, mockClosed: true, runtimeDirectoryRemoved: true, readinessVerified: true,
+      partialWorkspace: { failurePhase: "root-readiness", shellPid: evidence.controlledReadinessFailure.shellPid, layoutVerified: true, noAgentLaunch: true, closeConfirmed: true, readyValidation: "verified", after: { ownerAbsent: true, workspaceAbsent: true, paneAbsent: true, terminalAbsent: true, tabAbsent: true } },
+      instance: { apiClosed: true, clientClosed: true, ownedChildClosed: true } });
+    const { partialWorkspace: partial, partialWorkspaceObservation: observed, partialWorkspaceIndependent: independent, processCapture, originalProcesses } = evidence.cleanup;
+    expect(observed, context).toMatchObject({ owner: partial.owner, binding: partial.binding, shellPid: partial.shellPid, tabId: partial.tabId, initialTabId: partial.initialTabId, initialPaneId: partial.initialPaneId, initialTerminalId: partial.initialTerminalId });
+    expect(independent, context).toMatchObject({ owner: partial.owner, binding: partial.binding, tabId: partial.tabId, initialTabId: partial.initialTabId, initialPaneId: partial.initialPaneId, initialTerminalId: partial.initialTerminalId, ownerAbsent: true, workspaceAbsent: true, paneAbsent: true, terminalAbsent: true, tabAbsent: true });
+    expect(processCapture.roots, context).toContain(partial.shellPid);
+    expect(processCapture.roots, context).toHaveLength(2);
+    expect(processCapture.processes, context).toEqual(expect.arrayContaining(processCapture.roots.map((pid: number) => expect.objectContaining({ pid, startToken: expect.stringMatching(/^\d+$/) }))));
+    expect(originalProcesses, context).toHaveLength(processCapture.processes.length);
+    expect(originalProcesses.every((process: { observation: string }) => process.observation === "exited"), context).toBe(true);
+  }, 120_000);
 });

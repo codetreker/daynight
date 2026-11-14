@@ -1,3 +1,4 @@
+import { assertNativeImageAdmission } from "./image-admission.js";
 import { validateNativeInput, verifyNativeImageFiles, textNativeInput } from "./native-input.js";
 import type { NativeInput } from "./types.js";
 import { ClaudeControls, type ClaudeControlQuery } from "./controls-claude.js";
@@ -241,6 +242,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
   const submit = async (inputValue: NativeInput, operationId: string, text: string) => {
     options.assertNativeDispatch?.();
     try {
+      if (inputValue.content.some(part => part.type === "image")) assertNativeImageAdmission(inputValue, controls!.imageCapabilities(verified ? nativeId : null, native?.profile ?? null, !!options.imageRuntime), null);
       if (native?.submit) await native.submit({ uuid: operationId, sessionId: nativeId, input: inputValue });
       else input.push({ type: "user", uuid: operationId as ReturnType<typeof randomUUID>, session_id: nativeId, message: { role: "user", content: text }, parent_tool_use_id: null });
     } catch (error) {

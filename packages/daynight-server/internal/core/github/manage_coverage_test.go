@@ -91,6 +91,7 @@ func TestSettingsReschedulesAccessCheck(t *testing.T) {
 	old := now.Add(4 * time.Minute)
 	c := githubpr.DefaultConnection("p")
 	c.Enabled = true
+	c.SyncEnabled = true
 	c.AccessState = "unavailable"
 	c.AccessCheckedAt = &checked
 	c.NextAccessCheckAt = &old

@@ -48,7 +48,7 @@ type GitHubPRCounts struct{ Active, Closed, Merged, All int64 }
 // observation replacement. ExpectedVersion is always the caller's original version.
 type GitHubConfigurationWrite struct {
 	ExpectedVersion, Version, Generation, Revision int64
-	Enabled                                        bool
+	Enabled, SyncEnabled                           bool
 	AppID, InstallationID, RepositoryID            *int64
 	InstallationAccountLogin, RepositoryFullName   *string
 	RepositoryPrivate                              *bool

@@ -162,6 +162,7 @@
 .task-detail-main, .task-detail-aside { min-width: 0; }
 .task-detail-section { border-top: 1px solid #edf0f4; padding-top: 18px; margin: 21px 0 0; }
 .task-detail-section:first-child { margin-top: 0; }
+.task-detail-description-section { border-top: 0; padding-top: 0; }
 .task-detail-section > h4 { font-size: 11px; color: var(--task-helper); font-weight: 550; margin: 0 0 11px; letter-spacing: .3px; }
 .task-detail-description { white-space: pre-wrap; color: var(--task-helper); font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
 .task-goal-link { color: #5c5cbd; font-size: 12px; line-height: 1.9; text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }

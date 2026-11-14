@@ -46,6 +46,102 @@ const registerSource = (f: Awaited<ReturnType<typeof fixture>>) => {
   f.store.registerImageCaptureRequest(request); return request;
 };
 
+test("native staging, reserved Markdown staging and upload completion share one decoder without losing images", async () => {
+  let entered!: () => void, finish!: () => void, active = 0, peak = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
+  const calls: string[] = [];
+  const f = await fixture(async (request, signal) => {
+    calls.push(request.inputPath); active++; peak = Math.max(peak, active);
+    try { if (calls.length === 1) { entered(); await gate; } signal?.throwIfAborted(); return await validateImageFile(request); }
+    finally { active--; }
+  });
+  const media = f.store.media(), native = registerSource(f), markdown = registerSource(f);
+  const { writeFile } = await import("node:fs/promises");
+  const inputPath = path.join(f.home, "native.png"); await writeFile(inputPath, f.bytes, { mode: 0o400 });
+  const source = media.reserveCaptureSource(markdown.captureId, markdown.attemptId);
+  await source.runWriter(filename => appendFile(filename, f.bytes));
+  await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
+  const stage = (request: typeof native, filename: string) => media.stageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath: filename, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+  const nativeWork = stage(native, inputPath);
+  const pending: Promise<unknown>[] = [nativeWork];
+  try {
+    await started;
+    const markdownWork = stage(markdown, source.outputPath), uploadWork = media.complete(f.spec);
+    pending.push(markdownWork, uploadWork);
+    // Observe both outcomes immediately, including a refusal before the gate opens.
+    const outcomes = Promise.allSettled(pending);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(calls).toHaveLength(1);
+    finish();
+    expect(await outcomes).toEqual([
+      { status: "fulfilled", value: expect.objectContaining({ sha256: f.spec.sha256 }) },
+      { status: "fulfilled", value: expect.objectContaining({ sha256: f.spec.sha256 }) },
+      { status: "fulfilled", value: expect.objectContaining({ state: "validated" }) },
+    ]);
+    expect(peak).toBe(1); expect(calls).toHaveLength(3);
+    await source.release();
+    expect(await media.readCapture({ captureId: markdown.captureId, attemptId: markdown.attemptId, sha256: f.spec.sha256, byteLength: f.spec.byteLength, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).toMatchObject({ data: f.bytes.toString("base64") });
+    expect(await media.readPrepared({ preparationId: f.spec.uploadId, offset: "0", limit: 524288 })).toMatchObject({ data: f.bytes.toString("base64") });
+  } finally { finish(); await Promise.allSettled(pending); await media.close(); f.store.close(); }
+});
+
+test("release removes a queued upload and stop joins the active decoder before closing media", async () => {
+  let entered!: () => void, finish!: () => void, calls = 0, aborted = false;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
+  const f = await fixture(async (request, signal) => {
+    calls++; signal?.addEventListener("abort", () => { aborted = true; }, { once: true }); entered(); await gate;
+    signal?.throwIfAborted(); return validateImageFile(request);
+  });
+  const media = f.store.media(), requests = [registerSource(f), registerSource(f)];
+  const sources = requests.map(request => media.reserveCaptureSource(request.captureId, request.attemptId));
+  await Promise.all(sources.map(source => source.runWriter(filename => appendFile(filename, f.bytes))));
+  await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
+  const stage = (index: number) => media.stageCapture({ captureId: requests[index]!.captureId, attemptId: requests[index]!.attemptId, imageId: requests[index]!.occurrence.imageId, inputPath: sources[index]!.outputPath, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+  const active = stage(0), pending: Promise<unknown>[] = [active];
+  let stopping: Promise<void> | undefined;
+  try {
+    await started;
+    const upload = media.complete(f.spec), queued = stage(1); pending.push(upload, queued);
+    const outcomes = Promise.allSettled(pending);
+    await expect(media.release({ uploadId: f.spec.uploadId })).resolves.toMatchObject({ state: "released" });
+    expect(await upload).toMatchObject({ state: "failed" });
+    let closed = false;
+    stopping = media.close().then(() => { closed = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(aborted).toBe(true); expect(closed).toBe(false); expect(calls).toBe(1);
+    expect(await readFile(sources[0]!.outputPath)).toEqual(f.bytes);
+    finish(); await stopping;
+    expect(await outcomes).toEqual([
+      { status: "rejected", reason: expect.any(Error) },
+      { status: "fulfilled", value: expect.objectContaining({ state: "failed" }) },
+      { status: "rejected", reason: expect.objectContaining({ message: "Controller media stopped." }) },
+    ]);
+    expect(calls).toBe(1);
+  } finally { finish(); await Promise.allSettled(pending); await stopping; await media.close(); f.store.close(); }
+});
+
+test("queued capture checks the current attempt before copying or decoding its source", async () => {
+  let entered!: () => void, finish!: () => void, calls = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
+  const f = await fixture(async (request, signal) => { calls++; entered(); await gate; signal?.throwIfAborted(); return validateImageFile(request); });
+  const media = f.store.media(), request = registerSource(f), source = media.reserveCaptureSource(request.captureId, request.attemptId);
+  await source.runWriter(filename => appendFile(filename, f.bytes));
+  await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
+  const active = media.complete(f.spec);
+  let pending: Promise<unknown> | undefined;
+  try {
+    await started;
+    pending = media.stageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath: source.outputPath, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+    const refusal = expect(pending).rejects.toThrow("attempt conflict");
+    f.store.retryImageCaptureRequest(request.captureId, randomUUID());
+    // A read here would fail differently; stale queued work must stop at identity.
+    await rm(source.outputPath);
+    finish(); await active; await refusal;
+    expect(calls).toBe(1);
+    await source.release();
+  } finally { finish(); await Promise.allSettled([active, ...(pending ? [pending] : [])]); await media.close(); f.store.close(); }
+});
+
 test("durable source release returns both shared slots after a free-space failure", async () => {
   const f = await fixture(), media = f.store.media(), requests = [registerSource(f), registerSource(f)];
   const leases = requests.map(request => media.reserveCaptureSource(request.captureId, request.attemptId));
@@ -214,7 +310,8 @@ test("release cancels and joins a decoder before removing its private original",
 });
 
 test("undispatched leases can be reacquired but unknown native and resume pins survive close and restart", async () => {
-  const f = await fixture(); const media = f.store.media();
+  const decoder = vi.fn(validateImageFile);
+  const f = await fixture(decoder); const media = f.store.media();
   await media.prepare(f.spec); await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") });
   await media.complete({ uploadId: f.spec.uploadId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
   const resourceId = randomUUID(); const input = { content: [{ type: "image" as const, imageId: f.spec.imageId, uploadId: f.spec.uploadId, resourceId, sha256: f.spec.sha256, byteLength: f.spec.byteLength }], expectedTurnId: null, target: f.spec.target, expectedImageCapabilityRevision: "1", draftId: randomUUID(), draftRevision: "1" };
@@ -222,10 +319,16 @@ test("undispatched leases can be reacquired but unknown native and resume pins s
   f.store.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: input, intent: command });
   try {
     const first = await media.acquireInput(input, command.operationId); const firstImage = first.input.content.find(part => part.type === "image")!;
+    expect(firstImage.validated).toEqual({ mediaType: "image/png", byteLength: f.spec.byteLength, sha256: f.spec.sha256, width: 23, height: 19, frameCount: 1 });
+    expect(Object.isFrozen(firstImage.validated)).toBe(true);
+    first.verify();
     await expect(media.acquireInput(input, command.operationId)).rejects.toThrow("already has");
     first.close(); await expect(readFile(firstImage.localPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(media.read({ resourceId, offset: "0", limit: 524288 })).rejects.toThrow("unavailable");
     const second = await media.acquireInput(input, command.operationId); const retained = second.input.content.find(part => part.type === "image")!;
+    expect(retained.validated).toEqual(firstImage.validated);
+    second.verify();
+    expect(decoder).toHaveBeenCalledOnce();
     const original = path.join(`${f.file}.pending-content`, "blobs", `${createHash("sha256").update(resourceId).digest("hex")}.bin`);
     const [originalStat, nativeStat] = await Promise.all([stat(original), stat(retained.localPath)]);
     expect([nativeStat.dev, nativeStat.ino]).toEqual([originalStat.dev, originalStat.ino]);

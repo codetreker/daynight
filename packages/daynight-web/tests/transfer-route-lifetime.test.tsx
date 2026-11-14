@@ -17,7 +17,7 @@ const json = (body: unknown, status = 200) => new Response(stringifyWireJson(bod
 const render = createLocaleRender("en");
 beforeEach(() => {
   window.localStorage.clear(); window.sessionStorage.clear();
-  window.history.replaceState(null, "", `/projects/${projectId}/settings`);
+  window.history.replaceState(null, "", `/projects/${projectId}/settings?tab=management`);
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
 });
@@ -99,7 +99,7 @@ it("retains an unknown transfer across route changes without replaying it", asyn
   expect(transferSignal!.aborted).toBe(false);
   await act(async () => pending.reject(new Error("lost response")));
   expect(window.location.pathname).toBe("/workers");
-  act(() => navigate(`/projects/${projectId}/settings`));
+  act(() => navigate(`/projects/${projectId}/settings?tab=management`));
   const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(within(reopened).getByRole("alert")).toHaveTextContent("transfer result is unknown");
   expect(within(reopened).queryByRole("button", { name: "Confirm transfer" })).toBeNull();
@@ -135,6 +135,7 @@ it("keeps settings writes blocked across navigation while a transfer outcome is 
   await act(async () => transfer.reject(new Error("lost transfer")));
   expect(await within(dialog).findByText(/transfer result is unknown/i)).toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+  act(() => navigate(`/projects/${projectId}/settings`));
   const field = screen.getByLabelText("Alert threshold"); fireEvent.change(field, { target: { value: "90" } });
   const priorReads = fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length;
   holdPermission = true; fireEvent(window, new Event("focus"));
@@ -147,6 +148,7 @@ it("keeps settings writes blocked across navigation while a transfer outcome is 
   await act(async () => permission.resolve(json(access)));
   await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" })).toBeDisabled());
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
+  act(() => navigate(`/projects/${projectId}/settings?tab=management`));
   expect(screen.getByText(/transfer result is unknown/i)).toBeInTheDocument();
   expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith("/settings") && init?.method === "PATCH")).toHaveLength(0);
   expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/transfer"))).toHaveLength(1);
@@ -162,6 +164,7 @@ it("discards an ordinary settings draft when leaving and reloads on return", asy
     if (url.startsWith("/api/v1/workers")) return Promise.resolve(json({ items: [], nextCursor: null }));
     throw new Error(`Unexpected request ${url}`);
   });
+  window.history.replaceState(null, "", `/projects/${projectId}/settings`);
   vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
   const field = await screen.findByLabelText("Alert threshold"); await waitFor(() => expect(field).toBeEnabled());
   fireEvent.change(field, { target: { value: "90" } });
@@ -195,7 +198,7 @@ it("retains a definite rejection that arrives after leaving the settings page", 
   act(() => navigate("/workers"));
   await act(async () => pending.resolve(json({ error: { code: "forbidden", message: "No permission", requestId: "request-denied" } }, 403)));
   expect(window.location.pathname).toBe("/workers");
-  act(() => navigate(`/projects/${projectId}/settings`));
+  act(() => navigate(`/projects/${projectId}/settings?tab=management`));
   const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(within(reopened).getByRole("alert")).toHaveTextContent("request-denied");
   expect(within(reopened).getByRole("button", { name: "Cancel" })).toBeEnabled();
@@ -282,7 +285,7 @@ it("retains independent unknown transfer and invitation results across their rou
   await waitFor(() => expect(fetcher.mock.calls.filter(([url, init]) => url.endsWith('/invitations') && init?.method === 'POST')).toHaveLength(1));
   await act(async () => { transferResult.reject(new Error('lost transfer')); invitationResult.reject(new Error('lost invitation')); });
   await screen.findByText(/invitation change was not confirmed/i);
-  act(() => navigate(`/projects/${projectId}/settings`));
+  act(() => navigate(`/projects/${projectId}/settings?tab=management`));
   const reopened = await screen.findByRole("dialog", { name: "Transfer project" });
   expect(within(reopened).getByRole("alert")).toHaveTextContent("transfer result is unknown");
   fireEvent.click(within(reopened).getByRole("button", { name: "Close" }));
@@ -385,7 +388,7 @@ it("does not redirect a replacement settings owner when the old source lookup fi
   expect(await screen.findByText(/Project transferred to Destination/)).toBeInTheDocument();
   act(() => navigate("/workers"));
   await waitFor(() => expect(originalOwner.isConnected).toBe(false));
-  act(() => navigate(`/projects/${projectId}/settings`));
+  act(() => navigate(`/projects/${projectId}/settings?tab=management`));
   await waitFor(() => expect(window.location.pathname).toBe(`/projects/${projectId}/settings`));
   await act(async () => sourceRead.resolve(json(team)));
   expect(await screen.findByRole("link", { name: "Go to Team projects" })).toHaveAttribute("href", `/teams/${source}`);
@@ -427,7 +430,7 @@ it("retains a newer transfer draft across a second route change while old cleanu
   act(() => navigate("/workers"));
   await act(async () => cleanupAccess.resolve(json(transferredAccess)));
   expect(await screen.findByText(/Project transferred to Destination/)).toBeInTheDocument();
-  act(() => navigate(`/projects/${projectId}/settings`));
+  act(() => navigate(`/projects/${projectId}/settings?tab=management`));
   expect(await screen.findByRole("dialog", { name: "Transfer project" })).toBe(dialog);
   expect(within(dialog).getByLabelText("Team ID or link")).toHaveValue(laterTarget);
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));

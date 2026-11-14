@@ -247,3 +247,13 @@ func (h *handler) answer(w http.ResponseWriter, r *http.Request, a core.Actor, t
 	value, err := h.tasks.Answer(r.Context(), a, input)
 	return inquiryResponse(value), err
 }
+
+func (h *handler) enableWatchdog(w http.ResponseWriter, r *http.Request, a core.Actor, _, _ string) (any, error) {
+	p := decode(w, r, "id", "targetBotId")
+	id, target := p.id("id", true), p.id("targetBotId", true)
+	if p.err != nil {
+		return nil, p.err
+	}
+	value, err := h.tasks.EnableWatchdog(r.Context(), a, id, target)
+	return taskResponse(value), err
+}

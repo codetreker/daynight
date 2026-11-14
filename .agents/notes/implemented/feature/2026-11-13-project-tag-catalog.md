@@ -20,7 +20,9 @@ Unknown mutations are not replayed.
 The Web exposes the catalog as a member-accessible project section. It holds a
 single scope-owned page and checks the first page's epoch before retaining a
 later cursor, while refreshing usage separately because associations do not
-rotate the catalog epoch. Delete reads the current tag before confirmation;
+rotate the catalog epoch. Catalog requests omit `query` for an empty search,
+matching the service's distinction between an absent query and an invalid empty
+parameter; nonempty searches retain their original value. Delete reads the current tag before confirmation;
 conflict and unknown outcomes keep the draft for explicit observation. A write
 interrupted after dispatch remains unknown when the user returns to the section.
 

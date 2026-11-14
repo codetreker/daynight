@@ -153,7 +153,13 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
   if (method === "sendImages") {
     if (!session || args[0] !== session.sessionId || sending) throw new Error("Copilot image send is unavailable or already in progress.");
     sending = true;
-    try { const input = await encodeCopilotBridgeImages(args[1] as CopilotBridgeImageInput); return await session.send(input); }
+    try {
+      if (typeof args[2] !== "string") throw new Error("Copilot image admission identity is missing.");
+      const input = await encodeCopilotBridgeImages(args[1] as CopilotBridgeImageInput);
+      const allowed = await request({ method: "image_admission", sessionId: session.sessionId, admissionId: args[2] });
+      if (allowed !== true || closing || fatalFailure) throw new Error("Copilot image admission ended before native dispatch.");
+      return await session.send(input);
+    }
     finally { sending = false; }
   }
   if (method !== "call" || !Array.isArray(args[1]) || args[1].some(part => typeof part !== "string") || !Array.isArray(args[2])) throw new Error("Invalid Copilot bridge call.");

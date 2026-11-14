@@ -121,14 +121,14 @@ it('keeps focused shortcut nodes and expanded state through Session updates, wit
   expect(document.getElementById(`task-root-${rootId}`)).toHaveAttribute('aria-expanded', 'true'); expect(value.fetch).not.toHaveBeenCalled();
 });
 
-it('projects existing Session observations into independent Goal chain instances and hides them with the workspace', async () => {
+it('projects Session observations into independent Goal members and hides them with the workspace', async () => {
   const value = await fixture({ [childId]: 'warning', [otherId]: 'working', [externalId]: 'warning' }, false, true);
   const firstGoal = document.querySelector<HTMLElement>(`[data-goal-id="${goalId}"]`)!;
   const secondGoal = document.querySelector<HTMLElement>(`[data-goal-id="${otherGoalId}"]`)!;
   const firstToggle = firstGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   const secondToggle = secondGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   fireEvent.click(firstToggle); fireEvent.click(secondToggle);
-  const indicator = (goal: HTMLElement) => goal.querySelector('.goal-header [data-session-indicator]');
+  const indicator = (goal: HTMLElement) => goal.querySelector('.goal-task-row [data-session-indicator]');
   expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'warning');
   expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
   value.replace({ [childId]: 'notice', [otherId]: 'working', [externalId]: 'warning' });
@@ -137,13 +137,13 @@ it('projects existing Session observations into independent Goal chain instances
   expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'working');
   expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'warning');
   value.replace({ [childId]: 'pending', [otherId]: 'working' });
-  fireEvent.click(firstGoal.querySelector<HTMLButtonElement>('.goal-toggle')!);
   const row = firstGoal.querySelector<HTMLElement>(`.goal-task-main[id$="-${childId}"]`)!.closest<HTMLElement>('.goal-task-row')!;
   const shortcut = within(row).getByRole('button', { name: /当前会话可访问.*打开 Session/ });
   fireEvent.click(shortcut);
   expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
   expect(value.onOpenTask).not.toHaveBeenCalled();
   fireEvent.click(firstToggle);
+  expect(value.store.snapshot().has(childId)).toBe(true);
   expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
   expect(value.store.snapshot().has(otherId)).toBe(true);
   fireEvent.click(firstToggle);

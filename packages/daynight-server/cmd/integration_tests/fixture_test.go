@@ -194,6 +194,14 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func newFixtureWithDecoder(t *testing.T, imageDecoder bool) *fixture {
+	return newFixtureConfigured(t, imageDecoder, nil)
+}
+
+type githubFixtureConfig struct {
+	privateKey, caFile, proxyURL string
+}
+
+func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixtureConfig) *fixture {
 	t.Helper()
 	binary := verifyServerBuild(t)
 	databaseURL := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
@@ -301,6 +309,9 @@ func newFixtureWithDecoder(t *testing.T, imageDecoder bool) *fixture {
 		"task_sync": map[string]any{"overlap": "10s"},
 		"webhook":   map[string]any{"enabled": true},
 	}
+	if github != nil {
+		configuration["github"] = map[string]any{"enabled": true, "app_id": 13, "private_key_file": github.privateKey, "webhook_secret": "integration-only-secret"}
+	}
 	if imageDecoder {
 		dir, node := os.Getenv("DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR"), os.Getenv("DAYNIGHT_INTEGRATION_NODE_PATH")
 		if !filepath.IsAbs(dir) || !filepath.IsAbs(node) {
@@ -328,11 +339,14 @@ func newFixtureWithDecoder(t *testing.T, imageDecoder bool) *fixture {
 	}
 	command := exec.Command(binary, "--root", root)
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "DAYNIGHT_") {
+		if !strings.HasPrefix(entry, "DAYNIGHT_") && (github == nil || !strings.HasPrefix(entry, "HTTPS_PROXY=") && !strings.HasPrefix(entry, "https_proxy=") && !strings.HasPrefix(entry, "NO_PROXY=") && !strings.HasPrefix(entry, "no_proxy=") && !strings.HasPrefix(entry, "SSL_CERT_FILE=")) {
 			command.Env = append(command.Env, entry)
 		}
 	}
 	command.Env = append(command.Env, "DAYNIGHT_INTEGRATION_RUN_ROOT="+runRoot)
+	if github != nil {
+		command.Env = append(command.Env, "HTTPS_PROXY="+github.proxyURL, "NO_PROXY=localhost,127.0.0.1,::1", "SSL_CERT_FILE="+github.caFile)
+	}
 	child := &serverProcess{command: command, exited: make(chan struct{}), logs: &processLog{}}
 	command.Stdout, command.Stderr = child.logs, child.logs
 	if err := command.Start(); err != nil {

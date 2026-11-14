@@ -120,5 +120,5 @@ export const useProjectTags = (projectId: string, active = true) => {
   const refresh = useCallback(() => { if (active) { if (revoked.current !== null) void retryAccess(); else void request(stateRef.current.query, null); } }, [active, request, retryAccess]);
   const first = refresh;
   const next = useCallback(() => { const current = stateRef.current; if (active && current.page?.nextCursor != null) void request(current.query, current.page.nextCursor); }, [active, request]);
-  return { page: visible.page, query: visible.query, loading: visible.loading, refreshing: visible.refreshing, error: visible.error, setQuery, refresh, first, next };
+  return { page: visible.page, cursor: visible.cursor, query: visible.query, loading: visible.loading, refreshing: visible.refreshing, error: visible.error, setQuery, refresh, first, next };
 };

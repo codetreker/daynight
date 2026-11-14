@@ -76,8 +76,165 @@ const windowsFixture = async (action: (directory: string, run: any) => Promise<v
     await action(directory, run);
   } finally { await rm(directory, { recursive: true, force: true }); }
 };
+test.each(["closed", "pid-present", "endpoint-present", "receipt-present", "capture-present", "partial-present", "observation-present", "closure-present", "readiness-present", "adapter-created", "stage-missing", "error-missing", "diagnostics-missing", "mock-open", "query-unconfirmed", "retained"])("classifies pre-adapter initialization failure without weakening cleanup: %s", async kind => {
+  await windowsFixture(async directory => {
+    const file = "acceptance-codex-fixture.json";
+    const run: any = { schemaVersion: 1, platform: "win32", resourceStage: "initialization", error: "Git initialization failed", errorDetails: { code: 1, killed: false, signal: null, elapsedMs: 42 }, endpoints: null, receipt: null, initialInputAttempts: 0, requests: [], cleanup: { mockClosed: true, runtimeDirectoryRemoved: true, windowsQueries: [] } };
+    if (kind === "pid-present") run.daemonPid = 101;
+    if (kind === "endpoint-present") run.endpoints = {};
+    if (kind === "receipt-present") run.receipt = { helperPid: 103, childPid: 104 };
+    if (kind === "capture-present") run.cleanup.processCapture = { stage: "before-stop", roots: [101], processes: [] };
+    if (kind === "partial-present") run.cleanup.partialWorkspace = { closeConfirmed: true };
+    if (kind === "observation-present") run.cleanup.partialWorkspaceObservation = {};
+    if (kind === "closure-present") run.cleanup.partialWorkspaceClosure = {};
+    if (kind === "readiness-present") run.cleanup.readinessDiagnostics = {};
+    if (kind === "adapter-created") run.resourceStage = "adapter-created";
+    if (kind === "stage-missing") delete run.resourceStage;
+    if (kind === "error-missing") delete run.error;
+    if (kind === "diagnostics-missing") delete run.errorDetails;
+    if (kind === "mock-open") run.cleanup.mockClosed = false;
+    if (kind === "query-unconfirmed") run.cleanup.windowsQueries = [{ closed: false, cleanupConfirmed: false }];
+    if (kind === "retained") run.cleanup.runtimeDirectoryRemoved = false;
+    await writeFile(path.join(directory, file), JSON.stringify(run));
+    const result = await cleanup.checkHerdrPlatformCleanup(directory, { platform: "win32", observeWindows: observing() });
+    const formal = result.runs.find((entry: any) => entry.file === file);
+    expect(formal.livePids).toEqual([]);
+    if (kind === "closed") {
+      expect(result.failures).toEqual([]);
+      expect(formal).toMatchObject({ resourceState: "no-resource-initialization-failure", resourcesAbsent: true, processes: [], processEvidenceError: null });
+      expect(formal.processStopped).toBeUndefined();
+    } else expect(result.failures).toContain(file);
+  });
+});
+
 const queryResult = (rows: unknown[]) => ({ pid: 900, code: 0, signal: null, closed: true, error: null, stdoutBytes: 100, stderrBytes: 0, stdout: JSON.stringify({ schemaVersion: 1, rows }) });
 const observing = (change: (rows: any[], targets: any[]) => any = rows => rows) => (targets: any[]) => cleanup.observeWindowsCleanup(targets, { systemRoot: "C:\\Windows", execute: async () => queryResult(change(targets.map(target => ({ ...target, state: "missing", startToken: null, error: null })), targets)) });
+
+test.each([
+  "closed", "wrong-stage", "wrong-error", "missing-owner", "owner-mismatch", "missing-binding", "wrong-session", "shell-mismatch", "layout-unknown", "wrong-phase",
+  "launch-unknown", "receipt-present", "input-present", "request-present", "close-unknown", "owner-present", "workspace-present", "pane-present", "terminal-present",
+  "diagnostics-missing", "diagnostics-error", "ready-unknown", "ready-contradiction", "ready-unverified", "ready-valid", "ready-late-verified", "pane-invalid", "pane-mismatch",
+  "observation-missing", "observation-owner-mismatch", "observation-binding-mismatch", "observation-shell-mismatch", "closure-missing", "closure-owner-mismatch", "closure-binding-mismatch", "closure-unknown",
+  "tab-missing", "tab-duplicate", "observation-tab-mismatch", "closure-tab-mismatch", "tab-present", "independent-missing", "independent-owner-mismatch", "independent-binding-mismatch", "independent-tab-mismatch", "independent-tab-present", "independent-workspace-present",
+  "initial-pane-missing", "initial-pane-duplicate", "initial-terminal-duplicate", "observation-initial-pane-mismatch", "closure-initial-terminal-mismatch", "independent-initial-pane-mismatch",
+  "controlled", "controlled-marker-missing", "controlled-marker-invalid", "controlled-marker-shell", "controlled-marker-budget", "controlled-marker-kind", "controlled-no-deadline", "controlled-wrong-error-details", "controlled-ready-missing", "controlled-ready-unverified", "controlled-masquerade",
+  "root-missing", "root-duplicate", "birth-missing", "after-missing", "after-changed", "capture-error", "workspace-error", "instance-open", "endpoint-missing", "mock-open", "runtime-retained",
+  "live-original", "unknown-original",
+])("independently checks partially prepared Windows workspace cleanup: %s", async kind => {
+  await windowsFixture(async directory => {
+    const owner = { projectId: "00000000-0000-4000-8000-000000000001", taskId: "00000000-0000-4000-8000-000000000002", claimId: "00000000-0000-4000-8000-000000000003", worktreeId: "00000000-0000-4000-8000-000000000004" };
+    const originals = [101, 102, 105].map((pid, index) => ({ pid, parentPid: pid - 1, startToken: (BigInt(startToken) + BigInt(index * 10)).toString() }));
+    const run: any = { schemaVersion: 1, platform: "win32", resourceStage: "preparing-workspace", owner, daemonPid: 101, shellPid: 102, receipt: null, initialInputAttempts: 0, requests: [], error: "The original PowerShell root readiness phase failed", endpoints: { api: "fixture-api", client: "fixture-client" }, cleanup: { workspaceClosed: true, instance: { ownedChildClosed: true, apiClosed: true, clientClosed: true }, apiClosed: true, clientClosed: true, mockClosed: true, readinessVerified: true, readinessDiagnostics: { readyFile: { state: "missing" }, pane: { state: "observed", shellPid: 102, screenBytes: 0, screenSignals: [] } }, runtimeDirectoryRemoved: true, processCapture: { stage: "before-stop", roots: [101, 102], processes: originals }, originalProcesses: originals.map(row => ({ ...row, stage: "after-stop", observation: "exited" })), partialWorkspace: { owner: { ...owner }, binding: { session: "w", workspaceId: "workspace", paneId: "pane", terminalId: "terminal" }, shellPid: 102, tabId: "tab", initialTabId: "initial-tab", failurePhase: "root-readiness", layoutVerified: true, noAgentLaunch: true, closeConfirmed: true, readyValidation: "missing", after: { ownerAbsent: true, workspaceAbsent: true, paneAbsent: true, terminalAbsent: true, tabAbsent: true } } } };
+    const partial = run.cleanup.partialWorkspace;
+    partial.initialPaneId = "initial-pane"; partial.initialTerminalId = "initial-terminal";
+    run.cleanup.partialWorkspaceObservation = { owner: { ...owner }, binding: { ...partial.binding }, tabId: partial.tabId, initialTabId: partial.initialTabId, initialPaneId: partial.initialPaneId, initialTerminalId: partial.initialTerminalId, shellPid: 102, failurePhase: "root-readiness", layoutVerified: true };
+    run.cleanup.partialWorkspaceClosure = structuredClone(partial);
+    run.cleanup.partialWorkspaceIndependent = { owner: { ...owner }, binding: { ...partial.binding }, tabId: partial.tabId, initialTabId: partial.initialTabId, initialPaneId: partial.initialPaneId, initialTerminalId: partial.initialTerminalId, ...partial.after };
+    if (kind === "wrong-stage") run.resourceStage = "adapter-created";
+    if (kind === "wrong-error") run.error = "workspace.create failed";
+    if (kind === "missing-owner") delete run.owner.claimId;
+    if (kind === "owner-mismatch") partial.owner.claimId = "00000000-0000-4000-8000-000000000005";
+    if (kind === "missing-binding") delete partial.binding.terminalId;
+    if (kind === "wrong-session") partial.binding.session = "other";
+    if (kind === "shell-mismatch") partial.shellPid = 103;
+    if (kind === "layout-unknown") partial.layoutVerified = false;
+    if (kind === "wrong-phase") partial.failurePhase = "workspace-create";
+    if (kind === "launch-unknown") partial.noAgentLaunch = false;
+    if (kind === "receipt-present") run.receipt = { helperPid: 103, childPid: 104 };
+    if (kind === "input-present") run.initialInputAttempts = 1;
+    if (kind === "request-present") run.requests.push({ method: "POST" });
+    if (kind === "close-unknown") partial.closeConfirmed = false;
+    if (kind === "owner-present") partial.after.ownerAbsent = false;
+    if (kind === "workspace-present") partial.after.workspaceAbsent = false;
+    if (kind === "pane-present") partial.after.paneAbsent = false;
+    if (kind === "terminal-present") partial.after.terminalAbsent = false;
+    if (kind === "diagnostics-missing") delete run.cleanup.readinessDiagnostics;
+    if (kind === "diagnostics-error") run.cleanup.readinessDiagnosticError = "Error";
+    if (kind === "ready-unknown") run.cleanup.readinessDiagnostics.readyFile = { state: "unknown", reason: "unavailable" };
+    if (kind === "ready-contradiction") run.cleanup.readinessDiagnostics.readyFile = { state: "present", size: 40, nonceMatches: true, pidMatches: false, executableMatches: true, validStartToken: true };
+    if (kind === "ready-unverified" || kind === "ready-valid") { run.cleanup.readinessDiagnostics.readyFile = { state: "present", size: 40, nonceMatches: true, pidMatches: true, executableMatches: true, validStartToken: true }; if (kind === "ready-valid") partial.readyValidation = "verified"; }
+    if (kind === "ready-late-verified") partial.readyValidation = "verified";
+    if (kind === "pane-invalid") run.cleanup.readinessDiagnostics.pane = { state: "unknown", reason: "invalid" };
+    if (kind === "pane-mismatch") run.cleanup.readinessDiagnostics.pane.shellPid = 103;
+    if (kind === "observation-missing") delete run.cleanup.partialWorkspaceObservation;
+    if (kind === "observation-owner-mismatch") run.cleanup.partialWorkspaceObservation.owner.claimId = "00000000-0000-4000-8000-000000000005";
+    if (kind === "observation-binding-mismatch") run.cleanup.partialWorkspaceObservation.binding.paneId = "other";
+    if (kind === "observation-shell-mismatch") run.cleanup.partialWorkspaceObservation.shellPid = 103;
+    if (kind === "closure-missing") delete run.cleanup.partialWorkspaceClosure;
+    if (kind === "closure-owner-mismatch") run.cleanup.partialWorkspaceClosure.owner.claimId = "00000000-0000-4000-8000-000000000005";
+    if (kind === "closure-binding-mismatch") run.cleanup.partialWorkspaceClosure.binding.paneId = "other";
+    if (kind === "closure-unknown") run.cleanup.partialWorkspaceClosure.closeConfirmed = false;
+    if (kind === "tab-missing") delete partial.tabId;
+    if (kind === "tab-duplicate") partial.initialTabId = partial.tabId;
+    if (kind === "observation-tab-mismatch") run.cleanup.partialWorkspaceObservation.tabId = "other";
+    if (kind === "closure-tab-mismatch") run.cleanup.partialWorkspaceClosure.initialTabId = "other";
+    if (kind === "tab-present") partial.after.tabAbsent = false;
+    if (kind === "independent-missing") delete run.cleanup.partialWorkspaceIndependent;
+    if (kind === "independent-owner-mismatch") run.cleanup.partialWorkspaceIndependent.owner.claimId = "00000000-0000-4000-8000-000000000005";
+    if (kind === "independent-binding-mismatch") run.cleanup.partialWorkspaceIndependent.binding.paneId = "other";
+    if (kind === "independent-tab-mismatch") run.cleanup.partialWorkspaceIndependent.tabId = "other";
+    if (kind === "independent-tab-present") run.cleanup.partialWorkspaceIndependent.tabAbsent = false;
+    if (kind === "independent-workspace-present") run.cleanup.partialWorkspaceIndependent.workspaceAbsent = false;
+    if (kind === "initial-pane-missing") delete partial.initialPaneId;
+    if (kind === "initial-pane-duplicate") partial.initialPaneId = partial.binding.paneId;
+    if (kind === "initial-terminal-duplicate") partial.initialTerminalId = partial.binding.terminalId;
+    if (kind === "observation-initial-pane-mismatch") run.cleanup.partialWorkspaceObservation.initialPaneId = "other";
+    if (kind === "closure-initial-terminal-mismatch") run.cleanup.partialWorkspaceClosure.initialTerminalId = "other";
+    if (kind === "independent-initial-pane-mismatch") run.cleanup.partialWorkspaceIndependent.initialPaneId = "other";
+    if (kind === "root-missing") run.cleanup.processCapture.processes.shift();
+    if (kind === "root-duplicate") run.cleanup.processCapture.roots = [101, 101, 102];
+    if (kind === "birth-missing") run.cleanup.processCapture.processes[0].startToken = null;
+    if (kind === "after-missing") run.cleanup.originalProcesses.pop();
+    if (kind === "after-changed") run.cleanup.originalProcesses[0].startToken = "639301558314541840";
+    if (kind === "capture-error") run.cleanup.captureError = "failed";
+    if (kind === "workspace-error") run.cleanup.workspaceError = "unknown";
+    if (kind === "instance-open") run.cleanup.instance.ownedChildClosed = false;
+    if (kind === "endpoint-missing") delete run.endpoints.client;
+    if (kind === "mock-open") run.cleanup.mockClosed = false;
+    if (kind === "runtime-retained") run.cleanup.runtimeDirectoryRemoved = false;
+    const controlled = kind.startsWith("controlled");
+    if (controlled) {
+      run.officialNativeIdentification = false; run.controlledArgumentRoundTrip = false;
+      run.error += ": The operation was aborted: Operation deadline exceeded.";
+      run.errorDetails = { name: "HerdrAgentActionError", message: "The original PowerShell root readiness phase failed" };
+      run.controlledReadinessFailure = { kind: "after-real-readiness", realRootVerified: true, shellPid: 102, remainingMs: 12000, totalMs: 20000, failureKind: "deadline" };
+      partial.readyValidation = "verified";
+      run.cleanup.readinessDiagnostics.readyFile = { state: "present", size: 40, nonceMatches: true, pidMatches: true, executableMatches: true, validStartToken: true };
+      if (kind === "controlled-marker-missing") delete run.controlledReadinessFailure;
+      if (kind === "controlled-marker-invalid") run.controlledReadinessFailure.realRootVerified = false;
+      if (kind === "controlled-marker-shell") run.controlledReadinessFailure.shellPid = 103;
+      if (kind === "controlled-marker-budget") run.controlledReadinessFailure.remainingMs = 0;
+      if (kind === "controlled-marker-kind") run.controlledReadinessFailure.failureKind = "cancelled";
+      if (kind === "controlled-no-deadline") run.error = "The original PowerShell root readiness phase failed: Operation cancelled.";
+      if (kind === "controlled-wrong-error-details") run.errorDetails.name = "TypeError";
+      if (kind === "controlled-ready-missing") run.cleanup.readinessDiagnostics.readyFile = { state: "missing" };
+      if (kind === "controlled-ready-unverified") partial.readyValidation = "missing";
+    }
+    const file = controlled && kind !== "controlled-masquerade" ? "acceptance-partial-codex-fixture.json" : "acceptance-codex-fixture.json";
+    await writeFile(path.join(directory, file), JSON.stringify(run));
+    const observeWindows = vi.fn(observing(rows => rows.map(row => row.pid !== 101 || !["live-original", "unknown-original"].includes(kind) ? row : kind === "live-original" ? { ...row, state: "present", startToken, error: null } : { ...row, state: "unknown", error: { name: "QueryError", code: 5 } })));
+    const result = await cleanup.checkHerdrPlatformCleanup(directory, { platform: "win32", observeWindows, requirePartial: controlled && kind !== "controlled-masquerade" });
+    const actual = result.runs.find((entry: any) => entry.file === file);
+    if (["closed", "ready-valid", "ready-late-verified", "controlled"].includes(kind)) {
+      expect(result.failures).toEqual([]);
+      expect(actual.processStopped).toBe(true);
+      expect(actual.processes.map((row: any) => row.observation)).toEqual(["missing", "missing", "missing"]);
+      expect(observeWindows).toHaveBeenCalledWith(originals.map(({ pid }) => ({ pid, source })));
+    } else {
+      expect(result.failures).toContain(file);
+      if (kind === "live-original") expect(actual.livePids).toEqual([101]);
+      if (kind === "unknown-original") expect(actual.unknownPids).toEqual([101]);
+      if (!["live-original", "unknown-original", "runtime-retained", "controlled-marker-missing", "controlled-marker-invalid", "controlled-marker-shell", "controlled-marker-budget", "controlled-marker-kind", "controlled-no-deadline", "controlled-wrong-error-details", "controlled-ready-missing", "controlled-masquerade"].includes(kind)) expect(actual.processEvidenceError.code).toBe("INVALID_ORIGINAL_STOP_EVIDENCE");
+    }
+  });
+});
+
+test("requires a separate controlled Windows partial receipt when selected", async () => {
+  await windowsFixture(async directory => {
+    const result = await cleanup.checkHerdrPlatformCleanup(directory, { platform: "win32", observeWindows: observing(), requirePartial: true });
+    expect(result.failures).toContain("Missing or duplicate controlled Windows partial workspace evidence.");
+  });
+});
 
 // Policy and resource failures own real files and the checker, while native
 // PS5/CIM acquisition belongs to the dedicated platform acceptance job.
@@ -144,7 +301,7 @@ test.each(["639301558314541837", "639301558314541838"])("keeps exact .NET ticks 
   });
 });
 
-test.each(["root-missing", "descendant-missing", "after-token-changed", "capture-error", "workspace-unknown", "instance-unknown"])("rejects incomplete original stop evidence before observing replacements: %s", async kind => {
+test.each(["root-missing", "descendant-missing", "after-token-changed", "capture-error", "workspace-unknown", "instance-unknown", "contradictory-partial", "contradictory-observation", "contradictory-closure", "contradictory-readiness"])("rejects incomplete original stop evidence before observing replacements: %s", async kind => {
   await windowsFixture(async (directory, run) => {
     if (kind === "root-missing") run.cleanup.processCapture.processes.shift();
     if (kind === "descendant-missing") run.cleanup.originalProcesses.pop();
@@ -152,6 +309,10 @@ test.each(["root-missing", "descendant-missing", "after-token-changed", "capture
     if (kind === "capture-error") run.cleanup.captureError = "failed";
     if (kind === "workspace-unknown") run.cleanup.workspaceClosed = false;
     if (kind === "instance-unknown") run.cleanup.instance.ownedChildClosed = false;
+    if (kind === "contradictory-partial") run.cleanup.partialWorkspace = { closeConfirmed: true };
+    if (kind === "contradictory-observation") run.cleanup.partialWorkspaceObservation = {};
+    if (kind === "contradictory-closure") run.cleanup.partialWorkspaceClosure = {};
+    if (kind === "contradictory-readiness") run.cleanup.readinessDiagnostics = {};
     await writeFile(path.join(directory, "acceptance-codex-fixture.json"), JSON.stringify(run));
     const observeWindows = vi.fn(observing());
     const result = await cleanup.checkHerdrPlatformCleanup(directory, { platform: "win32", observeWindows });
@@ -180,6 +341,20 @@ test("joins a timed-out observer and its stdio before returning unknown", async 
   expect(result.signal).toBe("SIGKILL");
 });
 
+test("retains bounded stage diagnostics when an observer times out", async () => {
+  const script = `process.stderr.write('private stderr __DAYNIGHT_CLEANUP_STAGE_script-');
+    setTimeout(() => { process.stderr.write('start__'); setInterval(() => {}, 1000); }, 20);`;
+  const observed = await cleanup.observeWindowsCleanup([{ pid: 101, source: "dotnet-start-time-ticks" }], {
+    systemRoot: "C:\\Windows", captureStages: true,
+    execute: async () => cleanup.runCleanupQuery(process.execPath, ["-e", script], { timeoutMs: 3000, cleanupMs: 2000, captureStages: true }),
+  });
+  expect(observed.error).toMatchObject({ code: "ETIMEDOUT" });
+  expect(observed.rows).toEqual([]);
+  expect(observed.query).toMatchObject({ closed: true, signal: "SIGKILL" });
+  expect(observed.query.stages.map((entry: any) => entry.stage)).toEqual(["observer-spawn", "script-start", "observer-exit", "observer-close"]);
+  expect(JSON.stringify(observed.query)).not.toContain("private stderr");
+}, 10_000);
+
 test.skipIf(process.platform !== "win32")("reads one live original through the independent .NET process object", async () => {
   const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
   const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
@@ -194,11 +369,15 @@ test.skipIf(process.platform !== "win32")("reads one live original through the i
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     // The policy matrix controls OS results; this single mechanism case keeps
     // GetProcessById, SafeHandle and exact StartTime acquisition on a live child.
-    const observed = await cleanup.observeWindowsCleanup([{ pid: child.pid, source: "dotnet-start-time-ticks" }]);
+    const observed = await cleanup.observeWindowsCleanup([{ pid: child.pid, source: "dotnet-start-time-ticks" }], { captureStages: true });
     const diagnostic = JSON.stringify(observed);
+    console.log(`Independent .NET cleanup observer: ${diagnostic}`);
     expect(observed.error, diagnostic).toBeNull();
     expect(observed.query, diagnostic).toMatchObject({ closed: true, code: 0, signal: null, error: null });
     expect(observed.rows, diagnostic).toEqual([{ pid: child.pid, source: "dotnet-start-time-ticks", state: "present", startToken: expect.stringMatching(/^[1-9][0-9]+$/), error: null }]);
+    expect(observed.query.stages.filter((entry: any) => !entry.stage.startsWith("observer-")).map((entry: any) => entry.stage), diagnostic).toEqual([
+      "script-start", "get-process-start", "get-process-done", "safe-handle-start", "safe-handle-done", "start-time-start", "start-time-done", "dispose-start", "dispose-done", "json-start", "json-done",
+    ]);
     expect(streamError).toBeUndefined();
   } finally {
     child.stdin!.end();

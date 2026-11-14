@@ -12,7 +12,8 @@ title/number, and opens the existing PR detail reader. Visible workspaces reconc
 every 15 seconds; hidden sections retain filters, pages and selections while
 cancelling reads. Task graph errors do not block PR browsing. The
 [PR read design](../../docs/design/github-pr-reading.md) owns synchronization
-states, unknown counts, identity admission and retained-page behavior.
+states, unknown counts, identity admission and retained-page behavior. The list
+selects one primary synchronization notice while retaining independent diagnostics.
 
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
@@ -698,9 +699,10 @@ returns 404; checking current state never replays the transfer. See the
 
 ## Project execution-warning settings
 
-`/projects/{projectId}/settings` is a sibling of the members page, linked from
-the project and shared project-management navigation. Direct GET/HEAD entry and
-reload use the embedded application. Every member can read the saved threshold;
+`/projects/{projectId}/settings` opens the project settings workspace from the
+project header. Execution and reminders is the default section; members and
+invitations share the workspace, and `/projects/{projectId}/members` opens that
+section directly. Direct GET/HEAD entry and reload use the embedded application. Every member can read the saved threshold;
 only an explicitly resolved administrator can edit and submit it. The form uses
 integer minutes from 1 through 2147483647, initially 60, with save, cancel,
 pending, validation and localized error/recovery states that remain usable on
@@ -757,9 +759,11 @@ edit changes task time or graph geometry.
 
 ## GitHub connection settings
 
-Project settings show GitHub connection and independent polling and Webhook status to all members. Administrators can discover the configured App's installation, connect or reconnect, set the polling interval and disconnect. Discovery checks the App's access to the Project repository, independently of the operator's GitHub account. Disconnect retains synchronized data; private repository data is shared with Project members. A connection schedules the first sync and does not imply it has completed.
+Project settings show GitHub connection, PR synchronization intent, and independent polling and Webhook status to all members. Administrators can discover the configured App's installation, connect or reconnect, switch synchronization, set the polling interval and disconnect. Discovery checks the App's access to the Project repository, independently of the operator's GitHub account. A first connection remains off; reconnecting an unavailable binding retains its saved intent, while disconnecting turns synchronization off and retains saved data. Private repository data is shared with Project members.
 
-Management uses the independent GitHub resource's exact version and shares the synchronous Project management guard. A conflict or unknown write outcome retains the draft and holds the guard until an admitted read reconciles the state or the scope ends, without replaying the write. An existing binding can be disconnected even when the App is unavailable or unconfigured. The [runtime design](../../docs/design/github-connection-runtime.md) describes the server behavior.
+The switch displays the last confirmed `syncEnabled` value. Enabling requires an available service and connection; an administrator can disable an already enabled setting even when the service or authorization is unavailable. Synchronization off is neutral and retains historical observations without presenting old errors as current failures. The PR tab and saved records remain readable, including during a new initialization; refresh reads saved data and does not enable synchronization.
+
+Management uses the independent GitHub resource's exact version and shares the synchronous Project management guard. The separate switch request never submits an interval draft. A conflict or unknown write outcome retains the draft and original page ownership and holds the guard until an admitted read reconciles the state or the scope ends, without replaying the write. An existing binding can be disconnected even when the App is unavailable or unconfigured. The [runtime design](../../docs/design/github-connection-runtime.md) describes the server behavior.
 
 ## Project deletion
 
@@ -769,9 +773,9 @@ active Worker claims; those observations are not DELETE conditions. Names with
 control characters use reversible JSON escaping. A confirmed receipt is retained
 independently of local completion and preserves a success notice across navigation. During an admission pause, deletion settles
 locally without cleanup, automatic reads or navigation. On admission, cleanup
-uses the original cache generation. Withdrawal is not started, and navigation
-and dialog closure are skipped, when the submitted dialog, input or route has
-since changed. If persistent cleanup fails after withdrawal, retry targets the
+uses the original cache generation. A confirmed receipt withdraws only the original admitted cache generation.
+Navigation and dialog closure are skipped when the submitted dialog, input,
+section or route has since changed. If persistent cleanup fails after withdrawal, retry targets the
 matching user, Project, user fence and denied generation without broadcasting
 withdrawal again or resending DELETE. The denial may use a different ticket;
 a stale ticket cannot clear a newer generation. Cleanup and navigation
@@ -1019,15 +1023,26 @@ Failures stay visible and retryable. Trusted same-user project 404 responses
 withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md) records the rationale for the versioning, HTTP cache and scan-cost trade-offs.
 
-The task lists share assignee and status filters. Assignee supports All, Assigned
-to me, Unassigned and a person; status supports all, todo, in progress, done and cancelled.
-Both conditions must match the same task before pagination. Standalone rows match
-directly; a chain with any matching ordinary member retains its real representative
-and all ordinary children. Changing either filter resets both lists to page one.
-Full-chain progress, readiness, dependencies, statistics and graph use the complete
-index. Overview positioning adjusts filters that hide its target. The
-[assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
-mutation and presentation mechanisms.
+The task toolbar orders Assignee, Status and Tag filter. The ordinary Goal view
+adds one Child task tag filter after them, applying the same condition to every
+Goal's direct-child rows. Child filtering is independent of each Goal's own tags
+and retains its selection through category changes, pagination and collapse.
+Cards contain child rows without their own filter controls. Search results place
+the shared project tag filter directly after Status; child filtering belongs to
+the ordinary Goal view.
+
+Assignee supports All, Assigned to me, Unassigned and a person; status supports
+all five Task statuses. Project conditions must match the same task before
+pagination. Standalone rows match directly; a chain with any matching ordinary
+member retains its real representative and all ordinary children. Changing
+project filters resets the task lists to page one. Full-chain progress, readiness,
+dependencies, statistics and graph use the complete index. Child filtering also
+preserves Goal composition, in-progress and pause counts, and Session summaries.
+Overview positioning adjusts project filters that hide its target. Tag panels
+retain a readable width within the viewport as toolbars wrap on narrow screens.
+The [assignment design](../../docs/design/daynight-task-assignment.md) owns people,
+mutation and presentation mechanisms; the
+[Web design](../../docs/design/daynight-web.md) owns tag filtering and lifecycle.
 
 Project task search submits the original expression to the server, matching IDs,
 complete titles and Markdown descriptions, including completed Tasks and chain
@@ -1308,9 +1323,9 @@ clock without per-row timers or requests. Chain headers never claim an individua
 task's duration as aggregate execution time.
 
 While access initially loads, the project heading reserves the geometry of the
-localized members and settings links. Its inaccessible placeholder is replaced
-by the links without narrowing the title or moving the restored page position.
-The header does not display the current user's role; the members page retains
+localized settings link. Its inaccessible placeholder is replaced by the link
+without narrowing the title or moving the restored page position. The header does
+not display the current user's role; the members and invitations section retains
 role details. The
 [header-role decision](../../.agents/notes/implemented/simplification/2026-11-12-project-header-role.md) records this choice and the earlier layout rationale; the existing
 [shared-scroll decision](../../.agents/notes/archived/bug-fix/2026-11-03-shared-task-list-scroll.md) records the rationale for one task-list page offset per project, independently from Overview and graph viewports.
@@ -1643,11 +1658,9 @@ decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) re
 The typed Goal category also expands each Goal in place. On desktop its header
 matches the task-chain header height for equivalent unwrapped content in the
 same font; wrapped content grows naturally, including on narrow screens. The header
-body toggles the disclosure showing all direct standalone tasks and scoped chains.
-Separate Goal details and graph buttons open their readers without changing the disclosure. Classification uses the complete ordinary graph before selecting
-the Goal, so a scoped single member of a larger component remains a chain.
-Goal and chain disclosures start closed; closing a Goal preserves its chain
-choices until that row unmounts. Scoped progress counts only its own members,
+body toggles a flat list of all direct ordinary children. Separate Goal details
+and graph buttons open their readers without changing the disclosure. The Goal
+disclosure starts closed. Scoped progress counts only its own members,
 including separate done and cancelled results. The header shows a localized
 in-progress count of direct children, including zero and paused or manually
 executed tasks. It also shows the shared automatic execution indicator after the
@@ -1662,9 +1675,15 @@ In-progress Goal children can open their current accessible Session directly.
 Small working, notice and warning text annotations share the complete `sessions`
 map from the existing visible-page fifteen-second task-sync. Reliable pending
 Sessions retain the same shortcut without an annotation. Child status controls
-open that Task's Session tab; titles still open Overview, and chain status controls only expand
-members. Collapsed chains and assignee-filtered chains include every ordinary
-member, including the root; external chains do not contribute.
+open that Task's Session tab; titles still open Overview. Chain and Goal status controls
+only expand members. Collapsed chains and assignee-filtered chains include every
+ordinary member, including the root; external chains do not contribute. A Goal
+heading aggregates every direct ordinary child once, independently of disclosure
+and child Tag filtering. It uses warning > notice > working and hides the annotation
+and aggregate action when none is displayable. The Goal's lifecycle status and
+background remain its own; its active-claim indicator has separate meaning.
+Visible Goal containers register the full child scope with the same store, including
+when collapsed, and release observation through the existing visibility lifecycle.
 
 `useTaskGraph` owns one page-local summary store and is its only producer, passing
 it through ProjectPage, ProjectTaskWorkspace and the presentation Provider. List
@@ -1786,8 +1805,10 @@ Task and Goal details share a searchable multi-select tag editor. Its draft star
 from the resource's own detail and keeps its original version until the user
 explicitly adopts a newer one. Saving replaces the complete association set,
 including an empty set. Conflicts and unknown outcomes retain the draft and
-show the current saved tags without replaying the write. Creating a tag in the
-picker writes to the catalog independently; cancelling the association edit
+show the current saved or last observed tags without replaying the write. An
+observed empty set is explicit in reconciliation, while ordinary empty tag
+displays occupy no space. Read errors and unknown outcomes remain visible.
+Creating a tag in the picker writes to the catalog independently; cancelling the association edit
 does not delete it. Pending saves retain later local edits. Identity change or
 project access withdrawal retires private editing state.
 
@@ -1966,6 +1987,9 @@ URL protocols retain the renderer's existing policy. Empty descriptions use the
 current interface language. Markdown and localized messages do not change the
 stored string or CLI/API output. Wide tables and code scroll within their local
 regions, and long words wrap inside the Overview reading column at 320px.
+Nonempty Task and Goal descriptions have the same bordered reading container in
+page, dialog and fullscreen modes; empty descriptions, Steps and attachments keep
+their existing presentation.
 
 Description-relative links and images resolve from the task attachment root.
 Markdown attachments resolve from their containing file's directory. Both use
@@ -2670,10 +2694,12 @@ keep their existing identity/semantics. The
 [paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
 owns the pinned raster evidence and local-line rationale; the
 [bounded-line extension](../../.agents/notes/archived/bug-fix/2026-10-22-bounded-dashed-dependency-lines.md) records the rationale for the original GPU stroke bound and its added DOM cost.
-Initial placement uses current visible layout bounds after the viewport and positive
+Ordinary chain initial placement uses current visible layout bounds after the viewport and positive
 measured canvas dimensions are ready, fitting within 0.8–1 zoom or anchoring the
 leftmost rank at 0.8 zoom. The root remains vertically centered when already
 leftmost; otherwise the topmost upstream node starts at a 32px canvas inset.
+Goal graphs use a separate compact component and rank-grid layout, with a
+readable initial viewport and an explicit full overview.
 Dependency geometry does not require connection-port DOM or per-edge endpoint readiness.
 Graph-local inspection Context supplies presentation roles while controlled node
 geometry/data and memoized content retain stable references. Memoized chain rows retain stable props while graph inspection and details change

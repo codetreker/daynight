@@ -1,9 +1,12 @@
 import { formatOutboxDiagnostic, isOutboxFailure } from "./outbox-diagnostic.js";
 import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
+import { ImageCaptureNotDispatchedError, ImageCapturePrerequisiteError } from "./media/capture-error.js";
 import { createExternalImagePolicyProducer } from "./markdown/external-policy.js";
 import { createMarkdownCaptureCoordinator } from "./markdown/coordinator.js";
 import { createMarkdownTimelinePipeline } from "./markdown/pipeline.js";
+import { assertNativeImageAdmission, authorizeNativeImageInput } from "./providers/image-admission.js";
+import type { ImageCapabilities } from "../../session/image-values.js";
 import { textNativeInput } from "./providers/native-input.js";
 import { startupFailure } from "./startup.js";
 import { CLEANUP_OPERATION_MS } from "../cleanup-operation.js";
@@ -128,7 +131,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   let accountingFailure: unknown;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
   const historyAbort = new AbortController();
-  let historyWork: Promise<void> | null = null, historyRequested = false;
+  let historyWork: Promise<void> | null = null;
   let historyTimer: NodeJS.Timeout | null = null;
   let markdownTimer: NodeJS.Timeout | null = null;
   const knownInteractions = new Set<string>(), cleanupInteractions = new Set<string>();
@@ -189,10 +192,11 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     })();
     active.set(operation.operationId, execute); void execute.finally(() => active.delete(operation.operationId)).catch(fail); return execute;
   };
-  const assertImageCommand = (command: SessionCommand): void => {
+  const assertImageCommand = (command: SessionCommand, authorization?: ImageCapabilities): void => {
     if (command.kind !== "send_message" || !command.payload.content.some(part => part.type === "image")) return;
     const images = readState().providerImages, target = command.payload.target;
-    if (!images || !target || target.expectedNativeSessionId !== journal.getSnapshot().nativeSessionId || command.payload.expectedImageCapabilityRevision !== images.revision) throw new NativeRpcError(-32602, "Image capability or native target changed before dispatch.");
+    if (!images || !target || target.expectedNativeSessionId !== journal.getSnapshot().nativeSessionId) throw new NativeRpcError(-32602, "Image capability or native target changed before dispatch.");
+    if (authorization && (authorization.revision !== command.payload.expectedImageCapabilityRevision || authorization.providerRevision !== images.revision || authorization.expectedNativeSessionId !== images.expectedNativeSessionId || authorization.modelId !== images.modelId || authorization.controlsRevision !== images.controlsRevision)) throw new NativeRpcError(-32602, "Service image authorization no longer matches the original capability and provider qualification.");
     if ((command.payload.expectedTurnId === null ? images.send : images.steer) !== "supported") throw new NativeRpcError(-32602, "Native image input is disabled for this provider profile.");
   };
   let relay!: ReturnType<typeof createControllerRelay>;
@@ -260,13 +264,23 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
           if (!provider || stopping || !synchronized) throw new NativeRpcError(-32602, "Native provider is not available.");
           assertControlCommand(command, journal.getSnapshot());
           if (lease) assertImageCommand(command);
-          await relay.authorize(command.operationId);
+          const authorization = await relay.authorize(command.operationId);
           if (!relay.connected() || stopping) throw new Error("Relay authorization lost before native dispatch.");
           // Authorization is asynchronous too; check current turn and target again.
           assertControlCommand(command, journal.getSnapshot());
-          if (lease) assertImageCommand(command);
-          lease?.verify();
-          const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, lease?.input); }); relay.receipt(result);
+          let input = lease?.input;
+          if (lease) {
+            if (!authorization || command.kind !== "send_message") throw new NativeRpcError(-32602, "The service did not authorize the complete image input.");
+            const verify = () => {
+              if (!relay.connected() || stopping || !synchronized) throw new NativeRpcError(-32602, "Image authorization connection is no longer current.");
+              assertImageCommand(command, authorization);
+              lease!.verify();
+            };
+            verify();
+            input = authorizeNativeImageInput(lease.input, authorization, verify);
+            assertNativeImageAdmission(input, readState().providerImages!, command.payload.expectedTurnId);
+          }
+          const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, input); }); relay.receipt(result);
         } catch (error) {
           if (isOutboxFailure(error)) { stopForAccountingFailure(error); throw error; }
           if (journal.getOperation(command.operationId)?.state === "accepted") relay.receipt(journal.recordOperation(command.operationId, "rejected", null, error instanceof NativeRpcError ? error.message : "Native dispatch did not start because its input could not be prepared or authorized."));
@@ -281,7 +295,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   // native callbacks only persist text and never wait for media work.
   markdownTimer = setInterval(() => {
     void markdownTimeline.tick().catch(fail);
-    void markdownCaptures.tick().catch(fail);
+    void markdownCaptures.tick().catch(error => { if (isOutboxFailure(error)) fail(error); else diagnostic(error); });
   }, 250);
   own(() => { if (markdownTimer) { clearInterval(markdownTimer); markdownTimer = null; } });
   own(async () => {
@@ -290,8 +304,16 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     await historyWork;
   });
   async function synchronizeImageHistory(forCapture = false): Promise<void> {
+    let requiredSourceThrough: string | undefined;
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
-    if (stopping || !relay?.connected() || !journal.prepareImageHistorySync || !relay.currentFence || !relay.imageHistorySupported?.()) return;
+    if (stopping || !relay?.connected()) {
+      if (forCapture) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its history connection.");
+      return;
+    }
+    if (!relay.imageHistorySupported?.()) {
+      if (forCapture) throw new ImageCapturePrerequisiteError({ code: "component_unsupported", message: "Complete image history synchronization is unavailable." });
+      return;
+    }
     if (forCapture) {
       try { assertImageHistoryAvailable(journal); }
       catch (error) {
@@ -300,17 +322,28 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         historyTimer = setTimeout(() => { historyTimer = null; void synchronizeImageHistory().catch(cause => diagnostic(String(cause))); }, 250);
         throw error;
       }
+      await relay.flush();
+      if (stopping || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image capture history connection changed before synchronization.");
+      requiredSourceThrough = journal.getLastSourceSequence();
     }
-    historyRequested = true;
-    if (historyWork) return historyWork;
-    historyWork = (async () => {
-      while (historyRequested && !stopping) {
-        historyRequested = false;
-        const fence = relay.currentFence(); if (!fence) return;
-        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal });
+    const previous = historyWork;
+    const work = (async () => {
+      if (previous) await previous;
+      if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
+      for (;;) {
+        if (stopping) throw new ImageCaptureNotDispatchedError("Image history synchronization stopped before its checkpoint.");
+        const fence = relay.currentFence();
+        if (!fence || !relay.connected()) throw new ImageCaptureNotDispatchedError("Image history connection changed before synchronization.");
+        await syncControllerImageHistory({ ticket, journal, fence, currentFence: relay.currentFence, signal: historyAbort.signal, ...(requiredSourceThrough === undefined ? {} : { requiredSourceThrough }) });
+        if (!forCapture || journal.hasImageHistoryCheckpoint(journal.getLastSourceSequence())) return;
+        // Native events can advance the acknowledged source while an older
+        // frozen body uploads. Submit requires the complete current ledger.
+        await relay.flush();
+        requiredSourceThrough = journal.getLastSourceSequence();
       }
     })();
-    try { await historyWork; } finally { historyWork = null; }
+    historyWork = work;
+    try { await work; } finally { if (historyWork === work) historyWork = null; }
   }
   const executeCommand = async (command: SessionCommand, input?: NativeInput) => {
     if (!provider || stopping) throw new NativeRpcError(-32602, "Native provider is unavailable.");

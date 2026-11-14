@@ -15,14 +15,16 @@ Full and scoped chain summaries place the independent completion-time button in
 the metadata beneath the title, alongside assignee or child count and Worker
 information. A non-interactive container holds the heading and metadata; the
 native disclosure and time buttons remain separate controls. Progress, status,
-and the graph entry retain their responsibilities. This applies to scoped chains
-inside project Goal disclosures as well as chain lists. The
+and the graph entry retain their responsibilities. The [flat Goal list decision](../simplification/2026-11-13-goal-flat-list.md)
+replaces scoped chain summaries in Goal disclosures with individual Task rows. The
 [completion time design](../../../../docs/design/daynight-completion-time.md)
 owns the interaction and aggregation details.
 
 The [completion time presentation decision](2026-11-12-completion-time-presentation.md)
 continues to explain why chain time has its own button and how its hint remains
 accessible; this decision changes its position without changing that interaction.
+The [compact chain density decision](../bug-fix/2026-11-14-chain-completion-density.md)
+defines the time button's local box model within that layout.
 
 ## Alternatives
 

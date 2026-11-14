@@ -562,6 +562,9 @@ func (s *Execution) begin(ctx context.Context, tx *operationTx, r *record, t tas
 	}
 	out := envelope(r, "operation_authorized")
 	out["operationId"] = id
+	if sp.ContainsImages(o.Command.Payload) {
+		out["imageAuthorization"] = *r.Snapshot.Capabilities.Images
+	}
 	return out, nil
 }
 func terminal(state string) bool {

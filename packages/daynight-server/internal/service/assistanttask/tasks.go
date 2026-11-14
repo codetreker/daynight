@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask/watchdog"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -20,6 +21,8 @@ type Tasks struct {
 
 func New(database store.AssistantTaskWriter) *Tasks {
 	module := core.New()
+	// The fresh registry cannot reject this valid, unique application and validator.
+	_ = module.RegisterRules("watchdog", watchdog.ValidateRules)
 	return &Tasks{database: database, module: module, operations: module}
 }
 
@@ -224,6 +227,7 @@ func (s *Tasks) ClearAttention(ctx context.Context, actor core.Actor, targetBotI
 }
 
 type operations interface {
+	EnablePreset(context.Context, store.AssistantTaskDAO, core.Actor, core.CreateInput, string) (core.TaskResult, error)
 	Create(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.CreateInput) (core.TaskResult, error)
 	Get(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, taskID string) (core.TaskResult, error)
 	List(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.PageInput) (model.AssistantTaskPage[core.TaskResult], error)
@@ -257,4 +261,10 @@ type operations interface {
 // manual, proposal, decision and rollback paths.
 func (s *Tasks) RegisterRules(application string, validator core.RulesValidator) error {
 	return s.module.RegisterRules(application, validator)
+}
+
+func (s *Tasks) EnableWatchdog(ctx context.Context, actor core.Actor, id, target string) (core.TaskResult, error) {
+	return execute(ctx, s, "EnableWatchdog", func(dao store.AssistantTaskDAO) (core.TaskResult, error) {
+		return s.operations.EnablePreset(ctx, dao, actor, watchdog.Preset(id), target)
+	})
 }

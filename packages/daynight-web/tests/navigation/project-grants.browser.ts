@@ -92,14 +92,15 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
     await bob.evaluate((element) => { (window as unknown as { retainedBob: Element }).retainedBob = element; });
     await invitation.evaluate((element) => { (window as unknown as { retainedInvitation: Element }).retainedInvitation = element; });
     const bounds = await dialog.boundingBox();
-    const me = Promise.withResolvers<void>(), accessGate = Promise.withResolvers<void>(), membersGate = Promise.withResolvers<void>(), invitationsGate = Promise.withResolvers<void>();
-    state.holdMe = me.promise; state.holdAccess = accessGate.promise; state.holdMembers = membersGate.promise; state.holdInvitations = invitationsGate.promise;
+    const accessGate = Promise.withResolvers<void>(), membersGate = Promise.withResolvers<void>(), invitationsGate = Promise.withResolvers<void>();
+    state.holdAccess = accessGate.promise; state.holdMembers = membersGate.promise; state.holdInvitations = invitationsGate.promise;
     const meCount = state.requests.filter((value) => value === 'GET /api/v1/me').length;
     const accessCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length;
     const membersCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/members`).length;
     const invitationsCount = state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/invitations`).length;
     const other = await leaveAndReturn(page);
-    await expect.poll(() => state.requests.filter((value) => value === 'GET /api/v1/me').length).toBeGreaterThan(meCount);
+    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(accessCount);
+    expect(state.requests.filter((value) => value === 'GET /api/v1/me')).toHaveLength(meCount);
     const check = async () => {
       await expect(dialog).toBeVisible(); await expect(cancel).toBeFocused();
       expect(await dialog.boundingBox()).toEqual(bounds);
@@ -109,10 +110,7 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
     };
     await check();
     await page.screenshot({ path: testInfo.outputPath(`member-check-${locale}.png`) });
-    me.resolve();
-    await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/access`).length).toBeGreaterThan(accessCount);
-    await check();
-    accessGate.resolve(); state.holdMe = null; state.holdAccess = null;
+    accessGate.resolve(); state.holdAccess = null;
     await expect.poll(() => state.requests.filter((value) => value === `GET /api/v1/projects/${projectId}/members`).length).toBeGreaterThan(membersCount);
     await check();
     membersGate.resolve(); state.holdMembers = null;

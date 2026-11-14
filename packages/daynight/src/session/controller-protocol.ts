@@ -1,4 +1,4 @@
-import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChunk, parseImageReadRequest, parseImageReadChunk, parseImageError, parseProviderImageCapabilities, imageObject, imageId, imageDecimal, imageInteger, imageSha, type ImageUploadSpec, type LocalImagePreparation, type ImageReadRequest, type ImageReadChunk, type PreparedImageChunk, type ProviderImageCapabilities, type ImageError } from "./image-values.js";
+import { parseImageUploadSpec, parseLocalImagePreparation, parsePreparedImageChunk, parseImageReadRequest, parseImageReadChunk, parseImageError, parseProviderImageCapabilities, parseImageCapabilities, type ImageCapabilities, imageObject, imageId, imageDecimal, imageInteger, imageSha, type ImageUploadSpec, type LocalImagePreparation, type ImageReadRequest, type ImageReadChunk, type PreparedImageChunk, type ProviderImageCapabilities, type ImageError } from "./image-values.js";
 import { parseImageCaptureRequest, parseImageCaptureReceipt, parseValidatedImage, parseDirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt, type ValidatedImage, type DirectCaptureSubmission } from "./image-values.js";
 import { sessionControlKeys, parseSessionControlFields } from "./protocol.js";
 import { parseSessionStartupReport, type SessionStartupReport } from "./startup.js";
@@ -73,7 +73,7 @@ export type RelayMessage = ImageRequest | ImageCaptureResult | (Wire & { readonl
   | { readonly type: "events_ack"; readonly batchId: string; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "source_reset_ack"; readonly sourceEpoch: string; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "operation_offer"; readonly operationSeq: DecimalSequence; readonly command: SessionCommand }
-  | { readonly type: "operation_authorized"; readonly operationId: string }
+  | { readonly type: "operation_authorized"; readonly operationId: string; readonly imageAuthorization?: ImageCapabilities }
   | { readonly type: "receipt_ack"; readonly operation: SessionOperation }
   | { readonly type: "reconcile_result"; readonly operations: readonly SessionOperation[] }
   | { readonly type: "sync_ack" }
@@ -220,14 +220,14 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
     return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}) };
   }
   const contentFields: Record<string, readonly string[]> = { timeline: ["historyEpoch", "direction", "cursor", "limit"], resource: ["resourceId", "offset", "limit"], inspect_page: ["historyEpoch", "cursor", "limit", "responseOverhead"], entry_chunk: ["historyEpoch", "cursor", "limit"] };
-  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && typeof x.kind === "string" && Object.hasOwn(contentFields, x.kind) ? contentFields[x.kind]! : [])], heartbeat_ack: [], error: ["code", "message"] };
+  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId", ...("imageAuthorization" in x ? ["imageAuthorization"] : [])], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && typeof x.kind === "string" && Object.hasOwn(contentFields, x.kind) ? contentFields[x.kind]! : [])], heartbeat_ack: [], error: ["code", "message"] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
   const o = obj(x, ["type", "protocol", ...fenceKeys(x), ...extras[x.type]!]), base = { protocol: protocol(o.protocol), ...fence(o) };
   switch (x.type) {
     case "events_ack": return { ...base, type: "events_ack", batchId: id(o.batchId), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), lastEventSeq: seq(o.lastEventSeq, true) };
     case "source_reset_ack": return { ...base, type: "source_reset_ack", sourceEpoch: id(o.sourceEpoch), lastEventSeq: seq(o.lastEventSeq, true) };
     case "operation_offer": { const command = parseSessionCommand(o.command); assertSessionFence(command, sessionFence(base)); return { ...base, type: "operation_offer", operationSeq: seq(o.operationSeq), command }; }
-    case "operation_authorized": return { ...base, type: "operation_authorized", operationId: id(o.operationId) };
+    case "operation_authorized": return { ...base, type: "operation_authorized", operationId: id(o.operationId), ...("imageAuthorization" in o ? { imageAuthorization: parseImageCapabilities(o.imageAuthorization) } : {}) };
     case "receipt_ack": { const operation = parseSessionOperation(o.operation); assertSessionFence(operation, sessionFence(base)); return { ...base, type: "receipt_ack", operation }; }
     case "reconcile_result": {
       const operations = list(o.operations, parseSessionOperation, 200);

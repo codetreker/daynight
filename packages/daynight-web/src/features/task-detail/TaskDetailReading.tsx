@@ -68,7 +68,7 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, st
 
   return <TaskDetailPanels suspended={!available} {...(steps === undefined ? {} : { steps: (active: boolean) => steps(available && active, renderMarkdown) })} {...(discussion === undefined ? {} : { discussion: typeof discussion === 'function' ? (active: boolean) => available ? discussion(active) : null : available ? discussion : null })} {...(session === undefined ? {} : { session: typeof session === 'function' ? (active: boolean) => available ? session(active) : null : available ? session : null })} active={selection.tab} onChange={(tab) => select({ ...selection, tab })} overview={() => overview(description === ''
     ? <p className="task-detail-description">{messages.inspection.detail.noDescription}</p>
-    : renderMarkdown(description))} attachments={(active) => {
+    : <div className="description-card">{renderMarkdown(description)}</div>)} attachments={(active) => {
       if (!available) return null;
       const render = (records?: AttachmentRecordSlots) => <TaskAttachmentsPanel active={active} {...(records === undefined ? {} : { records })} projectId={projectId} taskId={taskId} attachments={attachments} reveal={reveal} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} {...(urls === undefined ? {} : { urls })} />;
       return sessionRecords === undefined ? render() : sessionRecords(active, render, reveal);

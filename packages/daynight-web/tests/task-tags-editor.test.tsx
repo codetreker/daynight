@@ -106,3 +106,19 @@ it.each(['Cancel', 'Escape'] as const)('offers recovery after %s closes an edito
   fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
   expect(screen.getByTestId('draft')).toHaveTextContent('Alpha'); expect(save).toHaveBeenCalledOnce();
 });
+
+it('distinguishes an empty observed set from an unknown outcome and a failed check', () => {
+  const save = vi.fn(); const empty = { ...detail, tags: [] };
+  const view = render(make(empty, idle, save));
+  expect(screen.queryByText('None')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  view.rerender(make(empty, { ...idle, operation, phase: 'unknown', reconciliationError: new Error('offline') }, save));
+  expect(screen.getByText('Last observed tags:')).toBeVisible();
+  expect(screen.getByText('None')).toBeVisible();
+  expect(screen.getByText(/outcome is unknown/)).toBeVisible();
+  expect(screen.getByText(/could not/i)).toBeVisible();
+  view.rerender(make({ ...empty, version: 2n }, { ...idle, operation, phase: 'conflict' }, save));
+  expect(screen.getByText('Currently saved tags:')).toBeVisible();
+  expect(screen.getByText('None')).toBeVisible();
+});

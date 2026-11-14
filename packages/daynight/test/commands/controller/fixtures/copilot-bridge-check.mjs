@@ -50,6 +50,19 @@ try {
     const other = client.createSession({ sessionId: "second-session", onPermissionRequest: config.onPermissionRequest });
     await assert.rejects(other, /binding/); await opening;
     assert.equal(records().filter(record => record.method === "session.create").length, 1);
+  } else if (mode === "admission-revoked" || mode === "admission-close") {
+    const session = await client.createSession(config), filename = path.join(root, "admission.png"), bytes = Buffer.alloc(524288, 7);
+    writeFileSync(filename, bytes, { mode: 0o400 });
+    let allowed = true, checks = 0;
+    const pending = sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [{ path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" }] }, () => {
+      checks++; assert.equal(allowed, true, "effective image qualification shrank while encoding");
+    });
+    const refused = assert.rejects(pending);
+    if (mode === "admission-revoked") allowed = false;
+    else await runtime.close(true);
+    await refused;
+    assert.equal(records().filter(record => record.method === "session.send").length, 0);
+    if (mode === "admission-revoked") assert.equal(checks, 1);
   } else {
     const session = await client.createSession(config);
     assert.equal(session.sessionId, "fixture-session");
@@ -82,14 +95,14 @@ try {
       assert.equal(catalog.models.length, 500); assert.equal(catalog.models[499].description, "catalog".repeat(800));
       const filename = path.join(root, "input.png"), bytes = Buffer.from("first-image"); writeFileSync(filename, bytes, { mode: 0o400 });
       const input = { path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" };
-      assert.equal(await sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [input, { ...input, displayName: "second.png" }] }), "sent-1");
+      assert.equal(await sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [input, { ...input, displayName: "second.png" }] }, () => {}), "sent-1");
       await eventually(() => events.some(event => event.id === "permission-event"));
       await session.rpc.permissions.handlePendingPermissionRequest({ requestId: "permission-request", result: { kind: "reject" } });
       await eventually(() => records().some(record => record.method === "session.permissions.handlePendingPermissionRequest"));
       const send = records().find(record => record.method === "session.send");
       assert.equal(send.params.prompt, ""); assert.equal(send.params.mode, "immediate");
       assert.deepEqual(send.params.attachments, [{ type: "blob", data: bytes.toString("base64"), mimeType: "image/png" }, { type: "blob", data: bytes.toString("base64"), mimeType: "image/png", displayName: "second.png" }]);
-      await assert.rejects(sendCopilotBridgeImages(session, { prompt: "must not send", mode: "immediate", attachments: [input, { ...input, sha256: "f".repeat(64) }] }), /integrity/);
+      await assert.rejects(sendCopilotBridgeImages(session, { prompt: "must not send", mode: "immediate", attachments: [input, { ...input, sha256: "f".repeat(64) }] }, () => {}), /integrity/);
       assert.equal(records().filter(record => record.method === "session.send").length, 1);
       await assert.rejects(session.getEvents(), /bounded/);
       await assert.rejects(session.rpc.eventLog.read({ max: 500, includeEphemeral: false }), /max=1/);

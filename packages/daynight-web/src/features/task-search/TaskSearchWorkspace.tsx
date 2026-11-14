@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent, type RefObject } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import type { TaskStatus } from '../../api/types';
 import { ApiError } from '../../api/client';
 import { TaskSearchError, searchSelectionRange, type TaskSearchField } from '../../api/task-search';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskAssigneeFilter, type AssigneeFilter } from '../task-assignment/TaskAssigneeFilter';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
+import { TaskTagList } from '../task-tags/TaskTagList';
 import type { TaskSearchController } from './useTaskSearch';
 import '../../styles/task-search.css';
 import '../../styles/task-status-rows.css';
@@ -12,9 +13,10 @@ import '../../styles/task-status-rows.css';
 export const assigneeValue = (filter: AssigneeFilter): string => filter.kind === 'all' ? '' : filter.kind === 'user' ? filter.userId : filter.kind;
 const assigneeFilter = (value: string): AssigneeFilter => value === '' ? { kind: 'all' } : value === 'me' || value === 'unassigned' ? { kind: value } : { kind: 'user', userId: value };
 
-export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask }: {
+export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, tagFilter }: {
   readonly projectId: string; readonly search: TaskSearchController; readonly inputRef: RefObject<HTMLInputElement | null>;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
+  readonly tagFilter?: ReactNode;
 }) => {
   const { messages: { workspace: { search: m, project, pagination, projects }, common }, format } = useI18n();
   const matchLabels: Readonly<Record<TaskSearchField, string>> = { id: m.idMatch, title: m.titleMatch, description: m.descriptionMatch };
@@ -55,6 +57,7 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask }:
       <div className="task-list-filters task-search-filters">
         <TaskAssigneeFilter projectId={projectId} filter={assigneeFilter(search.filters.assignedTo)} onChange={(filter) => search.setFilters({ ...search.filters, assignedTo: assigneeValue(filter) })} />
         <label className="task-status-filter">{project.statusFilter}<span className="task-status-select"><select value={search.filters.status} onChange={(event) => search.setFilters({ ...search.filters, status: event.currentTarget.value as TaskStatus | '' })}><option value="">{project.allStatuses}</option><option value="proposed">{project.statusOptions.proposed}</option><option value="todo">{project.statusOptions.todo}</option><option value="in_progress">{project.statusOptions.in_progress}</option><option value="done">{project.statusOptions.done}</option><option value="cancelled">{project.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label>
+        {tagFilter}
       </div>
       <section className="task-search-results" aria-busy={search.busy} aria-label={m.heading}>
         <div className="task-search-heading"><h2>{m.heading} {search.total !== null && <span>{format.number(search.total)}</span>}</h2><p>{m.applied({ query: search.applied })}</p></div>
@@ -64,6 +67,7 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask }:
           <button type="button" className="task-search-result task-status-surface" data-task-status={item.status} aria-label={m.open({ title: item.title })} onClick={(event) => onOpenTask(item.id, event.currentTarget)}>
             <span className="task-search-result-body"><span className="task-search-title">{item.title}</span>
               {item.context !== null && <span className="task-search-context">◇ {item.context.title}</span>}
+              <TaskTagList tags={item.tags} />
               <span className="task-search-match">{item.match.fields.length === 0 ? m.negativeMatch : item.match.fields.map(field => matchLabels[field]).join(' · ')}{item.match.descriptionSnippet === null ? '' : ` · ${item.match.descriptionSnippet}`}</span>
               <span className="task-search-meta"><span>{item.id}</span><TaskAssigneeIdentity projectId={projectId} assignedTo={item.assignedTo} /><time dateTime={item.updatedAt}>{m.updated({ date: format.dateTime(item.updatedAt) })}</time></span>
             </span><span className={`root-status graph-status-${item.status}`}>{common.status[item.status]}</span><span className="task-search-chevron" aria-hidden="true">›</span>

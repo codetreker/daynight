@@ -1,3 +1,4 @@
+import { authorizeNativeImageInput } from "../../../src/commands/controller/providers/image-admission.js";
 import { nativeEntryId } from "../../../src/commands/controller/providers/projection.js";
 import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -30,7 +31,7 @@ const processMock = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("../../../src/commands/controller/providers/copilot-bridge.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/providers/copilot-bridge.js")>(), startCopilotBridge(options: { port: number; token: string }) {
   const client = sdk.construct({ connection: sdk.connection(`127.0.0.1:${options.port}`, { connectionToken: options.token }) });
   return { ready: client.start().then(() => client), close: async () => {}, metrics: () => ({ peakRss: 0, peakHeap: 0 }) };
-}, sendCopilotBridgeImages: (native: unknown, input: unknown) => sdk.imageSend(native, input) }));
+}, sendCopilotBridgeImages: (native: unknown, input: unknown, verify: () => void) => { verify(); return sdk.imageSend(native, input); } }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: processMock.spawn }));
 import { openCopilotProvider } from "../../../src/commands/controller/providers/copilot.js";
 import { CopilotReadCorrelation, copilotReadMarker } from "../../../src/commands/controller/providers/copilot-read-authority-correlation.js";
@@ -751,7 +752,11 @@ const imageFixture = async (pure = false, provenGeometry = true) => {
   Object.assign(fixture.native.rpc, { model }); Object.assign(fixture.client, { getStatus: vi.fn(async () => ({ version: "1.0.105", protocolVersion: 3 })) });
   const observed = vi.fn(() => true);
   const options = { ...fixture.options, onInputObserved: observed, imageRuntime: { getIntent: (id: string) => id === operationId ? intent : null, readState: (key: string) => states.get(key) ?? null, writeState: (key: string, value: unknown) => states.set(key, structuredClone(value)) } } as unknown as ProviderOptions;
-  return { root, input, image, intent, operationId, options, observed, states, model };
+  return { root, get input() {
+    const caps = fixture.states.at(-1)?.images;
+    const value = { content: input.content.map(part => part.type === "image" ? { ...part, validated: { mediaType: part.mediaType as "image/png", byteLength: part.byteLength, sha256: part.sha256, width: 1, height: 1, frameCount: 1 } } : part) };
+    return caps?.send === "supported" ? authorizeNativeImageInput(value, { ...caps, revision: "7", providerRevision: "1" }, () => {}) : value;
+  }, image, intent, operationId, options, observed, states, model };
 };
 
 test.each([true, false])("under a controlled proven geometry profile the common Copilot send preserves ordered leases and durable acceptance (pure=%s)", async pure => {

@@ -29,6 +29,18 @@ An entire input acquires its resources before dispatching; a later preparation
 failure therefore cannot partially call the native provider. An uncertain native
 result retains the original operation and its pins for observation.
 
+Service-effective and Provider capability revisions are independently allocated.
+Image authorization returns the effective capability snapshot alongside the
+original operation and execution fence. The Controller matches the frozen
+intent to its service revision and the current Provider to its providerRevision;
+numeric equality between those counters establishes no relationship. The
+snapshot does not rewrite the durable intent or its hash. Validated leases retain
+the original MIME, bytes and full geometry so upload completion, authorization
+and final native dispatch enforce the smaller effective limits. Asynchronous
+preparation and native encoding end with another qualification check; a failed
+image refuses the complete input. Historical reads remain independent of current
+input qualification.
+
 Resource reads require both Session access and a publishing reference. Message
 references and committed archive closures permit shared reads; a private upload
 requires its original actor and matching complete receipt. Operation, unknown,
@@ -181,6 +193,17 @@ drafts consume this foundation; their support profiles remain closed until their
 own complete evidence exists.
 
 ## Alternatives
+
+**Compare service and Provider revision numbers directly.** Their independent
+publication histories can produce different valid counters or coincidentally
+equal stale counters. Carrying the authorized association preserves both owners
+without renumbering an immutable input intent.
+
+**Rely on browser validation or generic decoder limits.** A model or policy can
+change during upload, file acquisition or native encoding. Smaller qualified
+limits must be enforced using the original decoded metadata at each admission
+boundary; decoding the same immutable bytes again adds cost without proving the
+current capability relationship.
 
 **Keep separate image wire, provider sendInput and resource collections.** This
 was the earlier design's response to strict old readers. It would also keep two

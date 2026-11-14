@@ -16,16 +16,19 @@ The project Goal row opens a graph of every direct Task and each distinct,
 accessible direct prerequisite outside the Goal. Edges retain their actual
 ordinary or external classification and end at a member; external context does
 not recursively expand. Every card opens its Task details. The graph shares the
-canvas, layout and dialog mechanisms with ordinary chains while owning its own
-complete projection and full-bounds framing. Goal and chain resource UUIDs use
+canvas and dialog mechanisms with ordinary chains while owning its complete
+projection, compact layout and framing. The original implementation shared the
+chain layout and fitted full bounds on opening; the [compact layout decision](../architecture/2026-11-14-compact-goal-graph-layout.md)
+replaces that choice to preserve readability. Goal and chain resource UUIDs use
 the existing history witness and project-scoped direction preference.
 
 The [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
 own the user-visible contract and the [inspection design](../../../../docs/design/daynight-task-inspection.md#goal-整体图)
 owns projection, framing and reading ownership. The existing
-[Goal browsing decision](2026-11-11-goal-browsing.md) continues to classify
-ordinary chains before selecting list members; this graph adds a distinct Goal
-view without changing that list classification. The
+[Goal browsing decision](2026-11-11-goal-browsing.md) owns direct Parent scope
+and Goal detail classification. The [flat Goal list decision](../simplification/2026-11-13-goal-flat-list.md)
+presents those members without chain groups; this graph remains a distinct Goal
+view. The
 [shared graph presentation decision](../architecture/2026-11-13-shared-task-graph-presentation.md)
 retains the shared mechanical layer and ordinary chain policy.
 
@@ -48,5 +51,5 @@ The existing chain graph remains available for navigating that context.
 Readers see the full Goal scope and direct external prerequisites without
 changing the background list. Complete DOM and layout costs grow with the full
 projection; unlike a chain graph, this view does not progressively limit its
-initial node set. The viewport must accommodate the full bounds even when that
-requires a very small zoom, with pan and zoom available for detail reading.
+initial node set. The initial viewport preserves readable scale, while explicit
+overview can fit the full bounds at a smaller zoom.

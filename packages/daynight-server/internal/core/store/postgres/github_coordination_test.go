@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func b2Configure(t *testing.T, s *Store, project string, app, installation, repo
 		if _, err := dao.Connection(ctx); err != nil {
 			return err
 		}
-		ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, PollIntervalMinutes: 5, AccessState: "available"})
+		ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true, SyncEnabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, PollIntervalMinutes: 5, AccessState: "available"})
 		if err != nil {
 			return err
 		}
@@ -371,15 +372,15 @@ func TestGitHubCoordinationDeletionSerializesWithPublication(t *testing.T) {
 	if got := b2Signal(t, s, signal); got != 0 {
 		t.Fatalf("deleted Project accepted signal: %d", got)
 	}
-	var enabled bool
+	var enabled, syncEnabled bool
 	var claim *string
 	var next *time.Time
 	var pending, retained int
-	if err := s.Pool.QueryRow(ctx, `SELECT enabled,claim_token::text,next_poll_at,(SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1),(SELECT count(*) FROM project_pull_requests WHERE project_id=$1) FROM project_github WHERE project_id=$1`, project.ID).Scan(&enabled, &claim, &next, &pending, &retained); err != nil {
+	if err := s.Pool.QueryRow(ctx, `SELECT enabled,sync_enabled,claim_token::text,next_poll_at,(SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1),(SELECT count(*) FROM project_pull_requests WHERE project_id=$1) FROM project_github WHERE project_id=$1`, project.ID).Scan(&enabled, &syncEnabled, &claim, &next, &pending, &retained); err != nil {
 		t.Fatal(err)
 	}
-	if enabled || claim != nil || next != nil || pending != 0 || retained != 1 {
-		t.Fatalf("deletion state: enabled=%t claim=%v next=%v pending=%d retained=%d", enabled, claim, next, pending, retained)
+	if enabled || syncEnabled || claim != nil || next != nil || pending != 0 || retained != 1 {
+		t.Fatalf("deletion state: enabled=%t sync=%t claim=%v next=%v pending=%d retained=%d", enabled, syncEnabled, claim, next, pending, retained)
 	}
 }
 
@@ -745,5 +746,171 @@ func TestGitHubCoordinationRuntimeAndConditionalRetries(t *testing.T) {
 	}
 	if claim != nil || actualHint != nil || pollCode == nil || *pollCode != "poll-error" || webhookCode == nil || *webhookCode != "webhook-error" || !pollAt.Equal(now) || !fullAt.Equal(now) || generation != 1 || !next.Equal(now.Add(time.Hour)) {
 		t.Fatalf("runtime facts: claim=%v hint=%v poll=%v webhook=%v pollAt=%v fullAt=%v generation=%d revision=%d next=%v", claim, actualHint, pollCode, webhookCode, pollAt, fullAt, generation, revision, next)
+	}
+}
+
+func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) {
+	for _, signalKind := range []string{"pull request", "access"} {
+		t.Run(signalKind, func(t *testing.T) {
+			s := isolatedStore(t)
+			project, other := queryProject(t, s, 1), queryProject(t, s, 2)
+			b2Configure(t, s, project.ID, 10, 20, 30)
+			b2Configure(t, s, other.ID, 10, 20, 30)
+			secondPool, err := pgxpool.NewWithConfig(t.Context(), s.Pool.Config().Copy())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(secondPool.Close)
+			second := &Store{Pool: secondPool}
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			token := uuid.NewString()
+			lease := store.GitHubLease{Generation: 1, Token: token}
+			initial := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "initial", ReceivedAt: now, NextAttemptAt: now}
+			if n := b2Signal(t, s, initial); n != 2 {
+				t.Fatalf("initial signal: %d", n)
+			}
+			b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+				ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token, Kind: "poll", Until: now.Add(5 * time.Minute)})
+				if err != nil || !ok {
+					return fmt.Errorf("initial claim: %t %v", ok, err)
+				}
+				ok, err = dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(7, nil)})
+				if err != nil || !ok {
+					return fmt.Errorf("initial publication: %t %v", ok, err)
+				}
+				return nil
+			})
+			mustQueryExec(t, s, `UPDATE project_github SET not_before=$2 WHERE project_id=$1`, project.ID, now.Add(time.Hour))
+			locked, release := make(chan struct{}), make(chan struct{})
+			stopped := make(chan error, 1)
+			go func() {
+				completion, err := s.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
+					dao := sc.GitHubDAO()
+					c, err := dao.Connection(ctx)
+					if err != nil {
+						return err
+					}
+					close(locked)
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+					ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: true, SyncEnabled: false, AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState})
+					if err != nil || !ok {
+						return fmt.Errorf("stop: %t %v", ok, err)
+					}
+					return nil
+				})
+				if err == nil && completion.Outcome != store.TransactionCommitted {
+					err = fmt.Errorf("stop completion: %+v", completion)
+				}
+				stopped <- err
+			}()
+			select {
+			case <-locked:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			signaled := make(chan error, 1)
+			go func() {
+				completion, err := second.WriteGitHubSignals(ctx, func(w store.GitHubSignalWriter) error {
+					var n int64
+					var err error
+					if signalKind == "pull request" {
+						n, err = w.SignalPullRequest(ctx, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 8, RequestID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second), NextAttemptAt: now})
+					} else {
+						n, err = w.SignalAccess(ctx, store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second)})
+					}
+					if err != nil || n != 1 {
+						return fmt.Errorf("signal count: %d %v", n, err)
+					}
+					return nil
+				})
+				if err == nil && completion.Outcome != store.TransactionCommitted {
+					err = fmt.Errorf("signal completion: %+v", completion)
+				}
+				signaled <- err
+			}()
+			waitForQueryLock(t, s, "WITH locked AS MATERIALIZED")
+			worker := make(chan error, 1)
+			go func() {
+				completion, err := second.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
+					dao := sc.GitHubDAO()
+					if ok, err := dao.Renew(ctx, lease, now.Add(10*time.Minute)); err != nil || ok {
+						return fmt.Errorf("old renew: %t %v", ok, err)
+					}
+					if ok, err := dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(8, nil)}); err != nil || ok {
+						return fmt.Errorf("old publish: %t %v", ok, err)
+					}
+					if ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 2, Token: uuid.NewString(), Kind: "poll", Until: now.Add(5 * time.Minute)}); err != nil || ok {
+						return fmt.Errorf("disabled claim: %t %v", ok, err)
+					}
+					return nil
+				})
+				if err == nil && completion.Outcome != store.TransactionCommitted {
+					err = fmt.Errorf("worker completion: %+v", completion)
+				}
+				worker <- err
+			}()
+			waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE id =")
+			close(release)
+			for _, ch := range []<-chan error{stopped, signaled, worker} {
+				if err := receiveQueryResult(t, ctx, ch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var good bool
+			if err := s.Pool.QueryRow(ctx, `SELECT enabled AND NOT sync_enabled AND generation=2 AND claim_token IS NULL AND next_poll_at IS NULL AND next_access_check_at IS NULL AND access_hint_id IS NULL AND not_before=$2 AND last_webhook_received_at=$3 AND (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1)=0 AND (SELECT count(*) FROM project_pull_requests WHERE project_id=$1)=1 FROM project_github WHERE project_id=$1`, project.ID, now.Add(time.Hour), now).Scan(&good); err != nil || !good {
+				t.Fatalf("stopped state: %t %v", good, err)
+			}
+			var otherEnabled bool
+			if err := s.Pool.QueryRow(ctx, `SELECT sync_enabled FROM project_github WHERE project_id=$1`, other.ID).Scan(&otherEnabled); err != nil || !otherEnabled {
+				t.Fatalf("other project: %t %v", otherEnabled, err)
+			}
+			// Simulate a due row with no rate-limit or live claim: the switch itself
+			// must still exclude it from scanning and admission.
+			mustQueryExec(t, s, `UPDATE project_github SET not_before=NULL,next_poll_at=$2 WHERE project_id=$1`, project.ID, now)
+			due, err := second.DueGitHubProjects(ctx, 10, now.Add(time.Second), 10)
+			if err != nil || slices.Contains(due, project.ID) {
+				t.Fatalf("disabled candidate: %v %v", due, err)
+			}
+			b2Write(t, second, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+				ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 2, Token: uuid.NewString(), Kind: "poll", Until: now.Add(5 * time.Minute)})
+				if err != nil || ok {
+					return fmt.Errorf("disabled claim without rate limit: %t %v", ok, err)
+				}
+				return nil
+			})
+			b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+				c, err := dao.Connection(ctx)
+				if err != nil {
+					return err
+				}
+				ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: true, SyncEnabled: true, AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState, NextPollAt: &now})
+				if err != nil || !ok {
+					return fmt.Errorf("restart: %t %v", ok, err)
+				}
+				return nil
+			})
+			b2Write(t, second, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+				newToken := uuid.NewString()
+				ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 3, Token: newToken, Kind: "poll", Until: now.Add(5 * time.Minute)})
+				if err != nil || !ok {
+					return fmt.Errorf("new claim: %t %v", ok, err)
+				}
+				ok, err = dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(8, nil)})
+				if err != nil || ok {
+					return fmt.Errorf("old generation after restart: %t %v", ok, err)
+				}
+				ok, err = dao.Publish(ctx, store.GitHubLease{Generation: 3, Token: newToken}, []githubpr.PullRequest{b2Observation(8, nil)})
+				if err != nil || !ok {
+					return fmt.Errorf("new generation publication: %t %v", ok, err)
+				}
+				return nil
+			})
+		})
 	}
 }

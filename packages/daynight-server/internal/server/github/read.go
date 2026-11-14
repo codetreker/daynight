@@ -175,7 +175,7 @@ func syncError(code, message *string, at *time.Time) (*api.GitHubSyncError, erro
 }
 func statusResponse(s coregithub.Status) (api.GitHubStatus, error) {
 	c := s.Connection
-	out := api.GitHubStatus{ProjectID: c.ProjectID, Version: decimal(c.Version), Revision: decimal(c.Revision), ServiceAvailable: s.ServiceAvailable, Connection: "not_connected", PollIntervalMinutes: c.PollIntervalMinutes}
+	out := api.GitHubStatus{ProjectID: c.ProjectID, Version: decimal(c.Version), Revision: decimal(c.Revision), ServiceAvailable: s.ServiceAvailable, SyncEnabled: c.SyncEnabled, Connection: "not_connected", PollIntervalMinutes: c.PollIntervalMinutes}
 	if c.InstallationID != nil {
 		if c.InstallationAccountLogin == nil {
 			return out, fmt.Errorf("incomplete persisted GitHub installation")
@@ -195,7 +195,7 @@ func statusResponse(s coregithub.Status) (api.GitHubStatus, error) {
 		}
 		out.Repository = &api.GitHubRepository{ID: decimal(*c.RepositoryID), FullName: *c.RepositoryFullName, Private: c.RepositoryPrivate}
 	}
-	out.Initializing = c.Enabled && (c.LastFullGeneration == nil || *c.LastFullGeneration != c.Generation)
+	out.Initializing = c.Enabled && c.SyncEnabled && (c.LastFullGeneration == nil || *c.LastFullGeneration != c.Generation)
 	pollErr, err := syncError(c.PollErrorCode, c.PollErrorMessage, c.PollErrorAt)
 	if err != nil {
 		return out, err
@@ -204,14 +204,17 @@ func statusResponse(s coregithub.Status) (api.GitHubStatus, error) {
 	if err != nil {
 		return out, err
 	}
-	out.Poll = api.GitHubPollStatus{Running: c.ClaimKind != nil && *c.ClaimKind == "poll", LastAttemptAt: utc(c.LastPollAttemptAt), LastSuccessAt: utc(c.LastFullSuccessAt), NextAttemptAt: nextAttempt(c), Error: pollErr}
-	out.Webhook = api.GitHubWebhookStatus{Running: c.ClaimKind != nil && *c.ClaimKind == "webhook", LastReceivedAt: utc(c.LastWebhookReceivedAt), LastAttemptAt: utc(c.LastWebhookAttemptAt), LastSuccessAt: utc(c.LastWebhookSuccessAt), Error: hookErr}
+	out.Poll = api.GitHubPollStatus{Running: c.SyncEnabled && c.ClaimKind != nil && *c.ClaimKind == "poll", LastAttemptAt: utc(c.LastPollAttemptAt), LastSuccessAt: utc(c.LastFullSuccessAt), NextAttemptAt: nextAttempt(c), Error: pollErr}
+	out.Webhook = api.GitHubWebhookStatus{Running: c.SyncEnabled && c.ClaimKind != nil && *c.ClaimKind == "webhook", LastReceivedAt: utc(c.LastWebhookReceivedAt), LastAttemptAt: utc(c.LastWebhookAttemptAt), LastSuccessAt: utc(c.LastWebhookSuccessAt), Error: hookErr}
 	return out, nil
 }
 
 // nextAttempt preserves the selected persisted schedule while honoring a later
 // remote-request deadline. A deadline alone does not schedule an operation.
 func nextAttempt(c githubpr.Connection) *time.Time {
+	if !c.SyncEnabled {
+		return nil
+	}
 	planned := c.NextPollAt
 	if c.AccessState == "unavailable" {
 		planned = c.NextAccessCheckAt

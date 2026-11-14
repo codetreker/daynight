@@ -56,11 +56,11 @@ const install = (initial: readonly TaskDetail[]) => {
   vi.stubGlobal('fetch', fetcher);
   return { tasks, fetcher };
 };
-const mount = async () => {
+const mount = async (findFilter = () => screen.findByRole('button', { name: /^负责人:/ })) => {
   const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
   const view = render(<ProjectPage projectId={projectId} />, { container: root, taskCache: true });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
-  await screen.findByRole('button', { name: /^负责人:/ });
+  await findFilter();
   return view;
 };
 const filter = async (label: string | RegExp) => {
@@ -154,21 +154,20 @@ describe('project assignee filtering', () => {
     await filter('所有负责人'); expectCounts(4, 5, 4);
   });
 
-  it('persists each selection made through the control and restores it on reopening', async () => {
+  it.each([
+    ['分配给我', { kind: 'me' }], ['未分配', { kind: 'unassigned' }],
+    ['Former person', { kind: 'user', userId: formerUser }], ['所有负责人', { kind: 'all' }],
+  ] as const)('persists %s through the control and restores it on reopening', async (label, saved) => {
     install([task(1, TEST_VIEWER_ID), task(2, null), task(3, formerUser)]);
     const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
-    for (const [label, saved] of [
-      ['分配给我', { kind: 'me' }], ['未分配', { kind: 'unassigned' }],
-      ['Former person', { kind: 'user', userId: formerUser }], ['所有负责人', { kind: 'all' }],
-    ] as const) {
-      const view = await mount();
-      await filter(label === 'Former person' ? /^Former person/ : label);
-      expect(JSON.parse(localStorage.getItem(preference)!)).toEqual(saved);
-      view.unmount();
-      const reopened = await mount();
-      await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
-      reopened.unmount();
-    }
+    localStorage.setItem(preference, JSON.stringify(label === '所有负责人' ? { kind: 'unassigned' } : { kind: 'all' }));
+    const view = await mount();
+    await filter(label === 'Former person' ? /^Former person/ : label);
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual(saved);
+    view.unmount(); view.container.remove();
+    const reopened = await mount();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
+    reopened.unmount(); reopened.container.remove();
   });
 
   it('shows localized write failure while keeping the current list usable, and clears it after saving', async () => {
@@ -322,13 +321,19 @@ describe('project assignee filtering', () => {
       const root = position * 2 + 1;
       return [task(root, TEST_VIEWER_ID), task(root + 1, TEST_VIEWER_ID, { dependsOn: [id(root)] }), task(1000 + position, TEST_VIEWER_ID)];
     }).flat());
-    await mount();
+    const assigneePicker = () => {
+      const element = document.querySelector<HTMLElement>('.task-assignee-filter');
+      if (element === null) throw new Error('Assignee filter not found');
+      return within(element);
+    };
+    await mount(() => waitFor(() => assigneePicker().getByRole('button', { name: /^负责人:/ })));
     fireEvent.click(within(pagination('任务链列表')).getByRole('button', { name: '下一页' }));
     expect(pagination('任务链列表')).toHaveTextContent('第 2 / 3 页');
     fireEvent.click(standalone());
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     expect(pagination('独立任务列表')).toHaveTextContent('第 2 / 3 页');
-    await filter('分配给我');
+    fireEvent.click(assigneePicker().getByRole('button', { name: /^负责人:/ }));
+    fireEvent.click(await assigneePicker().findByRole('option', { name: '分配给我' }));
     expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页');
     fireEvent.click(chains());
     expect(pagination('任务链列表')).toHaveTextContent('第 1 / 3 页');

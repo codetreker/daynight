@@ -6,7 +6,7 @@ import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer, type Socket } from "node:net";
 import sharp from "sharp";
-import type { ProviderOptions } from "../../../src/commands/controller/providers/types.js";
+import type { NativeInput, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 import { openNativeMediaSpool } from "../../../src/commands/controller/media/native-spool.js";
 import { inspectProcessProof, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import { stopNativeFixture, withCleanup, withNativeFixtureExit } from "./claude-live-loss-cleanup.js";
@@ -14,6 +14,12 @@ import { stopNativeFixture, withCleanup, withNativeFixtureExit } from "./claude-
 const { queryClaudeLive, claudeLiveImage, releaseClaudeLiveRecord } = await import(new URL("../../../dist/commands/controller/providers/claude-live.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude-live.js");
 const { openClaudeProvider } = await import(new URL("../../../dist/commands/controller/providers/claude.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude.js");
 const { ClaudeControls } = await import(new URL("../../../dist/commands/controller/providers/controls-claude.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/controls-claude.js");
+const { authorizeNativeImageInput } = await import(new URL("../../../dist/commands/controller/providers/image-admission.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/image-admission.js");
+
+const authorizeControlledInput = (input: NativeInput, state: ProviderState | undefined): NativeInput => {
+  if (!state?.images) throw new Error("Controlled image capability was not published.");
+  return authorizeNativeImageInput({ content: input.content.map(part => part.type === "image" ? { ...part, validated: { mediaType: "image/png", byteLength: part.byteLength, sha256: part.sha256, width: 1, height: 1, frameCount: 1 } } : part) }, { ...state.images, revision: "7", providerRevision: "1" }, () => {});
+};
 
 const enableControlledImageInput = () => {
   const original = ClaudeControls.prototype.imageCapabilities;
@@ -175,16 +181,17 @@ test("native fixture cleanup retains both test and cleanup errors", async () => 
 
 test("the actual Claude adapter submits image-only input once and waits for durable root evidence", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-adapter-images-")), log = path.join(root, "native.jsonl"), imagePath = path.join(root, "image.png"), spoolDirectory = path.join(root, "spools"); await mkdir(spoolDirectory);
-  const bytes = Buffer.from([137,80,78,71,13,10,26,10,1,2,3]), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), localPath: imagePath, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") }; await writeFile(imagePath, bytes, { mode: 0o400 });
+  const bytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: "blue" } }).png().toBuffer(), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), localPath: imagePath, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") }; await writeFile(imagePath, bytes, { mode: 0o400 });
+  let state: ProviderState | undefined;
   const operationId = randomUUID(), saved = new Map<string, unknown>(), observed: unknown[] = [], children: ChildProcess[] = [];
   const command: any = { kind: "send_message", operationId, payload: { expectedTurnId: null, target: { expectedNativeSessionId: null }, content: [{ ...image, uploadId: randomUUID() }] } };
   const capability = enableControlledImageInput(); onTestFinished(() => capability.mockRestore());
   const provider = await openClaudeProvider({ cwd: root, model: null, args: [], resumeNativeSessionId: null, executable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env: { ...process.env, ANTHROPIC_BASE_URL: "https://api.anthropic.com", CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0", DAYNIGHT_TEST_CLAUDE_LIVE_LOG: log },
     imageRuntime: { getIntent: id => id === operationId ? { command, sha256: "c".repeat(64), state: "unknown" } : null, readState: key => saved.get(key), writeState: (key, value) => { saved.set(key, structuredClone(value)); }, indexDirectory: () => root, reserveIndex() {}, acquireIndexReservation: () => ({ release() {} }), createSpool: maximum => openNativeMediaSpool(path.join(spoolDirectory, randomUUID()), maximum, () => {}, () => {}) },
-    onTimeline() {}, onState() {}, onSpawn: child => { children.push(child); }, onInputObserved: value => { observed.push(value); return observed.length > 1; }, imageOccurrenceAcknowledged: () => false,
+    onTimeline() {}, onState(value) { state = value; }, onSpawn: child => { children.push(child); }, onInputObserved: value => { observed.push(value); return observed.length > 1; }, imageOccurrenceAcknowledged: () => false,
   });
   try {
-    await expect(provider.send({ content: [image] }, operationId, null)).resolves.toEqual({ disposition: "started", turnId: operationId });
+    await expect(provider.send(authorizeControlledInput({ content: [image] }, state), operationId, null)).resolves.toEqual({ disposition: "started", turnId: operationId });
     expect(observed.length).toBeGreaterThanOrEqual(2); expect(observed.at(-1)).toMatchObject({ provider: "claude", operationId, nativeMessageId: operationId, intentSha256: "c".repeat(64) });
     await expect(provider.send({ content: [image] }, randomUUID(), operationId)).rejects.toThrow("steering");
     await expect(provider.send({ content: [image, { ...image, sha256: "f".repeat(64) }] }, randomUUID(), null)).rejects.toThrow("integrity");
@@ -194,14 +201,15 @@ test("the actual Claude adapter submits image-only input once and waits for dura
 
 test.each(["success", "blocked"])("the actual adapter never accepts a zero-turn %s terminal without root execution", async mode => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-zero-turns-")), imagePath = path.join(root, "image.png");
-  const bytes = Buffer.from([137,80,78,71,13,10,26,10,1,2,3]), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), localPath: imagePath, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") }; await writeFile(imagePath, bytes, { mode: 0o400 });
+  const bytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: "blue" } }).png().toBuffer(), image = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), localPath: imagePath, mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") }; await writeFile(imagePath, bytes, { mode: 0o400 });
+  let state: ProviderState | undefined;
   const operationId = randomUUID(), saved = new Map<string, unknown>(), observed: unknown[] = [], children: ChildProcess[] = [];
   const command: any = { kind: "send_message", operationId, payload: { expectedTurnId: null, target: { expectedNativeSessionId: null }, content: [{ ...image, uploadId: randomUUID() }] } };
   const capability = enableControlledImageInput(); onTestFinished(() => capability.mockRestore());
   const provider = await openClaudeProvider({ cwd: root, model: null, args: [], resumeNativeSessionId: null, executable: path.resolve("test/commands/controller/fixtures/claude-live-native.mjs"), env: { ...process.env, ANTHROPIC_BASE_URL: "https://api.anthropic.com", CLAUDE_CODE_USE_BEDROCK: "0", CLAUDE_CODE_USE_VERTEX: "0", CLAUDE_CODE_USE_FOUNDRY: "0", DAYNIGHT_TEST_CLAUDE_RESULT_ONLY: mode },
     imageRuntime: { getIntent: id => id === operationId ? { command, sha256: "c".repeat(64), state: "unknown" } : null, readState: key => saved.get(key), writeState: (key, value) => { saved.set(key, structuredClone(value)); }, indexDirectory: () => root, reserveIndex() {}, acquireIndexReservation: () => ({ release() {} }), createSpool() { throw new Error("This terminal has no output images."); } },
-    onTimeline() {}, onState() {}, onSpawn: child => { children.push(child); }, onInputObserved: value => { observed.push(value); return true; }, imageOccurrenceAcknowledged: () => false,
+    onTimeline() {}, onState(value) { state = value; }, onSpawn: child => { children.push(child); }, onInputObserved: value => { observed.push(value); return true; }, imageOccurrenceAcknowledged: () => false,
   });
-  try { await expect(provider.send({ content: [image] }, operationId, null)).rejects.toThrow("root execution"); expect(observed).toEqual([]); }
+  try { await expect(provider.send(authorizeControlledInput({ content: [image] }, state), operationId, null)).rejects.toThrow("root execution"); expect(observed).toEqual([]); }
   finally { await provider.close(); expect(children.every(child => child.exitCode !== null || child.signalCode !== null)).toBe(true); await rm(root, { recursive: true, force: true }); }
 }, 20_000);
