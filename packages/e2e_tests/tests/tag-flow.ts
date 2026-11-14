@@ -6,15 +6,39 @@ type Task = { id: string; title: string; parentId: string | null; tags: { id: st
 
 export const verifyTagFlow = async (page: Page, projectId: string): Promise<void> => {
   const json = async <T>(args: string[]): Promise<T> => JSON.parse((await cli([...args, "--project", projectId, "--json"])).stdout) as T;
-  const backend = await json<Tag>(["tag", "create", "Backend"]);
-  const other = await json<Tag>(["tag", "create", "Other"]);
-  expect(backend.id).not.toBe(other.id);
   const create = async (args: string[]): Promise<string> => {
     const result = await cli(["task", "create", "--project", projectId, ...args]);
     const id = result.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
     expect(id).toBeDefined();
     return id!;
   };
+  const emptyGoalId = await create(["--type", "goal", "--title", "Empty catalog goal"]);
+  const emptyTaskId = await create(["--parent", emptyGoalId, "--title", "Empty catalog child"]);
+  await page.goto(`${topology.baseURL}/projects/${projectId}`);
+  await page.locator("#project-section-tab-tags").click();
+  const catalogView = page.locator(".project-tags");
+  await expect(catalogView.getByText("No tags yet.", { exact: true })).toBeVisible();
+  await expect(catalogView.getByText("Could not load tags.", { exact: true })).toHaveCount(0);
+  await page.locator("#project-section-tab-tasks").click();
+  await page.locator("#project-task-tab-goals").click();
+  const emptyCard = page.locator(`[data-goal-id="${emptyGoalId}"]`);
+  await emptyCard.locator(".goal-list-toggle").click();
+  const emptyFilter = emptyCard.locator(".tag-filter");
+  await emptyFilter.locator("summary").click();
+  await expect(emptyFilter.getByText("No tags yet.", { exact: true })).toBeVisible();
+  await expect(emptyFilter.getByText("Could not load tags.", { exact: true })).toHaveCount(0);
+  await emptyCard.locator(`#chain-task-goal-${emptyGoalId}-${emptyTaskId}`).click();
+  const emptyDetail = page.locator(".task-detail-dialog");
+  await emptyDetail.getByRole("button", { name: "Edit tags" }).click();
+  const emptyEditor = emptyDetail.locator(".task-tags-editor");
+  await expect(emptyEditor.getByText("No tags yet.", { exact: true })).toBeVisible();
+  await expect(emptyEditor.getByText("Could not load tags.", { exact: true })).toHaveCount(0);
+  await emptyEditor.getByRole("button", { name: "Cancel", exact: true }).click();
+  await emptyDetail.locator(".task-detail-close").click();
+
+  const backend = await json<Tag>(["tag", "create", "Backend"]);
+  const other = await json<Tag>(["tag", "create", "Other"]);
+  expect(backend.id).not.toBe(other.id);
   const goalId = await create(["--type", "goal", "--title", "Tagged Goal", "--tag", backend.id]);
   const taskId = await create(["--parent", goalId, "--title", "Tagged child", "--tag", other.id]);
   const controlId = await create(["--parent", goalId, "--title", "Other child", "--tag", other.id]);
@@ -23,6 +47,15 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   expect(await read(taskId)).toMatchObject({ id: taskId, parentId: goalId, tags: [{ id: other.id, name: "Other" }] });
 
   await page.goto(`${topology.baseURL}/projects/${projectId}`);
+  await page.locator("#project-section-tab-tags").click();
+  await expect(catalogView.getByText("Backend", { exact: true })).toBeVisible();
+  await expect(catalogView.getByText("Other", { exact: true })).toBeVisible();
+  const catalogSearch = catalogView.getByRole("searchbox", { name: "Search tags" });
+  await catalogSearch.fill("Backend");
+  await expect(catalogView.getByText("Backend", { exact: true })).toBeVisible();
+  await expect(catalogView.getByText("Other", { exact: true })).toHaveCount(0);
+  await catalogSearch.fill("");
+  await expect(catalogView.getByText("Other", { exact: true })).toBeVisible();
   await page.locator("#project-section-tab-tasks").click();
   await page.locator("#project-task-tab-goals").click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
@@ -38,7 +71,14 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await expect(detail.locator(".task-tag")).toHaveText(["Other"]);
   await detail.getByRole("button", { name: "Edit tags" }).click();
   const editor = detail.locator(".task-tags-editor");
-  await editor.getByRole("searchbox", { name: "Search tags" }).fill("Backend");
+  await expect(editor.getByRole("checkbox", { name: "Backend" })).toBeVisible();
+  await expect(editor.getByRole("checkbox", { name: "Other" })).toBeVisible();
+  const editorSearch = editor.getByRole("searchbox", { name: "Search tags" });
+  await editorSearch.fill("Backend");
+  await expect(editor.getByRole("checkbox", { name: "Backend" })).toBeVisible();
+  await expect(editor.getByRole("checkbox", { name: "Other" })).toHaveCount(0);
+  await editorSearch.fill("");
+  await expect(editor.getByRole("checkbox", { name: "Other" })).toBeVisible();
   await editor.getByRole("checkbox", { name: "Backend" }).check();
   await editor.getByRole("button", { name: "Save", exact: true }).click();
   await expect(editor).toHaveCount(0);
@@ -50,7 +90,14 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await detail.locator(".task-detail-close").click();
   const filter = card.locator(".tag-filter");
   await filter.locator("summary").click();
-  await filter.locator('input[type="search"]').fill("Backend");
+  await expect(filter.getByRole("checkbox", { name: "Backend" })).toBeVisible();
+  await expect(filter.getByRole("checkbox", { name: "Other" })).toBeVisible();
+  const filterSearch = filter.locator('input[type="search"]');
+  await filterSearch.fill("Backend");
+  await expect(filter.getByRole("checkbox", { name: "Backend" })).toBeVisible();
+  await expect(filter.getByRole("checkbox", { name: "Other" })).toHaveCount(0);
+  await filterSearch.fill("");
+  await expect(filter.getByRole("checkbox", { name: "Other" })).toBeVisible();
   await filter.getByRole("checkbox", { name: "Backend" }).check();
   await expect(child).toBeVisible();
   await expect(control).toHaveCount(0);
