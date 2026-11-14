@@ -397,11 +397,13 @@ test("Web browser owns frontend Playwright regressions and evidence without capa
   const install = steps.find((step) => step.includes("playwright install"))!;
   const browser = steps.find((step) => step.includes("id: web-browser"))!;
   const drafts = steps.find((step) => step.includes("id: session-drafts-browser"))!;
+  const nativeSelect = steps.find((step) => step.includes("id: native-select-browser"))!;
   const uploads = uploadSteps(webBrowser);
   const upload = uploads.find((step) => artifactName(step) === "daynight-web-assistant-browser")!;
   const draftUpload = uploads.find((step) => artifactName(step) === "daynight-web-session-drafts-browser")!;
-  assert.ok(install); assert.ok(browser); assert.ok(drafts); assert.ok(upload); assert.ok(draftUpload);
-  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser", "daynight-web-session-drafts-browser"]);
+  const nativeSelectUpload = uploads.find((step) => artifactName(step) === "daynight-web-native-select-browser")!;
+  assert.ok(install); assert.ok(browser); assert.ok(drafts); assert.ok(nativeSelect); assert.ok(upload); assert.ok(draftUpload); assert.ok(nativeSelectUpload);
+  assert.deepEqual(uploads.map(artifactName), ["daynight-web-assistant-browser", "daynight-web-session-drafts-browser", "daynight-web-native-select-browser"]);
   assert.doesNotMatch(webBrowser, /ci\.mts quality|id: web-quality|\.tmp\/coverage/);
   assert.match(webBrowser, /PLAYWRIGHT_BROWSERS_PATH: \$\{\{ github.workspace \}\}\/\.tmp\/playwright-browsers/);
   assert.match(install, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright install --with-deps chromium$/m);
@@ -423,6 +425,14 @@ test("Web browser owns frontend Playwright regressions and evidence without capa
   assert.deepEqual(artifactPaths(draftUpload), ["packages/daynight-web/.tmp/session-drafts-browser/results.json", "packages/daynight-web/.tmp/session-drafts-browser/results/"]);
   assert.match(draftUpload, /^          include-hidden-files: true$/m);
   assert.match(draftUpload, /^          if-no-files-found: error$/m);
+  assert.match(nativeSelect, /^        run: pnpm --filter @codetreker\/daynight-web exec playwright test --config tests\/navigation\/native-select-playwright.config.ts$/m);
+  assert.ok(webBrowser.indexOf(install) < webBrowser.indexOf(nativeSelect));
+  assert.ok(webBrowser.indexOf(nativeSelect) < webBrowser.indexOf(nativeSelectUpload));
+  assert.doesNotMatch(nativeSelect, /continue-on-error|passWithNoTests|--grep|--shard|--update-snapshots|if:/);
+  assert.match(nativeSelectUpload, /^        if: \$\{\{ always\(\) && steps.native-select-browser.outcome != 'skipped' \}\}$/m);
+  assert.deepEqual(artifactPaths(nativeSelectUpload), [".tmp/native-select-browser/results.json", ".tmp/native-select-browser/results/"]);
+  assert.match(nativeSelectUpload, /^          include-hidden-files: true$/m);
+  assert.match(nativeSelectUpload, /^          if-no-files-found: error$/m);
 });
 
 test("selected Web validation requires actual quality success", () => {
