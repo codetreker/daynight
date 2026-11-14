@@ -2,7 +2,7 @@
 .task-search-form { display: flex; gap: .55rem; align-items: stretch; }
 .task-search-input-wrap { display: flex; align-items: center; gap: .55rem; flex: 1; min-width: 0; padding: 0 .75rem; border: 1px solid var(--border, #d5dbe5); border-radius: .55rem; background: var(--surface, #fff); }
 .task-search-input-wrap:focus-within { outline: 2px solid var(--task-focus); outline-offset: 1px; }
-.task-search-input-wrap input { border: 0; outline: 0; background: transparent; padding: .7rem 0; width: 100%; min-width: 0; font: inherit; color: inherit; }
+.task-search-input-wrap input { border: 0; outline: 0; background: transparent; padding: .7rem 0; width: 100%; min-width: 0; font: inherit; font-size: 12px; color: inherit; }
 .task-search-input-wrap input::-webkit-search-cancel-button { display: none; }
 .task-search-clear { border: 0; background: transparent; font-size: 1.3rem; cursor: pointer; color: inherit; }
 .task-search-help-button { min-width: 2.7rem; }
