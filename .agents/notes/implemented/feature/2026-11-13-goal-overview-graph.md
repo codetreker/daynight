@@ -16,8 +16,10 @@ The project Goal row opens a graph of every direct Task and each distinct,
 accessible direct prerequisite outside the Goal. Edges retain their actual
 ordinary or external classification and end at a member; external context does
 not recursively expand. Every card opens its Task details. The graph shares the
-canvas, layout and dialog mechanisms with ordinary chains while owning its own
-complete projection and full-bounds framing. Goal and chain resource UUIDs use
+canvas and dialog mechanisms with ordinary chains while owning its complete
+projection, compact layout and framing. The original implementation shared the
+chain layout and fitted full bounds on opening; the [compact layout decision](../architecture/2026-11-14-compact-goal-graph-layout.md)
+replaces that choice to preserve readability. Goal and chain resource UUIDs use
 the existing history witness and project-scoped direction preference.
 
 The [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
@@ -49,5 +51,5 @@ The existing chain graph remains available for navigating that context.
 Readers see the full Goal scope and direct external prerequisites without
 changing the background list. Complete DOM and layout costs grow with the full
 projection; unlike a chain graph, this view does not progressively limit its
-initial node set. The viewport must accommodate the full bounds even when that
-requires a very small zoom, with pan and zoom available for detail reading.
+initial node set. The initial viewport preserves readable scale, while explicit
+overview can fit the full bounds at a smaller zoom.

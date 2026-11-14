@@ -2694,10 +2694,12 @@ keep their existing identity/semantics. The
 [paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
 owns the pinned raster evidence and local-line rationale; the
 [bounded-line extension](../../.agents/notes/archived/bug-fix/2026-10-22-bounded-dashed-dependency-lines.md) records the rationale for the original GPU stroke bound and its added DOM cost.
-Initial placement uses current visible layout bounds after the viewport and positive
+Ordinary chain initial placement uses current visible layout bounds after the viewport and positive
 measured canvas dimensions are ready, fitting within 0.8–1 zoom or anchoring the
 leftmost rank at 0.8 zoom. The root remains vertically centered when already
 leftmost; otherwise the topmost upstream node starts at a 32px canvas inset.
+Goal graphs use a separate compact component and rank-grid layout, with a
+readable initial viewport and an explicit full overview.
 Dependency geometry does not require connection-port DOM or per-edge endpoint readiness.
 Graph-local inspection Context supplies presentation roles while controlled node
 geometry/data and memoized content retain stable references. Memoized chain rows retain stable props while graph inspection and details change
