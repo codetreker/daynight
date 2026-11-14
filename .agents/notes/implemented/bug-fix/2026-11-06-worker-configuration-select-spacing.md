@@ -10,11 +10,20 @@ long localized choices need room to remain separate from the arrow.
 
 ## Decision
 
-Worker configuration selects retain native controls inside a scoped wrapper that
-draws a noninteractive chevron at a fixed inset. The select reserves space for
-the chevron and truncates choices that do not fit. The wrapper also reflects the
-disabled state in its arrow color. The [configuration editor decision](../../archived/architecture/2026-11-04-web-worker-configuration-editor.md)
-records the rationale for the existing configuration and draft behavior.
+The original Worker configuration fix retained native controls inside a scoped
+wrapper drawing a noninteractive chevron at a fixed inset. The select reserved
+space for the chevron and truncated choices that did not fit; the wrapper also
+reflected the disabled state in its arrow color. This gave the four configuration
+select types common geometry without changing other field consumers.
+
+The [shared native select decision](../architecture/2026-11-14-shared-native-select.md)
+owns the reusable replacement. Worker configuration now uses its `form`/`fill`
+variant, including the later control-mode field; the local wrapper and arrow
+rules have no remaining ownership. The configuration editor retains its values,
+inheritance, draft and save behavior. In particular, the real control-mode select
+ref and layout effect preserve no selection with exactly the `herdr` and `web`
+options. The [configuration editor decision](../../archived/architecture/2026-11-04-web-worker-configuration-editor.md)
+records the original configuration and draft rationale.
 
 ## Alternatives
 
@@ -26,7 +35,9 @@ reimplement selection, keyboard, focus and disabled behavior for a visual fix.
 
 ## Consequences
 
-All four Worker configuration select types share the same arrow geometry without
-changing other field consumers. Long selected labels may be truncated when space
-is limited; their full options remain available in the native menu. The arrow's
-contrast and placement need verification in disabled and forced-color modes.
+The original fixed-inset decision remains the reason for drawing a decorative
+arrow while preserving the native control. Its geometry and disabled and
+forced-color treatments are now maintained by the shared component. Worker
+browser regressions check that consumer integration and form layout continue to
+use that owner. Long selected labels may be truncated when space is limited;
+their full options remain available in the native menu.

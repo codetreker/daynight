@@ -60,8 +60,9 @@ This generalizes the geometry choice recorded in the
 [Worker spacing decision](../bug-fix/2026-11-06-worker-configuration-select-spacing.md)
 and the archived [language selector decision](../../archived/bug-fix/2026-11-04-language-selector-spacing.md).
 Their original reason remains valid: text padding cannot set a browser-drawn
-arrow's inset. The Worker record still owns its existing local implementation;
-the shared component owns the reusable presentation contract. The
+arrow's inset. The Worker record preserves the original local-wrapper choice and
+its rationale; the shared component owns current Worker presentation and the
+reusable contract. The
 [PR arrow decision](../bug-fix/2026-11-14-pr-filter-arrow-alignment.md) records
 the earlier local implementation and its replacement.
 
@@ -104,6 +105,12 @@ container modes support touch-sized forms without enlarging ordinary compact
 controls. Bot settings use their reading container width independently of the
 viewport, and shared fullscreen keyboard handling covers selects outside the
 input form. Native popup cancellation keeps current values and drafts intact.
+
+Worker configuration fields use the form/fill variant; the personal prompt
+preview uses filter/content. Their caller-owned drafts, inheritance and save
+timing remain separate from presentation. Control-mode adoption retains a real
+select ref with exactly the `herdr` and `web` options. Its nullable draft keeps
+no selection through the caller-owned layout effect.
 
 The extra wrapper must remain shrinkable and match the control's height.
 Inherited fieldset disabling, hidden state and direction must also affect the

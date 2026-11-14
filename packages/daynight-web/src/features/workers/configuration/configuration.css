@@ -30,12 +30,7 @@
 .worker-configuration .field .configuration-toggle input { width: 16px; height: 16px; margin: 2px 0 0; padding: 0; flex: none; accent-color: var(--indigo); }
 .configuration-toggle-detail { margin: 7px 0 0 26px; font-size: 11px; color: var(--muted); line-height: 1.8; }
 .configuration-field-detail { margin: 7px 0 0; font-size: 11px; color: var(--muted); line-height: 1.8; }
-.config-select { display: block; position: relative; min-width: 0; }
-.config-select::after { content: ""; position: absolute; right: 14px; top: calc(50% - 5px); width: 7px; height: 7px; border-right: 1.4px solid currentColor; border-bottom: 1.4px solid currentColor; transform: rotate(45deg); color: #435068; pointer-events: none; }
-.config-select:has(select:disabled)::after { color: #9299a9; }
-@media (forced-colors: active) { .config-select:has(select:disabled)::after { color: GrayText; } }
-.worker-configuration .field .config-select select { appearance: none; line-height: 16px; padding-right: 40px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.worker-configuration .field :is(input, select, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
+.worker-configuration .field :is(input, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
 .worker-configuration .field textarea { resize: vertical; min-height: 84px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; line-height: 1.7; }
 .field-unit { display: flex; align-items: center; gap: 9px; }
 .field-unit input { flex: 1; min-width: 0; }
@@ -85,7 +80,7 @@
 .project-native summary:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; border-radius: 3px; }
 .project-native .config-grid { padding-top: 16px; }
 .project-native .field label { font-size: 11px; }
-.project-native .field .config-select + :is(input, textarea) { margin-top: 8px; }
+.project-native .field .native-select + :is(input, textarea) { margin-top: 8px; }
 .native-inheritance-note { grid-column: 1 / -1; margin: -4px 0 0; color: #7d889b; font-size: 10px; line-height: 1.8; }
 .project-choices { margin-top: 17px; }
 .project-choice { display: flex; align-items: flex-start; gap: 12px; border: 1px solid #e5e8ee; border-radius: 7px; padding: 13px; margin-bottom: 9px; cursor: pointer; min-width: 0; }

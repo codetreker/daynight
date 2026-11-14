@@ -9,13 +9,13 @@ const team = { ...personal, version: 1, createdAt: WORKER_TIME, updatedAt: WORKE
 const project = { id: projectId, name: 'Alpha project with a long name for narrow screens', repoUrl: 'https://example.test/alpha.git', settings: { version: 1, executionWarningMinutes: 60 }, ownership: { teamId: personalId, version: 1 }, createdAt: WORKER_TIME, updatedAt: WORKER_TIME };
 
 const install = async (page: Page) => {
-  const value = { ...configurationValue(), native: { agent: 'codex' as const, model: 'model', args: ['--test'] }, projects: [{ projectId, nativeOverrides: {} }, { projectId: inaccessibleId, nativeOverrides: {} }] };
+  const value = { ...configurationValue(), agentControlMode: null, native: { agent: 'codex' as const, model: 'model', args: ['--test'] }, projects: [{ projectId, nativeOverrides: {} }, { projectId: inaccessibleId, nativeOverrides: {} }] };
   let release!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; });
   const writes: unknown[] = [];
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    const send = (json: unknown) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1' } });
+    const send = (json: unknown) => route.fulfill({ json, headers: { 'Daynight-User-ID': WORKER_USER, 'Daynight-Worker-Configuration': '1', 'Daynight-Worker-Control-Mode': '1' } });
     if (path === '/api/v1/me') return send(profile);
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send(team);
@@ -36,7 +36,18 @@ const install = async (page: Page) => {
 // Examine the compositor's pixels: the arrow must be visible and inset, with an
 // empty interval separating it from text even when the selected label is long.
 const paintedArrow = async (page: Page, select: Locator) => {
-  const png = await select.screenshot({ scale: 'css' });
+  const wrapper = select.locator('..');
+  await expect(wrapper).toHaveClass('native-select');
+  await expect(wrapper).toHaveAttribute('data-density', 'form');
+  await expect(wrapper).toHaveAttribute('data-layout', 'fill');
+  const geometry = await wrapper.evaluate(element => {
+    const control = element.querySelector('select')!.getBoundingClientRect();
+    const arrow = element.querySelector('.native-select__arrow')!.getBoundingClientRect();
+    return { inset: control.right - arrow.right, center: arrow.y + arrow.height / 2 - control.y - control.height / 2, width: arrow.width, height: arrow.height };
+  });
+  expect(geometry).toEqual({ inset: 12, center: 0, width: 10, height: 10 });
+  await expect(wrapper.locator('.native-select__arrow')).toHaveAttribute('aria-hidden', 'true');
+  const png = await wrapper.screenshot({ scale: 'css' });
   return page.evaluate(async data => {
     const image = new Image(); image.src = `data:image/png;base64,${data}`; await image.decode();
     const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
@@ -44,7 +55,7 @@ const paintedArrow = async (page: Page, select: Locator) => {
     const pixels = context.getImageData(0, 0, image.width, image.height).data;
     const dark = (x: number, y: number) => { const i = (y * image.width + x) * 4; return Math.max(pixels[i]!, pixels[i + 1]!, pixels[i + 2]!) < 200; };
     const arrow: number[] = [], gap: number[] = [];
-    for (let y = 8; y < image.height - 8; y++) for (let x = image.width - 39; x < image.width - 4; x++) {
+    for (let y = 8; y < image.height - 8; y++) for (let x = image.width - 29; x < image.width - 4; x++) {
       if (dark(x, y)) (x < image.width - 24 ? gap : arrow).push(x);
     }
     return { width: image.width, height: image.height, left: Math.min(...arrow), right: Math.max(...arrow), count: arrow.length, gapCount: gap.length };
@@ -63,7 +74,10 @@ for (const scenario of [
     const agent = page.locator('#config-native-agent'); await expect(agent).toHaveValue('codex');
     await page.locator('.project-native summary').first().click();
     await page.locator('.project-native summary').nth(1).click();
-    const selectors = [agent, ...['agent', 'model-mode', 'args-mode'].map(suffix => page.locator(`#config-project-${projectId}-${suffix}`))];
+    const mode = page.locator('#config-agentControlMode');
+    await expect(mode.locator('option')).toHaveText(['herdr', 'web']);
+    expect(await mode.evaluate(element => (element as HTMLSelectElement).selectedIndex)).toBe(-1);
+    const selectors = [agent, mode, ...['agent', 'model-mode', 'args-mode'].map(suffix => page.locator(`#config-project-${projectId}-${suffix}`))];
     for (const select of selectors) {
       await expect(select).toBeVisible();
       const bounds = await paintedArrow(page, select);
@@ -80,7 +94,12 @@ for (const scenario of [
     }
     await expect(page.locator('#config-native-model')).toHaveValue('');
     await expect(page.locator('#config-native-args')).toHaveValue('[]');
-    await agent.focus(); await page.keyboard.press('ArrowUp'); await expect(agent).toBeFocused();
+    await agent.scrollIntoViewIfNeeded();
+    const arrow = (await agent.locator('..').locator('.native-select__arrow').boundingBox())!;
+    await page.mouse.click(arrow.x + arrow.width / 2, arrow.y + arrow.height / 2);
+    await expect.poll(() => agent.evaluate(element => element.matches(':open'))).toBe(true);
+    await page.keyboard.press('Escape');
+    await agent.focus(); await page.keyboard.press('ArrowUp'); await expect(agent).toHaveValue('copilot');
     await page.screenshot({ path: testInfo.outputPath(`${scenario.locale}-${scenario.width}.png`), fullPage: true });
     await page.locator('.project-native select').first().selectOption('copilot');
     await page.locator(`#config-project-${projectId}-model-mode`).selectOption('default');
