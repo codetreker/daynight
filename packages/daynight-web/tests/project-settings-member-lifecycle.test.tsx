@@ -5,6 +5,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
 import { navigate } from '../src/app/router';
+import { TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { personalTeamPage } from './helpers/team';
 import { directAccessFixture, viewerHeaders } from './helpers/taskSync';
@@ -99,12 +100,67 @@ it.each(['lost', 'retained'] as const)('keeps a safe confirmed waiting notice af
   await waitFor(() => expect(app.fetcher.mock.calls.some(([url, init]) => url.endsWith(`/grants/${otherId}`) && init?.method === 'DELETE')).toBe(true));
   act(() => navigate('/projects'));
   app.denyProject();
+  const accessReply = Promise.withResolvers<Response>();
+  const accessRequested = vi.fn();
+  const fetch = app.fetcher.getMockImplementation()!;
+  app.fetcher.mockImplementation((url, init) => {
+    if (url === `/api/v1/projects/${projectId}/access`) {
+      accessRequested();
+      return accessReply.promise.then(response => response.clone());
+    }
+    return fetch(url, init);
+  });
   act(() => navigate(`/projects/${projectId}/settings?tab=execution`));
   await screen.findByText('Project not found or access unavailable.');
+  await waitFor(() => expect(accessRequested).toHaveBeenCalled());
+  const expectHiddenCollaborator = () => {
+    const email = screen.getByText('collaborator@example.test');
+    const person = email.closest('.person');
+    expect(person).not.toBeNull();
+    expect(within(person as HTMLElement).getByText('Private collaborator')).not.toBeVisible();
+    expect(email).not.toBeVisible();
+    expect(email.closest('[hidden]')).not.toBeNull();
+    expect(email.closest('[inert]')).not.toBeNull();
+  };
+  expectHiddenCollaborator();
+  const expectCollaboratorRemoved = () => {
+    expect(screen.queryByText('Private collaborator')).toBeNull();
+    expect(screen.queryByText('collaborator@example.test')).toBeNull();
+  };
+
+  const revoked = vi.fn();
+  const observeRevocation = (scope: TaskCacheScope) => {
+    const unsubscribe = scope.subscribe(event => {
+      if (event.projectId !== projectId || !event.accessRevoked) return;
+      unsubscribe(); revoked();
+    });
+  };
+  if (actorAccess === 'lost') {
+    const suspend = TaskCacheScope.prototype.suspendProject;
+    vi.spyOn(TaskCacheScope.prototype, 'suspendProject').mockImplementation(function (this: TaskCacheScope, id) {
+      observeRevocation(this); return suspend.call(this, id);
+    });
+  } else {
+    const revoke = TaskCacheScope.prototype.revokeProject;
+    vi.spyOn(TaskCacheScope.prototype, 'revokeProject').mockImplementation(function (this: TaskCacheScope, ...args) {
+      observeRevocation(this); return revoke.apply(this, args);
+    });
+  }
   app.denyAccess();
+  accessRequested.mockClear();
   await act(async () => app.write.resolve(json({ projectId, userId: otherId, deleted: true, actorAccess: actorAccess === 'lost' ? null : access })));
   expect(await screen.findByText('The change was confirmed; its details are available after access is verified.')).toBeVisible();
   expect(screen.queryByText('Direct grant for Private collaborator removed.')).toBeNull();
-  for (const element of screen.queryAllByText('Private collaborator')) expect(element).not.toBeVisible();
-  expect(screen.queryByText('collaborator@example.test')).toBeNull();
+  if (actorAccess === 'lost') {
+    await waitFor(() => expect(revoked).toHaveBeenCalled());
+    await waitFor(expectCollaboratorRemoved);
+  } else {
+    await waitFor(() => expect(accessRequested).toHaveBeenCalled());
+    expectHiddenCollaborator();
+  }
+  await act(async () => accessReply.resolve(unavailable()));
+  await waitFor(() => expect(revoked).toHaveBeenCalled());
+  await waitFor(expectCollaboratorRemoved);
+  expect(screen.queryByText('Direct grant for Private collaborator removed.')).toBeNull();
+  expect(screen.getByText('The change was confirmed; its details are available after access is verified.')).toBeVisible();
 });
