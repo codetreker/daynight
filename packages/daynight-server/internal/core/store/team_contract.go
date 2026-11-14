@@ -32,6 +32,8 @@ type TeamWriteDAO interface {
 	HasProjects(context.Context) (bool, error)
 	Delete(context.Context) error
 	Member(context.Context, string) (model.TeamMember, error)
+	// MemberByExternalID finds only an existing membership in this scoped Team.
+	MemberByExternalID(context.Context, string) (model.TeamMember, error)
 	AdminCount(context.Context) (int64, error)
 	SetMemberRole(context.Context, string, model.ProjectRole) (model.TeamMember, error)
 	RemoveMember(context.Context, string) error

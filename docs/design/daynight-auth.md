@@ -749,6 +749,15 @@ write_outcome_unknown，确认提交后的响应丢失不重复执行操作。Pe
 独立 Project grant 均保持原规则。[直接成员决策](../../.agents/notes/implemented/feature/2026-11-13-direct-team-members.md)
 拥有三阶段边界与明确角色收敛的取舍。
 
+### 按外部身份解析 Team 成员
+
+`POST /api/v1/teams/{teamId}/members/resolve` 复用直接成员的主体和外部身份校验，
+但仅接受外部身份键。`DirectMembers` 在一个原 Team 作用域内检查真实凭据，
+由 `core/team` 检查当前普通 Team admin，再通过同事务 DAO 将既有身份与该 Team 的成员关系关联。
+身份或成员不存在均返回 null；其他错误保持拒绝。读取完成后以新鲜时间重验凭据，
+事务确认完成才输出结果。该路径不调用用户初始化或成员写入，也不把读取结果作为未来写操作的授权。
+[解析决策](../../.agents/notes/implemented/feature/2026-11-14-team-member-resolution.md)记录接口取舍。
+
 ### Team 邀请
 
 Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。接受按 Team →

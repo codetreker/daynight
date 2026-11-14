@@ -21,6 +21,17 @@ type DirectMemberResult struct {
 }
 
 func ValidateAddMember(p model.Principal, id, expected string, role model.ProjectRole) (string, error) {
+	id, err := validateMemberActor(p, id, expected)
+	if err != nil {
+		return "", err
+	}
+	if role != model.ProjectAdmin && role != model.ProjectMemberRole {
+		return "", invalidInput("Role must be admin or member.")
+	}
+	return id, nil
+}
+
+func validateMemberActor(p model.Principal, id, expected string) (string, error) {
 	if err := model.RequirePrincipal(p); err != nil {
 		return "", err
 	}
@@ -36,9 +47,6 @@ func ValidateAddMember(p model.Principal, id, expected string, role model.Projec
 	}
 	if id == uuid.Nil.String() {
 		return "", invalidInput("Team ID must be a nonzero canonical UUID.")
-	}
-	if role != model.ProjectAdmin && role != model.ProjectMemberRole {
-		return "", invalidInput("Role must be admin or member.")
 	}
 	return id, nil
 }
