@@ -148,17 +148,84 @@ for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details 
   await expect(web).toContainText('/opt/daynight/runtime/copilot'); await expect(software).not.toContainText('/opt/draft/copilot');
 });
 
+for (const width of [1440, 390, 320]) for (const locale of ['zh-CN', 'en'] as const) {
+  test(`${width}px ${locale} software details use the full row`, async ({ page, context }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    const long = `/Users/测试 用户/${'long-installation-directory/'.repeat(14)}bin/codex`;
+    const actual = toolActual('codex', 'web', { entryPath: long, executablePath: long, interpreterPath: null });
+    const state = await installTools(page, { locale });
+    state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { actual }), toolObservation('copilot', 'web'), toolObservation('herdr', 'herdr')]));
+    await page.goto(`/workers/${targetWorker}`);
+    for (const tool of ['codex', 'copilot', 'herdr']) {
+      const row = page.locator(`.worker-software-tool-paths[data-tool="${tool}"]`);
+      const details = row.locator('.worker-tool-software-details');
+      await details.locator(':scope > summary').focus(); await page.keyboard.press('Enter');
+      await expect(details).toHaveAttribute('open', '');
+      const geometry = await row.evaluate(element => {
+        const rowBox = element.getBoundingClientRect();
+        const name = element.querySelector('dt')!.getBoundingClientRect();
+        const summary = element.querySelector('dd')!.getBoundingClientRect();
+        const detail = element.querySelector('.worker-tool-software-details')!.getBoundingClientRect();
+        const facts = element.querySelector('.worker-tool-path-details')!.getBoundingClientRect();
+        return { row: [rowBox.left, rowBox.right], detail: [detail.left, detail.right], facts: [facts.left, facts.right], nameTop: name.top, summaryTop: summary.top };
+      });
+      for (const edges of [geometry.detail, geometry.facts]) {
+        expect(Math.abs(edges[0]! - geometry.row[0]!)).toBeLessThan(1);
+        expect(Math.abs(edges[1]! - geometry.row[1]!)).toBeLessThan(1);
+      }
+      expect(Math.abs(geometry.nameTop - geometry.summaryTop)).toBeLessThan(1);
+    }
+    const codex = page.locator('.worker-software-tool-paths[data-tool="codex"]');
+    await expect(codex.locator('[data-selection-role="actual"] .worker-tool-path-value')).toHaveCount(2);
+    await expect(codex).toHaveCSS('row-gap', '0px');
+    const entry = codex.locator('[data-selection-role="actual"] .worker-tool-path-value').first();
+    await entry.locator('summary').focus(); await page.keyboard.press('Enter');
+    await expect(entry.locator('code')).toHaveText(long);
+    await entry.locator('button').click();
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(long);
+    await noOverflow(page);
+    await codex.screenshot({ path: info.outputPath(`software-${width}-${locale}.png`) });
+    await info.attach('software-layout', { path: info.outputPath(`software-${width}-${locale}.png`), contentType: 'image/png' });
+  });
+}
+
+test('software path copy failure leaves the full value selectable', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await installTools(page);
+  await page.goto(`/workers/${targetWorker}`);
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } }));
+  const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
+  await row.locator('.worker-tool-software-details > summary').click();
+  const path = row.locator('[data-selection-role="actual"] .worker-tool-path-value').first();
+  await path.locator('summary').click(); await path.locator('button').click();
+  await expect(path.getByRole('status')).toHaveText('复制失败，请选择完整路径后复制。');
+  const selection = await path.locator('code').evaluate(element => {
+    const range = document.createRange(); range.selectNodeContents(element);
+    const selected = window.getSelection()!; selected.removeAllRanges(); selected.addRange(range);
+    return selected.toString();
+  });
+  expect(selection).toBe('/opt/installed/bin/codex');
+});
+
 for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'en' }] as const) {
   test(`${sample.width}px ${sample.locale} software geometry stays stable throughout visibility revalidation`, async ({ page }, info) => {
     await page.setViewportSize({ width: sample.width, height: 900 });
     const state = await installTools(page, { locale: sample.locale }); await page.goto(`/workers/${targetWorker}`);
     const row = page.locator('.worker-software-tool-paths[data-tool="codex"]');
     const expanded = row.locator('.worker-tool-software-details'); await expanded.locator(':scope > summary').click();
+    const other = row.locator('.worker-tool-other-context');
+    await other.locator(':scope > summary').focus(); await page.keyboard.press('Enter');
     const path = row.locator('[data-context="web"] [data-selection-role="actual"] .worker-tool-path-value').first();
     const focus = path.locator(':scope > summary'); await focus.click(); await focus.focus();
+    const selected = await path.locator('code').evaluate(element => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+      return selection.toString();
+    });
     await row.evaluate(element => {
       const owner = window as unknown as { toolSoftwareNodes: Element[] };
-      owner.toolSoftwareNodes = [element, element.closest('.worker-panel')!, element.querySelector('.worker-tool-software-details')!, element.querySelector('.worker-tool-path-value')!];
+      owner.toolSoftwareNodes = [element, element.closest('.worker-panel')!, element.querySelector('.worker-tool-software-details')!, element.querySelector('.worker-tool-path-value')!, element.querySelector('.worker-tool-other-context')!];
     });
     const measure = () => row.evaluate(element => {
       const software = element.closest('.worker-panel')!.getBoundingClientRect();
@@ -168,10 +235,11 @@ for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'e
     const before = await measure(), gate = deferredRead(); state.workerGate = gate;
     const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.request().method() === 'GET');
     const check = async () => {
-      await expect(focus).toBeFocused(); await expect(expanded).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', '');
+      await expect(focus).toBeFocused(); await expect(expanded).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', ''); await expect(other).toHaveAttribute('open', '');
+      expect(await page.evaluate(() => window.getSelection()!.toString())).toBe(selected);
       expect(await row.evaluate(element => {
         const nodes = (window as unknown as { toolSoftwareNodes: Element[] }).toolSoftwareNodes;
-        return [element, element.closest('.worker-panel'), element.querySelector('.worker-tool-software-details'), element.querySelector('.worker-tool-path-value')].every((node, index) => node === nodes[index]);
+        return [element, element.closest('.worker-panel'), element.querySelector('.worker-tool-software-details'), element.querySelector('.worker-tool-path-value'), element.querySelector('.worker-tool-other-context')].every((node, index) => node === nodes[index]);
       })).toBe(true);
       const current = await measure();
       expect(current.softwareHeight).toBeCloseTo(before.softwareHeight, 4);
@@ -273,7 +341,7 @@ for (const width of [1440, 390, 320]) {
     state.detail = reportedDetail(toolReport([toolObservation('codex', 'web', { target: choice, actual })]));
     await openToolConfiguration(page);
     const summary = toolsSummary(page); await summary.focus(); await page.keyboard.press('Enter');
-    await expect(field(page)).toBeVisible(); await field(page).focus(); await page.keyboard.press('Tab');
+    await expect(field(page)).toBeEnabled(); await field(page).focus(); await page.keyboard.press('Tab');
     await expect(configuration(page).getByRole('button', { name: '恢复自动', exact: true }).first()).toBeFocused();
     const entry = facts(page).locator('[data-selection-role="actual"] .worker-tool-path-value').first();
     await entry.locator('summary').click(); await expect(entry.locator('code')).toHaveText(long);
