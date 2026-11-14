@@ -51,7 +51,7 @@ const snapshot = (items = seeds, id = project): TaskGraph => {
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
-    summary: { proposed: 0, total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
+    summary: { proposed: tasks.filter((item) => item.status === 'proposed').length, total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
       done: tasks.filter((item) => item.status === 'done').length, cancelled: tasks.filter((item) => item.status === 'cancelled').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
 };
@@ -443,7 +443,7 @@ describe('project task views', () => {
       seed('00000000-0000-4000-8000-000000000005', 'done'), seed('00000000-0000-4000-8000-000000000006', 'todo', ['00000000-0000-4000-8000-000000000005']), seed('00000000-0000-4000-8000-000000000007', 'done'),
     ]));
     mount(); await findTab('chains');
-    expectUnfinishedCounts(4, 1);
+    expectUnfinishedCounts(2, 1);
     const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
     expect(stats.querySelectorAll('.stat')).toHaveLength(7);
     expect(stats).toHaveTextContent('待处理5等待开始');
@@ -456,7 +456,7 @@ describe('project task views', () => {
     expect(row('00000000-0000-4000-8000-000000000004').querySelector('.root-status')).toHaveClass('graph-status-todo');
     expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('可开始');
     expect(row('00000000-0000-4000-8000-000000000007')).toBeVisible();
-    expectUnfinishedCounts(4, 1);
+    expectUnfinishedCounts(2, 1);
   });
 
   it('shows confirmed platform requirements in standalone rows without changing readiness', async () => {
@@ -503,28 +503,28 @@ describe('project task views', () => {
     expect(row('00000000-0000-4000-8000-000000000002').querySelector('.root-status')).toHaveTextContent('待处理');
   });
 
-  it('counts unfinished tasks once across ordinary components and keeps both counts independent of visible rows', async () => {
+  it('counts each unfinished ordinary chain once and keeps both counts independent of visible rows', async () => {
     graphRequest.mockResolvedValue(snapshot([
       seed('00000000-0000-4000-8000-000000000001', 'done'), seed('00000000-0000-4000-8000-000000000002', 'done'), seed('00000000-0000-4000-8000-000000000003', 'in_progress', ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']), seed('00000000-0000-4000-8000-000000000004', 'todo', ['00000000-0000-4000-8000-000000000003']),
       seed('00000000-0000-4000-8000-000000000005'), seed('00000000-0000-4000-8000-000000000006', 'todo', ['00000000-0000-4000-8000-000000000005']), seed('00000000-0000-4000-8000-000000000007'), seed('00000000-0000-4000-8000-000000000008', 'in_progress'), seed('00000000-0000-4000-8000-000000000009', 'done'),
       seed('00000000-0000-4000-8000-000000000010', 'done'), seed('00000000-0000-4000-8000-000000000011', 'done', ['00000000-0000-4000-8000-000000000010']),
     ]));
     mount(); await findTab('chains');
-    expectUnfinishedCounts(4, 2);
-    expect(tab('chains').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务数');
+    expectUnfinishedCounts(2, 2);
+    expect(tab('chains').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务链数');
     expect(document.querySelectorAll('.root-toggle')).toHaveLength(3);
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000002')).toBeNull();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000010')).toBeVisible();
     expect(document.querySelectorAll('.root-toggle')).toHaveLength(3);
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     fireEvent.click(tab('standalone'));
     expect([...document.querySelectorAll('.standalone-row')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000008', 'standalone-task-00000000-0000-4000-8000-000000000007', 'standalone-task-00000000-0000-4000-8000-000000000009']);
     expect(tab('standalone').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务数');
     expect(row('00000000-0000-4000-8000-000000000009')).toBeVisible();
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     fireEvent.click(tab('chains'));
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
 
@@ -579,14 +579,14 @@ describe('project task views', () => {
     await waitFor(() => expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000003')).toBeNull());
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000005')).toBeNull();
-    expectUnfinishedCounts(3, 0);
+    expectUnfinishedCounts(1, 0);
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '刷新失败' });
     expect(await screen.findByText('任务 00000000-0000-4000-8000-000000000004')).toBeVisible();
-    expectUnfinishedCounts(3, 0);
+    expectUnfinishedCounts(1, 0);
     fireEvent.click(tab('chains'));
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
-    expectUnfinishedCounts(3, 0);
+    expectUnfinishedCounts(1, 0);
   });
 
   it('updates assignee counts after a topology and ownership refresh while retaining the last snapshot on failure', async () => {
@@ -682,7 +682,10 @@ describe('project task views', () => {
 
   it('remembers the selected view while chain graphs reopen only after a click', async () => {
     let view = mount(); await findTab('chains');
-    await openChain(); closeChain();
+    expectUnfinishedCounts(1, 2);
+    await openChain();
+    expect(document.querySelector('#project-task-tab-chains .graph-count-pill')).toHaveTextContent(/^1$/);
+    closeChain(); expectUnfinishedCounts(1, 2);
     fireEvent.click(tab('standalone'));
     cleanup(); view = mount(); await findTab('standalone');
     expect(tab('standalone')).toHaveAttribute('aria-selected', 'true');
@@ -749,7 +752,7 @@ describe('project task views', () => {
     mount(); await findTab('standalone'); const { trigger, dialog } = await openStandalone(canonicalTask(3));
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无独立任务' });
-    expectUnfinishedCounts(2, 0);
+    expectUnfinishedCounts(1, 0);
     expect(trigger.isConnected).toBe(false); expect(dialog).toBeVisible();
     expect(getTask).toHaveBeenCalledOnce();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
@@ -1651,7 +1654,7 @@ describe('status-first project presentation', () => {
     fireEvent.click(tab('standalone'));
     expect(presentedIds('standalone')).toEqual([102, 101, 104, 103, 106, 105].map(canonicalTask));
     expect(JSON.stringify(value.tasks)).toBe(original);
-    expectUnfinishedCounts(7, 4);
+    expectUnfinishedCounts(4, 4);
     expect(graphRequest).toHaveBeenCalledOnce();
   });
 
@@ -1720,7 +1723,7 @@ describe('status-first project presentation', () => {
     expect(presentedIds('standalone')).toEqual([102, 103, 101].map(canonicalTask));
     fireEvent.click(tab('chains'));
     expect(presentedIds('chains')).toEqual([3, 5, 1].map(canonicalTask));
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     expect(graphRequest).toHaveBeenCalledTimes(2);
   });
 });

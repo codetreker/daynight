@@ -27,7 +27,7 @@ its data flow.
 ## Alternatives
 
 **Keep all Goal statuses in the badge.** This matches the list's historical
-scope but counts work that has already ended, unlike the unfinished Task badges.
+scope but counts work that has already ended, unlike the other unfinished-work badges.
 
 **Count the filtered or visible Goal list.** Status and label filters, search or
 pagination would change the badge even when the underlying unfinished work had

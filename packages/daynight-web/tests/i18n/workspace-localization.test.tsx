@@ -155,6 +155,9 @@ describe("workspace localization", () => {
     await selectTaskList();
     await user.click(await screen.findByRole("tab", { name: "Standalone tasks" }));
     const standaloneTab = screen.getByRole("tab", { name: "Standalone tasks" });
+    const chainTab = screen.getByRole("tab", { name: "Task chains" });
+    expect(chainTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "Unfinished task chain count");
+    expect(standaloneTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "Unfinished task count");
     const filter = screen.getByRole("combobox", { name: "Status" });
     await user.selectOptions(filter, "todo");
     const row = screen.getByRole("button", { name: /Task 用户数据/ });
@@ -163,6 +166,9 @@ describe("workspace localization", () => {
     const selector = screen.getByRole("combobox", { name: /language/i });
     await user.selectOptions(selector, "zh-CN");
     expect(screen.getByRole("tab", { name: "独立任务" })).toBe(standaloneTab);
+    expect(screen.getByRole("tab", { name: "任务链" })).toBe(chainTab);
+    expect(chainTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "未完成任务链数");
+    expect(standaloneTab.querySelector(".graph-count-pill")).toHaveAttribute("title", "未完成任务数");
     expect(standaloneTab).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("combobox", { name: "状态" })).toBe(filter);
     expect(filter).toHaveValue("todo");
