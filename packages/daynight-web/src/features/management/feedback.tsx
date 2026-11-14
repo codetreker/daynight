@@ -17,10 +17,18 @@ export const ManagementError = ({ error, retry }: { readonly error: unknown; rea
 export const identityName = (user: { readonly name: string | null; readonly email: string | null; readonly userId?: string; readonly id?: string }): string =>
   user.name ?? user.email ?? user.userId ?? user.id!;
 
-export const Identity = ({ user, self = false }: { readonly user: { readonly name: string | null; readonly email: string | null; readonly userId?: string; readonly id?: string }; readonly self?: boolean }) => {
+const IdentityAvatar = ({ src, initials }: { readonly src: string | null; readonly initials: string }) => {
+  const [state, setState] = useState<'loading' | 'loaded' | 'failed'>('loading');
+  return <span className="avatar management-avatar" aria-hidden="true">
+    {state !== 'loaded' && initials}
+    {src !== null && src !== '' && state !== 'failed' && <img src={src} alt="" hidden={state !== 'loaded'} onLoad={() => setState('loaded')} onError={() => setState('failed')} />}
+  </span>;
+};
+
+export const Identity = ({ user, self = false }: { readonly user: { readonly name: string | null; readonly email: string | null; readonly avatarUrl: string | null; readonly userId?: string; readonly id?: string }; readonly self?: boolean }) => {
   const { messages: { auth: { management: { common } } } } = useI18n();
   return <div className="person">
-  <span className="avatar" aria-hidden="true">{Array.from(identityName(user)).slice(0, 2).join('').toUpperCase()}</span>
+  <IdentityAvatar key={JSON.stringify([user.userId ?? user.id, user.avatarUrl])} src={user.avatarUrl} initials={Array.from(identityName(user)).slice(0, 2).join('').toUpperCase()} />
   <div><div className="person-name">{identityName(user)}{self && <span className="muted small">{common.self}</span>}</div>{user.email !== null && <div className="person-meta">{user.email}</div>}</div>
 </div>;
 };

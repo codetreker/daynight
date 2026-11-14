@@ -92,6 +92,16 @@ beforeEach(() => {
 });
 
 describe('account credentials', () => {
+  it.each(['https://example.test/avatar.png', 'data:image/png;base64,aW1hZ2U='])('passes the account avatar source to Identity: %s', (avatarUrl) => {
+    render(<AccountPage user={{ ...user, avatarUrl }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
+    const avatar = document.querySelector('.profile-info .management-avatar')!;
+    const image = avatar.querySelector('img')!;
+    expect(avatar).toHaveTextContent('JI'); expect(image).toHaveAttribute('src', avatarUrl); expect(image).not.toBeVisible();
+    fireEvent.load(image);
+    expect(image).toBeVisible(); expect(avatar).not.toHaveTextContent('JI');
+    expect(screen.getByText(user.name!)).toBeVisible(); expect(screen.getByText(user.email!)).toBeVisible();
+  });
+
   it('shows normalized profile, invokes sign out, loads safe errors and retries without representing failure as empty', async () => {
     const signOut = vi.fn();
     vi.mocked(auth.listTokens).mockRejectedValueOnce(new ApiError('server', 500, 'internal_error', 'safe-id'));
@@ -1163,8 +1173,47 @@ describe('participant grants and unconfirmed writes', () => {
 });
 
 describe('management feedback', () => {
+  it('isolates avatar loading and failure by member identity and source', () => {
+    const profile = { userId: 'member-a', name: 'Alice', email: 'alice@example.com', avatarUrl: 'https://example.test/a.png' };
+    const view = render(<Identity user={profile} self />);
+    const avatar = () => view.container.querySelector('.management-avatar')!;
+    const imageA = avatar().querySelector('img')!;
+    expect(avatar()).toHaveAttribute('aria-hidden', 'true'); expect(imageA).toHaveAttribute('alt', '');
+    expect(avatar()).toHaveTextContent('AL'); expect(imageA).not.toBeVisible();
+    fireEvent.error(imageA); expect(avatar().querySelector('img')).toBeNull(); expect(avatar()).toHaveTextContent('AL');
+    view.rerender(<Identity user={{ ...profile }} self />); expect(avatar().querySelector('img')).toBeNull();
+    view.rerender(<Identity user={{ ...profile, avatarUrl: 'https://example.test/b.png' }} self />);
+    const imageB = avatar().querySelector('img')!; expect(imageB).toHaveAttribute('src', 'https://example.test/b.png');
+    fireEvent.load(imageB); fireEvent.error(imageA); expect(imageB).toBeVisible();
+    view.rerender(<Identity user={{ ...profile, avatarUrl: 'https://example.test/b.png' }} self />);
+    expect(avatar().querySelector('img')).toBe(imageB); expect(imageB).toBeVisible();
+    view.rerender(<Identity user={{ ...profile, userId: 'member-b', avatarUrl: 'https://example.test/b.png' }} self />);
+    expect(avatar().querySelector('img')).not.toBe(imageB); expect(avatar()).toHaveTextContent('AL');
+    fireEvent.error(avatar().querySelector('img')!);
+    view.rerender(<Identity user={{ ...profile, userId: 'member-c', avatarUrl: 'https://example.test/b.png' }} self />);
+    expect(avatar().querySelector('img')).not.toBeNull(); expect(screen.getByText(/Alice/)).toHaveTextContent('Alice');
+  });
+
+  it('ignores events from an image replaced while still loading', () => {
+    const profile = { userId: 'member-a', name: 'Alice', email: null, avatarUrl: 'https://example.test/a.png' };
+    const view = render(<Identity user={profile} />);
+    const old = view.container.querySelector('img')!;
+    view.rerender(<Identity user={{ ...profile, avatarUrl: 'https://example.test/b.png' }} />);
+    const current = view.container.querySelector('img')!;
+    fireEvent.load(old); fireEvent.error(old);
+    expect(current).not.toBeVisible(); expect(view.container.querySelector('.management-avatar')).toHaveTextContent('AL');
+    fireEvent.load(current); expect(current).toBeVisible();
+    fireEvent.error(old); expect(current).toBeVisible();
+  });
+
+  it.each([null, ''])('uses local ID initials without an image for source %s', (avatarUrl) => {
+    const view = render(<Identity user={{ id: 'id-only', name: null, email: null, avatarUrl }} />);
+    expect(view.container.querySelector('.management-avatar')).toHaveTextContent('ID');
+    expect(view.container.querySelector('img')).toBeNull(); expect(screen.getByText('id-only')).toBeVisible();
+  });
+
   it('renders only safe error fields and normalized fallback identities', () => {
-    const view = render(<><ManagementError error={new ApiError('server', 401)} /><Identity user={{ name: null, email: null, id: 'id-only' }} /><Identity user={{ name: null, email: 'email-only', userId: 'user-id' }} /><Identity user={{ name: null, email: null, userId: 'user-id' }} /></>);
+    const view = render(<><ManagementError error={new ApiError('server', 401)} /><Identity user={{ name: null, email: null, id: 'id-only', avatarUrl: null }} /><Identity user={{ name: null, email: 'email-only', userId: 'user-id', avatarUrl: null }} /><Identity user={{ name: null, email: null, userId: 'user-id', avatarUrl: null }} /></>);
     expect(screen.getByText('登录状态已失效，请重新登录。')).toBeInTheDocument(); expect(screen.getByText('id-only')).toBeInTheDocument(); expect(screen.getByText('user-id')).toBeInTheDocument();
     view.rerender(<ManagementError error={new ApiError('server', 404)} />); expect(screen.getByRole('alert')).toHaveTextContent('项目不存在');
   });
