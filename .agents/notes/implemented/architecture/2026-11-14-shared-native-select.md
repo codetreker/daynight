@@ -22,15 +22,20 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. A shared popup-state predicate gives enclosing Escape
-handlers a native observation without making the component an event owner.
+an authenticated shell. Worker configuration fields use the form/fill variant;
+the personal prompt preview uses filter/content. Their caller-owned drafts,
+inheritance and save timing remain separate from presentation, and control-mode
+adoption retains a real select ref with two options and no selection. A shared
+popup-state predicate gives enclosing Escape handlers a native observation
+without making the component an event owner.
 
 This generalizes the geometry choice recorded in the
 [Worker spacing decision](../bug-fix/2026-11-06-worker-configuration-select-spacing.md)
 and the archived [language selector decision](../../archived/bug-fix/2026-11-04-language-selector-spacing.md).
 Their original reason remains valid: text padding cannot set a browser-drawn
-arrow's inset. The Worker record still owns its existing local implementation;
-the shared component owns the reusable presentation contract.
+arrow's inset. The Worker record preserves the original local-wrapper choice and
+its rationale; the shared component owns current Worker presentation and the
+reusable contract.
 
 ## Alternatives
 

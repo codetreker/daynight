@@ -59,7 +59,11 @@ Daynight-Worker-Tool-Paths: 1 同样独立协商。HTTP 在业务调用前拒绝
 
 旧协议不接受新正文，旧回执不附加配置字段；配置协议 1 遵循完整扩展结构。协议 2 的有限个人 prompt 批次在原报告提交后独立读取，机制由[个人 prompt 设计](worker-prompts.md#配置报告)拥有。能力仅影响配置交换，不成为 Task/claim 或 inventory 的准入条件。
 
-## Web 保存与发布
+## Web 字段与保存
+
+`ConfigurationControlModeField` 与 `ConfigurationNativeFields` 的全局 Agent、项目 Agent、Model 模式和 Args 模式共用 [NativeSelect](native-select.md) 的 `form`/`fill` 变体，表单高度为 38px。公共组件拥有箭头、文字留白、焦点和禁用外观，配置样式仅安排表单网格与外部布局。选项、继承与自定义联动、重置、反馈和异步保存由配置编辑器拥有。
+
+托管模式仍只有 `herdr` 和 `web` 两个选项。`ConfigurationControlModeField` 的 ref 指向真实 `HTMLSelectElement`，自身 `useLayoutEffect` 在 nullable 草稿未采纳时设置 `selectedIndex=-1`；公共层不增加第三项或选择默认模式。能力不支持时继续禁用，label、可用性说明、反馈的 `aria-describedby` 和项目 Model/Args 的 `aria-controls` 继续关联真实字段。后台复核保留字段节点、焦点和草稿，不从观测值替换编辑输入。
 
 Web 配置编辑器持有提交的账号、Worker、操作、目标版本与草稿快照，并分别记录实际派发和可信响应。准备和准入等待使用操作自己的取消信号；暂停时本地保存分类与 pending 收尾不依赖远程准入。已确认、已派发但未确认、未派发及明确拒绝分别保留其原有结果含义，不把取消解释为服务端回滚。
 
@@ -68,5 +72,7 @@ Web 配置编辑器持有提交的账号、Worker、操作、目标版本与草�
 ## 验证边界
 
 真实 PostgreSQL 验证并发导入、独立 CAS、相同值、规范化比较、权限变化、事务失败与持久状态。HTTP 验证认证、Origin、查询/方法拒绝、精确字段、布尔 false、版本和原格式。迁移验证已初始化目标补入 false 而版本、时间、观测、Worker 遥测与任务数据不变；未初始化 Worker 不生成目标。
+
+Web 模块测试验证两选项无选中、能力禁用、继承与自定义、保存/拒绝/未知结果及后台复核中的草稿连续性。`tests/navigation/worker-configuration-arrow.browser.ts` 在生产 App 的受控 API fixture 中检查公共箭头、表单几何、禁用和 forced-colors；`worker-control-mode.browser.ts` 检查真实模式字段和配置交互。箭头回归由 `team-playwright.config.ts` 的 `team-preference` 项目执行，模式回归由 `worker-configuration-navigation-playwright.config.ts` 执行；公共组件矩阵由[公共选择组件](native-select.md#验证责任)拥有。
 
 服务端验证输入和账号归属，不能证明客户端真正准备了仓库或停止了进程；这些结果由本机观察并上报。配置接入不依赖任务清单同步，不改变现有任务恢复行为。
