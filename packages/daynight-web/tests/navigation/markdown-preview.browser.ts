@@ -184,10 +184,10 @@ test('opening a relative attachment from graph details retains the inspected gra
   expect(await checkDependencyGeometry(page, expected, info)).toEqual({ total: 0, examples: [] });
 });
 
-for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Task description card in page and dialog at ${width}px in ${locale}`, async ({ page }) => {
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Task description card in page at ${width}px in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   const source = `${description}\n\n- Reading item\n\n| Heading | Wide column |\n| --- | --- |\n| Value | ${'wide'.repeat(80)} |`;
-  await install(page, source, true, locale);
+  await install(page, source, false, locale);
   const check = async (surface: ReturnType<Page['locator']>) => {
     const card = surface.locator('.description-card');
     await expectDescriptionCard(page, card, width);
@@ -199,15 +199,6 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Tas
       }
     }
   };
-  await page.goto(`/projects/${projectId}`);
-  await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('tab', { name: /^(Task chains|任务链)$/ }).click();
-  await page.locator(`#task-chain-graph-${taskId}`).click();
-  await page.locator(`.react-flow__node[data-id="${taskId}"] .task-node-details`).click();
-  const dialog = page.locator('.task-detail-dialog');
-  await check(dialog);
-  await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
-  await check(dialog);
   await page.goto(`/projects/${projectId}/tasks/${taskId}`);
   const pageSurface = page.locator('.task-detail-page');
   await check(pageSurface);
