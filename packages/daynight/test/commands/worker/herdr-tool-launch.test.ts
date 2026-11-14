@@ -594,7 +594,8 @@ describe("owned Herdr launch mapping", () => {
 
   it.skipIf(process.platform !== "win32").each([0, 37, "killed"] as const)("keeps the original Windows Job observable through helper exit (%s) and stops unregistered descendants", async outcome => {
     const f = await fixture(), code = outcome === "killed" ? 0 : outcome;
-    const script = `const {spawn}=require('node:child_process');let started=false;process.stdout.write('ready\\n');process.stdin.on('data',()=>{if(started){process.exit(${code});return;}started=true;const child=spawn(process.execPath,['-e','setInterval(()=>{},1000);'],{detached:true,stdio:'ignore'});process.stdout.write(String(child.pid)+'\\n');});setInterval(()=>{},1000);`;
+    const descendantScript = "process.stdout.write('ready\\n');setInterval(()=>{},1000);";
+    const script = `const {spawn}=require('node:child_process');const {createInterface}=require('node:readline');let started=false;process.stdout.write('ready\\n');process.stdin.on('data',()=>{if(started){process.exit(${code});return;}started=true;const child=spawn(process.execPath,['-e',${JSON.stringify(descendantScript)}],{detached:true,stdio:['ignore','pipe','ignore']});const lines=createInterface({input:child.stdout});lines.once('line',line=>{if(line!=='ready')throw new Error('Unexpected descendant readiness');lines.close();child.stdout.destroy();process.stdout.write(String(child.pid)+'\\n');});});setInterval(()=>{},1000);`;
     const args = ["-e", script], helper = spawn(process.execPath, [childEntry, f.mapping.manifestPath, "codex", "--", ...args], { stdio: ["pipe", "pipe", "pipe"] });
     const closed = once(helper, "close"), job = `Local\\Daynight-${f.mapping.nonce}`, timer = setTimeout(() => helper.kill("SIGKILL"), 30_000);
     let failure: unknown, failed = false, retired = false;
@@ -603,7 +604,7 @@ describe("owned Herdr launch mapping", () => {
       expect(String((await once(helper.stdout!, "data"))[0])).toBe("ready\n");
       const receipt = await f.mapping.verifyReceipt(args, operation());
       const registered = await f.mapping.captureProcesses([helper.pid!, receipt.childPid], operation());
-      const spawned = once(helper.stdout!, "data"); helper.stdin!.write("spawn\n");
+      const spawned = once(helper.stdout!, "data", { signal: AbortSignal.timeout(10_000) }); helper.stdin!.write("spawn\n");
       const detached = Number(String((await spawned)[0]).trim());
       expect(Number.isSafeInteger(detached) && detached > 0).toBe(true); expect(registered).not.toContain(detached);
       const originalNative = await captureMappingProcessProof(receipt.childPid), originalDetached = await captureMappingProcessProof(detached);
