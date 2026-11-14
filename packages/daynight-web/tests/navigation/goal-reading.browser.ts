@@ -5,6 +5,7 @@ import { checkDependencyGeometry } from '../helpers/dependency-geometry';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import { expectDescriptionCard } from '../helpers/description-card';
 
 const projectId = '00000000-0000-4000-8000-000000000100';
 const goalId = '00000000-0000-4000-8000-000000000200';
@@ -2458,4 +2459,35 @@ test('Goal overview retires an invalidated Goal and cancels its old sync', async
   expect(await requestOutcome).toBe('failed');
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
+});
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal description card in page and dialog at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale);
+  const code = 'x'.repeat(400);
+  fixture.setGoalDescription(`# Reading\n\n- Item\n\n[Read notes](notes.txt)\n\n\`\`\`\n${code}\n\`\`\`\n\n| Column | Wide |\n| --- | --- |\n| Value | ${code} |\n\n\`\`\`mermaid\nflowchart LR\nA[Start] --> B[Finish]\n\`\`\``);
+  const check = async (surface: Locator) => {
+    const card = surface.locator('.description-card');
+    await expectDescriptionCard(page, card, width);
+    await expect(card.getByRole('heading', { name: 'Reading' })).toBeVisible();
+    await expect(card.getByText('Item', { exact: true })).toBeVisible();
+    await expect(card.locator('.mermaid-diagram img')).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
+    if (width === 320) for (const item of [card.locator('pre').first(), card.locator('.markdown-table')]) expect(await item.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  };
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const surface = page.locator('.goal-detail-surface');
+  await check(surface);
+  await surface.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+  await check(surface);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
+  await check(surface);
+  await surface.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+  await check(surface);
+  const link = surface.getByRole('link', { name: 'Read notes' });
+  await link.focus(); await expect(link).toBeFocused(); await page.keyboard.press('Enter');
+  await expect(surface.getByRole('tab', { name: locale === 'en' ? 'Attachments' : '附件', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(surface.locator('.attachment-file-selected')).toContainText('notes.txt');
 });

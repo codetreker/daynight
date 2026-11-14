@@ -1967,6 +1967,9 @@ URL protocols retain the renderer's existing policy. Empty descriptions use the
 current interface language. Markdown and localized messages do not change the
 stored string or CLI/API output. Wide tables and code scroll within their local
 regions, and long words wrap inside the Overview reading column at 320px.
+Nonempty Task and Goal descriptions have the same bordered reading container in
+page, dialog and fullscreen modes; empty descriptions, Steps and attachments keep
+their existing presentation.
 
 Description-relative links and images resolve from the task attachment root.
 Markdown attachments resolve from their containing file's directory. Both use
