@@ -64,6 +64,29 @@ it('keeps the picker open and query while choosing tags, switches modes and clea
   expect(screen.getByTestId('value')).toHaveTextContent('"tagMatch":"any"');
 });
 
+it('preserves the panel for prevented, composing and open native popup Escape events', () => {
+  setup();
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  fireEvent.click(summary);
+  const picker = summary.closest('details')!;
+  const select = within(picker).getByLabelText('Tag filter: AND / OR');
+  const composing = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true });
+  fireEvent(select, composing);
+  expect(picker).toHaveAttribute('open');
+  const prevented = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  prevented.preventDefault(); fireEvent(select, prevented);
+  expect(picker).toHaveAttribute('open');
+  const matches = vi.spyOn(select, 'matches').mockReturnValue(true);
+  const popup = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  fireEvent(select, popup);
+  expect(popup.defaultPrevented).toBe(false);
+  expect(picker).toHaveAttribute('open');
+  matches.mockRestore();
+  fireEvent.keyDown(select, { key: 'Escape' });
+  expect(picker).not.toHaveAttribute('open');
+  expect(summary).toHaveFocus();
+});
+
 it('retains the selected name and condition when a later catalog epoch reports deletion', async () => {
   const view = setup(true); fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
   fireEvent.click(screen.getByLabelText('bug'));
