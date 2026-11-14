@@ -12,8 +12,8 @@ mechanisms without inheriting those chain semantics.
 ## Decision
 
 `GraphProjection` contains main and external node IDs and real edges;
-`ChainProjection` also retains its real root and completion count. The layout
-accepts the shared projection. `TaskGraph` owns chain visibility, inspection,
+`ChainProjection` also retains its real root and completion count. Both chain
+and Goal layouts accept the shared projection. `TaskGraph` owns chain visibility, inspection,
 node data and root framing, and supplies those results to the shared canvas and
 toolbar. The dialog shell owns the portal, overlay and focus lifecycle, while
 the chain wrapper supplies its actual metadata and content. The existing chain
@@ -32,7 +32,10 @@ consistent.
 
 ## Consequences
 
-The [Goal overview graph](../feature/2026-11-13-goal-overview-graph.md) uses this shared layer with a complete Parent-scoped projection and its own actions and framing.
+The [Goal overview graph](../feature/2026-11-13-goal-overview-graph.md) uses
+this shared layer with a complete Parent-scoped projection and its own actions
+and framing. Its [compact layout](2026-11-14-compact-goal-graph-layout.md)
+remains separate from the chain layout.
 
 Consumers can provide their own projection, nodes, inspection and framing while
 the existing chain retains its reading behavior. Each consumer remains

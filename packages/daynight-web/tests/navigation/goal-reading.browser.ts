@@ -168,6 +168,11 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
     sessionStates = { [firstId]: indicator };
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, independentGoalTasks: () => {
+    details = [goal, ...Array.from({ length: 30 }, (_, n) => detailFixture(projectId,
+      `00000000-0000-4000-8000-${String(800 + n).padStart(12, '0')}`,
+      { parentId: goalId, title: n === 0 ? 'Long task 长标题 '.repeat(15) : `Grid task ${n}` }))];
+    currentGraph = graphFixture(details);
   }, setGoalStatusFixture: (status: 'todo' | 'in_progress' | 'done' | 'cancelled', completedChildren: boolean) => {
     const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
     details = details.map(item => item.id === goalId
@@ -2506,6 +2511,94 @@ test('nested Goal reads its own completion fact from a cross-Goal graph', async 
   await expect(page.getByRole('dialog', { name: 'Other task', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
   await expect(nested).toHaveCount(0);
+});
+
+for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal compact graph frames independent tasks at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const fixture = await install(page, locale); fixture.independentGoalTasks();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-graph-${goalId}`).click();
+  const dialog = page.locator(`#task-graph-${goalId}`);
+  const nodes = dialog.locator('.react-flow__node');
+  const viewport = dialog.locator('.react-flow__viewport');
+  await expect(nodes).toHaveCount(30);
+  const grid = async () => nodes.evaluateAll(elements => elements.map(element => {
+    const matrix = new DOMMatrix(getComputedStyle(element).transform);
+    return { x: matrix.e, y: matrix.f };
+  }));
+  const zoom = async () => viewport.evaluate(element => new DOMMatrix(getComputedStyle(element).transform).a);
+  const allInView = async () => dialog.locator('.react-flow').evaluate(element => {
+    const pane = element.getBoundingClientRect();
+    return [...element.querySelectorAll('.react-flow__node')].every(node => {
+      const box = node.getBoundingClientRect();
+      return box.left >= pane.left - 1 && box.top >= pane.top - 1 && box.right <= pane.right + 1 && box.bottom <= pane.bottom + 1;
+    });
+  });
+  const expectGrid = async () => {
+    const positions = await grid();
+    expect(new Set(positions.map(point => point.x)).size).toBeGreaterThan(1);
+    expect(new Set(positions.map(point => point.y)).size).toBeGreaterThan(1);
+  };
+  await expectGrid();
+  await expect.poll(zoom).toBeGreaterThanOrEqual(0.8);
+  expect(await zoom()).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const topFit = dialog.locator('.graph-reset-overview');
+  await topFit.focus(); await page.keyboard.press('Enter');
+  await expect(topFit).toBeFocused();
+  await expect.poll(allInView).toBe(true);
+  await dialog.locator('[data-direction="vertical"]').click();
+  await expect(dialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+  await expectGrid();
+  await expect.poll(zoom).toBeGreaterThanOrEqual(0.8);
+  const bottomFit = dialog.getByRole('button', { name: locale === 'en' ? 'Fit to canvas' : '适应画布', exact: true });
+  await bottomFit.click();
+  await expect(bottomFit).toBeFocused();
+  await expect.poll(allInView).toBe(true);
+  if (width === 1280 && locale === 'en') {
+    const positions = await grid();
+    const transform = await viewport.getAttribute('style');
+    await dialog.locator('.graph-fullscreen-toggle').click();
+    expect(await grid()).toEqual(positions);
+    await expect(viewport).toHaveAttribute('style', transform!);
+    await page.setViewportSize({ width: 1100, height: 800 });
+    expect(await grid()).toEqual(positions);
+    await expect(viewport).toHaveAttribute('style', transform!);
+  }
+});
+
+test.describe('Goal compact graph on touch screens', () => {
+  test.use({ hasTouch: true });
+  test('pans and opens a Task with touch', async ({ page, context }) => {
+    await page.setViewportSize({ width: 390, height: 800 });
+    const fixture = await install(page); fixture.independentGoalTasks();
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+    await page.getByRole('tab', { name: /^Goal/ }).click();
+    await page.locator(`#project-goal-graph-${goalId}`).click();
+    const dialog = page.locator(`#task-graph-${goalId}`);
+    const viewport = dialog.locator('.react-flow__viewport');
+    const task = dialog.locator('[data-id="00000000-0000-4000-8000-000000000800"] .task-node-body');
+    await expect(task).toBeVisible();
+    const box = await task.boundingBox();
+    expect(box).not.toBeNull();
+    await page.touchscreen.tap(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await expect(page.getByRole('dialog', { name: /^Long task/ })).toBeVisible();
+    await page.keyboard.press('Escape');
+    const pane = await dialog.locator('.react-flow__pane').boundingBox();
+    expect(pane).not.toBeNull();
+    const before = await viewport.getAttribute('style');
+    const cdp = await context.newCDPSession(page);
+    const x = pane!.x + 10, y = pane!.y + pane!.height / 2;
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.classList.contains('react-flow__pane'), { x, y })).toBe(true);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + 60, y: y + 40 }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect.poll(() => viewport.getAttribute('style')).not.toBe(before);
+    await cdp.detach();
+  });
 });
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal overview graph preserves reading and keyboard focus at ${width}px in ${locale}`, async ({ page }, info) => {
