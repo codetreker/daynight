@@ -170,11 +170,14 @@ describe('project task views', () => {
     graphRequest.mockResolvedValue(snapshot([...goals, ...children]));
     mount(); await findTab('chains'); fireEvent.click(tab('goals'));
     expect(document.querySelectorAll('.goal-list-row')).toHaveLength(20);
+    expect(tab('goals').querySelector('.graph-count-pill')).toHaveTextContent(/^21$/);
+    expect(document.querySelector('#project-goal-list .task-view-summary')).toHaveTextContent('21 / 21 个 Goal');
     const first = [...document.querySelectorAll<HTMLElement>('.goal-list-card')].map((element) => element.dataset.goalId);
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Goal分页' })).getByRole('button', { name: '下一页' }));
     const second = [...document.querySelectorAll<HTMLElement>('.goal-list-card')].map((element) => element.dataset.goalId);
     expect(second).toHaveLength(1);
     expect(new Set([...first, ...second]).size).toBe(21);
+    expect(tab('goals').querySelector('.graph-count-pill')).toHaveTextContent(/^21$/);
     const goalWithChildren = document.querySelector<HTMLElement>(`[data-goal-id="${goals[0]!.id}"]`)!;
     fireEvent.click(goalWithChildren.querySelector('.goal-list-toggle')!);
     expect(goalWithChildren.querySelectorAll('.goal-task-main')).toHaveLength(25);
@@ -590,12 +593,12 @@ describe('project task views', () => {
     const goal = canonicalTask(500), first = canonicalTask(1), second = canonicalTask(2), third = canonicalTask(3), fourth = canonicalTask(4);
     const other = canonicalTask(900);
     const initial = snapshot([
-      { ...seed(goal, 'done'), type: 'goal', assignedTo: TEST_VIEWER_ID },
+      { ...seed(goal, 'todo'), type: 'goal', assignedTo: TEST_VIEWER_ID },
       { ...seed(first, 'done'), assignedTo: TEST_VIEWER_ID }, { ...seed(second, 'todo', [first]), assignedTo: other },
       { ...seed(third), assignedTo: TEST_VIEWER_ID }, { ...seed(fourth), assignedTo: other },
     ]);
     const changed = snapshot([
-      { ...seed(goal, 'done'), type: 'goal', assignedTo: other },
+      { ...seed(goal, 'todo'), type: 'goal', assignedTo: other },
       { ...seed(first, 'done'), assignedTo: TEST_VIEWER_ID }, { ...seed(second, 'todo', [first]), parentId: goal, assignedTo: TEST_VIEWER_ID },
       { ...seed(third, 'todo', [first]), assignedTo: TEST_VIEWER_ID }, { ...seed(fourth), assignedTo: TEST_VIEWER_ID },
     ]);
@@ -618,6 +621,29 @@ describe('project task views', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
     await waitFor(() => expectUnfinishedCounts(1, 1));
     expect(goalCount()).toHaveTextContent(/^0$/);
+  });
+
+  it('updates Goal count on completion, cancellation and reopening while retaining the last snapshot on failure', async () => {
+    const first = canonicalTask(500), second = canonicalTask(501);
+    const goals = (firstStatus: GraphTask['status'], secondStatus: GraphTask['status']) => snapshot([
+      { ...seed(first, firstStatus), type: 'goal' }, { ...seed(second, secondStatus), type: 'goal' },
+    ]);
+    graphRequest.mockResolvedValueOnce(goals('todo', 'in_progress'))
+      .mockResolvedValueOnce(goals('done', 'cancelled'))
+      .mockRejectedValueOnce(new Error('Refresh failed'))
+      .mockResolvedValueOnce(goals('todo', 'in_progress'));
+    mount(); await findTab('chains'); fireEvent.click(tab('goals'));
+    const count = () => tab('goals').querySelector('.graph-count-pill');
+    expect(count()).toHaveTextContent(/^2$/);
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(count()).toHaveTextContent(/^0$/));
+    expect(document.querySelectorAll('.goal-list-card')).toHaveLength(2);
+    expect(document.querySelector('#project-goal-list .task-view-summary')).toHaveTextContent('2 / 2 个 Goal');
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await screen.findByRole('heading', { name: '刷新失败' });
+    expect(count()).toHaveTextContent(/^0$/);
+    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
+    await waitFor(() => expect(count()).toHaveTextContent(/^2$/));
   });
 
   it('opens the real dialog directly and returns focus to its standalone row', async () => {
@@ -707,6 +733,7 @@ describe('project task views', () => {
     expect(tab('chains')).toBeVisible();
     fireEvent.click(tab('goals'));
     expect(screen.getByRole('heading', { name: '暂无 Goal' })).toBeVisible();
+    expect(tab('goals').querySelector('.graph-count-pill')).toHaveTextContent(/^0$/);
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
   });
 

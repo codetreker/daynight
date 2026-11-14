@@ -33,6 +33,7 @@ const install = (initial: readonly TaskDetail[]) => {
       assigneeVersions: people.map(({ userId, version, hasProjectAccess }) => ({ userId, version, hasProjectAccess })),
       viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: (value) => tasks.get(value.id)!.version,
       propertiesForTask: (value) => tasks.get(value.id)!.properties,
+      tagsForTask: (value) => tasks.get(value.id)!.tags,
     });
     if (url.pathname === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
@@ -93,6 +94,9 @@ describe('project assignee filtering', () => {
       task(21, null), task(22, null, { dependsOn: [id(21)] }),
       task(31, formerUser), task(32, formerUser, { dependsOn: [id(31)] }),
       task(101, TEST_VIEWER_ID, { type: 'goal' }), task(102, null, { type: 'goal' }), task(103, formerUser, { type: 'goal' }),
+      task(201, TEST_VIEWER_ID, { type: 'goal', status: 'done', completedAt: '2026-10-22T10:00:00Z' }),
+      task(202, null, { type: 'goal', status: 'cancelled', cancelledAt: '2026-10-22T10:00:00Z' }),
+      task(203, formerUser, { type: 'goal', status: 'done', completedAt: '2026-10-22T10:00:00Z' }),
     ]);
     const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
     const matchingIds = new Set<number>(matching);
@@ -135,23 +139,79 @@ describe('project assignee filtering', () => {
       task(502, null, { type: 'goal' }), task(503, formerUser, { type: 'goal', status: 'done', completedAt: finishedAt }),
     ]);
     await mount();
-    expectCounts(4, 5, 4);
+    expectCounts(4, 5, 1);
     await filter('分配给我');
-    expectCounts(2, 1, 1);
+    expectCounts(2, 1, 0);
     expect(chain(11)).toBeVisible();
     fireEvent.click(chain(11)!);
     expect(document.getElementById(`goal-children-${id(11)}`)!.querySelectorAll('.goal-task-row')).toHaveLength(5);
     status('todo');
     expect(chain(11)).toBeNull(); // The viewer's unfinished member is proposed, not todo.
-    expectCounts(2, 1, 1);
+    expectCounts(2, 1, 0);
     fireEvent.click(goals());
     expect(document.querySelector(`[data-goal-id="${id(500)}"]`)).toBeNull();
-    expectCounts(2, 1, 1);
+    expectCounts(2, 1, 0);
     status('all');
     expect(document.querySelector(`[data-goal-id="${id(501)}"]`)).toBeVisible();
     await filter('未分配'); expectCounts(1, 1, 1);
-    await filter(/^Former person/); expectCounts(1, 1, 1);
-    await filter('所有负责人'); expectCounts(4, 5, 4);
+    await filter(/^Former person/); expectCounts(1, 1, 0);
+    await filter('所有负责人'); expectCounts(4, 5, 1);
+  });
+
+  it('counts unfinished Goal owners independently of children and list status in both locales', async () => {
+    const finishedAt = '2026-10-22T10:00:00Z';
+    install([
+      task(500, TEST_VIEWER_ID, { type: 'goal' }),
+      task(501, TEST_VIEWER_ID, { type: 'goal', status: 'in_progress', startedAt: finishedAt }),
+      task(502, TEST_VIEWER_ID, { type: 'goal', status: 'done', completedAt: finishedAt }),
+      task(503, TEST_VIEWER_ID, { type: 'goal', status: 'cancelled', cancelledAt: finishedAt }),
+      task(504, null, { type: 'goal' }), task(505, formerUser, { type: 'goal' }),
+      task(506, otherUser, { type: 'goal', status: 'done', completedAt: finishedAt }),
+      task(1, otherUser, { parentId: id(500), status: 'done', completedAt: finishedAt }),
+      task(2, otherUser, { parentId: id(501), status: 'cancelled', cancelledAt: finishedAt }),
+      task(3, TEST_VIEWER_ID, { parentId: id(506) }),
+    ]);
+    const view = await mount();
+    await filter('分配给我');
+    expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^2$/);
+    expect(goals().querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成 Goal 数');
+    fireEvent.click(goals());
+    status('done');
+    expect(document.querySelector(`[data-goal-id="${id(502)}"]`)).toBeVisible();
+    expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^2$/);
+    status('cancelled');
+    expect(document.querySelector(`[data-goal-id="${id(503)}"]`)).toBeVisible();
+    expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^2$/);
+    await filter('未分配'); expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^1$/);
+    await filter(/^Former person/); expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^1$/);
+    await filter('所有负责人'); expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^4$/);
+    view.setLocale('en');
+    expect(screen.getByRole('tab', { name: 'Goals' }).querySelector('.graph-count-pill')).toHaveAttribute('title', 'Unfinished Goal count');
+  });
+
+  it('keeps the unfinished Goal count while filtering Goals and their children by tags', async () => {
+    const tag = { id: id(900), name: 'backend' };
+    install([
+      task(500, TEST_VIEWER_ID, { type: 'goal', tags: [tag] }), task(501, TEST_VIEWER_ID, { type: 'goal' }),
+      task(1, TEST_VIEWER_ID, { parentId: id(501), tags: [tag] }), task(2, TEST_VIEWER_ID, { parentId: id(501) }),
+    ]);
+    await mount(); fireEvent.click(goals());
+    const count = () => goals().querySelector('.graph-count-pill');
+    expect(count()).toHaveTextContent(/^2$/);
+    fireEvent.click(screen.getByText('标签筛选', { selector: 'summary' }));
+    const goalFilter = screen.getByText('标签筛选', { selector: 'summary' }).closest('.tag-filter')!;
+    fireEvent.click(within(goalFilter as HTMLElement).getByRole('checkbox', { name: '无标签' }));
+    expect(document.querySelector(`[data-goal-id="${id(500)}"]`)).toBeNull();
+    const card = document.querySelector<HTMLElement>(`[data-goal-id="${id(501)}"]`)!;
+    expect(card).toBeVisible(); expect(count()).toHaveTextContent(/^2$/);
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(2);
+    fireEvent.click(screen.getByText('子 Task 标签筛选', { selector: 'summary' }));
+    const childFilter = screen.getByText('子 Task 标签筛选', { selector: 'summary' }).closest('.tag-filter')!;
+    fireEvent.click(within(childFilter as HTMLElement).getByRole('checkbox', { name: '无标签' }));
+    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(1);
+    expect(card).toHaveTextContent('Task 2');
+    expect(count()).toHaveTextContent(/^2$/);
   });
 
   it.each([

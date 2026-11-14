@@ -54,7 +54,7 @@ async function fixture(sessions: TaskSync['sessions'], rootActive = false, goalM
   const onOpenTask = vi.fn(); const onOpenSession = vi.fn(); const onOpenChain = vi.fn(); const noop = () => {};
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
   const workspace = (active = true) => <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}><ProjectTaskWorkspace pausedTaskCount={0} snapshot={snapshot} sessionStore={store} active={active}
-    goalCount={goalMode ? 2 : 0} goals={{ projectId, goals: goalMode ? [result.project.summaries.get(goalId)!, result.project.summaries.get(otherGoalId)!] : [], total: goalMode ? 2 : 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: onOpenTask, onOpenListChain: noop, onOpenSession }}
+    unfinishedGoalCount={goalMode ? 2 : 0} goals={{ projectId, goals: goalMode ? [result.project.summaries.get(goalId)!, result.project.summaries.get(otherGoalId)!] : [], total: goalMode ? 2 : 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: onOpenTask, onOpenListChain: noop, onOpenSession }}
     activeView={goalMode ? 'goals' : 'chains'} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
     chains={{ projectId, representativeIds: [rootId], allRepresentativeIds: [rootId], openGraphTarget: null, onOpenChain, onCloseChain: noop, onOpenTask, onOpenSession }}
     standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;

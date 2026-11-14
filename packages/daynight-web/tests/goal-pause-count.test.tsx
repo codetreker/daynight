@@ -34,7 +34,7 @@ const noop = () => {};
 const ChildFilteredWorkspace = ({ items }: { readonly items: TaskSummary[] }) => {
   const filter = useTagFilter(projectId);
   const value = snapshot(items);
-  return <TaskExecutionClockProvider projectId={projectId} snapshot={value}><ProjectTaskWorkspace snapshot={value} sessionStore={store} activeView="goals" pausedTaskCount={0} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={0} goalCount={2} onViewChange={noop} filter={<TagFilter controller={filter} child />}
+  return <TaskExecutionClockProvider projectId={projectId} snapshot={value}><ProjectTaskWorkspace snapshot={value} sessionStore={store} activeView="goals" pausedTaskCount={0} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={0} unfinishedGoalCount={2} onViewChange={noop} filter={<TagFilter controller={filter} child />}
     goals={{ projectId, childTagFilter: filter, goals: [value.summaries.get('goal')!, value.summaries.get('other')!], summaries: value.summaries, total: 2, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
     chains={{ projectId, representativeIds: [], allRepresentativeIds: [], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
     standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;

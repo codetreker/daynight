@@ -14,9 +14,12 @@ The project page derives all three counts from the complete snapshot using the
 same assignee predicate as the lists, including the current viewer for `me`.
 The standalone and chain counts each include matching, unfinished ordinary
 Tasks with no Parent, classified by their full ordinary component and counted
-once by ID. The Goal count includes matching Goal containers in every status,
-using each Goal's own assignee. Status selection, search, pagination, category,
-graph and expansion do not affect these counts. Full graph classification
+once by ID. The Goal count uses each Goal's own assignee and counts unfinished
+containers, as specified by the later [unfinished Goal decision](2026-11-14-unfinished-goal-tab-count.md).
+The original assignee-scope decision retained Goal containers in every status;
+it addressed whose work the badge represented, rather than its status scope.
+Status selection, search, pagination, category, graph and expansion do not affect
+these counts. Full graph classification
 precedes Parent scoping, so a cross-Goal component with one unparented member
 remains a chain; external edges do not combine components.
 
@@ -45,7 +48,7 @@ includes work assigned to others when the list is restricted by assignee.
 
 Changing assignee immediately changes the three badges without changing the
 complete graph, chain and Goal progress, or project overview statistics. The
-chain count is a count of tasks rather than chains; the Goal count includes
-finished containers. Snapshot and identity changes recompute the projection,
-without new requests or persisted data. A failed refresh retains the last
+chain count is a count of tasks rather than chains; the Goal count now excludes
+terminal containers under the later decision. Snapshot and identity changes
+recompute the projection without new requests or persisted data. A failed refresh retains the last
 successful snapshot and its existing error feedback.

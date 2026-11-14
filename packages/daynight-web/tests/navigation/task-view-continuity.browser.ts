@@ -46,6 +46,40 @@ const select = async (page: Page, name: string) => {
 };
 const position = (page: Page) => page.evaluate(() => new Promise<number>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(scrollY)))));
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
+  test(`unfinished Goal tab count and keyboard navigation at ${width}px in ${locale}`, async ({ page }) => {
+    const goal = (n: number, changes: Partial<TaskDetail>) => detailFixture(projectId, id(n), { type: 'goal', title: `Goal ${n}`, ...changes });
+    const state = await install(page, [
+      goal(1, { status: 'todo' }),
+      goal(2, { status: 'in_progress', startedAt: time }),
+      goal(3, { status: 'done', completedAt: time }),
+      goal(4, { status: 'cancelled', cancelledAt: time }),
+    ]);
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const chain = page.locator('#project-task-tab-chains');
+    const goalTab = page.locator('#project-task-tab-goals');
+    const pill = goalTab.locator('.graph-count-pill');
+    await expect(pill).toHaveText('2');
+    await expect(pill).toHaveAttribute('title', locale === 'en' ? 'Unfinished Goal count' : '未完成 Goal 数');
+    await expect(page.locator('#project-task-tab-standalone .graph-count-pill')).toHaveText('0');
+    await expect(chain.locator('.graph-count-pill')).toHaveText('0');
+    expect(await page.locator('.project-task-tabs').evaluate(tabs => {
+      const box = tabs.getBoundingClientRect();
+      return document.documentElement.scrollWidth <= innerWidth && [...tabs.querySelectorAll<HTMLElement>('[role="tab"]')].every(tab => {
+        const bounds = tab.getBoundingClientRect();
+        return bounds.width > 0 && bounds.left >= box.left - 1 && bounds.right <= box.right + 1 && tab.scrollWidth <= tab.clientWidth + 1;
+      });
+    })).toBe(true);
+    await chain.focus(); await page.keyboard.press('ArrowRight');
+    await expect(goalTab).toBeFocused(); await expect(goalTab).toHaveAttribute('aria-selected', 'true');
+    for (const n of [1, 2, 3, 4]) await expect(page.locator(`[data-goal-id="${id(n)}"]`)).toBeVisible();
+    expect(state.writes).toEqual([]);
+  });
+}
+
 for (const width of [1100, 390]) test(`project header and navigation survive a pending and failed graph at ${width}px`, async ({ page }) => {
   const state = await install(page, [row(10, 'Task')]);
   state.graphMode = 'pending';

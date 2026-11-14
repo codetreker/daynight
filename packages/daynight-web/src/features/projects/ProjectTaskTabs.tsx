@@ -8,11 +8,11 @@ type ProjectTaskTabsProps = {
   readonly activeView: TaskView;
   readonly unfinishedStandaloneTaskCount: number;
   readonly unfinishedChainTaskCount: number;
-  readonly goalCount: number;
+  readonly unfinishedGoalCount: number;
   readonly onViewChange: (view: TaskView) => void;
 };
 
-export const ProjectTaskTabs = ({ activeView, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, goalCount, onViewChange }: ProjectTaskTabsProps) => {
+export const ProjectTaskTabs = ({ activeView, unfinishedStandaloneTaskCount, unfinishedChainTaskCount, unfinishedGoalCount, onViewChange }: ProjectTaskTabsProps) => {
   const { messages: { workspace: { tabs: m } }, format } = useI18n();
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, view: TaskView) => {
     const position = views.indexOf(view);
@@ -28,7 +28,7 @@ export const ProjectTaskTabs = ({ activeView, unfinishedStandaloneTaskCount, unf
     <button className="project-task-tab" type="button" role="tab" id={`project-task-tab-${view}`} key={view}
       aria-label={m[view]} aria-selected={activeView === view} aria-controls={`project-task-panel-${view}`} tabIndex={activeView === view ? 0 : -1}
       onClick={() => { onViewChange(view); }} onKeyDown={(event) => { onKeyDown(event, view); }}>
-      {m[view]}<span className="graph-count-pill" title={view === "goals" ? m.goals : m.unfinishedCount} aria-hidden="true">{format.number(view === "standalone" ? unfinishedStandaloneTaskCount : view === "chains" ? unfinishedChainTaskCount : goalCount)}</span>
+      {m[view]}<span className="graph-count-pill" title={view === "goals" ? m.unfinishedGoalCount : m.unfinishedCount} aria-hidden="true">{format.number(view === "standalone" ? unfinishedStandaloneTaskCount : view === "chains" ? unfinishedChainTaskCount : unfinishedGoalCount)}</span>
     </button>
   ))}</div>;
 };
