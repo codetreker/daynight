@@ -1,0 +1,9 @@
+.project-paused-tasks { margin-left: auto; flex: none; }
+.project-paused-menu { position: fixed; inset: auto; margin: 0; width: 360px; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; box-sizing: border-box; padding: 5px; border: 1px solid #e1e4ed; border-radius: 7px; background: #fff; box-shadow: 0 8px 24px #17244726; color: #29364b; font-size: 13px; }
+.project-paused-menu-title { padding: 9px 10px; font-weight: 600; }
+.project-paused-option { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; min-height: 44px; padding: 9px 10px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; font: inherit; overflow-wrap: anywhere; cursor: pointer; }
+.project-paused-option:hover, .project-paused-option:focus-visible { background: #f0f0fb; }
+.project-paused-option:focus-visible, button.task-pause-count:focus-visible { outline: 2px solid #344054; outline-offset: -2px; }
+.project-paused-option-title { width: 100%; overflow-wrap: anywhere; }
+.project-paused-truncated, .project-paused-option-meta { color: #556176; font-size: 12px; }
+.project-paused-option-meta { display: flex; gap: 12px; }

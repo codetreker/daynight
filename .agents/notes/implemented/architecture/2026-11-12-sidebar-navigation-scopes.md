@@ -20,8 +20,10 @@ selection and catalog gate.
 
 `WorkspaceSidebar` owns layout and drawer lifecycle, `WorkspaceNavigation`
 composes the fixed routes and derives their active state, and
-`SidebarProjectList` consumes the existing shared project directory. A required
-context distinguishes the ready Team ID used to generate links from the
+`SidebarProjectList` consumes the current Team project directory, shared with the
+Team project cards. The [directory isolation decision](../bug-fix/2026-11-14-shared-project-directory-isolation.md)
+keeps that directory visible on Shared with me and gives the shared page its own
+owner. A required context distinguishes the ready Team ID used to generate links from the
 visibility identity retained during a recheck. The [Personal visibility
 rule](../feature/2026-11-05-personal-team-sidebar.md) and [Team selector
 popover](../feature/2026-11-05-team-switcher-popover.md) remain in force.
@@ -36,8 +38,9 @@ schema, permission callback framework or a second source of navigation state.
 
 ## Consequences
 
-The groups communicate resource scope without adding a workspace entity or a
-second directory. The explicit context prevents a retained display identity from
+The groups communicate resource scope without adding a workspace entity. The
+shared page has an independent directory so its account scope cannot populate the
+Team tree. The explicit context prevents a retained display identity from
 authorizing Team links; an unknown selection retains disabled placeholders.
 The shared scrolling region keeps every group reachable for long directories.
 Native links, the existing provider lifetimes and responsive drawer behavior

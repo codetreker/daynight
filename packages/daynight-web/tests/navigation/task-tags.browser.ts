@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import type { TaskDetail } from '../../src/api/types';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
@@ -79,6 +79,93 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
   });
   return state;
 }
+
+async function assertSummary(summary: Locator, names: readonly string[], viewportWidth: number) {
+  const chips = summary.locator('.task-tag'), button = summary.locator(':scope > button');
+  await expect(chips).toHaveText([...names]);
+  await expect(button).toBeVisible();
+  await expect(summary.locator('.task-tag-list')).toHaveCount(names.length === 0 ? 0 : 1);
+  const { bounds, boxes } = await summary.evaluate(element => {
+    const rect = (item: Element) => {
+      const box = item.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height, w: item.clientWidth, sw: item.scrollWidth, h: item.clientHeight, sh: item.scrollHeight };
+    };
+    return { bounds: rect(element), boxes: [...element.querySelectorAll('.task-tag'), element.querySelector(':scope > button')!].map(rect) };
+  });
+  for (let i = 0; i < boxes.length; i++) {
+    const box = boxes[i]!;
+    expect(box.x).toBeGreaterThanOrEqual(bounds.x - 1);
+    expect(box.x + box.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
+    expect(box.sw).toBeLessThanOrEqual(box.w + 1);
+    expect(box.sh).toBeLessThanOrEqual(box.h + 1);
+    for (let j = 0; j < i; j++) {
+      const previous = boxes[j]!;
+      const overlap = Math.min(box.x + box.width, previous.x + previous.width) > Math.max(box.x, previous.x) + 1 && Math.min(box.y + box.height, previous.y + previous.height) > Math.max(box.y, previous.y) + 1;
+      expect(overlap).toBe(false);
+    }
+  }
+  for (let i = 1; i < boxes.length; i++) {
+    const previous = boxes[i - 1]!, current = boxes[i]!;
+    if (Math.abs(previous.y + previous.height / 2 - current.y - current.height / 2) <= 1) {
+      expect(current.x - previous.x - previous.width).toBeCloseTo(8, 0);
+    } else {
+      const previousCenter = previous.y + previous.height / 2;
+      const previousRow = boxes.slice(0, i).filter(box => Math.abs(box!.y + box!.height / 2 - previousCenter) <= 1);
+      expect(current.y - Math.max(...previousRow.map(box => box!.y + box!.height))).toBeGreaterThanOrEqual(5);
+    }
+  }
+  expect(await summary.page().evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewportWidth);
+  return boxes;
+}
+
+for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) for (const kind of ['task', 'goal'] as const) test(`detail tag summary wraps independently at ${width}px in ${locale} for ${kind}`, async ({ page }) => {
+  const state = await install(page, locale), target = kind === 'task' ? standalone : goal;
+  const samples = [
+    ['P0'], [], ['P0', 'P1'], ['中文'.repeat(32)],
+    ['中文长标签'.repeat(12), 'UnbrokenEnglishTag'.repeat(3), 'P0'],
+  ];
+  await page.setViewportSize({ width, height: 700 });
+  for (const [sampleIndex, names] of samples.entries()) {
+    const tags = names.map((name, index) => ({ id: id(300 + index), name }));
+    state.observedAt = `2026-10-22T10:00:0${sampleIndex + 1}Z`;
+    state.tasks = state.tasks.map(item => item.id === target.id ? { ...item, tags, version: BigInt(sampleIndex + 1), updatedAt: state.observedAt } : item);
+    state.tags = tags;
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    if (kind === 'task') {
+      await page.locator('#project-task-tab-standalone').click();
+      await page.locator(`#standalone-task-${target.id}`).click();
+    } else {
+      await page.locator('#project-task-tab-goals').click();
+      await page.locator(`#project-goal-detail-${target.id}`).click();
+    }
+    const dialog = page.locator('.task-detail-dialog');
+    const summary = dialog.locator('.task-tags-summary');
+    const boxes = await assertSummary(summary, names, width);
+    if (names[0] === 'P0') {
+      const last = boxes[names.length - 1]!, edit = boxes[names.length]!;
+      expect(Math.abs(last.y + last.height / 2 - edit.y - edit.height / 2)).toBeLessThanOrEqual(1);
+      expect(edit.x - last.x - last.width).toBeCloseTo(8, 0);
+    }
+    if (names[0] === '中文'.repeat(32)) expect(boxes[1]!.y - (boxes[0]!.y + boxes[0]!.height)).toBeGreaterThanOrEqual(5);
+    if (names[0] === 'P0' && names.length === 1) {
+      await dialog.locator('.task-detail-fullscreen-toggle').click();
+      await assertSummary(summary, names, width);
+      await dialog.locator('.task-detail-fullscreen-toggle').click();
+      await summary.locator('button').click();
+      const editor = dialog.locator('.task-tags-editor');
+      await expect(editor).toBeVisible();
+      await expect(summary.locator('.task-tags-editor')).toHaveCount(0);
+      expect((await editor.boundingBox())!.y).toBeGreaterThanOrEqual((await summary.boundingBox())!.y + (await summary.boundingBox())!.height);
+      await editor.getByRole('searchbox').focus();
+      await page.keyboard.press('Escape');
+      await expect(summary.locator('button')).toBeFocused();
+      await page.goto(`/projects/${projectId}/tasks/${target.id}?tab=overview`);
+      await assertSummary(page.locator('.task-detail-page .task-tags-summary'), names, width);
+    }
+  }
+  expect(state.writes).toEqual([]);
+});
 
 for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`own tags remain readable in lists and details at ${width}px in ${locale}`, async ({ page }) => {
   const state = await install(page, locale);

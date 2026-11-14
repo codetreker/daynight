@@ -3,7 +3,14 @@ import { useI18n } from "../i18n/LocaleProvider";
 import { useBrowserLocation } from "./browser-location";
 import { navigate } from "./router";
 
-export const AccountMenu = ({ name, onSignOut }: { readonly name: string; readonly onSignOut: () => void }) => {
+const AccountAvatar = ({ name, src }: { readonly name: string; readonly src: string | null }) => {
+  const [state, setState] = useState<"loading" | "loaded" | "failed">("loading");
+  return <span className="avatar account-avatar" aria-hidden="true"><span className={state === "loaded" ? "account-avatar-initial-hidden" : undefined}>{name.slice(0, 1).toUpperCase()}</span>
+    {src !== null && src !== "" && state !== "failed" && <img src={src} alt="" className={state === "loaded" ? "loaded" : undefined} onLoad={() => setState("loaded")} onError={() => setState("failed")} />}
+  </span>;
+};
+
+export const AccountMenu = ({ name, userId, avatarUrl, onSignOut }: { readonly name: string; readonly userId: string; readonly avatarUrl: string | null; readonly onSignOut: () => void }) => {
   const { messages: { auth: { shell: m } } } = useI18n();
   const location = useBrowserLocation();
   const [openedAt, setOpenedAt] = useState<typeof location | null>(null);
@@ -44,7 +51,7 @@ export const AccountMenu = ({ name, onSignOut }: { readonly name: string; readon
       onClick={() => { focusLast.current = false; open ? close(false) : setOpenedAt(location); }} onKeyDown={(event) => {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); focusLast.current = event.key === "ArrowUp"; setOpenedAt(location); }
         else if (event.key === "Escape" && open) { event.preventDefault(); close(true); }
-      }}><span className="avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><span className="account-name">{name}</span></button>
+      }}><AccountAvatar key={JSON.stringify([userId, avatarUrl])} name={name} src={avatarUrl} /><span className="account-name">{name}</span></button>
     {open && <div className="account-menu" id={menuId} ref={menu} role="menu" aria-label={m.accountMenu({ name })} onKeyDown={(event) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
       else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
