@@ -19,8 +19,9 @@ progress, details and the complete Goal graph keep their own responsibilities;
 Goal detail statistics retain chain classification. The [Goal browsing
 decision](../feature/2026-11-11-goal-browsing.md) owns scope and navigation.
 
-The mounted member list registers visibility with the existing Session store,
-without additional reads. Its rows restore focus to the Task control when a
+The Goal container registers direct-member visibility with the existing Session
+store, without additional reads. The [Goal Session summary decision](../feature/2026-11-14-goal-session-summary.md)
+keeps that observation available while the Goal is collapsed. Its rows restore focus to the Task control when a
 focused Session control disappears and focus otherwise falls to the document
 body; other valid focus remains untouched. The [Web design](../../../../docs/design/daynight-web.md)
 describes the assembly and lifecycle.

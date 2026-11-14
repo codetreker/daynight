@@ -73,6 +73,7 @@ async function expectChainTimeLayout(header: Locator) {
 async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'Long owner name '.repeat(8)) {
   let details = all;
   let currentGraph = graph;
+  let sessionStates: Record<string, 'working' | 'notice' | 'warning' | 'pending'> = {};
   let colorRevision = 0;
   let epoch = taskSyncEpoch(projectId);
   let forbiddenGoal = false;
@@ -107,7 +108,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
-      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties });
+      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties });
       if (holdNextSync) {
         holdNextSync = false; await new Promise<void>(resolve => { releaseSync = resolve; }); releaseSync = null;
         try { await send(response); } finally { heldSyncFinished = true; }
@@ -159,7 +160,15 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     if (path.endsWith('/sessions')) return send({ items: [], nextCursor: null });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } }, 404);
   });
-  return { setGoalStatusFixture: (status: 'todo' | 'in_progress' | 'done' | 'cancelled', completedChildren: boolean) => {
+  return { setGoalSessionFixture: (status: 'todo' | 'in_progress' | 'done' | 'cancelled', indicator: 'working' | 'notice' | 'warning' | 'pending') => {
+    const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    details = [{ ...goal, title: 'Long Goal 长标题 '.repeat(16), status, assignedTo: TEST_VIEWER_ID, version: BigInt(colorRevision + 1), updatedAt: changedAt,
+      startedAt: status === 'in_progress' ? time : null, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null },
+      { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
+    sessionStates = { [firstId]: indicator };
+    currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, setGoalStatusFixture: (status: 'todo' | 'in_progress' | 'done' | 'cancelled', completedChildren: boolean) => {
     const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
     details = details.map(item => item.id === goalId
       ? { ...item, status, assignedTo: TEST_VIEWER_ID, version: item.version + 1n, updatedAt: changedAt, startedAt: status === 'in_progress' ? time : null, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null }
@@ -1908,7 +1917,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(content).toBeHidden();
   for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.assignee-name', '.goal-list-meta > span:last-child', '.goal-list-progress', '.root-status']) {
-    const target = toggle.locator(selector);
+    const target = card.locator('.goal-list-row').locator(selector);
     await target.click();
     await expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
     await expect(content).toBeVisible();
@@ -1927,6 +1936,23 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   expect(blank).not.toBeNull();
   await page.mouse.click(blank!.x, blank!.y);
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await card.locator(`#chain-task-goal-${goalId}-${firstId}`).focus();
+  await card.locator('.goal-list-row .root-status').click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toBeFocused();
+  if (width === 320) {
+    const rowBlank = await card.locator('.goal-list-row').evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      const bottomOfToggle = element.querySelector('.goal-list-toggle')!.getBoundingClientRect().bottom;
+      for (let y = bottomOfToggle + 2; y < bounds.bottom - 2; y += 3) for (let x = bounds.left + 2; x < bounds.right - 2; x += 3) {
+        if (document.elementFromPoint(x, y) === element) return { x, y };
+      }
+      return null;
+    });
+    expect(rowBlank).not.toBeNull();
+    await page.mouse.click(rowBlank!.x, rowBlank!.y);
+  } else await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   for (const expanded of ['true', 'false'] as const) {
     await detail.click();
     await expect(page.locator('.goal-detail-surface')).toBeVisible();
@@ -1940,6 +1966,90 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await expect(toggle).toHaveAttribute('aria-expanded', expanded);
     if (expanded === 'true') await toggle.click();
   }
+  expect(await page.locator('button button, button a, a button').count()).toBe(0);
+});
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal Session summary stays readable and operable at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale, 'Owner');
+  fixture.setGoalSessionFixture('todo', 'working');
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const row = card.locator('.goal-list-row');
+  await row.scrollIntoViewIfNeeded();
+  await page.mouse.move(0, 0);
+  const toggle = row.locator('.goal-list-toggle');
+  const status = row.locator('.session-status-action');
+  const annotation = row.locator('.session-status-annotation');
+  const pausedCount = row.locator('.task-pause-count');
+  const labels = locale === 'en'
+    ? { todo: 'To do', in_progress: 'In progress', done: 'Done', cancelled: 'Cancelled' }
+    : { todo: '待处理', in_progress: '进行中', done: '已完成', cancelled: '已取消' };
+  let initialHeight = 0;
+  const cases = [
+    ['todo', 'working'], ['todo', 'notice'], ['todo', 'warning'],
+    ['in_progress', 'notice'], ['done', 'warning'], ['cancelled', 'working'],
+  ] as const;
+  for (const [index, [goalStatus, indicator]] of cases.entries()) {
+    if (index > 0) {
+      fixture.setGoalSessionFixture(goalStatus, indicator);
+      await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    }
+    await expect(row).toHaveAttribute('data-task-status', goalStatus);
+    await expect(annotation).toHaveText(indicator);
+    await expect(pausedCount).toHaveText(locale === 'en' ? '1 paused' : '1 已暂停');
+    await expect(toggle).toHaveAccessibleDescription(locale === 'en' ? /1 paused/ : /1 已暂停/);
+    await expect(row.locator('.root-status')).toContainText(labels[goalStatus]);
+    await expect(row).toHaveCSS('background-color', roleColors[goalStatus][0]);
+    await expect(annotation).toHaveCSS('color', indicator === 'working' ? 'rgb(40, 91, 159)' : 'rgb(128, 91, 39)');
+    const geometry = await row.evaluate(element => {
+      const box = (selector: string) => {
+        const part = element.querySelector<HTMLElement>(selector)!;
+        if (selector !== '.root-status') return part.getBoundingClientRect();
+        const text = document.createRange(); text.selectNodeContents(part.firstChild!);
+        return text.getBoundingClientRect();
+      };
+      const bounds = element.getBoundingClientRect();
+      const selectors = ['.goal-list-title', '.task-pause-count', '.goal-list-meta', '.goal-list-progress', '.root-status', '.session-status-annotation', '.goal-list-detail', '.goal-list-graph'];
+      const parts = selectors.map(box);
+      const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+      return {
+        height: bounds.height,
+        titleWidth: parts[0]!.width,
+        inside: parts.every(part => part.width > 0 && part.height > 0 && part.left >= bounds.left - 1 && part.right <= bounds.right + 1 && part.top >= bounds.top - 1 && part.bottom <= bounds.bottom + 1),
+        overlaps: parts.flatMap((part, index) => parts.slice(index + 1).flatMap((other, offset) => separate(part, other) ? [] : [`${selectors[index]} / ${selectors[index + offset + 1]}`])),
+        clipped: [...element.querySelectorAll<HTMLElement>('.goal-list-title, .task-pause-count, .goal-list-meta, .goal-list-progress, .session-status-annotation')].filter(part => part.scrollWidth > part.clientWidth + 1 || part.scrollHeight > part.clientHeight + 1).map(part => part.className),
+        noOverflow: document.documentElement.scrollWidth <= innerWidth,
+      };
+    });
+    expect(geometry.inside).toBe(true);
+    expect(geometry.titleWidth).toBeGreaterThanOrEqual(80);
+    expect(geometry.overlaps).toEqual([]);
+    expect(geometry.clipped).toEqual([]);
+    expect(geometry.noOverflow).toBe(true);
+    if (goalStatus === 'todo' && indicator === 'working') initialHeight = geometry.height;
+    if (goalStatus === 'todo') expect(geometry.height).toBe(initialHeight);
+    await status.hover();
+    await page.mouse.down();
+    await expect(row.locator('.root-status')).toHaveCSS('color', roleColors[goalStatus][3]);
+    await page.mouse.up();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await toggle.click();
+    await page.mouse.move(0, 0);
+  }
+  await toggle.focus();
+  await page.keyboard.press('Tab');
+  await expect(status).toBeFocused();
+  await expect(status).toHaveAttribute('aria-expanded', 'false');
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(status).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   expect(await page.locator('button button, button a, a button').count()).toBe(0);
 });
 

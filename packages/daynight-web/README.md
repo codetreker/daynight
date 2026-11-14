@@ -1644,11 +1644,9 @@ decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) re
 The typed Goal category also expands each Goal in place. On desktop its header
 matches the task-chain header height for equivalent unwrapped content in the
 same font; wrapped content grows naturally, including on narrow screens. The header
-body toggles the disclosure showing all direct standalone tasks and scoped chains.
-Separate Goal details and graph buttons open their readers without changing the disclosure. Classification uses the complete ordinary graph before selecting
-the Goal, so a scoped single member of a larger component remains a chain.
-Goal and chain disclosures start closed; closing a Goal preserves its chain
-choices until that row unmounts. Scoped progress counts only its own members,
+body toggles a flat list of all direct ordinary children. Separate Goal details
+and graph buttons open their readers without changing the disclosure. The Goal
+disclosure starts closed. Scoped progress counts only its own members,
 including separate done and cancelled results. The header shows a localized
 in-progress count of direct children, including zero and paused or manually
 executed tasks. It also shows the shared automatic execution indicator after the
@@ -1663,9 +1661,15 @@ In-progress Goal children can open their current accessible Session directly.
 Small working, notice and warning text annotations share the complete `sessions`
 map from the existing visible-page fifteen-second task-sync. Reliable pending
 Sessions retain the same shortcut without an annotation. Child status controls
-open that Task's Session tab; titles still open Overview, and chain status controls only expand
-members. Collapsed chains and assignee-filtered chains include every ordinary
-member, including the root; external chains do not contribute.
+open that Task's Session tab; titles still open Overview. Chain and Goal status controls
+only expand members. Collapsed chains and assignee-filtered chains include every
+ordinary member, including the root; external chains do not contribute. A Goal
+heading aggregates every direct ordinary child once, independently of disclosure
+and child Tag filtering. It uses warning > notice > working and hides the annotation
+and aggregate action when none is displayable. The Goal's lifecycle status and
+background remain its own; its active-claim indicator has separate meaning.
+Visible Goal containers register the full child scope with the same store, including
+when collapsed, and release observation through the existing visibility lifecycle.
 
 `useTaskGraph` owns one page-local summary store and is its only producer, passing
 it through ProjectPage, ProjectTaskWorkspace and the presentation Provider. List
