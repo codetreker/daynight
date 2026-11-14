@@ -34,7 +34,7 @@ export const WorkspaceNavigation = ({ route, team, expanded, webhooksAvailable, 
     <div className="sidebar-group">
       <TeamSelector personalId={team.personalId} selectedId={team.readyTeamId} visibilityTeamId={team.visibilityTeamId} onNavigate={onNavigate} {...(onCreateTeam ? { onCreate: onCreateTeam } : {})} />
       <a className="nav-button" {...teamLink((id) => id === team.personalId ? "/projects" : `/teams/${id}`)} aria-label={app.projects} title={app.projects} aria-current={route.kind === "projects" || route.kind === "team" ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{app.projects}</span></a>
-      <SidebarProjectList hidden={!expanded || route.kind === "sharedProjects"} activeProjectId={activeProjectId} follow={follow} />
+      <SidebarProjectList hidden={!expanded} activeProjectId={activeProjectId} follow={follow} />
       {team.visibilityTeamId !== team.personalId && <a className="nav-button" {...teamLink((id) => `/teams/${id}/settings`)} aria-label={teamMessages.settings} title={teamMessages.settings} aria-current={route.kind === "teamSettings" || route.kind === "teamMembers" ? "page" : undefined}><span className="nav-icon" aria-hidden="true">⚙</span><span className="nav-text">{teamMessages.settings}</span></a>}
     </div>
     <div className="sidebar-group">

@@ -312,8 +312,8 @@ this entry to read the roster and leave their Team. Direct Personal settings and
 member URLs remain available under their existing access rules. The
 [personal Team navigation decision](../../.agents/notes/implemented/feature/2026-11-05-personal-team-sidebar.md)
 records this visibility choice. The
-[browser Team preference decision](../../.agents/notes/archived/feature/2026-11-04-browser-team-preference.md) records the rationale for storage, identity and recovery behavior. Shared projects stay outside the
-Team's indented list. Project, member and settings routes select
+[browser Team preference decision](../../.agents/notes/archived/feature/2026-11-04-browser-team-preference.md) records the rationale for storage, identity and recovery behavior. The current Team's indented list remains visible on Shared with me, while shared-only projects stay
+outside it. Project, member and settings routes select
 the corresponding project; both Worker routes select My Workers. Links preserve native
 modified clicks, expose full names through accessible text and titles, and
 truncate long visible names. Project children appear in expanded desktop and
@@ -1396,9 +1396,14 @@ backend authentication settings and explicit HTTP test policy follow the
 [deployment guide](../../deployment/localhost/README.md); changing the browser
 origin does not relax callback or Cookie-write Origin checks.
 
-An identity-scoped projects provider supplies both the sidebar directory and
-project cards from one request owner. It requests 50 items per page, preserves
-server order, and follows `nextCursor` through Load more. Repeated IDs count once.
+An identity-scoped Team projects provider supplies both the sidebar directory and
+Team project cards from one request owner. Shared with me mounts its own provider
+for shared cards, refresh and pagination; it loads independently of Team preference
+restoration. Entering or leaving that page retains the Team directory and its
+loaded pages. Mutation callbacks refresh the current Team directory and any mounted
+shared directory, including when a transfer receipt arrives after navigation. Each
+directory requests 50 items per page, preserves server order, and follows
+`nextCursor` through Load more. Repeated IDs count once.
 Project navigation retains loaded pages. Refresh discards old pages and cursors;
 late responses cannot repopulate them. Direct-grant controls remain available
 for the final direct administrator; inherited-only participants have no editable
@@ -1406,8 +1411,8 @@ grant version. After confirmed self-removal, the panel revalidates current acces
 and navigates away only after authoritative withdrawal. Inherited access retains
 the Project page; network, protocol or server failures keep a visible read retry
 and never repeat the write. Creating a project or confirmed loss of one's own
-access refreshes the shared directory; a new authenticated identity starts
-with a new directory. The [project navigation decision](../../.agents/notes/archived/feature/2026-10-27-sidebar-project-navigation.md)
+access refreshes the current directories; a new authenticated identity starts
+with new directories. The [project navigation decision](../../.agents/notes/archived/feature/2026-10-27-sidebar-project-navigation.md)
 records ownership and pagination choices.
 
 The application implements public `/`, explicit `/login`, the `/projects` index,

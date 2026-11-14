@@ -7,6 +7,8 @@ const personalB = '00000000-0000-4000-8000-000000000012';
 const alpha = '00000000-0000-4000-8000-000000000021';
 const beta = '00000000-0000-4000-8000-000000000022';
 const project = '00000000-0000-4000-8000-000000000031';
+const secondProject = '00000000-0000-4000-8000-000000000032';
+const sharedProject = '00000000-0000-4000-8000-000000000033';
 const task = '00000000-0000-4000-8000-000000000041';
 const key = (user: string) => `daynight.selectedTeam:${user}`;
 const time = '2026-10-20T09:00:00Z';
@@ -16,7 +18,7 @@ const team = (id: string, userId: string) => ({ id, kind: 'ordinary', name: id =
 const longProjectName = 'Infrastructure 跨团队协作 very-long-project-name-without-spaces '.repeat(5).trim();
 const error = { error: { code: 'not_found', message: 'Not found', requestId: '00000000-0000-4000-8000-000000000099' } };
 
-type Fixture = { actor: string; detail: 'ok' | '404' | '500' | 'network'; detailReads: string[]; projectQueries: string[]; paginated: boolean; holdDetail: Promise<void> | null; ordinaryName: string | null; projects: 'empty' | 'long' | 'error'; holdProjects: Promise<void> | null; extraTeams: number; holdList: Promise<void> | null; listReads: number; holdMe: Promise<void> | null; meReads: number; listFailure: boolean; moreFailure: boolean; empty: boolean };
+type Fixture = { actor: string; detail: 'ok' | '404' | '500' | 'network'; detailReads: string[]; projectQueries: string[]; paginated: boolean; holdDetail: Promise<void> | null; ordinaryName: string | null; projects: 'empty' | 'long' | 'error' | 'scoped'; holdProjects: Promise<void> | null; extraTeams: number; holdList: Promise<void> | null; listReads: number; holdMe: Promise<void> | null; meReads: number; listFailure: boolean; moreFailure: boolean; empty: boolean };
 const install = async (page: Page): Promise<Fixture> => {
   const state: Fixture = { actor: alice, detail: 'ok', detailReads: [], projectQueries: [], paginated: false, holdDetail: null, ordinaryName: null, projects: 'empty', holdProjects: null, extraTeams: 0, holdList: null, listReads: 0, holdMe: null, meReads: 0, listFailure: false, moreFailure: false, empty: false };
   const ordinary = (id: string) => ({ ...team(id, state.actor), name: id === alpha && state.ordinaryName !== null ? state.ordinaryName : team(id, state.actor).name });
@@ -50,6 +52,12 @@ const install = async (page: Page): Promise<Fixture> => {
       await state.holdProjects;
       if (state.projects === 'error') return send({ error: { code: 'internal_error', message: 'Unavailable', requestId: '00000000-0000-4000-8000-000000000099' } }, 500);
       const longProject = { id: project, name: longProjectName, repoUrl: 'https://github.com/example/project', createdAt: time, updatedAt: time, ownership: { teamId: personal(state.actor), version: 1 }, settings: { version: 1, executionWarningMinutes: 60 } };
+      if (state.projects === 'scoped') {
+        const query = new URL(route.request().url()).searchParams;
+        if (query.get('shared') === 'true') return send({ items: [{ ...longProject, id: sharedProject, name: 'Shared only' }], nextCursor: null });
+        if (query.has('cursor')) return send({ items: [{ ...longProject, id: secondProject, name: 'Team second' }], nextCursor: null });
+        return send({ items: [{ ...longProject, name: longProjectName }], nextCursor: 'next' });
+      }
       return send({ items: state.projects === 'long' ? [longProject] : [], nextCursor: null });
     }
     return send(error, 404);
@@ -62,6 +70,46 @@ const openPicker = (page: Page) => page.locator('.team-selector .team-switch').c
 const heading = (page: Page, name: string) => name === 'Team settings' || name === 'Projects shared with me'
   ? page.getByRole('main').getByRole('heading', { name, exact: true })
   : page.locator('.project-list-information').filter({ has: page.getByText(name, { exact: true }) }).getByRole('heading', { name: /^(Projects|项目)$/, exact: true });
+
+for (const viewport of [{ width: 1360, height: 900 }, { width: 390, height: 844 }]) {
+  for (const locale of ['en', 'zh-CN']) {
+    test(`retains the Team tree on shared navigation at ${viewport.width}px in ${locale}`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      const api = await install(page); api.projects = 'scoped';
+      await page.goto(locale === 'en' ? `/teams/${alpha}` : '/projects');
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      const narrow = viewport.width < 600, chinese = locale === 'zh-CN';
+      const sidebar = page.locator('.sidebar nav');
+      const open = async () => { if (narrow) await page.getByRole('button', { name: chinese ? '展开侧栏' : 'Expand sidebar', exact: true }).click(); };
+      await open();
+      await expect(sidebar.getByRole('link', { name: longProjectName })).toBeVisible();
+      await sidebar.getByRole('button', { name: chinese ? '加载更多' : 'Load more', exact: true }).click();
+      await expect(sidebar.getByRole('link', { name: 'Team second' })).toBeVisible();
+      const teamQueries = () => api.projectQueries.filter((query) => query.includes('teamId='));
+      expect(teamQueries()).toHaveLength(2);
+      await sidebar.getByRole('link', { name: chinese ? '与我共享' : 'Shared with me', exact: true }).click();
+      await expect(page.getByRole('main').getByRole('heading', { name: 'Shared only' })).toBeVisible();
+      await open();
+      await expect(sidebar.getByRole('link', { name: longProjectName })).toBeVisible();
+      await expect(sidebar.getByRole('link', { name: 'Team second' })).toBeVisible();
+      await expect(sidebar.getByRole('link', { name: 'Shared only' })).toHaveCount(0);
+      await expect(sidebar.getByRole('link', { name: chinese ? '与我共享' : 'Shared with me', exact: true })).toHaveAttribute('aria-current', 'page');
+      expect(teamQueries()).toHaveLength(2);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.goBack();
+      await expect.poll(() => new URL(page.url()).pathname).toBe(chinese ? '/projects' : `/teams/${alpha}`);
+      await page.goForward();
+      await expect.poll(() => new URL(page.url()).pathname).toBe('/shared-projects');
+      await expect(page.getByRole('main').getByRole('heading', { name: 'Shared only' })).toBeVisible();
+      if (narrow && !await sidebar.isVisible()) await open();
+      await expect(sidebar.getByRole('link', { name: 'Team second' })).toBeVisible();
+      expect(teamQueries()).toHaveLength(2);
+      await sidebar.getByRole('link', { name: 'Team second' }).click();
+      await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${secondProject}`);
+      if (narrow) await expect(page.getByRole('dialog', { name: chinese ? '工作空间导航' : 'Workspace navigation' })).toHaveCount(0);
+    });
+  }
+}
 
 for (const viewport of [{ width: 1360, height: 900 }, { width: 390, height: 844 }]) {
   for (const locale of ['en', 'zh-CN']) {
