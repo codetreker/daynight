@@ -102,7 +102,7 @@ export const inspectSelectTypeScript = (
   const nativeComponent = (node: Node): boolean => matches(selects, node) || member(node, 'NativeSelect', selectObjects);
   const visit = (node: Node): void => {
     if (isJsxOpeningElement(node) || isJsxSelfClosingElement(node)) {
-      if (isIdentifier(node.tagName) && node.tagName.text === 'select' && resolve(source.fileName) !== ownerPath) {
+      if (isIdentifier(node.tagName) && node.tagName.text.startsWith('s') && node.tagName.text.toLowerCase() === 'select' && resolve(source.fileName) !== ownerPath) {
         report(node, 'native-select creation: use NativeSelect from ui/native-select/NativeSelect.');
       }
       if (nativeComponent(node.tagName)) {
@@ -115,7 +115,7 @@ export const inspectSelectTypeScript = (
     }
     if (isCallExpression(node) && (matches(createElements, node.expression) || member(node.expression, 'createElement', reactObjects))) {
       const element = node.arguments[0];
-      if (element !== undefined && literalStrings(element)?.includes('select') && resolve(source.fileName) !== ownerPath) {
+      if (element !== undefined && literalStrings(element)?.some(tag => tag.toLowerCase() === 'select') && resolve(source.fileName) !== ownerPath) {
         report(node, 'native-select creation: use NativeSelect from ui/native-select/NativeSelect.');
       }
       if (element !== undefined && nativeComponent(element) && node.arguments[1] !== undefined) inspectProps(node.arguments[1]);

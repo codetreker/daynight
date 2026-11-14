@@ -3,9 +3,9 @@ import { find, ident, parse, walk, type CssNode, type Selector } from 'css-tree'
 const layoutProperties = /^(?:(?:min-|max-)?(?:width|inline-size)|margin(?:-(?:top|right|bottom|left|block(?:-start|-end)?|inline(?:-start|-end)?))?|flex(?:-basis|-grow|-shrink)?|(?:align|justify|place)-self|grid(?:-area|-row(?:-start|-end)?|-column(?:-start|-end)?)?|order)$/;
 const internalClass = (name: string): boolean => name === 'native-select__control' || name === 'native-select__arrow';
 const wrapperClass = (name: string, wrappers: ReadonlySet<string>): boolean => name === 'native-select' || wrappers.has(name);
-type Target = { internal: boolean; wrapper: boolean; pseudo: boolean; descendants: boolean; siblings: boolean };
+type Target = { internal: boolean; wrapper: boolean; pseudo: boolean; descendants: boolean; siblings: boolean; directChild: boolean };
 
-const unowned = (): Target => ({ internal: false, wrapper: false, pseudo: false, descendants: false, siblings: false });
+const unowned = (): Target => ({ internal: false, wrapper: false, pseudo: false, descendants: false, siblings: false, directChild: false });
 const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = unowned(), implicitNesting = false): Target => {
   let subject: CssNode[] = [];
   let ownedAncestor = false;
@@ -15,11 +15,14 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
       if (node.type === 'TypeSelector' && ident.decode(node.name).toLowerCase().split('|').at(-1) === 'select') {
         result.internal = true;
         result.descendants = true;
+        result.siblings = true;
+        result.directChild = true;
       }
       if (node.type === 'ClassSelector') {
         const internal = internalClass(ident.decode(node.name));
         result.internal ||= internal;
         result.siblings ||= internal;
+        result.directChild ||= internal;
         result.wrapper ||= wrapperClass(ident.decode(node.name), wrappers);
         result.descendants ||= result.internal || result.wrapper;
       }
@@ -28,6 +31,7 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
         const internal = value.includes('native-select__');
         result.internal ||= internal;
         result.siblings ||= internal;
+        result.directChild ||= (node.matcher === '=' || node.matcher === '~=') && value.split(/\s+/).some(internalClass);
         result.wrapper ||= value.split(/\s+/).some(name => wrapperClass(name, wrappers));
         result.descendants ||= result.internal || result.wrapper;
       }
@@ -38,14 +42,41 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
         result.pseudo ||= parent.pseudo;
         result.descendants ||= parent.descendants;
         result.siblings ||= parent.siblings;
+        result.directChild ||= parent.directChild;
+      }
+      if (node.type === 'PseudoClassSelector' && node.name.toLowerCase() === 'has' && node.children !== null) {
+        const roles: ('wrapper' | 'child' | 'internal' | 'unknown')[] = [];
+        node.children.forEach(child => {
+          if (child.type !== 'SelectorList') { roles.push('unknown'); return; }
+          child.children.forEach(branch => {
+            if (branch.type !== 'Selector') { roles.push('unknown'); return; }
+            const [relation, ...rest] = branch.children.toArray();
+            if (relation?.type !== 'Combinator' || !['>', '+', '~'].includes(relation.name)) { roles.push('unknown'); return; }
+            const end = rest.findIndex(part => part.type === 'Combinator');
+            const first = classify(end === -1 ? rest : rest.slice(0, end));
+            roles.push(!first.internal ? 'unknown' : !first.directChild ? 'internal' : relation.name === '>' ? 'wrapper' : 'child');
+          });
+        });
+        if (roles.some(role => role !== 'unknown')) {
+          // Layout requires every alternative to identify the wrapper; uncertain depth or alternatives retain internal ownership.
+          const wrapper = roles.every(role => role === 'wrapper');
+          result.wrapper ||= wrapper;
+          result.internal ||= !wrapper;
+          result.descendants = true;
+          result.siblings ||= !wrapper;
+          result.directChild ||= roles.every(role => role === 'child');
+        }
       }
       if (node.type === 'PseudoClassSelector' && ['is', 'where', 'nth-child', 'nth-last-child'].includes(node.name.toLowerCase()) && node.children !== null) {
+        let allDirectChildren = true, branches = 0;
         node.children.forEach(child => {
           const selectors = child.type === 'Nth' ? child.selector : child.type === 'SelectorList' ? child : null;
           if (selectors === null) return;
           selectors.children.forEach(branch => {
             if (branch.type !== 'Selector') return;
             const nested = targets(branch, wrappers, parent);
+            allDirectChildren &&= nested.directChild;
+            branches += 1;
             result.internal ||= nested.internal;
             result.wrapper ||= nested.wrapper;
             result.pseudo ||= nested.pseudo;
@@ -53,6 +84,7 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
             result.siblings ||= nested.siblings;
           });
         });
+        result.directChild ||= branches > 0 && allDirectChildren;
       }
     }
     return result;
@@ -60,7 +92,7 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
   selector.children.forEach(node => {
     if (node.type === 'Combinator') {
       const previous = classify(subject);
-      // Internal markers identify children of the shared wrapper; their siblings remain inside that owner.
+      // Every production select and internal marker is a child of the shared wrapper, so its siblings stay inside that owner.
       ownedAncestor ||= node.name === '+' || node.name === '~' ? previous.siblings : previous.descendants;
       subject = [];
     } else subject.push(node);

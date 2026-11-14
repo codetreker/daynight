@@ -81,10 +81,14 @@ closing the enclosing view or discarding a draft.
 The native select policy enumerates every production TS/TSX and CSS input,
 including unreferenced files. TypeScript 7 project snapshots and AST traversal
 recognize native JSX and standard React creation with actual import bindings;
+HTML host-tag strings retain case-insensitive HTML element semantics;
 css-tree parses selectors and declarations for internal control/arrow targets
-and the collected wrapper classes. Internal control and arrow markers identify
+and the collected wrapper classes. Every production select and the internal control/arrow markers identify
 children of the shared wrapper, so their siblings and descendants retain that
-owner; fields adjacent to the wrapper retain page ownership. The common component and its CSS are the
+owner. Direct-child and internal-sibling `:has()` relationships carry the same
+ownership. Wrapper layout is granted only when all relative-selector branches
+prove an exact shared-wrapper child; ambiguous or deeper owned nodes retain
+internal restrictions. Outer page ancestors and fields adjacent to the wrapper retain page ownership. The common component and its CSS are the
 only declaration and presentation owners, with no legacy exemption list.
 Parsing, missing ASTs, file access and resource-release failures fail the command.
 Snapshots and API processes are released on both success and failure. The

@@ -28,6 +28,7 @@ test('allows the public owner, aliases, single/multiple selects and literal wrap
   await fixture(async (directory, put) => {
     await put('src/view.tsx', `
       import { NativeSelect as Choice } from './ui/native-select/NativeSelect';
+      import { NativeSelect as Select } from './ui/native-select/NativeSelect';
       import * as Selects from './ui/native-select/NativeSelect';
       declare const flag: boolean;
       const first = <Choice wrapperClassName={'wide' + ' spaced'}><option>One</option></Choice>;
@@ -36,11 +37,13 @@ test('allows the public owner, aliases, single/multiple selects and literal wrap
       const text = '<select /> React.createElement("select")';
       // <select /> createElement('select')
       const other = <input />;
+      declare const SELECT: any;
+      const components = <><Select wrapperClassName="caps" /><SELECT /></>;
     `);
     await put('src/layout.css', '.wide,.narrow{width:120px;max-inline-size:100%}.spaced{margin:8px 0}.column{flex:1;align-self:start}.grid{grid-column:2;order:1}');
     const result = await checkNativeSelectPolicy(directory);
     assert.deepEqual(result.diagnostics, []);
-    assert.deepEqual(result.wrappers, ['column', 'grid', 'narrow', 'spaced', 'wide']);
+    assert.deepEqual(result.wrappers, ['caps', 'column', 'grid', 'narrow', 'spaced', 'wide']);
     assert.deepEqual(await readdir(join(directory, '.tmp')), []);
   });
 });
@@ -52,13 +55,14 @@ test('rejects unreferenced native JSX and React createElement import aliases wit
       import { default as DefaultAlias } from 'react';
       const a = <select />;
       const b = <select multiple size={4}><option>One</option></select>;
-      const c = R.createElement('select');
-      const d = ReactAlias.createElement('select');
-      const e = element('select');
+      const mixed = <sElEcT />;
+      const c = R.createElement('SELECT');
+      const d = ReactAlias.createElement('Select');
+      const e = element('sElEcT');
       const f = DefaultAlias.createElement('select');
       const g = element('div');`);
     const result = await checkNativeSelectPolicy(directory);
-    assert.equal(result.diagnostics.length, 6);
+    assert.equal(result.diagnostics.length, 7);
     for (const [index, diagnostic] of result.diagnostics.entries()) {
       assert.match(diagnostic, new RegExp(`^src/unreferenced\\.tsx:${index + 4}:\\d+: native-select creation:`));
       assert.ok(!diagnostic.includes(directory));
@@ -134,6 +138,30 @@ test('rejects appearance, mixed selector branches, internal markers and pseudo-e
     '[class~="native-select__control"] + svg{display:none}',
     '.native-select__control{& + svg{display:none}}', '.native-select__control{& ~ svg path{stroke:red}}',
     ':is(.native-select__control){& + svg path{stroke:red}}',
+    '.pr-toolbar select + svg{display:none}', 'select ~ svg{display:none}', 'select + svg path{stroke:red}',
+    ':is(select) + svg{display:none}', ':where(select) ~ svg path{stroke:red}',
+    'select{& + svg{display:none}}', 'select{& ~ svg path{stroke:red}}', ':is(select){& + svg path{stroke:red}}',
+    'select + input{padding:8px}', 'select ~ span{color:red}',
+    ':has(> select){background:red}', ':has(> select)::after{content:""}',
+    ':has(> .native-select__control) > svg path{stroke:red}', ':has(> .native-select__arrow path){padding:8px}',
+    ':has(> select + svg) > svg{display:none}', ':has(+ .native-select__arrow){appearance:auto}',
+    ':has(~ select + svg){appearance:auto}', ':is(:has(> select))::after{content:""}',
+    ':where(:has(> :is(select, .native-select__control))) > span{color:red}',
+    ':has(> :nth-child(1 of .native-select__control)) > svg{display:none}',
+    ':has(> select){&::after{content:""}}', ':has(> select){& > svg path{stroke:red}}',
+    '.native-select__control{&:has(+ .native-select__arrow){color:red}}',
+    ':has(+ :where(.native-select__arrow)) + span{color:red}',
+    ':has(> :is(select > option)) + svg{display:none}',
+    ':has(> :where(.native-select__arrow > path)){margin:8px}',
+    ':has(> :is(select, option)){width:120px}', ':has(> :is(select > option, select)){margin:8px}',
+    ':has(> :where(.native-select__arrow > path, select)) + svg{display:none}',
+    ':has(+ :is(select > option)) + span{color:red}',
+    ':has(> :has(> :is(select > option))){margin:8px}',
+    ':has(> :is(.native-select__control, .native-select__arrow path)){width:120px}',
+    ':has(> select, > option){width:200px}', ':has(> select, > option) + svg{display:none}',
+    ':has(> .native-select__control, > :is(.native-select__arrow path)){margin:8px}',
+    ':has(> select, + .native-select__arrow){width:200px}',
+    ':has(> select, select){width:200px}',
     '.native-select__control option{font-size:42px}', ':nth-child(1 of .layout){background:red}',
     ':nth-last-child(2 of .native-select__control){appearance:auto}',
     '@scope (.native-select__arrow){path{stroke:red}}', '@scope (.layout){:scope::after{content:"";border:3px solid red}}',
@@ -146,10 +174,19 @@ test('allows layout, ordinary inputs, menu options, select ancestors and :has co
   for (const css of [
     '.layout{width:120px;min-width:0;max-inline-size:100%;margin-inline-start:8px;flex-shrink:0;grid-row:2}',
     'input,textarea{font:inherit;background:white}', '.menu [role="option"]{padding:8px}',
-    'select + input{padding:8px}', '.native-select + input{margin-top:8px;padding:8px}',
-    'select ~ input{padding:8px}', '.native-select ~ input{padding:8px}',
-    'select{& + input{padding:8px}}', '.native-select{& ~ input{padding:8px}}',
+    '.native-select + input{margin-top:8px;padding:8px}', '.native-select ~ input{padding:8px}',
+    '.native-select{& ~ input{padding:8px}}',
     '.field:has(select) input{background:white}', '.field:not(select){display:block}',
+    '.field:has(> .native-select) input{background:white}',
+    ':has(> select){width:120px;max-inline-size:100%;margin:8px}',
+    ':has(> select) + input{padding:8px}', ':has(> select) ~ input{padding:8px}',
+    ':has(> select){& + input{padding:8px}}',
+    ':has(> :is(select, .native-select__arrow)){width:120px;margin:8px}',
+    ':has(> select:is(option, .other)){width:120px}',
+    ':has(> :has(+ .native-select__arrow)){width:120px}',
+    ':has(> select, > .native-select__control){width:120px}',
+    ':has(> .native-select__control, > .native-select__arrow path){margin:8px}',
+    '.field:has(select, > .native-select) input{padding:8px}',
     '/* select { appearance: auto } */ .other::after{content:"select .native-select__control"}',
     '@keyframes turn{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}',
     '.layout{& + input{padding:8px}}', '.field{& input{padding:8px}& .menu [role="option"]{color:red}}',
