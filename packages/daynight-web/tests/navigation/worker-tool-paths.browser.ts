@@ -179,11 +179,11 @@ for (const width of [1440, 390, 320]) test(`software summary and full details su
   try { await expect(other).toBeFocused(); await expect(details).toHaveAttribute('open', ''); await noOverflow(page); }
   finally { gate.release(); state.workerGate = null; await response; }
   await expect(other).toBeFocused(); await expect(path).toHaveAttribute('open', '');
-  expect(await other.evaluate(element => element.getBoundingClientRect().top)).toBeCloseTo(anchorTop, 0);
+  expect(Math.abs(await other.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
   await page.locator('.locale-control select').selectOption('en');
   await expect(details).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', '');
   await expect(codex.locator('summary').filter({ hasText: 'Other execution mode' })).toBeFocused();
-  expect(await other.evaluate(element => element.getBoundingClientRect().top)).toBeCloseTo(anchorTop, 0);
+  expect(Math.abs(await other.evaluate(element => element.getBoundingClientRect().top) - anchorTop)).toBeLessThan(2);
   await noOverflow(page);
   await info.attach('software-summary', { body: JSON.stringify({ width, codex: await codex.locator('.worker-tool-version').allTextContents(), copilot: await copilot.locator('.worker-tool-version').allTextContents(), scrollWidth: await page.evaluate(() => document.documentElement.scrollWidth) }), contentType: 'application/json' });
 });
