@@ -1,3 +1,4 @@
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import type { TaskStatus } from '../../api/types';
 import { ApiError } from '../../api/client';
@@ -56,7 +57,7 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, t
     {search.applied !== null && <>
       <div className="task-list-filters task-search-filters">
         <TaskAssigneeFilter projectId={projectId} filter={assigneeFilter(search.filters.assignedTo)} onChange={(filter) => search.setFilters({ ...search.filters, assignedTo: assigneeValue(filter) })} />
-        <label className="task-status-filter">{project.statusFilter}<span className="task-status-select"><select value={search.filters.status} onChange={(event) => search.setFilters({ ...search.filters, status: event.currentTarget.value as TaskStatus | '' })}><option value="">{project.allStatuses}</option><option value="proposed">{project.statusOptions.proposed}</option><option value="todo">{project.statusOptions.todo}</option><option value="in_progress">{project.statusOptions.in_progress}</option><option value="done">{project.statusOptions.done}</option><option value="cancelled">{project.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label>
+        <label className="task-status-filter">{project.statusFilter}<NativeSelect density="filter" focusTone="task" value={search.filters.status} onChange={(event) => search.setFilters({ ...search.filters, status: event.currentTarget.value as TaskStatus | '' })}><option value="">{project.allStatuses}</option><option value="proposed">{project.statusOptions.proposed}</option><option value="todo">{project.statusOptions.todo}</option><option value="in_progress">{project.statusOptions.in_progress}</option><option value="done">{project.statusOptions.done}</option><option value="cancelled">{project.statusOptions.cancelled}</option></NativeSelect></label>
         {tagFilter}
       </div>
       <section className="task-search-results" aria-busy={search.busy} aria-label={m.heading}>
