@@ -149,12 +149,21 @@ variant and supplies options, values, labels, constraints, events and real refs.
 Search pickers, navigation menus and action menus retain their own semantics.
 
 Consumer classes may set external width, margins and flex/grid placement through
-`wrapperClassName`. They must not restyle the internal control, add a second
-arrow, restore native single-line appearance or override common touch sizing.
-Keep complete option labels, shrink the surrounding layout when necessary and
-verify the rendered result in narrow rows and forms. The component imports its
-own CSS so public and authentication entries have the same appearance without
-requiring the workspace shell.
+`wrapperClassName`, using statically resolvable string tokens or literal
+combinations. They must not restyle the internal control, add a second arrow,
+restore native single-line appearance or override common touch sizing. The common
+component is the only production owner of native select declarations; its CSS is
+the only owner of internal control and arrow presentation. Generic field and
+focus rules for input/textarea must not include select branches.
+
+The [ownership check](design/native-select.md#所有权检查) runs in the Web harness,
+ordinary Web tests and CI quality. It parses every production TS/TSX and CSS file,
+rejecting direct native creation and internal or wrapper skin overrides outside
+the common owner without a legacy exemption list. It does not infer arbitrary
+drawing intent. Keep complete option labels, shrink surrounding layouts when
+necessary and verify the actual rendered result in narrow rows and forms. The
+component imports its own CSS so public and authentication entries have the same
+appearance without requiring the workspace shell.
 
 Use the common compact, filter and form densities rather than per-page heights.
 Opt into responsive or named-container touch sizing where the interface calls

@@ -8,7 +8,9 @@ Page-specific native select wrappers duplicate arrow geometry, focus treatments
 and disabled styling. Fixing one wrapper does not prevent another page or an
 independent entry from drawing an arrow against its border or allowing long text
 to overlap it. A common control must also preserve native list and multiple
-selection, form validation, events and real element refs.
+selection, form validation, events and real element refs. Shared implementation
+alone also leaves new pages free to recreate native elements or override its
+internal skin unless normal quality checks enforce ownership.
 
 ## Decision
 
@@ -17,7 +19,7 @@ its presentation CSS directly. Its noninteractive wrapper adds a pointer-free SV
 arrow only for a single-line select. Public density, width, focus, pending and
 touch properties express presentation; native values, options, constraints,
 events and refs stay with the select and its caller. Consumer wrapper classes
-are limited to external layout. The [component design](../../../../docs/design/native-select.md)
+are limited to external layout and statically resolvable tokens. The [component design](../../../../docs/design/native-select.md)
 owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
@@ -76,6 +78,17 @@ conversion, drafts and real element refs. Task detail and Step draft handlers
 leave native Escape cancellation intact while preventing an open picker from
 closing the enclosing view or discarding a draft.
 
+The native select policy enumerates every production TS/TSX and CSS input,
+including unreferenced files. TypeScript 7 project snapshots and AST traversal
+recognize native JSX and standard React creation with actual import bindings;
+css-tree parses selectors and declarations for internal control/arrow targets
+and the collected wrapper classes. The common component and its CSS are the
+only declaration and presentation owners, with no legacy exemption list.
+Parsing, missing ASTs, file access and resource-release failures fail the command.
+Snapshots and API processes are released on both success and failure. The
+Node harness owns controlled policy fixtures and the real production-tree scan,
+so ordinary Web tests and CI quality enforce the same rule.
+
 ## Alternatives
 
 **Share CSS while retaining page-owned structures.** Each caller could still
@@ -102,6 +115,17 @@ event ownership into NativeSelect.
 controlled by the browser independently of text padding. The earlier spacing
 decisions already identified why this cannot guarantee a fixed inset.
 
+**Search source text for select and styling patterns.** Comments, strings,
+generics, import aliases and mixed or nested CSS selectors make textual matches
+ambiguous. Compiler and CSS ASTs identify syntax and declarations without
+maintaining a second parser or a growing list of textual exceptions.
+
+**Check only imported application modules or grandfather existing selectors.**
+An unreferenced source file can later become an entry without passing review of
+its original implementation; an exception list also preserves page-specific
+skins after migration. Enumerating all production inputs and allowing only the
+common owner keeps future additions subject to the same rule.
+
 ## Consequences
 
 Consumers share geometry and state styling while retaining their business
@@ -117,6 +141,14 @@ preview uses filter/content. Their caller-owned drafts, inheritance and save
 timing remain separate from presentation. Control-mode adoption retains a real
 select ref with exactly the `herdr` and `web` options. Its nullable draft keeps
 no selection through the caller-owned layout effect.
+
+The source guard makes direct native creation and internal skin forks fail normal
+quality checks, and static wrapper tokens let CSS analysis connect caller layout
+to its declarations. It introduces explicit css-tree development dependencies and
+depends on the pinned TypeScript unstable project/AST API. Dependency upgrades
+must preserve parser, diagnostic and cleanup behavior. The guard cannot infer
+arbitrary drawing intent, prove visual geometry or replace platform interaction
+checks; those remain with browser suites and independent review.
 
 The extra wrapper must remain shrinkable and match the control's height.
 Inherited fieldset disabling, hidden state and direction must also affect the

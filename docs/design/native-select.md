@@ -2,7 +2,7 @@
 
 ## 职责与依赖
 
-`packages/daynight-web/src/ui/native-select/NativeSelect.tsx` 是 Web 原生选择控件的公共入口，并直接导入同目录的 `native-select.css`。页面通过相对路径导入组件，提供选项、值、事件、权限和业务状态。公共层拥有控件结构、文字与箭头空间、尺寸、焦点和状态外观，不依赖认证外壳、API、语言 Provider 或 Session。
+`packages/daynight-web/src/ui/native-select/NativeSelect.tsx` 是 Web 原生选择控件的唯一生产声明入口，并直接导入同目录的 `native-select.css`；该 CSS 独占内部控件与箭头的样式。页面通过相对路径导入组件，提供选项、值、事件、权限和业务状态。公共层拥有控件结构、文字与箭头空间、尺寸、焦点和状态外观，不依赖认证外壳、API、语言 Provider 或 Session。
 
 原生 `select` 保留浏览器的表单校验、键盘与触摸选择、焦点和多选行为。公共层没有内部选中状态、请求、存储、定时器或自建弹层；箭头只是装饰。采用这一结构的原因及此前局部箭头决策见[决策记录](../../.agents/notes/implemented/architecture/2026-11-14-shared-native-select.md)。配色与一般交互规则由 [UI 原则](../ui-design.md)拥有。
 
@@ -34,7 +34,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 调用者继续拥有动态目录缺失项、单独禁用选项、确认与取消恢复、筛选草稿、异步提交及失败恢复。待定态不意味着禁用或成功；`aria-invalid` 来自调用者的实际校验。需要无选中状态时，调用者通过真实 ref 在自己的布局 effect 中设置 `selectedIndex=-1`，保持原选项集合。已有外层 `label` 可以包含公共组件，`htmlFor` 仍指向内部控件的 `id`。
 
-`wrapperClassName` 不得设置内部字体、背景、边框、padding、行高、箭头、焦点、禁用或触控尺寸，也不得添加伪元素箭头。页面选择公开展示属性来表达这些差异；固定列宽或网格位置属于页面布局。
+`wrapperClassName` 必须是可静态解析的字符串 token 列表，支持字符串字面量及可解析的字面量组合；不能传入运行时计算的类名。对应 CSS 仅设置外部宽度、外边距及 flex/grid 占位，不得设置内部字体、背景、边框、padding、行高、箭头、焦点、禁用或触控尺寸，也不得添加伪元素箭头。页面选择公开展示属性来表达这些差异；固定列宽或网格位置属于页面布局。
 
 ## 结构与几何
 
@@ -64,7 +64,17 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 拥有对话框、草稿面板或全屏关闭逻辑的调用者先尊重 `defaultPrevented` 与 IME 状态（`isComposing` 或 `keyCode=229`）。Escape 命中打开的原生选择弹窗时，仅阻止继续向外传播，不调用 `preventDefault`，以保留原生取消并保护外层和草稿。其他 Escape 继续执行所在页面的关闭与焦点恢复逻辑。公共层不维护另一份弹窗状态。
 
+## 所有权检查
+
+`packages/daynight-web/scripts/native-select-policy.mts` 先枚举完整 `src/` 中的 TS/TSX 和 CSS，再使用 TypeScript 7 的 `typescript/unstable/sync` 项目 API 与 `typescript/unstable/ast` 遍历源码，包括未被其他模块引用的输入。除公共组件文件外，原生 JSX `select` 和标准 React `createElement` 原生创建均失败；React、`createElement` 和 NativeSelect 的导入别名按实际绑定识别，注释、字符串与泛型不作为元素声明。
+
+CSS 使用显式开发依赖 `css-tree` 的 AST 分析完整选择器与声明。公共 CSS 外对 `select`、公共 control/arrow 类或对应标记的内部外观覆盖，以及 `wrapperClassName` 布局类的核心外观、伪元素箭头或 `appearance` 恢复均失败。混合选择器、嵌套规则与条件规则仍接受检查，内部箭头和控件的子节点也归公共 CSS 所有。以受保护选择器为根的 `@scope` 明确拒绝；布局类使用直接规则，内部样式放入公共 CSS。普通 input/textarea 及其他菜单保持各自所有权。检查没有遗留名单或页面豁免。
+
+诊断包含相对路径、行号和被违反的规则；文件读取、源码/CSS 解析、缺失 AST 及资源释放错误均令命令失败。TypeScript 快照与 API 在成功和失败路径都释放。检查约束直接声明与样式所有权，不能判断任意绘图代码的视觉意图；真实浏览器和独立审查继续负责重复箭头、几何及原生交互。
+
 ## 验证责任
+
+`scripts/native-select-policy.test.mts` 验证合法用法、受控违规、别名、字面量组合、单/多选、混合选择器、布局允许项、解析和资源释放失败，并检查实际生产树。`test:harness` 执行该检查，因此 `web:test` 和 CI `quality` 的 harness 阶段均执行所有权规则。可用 `pnpm --filter @codetreker/daynight-web test:select-policy` 单独检查生产树。
 
 `tests/native-select.test.tsx` 验证 props、真实 ref 与事件、label、required/fieldset、hidden/dir、列表与多选、无选中状态及重渲染节点连续性。`tests/navigation/native-select-playwright.config.ts` 直接渲染生产组件与 CSS，拥有公共变体与状态、长文本、中英文、规定宽窄视口、flex/grid、触控容器、forced-colors、缩放和真实浏览器输入证明。执行命令、调度及产物位置见 [Web README](../../packages/daynight-web/README.md#native-select-browser-validation)。
 
