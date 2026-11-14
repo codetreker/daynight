@@ -63,4 +63,4 @@ cleanup while preserving independent process and endpoint checks. A failed
 diagnostic does not replace the original readiness failure or establish a cause;
 the available artifact cannot reconstruct the historical bootstrap state. The
 normal production stop path and successful real-platform acceptance remain
-unchanged. Process-tree PID incarnation remains a separate ownership concern.
+unchanged. The [process incarnation capture decision](2026-11-14-herdr-process-incarnation-capture.md) owns birth-ordered descendant capture for both normal and partial cleanup.

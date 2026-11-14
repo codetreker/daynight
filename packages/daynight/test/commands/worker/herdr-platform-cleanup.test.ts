@@ -301,6 +301,36 @@ test.each(["639301558314541837", "639301558314541838"])("keeps exact .NET ticks 
   });
 });
 
+test.each(["missing", "unrelated-replacement", "live-first", "live-second", "unknown", "duplicate-capture", "duplicate-stop", "missing-stop"])("checks every owned incarnation of a reused Windows PID: %s", async kind => {
+  await windowsFixture(async (directory, run) => {
+    const first = run.cleanup.processCapture.processes[4];
+    const second = { ...first, startToken: (BigInt(first.startToken) + 10n).toString() };
+    run.cleanup.processCapture.processes.push(second);
+    run.cleanup.originalProcesses.push({ ...second, stage: "after-stop", observation: "exited" });
+    if (kind === "duplicate-capture") run.cleanup.processCapture.processes.push({ ...second });
+    if (kind === "duplicate-stop") run.cleanup.originalProcesses[5] = { ...run.cleanup.originalProcesses[4] };
+    if (kind === "missing-stop") run.cleanup.originalProcesses.pop();
+    await writeFile(path.join(directory, "acceptance-codex-fixture.json"), JSON.stringify(run));
+    const observeWindows = vi.fn(observing(rows => rows.map(row => {
+      if (row.pid !== first.pid || kind === "missing") return row;
+      if (kind === "unknown") return { ...row, state: "unknown", error: { name: "AccessDenied", code: 5 } };
+      return { ...row, state: "present", startToken: kind === "live-first" ? first.startToken : kind === "live-second" ? second.startToken : (BigInt(second.startToken) + 10n).toString() };
+    })));
+    const result = await cleanup.checkHerdrPlatformCleanup(directory, { platform: "win32", observeWindows });
+    const formal = result.runs.find((entry: any) => entry.file === "acceptance-codex-fixture.json");
+    if (["duplicate-capture", "duplicate-stop", "missing-stop"].includes(kind)) {
+      expect(formal.processEvidenceError.code).toBe("INVALID_ORIGINAL_STOP_EVIDENCE");
+    } else {
+      const observed = formal.processes.filter((entry: any) => entry.pid === first.pid);
+      expect(observed.map((entry: any) => entry.originalStartToken)).toEqual([first.startToken, second.startToken]);
+      expect(observed.map((entry: any) => entry.observation)).toEqual(kind === "missing" ? ["missing", "missing"] : kind === "live-first" ? ["same-original", "replaced"] : kind === "live-second" ? ["replaced", "same-original"] : kind === "unknown" ? ["unknown", "unknown"] : ["replaced", "replaced"]);
+      expect(observeWindows.mock.calls[0]![0]).toHaveLength(5);
+    }
+    if (["missing", "unrelated-replacement"].includes(kind)) expect(result.failures).toEqual([]);
+    else expect(result.failures).toContain(formal.file);
+  });
+});
+
 test.each(["root-missing", "descendant-missing", "after-token-changed", "capture-error", "workspace-unknown", "instance-unknown", "contradictory-partial", "contradictory-observation", "contradictory-closure", "contradictory-readiness"])("rejects incomplete original stop evidence before observing replacements: %s", async kind => {
   await windowsFixture(async (directory, run) => {
     if (kind === "root-missing") run.cleanup.processCapture.processes.shift();
