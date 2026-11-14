@@ -11,7 +11,7 @@ export default defineConfig({
       outputDir: fileURLToPath(new URL('../../../../.tmp/session-selector/results', import.meta.url)),
     },
     {
-      name: 'team-preference', testMatch: ['**/sidebar-scopes.browser.ts', '**/team-preference.browser.ts', '**/account-history.browser.ts', '**/credential-usage.browser.ts', '**/worker-configuration-identity.browser.ts', '**/worker-configuration-arrow.browser.ts', '**/worker-configuration-save-bar.browser.ts', '**/worker-prompts.browser.ts'], timeout: 45_000,
+      name: 'team-preference', testMatch: ['**/sidebar-scopes.browser.ts', '**/team-preference.browser.ts', '**/account-history.browser.ts', '**/management-avatar.browser.ts', '**/credential-usage.browser.ts', '**/worker-configuration-identity.browser.ts', '**/worker-configuration-arrow.browser.ts', '**/worker-configuration-save-bar.browser.ts', '**/worker-prompts.browser.ts'], timeout: 45_000,
       outputDir: fileURLToPath(new URL('../../../../.tmp/team-preference-results', import.meta.url)),
     },
     {
