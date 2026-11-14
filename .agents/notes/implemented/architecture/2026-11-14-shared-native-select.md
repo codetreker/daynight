@@ -24,6 +24,8 @@ The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
 an authenticated shell. Project and search status, PR status, and tag match filters
 use the shared filter variant while retaining their separate values and behavior.
+Bot creation and assistant task forms and record filters also use the shared
+presentation while retaining their business selection rules.
 Management consumers use the same component: Team and
 Project roles choose filter density with a 120px layout wrapper; transfer,
 Token expiry and GitHub installation use full-width form density. Their options,

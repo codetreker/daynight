@@ -27,6 +27,36 @@ function fill() {
   for (const [label, value] of [['Name', 'Coordination'], ['Purpose', 'Review outcomes'], ['Scope', 'My work'], ['Initial manual', 'Inspect before acting']] as const) fireEvent.change(screen.getByRole('textbox', { name: label }), { target: { value } });
   fireEvent.click(screen.getByRole('button', { name: 'Create assistant task' }));
 }
+
+it('requires a watchdog assistant and keeps the disabled empty choice without dispatch', async () => {
+  const owner = context();
+  const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
+  renderWithLocale(<TaskCacheProvider scope={owner.scope}><AssistantTaskCreate watchdog bots={[]} enabled onClose={owner.close} onCreated={owner.created} /></TaskCacheProvider>, { locale: 'en' });
+  const select = screen.getByRole('combobox', { name: 'Choose an assistant' }) as HTMLSelectElement;
+  expect(select).toBeRequired();
+  expect(select).toHaveValue('');
+  expect(select.options[0]).toBeDisabled();
+  expect(select.checkValidity()).toBe(false);
+  expect(screen.getByRole('button', { name: 'Enable Watchdog' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Enable Watchdog' }));
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it('starts with the first watchdog assistant and submits the explicitly chosen one once', async () => {
+  const owner = context();
+  const fetch = vi.fn(async (_url: string, _options?: RequestInit) => { throw new TypeError('response lost'); }); vi.stubGlobal('fetch', fetch);
+  renderWithLocale(<TaskCacheProvider scope={owner.scope}><AssistantTaskCreate watchdog bots={[botDefinition(1), botDefinition(2)]} enabled onClose={owner.close} onCreated={owner.created} /></TaskCacheProvider>, { locale: 'en' });
+  const select = screen.getByRole('combobox', { name: 'Choose an assistant' });
+  expect(select).toHaveValue(botId(1));
+  fireEvent.change(select, { target: { value: botId(2) } });
+  expect(fetch).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Enable Watchdog' }));
+  await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+  expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body))).toEqual({ id: expect.any(String), targetBotId: botId(2) });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Enable Watchdog' })).toBeDisabled());
+  expect(select).toHaveValue(botId(2));
+  expect(owner.created).not.toHaveBeenCalled();
+});
 it('retains the original unknown creation across closing and checks that ID without another POST', async () => {
   const owner = context(); let input!: CreateAssistantTaskInput;
   const fetch = vi.fn(async (_url: string, options?: RequestInit) => {
