@@ -9,6 +9,7 @@ const validOwnerId = id => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[
 const validToken = token => typeof token === "string" && /^[1-9][0-9]{0,18}$/.test(token) && BigInt(token) >= 504911232000000000n && BigInt(token) <= 3155378975999999999n;
 const sources = new Set(["cim-creation-date-ticks", "dotnet-start-time-ticks"]);
 const validSourceToken = (source, token) => sources.has(source) && validToken(token) && (source !== "cim-creation-date-ticks" || BigInt(token) % 10n === 0n);
+const originalKey = row => `${row.pid}:${row.startToken}`;
 const details = error => ({ name: error?.name ?? "Error", code: error?.code ?? null, errno: error?.errno ?? null });
 const failure = code => ({ name: "CleanupObservationError", code });
 const cleanupStages = ["script-start", "get-process-start", "get-process-done", "safe-handle-start", "safe-handle-done", "start-time-start", "start-time-done", "dispose-start", "dispose-done", "json-start", "json-done"];
@@ -181,11 +182,11 @@ const windowsOriginals = (run, metadata) => {
     capture?.stage === "before-stop" && Array.isArray(capture.roots) &&
     explicit.every(pid => capture.roots.includes(pid)) && capture.roots.every(validPid) &&
     (!partialStage || capture.roots.length === explicit.length && new Set(capture.roots).size === explicit.length) &&
-    originals.length > 0 && originals.length <= 1000 && new Set(originals.map(row => row.pid)).size === originals.length &&
+    originals.length > 0 && originals.length <= 1000 && new Set(originals.map(originalKey)).size === originals.length &&
     originals.every(row => validPid(row.pid) && Number.isSafeInteger(row.parentPid) && row.parentPid >= 0 && validSourceToken(row.source, row.startToken)) &&
     capture.roots.every(pid => originals.some(row => row.pid === pid));
   const validStop = Array.isArray(after) && after.length === originals.length && after.every(row => row && typeof row === "object") &&
-    new Set(after.map(row => row.pid)).size === after.length &&
+    new Set(after.map(originalKey)).size === after.length &&
     originals.every(original => after.some(row => row.pid === original.pid && row.parentPid === original.parentPid && row.startToken === original.startToken && row.stage === "after-stop" && row.observation === "exited")) &&
     cleanup.workspaceClosed === true && cleanup.instance?.ownedChildClosed === true && cleanup.instance.apiClosed === true && cleanup.instance.clientClosed === true &&
     !["captureError", "processReadbackError", "workspaceError", "instanceError"].some(key => cleanup[key] !== undefined);
@@ -195,7 +196,8 @@ const windowsOriginals = (run, metadata) => {
 };
 const observeOriginals = async (run, metadata, observeWindows) => {
   const { valid, originals } = windowsOriginals(run, metadata);
-  const observation = valid ? await observeWindows(originals.map(({ pid, source }) => ({ pid, source }))) : { rows: [], query: null, error: failure("INVALID_ORIGINAL_STOP_EVIDENCE") };
+  const targets = [...new Map(originals.map(({ pid, source }) => [`${source}:${pid}`, { pid, source }])).values()];
+  const observation = valid ? await observeWindows(targets) : { rows: [], query: null, error: failure("INVALID_ORIGINAL_STOP_EVIDENCE") };
   const processes = originals.map(original => {
     const current = observation.rows.find(row => row.pid === original.pid && row.source === original.source);
     const error = observation.error ?? current?.error ?? (current ? null : failure("MISSING_QUERY_RESULT"));

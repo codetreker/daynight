@@ -41,12 +41,21 @@ describe("Herdr platform process ownership capture", () => {
     expect(capture.capture(current, [1, 2, 3])).toEqual([daemon, shell, native]);
   });
 
-  it("fails when a live original ancestor creates another owned incarnation of a retained PID", () => {
+  it("captures every owned incarnation when a live original ancestor creates a child with a retained PID", () => {
     const daemon = row(1, 0), shell = row(2, 1, 10n), replacement = row(2, 1, 20n), native = row(3, 2, 30n);
     const capture = createPlatformProcessCapture();
     capture.capture([daemon, shell], [1, 2], 1);
-    expect(() => capture.capture([native, replacement, daemon], [1, 2])).toThrow("reused by another owned incarnation");
-    expect(capture.capture([daemon, shell], [1, 2])).toEqual([daemon, shell]);
+    expect(capture.capture([native, replacement, daemon], [1, 2, 3])).toEqual([daemon, shell, replacement, native]);
+    expect(capture.capture([daemon, replacement, native], [1, 2, 3])).toEqual([daemon, shell, replacement, native]);
+    expect(capture.capture([], [1, 2, 3])).toEqual([daemon, shell, replacement, native]);
+  });
+
+  it("does not give an unrelated reused descendant PID ownership of its new subtree", () => {
+    const daemon = row(1, 0), child = row(2, 1, 10n), replacement = row(2, 99, 20n), unrelated = row(3, 2, 30n);
+    const capture = createPlatformProcessCapture();
+    capture.capture([daemon, child], [1, 2], 1);
+    expect(capture.capture([daemon, replacement, unrelated], [1, 2])).toEqual([daemon, child]);
+    expect(() => capture.capture([daemon, replacement, unrelated], [3])).toThrow("no verified ownership chain");
   });
 
   it("continues capturing descendants of original processes after an ancestor exits", () => {

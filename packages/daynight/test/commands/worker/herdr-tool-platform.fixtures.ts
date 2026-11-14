@@ -316,7 +316,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       assert.equal(await mac.observe(evidence.helperIdentityBefore), "same");
     } else {
       const current = await inventory();
-      for (const pid of [receipt.helperPid, receipt.childPid]) assert.deepEqual(current.find(process => process.pid === pid), ownedProcessTokens.find(process => process.pid === pid));
+      for (const pid of [receipt.helperPid, receipt.childPid]) assert.deepEqual(current.find(process => process.pid === pid), allProcesses.find(process => process.pid === pid));
     }
     evidence.sameOriginalNativeAfterInput = true;
     evidence.afterInitialInput = await rpc.request("session.snapshot", {}, operation());
@@ -379,7 +379,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
           const deadline = Date.now() + 5000;
           let alive: typeof ownedProcessTokens;
           do { const current = await inventory(); alive = ownedProcessTokens.filter(original => current.some(process => process.pid === original.pid && process.token === original.token)); if (alive.length) await delay(100); } while (alive.length && Date.now() < deadline);
-          evidence.cleanup.originalProcesses = ownedProcessTokens.map(original => ({ pid: original.pid, parentPid: original.parent, startToken: original.token, stage: "after-stop", observation: alive.some(process => process.pid === original.pid) ? "running" : "exited" }));
+          evidence.cleanup.originalProcesses = ownedProcessTokens.map(original => ({ pid: original.pid, parentPid: original.parent, startToken: original.token, stage: "after-stop", observation: alive.some(process => process.pid === original.pid && process.token === original.token) ? "running" : "exited" }));
         } catch (error) { evidence.cleanup.processReadbackError = errorText(error); }
       }
       evidence.cleanup.apiClosed = await closedEndpoint(adapter.paths.apiEndpoint); evidence.cleanup.clientClosed = await closedEndpoint(adapter.paths.clientEndpoint);
