@@ -324,7 +324,9 @@ pages without removing earlier links on failure.
 Only the sidebar toggle stays in the footer. Desktop widths are 190px expanded and
 68px collapsed. The footer stays reachable on long pages and short viewports;
 icon entries retain accessible names, hover titles and selected route styling.
-The topbar avatar opens an account menu whose Account settings item navigates to
+The topbar avatar uses the authenticated profile image, cropped to a circle,
+and displays the account initial while loading or when the source is empty or
+fails. It opens an account menu whose Account settings item navigates to
 `/account`. The localized trigger exposes its expanded state; keyboard access,
 outside-click and Escape dismissal, focus restoration after Escape, and route
 change dismissal keep the menu usable across desktop and narrow viewports.

@@ -325,6 +325,22 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("main")).toHaveFocus();
   });
 
+  it("passes the authenticated profile avatar to the account menu", async () => {
+    const avatarUrl = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'/%3E";
+    const fetcher = install((url) => url === "/api/v1/me" ? json({ ...user(), avatarUrl }) : defaults(url));
+    render(<AuthenticatedApp />);
+    const trigger = await screen.findByRole("button", { name: "账户菜单：Alice" });
+    const avatar = trigger.querySelector(".avatar")!;
+    const image = avatar.querySelector("img")!;
+    expect(image).toHaveAttribute("src", avatarUrl);
+    expect(image).toHaveAttribute("alt", "");
+    expect(avatar).toHaveAttribute("aria-hidden", "true");
+    expect(avatar).toHaveTextContent("A");
+    fireEvent.load(image);
+    expect(image).toHaveClass("loaded");
+    expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
+  });
+
   it.each(["pointer", "keyboard"] as const)("returns focus to the trigger when selecting the current account page with %s", async (method) => {
     window.history.replaceState(null, "", "/account");
     install();
