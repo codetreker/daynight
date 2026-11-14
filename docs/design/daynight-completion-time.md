@@ -14,7 +14,7 @@
 
 `StandaloneTaskRow`、`TaskMemberRow` 和 `GoalItem` 以非交互 `time` 显示各自完成时间，与执行耗时并列。项目 Goal 展开区为全部直接成员复用 `TaskMemberRow`，详情不重复列出 Task。标签不参与按钮名称或增加焦点停靠点；唯一的精确时间 description 与既有执行耗时 description 并存。Task 行的详情入口承担键盘提示；Goal 行的独立详情按钮承担键盘提示，展开按钮包含时间标签，提示 DOM 位于该按钮之外且不触发展开。Task 和 Goal 详情在已完成且时间已知时直接显示完整“完成时间”字段，即使时钟样本尚不可用也能读取。`GoalDetailSurface` 从 `completedAtFor(detail)` 读取 Goal 自身事实，在公共元信息行显示精确本地时间；它与描述侧栏的创建／修改时间和子任务进度独立，三个阅读页签均可查看。
 
-`ChainList` 和 `ScopedTaskChainRow` 使用各自完整的统计成员计算汇总。链摘要以非交互容器组织标题和次要信息，链时间按钮放在标题下方，与负责人或子任务数及 Worker 信息并列；进度、状态和图入口保留各自的职责。原生展开按钮与时间按钮是独立控件，展开入口保留 ID、展开状态、控制关系及焦点恢复。时间按钮名称为本地化的“查看 {title} 的完成时间”；相对时间不参与名称。展开后的代表详情入口另用代表 Task 自身事实。点击时间按钮不展开、选择任务或打开图。
+`ChainList` 和 `ScopedTaskChainRow` 使用各自完整的统计成员计算汇总。链摘要以非交互容器组织标题和次要信息，链时间按钮放在标题下方，与负责人或子任务数及 Worker 信息并列；进度、状态和图入口保留各自的职责。摘要内的时间按钮使用 17px 行高和无纵向内边距的居中 flex 盒，使未换行的信息区与头像对齐；内容换行时由内容自然撑高。原生展开按钮与时间按钮是独立控件，展开入口保留 ID、展开状态、控制关系及焦点恢复。时间按钮名称为本地化的“查看 {title} 的完成时间”；相对时间不参与名称。展开后的代表详情入口另用代表 Task 自身事实。点击时间按钮不展开、选择任务或打开图。
 
 行的完成标签支持鼠标悬停，Task 行及 Goal 独立详情按钮获得焦点时支持键盘访问；触屏用户可从详情入口读取 Task 或 Goal 精确时间。链汇总没有独立详情，因而提供同级时间按钮供鼠标、键盘和触屏使用。悬停或聚焦显示提示；链时间按钮点击或触屏激活可固定提示，再次激活、焦点离开或外部 pointerdown 关闭，外部操作仍正常执行。鼠标可从标签移到提示上阅读。blur、来源失效或导航清理原提示。
 
@@ -26,4 +26,4 @@
 
 纯模型测试负责状态、未知值、成员范围、纳秒比较和时间分段边界；时钟与 hook 测试负责共享调度、样本切换、可见性和资源释放。组件和浏览器 fixture 验证真实消费者的来源、描述组合、节点和操作身份、鼠标/键盘/触屏、窄屏及时间推进中的状态保持。真实产品流程验证服务事实传播；受控 fixture 或原型不能代替它。Goal 的完成事实和子任务进度分别验证；项目 Goal 展开区的子任务时间使用各成员自身事实；链汇总只聚合该链行的实际范围。Goal 详情的精确完成时间以自身状态和字段验证，不通过已移除的详情 Task 列表或链头验证。
 
-[Goal 标题行展开决策](../../.agents/notes/implemented/bug-fix/2026-11-13-goal-row-disclosure.md)记录 Goal 提示触发器与展开控件的关系；[链汇总时间布局决策](../../.agents/notes/implemented/architecture/2026-11-13-chain-completion-time-layout.md)记录链头布局的取舍；[完成时间交互决策](../../.agents/notes/implemented/architecture/2026-11-12-completion-time-presentation.md)记录提示与控件的取舍；[共享时钟决策](../../.agents/notes/implemented/architecture/2026-11-12-shared-completion-clock.md)记录时钟所有权。
+[Goal 标题行展开决策](../../.agents/notes/implemented/bug-fix/2026-11-13-goal-row-disclosure.md)记录 Goal 提示触发器与展开控件的关系；[链汇总时间布局决策](../../.agents/notes/implemented/architecture/2026-11-13-chain-completion-time-layout.md)记录链头布局的取舍，[紧凑行高决策](../../.agents/notes/implemented/bug-fix/2026-11-14-chain-completion-density.md)记录时间按钮盒模型的取舍；[完成时间交互决策](../../.agents/notes/implemented/architecture/2026-11-12-completion-time-presentation.md)记录提示与控件的取舍；[共享时钟决策](../../.agents/notes/implemented/architecture/2026-11-12-shared-completion-clock.md)记录时钟所有权。
