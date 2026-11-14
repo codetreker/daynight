@@ -41,7 +41,7 @@ const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState =
 
 const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView={activeView}
   goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
-  unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
+  unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openGraphTarget: openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
   standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 
@@ -73,7 +73,7 @@ describe('paused task discovery', () => {
     const value = snapshot();
     const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView="standalone"
       goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
-      unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
+      unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
       chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
       standalone={{ projectId: project.id, taskIds: [id(4)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop,
         pagination: { page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop } }} /></TaskExecutionClockProvider>, { locale: 'en', taskCache: true });
