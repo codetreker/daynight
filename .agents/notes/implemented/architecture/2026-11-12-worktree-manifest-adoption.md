@@ -24,7 +24,15 @@ Backend obligations and local cleanup settle before metadata retirement. A
 metadata-only retry does not restore execution capacity or the same-task barrier.
 Legacy Herdr can settle an orphan manifest from complete current observations
 after in-process operations join; loss of an in-memory receipt does not require
-inventing historical stop evidence. An independently confirmed successor binding
+inventing historical stop evidence. Shared-daemon resource observation runs under
+the instance mutex without spawning. An empty observation requires no current or
+pending instance owner, no execution responsibilities, absent configuration,
+session directory and both endpoints, and confirmed stopped native mappings.
+Otherwise the adapter reconnects to the original instance and reads its resources;
+missing configuration alone cannot establish absence. Unknown ownership and
+observation errors retain the repository gate. This permits a Web Worker that has
+never started Herdr to retire orphan metadata without requiring a Herdr daemon.
+An independently confirmed successor binding
 permits retiring only the old metadata without inspecting the successor cwd.
 Standalone release retires its manifest before returning successfully. The
 [cleanup outcome decision](2026-11-12-worktree-cleanup-outcome.md) defines fresh

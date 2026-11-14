@@ -40,6 +40,80 @@ const getByScope = (name: string) => {
 beforeEach(() => { focused = true; vi.spyOn(document, "hasFocus").mockImplementation(() => focused); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible"); });
 
 describe("Team workspace navigation", () => {
+  it.each([[`/teams/${a}`, a], ["/projects", personal]])("keeps the paginated Team directory independent of shared projects on %s", async (path, teamId) => {
+    window.history.replaceState(null, "", path);
+    const second = { ...project, id: "00000000-0000-4000-8000-000000000006", name: "Team second", ownership: { teamId, version: 1n } };
+    const third = { ...project, id: "00000000-0000-4000-8000-000000000009", name: "Team third", ownership: { teamId, version: 1n } };
+    const first = { ...project, name: "Team first", ownership: { teamId, version: 1n } };
+    const shared = { ...project, id: "00000000-0000-4000-8000-000000000007", name: "Shared only" };
+    const sharedSecond = { ...project, id: "00000000-0000-4000-8000-000000000008", name: "Shared second" };
+    const pending = Promise.withResolvers<Response>();
+    let sharedReads = 0, sharedPageReads = 0;
+    const fetcher = install((url) => {
+      if (url.startsWith(`/api/v1/projects/${second.id}`)) return json({ error: { code: "not_found", message: "missing", requestId: "rq" } }, 404);
+      if (!url.startsWith("/api/v1/projects?")) return undefined;
+      const params = new URLSearchParams(url.split("?")[1]);
+      if (params.get("shared") === "true") {
+        if (params.has("cursor")) {
+          sharedPageReads++;
+          return sharedPageReads === 1 ? json({ error: { code: "internal_error", message: "failure", requestId: "rq" } }, 500) : json({ items: [sharedSecond], nextCursor: null });
+        }
+        sharedReads++;
+        return sharedReads === 1 ? pending.promise : json({ items: [shared], nextCursor: "shared-next" });
+      }
+      expect(params.get("teamId")).toBe(teamId);
+      return params.get("cursor") === "next" ? json({ items: [second], nextCursor: "team-next" })
+        : params.get("cursor") === "team-next" ? json({ items: [third], nextCursor: null })
+          : json({ items: [first], nextCursor: "next" });
+    });
+    render(<AuthenticatedApp />);
+    const nav = within(await screen.findByRole("complementary", { name: "Workspace navigation" }));
+    await nav.findByRole("link", { name: "Team first" });
+    fireEvent.click(nav.getByRole("button", { name: "Load more" }));
+    await nav.findByRole("link", { name: "Team second" });
+    const teamReads = () => fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?") && url.includes(`teamId=${teamId}`));
+    expect(teamReads()).toHaveLength(2);
+
+    fireEvent.click(nav.getByRole("link", { name: "Shared with me" }));
+    await screen.findByRole("heading", { name: "Projects shared with me" });
+    await waitForState(() => expect(sharedReads).toBe(1));
+    expect(nav.getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Team first", "Team second"]);
+    expect(nav.getByRole("link", { name: "Shared with me" })).toHaveAttribute("aria-current", "page");
+    expect(nav.getByRole("link", { name: "Team first" })).not.toHaveAttribute("aria-current");
+    await act(async () => pending.resolve(json({ error: { code: "internal_error", message: "failure", requestId: "rq" } }, 500)));
+    expect(await screen.findByRole("heading", { name: "Projects could not be loaded" })).toBeInTheDocument();
+    expect(nav.getByRole("link", { name: "Team second" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("main").querySelector("button.primary")!);
+    await screen.findByRole("heading", { name: "Shared only" });
+    expect(nav.queryByRole("link", { name: "Shared only" })).toBeNull();
+    expect(teamReads()).toHaveLength(2);
+    fireEvent.click(nav.getByRole("button", { name: "Load more" }));
+    await nav.findByRole("link", { name: "Team third" });
+    expect(screen.getByRole("heading", { name: "Shared only" })).toBeInTheDocument();
+    expect(sharedReads).toBe(2);
+    const main = within(screen.getByRole("main"));
+    fireEvent.click(main.getByRole("button", { name: "Load more" }));
+    expect(await main.findByText(/More projects could not be loaded/)).toBeInTheDocument();
+    expect(nav.getByRole("link", { name: "Team second" })).toBeInTheDocument();
+    fireEvent.click(main.getByRole("button", { name: "Retry loading more" }));
+    await main.findByRole("heading", { name: "Shared second" });
+    fireEvent.click(main.getByRole("button", { name: "Refresh" }));
+    await waitForState(() => expect(sharedReads).toBe(3));
+    await main.findByRole("heading", { name: "Shared only" });
+    expect(nav.getByRole("link", { name: "Team second" })).toBeInTheDocument();
+    expect(teamReads()).toHaveLength(3);
+
+    act(() => navigate(path));
+    await screen.findByRole("heading", { name: "Team second" });
+    act(() => navigate("/shared-projects"));
+    await screen.findByRole("heading", { name: "Shared only" });
+    expect(sharedReads).toBe(4);
+    expect(teamReads()).toHaveLength(3);
+    const link = nav.getByRole("link", { name: "Team second" });
+    expect(link).toHaveAttribute("href", `/projects/${second.id}`);
+    fireEvent.click(link);
+    expect(window.location.pathname).toBe(`/projects/${second.id}`);
+  }, 20000);
   it.each(["en", "zh-CN"] as const)("keeps empty project guidance specific to each workspace in %s", async (locale) => {
     window.history.replaceState(null, "", `/teams/${a}`);
     install();
@@ -1173,12 +1247,21 @@ describe("Team selection at cold workspace entries", () => {
 
   it("keeps Shared content available during a failed restoration and retries without losing the saved Team", async () => {
     window.history.replaceState(null, "", "/shared-projects"); localStorage.setItem(savedKey, a); let status = 500;
-    const fetcher = install((url) => url === `/api/v1/teams/${a}` && status === 500 ? json({ error: { code: "internal_error", message: "private", requestId: "rq-restore" } }, 500) : undefined);
+    const pending = Promise.withResolvers<Response>();
+    const fetcher = install((url) => {
+      if (url === `/api/v1/teams/${a}` && status === 500) return pending.promise;
+      if (url.startsWith("/api/v1/projects?") && url.includes("shared=true")) return json({ items: [{ ...project, name: "Shared during restoration" }], nextCursor: null });
+      return undefined;
+    });
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "Projects shared with me" });
+    await screen.findByRole("heading", { name: "Shared during restoration" });
+    expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${a}`))).toBe(false);
+    await act(async () => pending.resolve(json({ error: { code: "internal_error", message: "private", requestId: "rq-restore" } }, 500)));
     const notice = (await screen.findByRole("heading", { name: "Unable to load Teams" })).closest("section")!;
     expect(notice).toHaveTextContent("rq-restore"); expect(notice).not.toHaveTextContent("private");
     expect(localStorage.getItem(savedKey)).toBe(a);
+    expect(screen.getByRole("heading", { name: "Shared during restoration" })).toBeInTheDocument();
     await waitForState(() => expect(fetcher.mock.calls.some(([url]) => url.includes("shared=true"))).toBe(true));
     expect(fetcher.mock.calls.some(([url]) => url.includes(`teamId=${personal}`))).toBe(false);
     status = 200; fireEvent.click(within(notice).getByRole("button", { name: "Retry" }));

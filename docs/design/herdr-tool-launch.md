@@ -86,6 +86,8 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 混合模式的前置 Herdr 重连或资源读取失败时，协调器仍可调度本轮完整清单覆盖、项目已准备且保留原 worktree 与持久 `webExecution` 的 active Web 执行。该调度继续核对原 claim、许可、暂停和 backend 身份；取消不进入此路径。原 Herdr 错误仍上报，容量保持未知，不进入全局资源结算、pending 启动或新 claim 准入。原 Web 执行的显式 retry、清理和完成也按其冻结模式选择 backend，不以当前工具目标或其它 claim 的 Herdr 责任增加前置依赖。
 
+孤立 worktree 清单通过独立的 `observeResources` 只读入口观察 legacy 资源：共享串行队列内只有 current/pending owner 和执行责任均缺席、配置与 session 路径及两个 endpoint 均缺席、原 native mapping 全部确认停止时才返回空集合；其它情况按原实例重连并读取资源，保留未知状态与读取错误。实例存在检查和新执行准入不采用这一空观察替代原身份核验。
+
 ## 观察与验证边界
 
 工具遥测按 selectionKey 聚合原实例与执行事实，允许同时出现多个实际选择。版本来自对应冻结观察或实际实例握手；无完整证据时计数和版本保持未知并保留 unconfirmed，不能由 task.status 推导进程存活。采样只读，不启动或探测工具。

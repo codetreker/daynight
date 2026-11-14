@@ -1540,6 +1540,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         || retainedLifecycle?.neverStarted?.candidates().some(value => key(value) === identity)
         || retainedLifecycle?.worktreePath?.(owner) != null) return false;
       const observed = migration !== undefined ? await workerOperation(operation => migration.listLegacyBindings(operation), normalSignal) : observedLegacy ?? await workerOperation(async operation => {
+        if (options.herdr.observeResources !== undefined) return options.herdr.observeResources(operation);
         await options.herdr.ensureInstance(operation);
         return options.herdr.tasks.listResources(operation);
       }, normalSignal);

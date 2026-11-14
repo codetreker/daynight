@@ -141,6 +141,8 @@ export type WorkerHerdrInput = {
 export type WorkerHerdrAdapter = ReturnType<typeof createWorkerHerdr> & {
   lifecycle?: WorkerHerdrLifecycle;
   input?: WorkerHerdrInput;
+  /** Observe original resources without starting an instance; absence requires confirmed ownership and endpoint checks. */
+  observeResources?(operation: Operation): Promise<import("./herdr/agents.js").HerdrOwnedWorkspace[]>;
   /** Restore only an original claim's frozen instance after its old process tree is closed. */
   ensureExecution?(context: Omit<HerdrExecutionContext, "cwd">, operation: Operation): Promise<import("./herdr/instance.js").HerdrInstanceReady>;
 };

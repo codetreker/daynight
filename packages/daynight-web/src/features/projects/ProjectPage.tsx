@@ -115,6 +115,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
+  const pausedOrigin = useRef<HTMLElement | null>(null);
   const listOrigin = useRef<ProjectListOrigin | null>(null);
   const lastGraphResource = useRef<string | null>(null);
   const restoreRequested = useRef(false);
@@ -129,7 +130,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (event.historyChanged && (currentSelection.current.detail !== null || currentSelection.current.projectGraphWitness !== null)) {
       const detail = currentSelection.current.detail;
       pendingRetirement.current = { summaryId: detail?.source === "summary" ? detail.id : null };
-      listOrigin.current = null; originalTrigger.current = null; lastGraphResource.current = null; closedDetail.current = null;
+      listOrigin.current = null; originalTrigger.current = null; pausedOrigin.current = null; lastGraphResource.current = null; closedDetail.current = null;
     }
   }), [viewer, projectId]);
   const suppressRestore = useRef(false);
@@ -182,10 +183,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     .toReversed().sort((left, right) => compareTaskStatus(left.status, right.status)), [snapshot]);
   const matchesCurrentAssignee = (assignedTo: string | null) => matchesAssignee(assignedTo, assigneeFilter, viewer.userId);
   const assignedGoals = allGoals.filter((goal) => matchesCurrentAssignee(goal.assignedTo));
+  const unfinishedGoalCount = assignedGoals.filter((goal) => !isTerminalStatus(goal.status)).length;
   const goals = assignedGoals.filter((goal) =>
     (statusFilter === "all" || goal.status === statusFilter) && !tagFilter.invalid && matchesTagFilter(goal.tags, tagFilter.value));
-  const pausedTaskCount = useMemo(() => snapshot === null ? 0 : pausedSummaryTaskIds(
-    snapshot.graph.tasks.filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId)), snapshot.pausedTaskIds).size,
+  const pausedTasks = useMemo(() => {
+    if (snapshot === null) return [];
+    const ids = pausedSummaryTaskIds(snapshot.graph.tasks, snapshot.pausedTaskIds);
+    return snapshot.graph.tasks.filter((task) => ids.has(task.id) && matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId));
+  },
   [snapshot, assigneeFilter, viewer.userId]);
   const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
@@ -244,7 +249,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [graphWitness, openGraphTarget, section, activeView, snapshot, selection, history.select]);
   const onOpenListChain = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
     history.select({ ...selection, projectGraphWitness: id }, false, () => {
-      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger };
+      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger }; pausedOrigin.current = null;
       restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false;
     });
   }, [activeView, history.select, selection]);
@@ -265,22 +270,32 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onOpenTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: trigger.closest(".task-chain-dialog") !== null,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      restoreRequested.current = false; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
+      restoreRequested.current = false; pausedOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
     });
   }, [history.select, selection]);
   const onOpenListTask = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: false,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger };
+      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger }; pausedOrigin.current = null;
       restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false; setNotice(null);
     });
   }, [activeView, history.select, selection]);
   const onOpenSearchTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "direct", insideProjectGraph: false,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      restoreRequested.current = false; listOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = true; setNotice(null);
+      restoreRequested.current = false; listOrigin.current = null; pausedOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = true; setNotice(null);
     });
   }, [history.select, selection]);
+  const onOpenPausedTask = useCallback((id: string, trigger: HTMLElement) => {
+    history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: false,
+      navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+      restoreRequested.current = false; listOrigin.current = null; pausedOrigin.current = trigger; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
+    });
+  }, [history.select, selection]);
+  const onPausedFocusFallback = useCallback(() => {
+    if (!focusVisible(document.getElementById(`project-task-tab-${currentView.current}`)) &&
+      !focusVisible(document.getElementById("project-section-tab-tasks"))) focusVisible(heading.current);
+  }, []);
   const onOpenSession = useCallback((id: string) => {
     navigate(taskDetailUrl(projectId, id, { tab: "session", path: null }));
   }, [projectId]);
@@ -307,6 +322,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         return focusVisible(document.getElementById(`task-graph-${openGraph.current.kind === "chain" ? openGraph.current.rootId : openGraph.current.goalId}`)?.querySelector<HTMLButtonElement>('.task-chain-close'));
       }
       if (fromSearch && (focusVisible(trigger) || focusVisible(searchInput.current))) return true;
+      if (pausedOrigin.current !== null) {
+        if (focusVisible(pausedOrigin.current)) return true;
+        if (focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return true;
+        if (focusVisible(document.getElementById("project-section-tab-tasks"))) return true;
+        return focusVisible(heading.current);
+      }
       if (origin === null && focusVisible(trigger)) return true;
       const detailWitness = !fromSearch && closedDetail.current?.source === "summary" && !closedDetail.current.insideProjectGraph ? closedDetail.current.id : null;
       if (focusProjectList(currentView.current, origin, resolveProjectGraphTarget(lastGraphResource.current, indexForFocus.current, summariesForFocus.current), indexForFocus.current, lastGraphResource.current, detailWitness)) return true;
@@ -370,6 +391,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
+    if (detailSelection === null) pausedOrigin.current = null;
     if (task.parentId === null && detailSelection === null && (activeView === "chains" || activeView === "goals") && openGraphTarget !== null) {
       const representative = snapshot.index.componentByTask.get(id)!;
       if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
@@ -419,6 +441,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
+    if (detailSelection === null) pausedOrigin.current = null;
     const representative = snapshot.index.componentByTask.get(id)!;
     if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
       if (task.parentId !== null) onNavigateExternalTask(id, trigger);
@@ -647,9 +670,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {section === "tasks" && graphState}
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} tagFilter={<TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTasks={pausedTasks} onOpenPausedTask={onOpenPausedTask} onPausedFocusFallback={onPausedFocusFallback} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label>{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
-              unfinishedChainCount={unfinishedChainCount} goalCount={assignedGoals.length} onViewChange={selectView}
+              unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}

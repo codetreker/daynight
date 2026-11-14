@@ -187,6 +187,13 @@ and new claims. Explicit retry, cleanup and completion use the original
 execution's backend rather than the current target configuration.
 Attach uses the original Herdr client recipe. Legacy endpoints remain usable for
 existing operations, while missing historical recipes cannot authorize new spawn.
+Read-only orphan-manifest observation is separate from required-running connection
+and execution admission. Under the shared mutex, an empty observation requires no
+current/pending instance owner or execution responsibility, absent configuration,
+session directory and both endpoints, and confirmed stopped native mappings.
+Other cases reconnect to the original instance; unknown ownership and observation
+failures remain errors. The [manifest decision](2026-11-12-worktree-manifest-adoption.md)
+owns metadata retirement after that observation.
 
 This extends the [frozen runtime decision](2026-11-12-worker-frozen-tool-runtime.md),
 whose initial delivery kept Herdr automatic until its distinct shell and instance

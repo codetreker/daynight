@@ -27,8 +27,8 @@ let sessionStore: TaskSessionSummaryStore;
 beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
 afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
-const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace pausedTaskCount={0} sessionStore={sessionStore} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainCount={1} onViewChange={noop}
-  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
+const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace pausedTasks={[]} onOpenPausedTask={() => {}} onPausedFocusFallback={() => {}} sessionStore={sessionStore} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainCount={1} onViewChange={noop}
+  unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
   chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], ...(scopedMembers === undefined ? {} : { scopedMembers }), openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
   standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;
