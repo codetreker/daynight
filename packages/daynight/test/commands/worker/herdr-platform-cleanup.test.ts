@@ -341,6 +341,20 @@ test("joins a timed-out observer and its stdio before returning unknown", async 
   expect(result.signal).toBe("SIGKILL");
 });
 
+test("retains bounded stage diagnostics when an observer times out", async () => {
+  const script = `process.stderr.write('private stderr __DAYNIGHT_CLEANUP_STAGE_script-');
+    setTimeout(() => { process.stderr.write('start__'); setInterval(() => {}, 1000); }, 20);`;
+  const observed = await cleanup.observeWindowsCleanup([{ pid: 101, source: "dotnet-start-time-ticks" }], {
+    systemRoot: "C:\\Windows", captureStages: true,
+    execute: async () => cleanup.runCleanupQuery(process.execPath, ["-e", script], { timeoutMs: 3000, cleanupMs: 2000, captureStages: true }),
+  });
+  expect(observed.error).toMatchObject({ code: "ETIMEDOUT" });
+  expect(observed.rows).toEqual([]);
+  expect(observed.query).toMatchObject({ closed: true, signal: "SIGKILL" });
+  expect(observed.query.stages.map((entry: any) => entry.stage)).toEqual(["observer-spawn", "script-start", "observer-exit", "observer-close"]);
+  expect(JSON.stringify(observed.query)).not.toContain("private stderr");
+}, 10_000);
+
 test.skipIf(process.platform !== "win32")("reads one live original through the independent .NET process object", async () => {
   const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
   const closed = new Promise<void>(resolve => child.once("close", () => resolve()));
@@ -355,11 +369,15 @@ test.skipIf(process.platform !== "win32")("reads one live original through the i
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     // The policy matrix controls OS results; this single mechanism case keeps
     // GetProcessById, SafeHandle and exact StartTime acquisition on a live child.
-    const observed = await cleanup.observeWindowsCleanup([{ pid: child.pid, source: "dotnet-start-time-ticks" }]);
+    const observed = await cleanup.observeWindowsCleanup([{ pid: child.pid, source: "dotnet-start-time-ticks" }], { captureStages: true });
     const diagnostic = JSON.stringify(observed);
+    console.log(`Independent .NET cleanup observer: ${diagnostic}`);
     expect(observed.error, diagnostic).toBeNull();
     expect(observed.query, diagnostic).toMatchObject({ closed: true, code: 0, signal: null, error: null });
     expect(observed.rows, diagnostic).toEqual([{ pid: child.pid, source: "dotnet-start-time-ticks", state: "present", startToken: expect.stringMatching(/^[1-9][0-9]+$/), error: null }]);
+    expect(observed.query.stages.filter((entry: any) => !entry.stage.startsWith("observer-")).map((entry: any) => entry.stage), diagnostic).toEqual([
+      "script-start", "get-process-start", "get-process-done", "safe-handle-start", "safe-handle-done", "start-time-start", "start-time-done", "dispose-start", "dispose-done", "json-start", "json-done",
+    ]);
     expect(streamError).toBeUndefined();
   } finally {
     child.stdin!.end();

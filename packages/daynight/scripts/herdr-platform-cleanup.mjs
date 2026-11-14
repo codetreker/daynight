@@ -11,17 +11,23 @@ const sources = new Set(["cim-creation-date-ticks", "dotnet-start-time-ticks"]);
 const validSourceToken = (source, token) => sources.has(source) && validToken(token) && (source !== "cim-creation-date-ticks" || BigInt(token) % 10n === 0n);
 const details = error => ({ name: error?.name ?? "Error", code: error?.code ?? null, errno: error?.errno ?? null });
 const failure = code => ({ name: "CleanupObservationError", code });
+const cleanupStages = ["script-start", "get-process-start", "get-process-done", "safe-handle-start", "safe-handle-done", "start-time-start", "start-time-done", "dispose-start", "dispose-done", "json-start", "json-done"];
+const cleanupStagePattern = new RegExp(`__DAYNIGHT_CLEANUP_STAGE_(${cleanupStages.join("|")})__`, "g");
 
 /** Own only the observer child. Its close event joins both exit and stdio;
  * an unconfirmed cleanup never supplies process observations.
  */
-export const runCleanupQuery = (file, args, { timeoutMs = 10_000, cleanupMs = 2000 } = {}) => new Promise(resolve => {
+export const runCleanupQuery = (file, args, { timeoutMs = 10_000, cleanupMs = 2000, captureStages = false } = {}) => new Promise(resolve => {
+  const startedAt = performance.now();
+  const stages = [];
+  const recordStage = stage => { if (captureStages && stages.length < 32) stages.push({ stage, receivedAfterMs: Math.round(performance.now() - startedAt) }); };
   const child = spawn(file, args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
-  const chunks = []; let bytes = 0, stderrBytes = 0, error = null, cleanupTimer, finished = false;
+  const chunks = []; let bytes = 0, stderrBytes = 0, stderrSuffix = "", error = null, cleanupTimer, finished = false;
   const finish = (code, signal, closed) => {
     if (finished) return;
     finished = true; clearTimeout(timer); clearTimeout(cleanupTimer);
-    resolve({ pid: child.pid ?? null, code, signal, closed, error, stdoutBytes: bytes, stderrBytes, stdout: Buffer.concat(chunks).toString("utf8") });
+    if (closed) recordStage("observer-close");
+    resolve({ pid: child.pid ?? null, code, signal, closed, error, stdoutBytes: bytes, stderrBytes, stdout: Buffer.concat(chunks).toString("utf8"), ...(captureStages ? { stages } : {}) });
   };
   const stop = reason => {
     error ??= reason;
@@ -35,19 +41,34 @@ export const runCleanupQuery = (file, args, { timeoutMs = 10_000, cleanupMs = 20
   };
   const timer = setTimeout(() => stop(failure("ETIMEDOUT")), timeoutMs);
   child.stdout.on("data", chunk => { bytes += chunk.length; if (bytes <= 256 * 1024) chunks.push(chunk); else stop(failure("OUTPUT_LIMIT")); });
-  child.stderr.on("data", chunk => { stderrBytes += chunk.length; if (stderrBytes > 64 * 1024) stop(failure("STDERR_LIMIT")); });
+  child.stderr.on("data", chunk => {
+    stderrBytes += chunk.length;
+    if (captureStages) {
+      const input = stderrSuffix + chunk.toString("utf8");
+      cleanupStagePattern.lastIndex = 0;
+      let match, consumed = 0;
+      while ((match = cleanupStagePattern.exec(input)) !== null) { recordStage(match[1]); consumed = cleanupStagePattern.lastIndex; }
+      stderrSuffix = input.slice(consumed).slice(-128);
+    }
+    if (stderrBytes > 64 * 1024) stop(failure("STDERR_LIMIT"));
+  });
   for (const stream of [child.stdout, child.stderr]) stream.on("error", cause => stop(details(cause)));
+  child.on("spawn", () => recordStage("observer-spawn"));
   child.on("error", cause => { error ??= details(cause); });
+  child.on("exit", () => recordStage("observer-exit"));
   child.on("close", (code, signal) => finish(code, signal, true));
 });
 
 /** These are the same independent sources as the saved evidence, not the
  * production Win32 proof reader. Never compare CIM microseconds to .NET ticks.
  */
-export const windowsCleanupScript = targets => {
+export const windowsCleanupScript = (targets, { captureStages = false } = {}) => {
   if (!Array.isArray(targets) || targets.length === 0 || targets.length > 1000 || targets.some(row => !validPid(row.pid) || !sources.has(row.source))) throw new Error("Invalid independent cleanup targets.");
+  if (captureStages && (targets.length !== 1 || targets[0].source !== "dotnet-start-time-ticks")) throw new Error("Cleanup stage diagnostics require one .NET target.");
   const data = Buffer.from(JSON.stringify(targets)).toString("base64");
+  const stage = name => captureStages ? `[Console]::Error.WriteLine('__DAYNIGHT_CLEANUP_STAGE_${name}__'); [Console]::Error.Flush();` : "";
   return `$ErrorActionPreference='Stop';
+${stage("script-start")}
 $targets=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${data}')));
 $rows=[Collections.Generic.List[object]]::new();
 function ErrorData($failure) {
@@ -66,25 +87,27 @@ foreach($target in $targets) {
       } finally { foreach($item in $instances) { if($item -is [IDisposable]) { $item.Dispose() } } }
     } else {
       $p=$null;
-      try { $p=[Diagnostics.Process]::GetProcessById([int]$target.pid) }
+      try { ${stage("get-process-start")} $p=[Diagnostics.Process]::GetProcessById([int]$target.pid); ${stage("get-process-done")} }
       catch { $e=$_.Exception; while($e.InnerException) { $e=$e.InnerException }; if($e -is [ArgumentException]) { $row.state='missing' } else { throw } }
       if($null -ne $p) {
-        try { $null=$p.SafeHandle; $row.startToken=$p.StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture); $row.state='present' }
-        finally { $p.Dispose() }
+        try { ${stage("safe-handle-start")} $null=$p.SafeHandle; ${stage("safe-handle-done")} ${stage("start-time-start")} $row.startToken=$p.StartTime.ToUniversalTime().Ticks.ToString([Globalization.CultureInfo]::InvariantCulture); ${stage("start-time-done")} $row.state='present' }
+        finally { ${stage("dispose-start")} $p.Dispose(); ${stage("dispose-done")} }
       }
     }
   } catch { $row.state='unknown'; $row.startToken=$null; $row.error=ErrorData $_ }
   $rows.Add($row);
 }
-@{schemaVersion=1;rows=@($rows.ToArray())} | ConvertTo-Json -Depth 6 -Compress;`;
+${stage("json-start")}
+@{schemaVersion=1;rows=@($rows.ToArray())} | ConvertTo-Json -Depth 6 -Compress;
+${stage("json-done")}`;
 };
 
-export const observeWindowsCleanup = async (targets, { execute = runCleanupQuery, systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT } = {}) => {
+export const observeWindowsCleanup = async (targets, { execute = runCleanupQuery, systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT, captureStages = false } = {}) => {
   let query;
   try {
     if (!systemRoot || !path.win32.isAbsolute(systemRoot)) throw Object.assign(new Error("Missing system PowerShell root."), { code: "SYSTEM_ROOT_MISSING" });
-    const script = windowsCleanupScript(targets);
-    query = await execute(path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]);
+    const script = windowsCleanupScript(targets, { captureStages });
+    query = await execute(path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { captureStages });
     if (!query.closed || query.error || query.code !== 0 || query.signal !== null) return { query: { ...query, stdout: undefined }, rows: [], error: query.error ?? failure("QUERY_NOT_COMPLETED") };
     const envelope = JSON.parse(query.stdout);
     if (envelope?.schemaVersion !== 1 || !Array.isArray(envelope.rows) || envelope.rows.length !== targets.length) throw failure("INVALID_QUERY_ENVELOPE");
