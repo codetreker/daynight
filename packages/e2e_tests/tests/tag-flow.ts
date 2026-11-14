@@ -125,8 +125,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await page.locator("#project-section-tab-tasks").click();
   await page.locator("#project-task-tab-goals").click();
   await expect(card).toBeVisible();
-  await expect(card.locator(".goal-list-toggle .task-tag-empty")).toHaveText("Untagged");
-  await expect(card.locator(".goal-list-toggle .task-tag")).toHaveCount(0);
+  await expect(card.locator(".goal-list-toggle .task-tag-list")).toHaveCount(0);
   await card.locator(".goal-list-toggle").click();
   await expect(child.locator(".task-tag")).toHaveText(["Other"]);
   await filter.locator("summary").click();

@@ -257,11 +257,11 @@ PR 列表    │ 负责人：全部  状态：全部状态       2 / 2 条任务
 
 ### Task 与 Goal 标签展示
 
-`TaskTagList` 接收条目自身的标签引用并以中性文字块展示名称；空集合显示当前语言的无标签文案。标签列表自然换行，长名称可在可用宽度内完整阅读。项目独立 Task、Goal 和 Goal 展开区域的直接子 Task 从 `snapshot.summaries` 按各自 ID 读取标签；链成员使用同一来源，不把标签加入 `GraphIndex` 或裁剪节点、边。Goal 展开与 Task 行保持原有按钮及焦点行为。
+`TaskTagList` 接收条目自身的标签引用并以中性文字块展示名称；空集合不渲染标签区域及其间距；Goal 展开按钮和 Task 行仅在标签非空时引用该区域。标签列表自然换行，长名称可在可用宽度内完整阅读。项目独立 Task、Goal 和 Goal 展开区域的直接子 Task 从 `snapshot.summaries` 按各自 ID 读取标签；链成员使用同一来源，不把标签加入 `GraphIndex` 或裁剪节点、边。Goal 展开与 Task 行保持原有按钮及焦点行为。
 
-Task 和 Goal 详情使用自身严格详情；同一 ID 的摘要版本较新时，展示摘要中的标签，以便普通同步后的改名与删除及时可见，同时保持详情和列表的现有交互状态。缓存准入、版本和普通增量的合同由[任务同步设计](daynight-task-sync.md)拥有，展示组件不新增读取或写入。取舍见[标签展示决策](../../.agents/notes/implemented/feature/2026-11-13-web-task-tag-display.md)。
+Task 和 Goal 详情使用自身严格详情；同一 ID 的摘要版本较新时，展示摘要中的标签，以便普通同步后的改名与删除及时可见，同时保持详情和列表的现有交互状态。缓存准入、版本和普通增量的合同由[任务同步设计](daynight-task-sync.md)拥有，展示组件不新增读取或写入。取舍见[标签展示决策](../../.agents/notes/implemented/feature/2026-11-13-web-task-tag-display.md)和[空标签展示决策](../../.agents/notes/implemented/simplification/2026-11-14-hide-empty-task-tags.md)。
 
-`TaskTagsEditor` 在 Task 与 Goal 详情共享 `TagPicker`。草稿以打开时严格详情的标签及版本为基准，目录仅持有当前页，选中身份独立保存，并在目录 epoch 变化后批量 resolve；已删除身份从选择中移除。条目保存通过 `TaskDetailSession` 以原始版本提交规范 ID 集合，校验回执与未修改字段；冲突及未知结果通过已有 reconciliation 展示当前详情，不重放写入。后台新详情不会覆盖草稿，用户明确采用当前版本后才能继续。提交后新增的草稿修改不会被旧回执关闭。选择器的新标签创建是独立目录写入；创建结束前等待关联保存，取消关联不会撤销目录写入。详情草稿导航和访问生命周期分别保护未保存内容及退休私有请求。取舍见[详情标签编辑决策](../../.agents/notes/implemented/feature/2026-11-13-web-tag-editing.md)。
+`TaskTagsEditor` 在 Task 与 Goal 详情共享 `TagPicker`。草稿以打开时严格详情的标签及版本为基准，目录仅持有当前页，选中身份独立保存，并在目录 epoch 变化后批量 resolve；已删除身份从选择中移除。条目保存通过 `TaskDetailSession` 以原始版本提交规范 ID 集合，校验回执与未修改字段；冲突及未知结果通过已有 reconciliation 展示当前保存或上次读取的详情，不重放写入；核对区域对已读取的空集合显示“无 / None”，并保留读取错误与未知结果。后台新详情不会覆盖草稿，用户明确采用当前版本后才能继续。提交后新增的草稿修改不会被旧回执关闭。选择器的新标签创建是独立目录写入；创建结束前等待关联保存，取消关联不会撤销目录写入。详情草稿导航和访问生命周期分别保护未保存内容及退休私有请求。取舍见[详情标签编辑决策](../../.agents/notes/implemented/feature/2026-11-13-web-tag-editing.md)。
 
 ### 居中任务详情
 

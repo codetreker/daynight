@@ -1794,8 +1794,10 @@ Task and Goal details share a searchable multi-select tag editor. Its draft star
 from the resource's own detail and keeps its original version until the user
 explicitly adopts a newer one. Saving replaces the complete association set,
 including an empty set. Conflicts and unknown outcomes retain the draft and
-show the current saved tags without replaying the write. Creating a tag in the
-picker writes to the catalog independently; cancelling the association edit
+show the current saved or last observed tags without replaying the write. An
+observed empty set is explicit in reconciliation, while ordinary empty tag
+displays occupy no space. Read errors and unknown outcomes remain visible.
+Creating a tag in the picker writes to the catalog independently; cancelling the association edit
 does not delete it. Pending saves retain later local edits. Identity change or
 project access withdrawal retires private editing state.
 

@@ -63,6 +63,7 @@ it('retains a newer successful search when an older Project read returns 404', a
   fireEvent.change(input, { target: { value: 'evidence' } });
   fireEvent.submit(input.closest('form')!);
   const result = await screen.findByText('Search evidence');
+  expect(result.closest('.task-search-result')!.querySelector('.task-tag-list')).toBeNull();
   expect(scope.getProjectReadRevision(projectId)).toBeGreaterThan(before);
   await act(async () => { old.reject(new ApiError('server', 404, 'not_found')); });
   expect(screen.getByText('Search evidence')).toBe(result);

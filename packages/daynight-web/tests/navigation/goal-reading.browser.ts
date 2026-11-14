@@ -1910,10 +1910,8 @@ test('Goal and task-chain headers remain compact with an assigned owner on deskt
   const goalHeight = await row.evaluate(element => element.getBoundingClientRect().height);
   const cardHeight = await card.evaluate(element => element.getBoundingClientRect().height);
   expect(chainHeight).toBe(62);
-  // Goal shows the empty-tag label on its own line; the chain header does not.
-  await expect(card.locator('.task-tag-empty')).toBeVisible();
-  expect(goalHeight).toBeGreaterThanOrEqual(chainHeight);
-  expect(goalHeight).toBeLessThanOrEqual(chainHeight + 20);
+  await expect(card.locator('.task-tag-list')).toHaveCount(0);
+  expect(goalHeight).toBe(chainHeight);
   expect(cardHeight - goalHeight).toBe(chainCardHeight - chainHeight);
   await card.locator('.goal-list-toggle').click();
   expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(goalHeight);

@@ -109,7 +109,8 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await expect(childRow.locator('.task-tag')).not.toContainText('Goal label');
   await expect(card.locator(`#chain-task-goal-${goal.id}-${root.id} .task-tag`)).toHaveText(['Root label']);
   const emptyRow = card.locator(`#chain-task-goal-${goal.id}-${chained.id}`);
-  await expect(emptyRow.locator('.task-tag')).toHaveCount(0);
+  await expect(emptyRow.locator('.task-tag-list')).toHaveCount(0);
+  expect(await emptyRow.getAttribute('aria-labelledby')).not.toContain('-tags');
   await card.locator(`#project-goal-detail-${goal.id}`).click();
   const goalDialog = page.locator('.goal-detail-surface');
   await expect(goalDialog.locator('.task-tag')).toHaveText(['Goal label']);
@@ -145,6 +146,14 @@ test('delta updates each row without losing expanded state or clearing content w
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await expect(toggle).toBeFocused();
     await expect(card.locator(`#chain-task-goal-${goal.id}-${root.id} .task-tag`)).toHaveText(['Renamed root label']);
+    state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, version: 3n, updatedAt: '2026-10-22T10:00:06Z', tags: [{ id: id(93), name: 'Restored child label' }] } : item);
+    state.observedAt = '2026-10-22T10:00:08Z';
+    await page.locator('.project-title-actions>button').evaluate((element: HTMLButtonElement) => element.click());
+    await expect(childRow.locator('.task-tag')).toHaveText(['Restored child label']);
+    await expect(childRow).toHaveAccessibleName(/Restored child label/);
+    expect(await childRow.getAttribute('aria-labelledby')).toContain('-tags');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(toggle).toBeFocused();
     expect(state.writes).toEqual([]);
   } finally { state.release(); }
 });
@@ -176,7 +185,7 @@ test('open details use current synced tags while Task detail read waits', async 
     state.observedAt = '2026-10-22T10:00:07Z';
     await page.locator('.project-title-actions>button').evaluate((element: HTMLButtonElement) => element.click());
     await expect(goalDialog.locator('.task-tag')).toHaveCount(0);
-    await expect(goalDialog.locator('.task-tag-empty')).toBeVisible();
+    await expect(goalDialog.locator('.task-tag-list')).toHaveCount(0);
     await expect(goalDialog).toBeVisible();
     state.releaseDetail();
     expect(state.writes).toEqual([]);
@@ -239,13 +248,13 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
     const dimensions = await tag.evaluate(element => ({ w: element.clientWidth, sw: element.scrollWidth, h: element.clientHeight, sh: element.scrollHeight }));
     expect(dimensions.sw).toBeLessThanOrEqual(dimensions.w + 1); expect(dimensions.sh).toBeLessThanOrEqual(dimensions.h + 1);
   }
-  for (const control of [toggle.locator('.goal-list-title'), toggle.locator('.root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph'), childRow.locator('.root-title'), childRow.locator('..').locator('.root-status')]) {
+  for (const control of [toggle.locator('.goal-list-title'), card.locator('.goal-list-session .root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph'), childRow.locator('.root-title'), childRow.locator('..').locator('.root-status')]) {
     await expect(control).toBeVisible();
     const box = await control.boundingBox(); expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(321);
   }
   const tagBox = (await toggle.locator('.task-tag').boundingBox())!;
-  for (const control of [toggle.locator('.root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph')]) {
+  for (const control of [card.locator('.goal-list-session .root-status'), card.locator('.goal-list-detail'), card.locator('.goal-list-graph')]) {
     const box = (await control.boundingBox())!;
     const overlap = Math.min(tagBox.x + tagBox.width, box.x + box.width) > Math.max(tagBox.x, box.x) && Math.min(tagBox.y + tagBox.height, box.y + box.height) > Math.max(tagBox.y, box.y);
     expect(overlap).toBe(false);
@@ -419,4 +428,36 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   } else {
     await expect(page.locator(`[data-goal-id="${created.id}"] .goal-list-toggle .task-tag`)).toHaveText(['Goal label', 'Child label']);
   }
+});
+
+for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`empty production rows reclaim placeholder height at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale);
+  state.tasks = state.tasks.map(item => item.id === goal.id || item.id === child.id ? { ...item, tags: [] } : item);
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-goals').click();
+  const card = page.locator(`[data-goal-id="${goal.id}"]`), toggle = card.locator('.goal-list-toggle');
+  await toggle.click();
+  const row = card.locator(`#chain-task-goal-${goal.id}-${child.id}`);
+  await expect(toggle.locator('.task-tag-list')).toHaveCount(0);
+  await expect(row.locator('.task-tag-list')).toHaveCount(0);
+  expect(await toggle.getAttribute('aria-describedby')).not.toContain(`project-goal-tags-${goal.id}`);
+  expect(await row.getAttribute('aria-labelledby')).not.toContain('-tags');
+  for (const [control, container, before] of [[toggle, '.goal-list-main', '.goal-list-meta'], [row, '.root-heading', null]] as const) {
+    const heights = await control.evaluate((element, args) => {
+      const target = element.querySelector(args.container)!;
+      const compact = element.getBoundingClientRect().height;
+      const old = document.createElement('span'); old.className = 'task-tag-list';
+      const label = document.createElement('span'); label.textContent = args.locale === 'en' ? 'Untagged' : '无标签';
+      label.style.cssText = `font-size:${args.width <= 320 ? 10 : 11}px;line-height:1.4`;
+      old.append(label); target.insertBefore(old, args.before === null ? null : target.querySelector(args.before));
+      const placeholder = element.getBoundingClientRect().height; old.remove();
+      return { compact, placeholder, restored: element.getBoundingClientRect().height };
+    }, { container, before, locale, width });
+    expect(heights.placeholder).toBeGreaterThan(heights.compact);
+    expect(heights.restored).toBe(heights.compact);
+  }
+  await row.focus(); await expect(row).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
 });
