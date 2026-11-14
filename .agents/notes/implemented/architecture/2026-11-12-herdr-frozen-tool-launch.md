@@ -244,14 +244,16 @@ mandatory. Contradictory or missing initialization evidence fails cleanup; the
 original initialization error still fails the platform test.
 
 Final Windows acceptance cleanup independently rereads each original process birth
-after adapter construction.
-CIM CreationDate and the metadata oracle's .NET StartTime keep their respective
-original token sources and precision. Missing or replaced identities can confirm
-original absence only alongside complete original stop evidence; a live original,
-missing original identity, failed query or incomplete output fails validation.
-Results retain both identities, their source and observation errors. The observer
-never signals inspected PIDs and still checks endpoints, directories and query
-resource closure.
+after adapter construction. CIM CreationDate and the metadata oracle's .NET
+StartTime keep their respective original token sources and precision. Missing or
+replaced identities can confirm original absence only alongside complete original
+stop evidence; a live original, missing original identity, failed query or
+incomplete output fails validation. Results retain both identities, their source
+and observation errors. The observer never signals inspected PIDs and still checks
+endpoints, directories and query resource closure. The [partial workspace
+evidence decision](../testing/2026-11-13-herdr-partial-workspace-evidence.md)
+defines the isolated fixture's additional proof for a readiness failure before
+the caller receives a binding.
 
 Windows cleanup policy tests execute the real checker and filesystem operations
 with controlled observations at the OS query boundary. Dedicated native jobs own
