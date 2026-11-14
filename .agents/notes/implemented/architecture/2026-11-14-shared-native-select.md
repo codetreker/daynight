@@ -22,7 +22,10 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. A shared popup-state predicate gives enclosing Escape
+an authenticated shell. Webhook owner and status filters use the filter variant;
+subscription and delivery filters use the full-width form variant. Their callers
+retain scope isolation, option eligibility and explicit delivery-filter application.
+A shared popup-state predicate gives enclosing Escape
 handlers a native observation without making the component an event owner.
 
 This generalizes the geometry choice recorded in the
