@@ -23,17 +23,20 @@ type FixtureOptions = {
   readonly previousChanges?: Partial<TaskDetail>;
   readonly exposePreviousUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
   readonly additionalTasks?: readonly TaskDetail[];
+  readonly exposeDeleteTask?: (remove: () => void) => void;
 };
 
 async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, options: FixtureOptions = {}) {
-  const epoch = taskSyncEpoch(projectId);
+  let epoch = taskSyncEpoch(projectId);
+  let taskRemoved = false;
   let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
   let previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n, ...options.previousChanges });
-  const details = () => [task, previous, ...(options.additionalTasks ?? [])];
+  const details = () => [...(taskRemoved ? [] : [task]), previous, ...(options.additionalTasks ?? [])];
   const graph = () => ({ ...graphFixture(details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
   let statusRequests = 0;
   options.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
   options.exposePreviousUpdate?.((changes) => { previous = { ...previous, ...changes }; });
+  options.exposeDeleteTask?.(() => { taskRemoved = true; epoch = '00000000-0000-4000-8000-000000000901'; });
   let steps = options.steps ? [...options.steps] : large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
   const writes: string[] = [];
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
@@ -824,9 +827,10 @@ for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
 test('paused popover preserves focus on refresh and moves it as tasks disappear', async ({ page }) => {
   let updateTask!: (changes: Partial<TaskDetail>) => void;
   let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  let deleteTask!: () => void;
   const writes = await install(page, false, false, false, false, true, undefined, { assignedTo: TEST_VIEWER_ID }, {
     previousChanges: { properties: { paused: true }, assignedTo: TEST_VIEWER_ID }, exposeUpdate: update => { updateTask = update; },
-    exposePreviousUpdate: update => { updatePrevious = update; },
+    exposePreviousUpdate: update => { updatePrevious = update; }, exposeDeleteTask: remove => { deleteTask = remove; },
   });
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
@@ -850,7 +854,21 @@ test('paused popover preserves focus on refresh and moves it as tasks disappear'
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('History origin');
   await expect(rows.first()).toBeFocused();
-  updatePrevious({ assignedTo: null, version: 6n, updatedAt: '2026-10-24T09:00:00Z' });
+  updateTask({ status: 'todo', completedAt: null, version: 7n, updatedAt: '2026-10-24T09:00:00Z' });
+  await refresh();
+  await expect(rows).toHaveCount(2);
+  await expect(rows.last()).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(rows.first()).toBeFocused();
+  deleteTask();
+  await refresh();
+  await expect(menu).toHaveCount(0);
+  await expect(badge).toContainText('1');
+  await badge.click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText('History origin');
+  await expect(rows.first()).toBeFocused();
+  updatePrevious({ assignedTo: null, version: 6n, updatedAt: '2026-10-25T09:00:00Z' });
   await refresh();
   await expect(menu).toHaveCount(0);
   await expect(badge).toHaveCount(0);
