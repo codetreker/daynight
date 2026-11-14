@@ -1,3 +1,4 @@
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { PullRequestProperty } from '../../api/types';
@@ -55,10 +56,10 @@ export const TaskPullRequests = ({ pullRequests: value }: { readonly pullRequest
             <button className="button" type="button" disabled={page === 0}
               onClick={() => setSelection({ collection: pullRequests, page: page - 1 })}>{m.previous}</button>
             <label className="task-detail-pr-page-label" htmlFor={pageId}>{m.page}</label>
-            <select className="task-detail-pr-page-select" id={pageId} ref={selectRef} aria-label={m.pageLabel} value={page}
+            <NativeSelect density="compact" layout="content" focusTone="task" wrapperClassName="task-detail-pr-page-select" id={pageId} ref={selectRef} aria-label={m.pageLabel} value={page}
               onChange={(event) => setSelection({ collection: pullRequests, page: Number(event.currentTarget.value) })}>
               {Array.from({ length: pageCount }, (_, index) => <option key={index} value={index}>{m.pageOption({ page: format.number(index + 1), total: format.number(pageCount) })}</option>)}
-            </select>
+            </NativeSelect>
             <button className="button" type="button" disabled={page === pageCount - 1}
               onClick={() => setSelection({ collection: pullRequests, page: page + 1 })}>{m.next}</button>
           </div>

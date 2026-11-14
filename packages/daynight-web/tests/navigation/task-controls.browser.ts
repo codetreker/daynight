@@ -316,6 +316,49 @@ test('a confirmed relative insertion follows the new Step to the next page and f
   expect(writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/${taskId}/steps`]);
 });
 
+for (const presentation of ['dialog', 'fullscreen'] as const) test(`native Step menu Escape preserves its draft in ${presentation}`, async ({ page }) => {
+  const writes = await install(page);
+  const dialog = await openDialog(page);
+  if (presentation === 'fullscreen') await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+  const form = dialog.locator('.step-add-form');
+  const title = form.getByRole('textbox', { name: 'Title' });
+  await title.fill('Retained draft');
+  const status = form.getByRole('combobox', { name: 'Initial status' });
+  const placement = form.getByRole('combobox', { name: 'Placement' });
+  for (const select of [status, placement]) {
+    expect(await select.evaluate(node => node.getBoundingClientRect().height)).toBe(38);
+    await select.click();
+    await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(false);
+    await expect(dialog).toBeVisible(); await expect(form).toBeVisible();
+    await expect(title).toHaveValue('Retained draft'); await expect(select).toBeFocused();
+    await expect(page.getByRole('alertdialog')).toHaveCount(0);
+    if (presentation === 'fullscreen') await expect(dialog).toHaveClass(/task-detail-fullscreen/);
+  }
+  await page.keyboard.press('Escape');
+  const discard = page.getByRole('alertdialog'); await expect(discard).toBeVisible();
+  await discard.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(title).toHaveValue('Retained draft');
+  expect(writes).toEqual([]);
+});
+
+test('native platform menu Escape precedes closing Task details', async ({ page }) => {
+  const writes = await install(page);
+  const dialog = await openDialog(page);
+  const platform = dialog.getByRole('combobox', { name: 'Execution platform' });
+  await platform.click();
+  await expect.poll(() => platform.evaluate(node => node.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => platform.evaluate(node => node.matches(':open'))).toBe(false);
+  await expect(dialog).toBeVisible(); await expect(platform).toHaveValue(''); await expect(platform).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0); await expect(page.locator(`#standalone-task-${taskId}`)).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
 test('a late move receipt does not steal focus or change the page of a new draft', async ({ page }) => {
   const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
   const writes = await install(page, false, false, true, false, false, { started: entered.resolve, wait: gate.promise });
@@ -435,9 +478,10 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     const status = dialog.locator('.task-status-trigger');
     const platform = dialog.getByRole('combobox', { name: locale === 'en' ? 'Execution platform' : '执行平台' });
     await expect(status).toBeEnabled(); await expect(platform).toBeEnabled();
+    expect(await platform.evaluate(node => getComputedStyle(node).height)).toBe('24px');
     await expect.poll(() => dialog.locator('.task-detail-status-row').evaluate(row => {
       const bounds = row.getBoundingClientRect();
-      const boxes = Array.from(row.querySelectorAll('.task-status-trigger, .task-assignee-field, .task-platform-select, .task-detail-ready, .task-detail-blocked, .task-detail-execution-mode, .task-automation-control')).map(element => element.getBoundingClientRect());
+      const boxes = Array.from(row.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select[data-density="compact"], .task-detail-ready, .task-detail-blocked, .task-detail-execution-mode, .task-automation-control')).map(element => element.getBoundingClientRect());
       return row.scrollWidth <= row.clientWidth && document.documentElement.scrollWidth <= innerWidth && boxes.every((box, index) => box.width > 0 && box.height > 0 && box.left >= bounds.left - 0.5 && box.right <= bounds.right + 0.5 && boxes.slice(index + 1).every(other => box.right <= other.left + 0.5 || other.right <= box.left + 0.5 || box.bottom <= other.top + 0.5 || other.bottom <= box.top + 0.5));
     })).toBe(true);
     await status.focus(); await page.keyboard.press('Enter');
@@ -459,6 +503,42 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     await expect(platformConfirmation).toBeVisible(); await expect(platform).toHaveValue('');
     await page.keyboard.press('Escape'); await expect(platformConfirmation).toHaveCount(0); await expect(platform).toBeFocused();
     expect(writes).toEqual([]);
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 375, 390]) {
+  test(`platform labels and status row fit at ${width}px in ${locale}`, async ({ page }) => {
+    let update!: (changes: Partial<TaskDetail>) => void;
+    await install(page, false, false, false, false, false, undefined, {}, { exposeUpdate: value => { update = value; } });
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: /^(Standalone tasks|独立任务)$/ }).click();
+    for (const [index, requiredPlatform] of ([null, 'windows', 'linux', 'macos'] as const).entries()) {
+      update({ requiredPlatform, version: BigInt(index + 6), updatedAt: `2026-10-23T10:00:0${index}Z` });
+      await page.reload();
+      await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+      await page.locator('#project-section-tab-tasks').click();
+      await page.getByRole('tab', { name: /^(Standalone tasks|独立任务)$/ }).click();
+      await page.locator(`#standalone-task-${taskId}`).click();
+      const dialog = page.locator('.task-detail-dialog');
+      const platform = dialog.getByRole('combobox', { name: locale === 'en' ? 'Execution platform' : '执行平台' });
+      await expect(platform).toHaveValue(requiredPlatform ?? '');
+      const geometry = await dialog.locator('.task-detail-status-row').evaluate(row => {
+        const nodes = [...row.querySelectorAll('.task-status-trigger, .task-assignee-field, .native-select[data-density="compact"], .task-detail-ready, .task-detail-blocked, .task-detail-execution-mode, .task-automation-control')];
+        const centers = nodes.map(node => { const r = node.getBoundingClientRect(); return (r.top + r.bottom) / 2; }).sort((a, b) => a - b);
+        const lines: number[] = [];
+        for (const center of centers) if (!lines.some(line => Math.abs(center - line) < 10)) lines.push(center);
+        const select = row.querySelector<HTMLSelectElement>('.native-select select')!;
+        const style = getComputedStyle(select), canvas = document.createElement('canvas'), context = canvas.getContext('2d')!;
+        context.font = style.font;
+        return { lines: lines.length, available: select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), text: context.measureText(select.selectedOptions[0]!.textContent ?? '').width };
+      });
+      expect(geometry.lines).toBeLessThanOrEqual(locale === 'en' && width === 320 ? 3 : 2);
+      expect(geometry.available + 1).toBeGreaterThanOrEqual(geometry.text);
+      await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情' }).click();
+    }
   });
 }
 
@@ -701,12 +781,22 @@ test('linked PRs remain readable in the overview sidebar across detail presentat
   await expect(directPrs).toBeVisible();
   await directPrs.getByRole('button', { name: 'Next page' }).click();
   const pageSelect = directPrs.getByRole('combobox', { name: 'Linked PR page' });
+  expect(await pageSelect.evaluate(node => getComputedStyle(node).height)).toBe('24px');
   await pageSelect.focus();
   update({ description: 'Refreshed task description', version: 6n });
   await page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tasks/${taskId}`, { timeout: 20_000 });
   await expect(direct.getByText('Refreshed task description')).toBeVisible();
   await expect(pageSelect).toHaveValue('1');
   await expect(pageSelect).toBeFocused();
+  await pageSelect.click();
+  await expect.poll(() => pageSelect.evaluate(node => node.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => pageSelect.evaluate(node => node.matches(':open'))).toBe(false);
+  await expect(direct).toHaveClass(/task-detail-fullscreen/); await expect(pageSelect).toHaveValue('1');
+  await expect(pageSelect).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(direct).not.toHaveClass(/task-detail-fullscreen/);
+  await expect(direct.getByRole('button', { name: 'Enter fullscreen', exact: true })).toBeFocused();
   await page.goto(`/projects/${projectId}/tasks/${previousId}`);
   await expect(page.getByRole('heading', { name: 'History origin' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Linked PRs' })).toContainText('No linked PRs');

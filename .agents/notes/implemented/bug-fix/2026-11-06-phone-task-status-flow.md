@@ -18,10 +18,9 @@ each side of the heading padding, giving controls more horizontal space while
 leaving the title, reading panels, pause control and claim summary untouched.
 Status and assignee retain their compact pair and
 existing name ellipsis, but the pair no longer requests a complete line.
-The native platform select uses `field-sizing: content` and symmetric 7px
-horizontal padding: its intrinsic width follows the selected option instead of
-the longest option, and the browser owns the native arrow space. This avoids
-reserving the custom status menu's additional arrow padding on the native select.
+The platform select uses the compact, content-width shared native control;
+its wrapper can shrink within the row and its arrow spacing belongs to the
+[shared selection decision](../architecture/2026-11-14-shared-native-select.md).
 Automatic execution retains its nonshrinking label/switch combination and
 automatic left margin, placing it at the right edge of the final line.
 
@@ -64,7 +63,7 @@ Long names remain truncated according to the existing name limits. Localization
 and future controls can change wrapping, so browser checks retain phone widths
 and both languages rather than assuming that compact controls always fit.
 
-Browsers without `field-sizing: content` retain the native select's longest-option
-width and may need another line; labels and operations remain available. The
-[Chrome field-sizing reference](https://developer.chrome.com/docs/css-ui/css-field-sizing)
-describes selected-option sizing and browser support.
+The original platform control used `field-sizing: content` and the browser's
+arrow to minimize its selected-option width. The shared control now reserves a
+consistent arrow inset, so a narrow row can wrap differently while retaining the
+native option list and the row's layout rules.

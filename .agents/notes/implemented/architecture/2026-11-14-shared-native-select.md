@@ -70,6 +70,12 @@ Webhook owner and status filters use the filter variant; subscription and
 delivery filters use the full-width form variant. Their callers retain scope
 isolation, option eligibility and explicit delivery-filter application.
 
+Task platform and PR pagination use compact controls; Task organization and Step
+forms use fill-width form controls. Their callers retain confirmation, numeric
+conversion, drafts and real element refs. Task detail and Step draft handlers
+leave native Escape cancellation intact while preventing an open picker from
+closing the enclosing view or discarding a draft.
+
 ## Alternatives
 
 **Share CSS while retaining page-owned structures.** Each caller could still

@@ -14,8 +14,9 @@ the form difficult to use.
 The shared `FormDialog` owns its visual boundary in `task-organization.css`.
 Its shell and form can shrink, body sections scroll, and the header and footer
 remain available. The account refresh notice occupies a separate header row;
-native fields receive scoped styling and focus indication while common buttons
-keep their application styles. The existing overlay and mutation owners remain
+Text fields receive scoped styling and focus indication, selection fields use
+the [shared native control](../architecture/2026-11-14-shared-native-select.md),
+and common buttons keep their application styles. The existing overlay and mutation owners remain
 responsible for focus, drafts and writes. The [Goal requirements](../../../../docs/spec/daynight-goals.md)
 describe the visible contract.
 

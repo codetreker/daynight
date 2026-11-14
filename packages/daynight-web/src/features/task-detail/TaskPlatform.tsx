@@ -1,3 +1,4 @@
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import type { RefObject } from 'react';
 import { ApiError } from '../../api/client';
 import { executionPlatform } from '../../api/parse';
@@ -44,7 +45,7 @@ export const TaskPlatformSelect = ({ detail, disabled, describedBy, onReview }: 
 }) => {
   const { messages: { platform: m } } = useI18n();
   const saved = detail.requiredPlatform === null ? '' : detail.requiredPlatform;
-  return <TaskControlTip text={detail.status === 'in_progress' ? m.locked : null} label={m.title} id={`${describedBy}-tip`}><select className="task-platform-select" aria-label={m.title} aria-describedby={detail.status === 'in_progress' ? `${describedBy}-tip` : undefined}
+  return <TaskControlTip text={detail.status === 'in_progress' ? m.locked : null} label={m.title} id={`${describedBy}-tip`}><NativeSelect density="compact" layout="content" focusTone="task" aria-label={m.title} aria-describedby={detail.status === 'in_progress' ? `${describedBy}-tip` : undefined}
     title={detail.status === 'in_progress' ? undefined : m.help} value={saved} disabled={disabled}
     onChange={(event) => {
       const selected = event.currentTarget.value === '' ? null : executionPlatform(event.currentTarget.value);
@@ -53,7 +54,7 @@ export const TaskPlatformSelect = ({ detail, disabled, describedBy, onReview }: 
     }}>
     <option value="">{m.any}</option>
     {(['windows', 'linux', 'macos'] as const).map((platform) => <option value={platform} key={platform}>{m.names[platform]}</option>)}
-  </select></TaskControlTip>;
+  </NativeSelect></TaskControlTip>;
 };
 
 const PlatformError = ({ error }: { readonly error: unknown }) => {
