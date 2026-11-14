@@ -27,7 +27,7 @@ it('parses independent sync state including unavailable installations and nullab
   expect(parseGitHubStatus(status, prProjectId)).toEqual(status);
 });
 
-it.each([{ connection: 'bad' }, { version: '0' }, { pollIntervalMinutes: 0 }, { pollIntervalMinutes: 2_147_483_648 }, { initializing: null }, { repository: { id: '4', fullName: 'o/r' } }, { poll: { ...prStatus().poll, lastSuccessAt: 'bad' } }])('rejects malformed status fields %#', changed => {
+it.each([{ syncEnabled: undefined }, { syncEnabled: null }, { syncEnabled: 'false' }, { connection: 'bad' }, { version: '0' }, { pollIntervalMinutes: 0 }, { pollIntervalMinutes: 2_147_483_648 }, { initializing: null }, { repository: { id: '4', fullName: 'o/r' } }, { poll: { ...prStatus().poll, lastSuccessAt: 'bad' } }])('rejects malformed status fields %#', changed => {
   expect(() => parseGitHubStatus({ ...prStatus(), ...changed }, prProjectId)).toThrow();
 });
 

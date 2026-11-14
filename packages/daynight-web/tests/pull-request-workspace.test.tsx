@@ -13,7 +13,7 @@ const summary = (number = '123', changes: Partial<PullRequestSummary> = {}): Pul
   createdAt: time, updatedAt: time, observedAt: time, closedAt: null, mergedAt: null, revision: '4', ...changes,
 });
 const status = (changes: Partial<GitHubStatus> = {}): GitHubStatus => ({
-  projectId, version: '2', revision: '4', serviceAvailable: true, connection: 'connected', repository: { id: '4', fullName: 'example/repo', private: true },
+  projectId, version: '2', revision: '4', serviceAvailable: true, syncEnabled: true, connection: 'connected', repository: { id: '4', fullName: 'example/repo', private: true },
   installation: { id: '12', accountLogin: 'owner' }, pollIntervalMinutes: 5, initializing: false,
   poll: { running: false, lastAttemptAt: time, lastSuccessAt: time, nextAttemptAt: time, error: null },
   webhook: { running: false, lastReceivedAt: time, lastAttemptAt: time, lastSuccessAt: time, error: null }, ...changes,
@@ -164,6 +164,25 @@ describe('pull request workspace', () => {
     act(() => view.rerender(<PullRequestWorkspace {...props} canRead={false} />));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('button', { name: '#123 Preserve 123, Open' })).toBeNull();
+  });
+
+  it('retains the open detail and search while a background check observes sync being disabled', async () => {
+    let enabled = true; const error = { code: 'timeout', message: 'Timeout', at: time };
+    const fetch = mockReads(url => url.pathname.endsWith('/github')
+      ? status({ syncEnabled: enabled, poll: { ...status().poll, error } })
+      : url.pathname.endsWith('/123') ? { ...summary(), description: 'Saved description' } : page([summary()]));
+    renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    fireEvent.change(await screen.findByRole('searchbox'), { target: { value: 'Preserve' } });
+    fireEvent.click(await screen.findByRole('button', { name: '#123 Preserve 123, Open' }));
+    expect(await screen.findByText('Saved description')).toBeVisible();
+    const raw = within(screen.getByRole('dialog')).getByRole('checkbox', { name: 'Raw Markdown' });
+    fireEvent.click(raw); enabled = false; fireEvent.focus(window);
+    expect(await screen.findByText(/Sync is off/)).toBeVisible();
+    expect(screen.getByText(/The last polling attempt failed/)).toBeVisible();
+    expect(screen.queryByText(/Polling temporarily failed/)).toBeNull();
+    expect(raw).toBeChecked(); expect(screen.getByRole('dialog')).toBeVisible();
+    expect(screen.getByRole('searchbox', { hidden: true })).toHaveValue('Preserve');
+    expect(fetch.mock.calls.every(([url]) => !String(url).endsWith('/github/sync'))).toBe(true);
   });
 
   it('announces new records without replacing the current page until explicit refresh', async () => {
