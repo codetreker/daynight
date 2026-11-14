@@ -680,13 +680,12 @@ export const parseImageReadChunk = (v: unknown): ImageReadChunk => {
   )
     return fail();
   const raw = atob(o.data);
-  const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
   if (
     btoa(raw) !== o.data ||
-    bytes.length > IMAGE_LIMITS.chunkBytes ||
-    BigInt(offset) + BigInt(bytes.length) > BigInt(byteLength) ||
-    o.eof !== (BigInt(offset) + BigInt(bytes.length) === BigInt(byteLength)) ||
-    (bytes.length === 0 && (!o.eof || offset !== byteLength))
+    raw.length > IMAGE_LIMITS.chunkBytes ||
+    BigInt(offset) + BigInt(raw.length) > BigInt(byteLength) ||
+    o.eof !== (BigInt(offset) + BigInt(raw.length) === BigInt(byteLength)) ||
+    (raw.length === 0 && (!o.eof || offset !== byteLength))
   )
     return fail();
   return {
