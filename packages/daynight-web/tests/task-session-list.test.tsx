@@ -143,7 +143,7 @@ it('projects Session observations into independent Goal members and hides them w
   expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
   expect(value.onOpenTask).not.toHaveBeenCalled();
   fireEvent.click(firstToggle);
-  expect(value.store.snapshot().has(childId)).toBe(false);
+  expect(value.store.snapshot().has(childId)).toBe(true);
   expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
   expect(value.store.snapshot().has(otherId)).toBe(true);
   fireEvent.click(firstToggle);

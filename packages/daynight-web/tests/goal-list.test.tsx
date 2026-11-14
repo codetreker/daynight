@@ -109,7 +109,7 @@ describe('Goal list', () => {
     expect(toggle.contains(detail)).toBe(false);
     expect(toggle.contains(graph)).toBe(false);
     for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status']) {
-      const target = toggle.querySelector(selector)!;
+      const target = card.querySelector(selector)!;
       fireEvent.click(target);
       expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
       expect(content).toBeVisible();
@@ -117,6 +117,12 @@ describe('Goal list', () => {
       expect(toggle, selector).toHaveAttribute('aria-expanded', 'false');
       expect(content).not.toBeVisible();
     }
+    fireEvent.click(toggle);
+    const child = card.querySelector<HTMLButtonElement>('.goal-task-main')!;
+    child.focus();
+    fireEvent.click(card.querySelector('.root-status')!);
+    expect(toggle).toHaveFocus();
+    expect(content).not.toBeVisible();
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     for (const expanded of [true, false]) {
@@ -330,20 +336,22 @@ describe('Goal list', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('publishes Session controls only for visible expanded Goals and restores focus on Session-only withdrawal', async () => {
+  it('observes collapsed Goal members and restores focus when Session controls disappear', async () => {
     const firstGoal = '00000000-0000-4000-8000-000000000301';
     const secondGoal = '00000000-0000-4000-8000-000000000302';
     const firstTask = '00000000-0000-4000-8000-000000000303';
     const secondTask = '00000000-0000-4000-8000-000000000304';
+    const siblingTask = '00000000-0000-4000-8000-000000000305';
     const worker = { ...claim('active'), userId: TEST_VIEWER_ID };
     const details = [detailFixture(projectId, firstGoal, { type: 'goal', title: 'First Goal' }),
       detailFixture(projectId, secondGoal, { type: 'goal', title: 'Second Goal' }),
-      detailFixture(projectId, firstTask, { title: 'First Task', parentId: firstGoal, status: 'in_progress', properties: { worker } }),
+      detailFixture(projectId, firstTask, { title: 'First Task', parentId: firstGoal, status: 'in_progress', tags: [{ id: 'tag-a', name: 'alpha' }], properties: { worker } }),
+      detailFixture(projectId, siblingTask, { title: 'Sibling Task', parentId: firstGoal, status: 'in_progress', tags: [{ id: 'tag-a', name: 'alpha' }], properties: { worker } }),
       detailFixture(projectId, secondTask, { title: 'Second Task', parentId: secondGoal, status: 'in_progress', properties: { worker } })];
     const graph = graphFixture(details); const value = snapshotFixture(details);
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const signal = new AbortController().signal; const ticket = await scope.beginSync(projectId, signal);
-    const sync = taskSyncFromGraph(graph, { sessions: { [firstTask]: 'notice', [secondTask]: 'working' }, versionForTask: () => 1n,
+    const sync = taskSyncFromGraph(graph, { sessions: { [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' }, versionForTask: () => 1n,
       propertiesForTask: (task) => details.find(item => item.id === task.id)!.properties });
     const result = await scope.applySync(ticket, sync, signal);
     const store = new TaskSessionSummaryStore(scope, projectId); store.start();
@@ -358,45 +366,97 @@ describe('Goal list', () => {
     vi.stubGlobal('IntersectionObserver', Observer);
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const openSession = vi.fn();
-    const view = createLocaleRender('en', { taskCache: true })(<TaskSessionSummaryProvider store={store}>
-      <TaskExecutionClockProvider projectId={projectId} snapshot={value}><GoalList projectId={projectId} index={value.index} summaries={value.summaries}
-        goals={[value.summaries.get(firstGoal)!, value.summaries.get(secondGoal)!]} total={2} workerMachines={value.workerMachines}
+    const renderGoals = (current: GraphSnapshot) => <TaskSessionSummaryProvider store={store}>
+      <TaskExecutionClockProvider projectId={projectId} snapshot={current}><GoalList projectId={projectId} index={current.index} summaries={current.summaries}
+        goals={[current.summaries.get(firstGoal)!, current.summaries.get(secondGoal)!]} total={2} workerMachines={current.workerMachines}
         onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop}
         openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} onOpenSession={openSession} /></TaskExecutionClockProvider>
       <button type="button">Outside</button>
-    </TaskSessionSummaryProvider>);
+    </TaskSessionSummaryProvider>;
+    const view = createLocaleRender('en', { taskCache: true })(renderGoals(value));
     try {
-      expect(records).toHaveLength(0);
+      expect(records).toHaveLength(2);
       const firstCard = document.querySelector<HTMLElement>(`[data-goal-id="${firstGoal}"]`)!;
       const secondCard = document.querySelector<HTMLElement>(`[data-goal-id="${secondGoal}"]`)!;
       const firstToggle = firstCard.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
-      fireEvent.click(firstToggle); fireEvent.click(secondCard.querySelector('.goal-list-toggle')!);
-      expect(records).toHaveLength(2);
       const visible = (record: typeof records[number], isIntersecting: boolean) => act(() => record.callback([{ target: record.element!, isIntersecting } as IntersectionObserverEntry], {} as IntersectionObserver));
       expect(firstCard.querySelector('.session-status-action')).toBeNull();
       visible(records[0]!, true);
-      const session = firstCard.querySelector<HTMLButtonElement>('.session-status-action')!;
-      expect(session).toHaveAttribute('data-session-indicator', 'notice');
+      const aggregate = firstCard.querySelector<HTMLButtonElement>('.goal-list-row .session-status-action')!;
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
       expect(secondCard.querySelector('.session-status-action')).toBeNull();
+      fireEvent.click(aggregate);
+      expect(firstToggle).toHaveAttribute('aria-expanded', 'true');
+      expect(openSession).not.toHaveBeenCalled();
+      fireEvent.click(within(firstCard).getByText('Child task tag filter', { selector: 'summary' }));
+      fireEvent.click(within(firstCard).getByRole('checkbox', { name: 'No tags' }));
+      expect(within(firstCard).getByText('No tasks match the filters')).toBeVisible();
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
+      fireEvent.click(within(firstCard).getByRole('button', { name: 'Remove No tags' }));
+      const session = firstCard.querySelector<HTMLButtonElement>('.goal-task-row .session-status-action')!;
       fireEvent.click(session); expect(openSession).toHaveBeenCalledWith(firstTask, session);
       visible(records[1]!, true);
-      expect(secondCard.querySelector('.session-status-action')).toHaveAttribute('data-session-indicator', 'working');
+      expect(secondCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'warning');
+      const replaceSessions = (sessions: typeof sync.sessions) => act(() => store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions, receivedMonotonic: performance.now() }));
+      replaceSessions({ [firstTask]: 'working', [siblingTask]: 'warning', [secondTask]: 'warning' });
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'warning');
+      replaceSessions({ [firstTask]: 'working', [siblingTask]: 'pending', [secondTask]: 'warning' });
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'working');
+      replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
       session.focus();
       visible(records[0]!, false);
       expect(firstCard.querySelector('.session-status-action')).toBeNull();
       expect(firstCard.querySelector('.goal-task-main')).toHaveFocus();
       expect(secondCard.querySelector('.session-status-action')).toBeVisible();
       visible(records[0]!, true);
+      firstCard.querySelector<HTMLButtonElement>('.goal-list-row .session-status-action')!.focus();
+      visible(records[0]!, false);
+      expect(firstToggle).toHaveFocus();
+      visible(records[0]!, true);
       screen.getByRole('button', { name: 'Outside' }).focus();
       visible(records[0]!, false);
       expect(screen.getByRole('button', { name: 'Outside' })).toHaveFocus();
       fireEvent.click(firstToggle);
-      expect(records[0]!.disconnect).toHaveBeenCalled();
       visible(records[0]!, true);
-      expect(store.snapshot().has(firstTask)).toBe(false);
+      expect(store.snapshot().has(firstTask)).toBe(true);
       expect(store.snapshot().has(secondTask)).toBe(true);
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
+      visibility.mockReturnValue('visible');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'notice');
+      visibility.mockRestore();
+      const moved = snapshotFixture(details.map(task => task.id === firstTask ? { ...task, parentId: secondGoal } : task));
+      view.rerender(renderGoals(moved));
+      expect(records[0]!.disconnect).toHaveBeenCalled();
+      for (const record of records.slice(2)) visible(record, true);
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'working');
+      const removed = snapshotFixture(details.filter(task => task.id !== siblingTask).map(task => task.id === firstTask ? { ...task, parentId: secondGoal } : task));
+      const previousObservers = records.length;
+      view.rerender(renderGoals(removed));
+      for (const record of records.slice(previousObservers)) visible(record, true);
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
+      const beforeRestore = records.length;
+      view.rerender(renderGoals(value));
+      for (const record of records.slice(beforeRestore)) visible(record, true);
+      replaceSessions({ [firstTask]: 'pending', [siblingTask]: 'pending', [secondTask]: 'warning' });
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
+      expect(firstCard.querySelector('.goal-list-row .session-status-annotation')).toBeNull();
+      replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
+      const completedDetails = details.map(task => task.id === firstTask ? { ...task, status: 'done' as const, version: 2n } : task);
+      const completedSync = taskSyncFromGraph(graphFixture(completedDetails), { query: { epoch: sync.epoch }, sessions: { [siblingTask]: 'working', [secondTask]: 'warning' }, versionForTask: (task) => task.id === firstTask ? 2n : 1n,
+        propertiesForTask: (task) => completedDetails.find(item => item.id === task.id)!.properties });
+      const completedTicket = await scope.beginSync(projectId, signal);
+      await act(async () => {
+        const completedResult = await scope.applySync(completedTicket, completedSync, signal);
+        store.replace({ project: completedResult.project, observedBindings: deriveTaskSyncBindings(completedTicket, completedSync), sessions: completedSync.sessions, receivedMonotonic: performance.now() });
+        view.rerender(renderGoals(snapshotFixture(completedDetails)));
+      });
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'working');
       expect(fetch).not.toHaveBeenCalled();
-    } finally { view.unmount(); store.dispose(); scope.dispose(); vi.unstubAllGlobals(); }
+    } finally { view.unmount(); expect(records.every((record) => record.disconnect.mock.calls.length > 0)).toBe(true); store.dispose(); scope.dispose(); vi.unstubAllGlobals(); }
   });
 
 });

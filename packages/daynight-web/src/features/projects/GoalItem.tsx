@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TaskSummary, WorkerClaim } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
@@ -6,7 +6,8 @@ import type { GraphIndex } from '../task-graph/model';
 import { completionProgress } from '../task-graph/completion-progress';
 import { projectTaskScope } from '../task-graph/scope';
 import { TaskMemberRow } from '../task-graph/TaskMemberRow';
-import { useSessionChainVisibility } from '../task-session-summary/TaskSessionSummaryProvider';
+import { useChainSessionSummary, useSessionChainVisibility } from '../task-session-summary/TaskSessionSummaryProvider';
+import { SessionStatus } from '../task-session-summary/SessionStatus';
 import { compareTaskMembers } from './task-order';
 import { ActiveWorkerIndicator } from '../task-graph/ActiveWorkerIndicator';
 import { TaskTagList } from '../task-tags/TaskTagList';
@@ -28,7 +29,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, on
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => {
-  const { messages: { workspace: { goals: m }, graph, common, assignment } } = useI18n();
+  const { messages: { workspace: { goals: m }, graph, assignment } } = useI18n();
   const completion = useCompletionTime(completedAtFor(goal));
   const hint = useCompletionHint(completion);
   const scope = useMemo(() => projectTaskScope(index, goal.id), [index, goal.id]);
@@ -36,6 +37,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, on
   const inProgressCount = scope.taskIds.filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
   const tasks = useMemo(() => scope.taskIds.map((id) => index.nodes.get(id)!).toSorted(compareTaskMembers), [scope, index]);
   const visibilityRef = useSessionChainVisibility(`goal-members-${goal.id}`, scope.taskIds);
+  const sessionIndicator = useChainSessionSummary(scope.taskIds);
   const [expanded, setExpanded] = useState(false);
   const filter = useTagFilter(projectId, expanded);
   const visibleTasks = useMemo(() => tasks.filter((task) => !filter.invalid && (summaries?.has(task.id)
@@ -43,22 +45,36 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, on
       : filter.value.tagIds.length === 0 && !filter.value.untagged)), [tasks, summaries, filter.value, filter.invalid]);
   const content = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
+  const focusedSession = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const control = focusedSession.current;
+    if (control === null || control.isConnected) return;
+    focusedSession.current = null;
+    if (document.activeElement === document.body && toggle.current?.isConnected && toggle.current.closest('[hidden], [inert]') === null)
+      toggle.current.focus({ preventScroll: true });
+  });
   const title = `${goal.titlePreview}${goal.titleTruncated ? '…' : ''}`;
   const childrenId = `project-goal-children-${goal.id}`;
   const { total: count } = scope.progress;
   const progress = completionProgress(scope.progress);
-  return <li className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status}>
-    <div className="goal-list-row task-status-surface" data-task-status={goal.status}>
-      <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} aria-describedby={`project-goal-in-progress-${goal.id} project-goal-assignee-${goal.id} project-goal-worker-${goal.id} project-goal-composition-${goal.id} project-goal-progress-${goal.id} project-goal-status-${goal.id} project-goal-tags-${goal.id}`} onClick={() => {
-        if (expanded && content.current?.contains(document.activeElement)) toggle.current?.focus({ preventScroll: true });
-        setExpanded(!expanded);
-      }}><svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+  const toggleExpanded = () => {
+    if (expanded && content.current?.contains(document.activeElement)) toggle.current?.focus({ preventScroll: true });
+    setExpanded((value) => !value);
+  };
+  return <li ref={visibilityRef} className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status} onFocusCapture={(event) => {
+    focusedSession.current = event.target instanceof HTMLElement && event.target.classList.contains('session-status-action') && event.target.closest('.goal-list-row') !== null ? event.target : null;
+  }} onBlurCapture={(event) => { if (event.relatedTarget !== null) focusedSession.current = null; }}>
+    <div className="goal-list-row task-status-surface" data-task-status={goal.status} onMouseDown={(event) => { if (event.target === event.currentTarget) event.preventDefault(); }} onClick={(event) => { if (event.target === event.currentTarget) toggleExpanded(); }}>
+      <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} aria-describedby={`project-goal-in-progress-${goal.id} project-goal-assignee-${goal.id} project-goal-worker-${goal.id} project-goal-composition-${goal.id} project-goal-progress-${goal.id} project-goal-status-${goal.id} project-goal-tags-${goal.id}`} onClick={toggleExpanded}><svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
       <span className="goal-list-icon" aria-hidden="true">◎</span>
       <span className="goal-list-main"><span className="goal-title-line"><span className="goal-list-title" id={`project-goal-${goal.id}`}>{title}</span><span className="goal-in-progress" id={`project-goal-in-progress-${goal.id}`}>{graph.inProgressCount({ count: inProgressCount })}</span></span>
         <TaskTagList id={`project-goal-tags-${goal.id}`} tags={goal.tags} /><span className="goal-list-meta"><TaskAssigneeIdentity id={`project-goal-assignee-${goal.id}`} projectId={projectId} assignedTo={goal.assignedTo} /><span id={`project-goal-worker-${goal.id}`}><ActiveWorkerIndicator memberIds={memberIds} workerMachines={workerMachines} /></span><span id={`project-goal-composition-${goal.id}`}>{m.composition({ count })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span></span>
       <span className="goal-list-progress" id={`project-goal-progress-${goal.id}`}><span>{graph.progress({ done: progress.displayDone, total: progress.displayTotal })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${progress.widthPercent}%` }} /></span></span>
-      <span className={`root-status graph-status-${goal.status}`} id={`project-goal-status-${goal.id}`}>{common.status[goal.status]}</span>
       </button>
+      <span className="goal-list-session" onMouseDown={(event) => { if (sessionIndicator === null) event.preventDefault(); }} onClick={() => { if (sessionIndicator === null) toggleExpanded(); }}>
+        <SessionStatus title={title} status={goal.status} statusId={`project-goal-status-${goal.id}`} indicator={sessionIndicator} chain expanded={expanded} controls={childrenId}
+          {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
+      </span>
       <button className="goal-list-detail" id={`project-goal-detail-${goal.id}`} type="button" aria-haspopup="dialog" aria-label={m.detailsLabel({ title })} title={m.details} ref={hint.triggerRef} {...hint.triggerEvents} aria-describedby={hint.descriptionId} onClick={(event) => { hint.triggerEvents.onClick(); onOpenGoal(goal.id, event.currentTarget); }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5m0-8h.01" /></svg></button>
       {hint.hint}
       <button className="goal-list-graph" type="button" id={`project-goal-graph-${goal.id}`} aria-haspopup="dialog" aria-label={graph.goalGraphLabel({ title })} title={graph.goalGraph} onClick={(event) => onOpenGoalGraph(goal.id, event.currentTarget)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.4" /><rect x="15" y="15" width="6" height="6" rx="1.4" /><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v5a4 4 0 0 0 4 4h5" /></svg></button>
@@ -67,7 +83,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, workerMachines, on
       <TagFilter controller={filter} child />
       {count === 0 && <p className="goal-list-empty">{m.emptyTasks}</p>}
       {count > 0 && !filter.invalid && visibleTasks.length === 0 && <p className="goal-list-empty">{assignment.noMatches}</p>}
-      {visibleTasks.length > 0 && <ul className="goal-task-list" ref={visibilityRef}>{visibleTasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} {...(summaries?.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={`goal-${goal.id}`} workerMachine={workerMachines.get(task.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+      {visibleTasks.length > 0 && <ul className="goal-task-list">{visibleTasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} {...(summaries?.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={`goal-${goal.id}`} workerMachine={workerMachines.get(task.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     </>}</div>
   </li>;
 };
