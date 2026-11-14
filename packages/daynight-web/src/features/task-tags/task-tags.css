@@ -3,6 +3,7 @@
 @media (max-width: 320px) { .task-tag { font-size: 10px; } }
 .task-tags-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; max-width: 100%; }
 .task-tags-summary > .task-tag-list { display: contents; margin: 0; }
+.task-tags-summary .task-tag { box-sizing: border-box; }
 .task-tags-summary > button { flex-shrink: 0; }
 .task-tags-editor, .tag-picker { min-width: 0; max-width: 100%; }
 .task-tags-editor { margin-top: 10px; }
