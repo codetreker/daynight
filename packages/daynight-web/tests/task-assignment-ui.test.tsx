@@ -160,7 +160,7 @@ describe('task assignment interface', () => {
     expect(screen.queryByRole('dialog', { name: 'Assignee' })).toBeNull();
     expect(document.activeElement).not.toBe(trigger);
     expect(detail).toContainElement(document.activeElement as HTMLElement);
-    expect(document.activeElement).toHaveClass('task-platform-select');
+    expect(within(detail).getByRole('combobox', { name: 'Execution platform' })).toHaveFocus();
   });
 
   it('marks an unknown write for verification while retaining the old assignee and hiding the old automation value', async () => {

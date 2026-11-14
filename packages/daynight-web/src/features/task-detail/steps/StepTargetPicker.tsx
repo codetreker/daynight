@@ -1,3 +1,4 @@
+import { NativeSelect } from "../../../ui/native-select/NativeSelect";
 import { AccountRefreshNotice } from '../../auth/AccountRefreshNotice';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TaskStep } from "../../../api/task-steps";
@@ -72,7 +73,7 @@ export const StepMoveDialog = ({ step, steps, available, onCancel, onConfirm }: 
     <div className="dialog-body step-move-body"><strong>{step.title}</strong><code className="step-id">{step.id}</code>
       <StepTargetPicker steps={steps} excludeId={step.id} selectedId={selectedId} onSelect={setSelectedId} />
       {missing && <p role="alert">{m.targetMissing}</p>}
-      <label className="step-target-field"><span>{m.placement}</span><select value={placement} onChange={(event) => setPlacement(event.currentTarget.value as "before" | "after")}><option value="before">{m.before}</option><option value="after">{m.after}</option></select></label>
+      <label className="step-target-field"><span>{m.placement}</span><NativeSelect density="form" layout="fill" focusTone="task" value={placement} onChange={(event) => setPlacement(event.currentTarget.value as "before" | "after")}><option value="before">{m.before}</option><option value="after">{m.after}</option></NativeSelect></label>
     </div>
     <footer className="dialog-footer"><button className="button" type="button" ref={cancel} onClick={onCancel}>{m.cancelMove}</button><button className="button primary" type="button" disabled={!available || selectedId === null || missing} onClick={() => { if (selectedId !== null && selectedId !== step.id && !missing) onConfirm(selectedId, placement); }}>{m.confirmMove}</button></footer>
   </dialog>;

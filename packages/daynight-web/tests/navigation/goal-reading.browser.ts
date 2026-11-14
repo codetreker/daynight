@@ -1707,6 +1707,35 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
   });
 }
 
+for (const width of [1440, 320]) test(`native Task form menu cancels before its dialog at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 844 });
+  const fixture = await install(page);
+  const longGoal = 'Long Goal name '.repeat(24);
+  fixture.setGoalTitle(longGoal);
+  const dialog = await openForm(page, 'project-task', 'en');
+  const opener = page.locator('.project-title-actions').getByRole('button', { name: 'New Task' });
+  const title = dialog.getByLabel('Title', { exact: true });
+  const goal = dialog.getByRole('combobox', { name: 'Goal', exact: true });
+  const assignee = dialog.getByRole('combobox', { name: 'Assignee', exact: true });
+  await title.fill('Retained draft'); await goal.selectOption(goalId);
+  await expect(goal.locator('option:checked')).toContainText('Long Goal name');
+  await expect(goal.locator('option:checked')).toContainText(goalId);
+  for (const select of [goal, assignee]) {
+    expect(await select.evaluate(node => node.getBoundingClientRect().height)).toBe(38);
+    await select.click();
+    await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(false);
+    await expect(dialog).toBeVisible(); await expect(title).toHaveValue('Retained draft');
+    await expect(goal).toHaveValue(goalId); await expect(select).toBeFocused();
+  }
+  await expectFormSkin(page, dialog);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
+  await opener.click(); await expect(title).toHaveValue('Retained draft');
+  expect(fixture.creates()).toEqual([]);
+});
+
 for (const locale of ['en', 'zh-CN'] as const) test(`Project Task short viewport keeps errors, recovery and draft accessible in ${locale}`, async ({ page }, testInfo) => {
   const zh = locale === 'zh-CN';
   await page.setViewportSize({ width: 320, height: 320 });
