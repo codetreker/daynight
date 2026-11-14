@@ -23,7 +23,10 @@ owns the complete API, geometry and caller responsibilities.
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
 an authenticated shell. Project and search status, PR status, and tag match filters
-use the shared filter variant while retaining their separate values and behavior. A shared popup-state predicate gives enclosing Escape
+use the shared filter variant while retaining their separate values and behavior.
+Bot creation and assistant task forms and record filters also use the shared
+presentation while retaining their business selection rules. A shared popup-state
+predicate gives enclosing Escape
 handlers a native observation without making the component an event owner.
 
 This generalizes the geometry choice recorded in the

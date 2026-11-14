@@ -69,6 +69,18 @@ for (const locale of ['en', 'zh-CN']) for (const viewport of [{ width: 1440, hei
     expect(fixture.reads).toEqual([]);
     await page.locator('.bot-create-advanced > summary').click();
     await expect(page.locator('#bot-model')).toBeEnabled();
+    for (const id of ['worker', 'agent', 'model', 'effort']) {
+      const control = page.locator(`#bot-${id}`);
+      const measured = await control.evaluate(node => {
+        const bounds = node.getBoundingClientRect(), field = node.closest('.field')!.getBoundingClientRect();
+        return { width: bounds.width, height: bounds.height, left: bounds.left, right: bounds.right, fieldLeft: field.left, fieldRight: field.right, fontSize: parseFloat(getComputedStyle(node).fontSize) };
+      });
+      expect(measured.width).toBeGreaterThan(0);
+      expect(measured.left).toBeGreaterThanOrEqual(measured.fieldLeft - 1);
+      expect(measured.right).toBeLessThanOrEqual(measured.fieldRight + 1);
+      if (viewport.width <= 800) { expect(measured.height).toBeGreaterThanOrEqual(44); expect(measured.fontSize).toBeGreaterThanOrEqual(16); }
+    }
+    await expect(page.locator('#bot-worker option').first()).toContainText(workerName);
     const expanded = await bounded(page);
     await page.screenshot({ path: info.outputPath('expanded.png') });
     await page.locator('#bot-cwd').scrollIntoViewIfNeeded();
@@ -179,13 +191,28 @@ test('directory permission recovery retains loaded pages, edited path and focuse
 
 test('cancelling the native model menu keeps the dialog and restores model focus', async ({ page }) => {
   const fixture = await install(page); await page.goto('/bots'); await open(page);
+  await page.locator('#bot-name').fill('Draft survives native cancellation');
   await page.locator('.bot-create-advanced > summary').click();
   const model = page.locator('#bot-model'); await expect(model).toBeEnabled(); await model.focus();
   await model.click();
   await expect.poll(() => model.evaluate(node => node.matches(':open'))).toBe(true);
   await page.keyboard.press('Escape');
   await expect(page.locator('dialog.bot-create-dialog')).toBeVisible(); await expect(model).toBeFocused();
-  await expect(model).toHaveValue(''); expect(fixture.posts).toHaveLength(0);
+  await expect(model).toHaveValue(''); await expect(page.locator('#bot-name')).toHaveValue('Draft survives native cancellation'); expect(fixture.posts).toHaveLength(0);
+});
+
+test.describe('coarse pointer at desktop width', () => {
+  test.use({ viewport: { width: 960, height: 720 }, hasTouch: true, isMobile: true });
+  test('Bot selectors use touch sizing independently of viewport width', async ({ page }) => {
+    await install(page); await page.goto('/bots'); await open(page);
+    await expect.poll(() => page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    await page.locator('.bot-create-advanced > summary').click(); await expect(page.locator('#bot-model')).toBeEnabled();
+    for (const id of ['worker', 'agent', 'model', 'effort']) {
+      const dimensions = await page.locator(`#bot-${id}`).evaluate(node => ({ height: node.getBoundingClientRect().height, font: parseFloat(getComputedStyle(node).fontSize) }));
+      expect(dimensions.height).toBeGreaterThanOrEqual(44); expect(dimensions.font).toBeGreaterThanOrEqual(16);
+    }
+    await bounded(page);
+  });
 });
 
 
