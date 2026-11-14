@@ -126,7 +126,7 @@ Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时�
 
 每个 I/O 检查点先检查消费取消状态，再按 decoder 的原绝对帧开始时间刷新 timer。完整帧清除旧 partial-frame timer，后续片段不能延长未完成帧的期限。检查点恢复后再次检查取消状态；显式释放、原生错误或真实期限到达后停止派发及 timer 重设。已经等待的 immediate 正常结算并由 `rpc.stopped` join，decoder 最终清理仍保留消费者独立持有的媒体 lease。
 
-原生进程自然关闭时立即禁止新的出站写入并失效本地读取权限，reader 继续排空已经收到的 stdout 并校验 decoder EOF。已知进程退出后不再发送原生请求的自动拒绝，避免向已关闭写端回复时中断剩余输入的解析。Provider 等待 reader 停止，再拒绝未确认轮次和触发运行时收尾，避免在 I/O 让步期间先销毁尚未消费的最终通知或成功回执。进程退出与 reader 停止分开记录，收尾不能再次等待已经发生的进程关闭事件。显式释放和真实错误仍立即取消消费；未确认操作、迟到回执与原执行身份继续采用原合同。
+原生进程的 `exit` 事件立即禁止新的出站写入并失效本地读取权限，reader 继续排空已经收到的 stdout 并校验 decoder EOF。已知进程退出后不再发送原生请求的自动拒绝，避免向已关闭写端回复时中断剩余输入的解析。Provider 在 `close` 后等待 reader 停止，再拒绝未确认轮次和触发运行时收尾；在退出与关闭之间发起的收尾同样先等待流关闭和 reader 停止，保留最终通知与成功回执。进程退出、流关闭与 reader 停止分开记录，收尾不能再次等待已经发生的进程关闭事件。显式释放和真实错误仍立即取消消费；未确认操作、迟到回执与原执行身份继续采用原合同。
 
 此调度只在安全边界让出，不能抢占单帧同步解码、图片处理或 SQLite 事务。Worker 的 IPC 观察期限仍为 2,000 ms。普通回归验证真实 socket 与生命周期；独立 `output-responsiveness.stress.ts` 通过原生 stdout 管道、真实工具投影及 journal、独立进程的认证 IPC，分别记录有限输出与持续输出的时序、内容和精确队列字节，不进入普通 CI。取舍见[公平消费决策](../../.agents/notes/implemented/bug-fix/2026-11-13-codex-output-responsiveness.md)，媒体解析上限由[Provider 图片设计](session-image-providers.md#有界原生接收)拥有。
 

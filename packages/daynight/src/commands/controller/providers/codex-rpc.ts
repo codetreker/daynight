@@ -25,12 +25,12 @@ export class CodexRpc {
   private nativeClosed = false;
   private frameTimer: NodeJS.Timeout | null = null;
   private readonly onError = (error: Error) => this.fail(error);
-  // Child close revokes writes, while the reader still owns received stdout.
+  // Process exit revokes writes, while the reader still owns received stdout.
   // EOF validates and settles that output before reporting unknown operations.
   private readonly onClose = () => { this.nativeClosed = true; };
   constructor(private readonly child: EventEmitter & { stdin: Writable; stdout: Readable }, private readonly onMessage: (value: NativeObject) => void, private readonly options: CodexRpcOptions) {
     this.decoder = new CodexJsonDecoder(options.createSpool, options.limits);
-    child.once("error", this.onError); child.once("close", this.onClose); child.stdin.on("error", this.onError);
+    child.once("error", this.onError); child.once("exit", this.onClose); child.once("close", this.onClose); child.stdin.on("error", this.onError);
     this.stopped = this.read();
   }
   private armDeadline(): void {
@@ -70,7 +70,7 @@ export class CodexRpc {
     finally {
       if (this.frameTimer) clearTimeout(this.frameTimer); this.frameTimer = null;
       try { this.decoder.dispose(); } catch (error) { this.options.onFatalError?.(error instanceof Error ? error : new Error("Native media cleanup failed.")); }
-      this.child.off("error", this.onError); this.child.off("close", this.onClose); this.child.stdin.off("error", this.onError);
+      this.child.off("error", this.onError); this.child.off("exit", this.onClose); this.child.off("close", this.onClose); this.child.stdin.off("error", this.onError);
     }
   }
   private deliver(message: NativeObject): void {

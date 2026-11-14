@@ -2,6 +2,7 @@ import { textNativeInput } from "../../../src/commands/controller/providers/nati
 import { test, expect, beforeEach, afterEach, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { PassThrough } from "node:stream";
 import { appendFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { openCodexProvider } from "../../../src/commands/controller/providers/codex.js";
@@ -238,23 +239,43 @@ test("a late turn/start receipt does not resurrect a completed native turn", asy
   finally { await provider.close(); }
 });
 
-test.each(["notifications", "unsupported request", "foreign request", "invalid form"])("natural native exit drains %s and preserves terminal evidence before runtime shutdown", async mode => {
+test.each([["notifications", false], ["unsupported request", false], ["foreign request", false], ["invalid form", false], ["foreign request", true]] as const)("natural native exit drains %s before shutdown (early close: %s)", async (mode, earlyClose) => {
   const entries: Parameters<ProviderOptions["onTimeline"]>[0][] = [], events: string[] = [], states: ProviderState[] = [];
-  const fatal = Promise.withResolvers<void>();
+  const fatal = Promise.withResolvers<void>(), exited = Promise.withResolvers<void>();
+  let hold = false, didExit = false, didClose = false, closedBeforeShutdown = false, writesAtExit = -1;
+  let writes: ReturnType<typeof vi.spyOn>;
   let shutdown: Promise<void> | undefined;
   const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null,
     env: { ...process.env, CODEX_TEST_EXIT_BURST: mode }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)),
-    onTimeline: entry => { entries.push(entry); if (entry.kind === "assistant_message" && entry.content.some(part => part.type === "text" && part.text === "final answer before exit")) events.push("final projection"); },
-    onState: state => states.push(state), onSpawn: () => {},
+    onTimeline: entry => { entries.push(entry); if (entry.kind === "assistant_message") expect(didExit).toBe(true); if (entry.kind === "assistant_message" && entry.content.some(part => part.type === "text" && part.text === "final answer before exit")) events.push("final projection"); },
+    onState: state => states.push(state), onSpawn: child => {
+      const stdout = child.stdout!, buffered = new PassThrough({ highWaterMark: 1024 * 1024 });
+      stdout.pipe(buffered);
+      // Drain the real pipe into bounded test storage while holding consumption
+      // until the child has actually exited, even on a fast reader.
+      Object.defineProperty(stdout, Symbol.asyncIterator, { value: async function* () {
+        for await (const chunk of buffered) { if (hold) await exited.promise; yield chunk; }
+      } });
+      writes = vi.spyOn(child.stdin!, "write");
+      child.once("close", () => { didClose = true; });
+      process.nextTick(() => child.once("exit", () => {
+        didExit = true; writesAtExit = writes.mock.calls.length; exited.resolve();
+        if (earlyClose) { closedBeforeShutdown = didClose; shutdown = provider.close(); }
+      }));
+    },
     onFatalError: () => { events.push("EOF"); shutdown = provider.close(); fatal.resolve(); },
   });
   try {
+    hold = true;
     const receipt = await provider.send(textNativeInput("exit after output"), randomUUID(), null).then(value => { events.push("receipt"); return value; });
     expect(receipt).toEqual({ disposition: "started", turnId: "native-turn" });
     await provider.waitForTurn("native-turn", Date.now() + 1000);
-    await fatal.promise; await shutdown;
-    expect(events).toEqual(["final projection", "receipt", "EOF"]);
+    if (!earlyClose) await fatal.promise;
+    await shutdown;
+    expect(events).toEqual(earlyClose ? ["final projection", "receipt"] : ["final projection", "receipt", "EOF"]);
+    if (earlyClose) expect(closedBeforeShutdown).toBe(false);
     expect(entries.filter(entry => entry.kind === "assistant_message")).toHaveLength(1001);
+    expect(didExit).toBe(true); expect(writes.mock.calls.length).toBe(writesAtExit);
     if (mode === "unsupported request") expect(entries).toContainEqual(expect.objectContaining({ kind: "error", code: "unsupported_interaction", message: "Unsupported native interaction: unsupported/request" }));
     expect(states.at(-1)).toMatchObject({ currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } });
   } finally { await provider.close(); }
