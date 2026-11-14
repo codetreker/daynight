@@ -1483,6 +1483,16 @@ cache, index or refresh loop. Task details remain outside either section panel.
 Inactive inner-category contents unmount while their associated tabpanel IDs
 remain stable.
 
+The Task list heading's nonzero pause badge opens a native popover containing
+exactly the assignee-scoped eligible ordinary tasks counted by the badge. Rows
+show title previews, truncation, short IDs and lifecycle labels; selection opens
+the exact task through the existing detail history while retaining list state.
+The badge is the focus return target, with the visible tab or project heading as
+a fallback if it disappears. Unchanged snapshot checks preserve the open menu,
+focus and scroll; eligibility changes update it without an extra detail read or
+polling loop. The [pause-list decision](../../.agents/notes/implemented/feature/2026-11-14-project-paused-task-list.md)
+records the navigation and data-scope trade-offs.
+
 Within Task list, an absent category preference selects Task chains; later
 new visits restore the project's last saved inner category. The standalone badge
 counts unparented unfinished standalone tasks matching the selected assignee; the
@@ -2467,6 +2477,12 @@ Unchanged refresh receipts and repeated search errors are observed through the
 actual controller/UI publication before interaction. The full graph expansion
 and keyboard fixtures remain intact; the [project/graph query decision](../../.agents/notes/implemented/testing/2026-11-07-project-graph-query-owners.md)
 owns those query and receipt boundaries.
+
+The task controls browser suite exercises the project pause list using native
+popover behavior, including keyboard and focus restoration, history, dynamic
+snapshot updates and narrow viewports. Run `pnpm --filter
+@codetreker/daynight-web exec playwright test --config
+tests/navigation/task-controls-playwright.config.ts` after installing Chromium.
 
 The focused navigation browser suite builds a minimal editor host from the
 production router, admitted-location owner and task confirmation. It checks draft

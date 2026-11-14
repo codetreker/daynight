@@ -396,13 +396,17 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 `readTaskPaused` 在完整详情与 task-sync 摘要准入时严格消费布尔 `paused`；缺席返回 absent，显式 false 保留为已存储值，错误类型产生协议错误。`task-cache/projection.ts` 从完整摘要派生 `pausedTaskIds`，由 `TaskProjection` 与 `GraphSnapshot` 携带。图节点仍显式剥离 properties 和 version；完整属性保留在摘要 map，不把展示需求扩展为新的服务端字段或图协议。
 
-项目任务区的暂停 context 将原始集合提供给列表、任务链和图。`GoalDetailSurface` 在自身内容和链弹窗的共同 React 子树提供当前快照的同一集合，使嵌套 portal 也能读取；尚无快照时使用稳定空集合。项目 Goal 展开区的子任务行使用项目的同一暂停集合；详情只为恢复的图及嵌套 Task 提供该 context。快照变化更新标识与数量，不重挂载已打开的链图。任务自身的琥珀色标识共用图标和双语文案，根任务的标识与整链暂停数量分别表达；`done` 任务仍可显示自身标识。`task-pause` 的共享纯 selector 从当前范围的节点和原始集合派生去重的汇总资格：ID 存在于原始集合且状态不是 `done`，`cancelled` 仍可计入。项目概览使用完整项目普通节点；项目页面将完整普通节点按列表共用的负责人匹配规则筛选后，交给 selector 计算任务列表标题数量。链列表及链弹窗使用完整普通分量节点并排除外部前置；Goal 列表行和整体图的汇总只使用其直接成员并排除外部前置。Goal 行在进行中数量后复用共享数量组件，非零时通过条件描述引用向展开按钮提供数量，零时移除引用；子项标签筛选和展开不改变汇总范围。各数量均不从状态筛选、列表类别、分页或可见子图推断；概览与链数量不受负责人筛选影响。概览从同一合格集合按原任务顺序选择定位目标；零数量隐藏入口。状态快照变化时重新派生，因此完成或重开立即影响数量，而原始属性及详情操作不变。七项统计、任务五态和页签未完成数不承担暂停语义。
+项目任务区的暂停 context 将原始集合提供给列表、任务链和图。`GoalDetailSurface` 在自身内容和链弹窗的共同 React 子树提供当前快照的同一集合，使嵌套 portal 也能读取；尚无快照时使用稳定空集合。项目 Goal 展开区的子任务行使用项目的同一暂停集合；详情只为恢复的图及嵌套 Task 提供该 context。快照变化更新标识与数量，不重挂载已打开的链图。任务自身的琥珀色标识共用图标和双语文案，根任务的标识与整链暂停数量分别表达；`done` 任务仍可显示自身标识。`task-pause` 的共享纯 selector 从当前范围的节点和原始集合派生去重的汇总资格：ID 存在于原始集合且状态不是 `done`，`cancelled` 仍可计入。项目概览使用完整项目普通节点；项目页面对完整普通节点应用 selector 和列表共用的负责人匹配规则，得到任务列表标题集合。链列表及链弹窗使用完整普通分量节点并排除外部前置；Goal 列表行和整体图的汇总只使用其直接成员并排除外部前置。Goal 行在进行中数量后复用共享数量组件，非零时通过条件描述引用向展开按钮提供数量，零时移除引用；子项标签筛选和展开不改变汇总范围。各数量均不从状态筛选、列表类别、分页或可见子图推断；概览与链数量不受负责人筛选影响。概览从同一合格集合按原任务顺序选择定位目标；零数量隐藏入口。状态快照变化时重新派生，因此完成或重开立即影响数量，而原始属性及详情操作不变。七项统计、任务五态和页签未完成数不承担暂停语义。
+
+`ProjectPage` 从完整普通 Task 集合按负责人匹配及共享汇总资格派生有序暂停列表，任务列表标题数量取同一列表长度；既有快照顺序保持创建时间升序及同时间 ID 顺序。`ProjectTaskWorkspace` 将列表和专用详情选择回调交给 `ProjectPausedTasks`，后者复用 `TaskPauseCount` 徽标并拥有 native popover、行焦点和滚动。选择先关闭浮层，再由项目页的既有 history 和 summary 详情路径打开精确 ID；专用来源清除旧列表和搜索来源，以持续存在的徽标作为原始触发器，失效时沿用可见页签或标题回退。列表不进行额外预读或轮询。
+
+浮层按锚点和 visual viewport 定位，监听尺寸与滚动变化并在下方空间不足时向上放置，内部滚动承载多项。任务以 ID 保持稳定身份：内容无变化的快照不重置浮层、焦点和滚动；资格变化保留仍存在项的焦点，移除当前项时选择相邻项，空集合关闭浮层并在需要时恢复可见焦点。资源退役、离开任务区或替代搜索关闭 top layer。页面语言、原生菜单键盘行为及详情准入沿用现有 owner。
 
 `TaskDetailSurface` 在公共头部呈现暂停区域，读取当前完整 task 的属性，覆盖弹窗、独立页、全屏及全部阅读页签。`Unpause` 按钮直接调用详情会话的解除操作；运行态不构成锁定，准入、陈旧读取与未决写入沿用普通任务写入规则。按钮提交中禁用并显示 busy，区域保留已确认的暂停状态。失败、冲突和未知结果进入既有公共提示层与 GET 核对入口，错误不挤压阅读区。
 
 解除操作通过普通 task PATCH 发送精确 `version` 与 `properties:{paused:false}`，返回完整 TaskDetail，复用每任务串行写入 owner、历史准入与缓存安装。确认响应只允许本次 paused 值和相应版本/更新时间变化，状态、计时、许可、负责人、平台、依赖、worker 与其他属性必须保持。成功先确认远端结果，再安装完整详情并刷新匹配项目；冲突读取后重新决定，未知结果只读核对且不重放，后来的目标值不证明原请求成功。关闭、切换和旧历史结果不解除新操作的共享写锁。
 
-该入口只解除 task 的输入暂停标记，不发原生启动或恢复指令，不修改 worker.phase；Web backend 的恢复失败等待与其 retry 授权继续由运行时拥有。[Goal 暂停展示决策](../../.agents/notes/implemented/bug-fix/2026-11-11-goal-pause-presentation.md)记录 Goal 范围的接线取舍；[暂停汇总资格决策](../../.agents/notes/implemented/bug-fix/2026-11-10-paused-summary-eligibility.md)记录汇总与原始标识的区分；[负责人筛选汇总决策](../../.agents/notes/implemented/bug-fix/2026-11-12-assignee-scoped-pause-summary.md)记录列表标题范围；[Web 暂停操作决策](../../.agents/notes/archived/feature/2026-11-04-task-pause-web-controls.md)保存展示、投影和写入复用的历史取舍；[周期输入暂停决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)记录了原生递交边界的历史取舍。
+该入口只解除 task 的输入暂停标记，不发原生启动或恢复指令，不修改 worker.phase；Web backend 的恢复失败等待与其 retry 授权继续由运行时拥有。[Goal 暂停展示决策](../../.agents/notes/implemented/bug-fix/2026-11-11-goal-pause-presentation.md)记录 Goal 范围的接线取舍；[暂停汇总资格决策](../../.agents/notes/implemented/bug-fix/2026-11-10-paused-summary-eligibility.md)记录汇总与原始标识的区分；[负责人筛选汇总决策](../../.agents/notes/implemented/bug-fix/2026-11-12-assignee-scoped-pause-summary.md)记录列表标题范围；[暂停列表入口决策](../../.agents/notes/implemented/feature/2026-11-14-project-paused-task-list.md)记录选择入口和焦点恢复取舍；[Web 暂停操作决策](../../.agents/notes/archived/feature/2026-11-04-task-pause-web-controls.md)保存展示、投影和写入复用的历史取舍；[周期输入暂停决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)记录了原生递交边界的历史取舍。
 
 ### 认领归属与强制撤回
 
