@@ -9,7 +9,7 @@ import { operationPresentation, type SessionOperationProgress } from './operatio
 import { useSessionControlMessages } from './controls-messages';
 
 export type ControlsView = 'model' | 'permissions' | 'commands' | null;
-export function SessionControlsPanel({ controls, state, intents, operationProgress = new Map(), view, disabled, nativeSelectTouchMode, onClose, onSelect, onRefresh }: {
+export function SessionControlsPanel({ controls, state, intents, operationProgress = new Map(), view, disabled, nativeSelectTouchMode = 'none', onClose, onSelect, onRefresh }: {
   readonly nativeSelectTouchMode?: NativeSelectProps['touchMode'];
   readonly controls: SessionControls | undefined; readonly state: SessionState;
   readonly operationProgress?: SessionOperationProgress;
