@@ -141,3 +141,16 @@ func PersonalTaskPaused(raw *string) (bool, error) {
 	}
 	return *value, nil
 }
+
+// PersonalTaskWorker exposes only the current claim's display identity.
+type PersonalTaskWorker struct {
+	WorkerID string
+	Machine  model.WorkerMachine
+}
+
+func ActivePersonalTaskWorker(claim *model.WorkerClaim) *PersonalTaskWorker {
+	if claim == nil || claim.State != model.WorkerActive {
+		return nil
+	}
+	return &PersonalTaskWorker{WorkerID: claim.WorkerID, Machine: claim.Machine}
+}

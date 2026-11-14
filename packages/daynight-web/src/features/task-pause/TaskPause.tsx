@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode, type MouseEvent } from 'react';
+import { createContext, useContext, type ReactNode, type MouseEvent, type Ref } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
 import '../../styles/task-pause.css';
 
@@ -15,9 +15,9 @@ export const TaskPausedBadge = ({ compact = false }: { readonly compact?: boolea
   return <span className={`task-paused-badge${compact ? ' compact' : ''}`}><TaskPauseIcon />{m.label}</span>;
 };
 
-export const TaskPauseCount = ({ count, label, onClick }: { readonly count: number; readonly label?: string; readonly onClick?: (event: MouseEvent<HTMLButtonElement>) => void }) => {
+export const TaskPauseCount = ({ count, label, onClick, buttonRef, expanded, controls }: { readonly count: number; readonly label?: string; readonly onClick?: (event: MouseEvent<HTMLButtonElement>) => void; readonly buttonRef?: Ref<HTMLButtonElement>; readonly expanded?: boolean; readonly controls?: string }) => {
   const { messages: { inspection: { pause: m } }, format } = useI18n();
   if (count === 0) return null;
   const content = <><TaskPauseIcon />{m.count(format.number(count))}</>;
-  return onClick === undefined ? <span className="task-pause-count">{content}</span> : <button className="task-pause-count" type="button" aria-label={label} onClick={onClick}>{content}</button>;
+  return onClick === undefined ? <span className="task-pause-count">{content}</span> : <button className="task-pause-count" type="button" ref={buttonRef} aria-label={label} aria-haspopup={expanded === undefined ? undefined : 'menu'} aria-expanded={expanded} aria-controls={controls} onClick={onClick}>{content}</button>;
 };

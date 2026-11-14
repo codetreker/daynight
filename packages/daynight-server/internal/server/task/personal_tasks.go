@@ -36,9 +36,13 @@ func personalTaskResponse(page service.PersonalTaskPage) protocol.PersonalTaskPa
 		if item.Task.GoalID != nil && item.Task.GoalTitle != nil {
 			goal = &protocol.PersonalTaskGoal{ID: *item.Task.GoalID, Title: *item.Task.GoalTitle}
 		}
+		var worker *protocol.PersonalTaskWorker
+		if item.Worker != nil {
+			worker = &protocol.PersonalTaskWorker{WorkerID: item.Worker.WorkerID, Machine: protocol.PersonalTaskMachine{ID: item.Worker.Machine.ID, Name: item.Worker.Machine.Name}}
+		}
 		out.Items = append(out.Items, protocol.PersonalTaskItem{
 			Project: protocol.PersonalTaskProject{ID: item.Project.ID, Name: item.Project.Name, OwnerTeam: protocol.PersonalTaskTeam{ID: item.Project.OwnerTeamID, Kind: item.Project.OwnerTeamKind, Name: item.Project.OwnerTeamName}, ExecutionWarningMinutes: int64(item.Project.ExecutionWarningMinutes), MatchedTaskCount: item.MatchedTaskCount},
-			Task:    protocol.PersonalTask{ID: item.Task.ID, Version: strconv.FormatInt(item.Task.Version, 10), Title: item.Task.Title, Status: "in_progress", StartedAt: item.Task.StartedAt, AllowAgents: item.Task.AllowAgents, Paused: item.Paused, Goal: goal}, Session: item.Session,
+			Task:    protocol.PersonalTask{ID: item.Task.ID, Version: strconv.FormatInt(item.Task.Version, 10), Title: item.Task.Title, Status: "in_progress", StartedAt: item.Task.StartedAt, AllowAgents: item.Task.AllowAgents, Paused: item.Paused, Goal: goal, Worker: worker}, Session: item.Session,
 		})
 	}
 	return out

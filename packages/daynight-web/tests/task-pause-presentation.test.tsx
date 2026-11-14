@@ -39,7 +39,7 @@ afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
-const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView={activeView}
+const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView={activeView}
   unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
   unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openGraphTarget: openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
@@ -71,7 +71,7 @@ describe('paused task discovery', () => {
 
   it('keeps project count across filtered and paginated lists', () => {
     const value = snapshot();
-    const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView="standalone"
+    const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView="standalone"
       unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
       unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
       chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
@@ -121,12 +121,22 @@ describe('paused task discovery', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停'));
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
     await waitFor(() => expect(headingCount()).toHaveTextContent('6 已暂停'));
+    const expectPausedTasks = (numbers: number[]) => {
+      fireEvent.click(headingCount()!);
+      const menu = screen.getByRole('menu', { name: '已暂停的任务' });
+      const rows = within(menu).getAllByRole('menuitem');
+      expect(rows).toHaveLength(numbers.length);
+      expect(rows.map((row) => row.textContent)).toEqual(numbers.map((number) => expect.stringContaining(`Task ${number}`)));
+      fireEvent.keyDown(menu, { key: 'Escape' });
+    };
+    expectPausedTasks([1, 2, 3, 4, 6, 100]);
     const selectAssignee = async (label: string | RegExp) => {
       fireEvent.click(screen.getByRole('button', { name: /^负责人:/ }));
       fireEvent.click(await screen.findByRole('option', { name: label }));
     };
     await selectAssignee('分配给我');
     expect(headingCount()).toHaveTextContent('3 已暂停');
+    expectPausedTasks([1, 6, 100]);
     const chain = document.getElementById(`task-root-${id(1)}`)!;
     expect(within(chain).getByText('2 已暂停')).toBeVisible();
     fireEvent.click(chain);
@@ -145,8 +155,10 @@ describe('paused task discovery', () => {
     expect(headingCount()).toHaveTextContent('3 已暂停');
     await selectAssignee('未分配');
     expect(headingCount()).toHaveTextContent('1 已暂停');
+    expectPausedTasks([4]);
     await selectAssignee(/^Other person/);
     expect(headingCount()).toHaveTextContent('2 已暂停');
+    expectPausedTasks([2, 3]);
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停');
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));

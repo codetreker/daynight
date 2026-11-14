@@ -69,7 +69,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 `AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权。`app/sidebar/WorkspaceSidebar` 拥有折叠、抽屉、焦点和滚动生命周期；`WorkspaceNavigation` 根据 `AuthRoute` 组合当前范围、“我的”和“工具”三组固定入口；`SidebarProjectList` 消费现有 `useProjectList` 目录。`SidebarTeamContext` 分离 Personal ID、仅在 Team ready 时可生成链接的 ID 和仅用于可见性的 ID，未知范围保留禁用占位，已确认 Personal 隐藏团队设置。
 
-三组共享可滚动的 `.sidebar-main`，不收缩的 `.sidebar-bottom` 仅持有切换按钮。项目子项使用与项目列表相同的分页目录和原生链接处理；共享路由及折叠竖条隐藏整棵项目树。项目、成员及设置路由仅选中已加载目录中匹配的项目，Team 列表与设置、共享列表、账号资源和工具按各自路由选中。明确项目的面包屑不推断侧栏 Team 归属，账号及工具使用纯文本范围父项。Team／Personal 项目列表 H1 和 document title 统一为“项目”，范围显示在 eyebrow。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
+三组共享可滚动的 `.sidebar-main`，不收缩的 `.sidebar-bottom` 仅持有切换按钮。项目子项使用与当前 Team 项目列表相同的分页目录和原生链接处理；折叠竖条隐藏项目树，共享路由保留当前 Team 项目树。项目、成员及设置路由仅选中已加载目录中匹配的项目，Team 列表与设置、共享列表、账号资源和工具按各自路由选中。明确项目的面包屑不推断侧栏 Team 归属，账号及工具使用纯文本范围父项。Team／Personal 项目列表 H1 和 document title 统一为“项目”，范围显示在 eyebrow。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
 
 sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部切换按钮。链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。完整名称作为链接名称及 title，视觉文字允许省略。详细取舍见[侧栏范围决策](../../.agents/notes/implemented/architecture/2026-11-12-sidebar-navigation-scopes.md)。
 
@@ -100,9 +100,11 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 ### 我的进行中任务
 
-`/my-tasks` 是账号级页面，侧栏 Team 不参与筛选。`api/personal-tasks.ts` 解析[服务端合同](../spec/daynight-personal-in-progress-tasks.md)，`useMyTasks` 逐页读取同一 inventory revision，核对数量、重复身份和项目元数据。首次遍历可展示已读取的局部结果；后续遍历成功后替换集合，失败保留可展示结果并标记未更新。每轮最多一次遍历，409 不立即重试。
+`/my-tasks` 是账号级页面，侧栏 Team 不参与筛选。`api/personal-tasks.ts` 精确解析[服务端合同](../spec/daynight-personal-in-progress-tasks.md)，包括必需的 nullable Worker 摘要及其嵌套键、UUID 和非空合法 Unicode 名称；非法或缺失字段拒绝整页。`useMyTasks` 逐页读取同一 inventory revision，核对数量、重复身份和项目元数据。首次遍历可展示已读取的局部结果；后续遍历成功后替换集合，失败保留可展示结果并标记未更新。每轮最多一次遍历，409 不立即重试。
 
-读取绑定账号 scope 和请求代次。projection fence 在发布前复核项目资格；撤权或暂停事件退役受影响读取并撤下项目，恢复需要新读取。局部撤下后不再宣称原集合数量完整。页面使用统一同步周期与每项目 15 条的展示分页；执行时钟使用服务端观测锚点和项目阈值，复用现有时钟语义。Task 和 Goal 的真实 href 保持直接访问和修饰键导航。 普通点击在账号页面打开现有完整详情，`MyTasksDetailHost` 按选中项目挂载项目权限、详情 Session、完整图和负责人 receipt；同项目资源切换复用图，项目切换隔离图。详情使用直接读取，图失败交给现有错误和重试入口，mutation 同时刷新图及总览。列表过滤不决定详情准入。
+读取绑定账号 scope 和请求代次。projection fence 在发布前复核项目资格；撤权或暂停事件退役受影响读取并撤下项目，恢复需要新读取。局部撤下后不再宣称原集合数量完整。页面使用统一同步周期与每项目 15 条的展示分页；执行时钟使用服务端观测锚点和项目阈值，复用现有时钟语义。Task 行将 active Worker 名称作为文本放在耗时之后、Goal 之前，沿用元信息样式并允许长词换行；Session 徽标独立于 Worker 显示。Task 和 Goal 的真实 href 保持直接访问和修饰键导航。普通点击在账号页面打开现有完整详情，`MyTasksDetailHost` 按选中项目挂载项目权限、详情 Session、完整图和负责人 receipt；同项目资源切换复用图，项目切换隔离图。详情使用直接读取，图失败交给现有错误和重试入口，mutation 同时刷新图及总览。列表过滤不决定详情准入。
+
+单任务行先按观测有效性、注册和连接状态求出最终 Session 展示状态，再对 warning 应用启动宽限；因此显式 indicator 和断开、归档的 fallback 采用相同规则，过期或不可用仍优先展示。经过时间取 `task.startedAt` 与 `Date.parse(item.observedAt) + (performance.now() - item.receivedMonotonic)` 的非负差值，沿用执行时钟的服务端锚点而不依赖浏览器墙钟或页面进入时间。Session 复用项目执行时钟订阅：可见时逐秒更新，重返前台立即发布，以当前观测在边界重新判定，不增加独立 timer、请求、持久化或 API 字段。取舍见[个人列表启动宽限决策](../../.agents/notes/implemented/bug-fix/2026-11-14-personal-session-startup-grace.md)。
 
 `my-tasks` 阅读历史绑定账号，只保存项目页码、根详情、页签及 Goal 子选择；资源退役 fence 拒绝旧项目条目。`MyTasksDraftHost` 与子资源宿主沿用 browserNavigation 的草稿保护，同资源阅读切换保留草稿，离开和关闭先经过确认。外部 Task 根据真实 Parent 选择独立详情或 Goal 子任务；完整链按现有项目图语义导航。图尚未能解析目标时，Task 关系使用真实独立详情地址，链使用项目图地址，以保留可操作的导航。关闭焦点优先返回触发入口，其次项目标题和页面标题。
 
@@ -180,8 +182,8 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 - 成员与邀请分区在 `/teams/{teamId}/members` 按身份读取 Team 和完整成员目录，邀请管理位于成员列表下方并保持 admin 读取与写入限制；不使用 Project participant 代替 Team 目录。目录保留 nullable profile 和真实成员版本，以用户 ID 作为资料缺失时的展示回退。角色与移除确认复用 `ManagementDialog` 和 Team mutation 状态；派发后的未知结果保留只读核对，冲突或权限拒绝刷新后要求重新确认。成员操作按登录身份和 Team 保持到跨路由的回执或未知结果；待定与未知操作阻止偏好读取的 404 抢先丢弃结果，核对只展示当前事实。成功回执独立于刷新结果显示，并刷新本人角色与 Team 列表；完成时仍在同一 Team 的任一设置分区则自退回执导航 Personal，离开该 Team 设置后的迟到回执只回退仍指向该 Team 的内存选择，不改变新路由。`useTeamPreference.leaveTeam` 丢弃已退出 Team 的待保存值，复用保存与重试机制将已退出 Team ID 作为替换条件；每次尝试均读取当前存储，仅当仍保存为该 ID 时写入 Personal，其他 Team 或缺失值保持原样。读取或写入失败保留这个条件，沿用保存错误与人工重试入口，后来的本地选择接替待保存值。生产 hook 测试覆盖正常回退、另一标签页选择、缺失记忆、未保存选择及存储故障恢复；完整 `AuthenticatedApp` 测试以延迟自退回执验证 Shared 和 Task 路由及下次默认入口恢复。独立 Project grant 保持不变。Personal 和最后 admin 的控件不可用，服务端仍负责并发权限与最后 admin 检查。
 - Team 成员列表以共享 grid 列轨道和行 subgrid 对齐身份、角色及操作；最后 admin 说明占独立行，避免其高度改变控件与操作的对齐。窄屏把身份移到上一行，说明可换行。角色控件保留原生 select 交互，使用固定尺寸与独立绘制的箭头控制留白；Project 授权的控件样式独立保留。取舍见[成员角色对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-05-team-member-role-alignment.md)。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
-- Workspace 的认证身份内只挂载一个项目目录 Provider；侧栏与项目卡片共享目录、刷新及“加载更多”，切换项目保留已加载页；共享范围活动时不将其条目呈现为 Team 子项。
-- 复用 `GET /api/v1/projects` 的 `teamId` 或 `shared=true` 范围和游标，服务端先过滤再分页，按 ID 去重并保留服务端顺序。切换范围清空旧游标和显示，取消旧请求并拒绝晚到结果。创建对话框捕获打开时的 Team ID；成功及移除自身成员后刷新共享目录。身份错配且 owner 保留对话框时，停止旧操作等待和结果发布，区分已确认、可信拒绝和未知创建结果；未知结果不能重发，已确认回执不能触发旧身份下的导航或目录更新。
+- `TeamWorkspace` 的外层 `ProjectsProvider` 固定于当前 Team，侧栏与 Team 项目卡片共享目录、刷新及“加载更多”；共享路由不改变其 scope 或重置已加载页。`SharedProjectsPage` 仅在共享正文中挂载独立 `ProjectsProvider`，共享列表的手动刷新和分页只操作该目录。Team 目录等待偏好 ready，Shared 目录只依赖账号／工作空间准入，二者的加载和错误互不替换。
+- 两份目录复用 `GET /api/v1/projects` 的 `teamId` 或 `shared=true` 范围和游标，服务端先过滤再分页，按 ID 去重并保留服务端顺序。Team 真正切换时取消旧请求、清空旧游标并拒绝晚到结果；共享页面卸载后再次进入按页面生命周期首读。`WorkspaceRoutes` 接收共享页面以 layout effect 注册的当前 refresh，清理仅移除对应回调；统一刷新入口调用当前 Team 及已挂载 Shared 目录，供转移、删除、创建、成员移除和不可用回调使用。迟到回执使用当前目录 owner，导航仍受原操作的上下文约束。创建对话框捕获打开时的 Team ID。身份错配且 owner 保留对话框时，停止旧操作等待和结果发布，区分已确认、可信拒绝和未知创建结果；未知结果不能重发，已确认回执不能触发旧身份下的导航或目录更新。
 - 加载下一页失败时保留已加载卡片，错误和重试定位在列表末尾；首次加载失败使用整页错误。
 - 刷新重置分页，从新列表开始。列表没有跨页一致性承诺，不显示未经完整读取的项目总数。目录和配置元数据在请求开始时捕获缓存 generation；可信撤权撤回匹配项并使在途读取失效，持久清理失败保留拒绝及可见错误。fresh 授权读取可以恢复同一 ID；未访问没有准入记录不代表撤权。
 
@@ -394,13 +396,17 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 `readTaskPaused` 在完整详情与 task-sync 摘要准入时严格消费布尔 `paused`；缺席返回 absent，显式 false 保留为已存储值，错误类型产生协议错误。`task-cache/projection.ts` 从完整摘要派生 `pausedTaskIds`，由 `TaskProjection` 与 `GraphSnapshot` 携带。图节点仍显式剥离 properties 和 version；完整属性保留在摘要 map，不把展示需求扩展为新的服务端字段或图协议。
 
-项目任务区的暂停 context 将原始集合提供给列表、任务链和图。`GoalDetailSurface` 在自身内容和链弹窗的共同 React 子树提供当前快照的同一集合，使嵌套 portal 也能读取；尚无快照时使用稳定空集合。项目 Goal 展开区的子任务行使用项目的同一暂停集合；详情只为恢复的图及嵌套 Task 提供该 context。快照变化更新标识与数量，不重挂载已打开的链图。任务自身的琥珀色标识共用图标和双语文案，根任务的标识与整链暂停数量分别表达；`done` 任务仍可显示自身标识。`task-pause` 的共享纯 selector 从当前范围的节点和原始集合派生去重的汇总资格：ID 存在于原始集合且状态不是 `done`，`cancelled` 仍可计入。项目概览使用完整项目普通节点；项目页面将完整普通节点按列表共用的负责人匹配规则筛选后，交给 selector 计算任务列表标题数量。链列表及链弹窗使用完整普通分量节点并排除外部前置；Goal 列表行和整体图的汇总只使用其直接成员并排除外部前置。Goal 行在进行中数量后复用共享数量组件，非零时通过条件描述引用向展开按钮提供数量，零时移除引用；子项标签筛选和展开不改变汇总范围。各数量均不从状态筛选、列表类别、分页或可见子图推断；概览与链数量不受负责人筛选影响。概览从同一合格集合按原任务顺序选择定位目标；零数量隐藏入口。状态快照变化时重新派生，因此完成或重开立即影响数量，而原始属性及详情操作不变。七项统计、任务五态和页签未完成数不承担暂停语义。
+项目任务区的暂停 context 将原始集合提供给列表、任务链和图。`GoalDetailSurface` 在自身内容和链弹窗的共同 React 子树提供当前快照的同一集合，使嵌套 portal 也能读取；尚无快照时使用稳定空集合。项目 Goal 展开区的子任务行使用项目的同一暂停集合；详情只为恢复的图及嵌套 Task 提供该 context。快照变化更新标识与数量，不重挂载已打开的链图。任务自身的琥珀色标识共用图标和双语文案，根任务的标识与整链暂停数量分别表达；`done` 任务仍可显示自身标识。`task-pause` 的共享纯 selector 从当前范围的节点和原始集合派生去重的汇总资格：ID 存在于原始集合且状态不是 `done`，`cancelled` 仍可计入。项目概览使用完整项目普通节点；项目页面对完整普通节点应用 selector 和列表共用的负责人匹配规则，得到任务列表标题集合。链列表及链弹窗使用完整普通分量节点并排除外部前置；Goal 列表行和整体图的汇总只使用其直接成员并排除外部前置。Goal 行在进行中数量后复用共享数量组件，非零时通过条件描述引用向展开按钮提供数量，零时移除引用；子项标签筛选和展开不改变汇总范围。各数量均不从状态筛选、列表类别、分页或可见子图推断；概览与链数量不受负责人筛选影响。概览从同一合格集合按原任务顺序选择定位目标；零数量隐藏入口。状态快照变化时重新派生，因此完成或重开立即影响数量，而原始属性及详情操作不变。七项统计、任务五态和页签未完成数不承担暂停语义。
+
+`ProjectPage` 从完整普通 Task 集合按负责人匹配及共享汇总资格派生有序暂停列表，任务列表标题数量取同一列表长度；既有快照顺序保持创建时间升序及同时间 ID 顺序。`ProjectTaskWorkspace` 将列表和专用详情选择回调交给 `ProjectPausedTasks`，后者复用 `TaskPauseCount` 徽标并拥有 native popover、行焦点和滚动。选择先关闭浮层，再由项目页的既有 history 和 summary 详情路径打开精确 ID；专用来源清除旧列表和搜索来源，以持续存在的徽标作为原始触发器，失效时沿用可见页签或标题回退。列表不进行额外预读或轮询。
+
+浮层按锚点和 visual viewport 定位，监听尺寸与滚动变化并在下方空间不足时向上放置，内部滚动承载多项。任务以 ID 保持稳定身份：内容无变化的快照不重置浮层、焦点和滚动；资格变化保留仍存在项的焦点，移除当前项时选择相邻项，空集合关闭浮层并在需要时恢复可见焦点。资源退役、离开任务区或替代搜索关闭 top layer。页面语言、原生菜单键盘行为及详情准入沿用现有 owner。
 
 `TaskDetailSurface` 在公共头部呈现暂停区域，读取当前完整 task 的属性，覆盖弹窗、独立页、全屏及全部阅读页签。`Unpause` 按钮直接调用详情会话的解除操作；运行态不构成锁定，准入、陈旧读取与未决写入沿用普通任务写入规则。按钮提交中禁用并显示 busy，区域保留已确认的暂停状态。失败、冲突和未知结果进入既有公共提示层与 GET 核对入口，错误不挤压阅读区。
 
 解除操作通过普通 task PATCH 发送精确 `version` 与 `properties:{paused:false}`，返回完整 TaskDetail，复用每任务串行写入 owner、历史准入与缓存安装。确认响应只允许本次 paused 值和相应版本/更新时间变化，状态、计时、许可、负责人、平台、依赖、worker 与其他属性必须保持。成功先确认远端结果，再安装完整详情并刷新匹配项目；冲突读取后重新决定，未知结果只读核对且不重放，后来的目标值不证明原请求成功。关闭、切换和旧历史结果不解除新操作的共享写锁。
 
-该入口只解除 task 的输入暂停标记，不发原生启动或恢复指令，不修改 worker.phase；Web backend 的恢复失败等待与其 retry 授权继续由运行时拥有。[Goal 暂停展示决策](../../.agents/notes/implemented/bug-fix/2026-11-11-goal-pause-presentation.md)记录 Goal 范围的接线取舍；[暂停汇总资格决策](../../.agents/notes/implemented/bug-fix/2026-11-10-paused-summary-eligibility.md)记录汇总与原始标识的区分；[负责人筛选汇总决策](../../.agents/notes/implemented/bug-fix/2026-11-12-assignee-scoped-pause-summary.md)记录列表标题范围；[Web 暂停操作决策](../../.agents/notes/archived/feature/2026-11-04-task-pause-web-controls.md)保存展示、投影和写入复用的历史取舍；[周期输入暂停决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)记录了原生递交边界的历史取舍。
+该入口只解除 task 的输入暂停标记，不发原生启动或恢复指令，不修改 worker.phase；Web backend 的恢复失败等待与其 retry 授权继续由运行时拥有。[Goal 暂停展示决策](../../.agents/notes/implemented/bug-fix/2026-11-11-goal-pause-presentation.md)记录 Goal 范围的接线取舍；[暂停汇总资格决策](../../.agents/notes/implemented/bug-fix/2026-11-10-paused-summary-eligibility.md)记录汇总与原始标识的区分；[负责人筛选汇总决策](../../.agents/notes/implemented/bug-fix/2026-11-12-assignee-scoped-pause-summary.md)记录列表标题范围；[暂停列表入口决策](../../.agents/notes/implemented/feature/2026-11-14-project-paused-task-list.md)记录选择入口和焦点恢复取舍；[Web 暂停操作决策](../../.agents/notes/archived/feature/2026-11-04-task-pause-web-controls.md)保存展示、投影和写入复用的历史取舍；[周期输入暂停决策](../../.agents/notes/archived/feature/2026-11-02-task-paused-worker-pings.md)记录了原生递交边界的历史取舍。
 
 ### 认领归属与强制撤回
 
@@ -1037,7 +1043,7 @@ type TaskGraph = {
 
 ## 请求、刷新与故障
 
-项目目录请求归属认证 Workspace 内的 ProjectsProvider，导航与项目列表共享该请求所有者。图、详情和附件请求分别归属其页面或选择。项目任务页保持挂载时按 document 可见性选择唯一 interval，可见每 15 秒、隐藏每 5 分钟读取 task-sync 并原子合并摘要。隐藏转换不发请求，重新可见时立即尝试读取；每次转换从该时刻重建计时。失焦不改变周期，浏览器节流或冻结时后台周期仅为名义值。自动
+Team 项目目录请求归属认证 Workspace 内的 ProjectsProvider，导航与 Team 项目列表共享该请求所有者；共享页面的目录由页面内独立 Provider 拥有。图、详情和附件请求分别归属其页面或选择。项目任务页保持挂载时按 document 可见性选择唯一 interval，可见每 15 秒、隐藏每 5 分钟读取 task-sync 并原子合并摘要。隐藏转换不发请求，重新可见时立即尝试读取；每次转换从该时刻重建计时。失焦不改变周期，浏览器节流或冻结时后台周期仅为名义值。自动
 触发遇到活动同步请求时跳过，返回可见时也沿用活动读取；手动刷新取消活动同步请求并
 立即开始新读取。隐藏不取消已发出的读取。导航和卸载清除定时器并取消所属请求，
 请求序号和资源身份检查阻止晚到结果覆盖当前数据；取消不展示失败通知。

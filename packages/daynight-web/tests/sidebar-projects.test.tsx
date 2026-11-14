@@ -51,7 +51,7 @@ describe("sidebar project navigation", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
-  it("hides shared and collapsed trees without reloading or attributing unrelated pages to a project", async () => {
+  it("retains the tree on shared pages and hides it when collapsed without reloading", async () => {
     const fetch = vi.fn().mockResolvedValue(response([project(1)]));
     vi.stubGlobal("fetch", fetch);
     const view = render(<Harness activeProjectId={project(1).id} />);
@@ -62,7 +62,8 @@ describe("sidebar project navigation", () => {
     expect(nav.getByRole("link", { name: "Project 1" })).toBe(link);
     expect(link).not.toHaveAttribute("aria-current");
     view.rerender(<Harness route={{ kind: "sharedProjects" }} />);
-    expect(nav.queryByRole("link", { name: "Project 1" })).toBeNull();
+    expect(nav.getByRole("link", { name: "Project 1" })).toBe(link);
+    expect(link).not.toHaveAttribute("aria-current");
     expect(nav.getByRole("link", { name: "Shared with me" })).toHaveAttribute("aria-current", "page");
     view.rerender(<Harness collapsed />);
     expect(nav.queryByRole("link", { name: "Project 1" })).toBeNull();

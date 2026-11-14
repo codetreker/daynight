@@ -10,6 +10,8 @@
 
 新建按钮保留原生事件目标与禁用语义，并在未设样式的 SPAN 内参与页头布局；按钮自身处于普通内联上下文，避免直接 flex item 的 blockification 改变 resolved display/min-width。新建配置 form 使用 webhook-create-form 标记，其 fieldset.form-field 采用 min-content 最小尺寸；编辑和订阅 form 保留各自现有尺寸规则。该标记只表达表单布局类型，不改变创建、版本或请求逻辑。
 
+接收端点状态 `select.filter` 使用专属定位包装，隐藏浏览器绘制的箭头并叠加不接收指针事件的装饰 SVG；原生 select 仍拥有名称、焦点和选择行为。箭头盒为 10px，距右框 9px、垂直居中，select 为文字预留 29px 右内边距。包装与 select 在工具栏交叉轴拉伸，沿用页面自身的宽度限制及桌面和 450px 以下的字体、边框与其余内边距；窄屏规则保留箭头所需空间。箭头不参与固有宽度计算，搜索框继续收缩，团队选择器不受专属样式影响。浏览器箭头与文字 padding 分别受浏览器控制，故单调 padding 无法固定右边距；取舍记录于[状态筛选箭头决策](../../.agents/notes/implemented/bug-fix/2026-11-14-webhook-status-select-spacing.md)。
+
 ## 请求与配置发布
 
 `api/webhooks.ts`复用现有同源request、取消、401清理与requestId机制。成功及非401错误响应先校验当前主体，成功再验证严格DTO和请求资源；浏览器使用Web Crypto，不导入CLI的Node依赖。配置版本、destinationRevision和generation为规范int64字符串，nullable和数组必须真实存在。历史参数、顺序、重复ID与cursor严格验证；UTC筛选按服务端纳秒精度比较，Attempt代次使用BigInt。
@@ -65,3 +67,5 @@ delivery.redeliver descriptor固定endpointId、deliveryId、ifVersion、ifGener
 单元验证负责wire、版本、状态机、存储和UI生命周期边界，包含跨列表/详情/payload限制、仅目标URL收缩、Attempt404与在途读取竞争、跨载荷期限迟到响应及权威历史失效。无头浏览器连接同一生产RegisterRoutes、真实认证和PostgreSQL，通过真实第二客户端、barrier及仅转发的故障层验证业务效果；接收结果与签名使用实际发送器和受控HTTPS接收方。临时fixture只接线模块，不复制业务handler或成功JSON。合法边界载荷fixture只证明独立原字节接口与浏览器上限，不把安装的边界内容冒称实际事件渲染输出。
 
 内容区与dialog对照视觉输入的样式向量、局部geometry和像素，生产shell单独核对控件、响应式与导航。全页截图保留shell起点、宽度、页头及边距差异，只允许对齐外层可用内容盒。未变化背景检查同时验证节点身份、草稿、选区、焦点、滚动和分页；产品测试不导入原型或场景状态。局部模块验证不替代完整应用生命周期与物理保留清理的组合证明。
+
+状态筛选的定向浏览器回归挂载生产页面并控制 API 响应，测量箭头与选择框几何、响应式布局，操作原生选择并核对查询参数；这项局部视觉和交互检查不替代真实服务的业务效果验证。
