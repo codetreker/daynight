@@ -91,6 +91,24 @@ describe("worker managed prompts", () => {
     expect(prompt).toContain("The controller owns scheduling and its worktree, branch and workspace");
     expect(prompt).not.toContain("development-workflow");
   });
+  it.each(["startup", "resume", "continuation", "periodic"])("delivers action ownership and authorization rules before review waits in the %s prompt", (kind) => {
+    const { task, build } = fixture();
+    if (kind === "resume") task.sessionId = uuid(6);
+    const prompt = kind === "periodic" ? workerPingPrompt(task) : kind === "continuation" ? workerContinuationPrompt(task) : build(task, "macos");
+    expect(prompt).toContain("Before waiting, determine who owns the next action");
+    expect(prompt).toContain("current PR HEAD and the complete set of unresolved review threads, including previously known comments");
+    expect(prompt).toContain("Incomplete pages or failed reads leave review state unknown");
+    expect(prompt).toContain("No new comments does not mean no unresolved work");
+    expect(prompt).toContain("Address actionable feedback within existing scope and authorization before polling again");
+    expect(prompt).toContain("Removing unrelated changes from this PR does not authorize delivering those changes separately");
+    expect(prompt).toContain("Permission to publish a reply and permission to modify or validate code are separate");
+    expect(prompt).toContain("only when the next action belongs to a reviewer, CI or another external party");
+    expect(prompt).toContain("Avoid repeated unchanged progress announcements");
+    expect(prompt).toContain("Native working activity and successful polling do not prove delivery progress");
+    expect(prompt).toContain("a required action lacks authorization and no remaining authorized work can advance the assignment");
+    expect(prompt).toContain("identify the exact action, the instruction or restriction withholding permission, and the authorization needed");
+    expect(prompt).toContain("Existing assignment and session authorization persists; do not request it again as procedural confirmation");
+  });
   it("uses the current cleanup attempt deadline", async () => {
     const { task } = fixture(); const deadline = 601_000; const prompt = workerCleanupPrompt(task, deadline);
     expect(prompt).toContain(task.claimId); expect(prompt).toContain(new Date(deadline).toISOString());
@@ -112,7 +130,7 @@ describe("worker managed prompts", () => {
     expect(prompt).toContain("Honor independent user pauses, restrictions and revocations");
     expect(prompt).toContain("all required delivery, acceptance and evidence");
   });
-  it.each(["startup", "resume", "continuation", "periodic"])("handles unexpected conditions within the assignment and pauses only for an irreconcilable design conflict in the %s prompt", (kind) => {
+  it.each(["startup", "resume", "continuation", "periodic"])("preserves execution boundaries and design-conflict evidence in the %s prompt", (kind) => {
     const { task, build } = fixture();
     if (kind === "resume") task.sessionId = uuid(6);
     const prompt = kind === "periodic" ? workerPingPrompt(task) : kind === "continuation" ? workerContinuationPrompt(task) : build(task, "macos");
