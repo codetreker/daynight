@@ -1479,11 +1479,17 @@ Inactive inner-category contents unmount while their associated tabpanel IDs
 remain stable.
 
 Within Task list, an absent category preference selects Task chains; later
-new visits restore the project's last saved inner category. Both badges count unfinished
-tasks (pending and in progress) from the complete snapshot, independently of
-completed-item visibility, outer/inner selection and the open graph dialog. Their sum
-equals the project's unfinished total; toolbars report all entries matching the
-current filter against complete category totals, independently of page size.
+new visits restore the project's last saved inner category. The standalone badge
+counts unparented unfinished standalone tasks matching the selected assignee; the
+chain badge counts each ordinary component once when an unparented member is both
+unfinished and matches that assignee. Proposed, todo and in-progress members are
+unfinished; a finished root does not hide a matching successor. Classification uses
+the complete ordinary graph before Parent scoping, and external edges do not join
+components. The Goal badge counts matching containers in all statuses. Badges use
+the complete snapshot independently of status, tag, search, pagination, category,
+graph and expansion; the chain badge has its own localized tooltip. Toolbars report
+all entries matching the current filter against complete category totals,
+independently of page size.
 Both categories default to all statuses and include all history. Status and
 assignee selections are shared in memory during the project visit.
 

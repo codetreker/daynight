@@ -198,7 +198,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     return !isTerminalStatus(task.status) && matchesCurrentAssignee(task.assignedTo);
   };
   const unfinishedStandaloneTaskCount = scopedStandaloneIds.filter(unfinishedMatches).length;
-  const unfinishedChainTaskCount = [...new Set([...scopedMembers.values()].flat())].filter(unfinishedMatches).length;
+  const unfinishedChainCount = [...scopedMembers.values()].filter((memberIds) => memberIds.some(unfinishedMatches)).length;
   const rootIds = scopedChainIds.filter((id) => scopedMembers.get(id)!.some((member) => matchingTaskIds.has(member)));
   const standaloneIds = scopedStandaloneIds.filter((id) => matchingTaskIds.has(id));
   const chainPagination = usePagination(rootIds.length);
@@ -649,7 +649,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             <div hidden={searchActive} inert={searchActive}>
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label>{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
-              unfinishedChainTaskCount={unfinishedChainTaskCount} goalCount={assignedGoals.length} onViewChange={selectView}
+              unfinishedChainCount={unfinishedChainCount} goalCount={assignedGoals.length} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
