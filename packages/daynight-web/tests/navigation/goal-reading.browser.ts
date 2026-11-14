@@ -2465,14 +2465,14 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale);
   const code = 'x'.repeat(400);
-  fixture.setGoalDescription(`# Reading\n\n- Item\n\n[Read notes](notes.txt)\n\n\`\`\`\n${code}\n\`\`\`\n\n| Column | Wide |\n| --- | --- |\n| Value | ${code} |\n\n\`\`\`mermaid\nflowchart LR\nA[Start] --> B[Finish]\n\`\`\``);
+  fixture.setGoalDescription(`# Reading\n\n- Item\n\n[Read notes](notes.txt)\n\n\`\`\`\n${code}\n\`\`\`\n\n| Column | Wide |\n| --- | --- |\n| Value | ${code} |\n\n\`\`\`mermaid\nflowchart LR\nA[Start] --> B[Middle] --> C[Review] --> D[Finish]\n\`\`\``);
   const check = async (surface: Locator) => {
     const card = surface.locator('.description-card');
     await expectDescriptionCard(page, card, width);
     await expect(card.getByRole('heading', { name: 'Reading' })).toBeVisible();
     await expect(card.getByText('Item', { exact: true })).toBeVisible();
     await expect(card.locator('.mermaid-diagram img')).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
-    if (width === 320) for (const item of [card.locator('pre').first(), card.locator('.markdown-table')]) expect(await item.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+    if (width === 320) for (const item of [card.locator('pre').first(), card.locator('.markdown-table'), card.locator('.mermaid-diagram')]) expect(await item.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
   };
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const surface = page.locator('.goal-detail-surface');
@@ -2495,7 +2495,8 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
 for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Task description card in dialog at ${width}px in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale);
-  fixture.setTaskDescription('# Task reading\n\n- Item\n\n[Read notes](notes.txt)');
+  const code = 'x'.repeat(400);
+  fixture.setTaskDescription(`# Task reading\n\n- Item\n\n[Read notes](notes.txt)\n\n\`\`\`\n${code}\n\`\`\`\n\n| Column | Wide |\n| --- | --- |\n| Value | ${code} |\n\n\`\`\`mermaid\nflowchart LR\nA[Start] --> B[Middle] --> C[Review] --> D[Finish]\n\`\`\``);
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
@@ -2505,6 +2506,8 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   const check = async () => {
     await expectDescriptionCard(page, dialog.locator('.description-card'), width);
     await expect(dialog.getByRole('heading', { name: 'Task reading' })).toBeVisible();
+    await expect(dialog.locator('.description-card .mermaid-diagram img')).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
+    if (width === 320) for (const item of [dialog.locator('.description-card pre').first(), dialog.locator('.description-card .markdown-table'), dialog.locator('.description-card .mermaid-diagram')]) expect(await item.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
   };
   await check();
   await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();

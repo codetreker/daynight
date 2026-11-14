@@ -154,6 +154,7 @@ describe('task description reading', () => {
     await waitFor(() => expect(api.list).toHaveBeenCalledOnce());
     view.rerender(reading(api, ''));
     expect(screen.getByText('暂无描述')).toBeVisible();
+    expect(screen.getByText('暂无描述').closest('.description-card')).toBeNull();
     expect(api.list).toHaveBeenCalledOnce();
   });
 
