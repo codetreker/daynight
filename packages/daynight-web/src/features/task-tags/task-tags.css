@@ -1,7 +1,6 @@
 .task-tag-list { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; max-width: 100%; margin-top: 5px; }
 .task-tag { min-width: 0; max-width: 100%; padding: 2px 7px; border: 1px solid #e4e7ee; border-radius: 5px; background: #f0f1f6; color: #566176; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
-.task-tag-empty { color: #556176; font-size: 11px; line-height: 1.4; }
-@media (max-width: 320px) { .task-tag, .task-tag-empty { font-size: 10px; } }
+@media (max-width: 320px) { .task-tag { font-size: 10px; } }
 .task-tags-editor, .tag-picker { min-width: 0; max-width: 100%; }
 .task-tags-editor { margin-top: 10px; }
 .tag-picker { padding: 12px; border: 1px solid #dce0e8; border-radius: 8px; }
