@@ -68,6 +68,40 @@ const background = async (page: Page): Promise<Page> => {
   await page.bringToFront(); return other;
 };
 
+for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
+  test(`native installation menu cancellation preserves confirmation at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+    const state = await install(page);
+    const accountLogin = 'installation-' + 'platform-engineering-'.repeat(8);
+    await page.route('**/api/v1/projects/*/github/installation', route => route.fulfill({ json: { ...candidate, installation: { ...candidate.installation, accountLogin } }, headers: { 'Daynight-User-ID': actorId } }));
+    await page.setViewportSize({ width, height: 900 }); await open(page);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const opener = page.getByRole('button', { name: locale === 'en' ? 'Connect GitHub App' : '连接 GitHub App' });
+    await opener.click();
+    const dialog = page.getByRole('dialog'), select = dialog.locator('#github-installation');
+    await expect(select).toHaveValue(candidate.installation.id); await expect(select.locator('option')).toHaveCount(1);
+    await expect(select.locator('option')).toHaveText(accountLogin);
+    const geometry = await select.evaluate(element => {
+      const control = element.getBoundingClientRect(), wrapper = element.parentElement!, arrow = wrapper.querySelector('svg')!.getBoundingClientRect();
+      return { width: control.width, fieldWidth: wrapper.parentElement!.clientWidth, height: control.height, arrowInset: control.right - arrow.right, arrowOffset: arrow.top + arrow.height / 2 - control.top - control.height / 2, textOverflow: getComputedStyle(element).textOverflow };
+    });
+    expect(geometry.height).toBe(38); expect(Math.abs(geometry.width - geometry.fieldWidth)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.arrowInset - 12)).toBeLessThanOrEqual(1); expect(Math.abs(geometry.arrowOffset)).toBeLessThanOrEqual(1);
+    expect(geometry.textOverflow).toBe('ellipsis');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await testInfo.attach('select-geometry', { contentType: 'application/json', body: JSON.stringify(geometry) });
+    await page.screenshot({ path: testInfo.outputPath('installation-select.png') });
+    const arrow = await select.locator('..').locator('svg').boundingBox();
+    await page.mouse.click(arrow!.x + arrow!.width / 2, arrow!.y + arrow!.height / 2);
+    await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(false);
+    await expect(dialog).toBeVisible(); await expect(select).toBeFocused();
+    await expect(select).toHaveValue(candidate.installation.id); expect(state.writes).toHaveLength(0);
+    await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
+    expect(state.writes).toHaveLength(0);
+  });
+}
+
 test('connects the verified installation from a different account and retains the private sharing explanation', async ({ page }) => {
   const state = await install(page); await open(page);
   await page.getByRole('button', { name: 'Connect GitHub App' }).click();

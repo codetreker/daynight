@@ -38,6 +38,21 @@ beforeEach(() => {
 });
 
 describe('GitHub settings', () => {
+  it('keeps the single installation candidate until explicit confirmation and cancels without writing', async () => {
+    mocks.status.mockResolvedValue({ ...base(), connection: 'not_connected', repository: null, installation: null });
+    mocks.discover.mockResolvedValue({ repository: { id: '31', fullName: 'owner/private', private: true }, installation: { id: '42', accountLogin: 'different-account' } });
+    render(<Subject />); await ready(); fireEvent.click(screen.getByRole('button', { name: 'Connect GitHub App' }));
+    const dialog = await screen.findByRole('dialog');
+    const select = await within(dialog).findByRole('combobox');
+    expect(select).toHaveValue('42'); expect(select).toBeEnabled();
+    expect(within(select).getAllByRole('option')).toHaveLength(1);
+    expect(within(select).getByRole('option')).toHaveTextContent('different-account');
+    fireEvent.change(select, { target: { value: '42' } });
+    expect(mocks.connect).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull(); expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
   it('distinguishes channels, initialization, full empty and retained data', async () => {
     const failed = { ...base(), poll: { ...base().poll, error: { code: 'timeout', message: 'Timed out', at: null } }, webhook: { ...base().webhook, error: { code: 'failed', message: 'Event failed', at: null } } };
     mocks.status.mockResolvedValue(failed); render(<Subject />); await ready();

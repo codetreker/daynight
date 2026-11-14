@@ -22,8 +22,14 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. A shared popup-state predicate gives enclosing Escape
-handlers a native observation without making the component an event owner.
+an authenticated shell. Management consumers use the same component: Team and
+Project roles choose filter density with a 120px layout wrapper; transfer,
+Token expiry and GitHub installation use full-width form density. Their options,
+permission gates, drafts and explicit confirmations remain caller-owned.
+A shared popup-state predicate gives enclosing Escape handlers a native
+observation without making the component an event owner. ManagementDialog uses
+it before its ordinary Escape close, retaining native cancellation and stopping
+outward propagation while respecting prevented events and IME input.
 
 This generalizes the geometry choice recorded in the
 [Worker spacing decision](../bug-fix/2026-11-06-worker-configuration-select-spacing.md)
