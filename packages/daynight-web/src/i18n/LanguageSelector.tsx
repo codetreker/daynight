@@ -1,4 +1,5 @@
 import { useId, type ReactNode } from "react";
+import { NativeSelect } from "../ui/native-select/NativeSelect";
 import { useI18n, useLocalePreference } from "./LocaleProvider";
 import { parseLocale, type LocaleIssue } from "./locale";
 import "./language-selector.css";
@@ -16,11 +17,11 @@ export const LanguageSelector = ({ renderNotice }: { readonly renderNotice?: (no
 
   return <div className="locale-preference">
     <label className="locale-control" htmlFor={id}>
-      <select id={id} aria-label={messages.language.label} value={locale} aria-describedby={issue === null ? undefined : noticeId}
+      <NativeSelect density="filter" id={id} aria-label={messages.language.label} value={locale} aria-describedby={issue === null ? undefined : noticeId}
         onChange={(event) => selectLocale(parseLocale(event.currentTarget.value))}>
         <option value="en">{messages.language.options.en}</option>
         <option value="zh-CN">{messages.language.options["zh-CN"]}</option>
-      </select>
+      </NativeSelect>
     </label>
     {issue !== null && (renderNotice === undefined ? notice : <>
       <span id={noticeId} className="locale-notice-description">{messages.language.preferenceNotice[issue.kind]}</span>

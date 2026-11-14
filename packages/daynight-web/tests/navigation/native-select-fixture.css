@@ -1,0 +1,18 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; color: #172132; background: #fff; }
+main { padding: 16px; }
+h1 { font-size: 18px; }
+section { margin-block: 20px; }
+label { display: grid; gap: 5px; min-width: 0; font-size: 12px; }
+fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.matrix { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; }
+.layout-cases { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.flex-row { display: flex; gap: 8px; max-width: 400px; }
+.flex-field { flex: 1; }
+.grid-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: stretch; gap: 8px; max-width: 450px; }
+.grid-row p { margin: 0; font-size: 14px; line-height: 24px; }
+.fixed-column { width: 150px; }
+.container-case { container: bot-reading native-select-region / inline-size; max-width: 100%; }
+.container-case.wide { width: 700px; }
+.container-case.narrow { width: 560px; }
+.inner-container { container: unrelated / inline-size; }

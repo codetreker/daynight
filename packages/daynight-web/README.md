@@ -250,7 +250,9 @@ One current copy operation disables the copy buttons until it settles. A floatin
 status message reports success or manual-copy recovery without shifting content.
 Unmount, locale and client changes invalidate old results, including completion
 handlers that might otherwise release a newer pending copy. Client choice survives
-a language change and resets to Codex on reopening. The public reading layout
+a language change and resets to Codex on reopening. The client field uses the
+shared NativeSelect form density and retains its real label, options and change
+callback. The public reading layout
 supports long addresses and controls at desktop, 390px and 320px widths. Go
 serves direct GET/HEAD requests and reloads through the normal no-store HTML
 handler; `/setup` and its descendants are reserved from authentication callbacks.
@@ -1336,7 +1338,12 @@ The [language requirements](../../docs/spec/daynight-web-i18n.md) define the
 implemented English and Simplified Chinese interface. The
 [language design](../../docs/design/daynight-web-i18n.md) owns typed catalogs,
 cached native Intl formatters, initial resolution, a Provider and the shared
-native selector under `src/i18n/`. Production `main.tsx` resolves language and
+LanguageSelector under `src/i18n/`. LanguageSelector uses the common
+[NativeSelect](../../docs/design/native-select.md) filter density; its 32px
+height, arrow, focus and disabled presentation are shared by public,
+authentication and workspace entries. The language module owns preference
+feedback and retry layout, with descriptions associated to the real select.
+Production `main.tsx` resolves language and
 sets HTML `lang` and the route-appropriate introduction, guide or authentication
 loading title before React renders.
 The public page, guide and `AuthenticatedApp` update their document metadata on
@@ -1371,6 +1378,24 @@ are outside this runtime's persistence guarantee.
 
 Production claims require real service receipts. Web typecheck, test and build
 include all translated components under the existing coverage gate.
+
+## Shared native selection
+
+Import `NativeSelect` from `src/ui/native-select/NativeSelect.tsx` using a relative
+path. It imports its own CSS and supports native single-line, size-based list
+and multiple selection. The [component design](../../docs/design/native-select.md)
+owns its props, geometry, touch modes and popup-helper usage. The
+[UI principles](../../docs/ui-design.md#share-native-selection-presentation)
+own the reuse rules.
+
+Pages provide their options, value, labels, constraints, event handlers and real
+`HTMLSelectElement` refs. Choose compact, filter or form density, content or fill
+width, and explicit focus, pending and touch presentation. Consumer
+`wrapperClassName` classes may control external width, margins and flex/grid
+placement; internal skin, arrow and touch sizing belong to the common CSS.
+Keep business confirmation, cancellation, drafts, request timing and errors with
+the consuming feature. The component adds no selection state, placeholder,
+request or Provider dependency.
 
 ## Development
 
@@ -2524,7 +2549,8 @@ has a 30-minute limit, and final `checks` requires it to succeed when selected.
 It runs full typechecking, the harness, the Docker Web build, Vitest/V8 collection
 and coverage checking serially with bounded stages and uploads coverage evidence.
 The separate [`shell and browser acceptance` workflow](../../.github/workflows/shell-browser.yml)
-runs the assistant and ordinary Session draft suites below on `main` pushes and manual dispatch. Its browser
+runs the assistant, ordinary Session draft and common NativeSelect suites on
+`main` pushes and manual dispatch. Its browser
 job has a 20-minute limit and prepares its own runner without a quality artifact
 or result dependency. Ordinary Web unit and quality commands do not launch
 browser fixtures. The explicit module browser entry separately runs the
@@ -2569,6 +2595,36 @@ completion, attachment refusal, byte verification and cleanup. The
 [acceptance ownership decision](../../.agents/notes/implemented/testing/2026-11-06-attachment-admission-acceptance-ownership.md)
 records the division.
 
+
+### Native select browser validation
+
+The common select browser suite renders the production NativeSelect and its CSS
+in an isolated frontend host. It checks compact/filter/form geometry, states,
+long English and Chinese choices, narrow and desktop widths, flex/grid layouts,
+RTL, list and multiple selection, responsive and named-container touch sizing,
+forced colors and zoom. Native pointer and keyboard assertions are distinct from
+programmatic option selection. The module suite in `tests/native-select.test.tsx`
+owns props, refs, events, form constraints and node continuity.
+
+Run the focused browser suite from the repository root:
+
+```bash
+pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/native-select-playwright.config.ts
+```
+
+Install the locked Playwright Chromium first, or select an existing executable
+with `DAYNIGHT_BROWSER_EXECUTABLE`. The configuration is also included in
+`pnpm web:test:browser`. Its JSON report is written to the repository root's
+`.tmp/native-select-browser/results.json`; screenshots and other Playwright
+attachments are under `.tmp/native-select-browser/results/`. The
+[main/manual browser workflow](../../.github/workflows/shell-browser.yml) invokes
+this same configuration and uploads its report and captures. Ordinary PR quality
+does not execute the browser fixture.
+
+The setup and landing-header browser configurations separately exercise real
+independent-page consumers, including language and client selection. These
+frontend checks establish rendered and input behavior for their actual browser;
+they do not prove a physical phone's system picker or live service behavior.
 
 ### Assistant browser validation
 

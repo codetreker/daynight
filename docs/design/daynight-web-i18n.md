@@ -20,7 +20,7 @@ packages/daynight-web/
     messages/landing.ts    公开推广、交互演示、身份提示与元数据消息
     formats.ts             按语言缓存的 Intl 格式化器
     LocaleProvider.tsx     展示值、偏好错误及保存操作
-    LanguageSelector.tsx   共用原生选择器、错误提示与重试
+    LanguageSelector.tsx   基于 NativeSelect 的语言选择、错误提示与重试
   tests/helpers/renderWithLocale.tsx  显式语言渲染 helper
 ```
 
@@ -72,7 +72,7 @@ Context 的缺省值明确表示未挂载，缺少 Provider 时 hooks 抛出错�
 
 Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选择语言时先更新本页展示，再尝试保存；失败保留选择并将 issue 更新为 `write`，保留原始 `cause`。`retrySave()` 保存当前语言。任意保存成功均将 issue 清为 `null`，包括启动时产生的读取或无效值错误。展示上下文按 locale 保持稳定，单独更新保存错误不替换其消息与格式化器。
 
-`LanguageSelector` 包含可访问名称为 `语言 / Language` 的原生 `select`，不显示独立标签，选项使用 `English` 与 `简体中文`。共享样式为文本和绘制的箭头分别预留空间，箭头距右边框保持固定间距；各入口复用这一布局。每个实例有独立标识，多个实例共享 Provider。错误提示按当前语言从目录映射，不显示原始异常；出现错误时提供本地化的重试保存操作。原生控件保持键盘与焦点行为，语言变化不重建选择器。
+`LanguageSelector` 使用[公共 NativeSelect](native-select.md) 的 `filter` 变体，保留可访问名称 `语言 / Language`，不显示独立标签，选项使用 `English` 与 `简体中文`。公共组件直接导入自己的 CSS，统一 32px 控件高度、文字留白、装饰箭头、焦点和禁用外观，首页、登录、指南、工作空间与独立详情均不依赖外壳样式或页面对内部 select 的覆盖。语言模块仅拥有偏好容器、提示和重试的布局与展示。每个实例有独立标识，多个实例共享 Provider。错误提示按当前语言从目录映射，不显示原始异常；出现错误时提供本地化的重试保存操作，描述关联继续指向真实原生控件。语言变化保留同一个 `HTMLSelectElement`、键盘与焦点行为。
 
 ## 消息与格式化
 
@@ -104,13 +104,13 @@ Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻�
 鉴权界面还保留当前身份、成员观察版本、模态、一次性秘密及进行中的管理请求；
 校验、登出/会话、邀请清理和复制通知保存语义值，渲染时查询当前目录。它不主动重置浏览位置；英文自然换行的高度变化需要浏览器几何检查。独立任务徽标按当前负责人统计未完成的范围内单成员 Task；任务链徽标按当前负责人统计范围内含匹配未完成成员的普通分量，并使用独立的中英文提示；Goal 徽标按自身负责人统计全部状态的 Goal。状态筛选及语言切换不改变其统计范围，机制见 [Web 设计](daynight-web.md)。
 
-`SetupGuidePage` 订阅同一 `messages.setup`，复制状态保存成功/失败语义；命令维护完整字符串，目录提供本地化的说明、项目名示例及 Agent 请求。语言变化保留页面路由、步骤与 MCP 客户端选择，推进复制 generation 并清理旧提示，旧调用的完成不会覆盖当前语言或新复制状态。客户端变化和卸载也使旧复制结果失效。浮动提示不改变步骤尺寸。指南在认证组件之外使用同一 locale Provider，语言切换及整个阅读生命周期均不发起任何 API 请求。
+`SetupGuidePage` 订阅同一 `messages.setup`，复制状态保存成功/失败语义；命令维护完整字符串，目录提供本地化的说明、项目名示例及 Agent 请求。语言变化保留页面路由、步骤与 MCP 客户端选择，推进复制 generation 并清理旧提示，旧调用的完成不会覆盖当前语言或新复制状态。客户端变化和卸载也使旧复制结果失效。浮动提示不改变步骤尺寸。指南在认证组件之外使用同一 locale Provider。`McpSetupGuide` 的客户端字段使用公共 NativeSelect 的 `form`/`content` 变体，保留原 label、值、选项和变更回调；客户端选择和语言切换不引入业务 API 请求。
 
 ## 验证与证据归属
 
 基础测试提供显式 `renderWithLocale` helper、可控 storage 和隔离组件 fixture，覆盖浏览器匹配、显式选择优先、自动检测不保存、读写故障、无效值、成功清除错误、多个选择器共享状态、缺少 Provider 失败、完整目录与格式化。`pnpm web:typecheck`、`pnpm web:test` 与 `pnpm web:build` 执行模块检查，覆盖率门槛由 `pnpm web:test` 检查；`pnpm web:test:browser` 单独运行模块浏览器配置。
 
-组件测试验证领域文案、已显示错误重翻译、待完成附件操作期间切换、DOM/预览身份和浏览状态保持。现有组件测试与 standalone 入口显式使用 Provider。受控浏览器 fixture 验证两种语言的键盘操作、窄屏布局及实际焦点、选区和视口；真实服务连接由独立产品组合验证承担。测试结果绑定实际源码和环境，模拟响应与本地浏览器结果不能证明真实服务或部署行为。
+组件测试验证领域文案、已显示错误重翻译、待完成附件操作期间切换、DOM/预览身份和浏览状态保持。现有组件测试与 standalone 入口显式使用 Provider。受控浏览器 fixture 验证两种语言的键盘操作、窄屏布局及实际焦点、选区和视口；`landing-header-playwright.config.ts` 与 `setup-guide-playwright.config.ts` 覆盖独立页面采用，公共选择器的完整几何和原生输入矩阵由 `native-select-playwright.config.ts` 拥有。执行命令与产物见 [Web README](../../packages/daynight-web/README.md#native-select-browser-validation)。真实服务连接由独立产品组合验证承担。测试结果绑定实际源码和环境，模拟响应与本地浏览器结果不能证明真实服务或部署行为。
 
 原生产浏览器入口及下列三个场景已移除；其方法和结果仅作为对应源码的历史证据，不代表当前自动化：
 
