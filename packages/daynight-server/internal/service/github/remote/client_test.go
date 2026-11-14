@@ -272,7 +272,7 @@ func TestHTTPTokenExpiryAndPaginationRefreshBudget(t *testing.T) {
 		if strings.Contains(r.URL.Path, "access_tokens") {
 			n := tokens.Add(1)
 			w.WriteHeader(201)
-			fmt.Fprintf(w, `{"token":"token-%d","expires_at":%q}`, n, time.Now().Add(61*time.Second).UTC().Format(time.RFC3339))
+			fmt.Fprintf(w, `{"token":"token-%d","expires_at":%q}`, n, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
 			return
 		}
 		if mode.Load() == 1 {
