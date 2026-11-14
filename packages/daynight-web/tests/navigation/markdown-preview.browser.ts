@@ -196,6 +196,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Tas
     if (width === 320) {
       for (const item of [card.locator('pre').first(), card.locator('.markdown-table'), card.locator('.mermaid-diagram').first()]) {
         await expect.poll(() => item.evaluate(element => element.scrollWidth > element.clientWidth), { timeout: 45_000 }).toBe(true);
+        expect(await item.evaluate(element => { element.scrollLeft = 30; return element.scrollLeft; })).toBeGreaterThan(0);
       }
     }
   };

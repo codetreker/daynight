@@ -2472,7 +2472,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await expect(card.getByRole('heading', { name: 'Reading' })).toBeVisible();
     await expect(card.getByText('Item', { exact: true })).toBeVisible();
     await expect(card.locator('.mermaid-diagram img')).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
-    if (width === 320) for (const item of [card.locator('pre').first(), card.locator('.markdown-table'), card.locator('.mermaid-diagram')]) expect(await item.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+    if (width === 320) for (const item of [card.locator('pre').first(), card.locator('.markdown-table'), card.locator('.mermaid-diagram')]) expect(await item.evaluate(element => { element.scrollLeft = 30; return element.scrollLeft; })).toBeGreaterThan(0);
   };
   await page.goto(`/projects/${projectId}/tasks/${goalId}`);
   const surface = page.locator('.goal-detail-surface');
@@ -2507,7 +2507,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await expectDescriptionCard(page, dialog.locator('.description-card'), width);
     await expect(dialog.getByRole('heading', { name: 'Task reading' })).toBeVisible();
     await expect(dialog.locator('.description-card .mermaid-diagram img')).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
-    if (width === 320) for (const item of [dialog.locator('.description-card pre').first(), dialog.locator('.description-card .markdown-table'), dialog.locator('.description-card .mermaid-diagram')]) expect(await item.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+    if (width === 320) for (const item of [dialog.locator('.description-card pre').first(), dialog.locator('.description-card .markdown-table'), dialog.locator('.description-card .mermaid-diagram')]) expect(await item.evaluate(element => { element.scrollLeft = 30; return element.scrollLeft; })).toBeGreaterThan(0);
   };
   await check();
   await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
