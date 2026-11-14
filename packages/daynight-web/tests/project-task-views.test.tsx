@@ -625,13 +625,19 @@ describe('project task views', () => {
 
   it('updates Goal count on completion, cancellation and reopening while retaining the last snapshot on failure', async () => {
     const first = canonicalTask(500), second = canonicalTask(501);
-    const goals = (firstStatus: GraphTask['status'], secondStatus: GraphTask['status']) => snapshot([
-      { ...seed(first, firstStatus), type: 'goal' }, { ...seed(second, secondStatus), type: 'goal' },
-    ]);
-    graphRequest.mockResolvedValueOnce(goals('todo', 'in_progress'))
-      .mockResolvedValueOnce(goals('done', 'cancelled'))
+    const goals = (firstStatus: GraphTask['status'], secondStatus: GraphTask['status'], updatedAt: string) => {
+      const goal = (id: string, status: GraphTask['status']) => ({
+        ...seed(id, status), type: 'goal' as const, updatedAt,
+        startedAt: status === 'in_progress' ? updatedAt : null,
+        completedAt: status === 'done' ? updatedAt : null,
+        cancelledAt: status === 'cancelled' ? updatedAt : null,
+      });
+      return { ...snapshot([goal(first, firstStatus), goal(second, secondStatus)]), observedAt: updatedAt };
+    };
+    graphRequest.mockResolvedValueOnce(goals('todo', 'in_progress', '2026-10-20T12:00:01Z'))
+      .mockResolvedValueOnce(goals('done', 'cancelled', '2026-10-20T12:00:02Z'))
       .mockRejectedValueOnce(new Error('Refresh failed'))
-      .mockResolvedValueOnce(goals('todo', 'in_progress'));
+      .mockResolvedValueOnce(goals('todo', 'in_progress', '2026-10-20T12:00:03Z'));
     mount(); await findTab('chains'); fireEvent.click(tab('goals'));
     const count = () => tab('goals').querySelector('.graph-count-pill');
     expect(count()).toHaveTextContent(/^2$/);
