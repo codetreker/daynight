@@ -167,6 +167,7 @@ describe("project dashboard", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("另一任务链");
     const filter = screen.getByText("标签筛选", { selector: "summary" });
+    expect(filter.parentElement?.parentElement?.previousElementSibling).toHaveClass("task-status-filter");
     fireEvent.click(filter);
     fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
     expect(chainList().getByRole("button", { name: "已完成根" })).toBeVisible();
@@ -175,6 +176,9 @@ describe("project dashboard", () => {
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.change(input, { target: { value: "query" } }); fireEvent.submit(input.closest("form")!);
     await waitFor(() => expect(searchTasks).toHaveBeenCalledWith(projectId, "query", expect.objectContaining({ type: "task", tagIds: [E], tagMatch: "all" }), null, expect.anything(), expect.anything(), expect.anything()));
+    const searchFilter = screen.getByText("标签筛选 (1)", { selector: "summary" });
+    expect(searchFilter.parentElement?.parentElement?.previousElementSibling).toHaveClass("task-status-filter");
+    expect(document.querySelectorAll(".tag-filter")).toHaveLength(1);
     fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
     expect(chainList().queryByRole("button", { name: "另一任务链" })).toBeNull();
     expect(screen.getByRole("button", { name: "移除 后端" })).toBeVisible();

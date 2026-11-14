@@ -1022,15 +1022,26 @@ Failures stay visible and retryable. Trusted same-user project 404 responses
 withdraw admission even after presentation changes; stale histories cannot
 withdraw a replacement generation. The [request-reuse decision](../../.agents/notes/archived/bug-fix/2026-11-04-task-view-request-reuse.md) records the rationale for the versioning, HTTP cache and scan-cost trade-offs.
 
-The task lists share assignee and status filters. Assignee supports All, Assigned
-to me, Unassigned and a person; status supports all, todo, in progress, done and cancelled.
-Both conditions must match the same task before pagination. Standalone rows match
-directly; a chain with any matching ordinary member retains its real representative
-and all ordinary children. Changing either filter resets both lists to page one.
-Full-chain progress, readiness, dependencies, statistics and graph use the complete
-index. Overview positioning adjusts filters that hide its target. The
-[assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
-mutation and presentation mechanisms.
+The task toolbar orders Assignee, Status and Tag filter. The ordinary Goal view
+adds one Child task tag filter after them, applying the same condition to every
+Goal's direct-child rows. Child filtering is independent of each Goal's own tags
+and retains its selection through category changes, pagination and collapse.
+Cards contain child rows without their own filter controls. Search results place
+the shared project tag filter directly after Status; child filtering belongs to
+the ordinary Goal view.
+
+Assignee supports All, Assigned to me, Unassigned and a person; status supports
+all five Task statuses. Project conditions must match the same task before
+pagination. Standalone rows match directly; a chain with any matching ordinary
+member retains its real representative and all ordinary children. Changing
+project filters resets the task lists to page one. Full-chain progress, readiness,
+dependencies, statistics and graph use the complete index. Child filtering also
+preserves Goal composition, in-progress and pause counts, and Session summaries.
+Overview positioning adjusts project filters that hide its target. Tag panels
+retain a readable width within the viewport as toolbars wrap on narrow screens.
+The [assignment design](../../docs/design/daynight-task-assignment.md) owns people,
+mutation and presentation mechanisms; the
+[Web design](../../docs/design/daynight-web.md) owns tag filtering and lifecycle.
 
 Project task search submits the original expression to the server, matching IDs,
 complete titles and Markdown descriptions, including completed Tasks and chain
