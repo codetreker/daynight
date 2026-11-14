@@ -1,3 +1,4 @@
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { createPortal } from "react-dom";
 import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAccess";
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -572,7 +573,7 @@ const MembersContent = ({ projectId, projectName = null, resultHost, presentatio
             return <div className="row grant-row" key={member.userId}><Identity user={identity} self={member.userId === user.id} />
               <div><span className="grant-label">{m.effectiveColumn}: </span><span className={`badge${member.effectiveRole === 'admin' ? ' admin' : ''}`}>{roleText(member.effectiveRole)}</span></div>
               <div><span className="grant-label">{m.teamColumn}: </span>{member.inheritedFrom === null ? '—' : <>{roleText(member.inheritedFrom.role)}<div className="row-detail">{member.inheritedFrom.team.kind === 'personal' ? m.personalTeam : member.inheritedFrom.team.name}</div></>}</div>
-              <div><span className="grant-label">{m.directColumn}: </span>{admin ? <select className="role-select" aria-label={m.roleLabel({ name: identityName(identity) })} disabled={pending || access.status !== 'ready' || grantBlocked} value={grant?.role ?? ''} onChange={(event) => { if (event.target.value === 'admin' || event.target.value === 'member') open({ kind: 'role', member, role: event.target.value }); }}><option value="" disabled>{m.noGrant}</option><option value="member">{common.roleMember}</option><option value="admin">{common.roleAdmin}</option></select> : grant === null ? m.noGrant : roleText(grant.role)}</div>
+              <div><span className="grant-label">{m.directColumn}: </span>{admin ? <NativeSelect density="filter" wrapperClassName="role-select" aria-label={m.roleLabel({ name: identityName(identity) })} disabled={pending || access.status !== 'ready' || grantBlocked} value={grant?.role ?? ''} onChange={(event) => { if (event.target.value === 'admin' || event.target.value === 'member') open({ kind: 'role', member, role: event.target.value }); }}><option value="" disabled>{m.noGrant}</option><option value="member">{common.roleMember}</option><option value="admin">{common.roleAdmin}</option></NativeSelect> : grant === null ? m.noGrant : roleText(grant.role)}</div>
               <div className="actions">{admin && grant !== null ? <button className="button quiet" type="button" aria-label={m.removeLabel({ name: identityName(identity) })} disabled={pending || access.status !== 'ready' || grantBlocked} onClick={() => open({ kind: 'remove', member })}>{m.remove}</button> : <span className="muted small">—</span>}</div></div>;
           })}
         </div>

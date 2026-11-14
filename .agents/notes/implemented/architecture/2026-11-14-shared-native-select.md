@@ -25,9 +25,15 @@ LanguageSelector and the public MCP setup client field use it without requiring
 an authenticated shell. Project and search status, PR status, and tag match filters
 use the shared filter variant while retaining their separate values and behavior.
 Bot creation and assistant task forms and record filters also use the shared
-presentation while retaining their business selection rules. A shared popup-state
-predicate gives enclosing Escape
-handlers a native observation without making the component an event owner.
+presentation while retaining their business selection rules.
+Management consumers use the same component: Team and
+Project roles choose filter density with a 120px layout wrapper; transfer,
+Token expiry and GitHub installation use full-width form density. Their options,
+permission gates, drafts and explicit confirmations remain caller-owned.
+A shared popup-state predicate gives enclosing Escape handlers a native
+observation without making the component an event owner. ManagementDialog uses
+it before its ordinary Escape close, retaining native cancellation and stopping
+outward propagation while respecting prevented events and IME input.
 
 Session Provider settings, interaction form choices and terminal recording zoom
 use the shared component without moving their value or operation ownership.
