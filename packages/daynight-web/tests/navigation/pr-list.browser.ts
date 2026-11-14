@@ -130,6 +130,60 @@ test('background reconciliation retains the real dialog, raw choice, focus and r
   expect(state.unexpected).toEqual([]);
 });
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`sync off and unavailable service show one primary notice at ${width}px in ${locale}`, async ({ page }, info) => {
+    const state = await installPrList(page, locale);
+    state.syncOff = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    const notice = page.locator('.pr-sync-status .pr-status-note');
+    await expect(notice).toHaveCount(1);
+    await expect(notice).toContainText(locale === 'en'
+      ? 'Sync is off. Saved pull requests remain readable but will not be updated.'
+      : '同步已关闭，已有 PR 仍可读取，暂不会更新。');
+    const link = notice.getByRole('link', { name: locale === 'en' ? 'View sync settings' : '查看同步设置' });
+    await expect(link).toHaveCount(1);
+    await expect(link).toHaveAttribute('href', `/projects/${projectId}/settings`);
+    await assertFits(page);
+    await capture(page, info, `sync-off-${locale}-${width}`);
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`));
+    expect(state.unexpected.filter(request => !request.startsWith('GET '))).toEqual([]);
+  });
+}
+
+test('a background sync status change preserves filtering, pagination and the open reading position', async ({ page }) => {
+  const state = await installPrList(page);
+  await page.clock.install();
+  await open(page);
+  const panel = page.locator('#project-section-panel-prs');
+  const filter = panel.locator('.pr-toolbar select'), search = panel.locator('.pr-toolbar input');
+  await filter.selectOption('all');
+  await search.fill('Pull request');
+  await expect(page.locator('.pr-row')).toHaveCount(6);
+  await panel.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  await page.locator('.pr-row').first().click();
+  const dialog = page.getByRole('dialog'), raw = dialog.getByRole('checkbox', { name: 'Raw Markdown' });
+  await raw.check();
+  const body = dialog.locator('.dialog-body');
+  const position = await body.evaluate(element => { element.scrollTop = Math.floor(element.scrollHeight / 2); return element.scrollTop; });
+  expect(position).toBeGreaterThan(0);
+  await dialog.evaluate(element => element.setAttribute('data-reading-witness', 'retained'));
+  const reads = state.statusReads;
+  state.syncOff = true;
+  await page.clock.fastForward(15_100);
+  await expect.poll(() => state.statusReads).toBeGreaterThan(reads);
+  await expect(panel.locator('.pr-sync-status .pr-status-note')).toContainText('Sync is off.');
+  await expect(dialog).toHaveAttribute('data-reading-witness', 'retained');
+  await expect(raw).toBeChecked(); await expect(raw).toBeFocused();
+  expect(await body.evaluate(element => element.scrollTop)).toBe(position);
+  await page.keyboard.press('Escape');
+  await expect(filter).toHaveValue('all'); await expect(search).toHaveValue('Pull request');
+  await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  expect(state.unexpected).toEqual([]);
+});
+
 test('independent PR empty, connection and saved-data notices remain readable at phone width', async ({ page }, info) => {
   const state = await installPrList(page);
   await page.setViewportSize({ width: 320, height: 800 });

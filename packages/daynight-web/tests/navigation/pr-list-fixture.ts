@@ -19,12 +19,12 @@ export const records = Array.from({ length: 48 }, (_, index) => ({
   createdAt: at, updatedAt: at, closedAt: index < 12 ? null : at, mergedAt: index >= 12 && index < 40 ? at : null, observedAt: at, revision: '1',
 }));
 
-export const installPrList = async (page: Page) => {
+export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
   const task = detailFixture(projectId, '00000000-0000-4000-8000-000000000041', { title: 'Existing task' });
   const graph = graphFixture([task]);
-  const state = { scene: 'populated' as Scene, revision: 1, graphFailure: false, pageReads: [] as string[], detailReads: 0, statusReads: 0, unexpected: [] as string[] };
+  const state = { scene: 'populated' as Scene, syncOff: false, revision: 1, graphFailure: false, pageReads: [] as string[], detailReads: 0, statusReads: 0, unexpected: [] as string[] };
   const cursors = new Map<string, { offset: number; state: string; query: string }>();
-  await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
@@ -43,7 +43,7 @@ export const installPrList = async (page: Page) => {
       state.statusReads++;
       if (state.scene === 'read-error') return send(fault(), 500);
       const missing = state.scene === 'notconnected', initial = state.scene === 'initial';
-      return send({ projectId, version: '1', revision: String(state.revision), serviceAvailable: true, syncEnabled: true,
+      return send({ projectId, version: '1', revision: String(state.revision), serviceAvailable: !state.syncOff, syncEnabled: !state.syncOff,
         connection: missing ? 'not_connected' : state.scene === 'unavailable' ? 'unavailable' : state.scene === 'disconnected' ? 'disconnected' : 'connected',
         repository: missing ? null : { id: '10', fullName: 'codetreker/daynight', private: null },
         installation: missing ? null : { id: '20', accountLogin: 'codetreker' }, pollIntervalMinutes: 5, initializing: initial,

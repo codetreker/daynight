@@ -12,7 +12,8 @@ title/number, and opens the existing PR detail reader. Visible workspaces reconc
 every 15 seconds; hidden sections retain filters, pages and selections while
 cancelling reads. Task graph errors do not block PR browsing. The
 [PR read design](../../docs/design/github-pr-reading.md) owns synchronization
-states, unknown counts, identity admission and retained-page behavior.
+states, unknown counts, identity admission and retained-page behavior. The list
+selects one primary synchronization notice while retaining independent diagnostics.
 
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
