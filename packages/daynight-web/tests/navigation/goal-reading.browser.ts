@@ -5,6 +5,7 @@ import { checkDependencyGeometry } from '../helpers/dependency-geometry';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import { expectDescriptionCard } from '../helpers/description-card';
 
 const projectId = '00000000-0000-4000-8000-000000000100';
 const goalId = '00000000-0000-4000-8000-000000000200';
@@ -164,7 +165,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'host' }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     details = [{ ...goal, title: 'Long Goal 长标题 '.repeat(16), status, assignedTo: TEST_VIEWER_ID, version: BigInt(colorRevision + 1), updatedAt: changedAt,
       startedAt: status === 'in_progress' ? time : null, completedAt: status === 'done' ? time : null, cancelledAt: status === 'cancelled' ? time : null },
-      { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, second, single];
+      { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
     sessionStates = { [firstId]: indicator };
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
   }, setGoalStatusFixture: (status: 'todo' | 'in_progress' | 'done' | 'cancelled', completedChildren: boolean) => {
@@ -216,7 +217,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
   }, completeOtherGoal: () => { details = details.map(item => item.id === otherGoalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T09:59:40Z' } : item); currentGraph = graphFixture(details); }, emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
     details = details.map(item => item.id === goalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n } : item);
     currentGraph = graphFixture(details);
-  }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
+  }, failPeople: () => { failPeople = true; }, failOtherDetail: () => { failOtherDetail = true; }, setOtherTaskTitle: (title: string) => { details = details.map(item => item.id === otherTaskId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalTitle: (title: string) => { details = details.map(item => item.id === goalId ? { ...item, title } : item); currentGraph = graphFixture(details); }, setGoalDescription: (description: string) => { details = details.map(item => item.id === goalId ? { ...item, description } : item); currentGraph = graphFixture(details); }, setTaskDescription: (description: string) => { details = details.map(item => item.id === singleId ? { ...item, description } : item); currentGraph = graphFixture(details); }, statusWrites: () => statusWrites, creates: () => creates, edits: () => edits, rejectWrites: () => { rejectGoalWrites = true; }, setEditMode: (mode: typeof editMode) => { editMode = mode; }, releaseEdit: () => releaseEdit?.(), failedGoalReads: () => failedGoalReads, restoreGoalReads: () => { failGoalRead = false; }, advanceEpoch: () => { epoch = '40000000-0000-4000-8000-000000000001'; }, addPausedTask: () => {
     details = [goal, first, { ...second, title: 'A very long paused task title '.repeat(5), properties: { paused: true } }, single];
     currentGraph = graphFixture(details);
   }, addActiveChain: () => {
@@ -722,6 +723,45 @@ test('Task parent link returns a Goal URL with a different query to overview', a
   await expect(task).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(`/tasks/${goalId}$`));
   await expect(goalPage.getByRole('tab', { name: 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal pause count remains readable with a long title at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale); fixture.addPausedTask();
+  fixture.setGoalTitle('Long Goal 标题 '.repeat(20));
+  const zh = locale === 'zh-CN';
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  const count = toggle.locator('.task-pause-count');
+  await expect(count).toHaveText(zh ? '1 已暂停' : '1 paused');
+  await expect(toggle).toHaveAccessibleDescription(zh ? /1 已暂停/ : /1 paused/);
+  const layout = await card.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const count = box('.task-pause-count'), progress = box('.goal-in-progress'), row = box('.goal-list-row');
+    const others = ['.goal-list-title', '.goal-list-progress', '.root-status', '.goal-list-detail', '.goal-list-graph'].map(box);
+    const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+    return {
+      ordered: count.top >= progress.bottom - 1 || (count.bottom > progress.top && count.top < progress.bottom && count.left >= progress.right - 1),
+      inside: count.width > 0 && count.height > 0 && count.left >= row.left - 1 && count.right <= row.right + 1 && count.top >= row.top - 1 && count.bottom <= row.bottom + 1,
+      separate: others.every(other => separate(count, other)),
+      noOverflow: document.documentElement.scrollWidth <= innerWidth && element.scrollWidth <= element.clientWidth + 1,
+      noClipping: [...element.querySelectorAll<HTMLElement>('.goal-in-progress, .task-pause-count')].every(part => part.scrollWidth <= part.clientWidth + 1 && part.scrollHeight <= part.clientHeight + 1),
+    };
+  });
+  expect(layout).toEqual({ ordered: true, inside: true, separate: true, noOverflow: true, noClipping: true });
+  await expectHit(count);
+  await toggle.focus(); await page.keyboard.press('Enter');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(count).toHaveText(zh ? '1 已暂停' : '1 paused');
+  await page.keyboard.press('Space');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expectHit(card.locator('.goal-list-detail'));
+  await expectHit(card.locator('.goal-list-graph'));
+  expect(await page.locator('button button, button a, a button').count()).toBe(0);
 });
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal list owns paused Task and graph navigation at ${width}px in ${locale}`, async ({ page }) => {
@@ -1943,6 +1983,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const toggle = row.locator('.goal-list-toggle');
   const status = row.locator('.session-status-action');
   const annotation = row.locator('.session-status-annotation');
+  const pausedCount = row.locator('.task-pause-count');
   const labels = locale === 'en'
     ? { todo: 'To do', in_progress: 'In progress', done: 'Done', cancelled: 'Cancelled' }
     : { todo: '待处理', in_progress: '进行中', done: '已完成', cancelled: '已取消' };
@@ -1958,6 +1999,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     }
     await expect(row).toHaveAttribute('data-task-status', goalStatus);
     await expect(annotation).toHaveText(indicator);
+    await expect(pausedCount).toHaveText(locale === 'en' ? '1 paused' : '1 已暂停');
+    await expect(toggle).toHaveAccessibleDescription(locale === 'en' ? /1 paused/ : /1 已暂停/);
     await expect(row.locator('.root-status')).toContainText(labels[goalStatus]);
     await expect(row).toHaveCSS('background-color', roleColors[goalStatus][0]);
     await expect(annotation).toHaveCSS('color', indicator === 'working' ? 'rgb(40, 91, 159)' : 'rgb(128, 91, 39)');
@@ -1969,7 +2012,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
         return text.getBoundingClientRect();
       };
       const bounds = element.getBoundingClientRect();
-      const selectors = ['.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status', '.session-status-annotation', '.goal-list-detail', '.goal-list-graph'];
+      const selectors = ['.goal-list-title', '.task-pause-count', '.goal-list-meta', '.goal-list-progress', '.root-status', '.session-status-annotation', '.goal-list-detail', '.goal-list-graph'];
       const parts = selectors.map(box);
       const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
       return {
@@ -1977,7 +2020,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
         titleWidth: parts[0]!.width,
         inside: parts.every(part => part.width > 0 && part.height > 0 && part.left >= bounds.left - 1 && part.right <= bounds.right + 1 && part.top >= bounds.top - 1 && part.bottom <= bounds.bottom + 1),
         overlaps: parts.flatMap((part, index) => parts.slice(index + 1).flatMap((other, offset) => separate(part, other) ? [] : [`${selectors[index]} / ${selectors[index + offset + 1]}`])),
-        clipped: [...element.querySelectorAll<HTMLElement>('.goal-list-title, .goal-list-meta, .goal-list-progress, .session-status-annotation')].filter(part => part.scrollWidth > part.clientWidth + 1 || part.scrollHeight > part.clientHeight + 1).map(part => part.className),
+        clipped: [...element.querySelectorAll<HTMLElement>('.goal-list-title, .task-pause-count, .goal-list-meta, .goal-list-progress, .session-status-annotation')].filter(part => part.scrollWidth > part.clientWidth + 1 || part.scrollHeight > part.clientHeight + 1).map(part => part.className),
         noOverflow: document.documentElement.scrollWidth <= innerWidth,
       };
     });
@@ -2565,4 +2608,61 @@ test('Goal overview retires an invalidated Goal and cancels its old sync', async
   expect(await requestOutcome).toBe('failed');
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
+});
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal description card in page and dialog at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale);
+  const code = 'x'.repeat(400);
+  fixture.setGoalDescription(`# Reading\n\n- Item\n\n[Read notes](notes.txt)\n\n\`\`\`\n${code}\n\`\`\`\n\n| Column | Wide |\n| --- | --- |\n| Value | ${code} |\n\n\`\`\`mermaid\nflowchart LR\nA[Start] --> B[Middle] --> C[Review] --> D[Finish]\n\`\`\``);
+  const check = async (surface: Locator) => {
+    const card = surface.locator('.description-card');
+    await expectDescriptionCard(page, card, width);
+    await expect(card.getByRole('heading', { name: 'Reading' })).toBeVisible();
+    await expect(card.getByText('Item', { exact: true })).toBeVisible();
+    await expect(card.locator('.mermaid-diagram img')).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
+    if (width === 320) for (const item of [card.locator('pre').first(), card.locator('.markdown-table'), card.locator('.mermaid-diagram')]) expect(await item.evaluate(element => { element.scrollLeft = 30; return element.scrollLeft; })).toBeGreaterThan(0);
+  };
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const surface = page.locator('.goal-detail-surface');
+  await check(surface);
+  await surface.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+  await check(surface);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`#project-goal-detail-${goalId}`).click();
+  await check(surface);
+  await surface.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+  await check(surface);
+  const link = surface.getByRole('link', { name: 'Read notes' });
+  await link.focus(); await expect(link).toBeFocused(); await page.keyboard.press('Enter');
+  await expect(surface.getByRole('tab', { name: locale === 'en' ? 'Attachments' : '附件', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(surface.locator('.attachment-file-selected')).toContainText('notes.txt');
+});
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Task description card in dialog at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale);
+  const code = 'x'.repeat(400);
+  fixture.setTaskDescription(`# Task reading\n\n- Item\n\n[Read notes](notes.txt)\n\n\`\`\`\n${code}\n\`\`\`\n\n| Column | Wide |\n| --- | --- |\n| Value | ${code} |\n\n\`\`\`mermaid\nflowchart LR\nA[Start] --> B[Middle] --> C[Review] --> D[Finish]\n\`\`\``);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  await page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`).click();
+  await page.locator(`#chain-task-goal-${goalId}-${singleId}`).click();
+  const dialog = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+  const check = async () => {
+    await expectDescriptionCard(page, dialog.locator('.description-card'), width);
+    await expect(dialog.getByRole('heading', { name: 'Task reading' })).toBeVisible();
+    await expect(dialog.locator('.description-card .mermaid-diagram img')).toHaveAttribute('src', /^blob:/, { timeout: 45_000 });
+    if (width === 320) for (const item of [dialog.locator('.description-card pre').first(), dialog.locator('.description-card .markdown-table'), dialog.locator('.description-card .mermaid-diagram')]) expect(await item.evaluate(element => { element.scrollLeft = 30; return element.scrollLeft; })).toBeGreaterThan(0);
+  };
+  await check();
+  await dialog.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
+  await check();
+  const link = dialog.getByRole('link', { name: 'Read notes' });
+  await link.focus(); await page.keyboard.press('Enter');
+  await expect(dialog.getByRole('tab', { name: locale === 'en' ? 'Attachments' : '附件', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.locator('.attachment-file-selected')).toContainText('notes.txt');
 });

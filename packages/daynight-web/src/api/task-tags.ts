@@ -67,7 +67,9 @@ const base = (project: string) => `/api/v1/projects/${project}/tags`;
 export const listProjectTags = async (projectId: string, query: ProjectTagQuery, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTagPage> => {
   const project = requestId(projectId);
   if (!query.query.isWellFormed() || query.query.includes("\0") || !Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100 || query.cursor !== null && (!query.cursor.isWellFormed() || query.cursor.trim() === "" || query.cursor.includes("\0"))) throw new ApiError("protocol");
-  const parameters = new URLSearchParams({ query: query.query, limit: String(query.limit) });
+  const parameters = new URLSearchParams();
+  if (query.query !== "") parameters.set("query", query.query);
+  parameters.set("limit", String(query.limit));
   if (query.cursor !== null) parameters.set("cursor", query.cursor);
   const response = await request(`${base(project)}?${parameters}`, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
