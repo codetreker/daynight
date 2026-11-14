@@ -2,7 +2,7 @@
 .tag-filter { position: relative; }
 .tag-filter-trigger { cursor: pointer; list-style: none; display: inline-flex; align-items: center; padding: 7px 10px; border: 1px solid #d5dce5; border-radius: 6px; background: #fff; color: #344054; font-size: 13px; }
 .tag-filter-trigger::-webkit-details-marker { display: none; }
-.tag-filter-panel { position: absolute; z-index: 20; top: calc(100% + 5px); left: 0; box-sizing: border-box; width: min(285px, 100%); max-width: 100%; padding: 12px; border: 1px solid #d5dce5; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px #17213226; color: #344054; }
+.tag-filter-panel { position: absolute; z-index: 20; top: calc(100% + 5px); left: 0; box-sizing: border-box; width: min(285px, calc(100vw - 32px)); padding: 12px; border: 1px solid #d5dce5; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px #17213226; color: #344054; }
 .tag-filter-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .tag-filter-panel input[type='search'], .tag-filter-panel select { box-sizing: border-box; width: 100%; min-width: 0; margin: 8px 0; }
 .tag-filter-options { max-height: 180px; overflow-y: auto; margin: 8px 0; }

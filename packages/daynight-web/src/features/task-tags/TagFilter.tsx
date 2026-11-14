@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
 import { resolveProjectTags } from '../../api/task-tags';
 import type { TaskTag } from '../../api/types';
@@ -108,17 +108,43 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
   const { locale } = useI18n(); const m = messages[locale];
   const { value, names, invalidIds, catalog, update } = controller;
   const title = child ? m.child : m.title;
+  const details = useRef<HTMLDetailsElement>(null);
+  useLayoutEffect(() => {
+    if (!controller.open) return;
+    const position = () => {
+      const element = details.current;
+      const panel = element?.querySelector<HTMLElement>('.tag-filter-panel');
+      if (element === null || panel === undefined || panel === null) return;
+      const bounds = element.getBoundingClientRect();
+      const width = panel.getBoundingClientRect().width;
+      const left = Math.max(16, Math.min(bounds.left, document.documentElement.clientWidth - width - 16));
+      panel.style.left = `${left - bounds.left}px`;
+    };
+    position();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(position);
+    if (details.current !== null) {
+      observer?.observe(details.current);
+      const toolbar = details.current.closest('.task-list-filters');
+      if (toolbar !== null) {
+        observer?.observe(toolbar);
+        for (const control of toolbar.children) observer?.observe(control);
+      }
+    }
+    window.addEventListener('resize', position);
+    window.addEventListener('scroll', position, true);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
+  }, [controller.open, locale]);
   const toggle = (tag: TaskTag, checked: boolean) => update({ ...value, untagged: false, tagIds: checked ? [...value.tagIds, tag.id] : value.tagIds.filter(id => id !== tag.id) }, { [tag.id]: tag.name });
   const clear = () => update({ ...value, tagIds: [], untagged: false });
   const count = value.untagged ? 1 : value.tagIds.length;
   return <div className="tag-filter-wrap">
-    <details className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={event => {
+    <details ref={details} className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={event => {
       if (event.key === 'Escape' && event.currentTarget.open) {
         event.preventDefault(); event.stopPropagation(); controller.setOpen(false);
         event.currentTarget.querySelector<HTMLElement>('summary')?.focus();
       }
     }}>
-      <summary className="tag-filter-trigger">{title}{count > 0 ? ` (${count})` : ''}</summary>
+      <summary className="tag-filter-trigger" onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}{count > 0 ? ` (${count})` : ''}</summary>
       <div className="tag-filter-panel">
         <div className="tag-filter-head"><strong>{title}</strong><button type="button" onClick={clear}>{m.clear}</button></div>
         <input type="search" aria-label={`${title}: ${m.search}`} placeholder={m.search} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />

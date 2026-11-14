@@ -21,12 +21,20 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await expect(catalogView.getByText("Could not load tags.", { exact: true })).toHaveCount(0);
   await page.locator("#project-section-tab-tasks").click();
   await page.locator("#project-task-tab-goals").click();
+  const toolbar = page.locator(".project-tasks .task-list-filters").filter({ visible: true });
+  await expect(toolbar.locator(":scope > .tag-filter-wrap")).toHaveCount(2);
+  expect(await toolbar.locator(":scope > *").evaluateAll(controls => controls.map(control => control.className)))
+    .toEqual(["task-assignee-filter", "task-status-filter", "tag-filter-wrap", "tag-filter-wrap"]);
+  const filter = toolbar.locator(".tag-filter").filter({ has: page.locator("summary").filter({ hasText: /^Child task tag filter/ }) });
+  await expect(filter).toHaveCount(1);
   const emptyCard = page.locator(`[data-goal-id="${emptyGoalId}"]`);
   await emptyCard.locator(".goal-list-toggle").click();
-  const emptyFilter = emptyCard.locator(".tag-filter");
-  await emptyFilter.locator("summary").click();
-  await expect(emptyFilter.getByText("No tags yet.", { exact: true })).toBeVisible();
-  await expect(emptyFilter.getByText("Could not load tags.", { exact: true })).toHaveCount(0);
+  await expect(emptyCard.locator(".tag-filter")).toHaveCount(0);
+  await filter.locator("summary").click();
+  await expect(filter.getByText("No tags yet.", { exact: true })).toBeVisible();
+  await expect(filter.getByText("Could not load tags.", { exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(filter).not.toHaveAttribute("open", "");
   await emptyCard.locator(`#chain-task-goal-${emptyGoalId}-${emptyTaskId}`).click();
   const emptyDetail = page.locator(".task-detail-dialog");
   await emptyDetail.getByRole("button", { name: "Edit tags" }).click();
@@ -88,7 +96,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   expect(edited.tags).toHaveLength(2);
   expect(edited.tags).toEqual(expect.arrayContaining([{ id: backend.id, name: "Backend" }, { id: other.id, name: "Other" }]));
   await detail.locator(".task-detail-close").click();
-  const filter = card.locator(".tag-filter");
+  await expect(card.locator(".tag-filter")).toHaveCount(0);
   await filter.locator("summary").click();
   await expect(filter.getByRole("checkbox", { name: "Backend" })).toBeVisible();
   await expect(filter.getByRole("checkbox", { name: "Other" })).toBeVisible();
@@ -101,6 +109,10 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await filter.getByRole("checkbox", { name: "Backend" }).check();
   await expect(child).toBeVisible();
   await expect(control).toHaveCount(0);
+  await filter.getByRole("button", { name: "Clear", exact: true }).click();
+  await expect(control).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(filter).not.toHaveAttribute("open", "");
 
   const renamed = await json<Tag>(["tag", "rename", backend.id, "Platform", "--if-version", String(backend.version)]);
   expect(renamed).toMatchObject({ id: backend.id, name: "Platform" });
@@ -134,5 +146,8 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await filter.locator('input[type="search"]').fill("Platform");
   await expect(filter.getByText("No matching tags.", { exact: true })).toBeVisible();
   await expect(filter.getByRole("checkbox", { name: "Platform" })).toHaveCount(0);
+  await filter.locator('input[type="search"]').fill("");
+  await page.keyboard.press("Escape");
+  await expect(filter).not.toHaveAttribute("open", "");
   console.log(`Tag journey: project=${projectId} goal=${goalId} task=${taskId} control=${controlId} renamed/deleted=${backend.id} retained=${other.id}`);
 };

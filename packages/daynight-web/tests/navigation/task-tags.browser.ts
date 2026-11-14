@@ -57,6 +57,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
       state.tasks.push(created); state.observedAt = '2026-10-22T10:00:04Z';
       return send(created, 201);
     }
+    if (path === `/api/v1/projects/${projectId}/tasks/search`) return send({ projectId, total: 0, items: [], nextCursor: null });
     const base = `/api/v1/projects/${projectId}/tasks/`;
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
@@ -269,31 +270,61 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
 });
 
 
-for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
+for (const width of [1100, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
   const state = await install(page, locale);
   const childLongName = `${longName}X`;
   state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, tags: [{ id: id(93), name: childLongName }] } : item);
   state.tags = state.tags.map(tag => tag.id === id(93) ? { ...tag, name: childLongName } : tag);
+  const secondGoal = detailFixture(projectId, id(20), { type: 'goal', title: 'Second goal', ready: false });
+  const secondChild = detailFixture(projectId, id(21), { title: 'Second child', parentId: secondGoal.id, tags: [{ id: id(93), name: childLongName }] });
+  const hiddenChild = detailFixture(projectId, id(22), { title: 'Unmatched child', parentId: secondGoal.id, tags: [] });
+  state.tasks.push(secondGoal, secondChild, hiddenChild);
   await page.setViewportSize({ width, height: 700 });
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
   await page.locator('#project-task-tab-goals').click();
-  const main = page.locator('.task-search-workspace > .tag-filter-wrap > .tag-filter');
+  const toolbar = page.locator('.project-tasks .task-list-filters').filter({ visible: true });
+  await expect(toolbar.locator(':scope > .task-assignee-filter, :scope > .task-status-filter, :scope > .tag-filter-wrap')).toHaveCount(4);
+  const status = toolbar.locator('.task-status-filter');
+  const main = toolbar.locator('.tag-filter').nth(0);
+  const filter = toolbar.locator('.tag-filter').nth(1);
+  expect(await status.evaluate(element => element.nextElementSibling?.className)).toBe('tag-filter-wrap');
+  expect(await main.evaluate(element => element.parentElement?.nextElementSibling?.className)).toBe('tag-filter-wrap');
   const mainTrigger = main.locator('summary');
   await mainTrigger.focus(); await page.keyboard.press('Enter');
   await expect(main).toHaveAttribute('open', '');
   const mainBounds = await main.locator('.tag-filter-panel').boundingBox();
-  expect(mainBounds).not.toBeNull(); expect(mainBounds!.x).toBeGreaterThanOrEqual(0); expect(mainBounds!.x + mainBounds!.width).toBeLessThanOrEqual(width + 1);
+  expect(mainBounds).not.toBeNull(); expect(mainBounds!.width).toBeGreaterThanOrEqual(Math.min(285, width - 32)); expect(mainBounds!.x).toBeGreaterThanOrEqual(0); expect(mainBounds!.x + mainBounds!.width).toBeLessThanOrEqual(width + 1);
   await page.keyboard.press('Escape'); await expect(mainTrigger).toBeFocused();
   const card = page.locator(`[data-goal-id="${goal.id}"]`);
   await card.locator('.goal-list-toggle').click();
-  const filter = card.locator('.tag-filter'), trigger = filter.locator('summary');
+  await expect(card.locator('.tag-filter')).toHaveCount(0);
+  const trigger = filter.locator('summary');
   await trigger.focus(); await page.keyboard.press('Enter');
   await expect(filter).toHaveAttribute('open', '');
   const search = filter.locator('input[type="search"]');
   await search.focus(); await search.fill('Unbroken');
   await expect(filter.getByText(childLongName, { exact: true })).toBeVisible();
   const option = filter.getByLabel(childLongName); await option.check();
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+  await expect(filter).not.toHaveAttribute('open', '');
+  const secondCard = page.locator(`[data-goal-id="${secondGoal.id}"]`);
+  await secondCard.locator('.goal-list-toggle').click();
+  await expect(secondCard.locator(`#chain-task-goal-${secondGoal.id}-${secondChild.id}`)).toBeVisible();
+  await expect(secondCard.locator(`#chain-task-goal-${secondGoal.id}-${hiddenChild.id}`)).toHaveCount(0);
+  await card.locator('.goal-list-toggle').click(); await card.locator('.goal-list-toggle').click();
+  await trigger.focus(); await page.keyboard.press('Enter');
+  await expect(filter).toHaveAttribute('open', '');
+  await expect(option).toBeChecked();
+  await page.locator('#project-task-tab-standalone').click(); await page.locator('#project-task-tab-goals').click();
+  await expect(filter).toHaveAttribute('open', '');
+  await trigger.focus(); await page.keyboard.press('Escape');
+  await expect(filter).not.toHaveAttribute('open', '');
+  await card.locator('.goal-list-toggle').click();
+  await expect(option).toBeChecked();
+  await expect(filter).not.toHaveAttribute('open', '');
+  await trigger.focus(); await page.keyboard.press('Enter');
+  await expect(filter).toHaveAttribute('open', '');
   await search.focus(); await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 4));
   const bounds = await filter.locator('.tag-filter-panel').boundingBox();
   expect(bounds).not.toBeNull(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width + 1);
@@ -310,6 +341,18 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
     await page.keyboard.press('Escape'); await expect(trigger).toBeFocused(); await expect(filter).not.toHaveAttribute('open', '');
   } finally { state.releaseCatalog(); }
+  const input = page.locator('.task-search-form input[type="text"]');
+  await input.fill('goal'); await input.press('Enter');
+  const searchToolbar = page.locator('.task-search-filters');
+  await expect(searchToolbar.locator('.tag-filter')).toHaveCount(1);
+  expect(await searchToolbar.locator('.task-status-filter').evaluate(element => element.nextElementSibling?.className)).toBe('tag-filter-wrap');
+  await expect(page.locator('.tag-filter-trigger').filter({ hasText: locale === 'zh-CN' ? '子 Task' : 'Child task' })).toHaveCount(0);
+  await input.fill('');
+  await expect(filter).not.toHaveAttribute('open', '');
+  await trigger.focus(); await page.keyboard.press('Enter');
+  await expect(filter).toHaveAttribute('open', '');
+  await expect(filter.locator('input[type="search"]')).toHaveValue('Unbroken');
+  await expect(filter.getByLabel(childLongName)).toBeChecked();
 });
 
 for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`edit Task and Goal tags with keyboard and retain independently created tags at ${width}px in ${locale}`, async ({ page }) => {

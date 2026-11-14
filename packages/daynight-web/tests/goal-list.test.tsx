@@ -1,3 +1,5 @@
+import type { ComponentProps } from 'react';
+import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskSummary, WorkerClaim } from '../src/api/types';
@@ -43,12 +45,16 @@ const claim = (state: WorkerClaim['state']): WorkerClaim => ({
   phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time,
 });
 const noop = () => {};
+const FilteredGoalList = (props: ComponentProps<typeof GoalList>) => {
+  const filter = useTagFilter(projectId);
+  return <><TagFilter controller={filter} child /><GoalList {...props} childTagFilter={filter} /></>;
+};
 const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn(), onOpenListChain = vi.fn(), onOpenGoalGraph = vi.fn()) => <TaskPauseProvider taskIds={new Set(['child'])}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
   <GoalList projectId={projectId} index={value.index} goals={[value.summaries.get(goal.id)!, value.summaries.get(other.id)!, value.summaries.get(empty.id)!]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenGoalGraphTask={noop} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
-  it('filters only direct children independently while retaining the complete chain context', async () => {
+  it('filters every Goal direct scope with one condition while retaining the complete chain context', async () => {
     vi.mocked(listProjectTags).mockResolvedValue({ items: ['alpha', 'beta'].map((name, i) => ({ id: i === 0 ? 'tag-a' : 'tag-b', name, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: 'epoch', nextCursor: null });
     vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => ids.map(id => ({ id, name: id === 'tag-a' ? 'alpha' : 'beta' })));
     const entries = [goal, other, empty,
@@ -60,13 +66,18 @@ describe('Goal list', () => {
     const value = snapshot(entries);
     const openGraph = vi.fn();
     createLocaleRender('en', { taskCache: true })(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
-      <GoalList projectId={projectId} index={value.index} summaries={value.summaries} goals={[goal, other]} total={2} workerMachines={value.workerMachines} onOpenGoal={noop} onOpenGoalGraph={openGraph} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+      <FilteredGoalList projectId={projectId} index={value.index} summaries={value.summaries} goals={[goal, other]} total={2} workerMachines={value.workerMachines} onOpenGoal={noop} onOpenGoalGraph={openGraph} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
     </TaskExecutionClockProvider></TaskPauseProvider>);
     const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
-    fireEvent.click(within(card).getByText('Child task tag filter', { selector: 'summary' }));
-    await waitFor(() => expect(within(card).getByRole('checkbox', { name: 'alpha' })).toBeInTheDocument());
-    fireEvent.click(within(card).getByRole('checkbox', { name: 'alpha' }));
+    fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'alpha' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
+    const otherCard = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
+    fireEvent.click(otherCard.querySelector('.goal-list-toggle')!);
+    expect(otherCard.querySelectorAll('.root-title')).toHaveLength(1);
+    expect(document.querySelectorAll('.tag-filter')).toHaveLength(1);
+    expect(card.querySelector('.tag-filter')).toBeNull();
     const titles = () => [...card.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent);
     expect(titles()).toEqual(['child']);
     expect(card.querySelector('.root-toggle')).toBeNull();
@@ -75,24 +86,29 @@ describe('Goal list', () => {
     const graphButton = within(card).getByRole('button', { name: 'goal, View Goal dependency graph' });
     fireEvent.click(graphButton);
     expect(openGraph).toHaveBeenCalledWith(goal.id, graphButton);
-    fireEvent.click(within(card).getByRole('checkbox', { name: 'beta' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'beta' }));
     expect(titles()).toEqual([]);
+    expect(otherCard.querySelectorAll('.root-title')).toHaveLength(0);
     expect(within(card).getByText('No tasks match the filters')).toBeVisible();
-    fireEvent.change(within(card).getByRole('combobox', { name: 'Child task tag filter: AND / OR' }), { target: { value: 'any' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Child task tag filter: AND / OR' }), { target: { value: 'any' } });
     expect(titles()).toEqual(['child', 'sibling', 'standalone']);
-    fireEvent.click(within(card).getByRole('checkbox', { name: 'No tags' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'No tags' }));
     expect(titles()).toEqual(['untagged']);
-    fireEvent.click(within(card).getByRole('button', { name: 'Remove No tags' }));
+    expect(otherCard.querySelectorAll('.root-title')).toHaveLength(0);
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    expect(titles()).toEqual(['untagged']);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
     expect(within(card).getByText('standalone', { selector: '.root-title' })).toBeInTheDocument();
     expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
-    fireEvent.click(within(card).getByRole('checkbox', { name: 'alpha' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
     vi.mocked(resolveProjectTags).mockRejectedValue(new ApiError('server', 404, 'tag_not_found'));
     vi.mocked(listProjectTags).mockResolvedValue({ items: [], catalogEpoch: 'new-epoch', nextCursor: null });
     fireEvent.focus(window);
-    await waitFor(() => expect(within(card).getByText('A selected tag is unavailable. Remove it to search again.')).toBeVisible());
+    await waitFor(() => expect(screen.getByText('A selected tag is unavailable. Remove it to search again.')).toBeVisible());
     expect(titles()).toEqual([]);
     expect(within(card).queryByText('No tasks match the filters')).toBeNull();
-    expect(within(card).getByRole('button', { name: 'Remove alpha' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Remove alpha' })).toBeVisible();
     expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
   });
   it('toggles from each part of the header and keeps detail and graph actions separate', () => {
@@ -367,7 +383,7 @@ describe('Goal list', () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const openSession = vi.fn();
     const renderGoals = (current: GraphSnapshot) => <TaskSessionSummaryProvider store={store}>
-      <TaskExecutionClockProvider projectId={projectId} snapshot={current}><GoalList projectId={projectId} index={current.index} summaries={current.summaries}
+      <TaskExecutionClockProvider projectId={projectId} snapshot={current}><FilteredGoalList projectId={projectId} index={current.index} summaries={current.summaries}
         goals={[current.summaries.get(firstGoal)!, current.summaries.get(secondGoal)!]} total={2} workerMachines={current.workerMachines}
         onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop}
         openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} onOpenSession={openSession} /></TaskExecutionClockProvider>
@@ -388,11 +404,11 @@ describe('Goal list', () => {
       fireEvent.click(aggregate);
       expect(firstToggle).toHaveAttribute('aria-expanded', 'true');
       expect(openSession).not.toHaveBeenCalled();
-      fireEvent.click(within(firstCard).getByText('Child task tag filter', { selector: 'summary' }));
-      fireEvent.click(within(firstCard).getByRole('checkbox', { name: 'No tags' }));
+      fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'No tags' }));
       expect(within(firstCard).getByText('No tasks match the filters')).toBeVisible();
       expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
-      fireEvent.click(within(firstCard).getByRole('button', { name: 'Remove No tags' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
       const session = firstCard.querySelector<HTMLButtonElement>('.goal-task-row .session-status-action')!;
       fireEvent.click(session); expect(openSession).toHaveBeenCalledWith(firstTask, session);
       visible(records[1]!, true);

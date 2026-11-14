@@ -1,4 +1,5 @@
-import { fireEvent, waitFor, within } from '@testing-library/react';
+import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { TaskSummary } from '../src/api/types';
 import { listProjectTags, resolveProjectTags } from '../src/api/task-tags';
@@ -30,13 +31,16 @@ beforeEach(() => {
 });
 afterEach(() => { store.dispose(); scope.dispose(); });
 const noop = () => {};
-const workspace = (items: TaskSummary[]) => {
+const ChildFilteredWorkspace = ({ items }: { readonly items: TaskSummary[] }) => {
+  const filter = useTagFilter(projectId);
   const value = snapshot(items);
-  return <TaskExecutionClockProvider projectId={projectId} snapshot={value}><ProjectTaskWorkspace snapshot={value} sessionStore={store} activeView="goals" pausedTaskCount={0} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={0} goalCount={2} onViewChange={noop}
-    goals={{ projectId, goals: [value.summaries.get('goal')!, value.summaries.get('other')!], summaries: value.summaries, total: 2, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
+  return <TaskExecutionClockProvider projectId={projectId} snapshot={value}><ProjectTaskWorkspace snapshot={value} sessionStore={store} activeView="goals" pausedTaskCount={0} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={0} goalCount={2} onViewChange={noop} filter={<TagFilter controller={filter} child />}
+    goals={{ projectId, childTagFilter: filter, goals: [value.summaries.get('goal')!, value.summaries.get('other')!], summaries: value.summaries, total: 2, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
     chains={{ projectId, representativeIds: [], allRepresentativeIds: [], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
     standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 };
+
+const workspace = (items: TaskSummary[]) => <ChildFilteredWorkspace items={items} />;
 
 it('summarizes the complete direct scope through the workspace and follows snapshot updates', async () => {
   let items = [
@@ -61,9 +65,9 @@ it('summarizes the complete direct scope through the workspace and follows snaps
   expect(toggle.querySelector('.goal-in-progress')!.nextElementSibling).toContainElement(count());
   fireEvent.click(toggle);
   expect(count()).toHaveTextContent('3 paused');
-  fireEvent.click(within(card).getByText('Child task tag filter', { selector: 'summary' }));
-  await waitFor(() => expect(within(card).getByRole('checkbox', { name: 'alpha' })).toBeVisible());
-  fireEvent.click(within(card).getByRole('checkbox', { name: 'alpha' }));
+  fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: 'alpha' })).toBeVisible());
+  fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
   expect(card.querySelectorAll('.goal-task-row')).toHaveLength(1);
   expect(count()).toHaveTextContent('3 paused');
   toggle.focus();

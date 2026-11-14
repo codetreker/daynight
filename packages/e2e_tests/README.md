@@ -95,11 +95,15 @@ This establishes the product's normal Controller path, without claiming live
 third-party provider behavior. Failure, capability, retry and transport matrices
 remain with their CLI and service owners.
 
-The tag journey creates a shared catalog and independently tagged Goal and child
-Tasks through the CLI. Web reads and edits the child's tags and filters sibling
-Tasks; CLI reads the saved set, renames and confirms deletion of a shared tag.
-Web reloads and CLI readback verify the current names, retained identities and
-association cleanup on the same Goal and Task.
+The tag journey reads empty catalogs in the Web catalog, shared child filter and
+Task editor, then creates a shared catalog and independently tagged Goal and
+child Tasks through the CLI. It verifies toolbar order as Assignee, Status, Tag
+filter and Child task tag filter. Web reads and edits the child's tags, uses the
+shared toolbar condition to filter sibling Tasks and clears it to restore them;
+CLI reads the saved set, renames and confirms deletion of a shared tag. Web
+reloads and CLI readback verify current names, retained identities and association
+cleanup on the same Goal and Task. Menus close before pointer navigation, and
+filter conditions and search text are cleared between journey operations.
 
 Add normal sequential journeys under `tests/`, using `tests/fixtures.ts` for the
 compiled CLI, isolated configuration and topology. Product scenarios use valid

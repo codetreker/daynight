@@ -46,7 +46,6 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, t
       <button className="button primary" type="submit" disabled={search.busy}>{m.submit}</button>
       <button className="button task-search-help-button" type="button" aria-label={m.help} title={m.help} aria-expanded={helpOpen} aria-controls="task-search-help" onClick={() => setHelpOpen(!helpOpen)}>?</button>
     </form>
-    {tagFilter}
     {helpOpen && <div className="task-search-help" id="task-search-help"><h3>{m.help}</h3><p>{m.helpDescription}</p><p>{m.helpExamples}</p></div>}
     {error !== null && <div className="task-search-error" role="alert" id="task-search-error">
       <p>{syntax !== undefined ? m.syntax({ position: syntax.position, reason: m.reasons[syntax.reason] ?? m.failed }) : m.failed}</p>
@@ -58,6 +57,7 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, t
       <div className="task-list-filters task-search-filters">
         <TaskAssigneeFilter projectId={projectId} filter={assigneeFilter(search.filters.assignedTo)} onChange={(filter) => search.setFilters({ ...search.filters, assignedTo: assigneeValue(filter) })} />
         <label className="task-status-filter">{project.statusFilter}<span className="task-status-select"><select value={search.filters.status} onChange={(event) => search.setFilters({ ...search.filters, status: event.currentTarget.value as TaskStatus | '' })}><option value="">{project.allStatuses}</option><option value="proposed">{project.statusOptions.proposed}</option><option value="todo">{project.statusOptions.todo}</option><option value="in_progress">{project.statusOptions.in_progress}</option><option value="done">{project.statusOptions.done}</option><option value="cancelled">{project.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label>
+        {tagFilter}
       </div>
       <section className="task-search-results" aria-busy={search.busy} aria-label={m.heading}>
         <div className="task-search-heading"><h2>{m.heading} {search.total !== null && <span>{format.number(search.total)}</span>}</h2><p>{m.applied({ query: search.applied })}</p></div>
