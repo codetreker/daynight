@@ -92,13 +92,21 @@ readable. Rejecting that positive evidence would falsely escalate an execution
 that has responded. Ordered evidence avoids both that false escalation and the
 opposite error of treating an older fallback candidate as new activity.
 
+**Count thread startup against the matching budget.** A delayed worker can
+exhaust the limit before evaluating a valid expression. Increasing the shared
+deadline would also extend catastrophic backtracking, so startup and matching
+use separate bounded phases.
+
 ## Consequences
 
 Monitoring continues without an LLM turn or spare project-task capacity. State
 survives assistant takeover, including pending records, reports and original
 operation identities. Initial rules are empty, so direct handling requires an
 approved manual change. Rule validation and bounded regular-expression matching
-keep the direct-action vocabulary narrow.
+keep the direct-action vocabulary narrow. Thread startup has its own deadline;
+the 250 ms matching budget begins after readiness, so startup does not consume
+the backtracking limit. Startup failure and premature thread exit surface as
+errors; a match timeout refuses direct input.
 
 Polling adds per-project work overview reads and full observations for matching
 tasks. Incomplete evidence suppresses actions and retains unresolved items.

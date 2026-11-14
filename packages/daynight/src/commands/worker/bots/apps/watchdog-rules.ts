@@ -30,21 +30,34 @@ export const watchdogRegex = (pattern: string): string => {
 export const matchWatchdogRegex = async (pattern: string, text: string, signal: AbortSignal): Promise<boolean> => {
   signal.throwIfAborted();
   const source = watchdogRegex(pattern);
-  const worker = new Worker('const {parentPort,workerData}=require("node:worker_threads"); parentPort.postMessage(new RegExp(workerData.source,"u").test(workerData.text));', { eval: true, workerData: { source, text } });
+  const worker = new Worker('const {parentPort}=require("node:worker_threads"); parentPort.once("message", ({source,text}) => parentPort.postMessage(new RegExp(source,"u").test(text))); parentPort.postMessage("ready");', { eval: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
+  let onMessage: ((value: unknown) => void) | undefined;
   try {
     return await new Promise<boolean>((resolve, reject) => {
       abort = () => reject(signal.reason);
       signal.addEventListener("abort", abort, { once: true });
-      timer = setTimeout(() => resolve(false), 250);
-      worker.once("message", value => resolve(value === true));
+      timer = setTimeout(() => reject(new Error("Watchdog regex worker startup timed out.")), 5_000);
+      let ready = false;
+      onMessage = value => {
+        if (!ready) {
+          if (value !== "ready") return reject(new Error("Invalid Watchdog regex worker readiness."));
+          ready = true;
+          clearTimeout(timer);
+          timer = setTimeout(() => resolve(false), 250);
+          try { worker.postMessage({ source, text }); } catch (error) { reject(error); }
+        } else if (typeof value === "boolean") resolve(value);
+        else reject(new Error("Invalid Watchdog regex worker result."));
+      };
+      worker.on("message", onMessage);
       worker.once("error", reject);
-      worker.once("exit", () => resolve(false));
+      worker.once("exit", code => reject(new Error(`Watchdog regex worker exited before returning a result (code ${code}).`)));
     });
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     if (abort !== undefined) signal.removeEventListener("abort", abort);
+    if (onMessage !== undefined) worker.off("message", onMessage);
     await worker.terminate();
   }
 };
