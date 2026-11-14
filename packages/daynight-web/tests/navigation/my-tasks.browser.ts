@@ -10,11 +10,45 @@ const taskId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, 
 const longProject = 'ProjectWithAnUnbrokenLongName'.repeat(4);
 const longTask = 'TaskWithAnUnbrokenLongName'.repeat(5);
 const longGoal = 'GoalWithAnUnbrokenLongName'.repeat(5);
+const longWorker = 'WorkerWithAnUnbrokenLongName'.repeat(5) + '中文机器名称'.repeat(10);
 const project = { id: projectId, name: longProject, ownerTeam: { id: teamId, kind: 'ordinary', name: 'Team' }, executionWarningMinutes: 120, matchedTaskCount: 16 };
 const observation = { ...unsupportedSessionObservation(), observation: 'observed', registration: 'not_applicable', reason: 'no_execution', error: null, observedAt: '2026-11-13T10:00:00Z', freshUntil: '2026-11-13T11:00:00Z' };
-const row = (n: number) => ({ project, task: { id: taskId(n), version: '1', title: n === 1 ? longTask : `Task ${n}`, status: 'in_progress', startedAt: null, allowAgents: false, paused: false, goal: n === 1 ? { id: goalId, title: longGoal } : null }, session: observation });
+const row = (n: number) => ({ project, task: { id: taskId(n), version: '1', title: n === 1 ? longTask : `Task ${n}`, status: 'in_progress', startedAt: null, allowAgents: false, paused: false, worker: n === 1 ? { workerId: taskId(70), machine: { id: taskId(71), name: longWorker } } : null, goal: n === 1 ? { id: goalId, title: longGoal } : null }, session: observation });
 const payload = { observedAt: '2026-11-13T10:00:00Z', inventoryRevision: 'a'.repeat(64), totalTaskCount: 17, totalProjectCount: 2, sessionPartial: false,
   items: [...Array.from({ length: 16 }, (_, i) => row(i + 1)), { ...row(17), project: { ...project, id: otherProjectId, name: 'Other project', matchedTaskCount: 1 } }], nextCursor: null };
+
+test('refresh replaces and removes the current Worker even when Session observation is unavailable', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  let current = row(1).task.worker;
+  await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: {
+    ...payload, totalTaskCount: 1, totalProjectCount: 1, sessionPartial: true,
+    items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, task: { ...row(1).task, worker: current, paused: true }, session: unsupportedSessionObservation() }],
+  }, headers: { 'Daynight-User-ID': userId } }));
+  await page.goto('/tests/navigation/my-tasks-browser.html');
+  await expect(page.getByText(`Worker: ${longWorker}`)).toBeVisible();
+  await expect(page.getByText('Session status unavailable')).toBeVisible();
+  const replacement = '机器  名称\nA\tB';
+  current = { workerId: taskId(72), machine: { id: taskId(73), name: replacement } };
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  const worker = page.locator('.my-task-worker');
+  await expect(worker).toBeVisible();
+  await expect.poll(() => worker.textContent()).toBe(`Worker: ${replacement}`);
+  const layout = await worker.evaluate(el => {
+    const node = el.firstChild!;
+    const start = node.textContent!.indexOf('机器');
+    const rect = (offset: number) => { const range = document.createRange(); range.setStart(node, start + offset); range.setEnd(node, start + offset + 1); return range.getBoundingClientRect(); };
+    return { firstSpace: rect(2).width, secondSpace: rect(3).width, firstLine: rect(4).top, secondLine: rect(7).top, tab: rect(8).width, overflow: document.documentElement.scrollWidth > innerWidth };
+  });
+  expect(layout.firstSpace).toBeGreaterThan(0);
+  expect(layout.secondSpace).toBeGreaterThan(0);
+  expect(layout.secondLine).toBeGreaterThan(layout.firstLine);
+  expect(layout.tab).toBeGreaterThan(0);
+  expect(layout.overflow).toBe(false);
+  await expect(page.getByText(`Worker: ${longWorker}`)).toHaveCount(0);
+  current = null;
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect(worker).toHaveCount(0);
+});
 
 for (const width of [320, 1280]) {
   test(`real overview retains layout, links and reading page at ${width}px`, async ({ page, context }) => {
@@ -36,6 +70,9 @@ for (const width of [320, 1280]) {
     await expect(task).toHaveAttribute('href', `/projects/${projectId}/tasks/${taskId(1)}`);
     await expect(goal).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
     await expect(goal).toBeVisible();
+    const worker = group.getByText(`Worker: ${longWorker}`);
+    await expect(worker).toBeVisible();
+    expect(await worker.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const popupPromise = context.waitForEvent('page');
     await goal.click({ modifiers: ['Control'] });
@@ -45,6 +82,7 @@ for (const width of [320, 1280]) {
     await page.getByLabel('Language').selectOption('zh-CN');
     await expect(page.getByRole('heading', { name: '进行中的任务' })).toBeVisible();
     await expect(group.getByRole('link', { name: `查看 Goal：${longGoal}` })).toBeVisible();
+    await expect(group.getByText(`Worker：${longWorker}`)).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.getByLabel('语言').selectOption('en');
     await group.getByRole('button', { name: 'Next' }).click();

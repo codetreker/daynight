@@ -180,6 +180,9 @@ func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snap
 			observation, exists := observations[task.ID]
 			source, currentExists := current[task.ID]
 			initial, initialExists := original[task.ID]
+			if strictSourceErrors && recheckErr == nil && (!currentExists || !initialExists || !samePersonalTaskBinding(initial, source)) {
+				return nil, false, personalTaskPhase("recheck", &model.Fault{Code: "reset_required", Message: "Tasks changed during this personal inventory; restart the inventory."})
+			}
 			if recheckErr == nil && (!currentExists || !initialExists || !sameObservedBinding(initial, source)) {
 				result[task.ID] = unavailableObservation(observed, "execution_changed")
 				partial = true

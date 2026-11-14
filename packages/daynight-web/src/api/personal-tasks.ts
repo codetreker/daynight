@@ -10,7 +10,7 @@ export type PersonalTaskProject = {
 };
 export type PersonalTaskItem = {
   readonly project: PersonalTaskProject;
-  readonly task: { readonly id: string; readonly version: string; readonly title: string; readonly status: 'in_progress'; readonly startedAt: string | null; readonly allowAgents: boolean; readonly paused: boolean; readonly goal: { readonly id: string; readonly title: string } | null };
+  readonly task: { readonly id: string; readonly version: string; readonly title: string; readonly status: 'in_progress'; readonly startedAt: string | null; readonly allowAgents: boolean; readonly paused: boolean; readonly goal: { readonly id: string; readonly title: string } | null; readonly worker: { readonly workerId: string; readonly machine: { readonly id: string; readonly name: string } } | null };
   readonly session: TaskSessionObservation;
   readonly observedAt: string; readonly receivedMonotonic: number;
 };
@@ -42,12 +42,16 @@ export const parsePersonalTaskPage = (value: unknown): PersonalTaskPage => {
     if ((kind === 'personal') !== (name === null)) return malformed();
     const warning = count(project.executionWarningMinutes), matchedTaskCount = count(project.matchedTaskCount);
     if (warning < 1 || warning > 2_147_483_647 || matchedTaskCount < 1) return malformed();
-    const task = fields(item.task, ['id', 'version', 'title', 'status', 'startedAt', 'allowAgents', 'paused', 'goal']);
+    const task = fields(item.task, ['id', 'version', 'title', 'status', 'startedAt', 'allowAgents', 'paused', 'goal', 'worker']);
     const version = string(task.version);
     if (!/^[1-9][0-9]*$/.test(version) || BigInt(version) > 9_223_372_036_854_775_807n || task.status !== 'in_progress') return malformed();
     const goal = task.goal === null ? null : fields(task.goal, ['id', 'title']);
+    const worker = task.worker === null ? null : fields(task.worker, ['workerId', 'machine']);
+    const machine = worker === null ? null : fields(worker.machine, ['id', 'name']);
+    const machineName = machine === null ? null : string(machine.name);
+    if (machineName !== null && (machineName.length === 0 || !machineName.isWellFormed())) return malformed();
     return { project: { id: id(project.id), name: title(project.name), ownerTeam: { id: id(team.id), kind, name }, executionWarningMinutes: warning, matchedTaskCount },
-      task: { id: id(task.id), version, title: title(task.title), status: 'in_progress' as const, startedAt: nullableTimestamp(task.startedAt), allowAgents: boolean(task.allowAgents), paused: boolean(task.paused), goal: goal === null ? null : { id: id(goal.id), title: title(goal.title) } },
+      task: { id: id(task.id), version, title: title(task.title), status: 'in_progress' as const, startedAt: nullableTimestamp(task.startedAt), allowAgents: boolean(task.allowAgents), paused: boolean(task.paused), goal: goal === null ? null : { id: id(goal.id), title: title(goal.title) }, worker: worker === null || machine === null ? null : { workerId: id(worker.workerId), machine: { id: id(machine.id), name: machineName! } } },
       session: parseTaskSessionObservation(item.session) };
   });
   if (items.length > 100) return malformed();
