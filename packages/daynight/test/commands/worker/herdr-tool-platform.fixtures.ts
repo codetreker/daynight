@@ -22,6 +22,7 @@ import { closePartialWorkspace, confirmReadinessUnchanged, isRootReadinessDeadli
 import { inspectWindowsRootReadiness } from "./herdr-platform-readiness-diagnostics.fixtures.js";
 import type { ResolvedToolLaunch } from "../../../src/platform/tool-executables.js";
 import type { HerdrRpcClient } from "../../../src/commands/worker/herdr/rpc.js";
+import { createPlatformProcessCapture, type PlatformProcessIdentity } from "./herdr-platform-process-capture.fixtures.js";
 
 const packageRoot = path.resolve(import.meta.dirname, "../../..");
 const outputRoot = path.resolve(packageRoot, "../../.tmp/herdr-tools/research-platform");
@@ -63,7 +64,7 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
   const evidenceFile = path.join(outputRoot, `${controlledReadinessFailure ? "partial" : argumentRoundTrip ? "argv" : "formal"}-${agent}-${nonce}.json`);
   const evidence: Record<string, any> = { agent, nonce, resourceStage: "initialization", controlledArgumentRoundTrip: argumentRoundTrip, officialNativeIdentification: !argumentRoundTrip && !controlledReadinessFailure, platform: process.platform, architecture: process.arch, driverNode: { version: process.version, executable: process.execPath }, businessPromptsSent: 0, initialInputAttempts: 0, uiInputsSent: 0, requests: [], cleanup: { windowsQueries: [] }, observations: [], evidenceFile };
   const persist = () => writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`);
-  const inventory = async (): Promise<{ pid: number; parent: number; token: string }[]> => {
+  const inventory = async (): Promise<PlatformProcessIdentity[]> => {
     if (process.platform === "linux") {
       const { readdir } = await import("node:fs/promises");
       const rows = await Promise.all((await readdir("/proc")).filter(name => /^\d+$/.test(name)).map(async name => {
@@ -78,7 +79,8 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     }
     return [];
   };
-  let ownedProcessTokens: { pid: number; parent: number; token: string }[] = [];
+  const processCapture = createPlatformProcessCapture({ immutableParents: process.platform === "win32" });
+  let ownedProcessTokens: PlatformProcessIdentity[] = [];
   const cancellation = new AbortController();
   let cleaning = false;
   const cancel = (signal: string) => { evidence.cancelledSignal = signal; cancellation.abort(new Error(`Platform validation cancelled by ${signal}.`)); process.exitCode = 1; };
@@ -124,7 +126,10 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     const paths: WorkerPaths = { stateDirectory: root, configFile: path.join(root, "config.yml"), workerDirectory: root, databaseFile: path.join(root, "worker.sqlite"), configurationFile: path.join(root, "worker.json"), lockFile: path.join(root, "worker.lock"), herdrDirectory: path.join(route, "h"), logsDirectory: path.join(root, "logs"), temporaryDirectory: path.join(root, "tmp") };
     preparationProbeEnvironment = { ...createHerdrNativeEnvironment(paths, environment), PATH: environment.PATH };
     evidence.resourceStage = "adapter-created";
-    adapter = createWorkerHerdr({ paths, homeDirectory: home, environment, agentEnvironment: { PATH: environment.PATH! }, herdrLaunch, readExecutionConfiguration: () => configuration, isolatedRun: process.platform === "darwin", onDaemonSpawn: async pid => { daemonPid = pid; } });
+    adapter = createWorkerHerdr({ paths, homeDirectory: home, environment, agentEnvironment: { PATH: environment.PATH! }, herdrLaunch, readExecutionConfiguration: () => configuration, isolatedRun: process.platform === "darwin", onDaemonSpawn: async pid => {
+      daemonPid = pid;
+      if (process.platform !== "darwin") ownedProcessTokens = processCapture.capture(await inventory(), [pid], pid);
+    } });
     evidence.ready = await adapter.ensureInstance(operation());
     if (mac && daemonPid) daemonIdentity = await mac.capture(daemonPid, "daemon");
     rpc = createHerdrRpcClient(adapter.paths.apiEndpoint);
@@ -161,7 +166,9 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
     const preparedMapping = await createToolLaunchMapping({ directory: paths.herdrDirectory, owner: context, launch, nativeEnvironment: environment, existingOnly: true }, operation());
     if (preparedMapping) evidence.preparedProcessJournal = await readFile(path.join(path.dirname(preparedMapping.manifestPath), "processes.json"), "utf8").catch(() => null);
     if (mac) evidence.shellIdentityBefore = await mac.capture(before.shellPid, "shell", startup ? { executable: startup.executable, operation: operation(), ready: () => startup.isReady(before.shellPid) } : undefined);
-    const shellTokenBefore = (await inventory()).find(process => process.pid === before.shellPid);
+    const shellInventory = await inventory();
+    const shellTokenBefore = shellInventory.find(process => process.pid === before.shellPid);
+    if (process.platform !== "darwin") ownedProcessTokens = processCapture.capture(shellInventory, [before.shellPid]);
     if (argumentRoundTrip) {
       assert.ok(preparedMapping?.windowsCommand);
       const script = path.join(root, "argument-capture.mjs"), output = path.join(root, "captured-arguments.json");
@@ -228,9 +235,8 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       evidence.windowsConsole = decodeWindowsConsoleQuery(await runWindowsPlatformQuery("console", { file: powershell, args: ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(consoleScript, "utf16le").toString("base64")], environment: observerEnvironment }, operation(), evidence.cleanup.windowsQueries), processTargets, evidence.cleanup.windowsQueries);
     }
     evidence.launch = launch; evidence.herdrLaunch = herdrLaunch;
-    const allProcesses = await inventory(), descendants = new Set([daemonPid!, before.shellPid, receipt.helperPid, receipt.childPid]);
-    for (let changed = true; changed;) { changed = false; for (const process of allProcesses) if (descendants.has(process.parent) && !descendants.has(process.pid)) { descendants.add(process.pid); changed = true; } }
-    ownedProcessTokens = allProcesses.filter(process => descendants.has(process.pid));
+    const allProcesses = await inventory();
+    if (process.platform !== "darwin") ownedProcessTokens = processCapture.capture(allProcesses, [daemonPid!, before.shellPid, receipt.helperPid, receipt.childPid]);
     if (process.platform !== "darwin") {
       assert.ok(shellTokenBefore, "The original shell must have an OS start token.");
       assert.deepEqual(allProcesses.find(process => process.pid === before.shellPid), shellTokenBefore);
@@ -337,10 +343,9 @@ export const runHerdrToolPlatform = async (agent: "codex" | "copilot", argumentR
       }
       if (process.platform !== "darwin") {
         try {
-          const processes = await inventory(), descendants = new Set([daemonPid!, evidence.shellBefore?.shellPid, partial?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"));
-          for (let changed = true; changed;) { changed = false; for (const process of processes) if (descendants.has(process.parent) && !descendants.has(process.pid)) { descendants.add(process.pid); changed = true; } }
-          for (const process of processes) if (descendants.has(process.pid) && !ownedProcessTokens.some(original => original.pid === process.pid && original.token === process.token)) ownedProcessTokens.push(process);
-          evidence.cleanup.processCapture = { stage: "before-stop", roots: [daemonPid, evidence.shellBefore?.shellPid, partial?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number"), processes: ownedProcessTokens.map(process => ({ pid: process.pid, parentPid: process.parent, startToken: process.token })) };
+          const roots = [daemonPid, evidence.shellBefore?.shellPid, partial?.shellPid, evidence.receipt?.helperPid, evidence.receipt?.childPid].filter((pid): pid is number => typeof pid === "number");
+          ownedProcessTokens = processCapture.capture(await inventory(), roots);
+          evidence.cleanup.processCapture = { stage: "before-stop", roots, processes: ownedProcessTokens.map(process => ({ pid: process.pid, parentPid: process.parent, startToken: process.token })) };
           if (partial && (!daemonPid || daemonPid === partial.shellPid || ![daemonPid, partial.shellPid].every(pid => ownedProcessTokens.some(original => original.pid === pid)))) throw new Error("The partial workspace daemon and shell were not captured before close.");
         } catch (error) { evidence.cleanup.captureError = errorText(error); }
       }
