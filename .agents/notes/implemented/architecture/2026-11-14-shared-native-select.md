@@ -29,6 +29,27 @@ presentation while retaining their business selection rules. A shared popup-stat
 predicate gives enclosing Escape
 handlers a native observation without making the component an event owner.
 
+Session Provider settings, interaction form choices and terminal recording zoom
+use the shared component without moving their value or operation ownership.
+Pending presentation retains the confirmed Provider value. Multi-select responses
+still use native selected options as arrays, and recording zoom remains local
+player state.
+
+BotSessionHost sets the Composer presentation touch mode after spreading caller
+configuration. Composer and ControlsPanel pass it to the common control; ordinary
+Task and Test callers retain the default mode. The existing Bot reading element
+provides both `bot-reading` and `native-select-region` names with inline-size
+containment. This keeps reading queries and control sizing tied to the same
+actual panel width despite nested Composer containers.
+
+Composer owns settings-panel Escape, while the shared Session fullscreen handler
+owns both its React and document entry points, including timeline interaction
+forms and recording controls outside Composer. Both honor consumed events and
+IME. An open native popup consumes propagation without preventing its default
+cancellation; panel, draft and fullscreen ownership survive until a later
+ordinary Escape. The [Bot Session design](../../../../docs/design/bot-session-view.md)
+records the presentation chain and keyboard responsibilities.
+
 This generalizes the geometry choice recorded in the
 [Worker spacing decision](../bug-fix/2026-11-06-worker-configuration-select-spacing.md)
 and the archived [language selector decision](../../archived/bug-fix/2026-11-04-language-selector-spacing.md).
@@ -50,6 +71,16 @@ keyboard and touch selection, form constraints, multi-selection and element-ref
 operations for a presentation problem. Keeping a real select preserves these
 mechanisms and platform menu behavior.
 
+**Size Bot settings from viewport width.** A narrow Bot panel can appear inside
+a wide desktop window. Viewport sizing would miss that touch target, while
+replacing the existing container name would disconnect reading layout queries.
+Multiple names on the same container preserve both responsibilities.
+
+**Protect popup Escape only in Composer.** Timeline forms and terminal playback
+controls bypass the Composer form. Guarding the common fullscreen handler also
+protects those controls and the external-boundary document path without moving
+event ownership into NativeSelect.
+
 **Keep the native single-line arrow and adjust text padding.** Its position is
 controlled by the browser independently of text padding. The earlier spacing
 decisions already identified why this cannot guarantee a fixed inset.
@@ -60,7 +91,9 @@ Consumers share geometry and state styling while retaining their business
 timing and exact native element identity. List mode keeps native size and
 selection semantics without a dropdown arrow. Explicit responsive and named
 container modes support touch-sized forms without enlarging ordinary compact
-controls.
+controls. Bot settings use their reading container width independently of the
+viewport, and shared fullscreen keyboard handling covers selects outside the
+input form. Native popup cancellation keeps current values and drafts intact.
 
 The extra wrapper must remain shrinkable and match the control's height.
 Inherited fieldset disabling, hidden state and direction must also affect the

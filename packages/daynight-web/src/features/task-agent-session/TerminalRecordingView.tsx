@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import type { SessionV2Archive } from '../../../../daynight/src/session/v2/types';
 import { parseTerminalFrame } from '../../../../daynight/src/session/v2/protocol';
 import { TerminalText } from './TerminalText';
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { advanceTerminalPlayback, buildTerminalPlayback, formatTerminalTime, nextTerminalFrame, seekTerminalPlayback } from './terminal-playback';
 import { useTerminalMessages } from './terminal-messages';
 import './terminal-session.css';
@@ -47,7 +48,7 @@ function Recording({ archive, active }: Props) {
   };
   return <section className="terminal-recording" aria-label={m.recording} style={{ '--terminal-text-scale': Number(zoom) / 100 } as CSSProperties}>
     <div className="terminal-recording-summary"><span className={archive.completeness === 'partial' ? 'terminal-partial' : ''}>{archive.completeness === 'partial' ? m.partial : m.complete}</span>
-      <label>{m.zoom}<select value={zoom} onChange={event => setZoom(event.currentTarget.value)}><option value="75">75%</option><option value="100">100%</option><option value="125">125%</option><option value="150">150%</option></select></label>
+      <label>{m.zoom}<NativeSelect density="filter" layout="content" value={zoom} onChange={event => setZoom(event.currentTarget.value)}><option value="75">75%</option><option value="100">100%</option><option value="125">125%</option><option value="150">150%</option></NativeSelect></label>
     </div>
     <div className="terminal-recording-display">{frame ? <TerminalText frame={frame} /> : item.kind === 'gap' ? <div className="terminal-recording-gap" role="status"><strong>{m[item.reason]}</strong><p>{m.gap}</p>{next === null ? <p>{m.noFollowing}</p> : <button className="button" type="button" onClick={() => select(next)}>{m.continue}</button>}</div> : null}</div>
     <div className="terminal-recording-controls">
