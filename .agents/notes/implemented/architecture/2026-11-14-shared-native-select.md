@@ -65,6 +65,10 @@ the shared component owns the reusable presentation contract. The
 [PR arrow decision](../bug-fix/2026-11-14-pr-filter-arrow-alignment.md) records
 the earlier local implementation and its replacement.
 
+Webhook owner and status filters use the filter variant; subscription and
+delivery filters use the full-width form variant. Their callers retain scope
+isolation, option eligibility and explicit delivery-filter application.
+
 Task platform and PR pagination use compact controls; Task organization and Step
 forms use fill-width form controls. Their callers retain confirmation, numeric
 conversion, drafts and real element refs. Task detail and Step draft handlers
