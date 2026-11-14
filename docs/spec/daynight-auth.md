@@ -278,6 +278,15 @@ Team 状态和目标关系。成员与必要 webhook eligibility 原子提交，
 修改角色。成功 membership 包含实际目标 UUID、Team UUID、角色、无损正 int64 版本和 UTC 时间。
 直接添加不推进 Team 元数据版本，不改变最后 admin 规则或独立 Project grant，不创建或消费邀请。
 
+普通 Team 的当前 admin 可通过 `POST /api/v1/teams/{teamId}/members/resolve` 只读解析既有外部身份。
+请求仅接受 `{expectedUserId,user:{externalUserId}}`，拒绝 query、未知或重复字段以及 profile；
+Team 和 expectedUserId 必须是非零规范 UUID，expectedUserId 必须等于真实用户凭据的主体。
+externalUserId 使用直接添加的身份校验和规范化规则。成功返回
+`{membership:<TeamMember>|null,actorRole:"admin"}`；身份不存在与不属于该 Team 均返回 null。
+凭据失效、非 admin、Team 不存在、主体不匹配和 Personal Team 沿现有 401/403/404/409 拒绝，
+内部或事务完成失败不能返回成功。响应保留 `Daynight-User-ID` 和 `no-store`，不回显外部身份。
+此读取不创建用户、凭据或成员，不改变资料或角色；它不授权后续写入，角色变更仍须使用当前版本和权限检查。
+
 角色修改和移除必须提供观察到的真实成员 version 及 `expectedUserId`，主体核对先于领域 SQL。
 过期版本返回 `409 version_conflict`，即使所请求角色与当前角色相同也不例外；精确版本下的
 同角色操作不改变版本或时间。降低或移除最后一名 admin 返回 `409 last_admin`；并发操作也

@@ -80,6 +80,15 @@ func (tx *writer) Member(ctx context.Context, userID string) (model.TeamMember, 
 	return m, nil
 }
 
+func (tx *writer) MemberByExternalID(ctx context.Context, externalID string) (model.TeamMember, error) {
+	m, err := scanTeamMember(tx.tx.QueryRow(ctx, `SELECT m.team_id::text,m.user_id::text,m.role,m.version,m.created_at,m.updated_at
+ FROM team_members m JOIN users u ON u.id=m.user_id WHERE m.team_id=$1 AND u.uniauth_id=$2`, tx.teamID, externalID))
+	if err != nil {
+		return model.TeamMember{}, pg.QueryError("resolve Team member", err)
+	}
+	return m, nil
+}
+
 func (tx *writer) AdminCount(ctx context.Context) (int64, error) {
 	var count int64
 	err := tx.tx.QueryRow(ctx, `SELECT count(*) FROM team_members WHERE team_id=$1 AND role='admin'`, tx.teamID).Scan(&count)

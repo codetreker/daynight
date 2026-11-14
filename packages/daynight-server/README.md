@@ -2842,6 +2842,18 @@ PATCH to change that role. Direct addition neither changes the Team metadata
 version nor creates or consumes an invitation. Invitation acceptance still
 explicitly adds member and retains its existing actor and consumption rules.
 
+An ordinary Team admin can resolve an existing external identity with
+`POST /api/v1/teams/{teamId}/members/resolve` and exactly
+`{expectedUserId,user:{externalUserId}}`. It accepts no query or profile and
+uses the same identity validation as direct addition. The current user credential,
+expected actor and current Team admin are checked in the Team transaction.
+Success is `200 {membership,actorRole:"admin"}`; membership is the existing
+TeamMember or null when the identity or relationship is absent. Credential,
+authorization, Team and transaction failures are not null results. The response
+is no-store and does not echo the external identity. Resolution creates or changes
+no user, credential or membership; later writes still require current authority
+and the observed membership version.
+
 An admin changes an existing role with `PATCH /api/v1/teams/{teamId}/members/{userId}`
 and `{version,role,expectedUserId}`; the response is `{membership,actorRole}`.
 An admin or the member removes the relationship with DELETE at the same path
