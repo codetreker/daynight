@@ -19,6 +19,7 @@ type PersonalTaskItem struct {
 	Task             store.PersonalTaskRow
 	MatchedTaskCount int64
 	Paused           bool
+	Worker           *taskcore.PersonalTaskWorker
 	Session          sp.TaskSessionObservation
 }
 
@@ -139,6 +140,29 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 				return err
 			}
 			sources[project] = selected
+			ids := make([]string, len(identities[project]))
+			for i, identity := range identities[project] {
+				ids[i] = identity.ID
+			}
+			captured, err := selected.SessionDAO().TaskSessionSources(ctx, project, ids)
+			if err != nil {
+				return err
+			}
+			byID := make(map[string]store.TaskSessionSource, len(captured))
+			for _, source := range captured {
+				byID[source.TaskID] = source
+			}
+			for i := range result.Items {
+				item := &result.Items[i]
+				if item.Task.ProjectID != project {
+					continue
+				}
+				source, exists := byID[item.Task.ID]
+				if !exists || source.TaskID != item.Task.ID || source.ProjectID != project || source.TaskVersion != item.Task.Version || source.TaskStatus != model.TaskInProgress {
+					return fmt.Errorf("personal task source does not match selected row")
+				}
+				item.Worker = taskcore.ActivePersonalTaskWorker(source.Worker)
+			}
 		}
 		return nil
 	})

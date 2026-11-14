@@ -10,7 +10,7 @@ const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '
 const anchor = '2026-11-13T10:00:00Z';
 const item = (n: number, overrides: Partial<PersonalTaskItem> = {}): PersonalTaskItem => ({
   project: { id: id(1), name: 'Project', ownerTeam: { id: id(2), kind: 'ordinary', name: 'Team' }, executionWarningMinutes: 120, matchedTaskCount: 17 },
-  task: { id: id(n + 10), version: '123456789012345', title: `Task ${n}`, status: 'in_progress', startedAt: '2026-11-13T09:00:00Z', allowAgents: true, paused: false, goal: null },
+  task: { id: id(n + 10), version: '123456789012345', title: `Task ${n}`, status: 'in_progress', startedAt: '2026-11-13T09:00:00Z', allowAgents: true, paused: false, worker: null, goal: null },
   session: { schemaVersion: 1, observation: 'observed', registration: 'not_applicable', sessionId: null, nativeSessionId: null, claimId: null, executionGeneration: null, connectionEpoch: null, agentControlMode: null, contentKind: null, provider: null, indicator: null, reason: 'no_execution', activity: null, connectionState: null, lifecycle: null, currentTurnId: null, needsAttention: null, send: { allowed: false, mode: null, reason: 'no_execution' }, observedAt: anchor, lastSeenAt: null, freshUntil: '2026-11-13T10:01:00Z', error: null },
   observedAt: anchor, receivedMonotonic: performance.now(), ...overrides,
 });
@@ -19,6 +19,30 @@ beforeEach(() => history.replaceState(null, '', '/my-tasks'));
 afterEach(() => vi.useRealTimers());
 
 describe('personal task overview', () => {
+  it('shows each current Worker independently of Session and pause, and updates on refresh', () => {
+    const a = item(0), b = item(1), c = item(2);
+    const worker = (n: number, name: string) => ({ workerId: id(n), machine: { id: id(n + 10), name } });
+    mock.value = state([
+      { ...a, task: { ...a.task, worker: worker(70, '<worker-one>'), paused: true }, session: { ...a.session, observation: 'unavailable' } },
+      { ...b, task: { ...b.task, worker: worker(71, '第二台机器') }, session: { ...b.session, freshUntil: '2026-11-13T09:59:59Z' } },
+      c,
+    ], { sessionPartial: true });
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
+    expect(screen.getByText('Worker: <worker-one>')).toBeInTheDocument();
+    expect(screen.getByText('Worker: 第二台机器')).toBeInTheDocument();
+    expect(within(screen.getByText('Task 2').closest('li')!).queryByText(/Worker:/)).not.toBeInTheDocument();
+    expect(screen.getByText('Session status unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Session observation expired')).toBeInTheDocument();
+    expect(screen.getByText('Paused')).toBeInTheDocument();
+    view.setLocale('zh-CN');
+    expect(screen.getByText('Worker：<worker-one>')).toBeInTheDocument();
+    expect(screen.getByText('Worker：第二台机器')).toBeInTheDocument();
+    mock.value = state([{ ...a, task: { ...a.task, worker: worker(72, 'replacement') } }, b]);
+    view.rerender(<MyTasksPage />);
+    expect(screen.queryByText('Worker：<worker-one>')).not.toBeInTheDocument();
+    expect(screen.getByText('Worker：replacement')).toBeInTheDocument();
+    expect(screen.queryByText('Worker：第二台机器')).not.toBeInTheDocument();
+  });
   it('retains the page across refresh, clamps it after removal, and links to the real Task and Goal', () => {
     const items = Array.from({ length: 17 }, (_, i) => item(i));
     const last = items[16]!;

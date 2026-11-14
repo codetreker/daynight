@@ -19,7 +19,7 @@ const messages = {
     eyebrow: 'MINE', title: 'In-progress tasks', subtitle: 'Tasks assigned to you across all your projects.', refresh: 'Refresh',
     loading: 'Loading tasks…', empty: 'No in-progress tasks', emptyDetail: 'Tasks assigned to you will appear here when they are in progress.',
     failed: 'Tasks could not be updated.', retained: 'Showing the last available results.', incomplete: 'The task list is incomplete; counts cannot be confirmed.',
-    retry: 'Retry', personal: 'Personal', goal: (title: string) => `View Goal: ${title}`, unknownDuration: 'Execution time unknown',
+    retry: 'Retry', personal: 'Personal', goal: (title: string) => `View Goal: ${title}`, worker: (name: string) => `Worker: ${name}`, unknownDuration: 'Execution time unknown',
     sessionPartial: 'Some Session observations are unavailable.', noSession: 'No Session', notRegistered: 'Session not registered',
     unavailable: 'Session status unavailable', expired: 'Session observation expired', working: 'Session is working',
     notice: 'Session needs a response', warning: 'Session needs checking', attention: 'Needs attention',
@@ -30,7 +30,7 @@ const messages = {
     eyebrow: '我的', title: '进行中的任务', subtitle: '查看分配给你的所有项目中的任务。', refresh: '刷新',
     loading: '正在加载任务…', empty: '没有进行中的任务', emptyDetail: '分配给你的任务进入进行中后会显示在这里。',
     failed: '无法更新任务。', retained: '显示上次可用的结果。', incomplete: '任务列表不完整，无法确认数量。',
-    retry: '重试', personal: '个人空间', goal: (title: string) => `查看 Goal：${title}`, unknownDuration: '执行耗时未知',
+    retry: '重试', personal: '个人空间', goal: (title: string) => `查看 Goal：${title}`, worker: (name: string) => `Worker：${name}`, unknownDuration: '执行耗时未知',
     sessionPartial: '部分 Session 观测暂不可用。', noSession: '没有 Session', notRegistered: 'Session 尚未注册',
     unavailable: 'Session 状态暂不可用', expired: 'Session 观测已过期', working: '会话工作中',
     notice: '会话需要响应', warning: '会话需要检查', attention: '需要关注',
@@ -72,6 +72,7 @@ const TaskRow = ({ item, open }: { readonly item: PersonalTaskItem; readonly ope
     <div className="my-task-main"><a className="my-task-title" href={href(task.id)} onClick={event => open(event, project.id, task.id)}>{task.title}</a>
       <div className="my-task-meta"><span className="my-task-id">{task.id.slice(0, 8)}</span>
         {execution === null ? <span>{m.unknownDuration}</span> : <><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</>}
+        {task.worker !== null && <span className="my-task-worker">{m.worker(task.worker.machine.name)}</span>}
         {task.goal !== null && <a className="my-task-goal" href={href(task.goal.id)} onClick={event => open(event, project.id, task.goal!.id)} aria-label={m.goal(task.goal.title)}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg><span>{task.goal.title}</span><span aria-hidden="true">↗</span></a>}
       </div>
     </div>

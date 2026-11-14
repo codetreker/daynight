@@ -40,6 +40,10 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	}
 	independent := createTask(t, f, personal, "Personal inventory", map[string]any{"assignedTo": f.userID, "status": "todo"})
 	independent = setStatus(t, f, independent, "in_progress", nil)
+	workerTask := createTask(t, f, personal, "Worker inventory", map[string]any{"assignedTo": f.userID, "status": "todo"})
+	workerTask = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(workerTask), map[string]any{"version": workerTask.Version, "allowAgents": true}, http.StatusOK)
+	claimID, workerID, machineID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim", map[string]any{"version": workerTask.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Inventory machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
 	// Leave a Team after creating a direct grant, so this project is readable only through sharing.
 	sharedTeam := requestJSON[api.Team](t, f, http.MethodPost, "/api/v1/teams", api.CreateTeamRequest{Name: "Shared inventory Team", ExpectedUserID: f.userID}, http.StatusCreated)
 	shared := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Shared inventory project", RepoURL: "https://github.com/example/inventory-shared", TeamID: &sharedTeam.ID, ExpectedUserID: f.userID}, http.StatusCreated)
@@ -76,6 +80,25 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	sharedItem, ok := seen[sharedTask.ID]
 	if !ok || sharedItem.Project.ID != shared.ID || sharedItem.Project.OwnerTeam.ID != sharedTeam.ID || sharedItem.Session.Observation != "observed" {
 		t.Fatalf("shared task: %+v", sharedItem)
+	}
+	workerItem, ok := seen[workerTask.ID]
+	if !ok || workerItem.Task.Worker == nil || workerItem.Task.Worker.WorkerID != workerID || workerItem.Task.Worker.Machine.ID != machineID || workerItem.Task.Worker.Machine.Name != "Inventory machine" {
+		t.Fatalf("claimed worker missing: %+v", workerItem)
+	}
+	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim/release", map[string]any{"version": workerTask.Version, "claimId": claimID, "stoppedConfirmed": true}, http.StatusOK)
+	workerTask = setStatus(t, f, workerTask, "in_progress", nil)
+	page := requestJSON[protocol.PersonalTaskPage](t, f, http.MethodGet, "/api/v1/me/in-progress-tasks", nil, http.StatusOK)
+	foundReleased := false
+	for _, item := range page.Items {
+		if item.Task.ID == workerTask.ID {
+			foundReleased = true
+			if item.Task.Worker != nil {
+				t.Fatalf("released worker retained: %+v", item.Task.Worker)
+			}
+		}
+	}
+	if !foundReleased {
+		t.Fatal("released task absent after restart")
 	}
 	assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(child), nil, http.StatusOK), child)
 	goalReadback := requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)

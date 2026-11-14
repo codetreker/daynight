@@ -100,9 +100,9 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 ### 我的进行中任务
 
-`/my-tasks` 是账号级页面，侧栏 Team 不参与筛选。`api/personal-tasks.ts` 解析[服务端合同](../spec/daynight-personal-in-progress-tasks.md)，`useMyTasks` 逐页读取同一 inventory revision，核对数量、重复身份和项目元数据。首次遍历可展示已读取的局部结果；后续遍历成功后替换集合，失败保留可展示结果并标记未更新。每轮最多一次遍历，409 不立即重试。
+`/my-tasks` 是账号级页面，侧栏 Team 不参与筛选。`api/personal-tasks.ts` 精确解析[服务端合同](../spec/daynight-personal-in-progress-tasks.md)，包括必需的 nullable Worker 摘要及其嵌套键、UUID 和非空合法 Unicode 名称；非法或缺失字段拒绝整页。`useMyTasks` 逐页读取同一 inventory revision，核对数量、重复身份和项目元数据。首次遍历可展示已读取的局部结果；后续遍历成功后替换集合，失败保留可展示结果并标记未更新。每轮最多一次遍历，409 不立即重试。
 
-读取绑定账号 scope 和请求代次。projection fence 在发布前复核项目资格；撤权或暂停事件退役受影响读取并撤下项目，恢复需要新读取。局部撤下后不再宣称原集合数量完整。页面使用统一同步周期与每项目 15 条的展示分页；执行时钟使用服务端观测锚点和项目阈值，复用现有时钟语义。Task 和 Goal 的真实 href 保持直接访问和修饰键导航。 普通点击在账号页面打开现有完整详情，`MyTasksDetailHost` 按选中项目挂载项目权限、详情 Session、完整图和负责人 receipt；同项目资源切换复用图，项目切换隔离图。详情使用直接读取，图失败交给现有错误和重试入口，mutation 同时刷新图及总览。列表过滤不决定详情准入。
+读取绑定账号 scope 和请求代次。projection fence 在发布前复核项目资格；撤权或暂停事件退役受影响读取并撤下项目，恢复需要新读取。局部撤下后不再宣称原集合数量完整。页面使用统一同步周期与每项目 15 条的展示分页；执行时钟使用服务端观测锚点和项目阈值，复用现有时钟语义。Task 行将 active Worker 名称作为文本放在耗时之后、Goal 之前，沿用元信息样式并允许长词换行；Session 徽标独立于 Worker 显示。Task 和 Goal 的真实 href 保持直接访问和修饰键导航。普通点击在账号页面打开现有完整详情，`MyTasksDetailHost` 按选中项目挂载项目权限、详情 Session、完整图和负责人 receipt；同项目资源切换复用图，项目切换隔离图。详情使用直接读取，图失败交给现有错误和重试入口，mutation 同时刷新图及总览。列表过滤不决定详情准入。
 
 `my-tasks` 阅读历史绑定账号，只保存项目页码、根详情、页签及 Goal 子选择；资源退役 fence 拒绝旧项目条目。`MyTasksDraftHost` 与子资源宿主沿用 browserNavigation 的草稿保护，同资源阅读切换保留草稿，离开和关闭先经过确认。外部 Task 根据真实 Parent 选择独立详情或 Goal 子任务；完整链按现有项目图语义导航。图尚未能解析目标时，Task 关系使用真实独立详情地址，链使用项目图地址，以保留可操作的导航。关闭焦点优先返回触发入口，其次项目标题和页面标题。
 
