@@ -20,8 +20,49 @@ type managementStub struct {
 	calls                 int
 	version, installation int64
 	minutes               int32
+	enabled               bool
+	ctx                   context.Context
+	principal             model.Principal
+	project               string
 	err                   error
 	status                *core.Status
+}
+
+func (s *managementStub) Sync(ctx context.Context, p model.Principal, id string, v int64, enabled bool) (core.Status, error) {
+	s.calls++
+	s.version, s.enabled = v, enabled
+	s.ctx, s.principal, s.project = ctx, p, id
+	if s.status != nil {
+		return *s.status, s.err
+	}
+	return core.Status{Connection: githubpr.DefaultConnection(projectID)}, s.err
+}
+
+func TestSyncHTTPContextAndErrors(t *testing.T) {
+	s := &managementStub{}
+	m := managementMux(s)
+	path := "/api/v1/projects/" + projectID + "/github/sync"
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "marker")
+	r := httptest.NewRequest("PATCH", path, strings.NewReader(`{"version":"1","syncEnabled":false}`)).WithContext(ctx)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+	if w.Code != 200 || s.ctx.Value(contextKey{}) != "marker" || s.principal.UserID != userID || s.project != projectID || s.calls != 1 || s.enabled || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Daynight-User-ID") != userID {
+		t.Fatalf("sync request: %d %s, stub %+v", w.Code, w.Body, s)
+	}
+	for _, code := range []string{"github_not_configured", "github_not_connected", "github_connection_unavailable", "github_write_outcome_unknown"} {
+		s.err = &service.ManagementError{Code: code, Message: code}
+		before := s.calls
+		w = managementCall(m, "PATCH", path, `{"version":"1","syncEnabled":true}`)
+		want := 409
+		if code == "github_write_outcome_unknown" {
+			want = 503
+		}
+		if w.Code != want || s.calls != before+1 || !strings.Contains(w.Body.String(), `"code":"`+code+`"`) {
+			t.Errorf("%s: %d %s", code, w.Code, w.Body)
+		}
+	}
 }
 
 func (s *managementStub) Discover(context.Context, model.Principal, string) (core.InstallationCandidate, error) {
@@ -81,6 +122,17 @@ func TestManagementHTTPContract(t *testing.T) {
 	w = managementCall(m, "PATCH", base+"settings", `{"version":"2","pollIntervalMinutes":3}`)
 	if w.Code != 200 || s.minutes != 3 {
 		t.Fatalf("settings %d %s", w.Code, w.Body)
+	}
+	w = managementCall(m, "PATCH", base+"sync", `{"version":"3","syncEnabled":true}`)
+	if w.Code != 200 || s.version != 3 || !s.enabled || !strings.Contains(w.Body.String(), `"syncEnabled":false`) {
+		t.Fatalf("sync %d %s", w.Code, w.Body)
+	}
+	for _, body := range []string{`{"version":"2"}`, `{"version":"2","syncEnabled":null}`, `{"version":"2","syncEnabled":"true"}`, `{"version":"2","syncEnabled":1}`, `{"version":"2","syncEnabled":true,"extra":1}`} {
+		before := s.calls
+		w = managementCall(m, "PATCH", base+"sync", body)
+		if w.Code != 400 || s.calls != before {
+			t.Errorf("%s: %d %s", body, w.Code, w.Body)
+		}
 	}
 	for _, tc := range []struct{ path, body string }{{"connect", `{"version":1,"installationId":"2"}`}, {"connect", `{"version":"01","installationId":"2"}`}, {"connect", `{"version":"1","installationId":"0"}`}, {"connect?x=1", `{"version":"1","installationId":"2"}`}, {"disconnect", `{"version":"1","extra":true}`}, {"disconnect", `{"version":"1","version":"2"}`}} {
 		before := s.calls

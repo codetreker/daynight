@@ -222,6 +222,9 @@ var projectGitHubPendingPRsSQL string
 //go:embed migrations/070_task_tags.sql
 var taskTagsSQL string
 
+//go:embed migrations/073_project_github_sync.sql
+var projectGitHubSyncSQL string
+
 //go:embed migrations/072_personal_in_progress.sql
 var personalInProgressSQL string
 
@@ -305,6 +308,7 @@ var schemaMigrations = []migration{
 	{version: 70, sql: taskTagsSQL},
 	{version: 71, sql: assistantTasksSQL},
 	{version: 72, sql: personalInProgressSQL},
+	{version: 73, sql: projectGitHubSyncSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -29,7 +29,7 @@ func TestGitHubWorkRuntimeAndConditionalHints(t *testing.T) {
 	tx := begin(t, db, pgx.TxOptions{})
 	hint, request, token := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	mustExec(t, tx, `INSERT INTO project_github(project_id,version,generation,revision,enabled,app_id,installation_id,repository_id,access_state,access_hint_id,access_delivery_id,last_webhook_received_at) VALUES($1,2,1,7,true,10,20,30,'available',$2,'delivery',$3)`, id, hint, now)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,app_id,installation_id,repository_id,access_state,access_hint_id,access_delivery_id,last_webhook_received_at) VALUES($1,2,1,7,true,true,10,20,30,'available',$2,'delivery',$3)`, id, hint, now)
 	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES ($1,42,1,$2,'delivery',$3,$3)`, id, request, now)
 	w := github.NewWriter(tx, id)
 	clock, err := w.ObservedAt(ctx)
@@ -145,9 +145,9 @@ func TestGitHubBindingsAndSignalReceptionTime(t *testing.T) {
 	}
 	mustExec(t, tx, `UPDATE projects SET deleted_at=now() WHERE id=$1`, deleted)
 	for _, project := range []string{id, other, deleted} {
-		mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,app_id,installation_id,repository_id) VALUES($1,true,10,20,30)`, project)
+		mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,true,true,10,20,30)`, project)
 	}
-	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,app_id,installation_id,repository_id) VALUES($1,true,10,20,31)`, different)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,true,true,10,20,31)`, different)
 	r := github.NewReader(tx)
 	repo := int64(30)
 	found, err := r.Bindings(ctx, store.GitHubBindingsQuery{AppID: 10, InstallationID: 20, RepositoryID: &repo, Limit: 100})
@@ -200,7 +200,7 @@ func TestGitHubWorkRefusalsAndCancellation(t *testing.T) {
 	db, id := dbFixture(t)
 	ctx := t.Context()
 	tx := begin(t, db, pgx.TxOptions{})
-	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,app_id,generation) VALUES ($1,true,10,1)`, id)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,generation) VALUES ($1,true,true,10,1)`, id)
 	w := github.NewWriter(tx, id)
 	token := uuid.NewString()
 	now, err := w.ObservedAt(ctx)
@@ -235,7 +235,7 @@ func TestGitHubWorkRejectsStaleLeaseAndPropagatesDatabaseErrors(t *testing.T) {
 	tx := begin(t, db, pgx.TxOptions{})
 	token, request := uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,app_id,installation_id,repository_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,10,20,30,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
+	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,true,10,20,30,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
 	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,9,1,$2,'delivery',$3,$3)`, id, request, now)
 	insertPR(t, tx, id, 9, "open", "one", nil)
 	insertPR(t, tx, id, 10, "open", "two", nil)
@@ -300,7 +300,7 @@ func TestGitHubSignalAndProjectInvalidationErrorsRollback(t *testing.T) {
 	token := uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
-	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,app_id,installation_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,10,20,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
+	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,true,10,20,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
 	signal := github.NewSignalWriter(tx)
 	mustExec(t, tx, `SAVEPOINT bad_signal`)
 	if n, err := signal.SignalAccess(ctx, store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: "invalid-uuid", DeliveryID: "delivery", ReceivedAt: now}); err == nil || n != 0 {
@@ -354,7 +354,7 @@ func TestDuePendingAdmission(t *testing.T) {
 	if due, err := w.HasDuePending(ctx, now); err != nil || due {
 		t.Fatalf("no connection: due=%v error=%v", due, err)
 	}
-	mustExec(t, tx, `INSERT INTO project_github(project_id,generation,enabled,app_id,installation_id,repository_id) VALUES($1,2,true,10,20,30),($2,2,true,10,20,30)`, id, other)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,generation,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,2,true,true,10,20,30),($2,2,true,true,10,20,30)`, id, other)
 	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES ($1,1,1,$3,'old',$4,$4),($1,2,2,$5,'future',$4,$6),($2,3,2,$7,'other',$4,$4)`, id, other, uuid.NewString(), now, uuid.NewString(), now.Add(time.Microsecond), uuid.NewString())
 	if due, err := w.HasDuePending(ctx, now); err != nil || due {
 		t.Fatalf("old generation, future and other Project: due=%v error=%v", due, err)
@@ -369,7 +369,7 @@ func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
 	ctx := t.Context()
 	setup := begin(t, db, pgx.TxOptions{})
 	mustExec(t, setup, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
-	mustExec(t, setup, `INSERT INTO project_github(project_id,generation,enabled,app_id,installation_id,repository_id) VALUES($1,1,true,10,20,30)`, id)
+	mustExec(t, setup, `INSERT INTO project_github(project_id,generation,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,1,true,true,10,20,30)`, id)
 	if err := setup.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -18,4 +18,4 @@ Verify the configured App's actual installation and repository read access outsi
 
 ## Consequences
 
-Connections and scheduling become available together. A crashed or uncertain claim can delay recovery until its five-minute expiry. Different Projects bound to the same repository perform independent reads, preserving their separate permissions and retained data.
+Connections and scheduling are available through the same runtime. A Project independently controls whether synchronization is enabled; the [synchronization setting decision](2026-11-14-project-github-sync-setting.md) records that separation and its migration. A crashed or uncertain claim can delay recovery until its five-minute expiry. Different Projects bound to the same repository perform independent reads, preserving their separate permissions and retained data.

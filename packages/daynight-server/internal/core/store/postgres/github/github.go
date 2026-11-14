@@ -25,7 +25,7 @@ func NewWriter(tx pgx.Tx, projectID string) store.GitHubWriteDAO {
 	return &writer{tx: tx, projectID: projectID}
 }
 
-const connectionFields = `project_id::text, version, generation, revision, enabled,
+const connectionFields = `project_id::text, version, generation, revision, enabled, sync_enabled,
  app_id, installation_id, repository_id, installation_account_login, repository_full_name, repository_private,
  poll_interval_minutes, access_state, access_reason, access_checked_at, next_access_check_at,
  access_hint_id::text, access_delivery_id, next_poll_at, not_before, last_poll_attempt_at,
@@ -38,7 +38,7 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanConnection(row rowScanner) (githubpr.Connection, error) {
 	var c githubpr.Connection
-	err := row.Scan(&c.ProjectID, &c.Version, &c.Generation, &c.Revision, &c.Enabled,
+	err := row.Scan(&c.ProjectID, &c.Version, &c.Generation, &c.Revision, &c.Enabled, &c.SyncEnabled,
 		&c.AppID, &c.InstallationID, &c.RepositoryID, &c.InstallationAccountLogin, &c.RepositoryFullName, &c.RepositoryPrivate,
 		&c.PollIntervalMinutes, &c.AccessState, &c.AccessReason, &c.AccessCheckedAt, &c.NextAccessCheckAt,
 		&c.AccessHintID, &c.AccessDeliveryID, &c.NextPollAt, &c.NotBefore, &c.LastPollAttemptAt,
@@ -83,19 +83,19 @@ func (w *writer) ObservedAt(ctx context.Context) (time.Time, error) {
 func (w *writer) SaveConfiguration(ctx context.Context, c store.GitHubConfigurationWrite) (bool, error) {
 	args := []any{w.projectID, c.Version, c.Generation, c.Revision, c.Enabled, c.AppID, c.InstallationID, c.RepositoryID,
 		c.InstallationAccountLogin, c.RepositoryFullName, c.RepositoryPrivate, c.PollIntervalMinutes, c.AccessState,
-		c.AccessReason, c.AccessCheckedAt, c.NextAccessCheckAt, c.NextPollAt, c.ExpectedVersion}
+		c.AccessReason, c.AccessCheckedAt, c.NextAccessCheckAt, c.NextPollAt, c.ExpectedVersion, c.SyncEnabled}
 	var sql string
 	if c.ExpectedVersion == 1 {
 		sql = `INSERT INTO project_github (project_id, version, generation, revision, enabled, app_id, installation_id,
 		 repository_id, installation_account_login, repository_full_name, repository_private, poll_interval_minutes,
-		 access_state, access_reason, access_checked_at, next_access_check_at, next_poll_at)
-		 SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17 WHERE $18::bigint=1
+		 access_state, access_reason, access_checked_at, next_access_check_at, next_poll_at, sync_enabled)
+		 SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$19 WHERE $18::bigint=1
 		 ON CONFLICT (project_id) DO NOTHING`
 	} else {
 		sql = `UPDATE project_github SET version=$2, generation=$3, revision=$4, enabled=$5, app_id=$6,
 		 installation_id=$7, repository_id=$8, installation_account_login=$9, repository_full_name=$10,
 		 repository_private=$11, poll_interval_minutes=$12, access_state=$13, access_reason=$14,
-		 access_checked_at=$15, next_access_check_at=$16, next_poll_at=$17,
+		 access_checked_at=$15, next_access_check_at=$16, next_poll_at=$17, sync_enabled=$19,
          claim_token=CASE WHEN generation<>$3 THEN NULL ELSE claim_token END,
          claim_until=CASE WHEN generation<>$3 THEN NULL ELSE claim_until END,
          claim_kind=CASE WHEN generation<>$3 THEN NULL ELSE claim_kind END,
