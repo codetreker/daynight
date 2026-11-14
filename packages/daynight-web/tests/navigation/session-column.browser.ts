@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { sessionFence, type SessionSnapshot } from '../../../daynight/src/session/protocol';
+import { sessionFence, type SessionCommand, type SessionSnapshot } from '../../../daynight/src/session/protocol';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import type { TaskSessionSnapshot } from '../helpers/session';
@@ -21,19 +21,26 @@ const controls: SessionControls = { revision: '3', settings: [
 const states = { idle: 'Ready', working: 'Working', waiting_input: 'Waiting for an answer', archived: 'Completed · Read-only history' } as const;
 type State = keyof typeof states;
 type Entry = 'task' | 'test' | 'assistant';
-type Content = 'short' | 'long' | 'empty';
+type Content = 'short' | 'long' | 'empty' | 'interaction';
 async function open(page: Page, locale: string, state: State, entry: Entry = 'task', content: Content = 'short', errors = false) {
   const provider = 'codex';
   const archived = state === 'archived';
   const taskSnapshot: TaskSessionSnapshot = { ...source, controls: errors ? { ...controls, commandsError: 'Native commands could not be refreshed. 原生命令刷新失败，已有命令仍可查看。', settingsError: 'Native settings could not be refreshed. 原生设置刷新失败。' } : controls, identity: { ...source.identity, provider }, lastEventSeq: '0', lastTimelineSeq: content === 'long' ? '30' : content === 'empty' ? '0' : '1',
     lifecycle: archived ? 'archived' : 'active', activity: archived ? 'idle' : state, connectionState: archived ? 'disconnected' : 'connected',
     currentTurnId: state === 'working' || state === 'waiting_input' ? 'column-fixture-turn' : null,
-    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: false } };
+    operations: { canSend: state === 'idle' || state === 'working', canCancel: state === 'working' || state === 'waiting_input', canRespond: content === 'interaction' } };
   const { claimId: _claim, identity: _identity, ...base } = taskSnapshot;
   const snapshot: SessionSnapshot = entry === 'task' ? taskSnapshot : { ...base, testExecutionId: '00000003-1111-4111-8111-111111111112',
     identity: { ownerUserId: TEST_VIEWER_ID, controllerId: source.identity.controllerId, controllerInstanceId: source.identity.controllerInstanceId, provider, agentControlMode: 'web', nativeSessionId: 'column-fixture' } };
   const root = entry === 'task' ? `${taskRoot}/sessions/${source.sessionId}` : `/api/v1/test-sessions/${source.sessionId}`;
-  const entries = content === 'empty' ? [] : Array.from({ length: content === 'long' ? 30 : 1 }, (_, index) => ({ entryId: `00000009-1111-4111-8111-${String(index + 1).padStart(12, '0')}`, entrySeq: String(index + 1), revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: content === 'long' ? `### Message ${index + 1}\n\nSession column acceptance conversation. Long content wraps within the reading column. 中文正文与输入框保持一致。\n\n\`\`\`text\n${'long_code_without_spaces_'.repeat(60)}\n\`\`\`` : 'Session column acceptance conversation' }] }));
+  const entries = content === 'empty' ? [] : content === 'interaction' ? [{
+    entryId: '00000009-1111-4111-8111-000000000001', entrySeq: '1', revision: '1', kind: 'interaction',
+    interaction: { interactionId: '00000010-1111-4111-8111-000000000001', revision: '1', state: 'pending', title: 'Choose session options', kind: 'form', canDismiss: false, fields: [
+      { fieldId: 'region', label: 'Destination region', type: 'select', required: true, options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'United States' }] },
+      { fieldId: 'features', label: 'Enabled features', type: 'multiselect', required: true, options: Array.from({ length: 10 }, (_, index) => ({ id: `feature-${index}`, label: `Feature ${index}` })) },
+      { fieldId: 'enabled', label: 'Enabled flag', type: 'boolean', required: true },
+    ] },
+  }] : Array.from({ length: content === 'long' ? 30 : 1 }, (_, index) => ({ entryId: `00000009-1111-4111-8111-${String(index + 1).padStart(12, '0')}`, entrySeq: String(index + 1), revision: '1', kind: 'assistant_message', content: [{ type: 'text', text: content === 'long' ? `### Message ${index + 1}\n\nSession column acceptance conversation. Long content wraps within the reading column. 中文正文与输入框保持一致。\n\n\`\`\`text\n${'long_code_without_spaces_'.repeat(60)}\n\`\`\`` : 'Session column acceptance conversation' }] }));
   const bot = { ...botDefinition(), ownerUserId: TEST_VIEWER_ID, name: 'Column assistant', sessionId: snapshot.sessionId, testExecutionId: snapshot.testExecutionId!, roleConfiguration: { instructions: 'Fixture only.', revision: '1', digest: 'a'.repeat(64) }, startupResult: { state: 'ready', code: null } };
   const worker = { claimId: source.claimId, state: archived ? 'completed' : 'active', userId: TEST_VIEWER_ID, workerId: source.identity.workerId,
     machine: { id: source.identity.controllerId, name: 'Column fixture' }, platform: 'macos', agent: provider, agentControlMode: 'web',
@@ -42,9 +49,12 @@ async function open(page: Page, locale: string, state: State, entry: Entry = 'ta
     completedAt: archived ? time : null, properties: { worker } });
   const graph = graphFixture([detail]);
   const observations = { currentReads: 0, writes: [] as string[], pageErrors: [] as string[] };
+  const settingUpdate = Promise.withResolvers<SessionCommand>(), settingReceipt = Promise.withResolvers<void>();
+  let publishSnapshot: ((next: SessionSnapshot) => void) | undefined;
   page.on('pageerror', error => observations.pageErrors.push(error.message));
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.routeWebSocket('**/channel*', socket => {
+    publishSnapshot = next => socket.send(JSON.stringify({ protocol: next.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot: next, cursor: 'updated' }));
     socket.send(JSON.stringify({ protocol: snapshot.protocol, type: 'snapshot', userId: TEST_VIEWER_ID, snapshot, cursor: 'zero' }));
   });
   await page.route('**/api/v1/**', async route => {
@@ -63,6 +73,12 @@ async function open(page: Page, locale: string, state: State, entry: Entry = 'ta
     if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
     if (path === taskRoot) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
     if (path === `${taskRoot}/sessions`) return send({ items: [], nextCursor: null });
+    if (path === `${root}/commands` && request.method() === 'POST') {
+      const command = request.postDataJSON() as SessionCommand;
+      settingUpdate.resolve(command);
+      await settingReceipt.promise;
+      return send({ operation: { protocol: snapshot.protocol, ...sessionFence(snapshot), operationId: command.operationId, kind: command.kind, state: 'confirmed', providerResult: 'handled', error: null }, operationUrl: `${root}/operations/${command.operationId}` }, 202);
+    }
     if (path === (entry === 'task' ? `${taskRoot}/sessions/current` : root)) {
       observations.currentReads++; return send(entry === 'task' ? { status: 'registered', session: snapshot } : { session: snapshot });
     }
@@ -78,7 +94,10 @@ async function open(page: Page, locale: string, state: State, entry: Entry = 'ta
   await expect(page.locator('.session-timeline-content')).toBeAttached();
   if (!archived) await expect(page.locator('.session-composer textarea')).toBeVisible();
   if (content !== 'empty') await expect(page.locator('.session-entry')).toHaveCount(entries.length);
-  return { header, observations };
+  return { header, observations, settingUpdate: settingUpdate.promise, confirmSetting: () => settingReceipt.resolve(), publishConfirmedModel: () => {
+    if (!publishSnapshot) throw new Error('The Session channel must be connected before publishing a confirmed setting.');
+    publishSnapshot({ ...snapshot, sessionRevision: String(BigInt(snapshot.sessionRevision) + 1n), controls: { ...controls, revision: '4', settings: controls.settings.map(setting => setting.id === 'model' ? { ...setting, value: 'native-b' } : setting) } });
+  } };
 }
 
 async function columnGeometry(page: Page) {
@@ -289,4 +308,127 @@ test('assistant real navigation remeasures a retained hidden Session after resiz
   await info.attach('hidden-resize', { body: JSON.stringify({ measured, writes: observations.writes }), contentType: 'application/json' });
   expect(observations.writes).toEqual([]);
     expect(observations.pageErrors).toEqual([]);
+});
+
+for (const entry of ['task', 'test', 'assistant'] as const) test(`${entry} native settings Escape preserves the panel, draft and fullscreen`, async ({ page }, info) => {
+  const { observations } = await open(page, 'en', 'idle', entry);
+  const input = page.locator('.session-composer textarea');
+  await input.fill('Retain this unsent draft 中文草稿');
+  const toggle = page.locator('.session-fullscreen-toggle');
+  await toggle.click();
+  await page.locator('.session-model-trigger').click();
+  const panel = page.locator('.session-controls-panel'), select = panel.locator('select').first();
+  await expect(select).toHaveValue('native-a');
+  await select.evaluate(node => node.setAttribute('data-native-node', 'retained'));
+  await select.click();
+  await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(false);
+  await expect(panel).toBeVisible(); await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(select).toHaveValue('native-a'); await expect(select).toHaveAttribute('data-native-node', 'retained');
+  await expect(input).toHaveValue('Retain this unsent draft 中文草稿');
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0); await expect(input).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false'); await expect(toggle).toBeFocused();
+  expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+  await info.attach('native-settings-cancel', { body: JSON.stringify({ entry, nativePopup: 'Observed :open before real Escape and closed afterward', panelRetained: true, draftRetained: true, fullscreenRetained: true, writes: observations.writes }), contentType: 'application/json' });
+});
+
+test('native Provider setting retains the confirmed value while its request is pending', async ({ page }, info) => {
+  const fixture = await open(page, 'en', 'idle');
+  const input = page.locator('.session-composer textarea');
+  await input.fill('Retain draft during Provider confirmation');
+  await page.locator('.session-model-trigger').click();
+  const select = page.locator('.session-controls-panel select').first(), wrapper = select.locator('..');
+  await select.evaluate(node => node.setAttribute('data-native-node', 'retained'));
+  await select.click();
+  await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
+  await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  const command = await fixture.settingUpdate;
+  expect(command.kind).toBe('update_setting');
+  expect(command.payload).toEqual({ settingId: 'model', value: 'native-b', expectedControlsRevision: '3' });
+  await expect(wrapper).toHaveAttribute('data-pending', 'true');
+  await expect(select).toHaveValue('native-a'); await expect(select).toBeDisabled();
+  await expect(input).toHaveValue('Retain draft during Provider confirmation');
+  fixture.confirmSetting();
+  await expect(wrapper).toHaveAttribute('data-pending', 'false');
+  await expect(select).toHaveValue('native-a');
+  fixture.publishConfirmedModel();
+  await expect(select).toHaveValue('native-b'); await expect(select).toBeEnabled();
+  await expect(select).toHaveAttribute('data-native-node', 'retained');
+  await expect(input).toHaveValue('Retain draft during Provider confirmation');
+  expect(fixture.observations.writes).toEqual([expect.stringMatching(/^POST .*\/commands$/)]);
+  expect(fixture.observations.pageErrors).toEqual([]);
+  await info.attach('provider-confirmation', { body: JSON.stringify({ command, pendingValue: 'native-a', receiptValue: 'native-a', confirmedSnapshotValue: 'native-b', sameNativeNode: true, draftRetained: true }), contentType: 'application/json' });
+});
+
+for (const entry of ['task', 'assistant'] as const) test(`${entry} select dimensions follow the actual named Bot container`, async ({ page }, info) => {
+  const { observations } = await open(page, 'en', 'idle', entry);
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await page.locator('.session-model-trigger').click();
+  const root = page.locator('.task-agent-session'), select = page.locator('.session-controls-panel select').first();
+  const evidence = [];
+  for (const width of [700, 560]) {
+    await root.evaluate((node, width) => { (node as HTMLElement).style.width = `${width}px`; }, width);
+    await expect.poll(() => select.evaluate(node => node.getBoundingClientRect().height)).toBe(entry === 'assistant' && width <= 600 ? 44 : 38);
+    const measured = await select.evaluate(node => ({
+      height: node.getBoundingClientRect().height, font: getComputedStyle(node).fontSize,
+      wrapperMode: node.parentElement!.getAttribute('data-touch-mode'),
+      readingContainer: getComputedStyle(node.closest('.task-agent-session')!).containerName,
+      composerContainer: getComputedStyle(node.closest('.session-composer')!).containerName,
+      timelinePadding: getComputedStyle(node.closest('.task-agent-session')!.querySelector('.session-timeline')!).paddingLeft,
+    }));
+    expect(measured.wrapperMode).toBe(entry === 'assistant' ? 'container' : 'none');
+    expect(measured.font).toBe('12px');
+    if (entry === 'assistant') {
+      expect(measured.readingContainer).toBe('bot-reading native-select-region');
+      expect(measured.composerContainer).not.toContain('native-select-region');
+      expect(measured.timelinePadding).toBe(width <= 600 ? '18px' : '36px');
+    }
+    evidence.push({ width, ...measured });
+  }
+  await page.screenshot({ path: info.outputPath(`${entry}-native-select-560.png`) });
+  await info.attach('native-container-dimensions', { body: JSON.stringify(evidence), contentType: 'application/json' });
+  expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+});
+
+test('coarse-pointer Bot session uses touch typography', async ({ browser }, info) => {
+  const context = await browser.newContext({ baseURL: 'http://127.0.0.1:4303', viewport: { width: 1360, height: 1000 }, hasTouch: true });
+  try {
+    const page = await context.newPage();
+    await open(page, 'en', 'idle', 'assistant');
+    await page.locator('.session-model-trigger').click();
+    const select = page.locator('.session-controls-panel select').first();
+    expect(await page.evaluate(() => matchMedia('(pointer:coarse)').matches)).toBe(true);
+    await expect.poll(() => select.evaluate(node => getComputedStyle(node).fontSize)).toBe('16px');
+    expect(await select.evaluate(node => node.getBoundingClientRect().height)).toBe(44);
+    await info.attach('coarse-native-select', { body: JSON.stringify({ pointer: 'coarse', height: 44, font: '16px', boundary: 'Chromium touch emulation, no physical device evidence' }), contentType: 'application/json' });
+  } finally { await context.close(); }
+});
+
+for (const entry of ['task', 'assistant'] as const) test(`${entry} timeline native selection cancels before fullscreen and preserves form values`, async ({ page }, info) => {
+  const { observations } = await open(page, 'en', 'waiting_input', entry, 'interaction');
+  const toggle = page.locator('.session-fullscreen-toggle');
+  await toggle.click();
+  const select = page.getByLabel('Destination region', { exact: true });
+  await select.selectOption('eu');
+  const multiple = page.getByLabel('Enabled features', { exact: true });
+  await multiple.selectOption(['feature-1', 'feature-3']);
+  await expect(multiple).toHaveValues(['feature-1', 'feature-3']);
+  await expect(multiple.locator('..').locator('svg')).toHaveCount(0);
+  expect(await multiple.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+  await page.getByLabel('Enabled flag', { exact: true }).selectOption('false');
+  await select.click();
+  await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => select.evaluate(node => node.matches(':open'))).toBe(false);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(select).toHaveValue('eu'); await expect(multiple).toHaveValues(['feature-1', 'feature-3']);
+  await expect(page.getByLabel('Enabled flag', { exact: true })).toHaveValue('false');
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false'); await expect(toggle).toBeFocused();
+  expect(observations.writes).toEqual([]); expect(observations.pageErrors).toEqual([]);
+  await info.attach('native-interaction-cancel', { body: JSON.stringify({ entry, nativePopupObserved: true, firstEscapeRetainsFullscreen: true, secondEscapeRestoresFocus: true, multiple: ['feature-1', 'feature-3'], flag: false }), contentType: 'application/json' });
 });

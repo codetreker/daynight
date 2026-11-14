@@ -99,6 +99,8 @@ fullscreen 状态，向 `TaskDetailSurface` 传递活动值和变更操作。关
 全屏切换不重复申请这些资源。独立页全屏隐藏辅助顶栏，标题栏保留返回已知项目路径
 的入口，退出恢复辅助顶栏；普通页 Escape 不执行 history 推测或窗口关闭。
 
+Session 子树继续拥有其设置面板和 Session 全屏的键盘层级。`SessionComposer` 与 `useSessionFullscreen` 使用[公共选择组件的 popup 判断](native-select.md#原生弹窗与外层关闭)，尊重 `defaultPrevented` 及 IME；原生菜单打开时只停止 Escape 传播，保留浏览器默认取消，不关闭设置、Session 全屏或外层详情。共享全屏处理器同时覆盖 Timeline 交互单选和 Terminal 录制缩放，包含 React 根与 document 两个入口；后续非 popup Escape 才按当前最上层退出并恢复原焦点。
+
 Surface 向 Reading 与附件预览传递语义键盘所有者：活动阅读 root、当前层资格和 `onEscape`。
 弹窗始终提供，独立页仅全屏时提供。已加载 frame 的文档和 owner 变化会更新监听，
 不依赖 reload；具体 document 清理、边界 Tab 和原生 PDF 的限制由

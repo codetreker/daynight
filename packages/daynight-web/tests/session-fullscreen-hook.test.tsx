@@ -1,7 +1,8 @@
 import { useRef, useState, type RefObject } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { useBodyScrollLock } from '../src/app/useBodyScrollLock';
+import { NativeSelect } from '../src/ui/native-select/NativeSelect';
 import { SessionFullscreenContext, useSessionFullscreen, type SessionFullscreenRegistration } from '../src/features/task-agent-session/useSessionFullscreen';
 import { TaskConfirmation } from '../src/features/task-detail/TaskConfirmation';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -19,7 +20,51 @@ function View({ active = true, identity = 'session-1', userId = 'user-1', owner 
 }
 const toggle = () => fireEvent.click(screen.getByText('Toggle'));
 
+function SelectView({ external, preventEscape = false }: { external: boolean; preventEscape?: boolean }) {
+  const boundary = useRef<HTMLDivElement>(null);
+  const view = useSessionFullscreen({ client, userId: 'user-1', active: true, identity: 'session-1',
+    ...(external ? { fullscreenBoundary: boundary } : {}) });
+  return <div ref={boundary}><section ref={view.sectionRef} tabIndex={-1} data-testid="select-session" data-fullscreen={view.fullscreen} onKeyDown={view.onKeyDown}>
+    <button ref={view.buttonRef} onClick={view.toggle}>Toggle</button>
+    <label>Session setting<NativeSelect defaultValue="confirmed" onKeyDown={event => {
+      if (preventEscape && event.key === 'Escape') event.preventDefault();
+    }}><option value="confirmed">Confirmed</option><option value="candidate">Candidate</option></NativeSelect></label>
+  </section></div>;
+}
+
 describe('Session fullscreen ownership', () => {
+  it.each([false, true])('preserves fullscreen for an open native selector through the external-boundary=%s handler', external => {
+    render(<SelectView external={external} />); toggle();
+    const select = screen.getByRole('combobox', { name: 'Session setting' });
+    act(() => select.focus());
+    // The browser suite owns native popup state; this test isolates both enclosing key handlers.
+    const matches = select.matches.bind(select);
+    const popup = vi.spyOn(select, 'matches').mockImplementation(selector => selector === ':open' || matches(selector));
+    expect(fireEvent.keyDown(select, { key: 'Escape', cancelable: true })).toBe(true);
+    expect(screen.getByTestId('select-session')).toHaveAttribute('data-fullscreen', 'true');
+    expect(select).toHaveValue('confirmed');
+    expect(select).toHaveFocus();
+    popup.mockRestore();
+    expect(fireEvent.keyDown(select, { key: 'Escape', cancelable: true })).toBe(false);
+    expect(screen.getByTestId('select-session')).toHaveAttribute('data-fullscreen', 'false');
+    expect(screen.getByText('Toggle')).toHaveFocus();
+  });
+
+  it.each([false, true])('respects prevented and IME Escape through the external-boundary=%s handler', external => {
+    const view = render(<SelectView external={external} preventEscape />); toggle();
+    const select = screen.getByRole('combobox', { name: 'Session setting' });
+    expect(fireEvent.keyDown(select, { key: 'Escape', cancelable: true })).toBe(false);
+    expect(screen.getByTestId('select-session')).toHaveAttribute('data-fullscreen', 'true');
+    view.rerender(<SelectView external={external} />);
+    for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+      expect(fireEvent.keyDown(select, { key: 'Escape', cancelable: true, ...composition })).toBe(true);
+      expect(screen.getByTestId('select-session')).toHaveAttribute('data-fullscreen', 'true');
+    }
+    fireEvent.keyDown(select, { key: 'Escape' });
+    expect(screen.getByTestId('select-session')).toHaveAttribute('data-fullscreen', 'false');
+    expect(screen.getByText('Toggle')).toHaveFocus();
+  });
+
   it('includes only its own standalone result slot in the fullscreen focus cycle and isolates it for a modal', async () => {
     function Host() {
       const boundary = useRef<HTMLDivElement>(null), fallback = useRef<HTMLButtonElement>(null);

@@ -100,8 +100,14 @@ describe('read-only recording controls', () => {
     view.rerender(<TerminalRecordingView archive={archive} active />);
     expect(screen.getByText('After interruption')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Play' })).toBeEnabled();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Text size' }), { target: { value: '125' } });
+    const zoom = screen.getByRole('combobox', { name: 'Text size' });
+    expect(zoom.parentElement).toHaveAttribute('data-density', 'filter');
+    expect(zoom.parentElement).toHaveAttribute('data-layout', 'content');
+    fireEvent.change(zoom, { target: { value: '125' } });
     expect(view.container.querySelector('.terminal-recording')).toHaveStyle('--terminal-text-scale: 1.25');
+    view.rerender(<TerminalRecordingView archive={archive} active />);
+    expect(screen.getByRole('combobox', { name: 'Text size' })).toBe(zoom);
+    expect(zoom).toHaveValue('125');
   });
   it('renders markup as literal text and applies only terminal text styling', () => {
     const frame: TerminalFrame = JSON.parse(sample().files[0]!.data);

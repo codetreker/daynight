@@ -153,8 +153,7 @@
 .person > div { min-width: 0; }
 .person-name { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .person-meta { font-size: 11px; color: #7b8598; overflow-wrap: anywhere; margin-top: 3px; }
-.role-select { font: inherit; color: inherit; border: 1px solid #e0e3ec; background: #fff; border-radius: 6px; padding: 6px 25px 6px 9px; font-size: 11px; max-width: 100%; }
-.role-select:disabled { color: #747d91; background: #f5f6f9; }
+.role-select { width: 120px; max-width: 100%; }
 .row-detail { font-size: 11px; color: #7b8598; overflow-wrap: anywhere; }
 .row-detail strong { font-weight: 500; color: #566279; display: block; margin-bottom: 3px; }
 .empty-inline { text-align: center; color: var(--muted); font-size: 12px; padding: 35px 23px; overflow-wrap: anywhere; }
@@ -360,7 +359,6 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
   .row > .row-detail { flex: 1; }
   .token-row > :first-child { flex-basis: 100%; min-width: 0; }
   .token-row > .row-detail { flex: 1 1 100%; }
-  .role-select { font-size: 10px; }
   .role-legend { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .panel-heading { padding: 17px; align-items: flex-start; }
   .panel-heading h2 { font-size: 14px; }
@@ -404,10 +402,7 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .team-member-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; row-gap: 6px; padding: 16px 23px; border-bottom: 1px solid var(--line); }
 .team-member-row:last-child { border-bottom: 0; }
 .team-member-row .person { grid-column: 1; grid-row: 1; }
-.team-member-role { grid-column: 2; grid-row: 1; width: 120px; max-width: 100%; position: relative; }
-.team-member-role::after { content: ""; position: absolute; right: 13px; top: 11px; width: 7px; height: 7px; border-right: 1.3px solid currentColor; border-bottom: 1.3px solid currentColor; transform: rotate(45deg); pointer-events: none; }
-.team-member-role:has(select:disabled)::after { color: #9299a9; }
-.team-member-role .role-select { appearance: none; width: 100%; height: 32px; padding: 6px 34px 6px 12px; }
+.team-member-role { grid-column: 2; grid-row: 1; min-width: 0; }
 .team-member-caption { grid-column: 2; grid-row: 2; min-width: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .team-member-actions { grid-column: 3; grid-row: 1; justify-self: end; }
 .team-member-actions .button { min-height: 32px; }

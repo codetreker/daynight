@@ -177,16 +177,19 @@ for (const width of [1440, 601, 390, 320]) for (const locale of ['en', 'zh-CN'])
     await page.setViewportSize({ width, height: 900 }); await page.goto(`/teams/${teamId}/members`);
     await expect(page.getByLabel('Team role: Alice')).toBeVisible();
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
-    const selects = page.locator('.team-member-row .role-select');
+    const selects = page.locator('.team-member-row').getByRole('combobox');
     await expect(selects).toHaveCount(3);
     await expect(selects.nth(0)).toBeDisabled(); await expect(selects.nth(1)).toBeEnabled();
     const geometry = await page.locator('.team-member-row').evaluateAll((rows) => rows.map((row) => {
       const rect = (selector: string) => row.querySelector(selector)!.getBoundingClientRect();
-      const role = rect('select'), person = rect('.person'), action = rect('button');
-      return { left: role.left, right: role.right, width: role.width, roleY: role.top + role.height / 2, personY: person.top + person.height / 2, actionY: action.top + action.height / 2 };
+      const role = rect('select'), arrow = rect('.native-select__arrow'), person = rect('.person'), action = rect('button');
+      return { left: role.left, right: role.right, width: role.width, height: role.height, roleY: role.top + role.height / 2, personY: person.top + person.height / 2, actionY: action.top + action.height / 2, arrowY: arrow.top + arrow.height / 2, arrowInset: role.right - arrow.right };
     }));
     for (const item of geometry) {
       expect(item.width).toBe(120);
+      expect(item.height).toBe(32);
+      expect(Math.abs(item.arrowY - item.roleY)).toBeLessThanOrEqual(1);
+      expect(Math.abs(item.arrowInset - 12)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.left - geometry[0]!.left)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.right - geometry[0]!.right)).toBeLessThanOrEqual(1);
       expect(Math.abs(item.width - geometry[0]!.width)).toBeLessThanOrEqual(1);
