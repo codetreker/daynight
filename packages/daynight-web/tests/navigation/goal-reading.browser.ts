@@ -715,6 +715,45 @@ test('Task parent link returns a Goal URL with a different query to overview', a
   await expect(goalPage.getByRole('tab', { name: 'Description', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal pause count remains readable with a long title at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale); fixture.addPausedTask();
+  fixture.setGoalTitle('Long Goal 标题 '.repeat(20));
+  const zh = locale === 'zh-CN';
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: zh ? '任务列表' : 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  const count = toggle.locator('.task-pause-count');
+  await expect(count).toHaveText(zh ? '1 已暂停' : '1 paused');
+  await expect(toggle).toHaveAccessibleDescription(zh ? /1 已暂停/ : /1 paused/);
+  const layout = await card.evaluate(element => {
+    const box = (selector: string) => element.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+    const count = box('.task-pause-count'), progress = box('.goal-in-progress'), row = box('.goal-list-row');
+    const others = ['.goal-list-title', '.goal-list-progress', '.root-status', '.goal-list-detail', '.goal-list-graph'].map(box);
+    const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+    return {
+      ordered: count.top >= progress.bottom - 1 || (count.bottom > progress.top && count.top < progress.bottom && count.left >= progress.right - 1),
+      inside: count.width > 0 && count.height > 0 && count.left >= row.left - 1 && count.right <= row.right + 1 && count.top >= row.top - 1 && count.bottom <= row.bottom + 1,
+      separate: others.every(other => separate(count, other)),
+      noOverflow: document.documentElement.scrollWidth <= innerWidth && element.scrollWidth <= element.clientWidth + 1,
+      noClipping: [...element.querySelectorAll<HTMLElement>('.goal-in-progress, .task-pause-count')].every(part => part.scrollWidth <= part.clientWidth + 1 && part.scrollHeight <= part.clientHeight + 1),
+    };
+  });
+  expect(layout).toEqual({ ordered: true, inside: true, separate: true, noOverflow: true, noClipping: true });
+  await expectHit(count);
+  await toggle.focus(); await page.keyboard.press('Enter');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(count).toHaveText(zh ? '1 已暂停' : '1 paused');
+  await page.keyboard.press('Space');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expectHit(card.locator('.goal-list-detail'));
+  await expectHit(card.locator('.goal-list-graph'));
+  expect(await page.locator('button button, button a, a button').count()).toBe(0);
+});
+
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal list owns paused Task and graph navigation at ${width}px in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale); fixture.addPausedTask();
