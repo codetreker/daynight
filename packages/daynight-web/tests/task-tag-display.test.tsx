@@ -46,7 +46,7 @@ it('shows each item’s own tags and updates them without remounting an expanded
   expect(childRow).toHaveTextContent('Another');
   expect(childRow).not.toHaveTextContent('Child tag');
   expect(toggle).not.toHaveAttribute('aria-describedby', expect.stringContaining(`project-goal-tags-${goal.id}`));
-  expect(toggle.querySelector('.task-tag-list')).toBeNull();
+  expect(card.querySelector('.goal-list-summary .task-tag-list')).toBeNull();
   expect(singleRow).toHaveTextContent('Single tag');
 });
 

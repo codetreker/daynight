@@ -67,7 +67,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await page.locator("#project-section-tab-tasks").click();
   await page.locator("#project-task-tab-goals").click();
   const card = page.locator(`[data-goal-id="${goalId}"]`);
-  await expect(card.locator(".goal-list-toggle .task-tag")).toHaveText(["Backend"]);
+  await expect(card.locator(".goal-list-summary .task-tag")).toHaveText(["Backend"]);
   await card.locator(".goal-list-toggle").click();
   const child = card.locator(`#chain-task-goal-${goalId}-${taskId}`);
   const control = card.locator(`#chain-task-goal-${goalId}-${controlId}`);
@@ -119,7 +119,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await page.reload();
   await page.locator("#project-section-tab-tasks").click();
   await page.locator("#project-task-tab-goals").click();
-  await expect(card.locator(".goal-list-toggle .task-tag")).toHaveText(["Platform"]);
+  await expect(card.locator(".goal-list-summary .task-tag")).toHaveText(["Platform"]);
   await card.locator(".goal-list-toggle").click();
   await expect(child.locator(".task-tag")).toHaveCount(2);
   await expect(child.locator(".task-tag").filter({ hasText: "Platform" })).toHaveCount(1);
@@ -137,7 +137,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await page.locator("#project-section-tab-tasks").click();
   await page.locator("#project-task-tab-goals").click();
   await expect(card).toBeVisible();
-  await expect(card.locator(".goal-list-toggle .task-tag-list")).toHaveCount(0);
+  await expect(card.locator(".goal-list-summary .task-tag-list")).toHaveCount(0);
   await card.locator(".goal-list-toggle").click();
   await expect(child.locator(".task-tag")).toHaveText(["Other"]);
   await filter.locator("summary").click();
