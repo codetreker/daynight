@@ -85,16 +85,19 @@ async function assertSummary(summary: Locator, names: readonly string[], viewpor
   await expect(chips).toHaveText([...names]);
   await expect(button).toBeVisible();
   await expect(summary.locator('.task-tag-list')).toHaveCount(names.length === 0 ? 0 : 1);
-  const bounds = (await summary.boundingBox())!;
-  const items = [...await chips.all(), button];
-  const boxes = await Promise.all(items.map(item => item.boundingBox()));
-  for (let i = 0; i < items.length; i++) {
+  const { bounds, boxes } = await summary.evaluate(element => {
+    const rect = (item: Element) => {
+      const box = item.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height, w: item.clientWidth, sw: item.scrollWidth, h: item.clientHeight, sh: item.scrollHeight };
+    };
+    return { bounds: rect(element), boxes: [...element.querySelectorAll('.task-tag'), element.querySelector(':scope > button')!].map(rect) };
+  });
+  for (let i = 0; i < boxes.length; i++) {
     const box = boxes[i]!;
     expect(box.x).toBeGreaterThanOrEqual(bounds.x - 1);
     expect(box.x + box.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
-    const size = await items[i]!.evaluate(element => ({ w: element.clientWidth, sw: element.scrollWidth, h: element.clientHeight, sh: element.scrollHeight }));
-    expect(size.sw).toBeLessThanOrEqual(size.w + 1);
-    expect(size.sh).toBeLessThanOrEqual(size.h + 1);
+    expect(box.sw).toBeLessThanOrEqual(box.w + 1);
+    expect(box.sh).toBeLessThanOrEqual(box.h + 1);
     for (let j = 0; j < i; j++) {
       const previous = boxes[j]!;
       const overlap = Math.min(box.x + box.width, previous.x + previous.width) > Math.max(box.x, previous.x) + 1 && Math.min(box.y + box.height, previous.y + previous.height) > Math.max(box.y, previous.y) + 1;
@@ -112,7 +115,7 @@ async function assertSummary(summary: Locator, names: readonly string[], viewpor
     }
   }
   expect(await summary.page().evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewportWidth);
-  return boxes.map(box => box!);
+  return boxes;
 }
 
 for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) for (const kind of ['task', 'goal'] as const) test(`detail tag summary wraps independently at ${width}px in ${locale} for ${kind}`, async ({ page }) => {
