@@ -65,6 +65,10 @@ the shared component owns the reusable presentation contract. The
 [PR arrow decision](../bug-fix/2026-11-14-pr-filter-arrow-alignment.md) records
 the earlier local implementation and its replacement.
 
+Webhook owner and status filters use the filter variant; subscription and
+delivery filters use the full-width form variant. Their callers retain scope
+isolation, option eligibility and explicit delivery-filter application.
+
 ## Alternatives
 
 **Share CSS while retaining page-owned structures.** Each caller could still

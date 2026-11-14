@@ -20,8 +20,6 @@
 .webhook-dialog button,
 .webhooks input,
 .webhook-dialog input,
-.webhooks select,
-.webhook-dialog select,
 .webhooks textarea,
 .webhook-dialog textarea { font:inherit;color:inherit }
 .webhooks button,
@@ -32,8 +30,6 @@
 .webhook-dialog button:focus-visible,
 .webhooks input:focus-visible,
 .webhook-dialog input:focus-visible,
-.webhooks select:focus-visible,
-.webhook-dialog select:focus-visible,
 .webhooks textarea:focus-visible,
 .webhook-dialog textarea:focus-visible,
 .webhooks summary:focus-visible,
@@ -131,11 +127,7 @@
 .webhook-dialog .search-wrap svg { position:absolute;left:11px;top:11px;color:#939cac }
 .webhooks .search-wrap input,
 .webhook-dialog .search-wrap input { width:100%;border:1px solid #dce0e8;border-radius:7px;background:#fff;padding:9px 10px 9px 34px;font-size:11px;min-width:0 }
-.webhooks .filter,
-.webhook-dialog .filter { border:1px solid #dce0e8;border-radius:7px;padding:8px 9px;background:#fff;font-size:11px;max-width:122px }
-.webhooks .webhook-status-select { position:relative;display:inline-flex;flex-shrink:0;max-width:122px }
-.webhooks .webhook-status-select .filter { appearance:none;min-width:0;width:100%;padding-right:29px }
-.webhooks .webhook-status-select svg { position:absolute;right:9px;top:50%;transform:translateY(-50%);width:10px;height:10px;color:#737d8e;pointer-events:none }
+.webhooks .webhook-status-select { flex-shrink:0;max-width:122px }
 .webhooks .endpoint-list,
 .webhook-dialog .endpoint-list { border-top:1px solid var(--line) }
 .webhooks .endpoint-row,
@@ -498,10 +490,7 @@
 .webhook-dialog .panel-heading { padding:17px 14px 13px }
 .webhooks .panel-tools,
 .webhook-dialog .panel-tools { padding:0 14px 14px;gap:6px }
-.webhooks .filter,
-.webhook-dialog .filter { padding:7px 5px;max-width:96px;font-size:10px }
 .webhooks .webhook-status-select { max-width:96px }
-.webhooks .webhook-status-select .filter { padding-right:29px }
 .webhooks .search-wrap input,
 .webhook-dialog .search-wrap input { font-size:10px;padding:9px 7px 9px 29px }
 .webhooks .search-wrap svg,
