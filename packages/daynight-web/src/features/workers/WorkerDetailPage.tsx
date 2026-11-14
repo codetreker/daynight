@@ -56,6 +56,7 @@ const ToolSoftwareRow = ({ tool, telemetry, online, probe }: { readonly tool: To
       <span className={online === false ? undefined : 'concealed'} aria-hidden={online !== false}>{m.state.offline}</span>
       <span className={online === null ? undefined : 'concealed'} aria-hidden={online !== null}>{m.state.unconfirmed}</span>
     </p>
+  </dd><dd className="worker-tool-software-detail-cell">
     <details className="worker-tool-software-details"><summary>{m.details}</summary><WorkerToolPathDetails tool={tool} telemetry={telemetry} online={online} /></details>
   </dd></div>;
 };

@@ -330,6 +330,14 @@ fails. It opens an account menu whose Account settings item navigates to
 `/account`. The localized trigger exposes its expanded state; keyboard access,
 outside-click and Escape dismissal, focus restoration after Escape, and route
 change dismissal keep the menu usable across desktop and narrow viewports.
+Shared management `Identity` displays the existing nullable avatar in account,
+grant confirmation and member surfaces. A nonempty source loads without rewriting;
+loading, empty or failed sources retain the two-character fallback. The avatar's
+identity and source isolate its local state without remounting surrounding
+pages or dialogs. It uses a decorative, circular 30px image, or 49px in the
+account profile. The [Web requirements](../../docs/spec/daynight-web.md#管理身份展示)
+and [design](../../docs/design/daynight-web.md) own the display contract and
+mechanism.
 Account profile, credentials and user prompt tabs participate in browser Back and
 Forward. Their history state contains only an account-bound tab selection; the
 existing credential and prompt owners retain their drafts and operation results.

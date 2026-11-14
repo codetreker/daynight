@@ -56,6 +56,15 @@
 .worker-os-version { display: inline-block; font-size: 11px; margin-top: 4px; }
 .worker-software-version { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: #435068; }
 .worker-software-unavailable { color: #737d8e; }
+.worker-info-row.worker-software-tool-paths { display: grid; grid-template-columns: auto minmax(0, 1fr); row-gap: 0; }
+.worker-info-row .worker-tool-software-detail-cell { grid-column: 1 / -1; min-width: 0; text-align: left; }
+.worker-tool-version { margin: 0 0 4px; }
+.worker-tool-connection { display: grid; color: #556176; }
+.worker-tool-connection > span { grid-area: 1 / 1; }
+.worker-tool-connection > .concealed { visibility: hidden; }
+.worker-tool-software-details { margin-top: 8px; text-align: left; }
+.worker-tool-software-details > summary { cursor: pointer; font-size: 11px; color: #556176; }
+.worker-tool-software-details > summary:focus-visible { outline: 3px solid #344054; outline-offset: 3px; }
 .worker-count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; background: #f0f0fb; border-radius: 5px; color: #6969bd; font-size: 11px; font-weight: 500; }
 .worker-task-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
 .worker-task-table th { text-align: left; font-size: 11px; font-weight: 500; color: #7a8495; background: #fbfbfd; padding: 12px 22px; border-bottom: 1px solid #eef0f4; }

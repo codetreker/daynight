@@ -15,8 +15,9 @@ within the unparented scope is both unfinished and matches the selected assignee
 The complete ordinary graph determines components before Parent scoping; external
 edges do not combine them. A finished representative does not suppress a matching
 unfinished successor, and a member outside the scope cannot qualify a chain.
-The badge has its own localized tooltip. The standalone and Goal counts retain
-their respective units and eligibility.
+The badge has its own localized tooltip. The standalone count retains its unit
+and eligibility; the separate [unfinished Goal decision](2026-11-14-unfinished-goal-tab-count.md)
+changes Goal eligibility independently.
 
 This partially supersedes the chain unit of the [assignee-scoped count decision](2026-11-13-assignee-scoped-tab-counts.md)
 while preserving its assignee, scope and snapshot rationale. It also replaces the

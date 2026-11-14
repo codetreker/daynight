@@ -66,17 +66,23 @@ export const GoalItem = ({ projectId, index, goal, summaries, childTagFilter, wo
     if (expanded && content.current?.contains(document.activeElement)) toggle.current?.focus({ preventScroll: true });
     setExpanded((value) => !value);
   };
+  const isInteractive = (target: EventTarget | null, row: HTMLElement) => {
+    if (!(target instanceof Element)) return false;
+    const control = target.closest('button, a, input, select, textarea, summary, audio[controls], video[controls], [role=button], [role=link], [role=tooltip], [contenteditable]:not([contenteditable=false]), [tabindex]:not([tabindex="-1"])');
+    return control !== null && (row.contains(control) || control.matches('[role=tooltip]'));
+  };
   return <li ref={visibilityRef} className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status} onFocusCapture={(event) => {
     focusedSession.current = event.target instanceof HTMLElement && event.target.classList.contains('session-status-action') && event.target.closest('.goal-list-row') !== null ? event.target : null;
   }} onBlurCapture={(event) => { if (event.relatedTarget !== null) focusedSession.current = null; }}>
-    <div className="goal-list-row task-status-surface" data-task-status={goal.status} onMouseDown={(event) => { if (event.target === event.currentTarget) event.preventDefault(); }} onClick={(event) => { if (event.target === event.currentTarget) toggleExpanded(); }}>
+    <div className="goal-list-row task-status-surface" data-task-status={goal.status} onMouseDown={(event) => { if (!isInteractive(event.target, event.currentTarget)) event.preventDefault(); }} onClick={(event) => { if (!isInteractive(event.target, event.currentTarget)) toggleExpanded(); }}>
+      <div className="goal-list-summary">
       <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} aria-describedby={`project-goal-in-progress-${goal.id}${pausedCount > 0 ? ` ${pauseCountId}` : ''} project-goal-assignee-${goal.id} project-goal-worker-${goal.id} project-goal-composition-${goal.id} project-goal-progress-${goal.id} project-goal-status-${goal.id}${goal.tags.length > 0 ? ` project-goal-tags-${goal.id}` : ''}`} onClick={toggleExpanded}><svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-      <span className="goal-list-icon" aria-hidden="true">◎</span>
-      <span className="goal-list-main"><span className="goal-title-line"><span className="goal-list-title" id={`project-goal-${goal.id}`}>{title}</span><span className="goal-in-progress" id={`project-goal-in-progress-${goal.id}`}>{graph.inProgressCount({ count: inProgressCount })}</span>{pausedCount > 0 && <span id={pauseCountId}><TaskPauseCount count={pausedCount} /></span>}</span>
+      </button><span className="goal-list-icon" aria-hidden="true">◎</span>
+      <span className="goal-list-main"><span className="goal-title-line"><button className="goal-list-title" id={`project-goal-${goal.id}`} type="button" aria-haspopup="dialog" onClick={(event) => onOpenGoal(goal.id, event.currentTarget)}>{title}</button><span className="goal-in-progress" id={`project-goal-in-progress-${goal.id}`}>{graph.inProgressCount({ count: inProgressCount })}</span>{pausedCount > 0 && <span id={pauseCountId}><TaskPauseCount count={pausedCount} /></span>}</span>
         <TaskTagList id={`project-goal-tags-${goal.id}`} tags={goal.tags} /><span className="goal-list-meta"><TaskAssigneeIdentity id={`project-goal-assignee-${goal.id}`} projectId={projectId} assignedTo={goal.assignedTo} /><span id={`project-goal-worker-${goal.id}`}><ActiveWorkerIndicator memberIds={memberIds} workerMachines={workerMachines} /></span><span id={`project-goal-composition-${goal.id}`}>{m.composition({ count })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span></span>
       <span className="goal-list-progress" id={`project-goal-progress-${goal.id}`}><span>{graph.progress({ done: progress.displayDone, total: progress.displayTotal })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${progress.widthPercent}%` }} /></span></span>
-      </button>
-      <span className="goal-list-session" onMouseDown={(event) => { if (sessionIndicator === null) event.preventDefault(); }} onClick={() => { if (sessionIndicator === null) toggleExpanded(); }}>
+      </div>
+      <span className="goal-list-session">
         <SessionStatus title={title} status={goal.status} statusId={`project-goal-status-${goal.id}`} indicator={sessionIndicator} chain expanded={expanded} controls={childrenId}
           {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
       </span>

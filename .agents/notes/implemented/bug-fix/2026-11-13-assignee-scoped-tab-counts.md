@@ -15,9 +15,13 @@ same assignee predicate as the lists, including the current viewer for `me`.
 The standalone count includes matching, unfinished ordinary Tasks with no Parent,
 classified by their full ordinary component and counted once by ID. The chain
 count includes each multi-member component once if a no-Parent member is both
-unfinished and assignee-matching. The Goal count includes matching Goal
-containers in every status, using each Goal's own assignee. Status selection, search, pagination, category,
-graph and expansion do not affect these counts. Full graph classification
+unfinished and assignee-matching. The Goal count uses each Goal's own assignee
+and counts unfinished containers, as specified by the [unfinished Goal decision](2026-11-14-unfinished-goal-tab-count.md).
+The [unfinished chain decision](2026-11-14-unfinished-chain-tab-count.md)
+owns the chain unit. The original assignee-scope decision counted unfinished
+Tasks within chains and retained Goals in every status; it addressed whose work
+the badge represented. Status selection, search, pagination, category, graph and
+expansion do not affect these counts. Full graph classification
 precedes Parent scoping, so a cross-Goal component with one unparented member
 remains a chain; external edges do not combine components.
 
@@ -48,7 +52,7 @@ includes work assigned to others when the list is restricted by assignee.
 
 Changing assignee immediately changes the three badges without changing the
 complete graph, chain and Goal progress, or project overview statistics. The
-chain count represents qualifying chains; the Goal count includes finished
-containers. Snapshot and identity changes recompute the projection,
-without new requests or persisted data. A failed refresh retains the last
+chain count represents qualifying chains; the Goal count excludes terminal
+containers under the later decisions. Snapshot and identity changes recompute
+the projection without new requests or persisted data. A failed refresh retains the last
 successful snapshot and its existing error feedback.
