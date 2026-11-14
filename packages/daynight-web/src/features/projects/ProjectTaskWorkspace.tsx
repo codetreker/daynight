@@ -12,7 +12,7 @@ import type { TaskView } from "./useProjectViewPreferences";
 import type { GraphSnapshot } from "./useTaskGraph";
 import type { TaskSessionSummaryStore } from "../task-session-summary/store";
 
-export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, activeView, pausedTasks, onOpenPausedTask, onPausedFocusFallback, unfinishedStandaloneTaskCount, unfinishedChainCount, goalCount, onViewChange, filter, chains, standalone, goals }: {
+export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, activeView, pausedTasks, onOpenPausedTask, onPausedFocusFallback, unfinishedStandaloneTaskCount, unfinishedChainCount, unfinishedGoalCount, onViewChange, filter, chains, standalone, goals }: {
   readonly active?: boolean;
   readonly filter?: ReactNode;
   readonly snapshot: GraphSnapshot;
@@ -23,7 +23,7 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, ac
   readonly onPausedFocusFallback: () => void;
   readonly unfinishedStandaloneTaskCount: number;
   readonly unfinishedChainCount: number;
-  readonly goalCount: number;
+  readonly unfinishedGoalCount: number;
   readonly onViewChange: (view: TaskView) => void;
   readonly chains: Omit<ComponentProps<typeof ChainList>, "index" | "workerMachines">;
   readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index">;
@@ -34,7 +34,7 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, ac
     <div className="project-section-heading"><h2>{sections.tasks}</h2><ProjectPausedTasks tasks={pausedTasks} active={active} onOpenTask={onOpenPausedTask} onFocusFallback={onPausedFocusFallback} /></div>
       <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskSessionSummaryProvider store={sessionStore} active={active}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
-          unfinishedChainCount={unfinishedChainCount} goalCount={goalCount} onViewChange={onViewChange} />
+          unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={onViewChange} />
         {filter}
         <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
           {activeView === "chains" && <section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section>}

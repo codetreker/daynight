@@ -122,6 +122,7 @@ export type WorkspaceMessages = {
     readonly chains: string;
     readonly unfinishedCount: string;
     readonly unfinishedChainCount: string;
+    readonly unfinishedGoalCount: string;
     readonly goals: string;
   };
   readonly goals: {
