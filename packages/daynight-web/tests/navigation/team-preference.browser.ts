@@ -101,7 +101,7 @@ for (const viewport of [{ width: 1360, height: 900 }, { width: 390, height: 844 
       await page.goForward();
       await expect.poll(() => new URL(page.url()).pathname).toBe('/shared-projects');
       await expect(page.getByRole('main').getByRole('heading', { name: 'Shared only' })).toBeVisible();
-      if (narrow && !await sidebar.isVisible()) await open();
+      await open();
       await expect(sidebar.getByRole('link', { name: 'Team second' })).toBeVisible();
       expect(teamQueries()).toHaveLength(2);
       await sidebar.getByRole('link', { name: 'Team second' }).click();
