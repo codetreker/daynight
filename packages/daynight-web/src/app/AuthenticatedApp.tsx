@@ -118,7 +118,7 @@ const Workspace = ({ user, children, route, selectedTeamId, onSignOut, blocked, 
           <div className="account-actions">
             <a className="setup-guide-link" href="/setup" target="_blank" rel="noopener noreferrer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v15M3 4h5a5 5 0 0 1 4 2 5 5 0 0 1 4-2h5v15h-5a5 5 0 0 0-4 2 5 5 0 0 0-4-2H3z" /></svg>{setup.navigation}</a>
             <LanguageSelector />
-            <AccountMenu name={accountLabel(user, m.currentAccount)} onSignOut={onSignOut} />
+            <AccountMenu name={accountLabel(user, m.currentAccount)} userId={user.id} avatarUrl={user.avatarUrl} onSignOut={onSignOut} />
           </div>
         </header>
         <main className="content" id="main-content" ref={content} tabIndex={-1}>
