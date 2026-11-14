@@ -108,7 +108,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
-      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties });
+      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties, tagsForTask: task => details.find(item => item.id === task.id)!.tags });
       if (holdNextSync) {
         holdNextSync = false; await new Promise<void>(resolve => { releaseSync = resolve; }); releaseSync = null;
         try { await send(response); } finally { heldSyncFinished = true; }
@@ -168,6 +168,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
     sessionStates = { [firstId]: indicator };
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, taggedAndEmptyGoals: () => {
+    details = [goal, ...[first, second, single].map(item => ({ ...item, tags: [{ id: layoutChildId, name: 'Tagged' }] })),
+      detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Empty goal', ready: false })];
+    currentGraph = graphFixture(details);
   }, independentGoalTasks: () => {
     details = [goal, ...Array.from({ length: 30 }, (_, n) => detailFixture(projectId,
       `00000000-0000-4000-8000-${String(800 + n).padStart(12, '0')}`,
@@ -1872,6 +1876,15 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(row).toHaveAttribute('data-task-status', 'done');
   await expect(row.locator('.goal-list-progress')).not.toHaveText(progress);
+  await card.locator('.goal-list-toggle').click();
+  for (const [id, status] of [[firstId, 'todo'], [singleId, 'cancelled']] as const) {
+    const member = card.locator(`#chain-task-goal-${goalId}-${id}`).locator('..');
+    await page.mouse.move(0, 0);
+    await expect(member).toHaveCSS('background-color', palette[status][0]);
+    await member.hover();
+    await expect(member).toHaveCSS('background-color', palette[status][1]);
+  }
+  await card.locator('.goal-list-toggle').click();
   fixture.setGoalStatusFixture('cancelled', false);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect(row).toHaveAttribute('data-task-status', 'cancelled');
@@ -2119,10 +2132,60 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   const otherToggle = otherGoal.locator('.goal-list-toggle');
   await expect(firstToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(otherToggle).toHaveAttribute('aria-expanded', 'false');
+  const checkOutline = async (card: Locator, expanded: boolean) => {
+    await card.evaluate(element => element.scrollIntoView({ block: 'start' }));
+    const topCorner = await card.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return element.contains(document.elementFromPoint(bounds.left + 0.5, bounds.top + 0.5));
+    });
+    await card.evaluate(element => element.scrollIntoView({ block: 'end' }));
+    const shape = await card.evaluate((element, open) => {
+      const bounds = element.getBoundingClientRect();
+      const header = element.querySelector('.goal-list-row')!.getBoundingClientRect();
+      const contents = element.querySelector('.goal-list-contents')!.getBoundingClientRect();
+      const last = element.querySelector('.goal-task-list > li:last-child')?.getBoundingClientRect();
+      const hit = (x: number, y: number) => element.contains(document.elementFromPoint(x, y));
+      return {
+        radius: getComputedStyle(element).borderRadius,
+        headerRadius: getComputedStyle(element.querySelector('.goal-list-row')!).borderBottomLeftRadius,
+        bottomCorner: hit(bounds.left + 0.5, bounds.bottom - 0.5),
+        bottomInside: hit(bounds.left + 9, bounds.bottom - 2),
+        headerBottom: header.bottom,
+        contentTop: contents.top,
+        lastBottom: open ? last!.bottom : header.bottom,
+        innerBottom: bounds.bottom - 1,
+      };
+    }, expanded);
+    expect(shape.radius).toBe('8px');
+    expect(shape.headerRadius).toBe('0px');
+    expect(topCorner).toBe(false);
+    expect(shape.bottomCorner).toBe(false);
+    expect(shape.bottomInside).toBe(true);
+    expect(shape.lastBottom).toBeCloseTo(shape.innerBottom, 1);
+    if (expanded) expect(shape.contentTop).toBeCloseTo(shape.headerBottom, 1);
+  };
+  await checkOutline(firstGoal, false);
   await firstToggle.focus(); await page.keyboard.press('Space');
   await otherToggle.focus(); await page.keyboard.press('Enter');
   await expect(firstGoal.locator('.goal-task-list > li')).toHaveCount(3);
   await expect(otherGoal.locator('.goal-task-list > li')).toHaveCount(1);
+  await checkOutline(firstGoal, true);
+  await checkOutline(otherGoal, true);
+  await expect(firstGoal.locator('.goal-list-contents')).toHaveCSS('border-top-width', '1px');
+  await expect(firstGoal.locator('..')).toHaveCSS('row-gap', '8px');
+  for (const control of [firstGoal.locator('.goal-list-toggle'), firstGoal.locator(`#project-goal-detail-${goalId}`), firstGoal.locator(`#project-goal-graph-${goalId}`), firstGoal.locator('.goal-task-main').first(), firstGoal.locator('.goal-task-main').last()]) {
+    await control.scrollIntoViewIfNeeded();
+    await control.focus();
+    const visibleOutline = await control.evaluate(element => {
+      const bounds = element.closest('.goal-list-card')!.getBoundingClientRect();
+      const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+      const extent = Math.max(0, parseFloat(style.outlineWidth) + parseFloat(style.outlineOffset));
+      return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0
+        && box.left - extent >= bounds.left + 1 && box.right + extent <= bounds.right - 1
+        && box.top - extent >= bounds.top + 1 && box.bottom + extent <= bounds.bottom - 1;
+    });
+    expect(visibleOutline).toBe(true);
+  }
   await expect(firstGoal.locator('.goal-row, .standalone-row, [data-chain-id]')).toHaveCount(0);
   await expect(firstGoal.getByText('Standalone task', { exact: true })).toBeVisible();
   await expect(firstGoal.getByText('First task', { exact: true })).toBeVisible();
@@ -2157,6 +2220,33 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await page.reload();
   await expect(page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`)).toHaveAttribute('aria-expanded', 'false');
   expect(errors).toEqual([]);
+});
+
+test('Goal empty and filtered states retain their padding and restore members', async ({ page }) => {
+  const fixture = await install(page); fixture.taggedAndEmptyGoals();
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const empty = page.locator(`[data-goal-id="${otherGoalId}"]`);
+  await card.locator('.goal-list-toggle').click();
+  await empty.locator('.goal-list-toggle').click();
+  await expect(empty.locator('.goal-list-empty')).toHaveText('No tasks in this Goal.');
+  const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').nth(1);
+  await filter.locator('summary').click();
+  await filter.getByLabel('No tags').check();
+  await expect(card.locator('.goal-list-empty')).toHaveText('No tasks match the filters');
+  for (const target of [card, empty]) {
+    await expect(target.locator('.goal-list-empty')).toHaveCSS('padding', '16px 18px');
+    expect(await target.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return Math.abs(element.querySelector('.goal-list-empty')!.getBoundingClientRect().bottom - bounds.bottom + 1) < 0.1;
+    })).toBe(true);
+  }
+  await filter.getByLabel('No tags').uncheck();
+  await expect(card.locator('.goal-task-list > li')).toHaveCount(3);
+  await expect(card.locator('.goal-list-empty')).toHaveCount(0);
 });
 
 test('flat Goal member preserves history, draft protection, and its source focus', async ({ page }) => {
@@ -2434,6 +2524,30 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await check();
   await surface.getByRole('button', { name: zh ? '进入全屏' : 'Enter fullscreen' }).click();
   await check();
+});
+
+test('Goal member completion hint remains reachable outside the clipped card', async ({ page }) => {
+  const fixture = await install(page); fixture.completionGoal();
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${otherGoalId}"]`);
+  await card.locator('.goal-list-toggle').click();
+  await card.evaluate(element => element.scrollIntoView({ block: 'center' }));
+  const member = card.locator(`#chain-task-goal-${otherGoalId}-${outsideId}`);
+  await member.focus();
+  const hint = member.locator('..').getByRole('tooltip');
+  await expect(hint).toBeVisible();
+  await expect.poll(() => hint.evaluate(element => {
+    const tip = element.getBoundingClientRect();
+    const bounds = element.closest('.goal-list-card')!.getBoundingClientRect();
+    const x = tip.left + tip.width / 2, y = tip.top + tip.height / 2;
+    return element.matches(':popover-open') && (y > bounds.bottom || y < bounds.top)
+      && element.contains(document.elementFromPoint(x, y));
+  })).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(hint).toBeHidden();
+  await expect(member).toBeFocused();
 });
 
 test('touch opens a completed Goal member and reads its completion time', async ({ browser }) => {
