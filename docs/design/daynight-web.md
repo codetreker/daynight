@@ -104,6 +104,8 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 读取绑定账号 scope 和请求代次。projection fence 在发布前复核项目资格；撤权或暂停事件退役受影响读取并撤下项目，恢复需要新读取。局部撤下后不再宣称原集合数量完整。页面使用统一同步周期与每项目 15 条的展示分页；执行时钟使用服务端观测锚点和项目阈值，复用现有时钟语义。Task 行将 active Worker 名称作为文本放在耗时之后、Goal 之前，沿用元信息样式并允许长词换行；Session 徽标独立于 Worker 显示。Task 和 Goal 的真实 href 保持直接访问和修饰键导航。普通点击在账号页面打开现有完整详情，`MyTasksDetailHost` 按选中项目挂载项目权限、详情 Session、完整图和负责人 receipt；同项目资源切换复用图，项目切换隔离图。详情使用直接读取，图失败交给现有错误和重试入口，mutation 同时刷新图及总览。列表过滤不决定详情准入。
 
+单任务行先按观测有效性、注册和连接状态求出最终 Session 展示状态，再对 warning 应用启动宽限；因此显式 indicator 和断开、归档的 fallback 采用相同规则，过期或不可用仍优先展示。经过时间取 `task.startedAt` 与 `Date.parse(item.observedAt) + (performance.now() - item.receivedMonotonic)` 的非负差值，沿用执行时钟的服务端锚点而不依赖浏览器墙钟或页面进入时间。Session 复用项目执行时钟订阅：可见时逐秒更新，重返前台立即发布，以当前观测在边界重新判定，不增加独立 timer、请求、持久化或 API 字段。取舍见[个人列表启动宽限决策](../../.agents/notes/implemented/bug-fix/2026-11-14-personal-session-startup-grace.md)。
+
 `my-tasks` 阅读历史绑定账号，只保存项目页码、根详情、页签及 Goal 子选择；资源退役 fence 拒绝旧项目条目。`MyTasksDraftHost` 与子资源宿主沿用 browserNavigation 的草稿保护，同资源阅读切换保留草稿，离开和关闭先经过确认。外部 Task 根据真实 Parent 选择独立详情或 Goal 子任务；完整链按现有项目图语义导航。图尚未能解析目标时，Task 关系使用真实独立详情地址，链使用项目图地址，以保留可操作的导航。关闭焦点优先返回触发入口，其次项目标题和页面标题。
 
 ### 我的 Worker 列表与详情
