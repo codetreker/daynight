@@ -147,4 +147,4 @@ export DAYNIGHT_TEST_UNIAUTH_FIXTURE
 node scripts/integration-runtime.mts auth "$run_root" "$DAYNIGHT_TEST_UNIAUTH_FIXTURE"
 export DAYNIGHT_INTEGRATION_SERVER_BINARY="$run_root/server"
 node scripts/integration-runtime.mts phase "$run_root" test
-GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go test -race="$race" -p=2 -count=1 -timeout=4m -tags=integration -run '^(TestServerAPINormalFlows|TestServerAPISessionNormalFlow|TestServerAPICredentialUsageNormalFlow)$' -v ./cmd/integration_tests
+GOFLAGS= timeout --signal=TERM --kill-after=5s 5m go test -race="$race" -p=2 -count=1 -timeout=4m -tags=integration -run '^(TestServerAPINormalFlows|TestServerAPISessionNormalFlow|TestServerAPICredentialUsageNormalFlow|TestServerAPIGitHubSyncNormalFlow)$' -v ./cmd/integration_tests

@@ -873,6 +873,15 @@ pull request and installation lifecycle events. The reverse proxy must allow a
 acknowledging relevant deliveries; polling repairs missed deliveries. See the
 [connection and scheduler design](../../docs/design/github-connection-runtime.md).
 
+Each Project's PR synchronization defaults to off, independently of its GitHub
+connection. An administrator enables it after connecting; disabling it retains
+the connection and saved PRs. When upgrading across migration 073, stop and drain
+every old server replica before migrating, replace all replicas, and then start
+the new servers. Old binaries ignore the synchronization setting and must not run
+alongside the new version. Existing Projects also migrate with synchronization
+off and require an administrator to enable it again. The migration retains the
+binding, PRs and history while invalidating old work and pending hints.
+
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
 bytes (0x21–0x7e), without whitespace or a required prefix. Invalid values stop

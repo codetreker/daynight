@@ -32,14 +32,14 @@ func (w *writer) Claim(ctx context.Context, c store.GitHubClaim) (bool, error) {
 		return false, err
 	}
 	tag, err := w.tx.Exec(ctx, `UPDATE project_github SET claim_token=$4, claim_kind=$5, claim_until=$6, revision=revision+1, updated_at=clock_timestamp()
- WHERE project_id=$1 AND enabled AND app_id=$2 AND generation=$3
+ WHERE project_id=$1 AND enabled AND sync_enabled AND app_id=$2 AND generation=$3
  AND (not_before IS NULL OR not_before <= clock_timestamp())
  AND (claim_until IS NULL OR claim_until <= clock_timestamp()) AND $6::timestamptz > clock_timestamp()`,
 		w.projectID, c.AppID, c.Generation, c.Token, c.Kind, c.Until)
 	return affected(tag.RowsAffected(), "claim github work", err)
 }
 
-const leasePredicate = `project_id=$1 AND enabled AND generation=$2 AND claim_token=$3 AND claim_until>clock_timestamp()`
+const leasePredicate = `project_id=$1 AND enabled AND sync_enabled AND generation=$2 AND claim_token=$3 AND claim_until>clock_timestamp()`
 
 func affected(rows int64, op string, err error) (bool, error) {
 	if err != nil {
@@ -193,7 +193,7 @@ func (w *writer) HasDuePending(ctx context.Context, now time.Time) (bool, error)
 		return false, err
 	}
 	var pending bool
-	err = w.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_github_pending_prs p JOIN project_github g ON g.project_id=p.project_id AND g.generation=p.generation WHERE p.project_id=$1 AND p.next_attempt_at<=$2)`, w.projectID, now).Scan(&pending)
+	err = w.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project_github_pending_prs p JOIN project_github g ON g.project_id=p.project_id AND g.generation=p.generation AND g.enabled AND g.sync_enabled WHERE p.project_id=$1 AND p.next_attempt_at<=$2)`, w.projectID, now).Scan(&pending)
 	if err != nil {
 		return false, pg.QueryError("check due github pull requests", err)
 	}
@@ -236,7 +236,7 @@ func (w *writer) SaveRuntime(ctx context.Context, l store.GitHubLease, r store.G
 // InvalidateProject is invoked under the Project deletion lock. Historical PRs
 // are retained; a later signal cannot revive an already disabled connection.
 func InvalidateProject(ctx context.Context, tx pgx.Tx, projectID string) error {
-	if _, err := tx.Exec(ctx, `UPDATE project_github SET enabled=false,claim_token=NULL,claim_until=NULL,claim_kind=NULL,next_poll_at=NULL,next_access_check_at=NULL,access_hint_id=NULL,access_delivery_id=NULL,updated_at=clock_timestamp() WHERE project_id=$1`, projectID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE project_github SET enabled=false,sync_enabled=false,claim_token=NULL,claim_until=NULL,claim_kind=NULL,next_poll_at=NULL,next_access_check_at=NULL,access_hint_id=NULL,access_delivery_id=NULL,updated_at=clock_timestamp() WHERE project_id=$1`, projectID); err != nil {
 		return pg.QueryError("invalidate deleted project github work", err)
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM project_github_pending_prs WHERE project_id=$1`, projectID); err != nil {

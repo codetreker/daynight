@@ -34,7 +34,7 @@ func ProjectRepository(address string) (string, string, error) {
 }
 
 func configuration(c githubpr.Connection) store.GitHubConfigurationWrite {
-	return store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version, Generation: c.Generation, Revision: c.Revision, Enabled: c.Enabled,
+	return store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version, Generation: c.Generation, Revision: c.Revision, Enabled: c.Enabled, SyncEnabled: c.SyncEnabled,
 		AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, InstallationAccountLogin: c.InstallationAccountLogin,
 		RepositoryFullName: c.RepositoryFullName, RepositoryPrivate: c.RepositoryPrivate, PollIntervalMinutes: c.PollIntervalMinutes,
 		AccessState: c.AccessState, AccessReason: c.AccessReason, AccessCheckedAt: c.AccessCheckedAt, NextAccessCheckAt: c.NextAccessCheckAt, NextPollAt: c.NextPollAt}
@@ -43,6 +43,16 @@ func configuration(c githubpr.Connection) store.GitHubConfigurationWrite {
 // Manage applies a decision inside the live Project write scope, rechecking the
 // principal, original version and repository address after remote verification.
 func Manage(ctx context.Context, s store.ProjectWriteScope, p model.Principal, version int64, action string, minutes int32, appID int64, expectedRepo string, candidate InstallationCandidate) (githubpr.Connection, error) {
+	return manage(ctx, s, p, version, action, minutes, appID, expectedRepo, candidate, false, false)
+}
+
+// ManageSync changes the synchronization intent under the same Project lock as
+// connection management. Availability is a deployment fact, not stored intent.
+func ManageSync(ctx context.Context, s store.ProjectWriteScope, p model.Principal, version int64, enabled, available bool, appID int64) (githubpr.Connection, error) {
+	return manage(ctx, s, p, version, "sync", 0, appID, "", InstallationCandidate{}, enabled, available)
+}
+
+func manage(ctx context.Context, s store.ProjectWriteScope, p model.Principal, version int64, action string, minutes int32, appID int64, expectedRepo string, candidate InstallationCandidate, syncEnabled, available bool) (githubpr.Connection, error) {
 	access, err := project.RequireProjectWrite(ctx, s.ProjectDAO(), p)
 	if err != nil {
 		return githubpr.Connection{}, err
@@ -97,7 +107,10 @@ func Manage(ctx context.Context, s store.ProjectWriteScope, p model.Principal, v
 		w.AccessReason = nil
 		w.AccessCheckedAt = &now
 		w.NextAccessCheckAt = nil
-		w.NextPollAt = &now
+		w.NextPollAt = nil
+		if c.SyncEnabled {
+			w.NextPollAt = &now
+		}
 		if c.Generation == math.MaxInt64 {
 			return c, &model.Fault{Code: "version_exhausted", Message: "GitHub generation exhausted."}
 		}
@@ -111,8 +124,38 @@ func Manage(ctx context.Context, s store.ProjectWriteScope, p model.Principal, v
 		}
 		w.Generation++
 		w.Enabled = false
+		w.SyncEnabled = false
 		w.NextPollAt = nil
 		w.NextAccessCheckAt = nil
+	case "sync":
+		if c.SyncEnabled == syncEnabled {
+			return c, nil
+		}
+		if syncEnabled {
+			if !available {
+				return c, &model.Fault{Code: "github_not_configured", Message: "GitHub integration is not configured."}
+			}
+			if !c.Enabled {
+				return c, &model.Fault{Code: "github_not_connected", Message: "GitHub repository is not connected."}
+			}
+			if c.AppID == nil || *c.AppID != appID || c.InstallationID == nil || c.RepositoryID == nil || c.AccessState != "available" {
+				return c, &model.Fault{Code: "github_connection_unavailable", Message: "GitHub connection must be restored before synchronization."}
+			}
+		}
+		if c.Generation == math.MaxInt64 {
+			return c, &model.Fault{Code: "version_exhausted", Message: "GitHub generation exhausted."}
+		}
+		w.Generation++
+		w.SyncEnabled = syncEnabled
+		w.NextPollAt = nil
+		w.NextAccessCheckAt = nil
+		if syncEnabled {
+			now, e := dao.ObservedAt(ctx)
+			if e != nil {
+				return c, e
+			}
+			w.NextPollAt = &now
+		}
 	case "settings":
 		if minutes < 1 {
 			return c, invalid("Polling interval must be a positive integer.")
@@ -125,7 +168,7 @@ func Manage(ctx context.Context, s store.ProjectWriteScope, p model.Principal, v
 			return c, e
 		}
 		w.PollIntervalMinutes = minutes
-		if c.Enabled && (c.ClaimKind == nil || *c.ClaimKind != WorkPoll) {
+		if c.Enabled && c.SyncEnabled && (c.ClaimKind == nil || *c.ClaimKind != WorkPoll) {
 			// Initial reconciliation and failed retries retain their existing deadlines.
 			// A completed cycle is scheduled from its last success, in either direction.
 			if c.NextPollAt != nil && c.PollErrorCode == nil && c.LastFullSuccessAt != nil && c.LastFullGeneration != nil && *c.LastFullGeneration == c.Generation {

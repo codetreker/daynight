@@ -8,7 +8,7 @@ import "time"
 type Connection struct {
 	ProjectID                                                         string
 	Version, Generation, Revision                                     int64
-	Enabled                                                           bool
+	Enabled, SyncEnabled                                              bool
 	AppID, InstallationID, RepositoryID                               *int64
 	InstallationAccountLogin, RepositoryFullName                      *string
 	RepositoryPrivate                                                 *bool

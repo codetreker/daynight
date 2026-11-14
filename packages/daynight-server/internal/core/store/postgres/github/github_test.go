@@ -66,7 +66,7 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 		t.Fatalf("read wrote a row: %d %v", rows, err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	write := store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true,
+	write := store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true, SyncEnabled: true,
 		AppID: ptr(int64(123)), InstallationID: ptr(int64(456)), RepositoryID: ptr(int64(789)), InstallationAccountLogin: ptr("owner"), RepositoryFullName: ptr("owner/repo"), RepositoryPrivate: ptr(true), PollIntervalMinutes: 17, AccessState: "available", AccessCheckedAt: &now, NextPollAt: &now}
 	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
 		t.Fatalf("create: %v %v", ok, err)
@@ -78,7 +78,7 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != 2 || got.Generation != 1 || got.Revision != 1 || !got.Enabled || *got.AppID != 123 || *got.InstallationID != 456 || *got.RepositoryID != 789 || *got.InstallationAccountLogin != "owner" || *got.RepositoryFullName != "owner/repo" || !*got.RepositoryPrivate || got.PollIntervalMinutes != 17 || got.AccessState != "available" || !got.AccessCheckedAt.Equal(now) || !got.NextPollAt.Equal(now) || got.CreatedAt == nil || got.UpdatedAt == nil || got.ClaimToken != nil {
+	if got.Version != 2 || got.Generation != 1 || got.Revision != 1 || !got.Enabled || !got.SyncEnabled || *got.AppID != 123 || *got.InstallationID != 456 || *got.RepositoryID != 789 || *got.InstallationAccountLogin != "owner" || *got.RepositoryFullName != "owner/repo" || !*got.RepositoryPrivate || got.PollIntervalMinutes != 17 || got.AccessState != "available" || !got.AccessCheckedAt.Equal(now) || !got.NextPollAt.Equal(now) || got.CreatedAt == nil || got.UpdatedAt == nil || got.ClaimToken != nil {
 		t.Fatalf("stored configuration: %+v", got)
 	}
 	mustExec(t, tx, `UPDATE project_github SET poll_error_code='retained', last_webhook_success_at=$2, not_before=$2 WHERE project_id=$1`, id, now)

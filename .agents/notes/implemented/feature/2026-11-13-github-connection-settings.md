@@ -16,4 +16,4 @@ Project settings present the independent GitHub resource and its polling and Web
 
 ## Consequences
 
-Members can see retained status while only administrators manage the connection. A successful connection schedules synchronization rather than proving completion; independent channel failures remain visible. Private repository facts are shared according to Project access.
+Members can see retained status while only administrators manage the connection. A successful connection verifies access but does not prove synchronization completed. Synchronization is a separate Project setting, as recorded in the [synchronization setting decision](../architecture/2026-11-14-project-github-sync-setting.md); independent channel failures remain visible. Private repository facts are shared according to Project access.

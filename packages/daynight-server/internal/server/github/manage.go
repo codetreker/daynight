@@ -20,6 +20,7 @@ type ManagementOperations interface {
 	Connect(context.Context, model.Principal, string, int64, int64) (core.Status, error)
 	Disconnect(context.Context, model.Principal, string, int64) (core.Status, error)
 	Settings(context.Context, model.Principal, string, int64, int32) (core.Status, error)
+	Sync(context.Context, model.Principal, string, int64, bool) (core.Status, error)
 }
 type managementHandler struct {
 	operations ManagementOperations
@@ -32,9 +33,32 @@ func RegisterManagementRoutes(mux *http.ServeMux, ops ManagementOperations, auth
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/github/connect", auth.Require(h.connect))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/github/disconnect", auth.Require(h.disconnect))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/github/settings", auth.Require(h.settings))
-	for _, route := range []struct{ path, allow string }{{"installation", "GET, HEAD"}, {"connect", "POST"}, {"disconnect", "POST"}, {"settings", "PATCH"}} {
+	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/github/sync", auth.Require(h.sync))
+	for _, route := range []struct{ path, allow string }{{"installation", "GET, HEAD"}, {"connect", "POST"}, {"disconnect", "POST"}, {"settings", "PATCH"}, {"sync", "PATCH"}} {
 		mux.HandleFunc("/api/v1/projects/{projectId}/github/"+route.path, auth.Require(httpx.ResourceMethodNotAllowed(logger, route.allow)))
 	}
+}
+
+func (h *managementHandler) sync(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	h.run(w, r, p, "sync_config", true, func(id string) (any, error) {
+		fields, err := httpx.DecodeObject(w, r, "version", "syncEnabled")
+		if err != nil {
+			return nil, err
+		}
+		v, err := decimalField(fields, "version")
+		if err != nil {
+			return nil, err
+		}
+		var enabled *bool
+		if err = json.Unmarshal(fields["syncEnabled"], &enabled); err != nil || enabled == nil {
+			return nil, httpx.InvalidInput("syncEnabled must be a boolean")
+		}
+		s, err := h.operations.Sync(r.Context(), p, id, v, *enabled)
+		if err != nil {
+			return nil, err
+		}
+		return mutationStatus(s)
+	})
 }
 func (h *managementHandler) run(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, mutate bool, f func(string) (any, error)) {
 	w.Header().Set("Cache-Control", "no-store")

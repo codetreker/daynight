@@ -18,4 +18,4 @@ Expose separate Project-scoped status, summary list and detail reads. Each check
 
 ## Consequences
 
-Members can distinguish missing or failed reads from successful empty pages and continue reading retained observations offline. Page membership and counts may still change across requests as stored observations change. Refreshing starts a new upper bound; this API does not provide synchronization or connection writes.
+Members can distinguish missing or failed reads from successful empty pages and continue reading retained observations offline or while synchronization is disabled. Page membership and counts may still change across requests as stored observations change. Refreshing starts a new upper bound; this API does not provide synchronization or connection writes. The [synchronization setting decision](2026-11-14-project-github-sync-setting.md) distinguishes saved intent from execution and retained history.

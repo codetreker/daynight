@@ -8,6 +8,7 @@ type GitHubStatus struct {
 	Version             string              `json:"version"`
 	Revision            string              `json:"revision"`
 	ServiceAvailable    bool                `json:"serviceAvailable"`
+	SyncEnabled         bool                `json:"syncEnabled"`
 	Connection          string              `json:"connection"`
 	Repository          *GitHubRepository   `json:"repository"`
 	Installation        *GitHubInstallation `json:"installation"`

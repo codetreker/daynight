@@ -18,4 +18,4 @@ Use one callable executor per claimed Project. Short database transactions estab
 
 ## Consequences
 
-The executor can resume through subsequent work after failures and preserves independent poll and webhook status. A crashed process or uncertain renewal can leave a claim until its five-minute expiry. Per-Project isolation can repeat requests for the same repository; the caller owns scheduling and lifecycle integration.
+The executor can resume through subsequent work after failures and preserves independent poll and webhook status. A crashed process or uncertain renewal can leave a claim until its five-minute expiry. Per-Project isolation can repeat requests for the same repository; the caller owns scheduling and lifecycle integration. The [synchronization setting decision](2026-11-14-project-github-sync-setting.md) uses the generation and lease fence to reject work after synchronization is disabled.

@@ -47,6 +47,7 @@ func (d *manageDAO) SaveConfiguration(_ context.Context, w store.GitHubConfigura
 	d.c.Generation = w.Generation
 	d.c.Revision = w.Revision
 	d.c.Enabled = w.Enabled
+	d.c.SyncEnabled = w.SyncEnabled
 	d.c.AccessState = w.AccessState
 	d.c.AccessReason = w.AccessReason
 	d.c.AppID = w.AppID
@@ -63,7 +64,7 @@ func TestManageConfigurationTransitions(t *testing.T) {
 	principal := model.Principal{UserID: "11111111-1111-4111-8111-111111111111", CredentialID: "22222222-2222-4222-8222-222222222222", Kind: model.SessionCredential}
 	proof := InstallationCandidate{Installation: githubpr.InstallationObservation{ID: 5, AccountLogin: "provider"}, Repository: githubpr.RepositoryObservation{ID: 9, FullName: "o/r", Private: true}}
 	c, err := Manage(ctx, scope, principal, 1, "connect", 0, 7, scope.project.repo, proof)
-	if err != nil || c.Version != 2 || c.Generation != 1 || !c.Enabled || dao.saved.NextPollAt == nil || !dao.saved.NextPollAt.Equal(now) {
+	if err != nil || c.Version != 2 || c.Generation != 1 || !c.Enabled || c.SyncEnabled || dao.saved.NextPollAt != nil {
 		t.Fatalf("connect: %+v %+v %v", c, dao.saved, err)
 	}
 	dao.saved = nil
@@ -113,6 +114,7 @@ func TestManageSettingsSchedule(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := githubpr.DefaultConnection("p")
 			c.Enabled = true
+			c.SyncEnabled = true
 			c.Generation = 2
 			generation := c.Generation
 			c.LastFullGeneration = &generation
@@ -165,6 +167,7 @@ func TestManageReconnectUnavailableBinding(t *testing.T) {
 			c.Generation = 2
 			c.Revision = 4
 			c.Enabled = true
+			c.SyncEnabled = true
 			c.AppID = &app
 			c.InstallationID = &installation
 			c.RepositoryID = &repo
