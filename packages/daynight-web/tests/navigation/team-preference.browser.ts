@@ -469,7 +469,8 @@ test('keeps Personal management links absent throughout project loading, failure
     await expect(sidebar.locator('.sidebar-group').nth(0).locator('.sidebar-projects')).toHaveCount(1);
     const myGroup = sidebar.locator('.sidebar-group').nth(1);
     await expect(myGroup.locator('.nav-label')).toHaveText('My');
-    await expect(myGroup.locator('a').first()).toHaveAttribute('aria-label', 'Shared with me');
+    await expect(myGroup.locator('a').first()).toHaveAttribute('aria-label', 'In-progress tasks');
+    await expect(myGroup.locator('a').nth(1)).toHaveAttribute('aria-label', 'Shared with me');
   };
   try {
     await page.goto('/projects');
