@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { HerdrAgentActionError, herdrExecutionLabel, type HerdrExecutionContext, type HerdrOwnedWorkspace } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrToolLaunchMapping } from "../../../src/commands/worker/herdr/tool-launch.js";
-import { closePartialWorkspace, confirmReadinessUnchanged, hasReadinessContradiction, isRootReadinessDeadline, isRootReadinessFailure, observePartialWorkspace, verifyReadinessDiagnostic } from "./herdr-platform-partial-workspace.fixtures.js";
+import { closePartialWorkspace, confirmReadinessUnchanged, hasReadinessContradiction, isRootReadinessDeadline, isRootReadinessFailure, observeClosedPartialWorkspace, observePartialWorkspace, verifyReadinessDiagnostic } from "./herdr-platform-partial-workspace.fixtures.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -24,9 +24,9 @@ const fixture = async () => {
   const resource: HerdrOwnedWorkspace = { owner: context, workspaceId: binding.workspaceId, panes: [{ binding, cwd: root, kind: null, status: "unknown", launchPending: false, interactiveReady: false, nativeSession: null, stateChangeSeq: null, completionSeq: null }] };
   const state = { workspaces: [{ workspace_id: binding.workspaceId, label: herdrExecutionLabel(context, "Test") }], panes: [{ workspace_id: binding.workspaceId, pane_id: binding.paneId, terminal_id: binding.terminalId, tab_id: "prepared-tab" }], agents: [] as Record<string, unknown>[], tabs: [{ workspace_id: binding.workspaceId, tab_id: "prepared-tab" }] };
   const layout = { workspace_id: binding.workspaceId, tab_id: "prepared-tab", root: { type: "pane", pane_id: binding.paneId, cwd: root, command } };
-  let closed = false, remain = false, closeFailure: Error | undefined;
+  let closed = false, remain = false, closeFailure: Error | undefined, postCloseTab: string | undefined;
   const request = vi.fn(async (method: string): Promise<HerdrRpcResult> => {
-    if (method === "session.snapshot") return { type: "session_snapshot", snapshot: closed && !remain ? { workspaces: [], panes: [], agents: [], tabs: [] } : structuredClone(state) };
+    if (method === "session.snapshot") return { type: "session_snapshot", snapshot: closed && !remain ? { workspaces: [], panes: [], agents: [], tabs: postCloseTab === undefined ? [] : [{ workspace_id: "foreign", tab_id: postCloseTab }] } : structuredClone(state) };
     if (method === "layout.export") return { type: "layout_export", layout: structuredClone(layout) };
     if (method === "workspace.close") { if (closeFailure) throw closeFailure; closed = true; return { type: "ok" }; }
     throw new Error(`Unexpected RPC ${method}`);
@@ -34,14 +34,19 @@ const fixture = async () => {
   const tasks = { listResources: vi.fn(async () => [resource]), processInfo: vi.fn(async () => ({ shellPid: 200, foregroundPids: [] })) };
   const operation = createOperation({ limits: { totalMs: 5000 } });
   const input = { context, tasks, rpc: { request } as unknown as HerdrRpcClient, mapping, operation };
-  return { input, state, resource, layout, intent, request, tasks, binding, root, setRemain: () => { remain = true; }, setCloseFailure: () => { closeFailure = new Error("unknown close"); } };
+  return { input, state, resource, layout, intent, request, tasks, binding, root, setRemain: () => { remain = true; }, setCloseFailure: () => { closeFailure = new Error("unknown close"); }, setPostCloseTab: (tab: string) => { postCloseTab = tab; } };
 };
 
 it("closes only the original verified partial workspace and observes its absence", async () => {
   const f = await fixture();
   try {
     const witness = await observePartialWorkspace(f.input);
-    expect(await closePartialWorkspace(f.input, witness)).toMatchObject({ owner: { projectId: f.input.context.projectId, taskId: f.input.context.taskId, claimId: f.input.context.claimId, worktreeId: f.input.context.worktreeId }, binding: f.binding, shellPid: 200, failurePhase: "root-readiness", layoutVerified: true, noAgentLaunch: true, closeConfirmed: true, after: { ownerAbsent: true, workspaceAbsent: true, paneAbsent: true, terminalAbsent: true } });
+    expect(await closePartialWorkspace(f.input, witness)).toMatchObject({ owner: { projectId: f.input.context.projectId, taskId: f.input.context.taskId, claimId: f.input.context.claimId, worktreeId: f.input.context.worktreeId }, binding: f.binding, tabId: "prepared-tab", initialTabId: "initial-tab", initialPaneId: "initial-pane", initialTerminalId: "initial-terminal", shellPid: 200, failurePhase: "root-readiness", layoutVerified: true, noAgentLaunch: true, closeConfirmed: true, after: { ownerAbsent: true, workspaceAbsent: true, paneAbsent: true, terminalAbsent: true, tabAbsent: true } });
+    const independentRequest = vi.fn(f.request.getMockImplementation()!);
+    const independent = await observeClosedPartialWorkspace({ ...f.input, rpc: { request: independentRequest } as unknown as HerdrRpcClient }, witness);
+    expect(independent).toMatchObject({ binding: f.binding, tabId: "prepared-tab", initialTabId: "initial-tab", initialPaneId: "initial-pane", initialTerminalId: "initial-terminal", ownerAbsent: true, workspaceAbsent: true, paneAbsent: true, terminalAbsent: true, tabAbsent: true });
+    expect(independentRequest).toHaveBeenCalledOnce();
+    expect(independentRequest.mock.calls[0]![0]).toBe("session.snapshot");
     expect(f.request.mock.calls.filter(([method]) => method === "workspace.close")).toHaveLength(1);
   } finally { f.input.operation.dispose(); }
 });
@@ -65,16 +70,53 @@ it.each(["missing-owner", "duplicate-owner", "foreign-owner", "wrong-cwd", "agen
   } finally { f.input.operation.dispose(); }
 });
 
-it.each(["changed-owner", "launch-after-observation", "unknown-close", "workspace-remains"])("keeps partial closure unconfirmed on %s", async failure => {
+it.each(["changed-owner", "replaced-tab", "changed-original-pane", "changed-original-terminal", "changed-original-tab", "launch-after-observation", "unknown-close", "workspace-remains", "current-tab-remains", "initial-tab-remains"])("keeps partial closure unconfirmed on %s", async failure => {
   const f = await fixture();
   try {
     const witness = await observePartialWorkspace(f.input);
     if (failure === "changed-owner") f.state.workspaces[0]!.label = "foreign";
+    if (failure === "replaced-tab") { f.state.tabs[0]!.tab_id = "replacement"; f.state.panes[0]!.tab_id = "replacement"; }
+    if (failure === "changed-original-pane" || failure === "changed-original-terminal" || failure === "changed-original-tab") {
+      const intent = structuredClone(f.intent);
+      if (failure === "changed-original-pane") intent.initial.paneId = "replacement";
+      if (failure === "changed-original-terminal") intent.initial.terminalId = "replacement";
+      if (failure === "changed-original-tab") intent.tabId = "replacement";
+      await writeFile(path.join(f.root, "layout-intent.json"), JSON.stringify(intent));
+    }
     if (failure === "launch-after-observation") await writeFile(path.join(f.root, "native-start.json"), "{}", { mode: 0o600 });
     if (failure === "unknown-close") f.setCloseFailure();
     if (failure === "workspace-remains") f.setRemain();
+    if (failure === "current-tab-remains") f.setPostCloseTab("prepared-tab");
+    if (failure === "initial-tab-remains") f.setPostCloseTab("initial-tab");
     await expect(closePartialWorkspace(f.input, witness)).rejects.toThrow();
-    expect(f.request.mock.calls.filter(([method]) => method === "workspace.close")).toHaveLength(failure === "changed-owner" || failure === "launch-after-observation" ? 0 : 1);
+    expect(f.request.mock.calls.filter(([method]) => method === "workspace.close")).toHaveLength(["changed-owner", "replaced-tab", "changed-original-pane", "changed-original-terminal", "changed-original-tab", "launch-after-observation"].includes(failure) ? 0 : 1);
+  } finally { f.input.operation.dispose(); }
+});
+
+it.each(["prepared-tab", "initial-tab"])("rejects a stale %s on the independent post-close snapshot", async tab => {
+  const f = await fixture();
+  try {
+    const witness = await observePartialWorkspace(f.input);
+    await closePartialWorkspace(f.input, witness);
+    f.setPostCloseTab(tab);
+    const independentRequest = vi.fn(f.request.getMockImplementation()!);
+    await expect(observeClosedPartialWorkspace({ ...f.input, rpc: { request: independentRequest } as unknown as HerdrRpcClient }, witness)).rejects.toThrow(/remains observable/);
+    expect(independentRequest).toHaveBeenCalledOnce();
+  } finally { f.input.operation.dispose(); }
+});
+
+it.each(["owner", "workspace", "pane", "initial-pane", "terminal", "initial-terminal", "unavailable"])("rejects an unconfirmed independent observation: %s", async failure => {
+  const f = await fixture();
+  try {
+    const witness = await observePartialWorkspace(f.input);
+    await closePartialWorkspace(f.input, witness);
+    const state = { workspaces: [] as Record<string, unknown>[], panes: [] as Record<string, unknown>[], agents: [] as Record<string, unknown>[], tabs: [] as Record<string, unknown>[] };
+    if (failure === "owner") state.workspaces.push({ workspace_id: "replacement", label: herdrExecutionLabel(f.input.context, "Test") });
+    if (failure === "workspace") state.workspaces.push({ workspace_id: f.binding.workspaceId, label: "foreign" });
+    if (failure === "pane" || failure === "initial-pane" || failure === "terminal" || failure === "initial-terminal") state.panes.push({ workspace_id: "foreign", pane_id: failure === "pane" ? f.binding.paneId : failure === "initial-pane" ? "initial-pane" : "foreign", terminal_id: failure === "terminal" ? f.binding.terminalId : failure === "initial-terminal" ? "initial-terminal" : "foreign", tab_id: "foreign" });
+    const independentRequest = vi.fn(async () => { if (failure === "unavailable") throw new Error("snapshot unavailable"); return { type: "session_snapshot", snapshot: state }; });
+    await expect(observeClosedPartialWorkspace({ ...f.input, rpc: { request: independentRequest } as unknown as HerdrRpcClient }, witness)).rejects.toThrow();
+    expect(independentRequest).toHaveBeenCalledOnce();
   } finally { f.input.operation.dispose(); }
 });
 

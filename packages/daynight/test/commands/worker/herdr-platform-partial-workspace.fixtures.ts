@@ -108,6 +108,8 @@ const assertNoLaunch = async (mapping: HerdrToolLaunchMapping): Promise<void> =>
 
 const verifyCurrent = async (input: Input, witness: Witness): Promise<void> => {
   const { context, rpc, operation, mapping } = input, { binding } = witness;
+  const intent = object(await optionalOwnedJson(mappingFiles(mapping.manifestPath).layout)), initial = object(intent.initial);
+  if (intent.nonce !== mapping.nonce || intent.cwd !== context.cwd || JSON.stringify(intent.command) !== JSON.stringify(mapping.windowsCommand) || initial.session !== binding.session || initial.workspaceId !== binding.workspaceId || initial.paneId !== witness.initialPaneId || initial.terminalId !== witness.initialTerminalId || intent.tabId !== witness.initialTabId) throw new Error("The original PowerShell layout intent changed.");
   const current = await snapshot(rpc, operation);
   const matching = current.workspaces.filter(row => row.workspace_id === binding.workspaceId || owned(row, context));
   if (matching.length !== 1 || matching[0]!.workspace_id !== binding.workspaceId || !owned(matching[0]!, context)) throw new Error("The partial workspace owner or ID changed.");
@@ -144,15 +146,21 @@ export const observePartialWorkspace = async (input: Input): Promise<Witness> =>
   return witness;
 };
 
-export const closePartialWorkspace = async (input: Input, witness: Witness) => {
-  await verifyCurrent(input, witness);
-  const result = await input.rpc.request("workspace.close", { workspace_id: witness.binding.workspaceId, close_group: false }, input.operation);
-  if (result.type !== "ok") throw new Error("The partial workspace close was not confirmed.");
+export const observeClosedPartialWorkspace = async (input: Pick<Input, "context" | "rpc" | "operation">, witness: Witness) => {
   const after = await snapshot(input.rpc, input.operation), { binding } = witness;
   const ownerAbsent = after.workspaces.every(row => !owned(row, input.context));
   const workspaceAbsent = after.workspaces.every(row => row.workspace_id !== binding.workspaceId) && [...after.panes, ...after.agents, ...after.tabs].every(row => row.workspace_id !== binding.workspaceId);
   const paneAbsent = [...after.panes, ...after.agents].every(row => row.pane_id !== binding.paneId && row.pane_id !== witness.initialPaneId);
   const terminalAbsent = [...after.panes, ...after.agents].every(row => row.terminal_id !== binding.terminalId && row.terminal_id !== witness.initialTerminalId);
-  if (!ownerAbsent || !workspaceAbsent || !paneAbsent || !terminalAbsent || after.tabs.some(row => row.tab_id === witness.tabId || row.tab_id === witness.initialTabId)) throw new Error("The original partial workspace remains observable after close.");
-  return { owner: canonicalResourceOwner(input.context), binding: { ...binding }, shellPid: witness.shellPid, failurePhase: "root-readiness" as const, layoutVerified: true, noAgentLaunch: true, closeConfirmed: true, after: { ownerAbsent, workspaceAbsent, paneAbsent, terminalAbsent } };
+  const tabAbsent = after.tabs.every(row => row.tab_id !== witness.tabId && row.tab_id !== witness.initialTabId);
+  if (!ownerAbsent || !workspaceAbsent || !paneAbsent || !terminalAbsent || !tabAbsent) throw new Error("The original partial workspace remains observable after close.");
+  return { owner: canonicalResourceOwner(input.context), binding: { ...binding }, tabId: witness.tabId, initialTabId: witness.initialTabId, initialPaneId: witness.initialPaneId, initialTerminalId: witness.initialTerminalId, ownerAbsent, workspaceAbsent, paneAbsent, terminalAbsent, tabAbsent };
+};
+
+export const closePartialWorkspace = async (input: Input, witness: Witness) => {
+  await verifyCurrent(input, witness);
+  const result = await input.rpc.request("workspace.close", { workspace_id: witness.binding.workspaceId, close_group: false }, input.operation);
+  if (result.type !== "ok") throw new Error("The partial workspace close was not confirmed.");
+  const { ownerAbsent, workspaceAbsent, paneAbsent, terminalAbsent, tabAbsent } = await observeClosedPartialWorkspace(input, witness);
+  return { owner: canonicalResourceOwner(input.context), binding: { ...witness.binding }, tabId: witness.tabId, initialTabId: witness.initialTabId, initialPaneId: witness.initialPaneId, initialTerminalId: witness.initialTerminalId, shellPid: witness.shellPid, failurePhase: "root-readiness" as const, layoutVerified: true, noAgentLaunch: true, closeConfirmed: true, after: { ownerAbsent, workspaceAbsent, paneAbsent, terminalAbsent, tabAbsent } };
 };
