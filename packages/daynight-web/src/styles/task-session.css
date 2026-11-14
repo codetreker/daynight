@@ -47,7 +47,8 @@
 .session-interaction fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .session-interaction fieldset fieldset { margin: 12px 0; }
 .session-interaction legend { margin-bottom: 8px; font-weight: 600; }
-.session-interaction input:not([type='checkbox']):not([type='radio']), .session-interaction select { display: block; width: 100%; min-width: 0; padding: 8px; border: 1px solid #d8ddea; border-radius: 5px; background: #fff; font: inherit; margin-top: 6px; }
+.session-interaction input:not([type='checkbox']):not([type='radio']) { display: block; width: 100%; min-width: 0; padding: 8px; border: 1px solid #d8ddea; border-radius: 5px; background: #fff; font: inherit; margin-top: 6px; }
+.session-interaction-select { margin-top: 6px; }
 .session-choice { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
 .session-form-field { display: block; margin-bottom: 12px; }
 .session-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

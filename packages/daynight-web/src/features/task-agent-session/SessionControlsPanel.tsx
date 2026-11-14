@@ -1,4 +1,5 @@
 import { operationErrorMessage, operationErrorText } from './operation-error';
+import { NativeSelect, type NativeSelectProps } from '../../ui/native-select/NativeSelect';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { SessionControls, SessionSetting } from '../../../../daynight/src/session/controls';
 import type { SessionState } from './state';
@@ -8,7 +9,8 @@ import { operationPresentation, type SessionOperationProgress } from './operatio
 import { useSessionControlMessages } from './controls-messages';
 
 export type ControlsView = 'model' | 'permissions' | 'commands' | null;
-export function SessionControlsPanel({ controls, state, intents, operationProgress = new Map(), view, disabled, onClose, onSelect, onRefresh }: {
+export function SessionControlsPanel({ controls, state, intents, operationProgress = new Map(), view, disabled, nativeSelectTouchMode, onClose, onSelect, onRefresh }: {
+  readonly nativeSelectTouchMode?: NativeSelectProps['touchMode'];
   readonly controls: SessionControls | undefined; readonly state: SessionState;
   readonly operationProgress?: SessionOperationProgress;
   readonly intents: ReadonlyMap<string, SessionSettingIntent>; readonly view: ControlsView; readonly disabled: boolean;
@@ -56,10 +58,10 @@ export function SessionControlsPanel({ controls, state, intents, operationProgre
       const failed = operation && ['failed', 'rejected', 'expired'].includes(operation.state);
       return <div className="session-control-setting" key={setting.id} data-setting-state={pending ? 'pending' : undefined}>
         <label htmlFor={`${id}-${setting.id}`}>{controlMessages.settingLabel(setting)}</label>
-        <select id={`${id}-${setting.id}`} value={value} disabled={disabled || busy || !setting.mutable || !onSelect} onChange={event => void select(setting, event.target.value)}>
+        <NativeSelect density="form" layout="fill" touchMode={nativeSelectTouchMode} pending={Boolean(pending)} id={`${id}-${setting.id}`} value={value} disabled={disabled || busy || !setting.mutable || !onSelect} onChange={event => void select(setting, event.target.value)}>
           {!setting.options.some(option => option.value === value) ? <option value={value}>{value || m.unavailableValue}</option> : null}
           {setting.options.map(option => <option key={option.value} value={option.value}>{controlMessages.optionLabel(setting, option)}</option>)}
-        </select>
+        </NativeSelect>
         {pending && receipt === 'unknown' ? <p className="session-control-note" role="status">{m.settingUnknown} {m.currentValue}: {actual}</p> : null}
         {failed ? <p className="session-error" role="alert">{operationErrorText(operation.error?.message ?? '', m.operationFailed)}</p> : null}
         {description ? <p className="session-control-note">{description}</p> : null}

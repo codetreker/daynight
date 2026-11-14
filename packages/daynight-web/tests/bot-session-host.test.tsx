@@ -42,6 +42,25 @@ function fixture() {
   const select = async (n: number) => { view.rerender(<BotSessionHost cache={cache} displayBinding={botBinding(n)} actionBinding={botBinding(n)} />); await waitFor(() => { const input = screen.getByRole('textbox', { name: 'Message' }); expect(input).toBeEnabled(); expect(input).not.toHaveAttribute('readonly'); }); };
   return { bots, cache, view, select };
 }
+it('gives Bot provider settings named-container touch presentation through the shared composer', async () => {
+  const bot = botFixture();
+  bot.change({ ...bot.snapshot(), controls: { revision: '1', settings: [
+    { id: 'model', category: 'model', label: 'Model selection', description: null, value: 'native-a', mutable: true, scope: 'session',
+      options: [{ value: 'native-a', label: 'Native A' }, { value: 'native-b', label: 'Native B' }] },
+  ], commands: [], settingsError: null, commandsError: null } });
+  const cache = new BotSessionCache({ userId: botOwner, isCurrent: () => true, storage: null, onPrincipalMismatch: vi.fn(), createApi: () => bot.api });
+  caches.push(cache);
+  render(<BotSessionHost cache={cache} displayBinding={bot.binding} actionBinding={bot.binding} />);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Model' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+  const select = screen.getByRole('combobox', { name: 'Model' });
+  expect(select.parentElement).toHaveAttribute('data-touch-mode', 'container');
+  expect(select.parentElement).toHaveAttribute('data-density', 'form');
+  expect(select.parentElement).toHaveAttribute('data-layout', 'fill');
+  expect(select).toHaveValue('native-a');
+  expect(bot.api.command).not.toHaveBeenCalled();
+});
+
 it('retains the actual shared Session DOM and independent drafts across A/B/A and releases a fourth pane', async () => {
   const f = fixture(); await f.select(1);
   const shell = f.view.container.firstElementChild, a = screen.getByRole('textbox', { name: 'Message' });

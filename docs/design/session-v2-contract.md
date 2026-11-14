@@ -21,6 +21,8 @@ TS `values.ts` 拥有版本、限额、原始 JSON 解码、基本值和规范�
 HTTP/WebSocket 路由启用、原生适配器、持久录制及 UI 分别由其实现模块负责；
 本包提供纯协议选择函数，不自行注册服务端路由。
 
+Web 的 `TerminalRecordingView` 以[公共原生选择组件](native-select.md)的 `filter/content` 呈现本地录制缩放，继续用原受控值改变 `--terminal-text-scale`，不产生控制请求、回执或归档修改。播放器与所在 Session 的全屏根保持同一子树；`useSessionFullscreen` 的共享 React/document 键盘处理器尊重已消费事件与 IME，并在缩放原生 popup 打开时只停止 Escape 传播，保留原生取消和当前全屏。非 popup Escape 沿原退出与回焦点逻辑处理。播放、暂停、时间轴和归档完整性仍由各自原机制拥有。
+
 ## 原始 JSON 与基本类型
 
 所有表中字段均必需，包括值为 `null` 的字段。所有对象拒绝未知字段、遗漏字段
