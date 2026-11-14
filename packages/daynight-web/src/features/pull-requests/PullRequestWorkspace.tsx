@@ -83,12 +83,15 @@ const Workspace = (props: PullRequestWorkspaceProps) => {
   const settingsLink = <a href={settings} onClick={settingsClick}>{m.settings}</a>;
   const known = page !== null && (BigInt(page.counts.all) > 0n || status !== null && !status.initializing && status.poll.lastSuccessAt !== null);
   const syncOperational = status !== null && status.syncEnabled && status.serviceAvailable && status.connection === 'connected';
+  const primaryNote = status === null ? null
+    : !status.syncEnabled ? { text: m.syncOff, danger: false }
+      : !status.serviceAvailable ? { text: m.serviceUnavailable, danger: false }
+        : status.connection === 'unavailable' ? { text: m.unavailable, danger: true }
+          : status.connection === 'disconnected' ? { text: m.disconnected, danger: false }
+            : status.connection === 'connected' && status.initializing ? { text: m.initializing, danger: false }
+              : null;
   const notes = status === null ? [] : [
-    ...(!status.syncEnabled ? [{ text: m.syncOff, danger: false }] : []),
-    ...(!status.serviceAvailable ? [{ text: m.serviceUnavailable, danger: false }] : []),
-    ...(status.connection === 'unavailable' ? [{ text: m.unavailable, danger: true }] : []),
-    ...(status.connection === 'disconnected' ? [{ text: m.disconnected, danger: false }] : []),
-    ...(status.syncEnabled && status.serviceAvailable && status.initializing && status.connection === 'connected' ? [{ text: m.initializing, danger: false }] : []),
+    ...(primaryNote === null ? [] : [primaryNote]),
     ...(status.poll.error !== null ? [{ text: syncOperational ? m.pollError : m.historicalPollError, danger: false }] : []),
     ...(status.webhook.error !== null ? [{ text: syncOperational ? m.webhookError : m.historicalWebhookError, danger: false }] : []),
   ];

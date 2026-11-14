@@ -119,6 +119,54 @@ describe('pull request workspace', () => {
     if (scene === 'service-unavailable') expect(screen.getByText(/not configured on this service/)).toBeVisible();
   });
 
+  it.each([
+    ['off and service unavailable', { syncEnabled: false, serviceAvailable: false }, 'Sync is off', false],
+    ['off and unavailable', { syncEnabled: false, connection: 'unavailable' }, 'Sync is off', false],
+    ['off and disconnected', { syncEnabled: false, connection: 'disconnected' }, 'Sync is off', false],
+    ['off and initializing', { syncEnabled: false, initializing: true }, 'Sync is off', false],
+    ['service unavailable and unavailable', { serviceAvailable: false, connection: 'unavailable', initializing: true }, 'GitHub integration is not configured', false],
+    ['unavailable and initializing', { connection: 'unavailable', initializing: true }, 'GitHub access is unavailable', true],
+    ['disconnected and initializing', { connection: 'disconnected', initializing: true }, 'GitHub is disconnected', false],
+    ['initializing', { initializing: true }, 'Initial synchronization is in progress', false],
+    ['healthy', {}, null, false],
+    ['not connected', { connection: 'not_connected', initializing: true }, null, false],
+  ] satisfies readonly [string, Partial<GitHubStatus>, string | null, boolean][])('selects one primary notice for %s', async (_scene, changes, expected, danger) => {
+    mockReads(url => url.pathname.endsWith('/github') ? status(changes) : page([summary()]));
+    const { container } = renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+    await screen.findByText(/Last complete sync/);
+    await waitFor(() => {
+      const notices = container.querySelectorAll('.pr-sync-status .pr-status-note');
+      expect(notices).toHaveLength(expected === null ? 0 : 1);
+      if (expected !== null) {
+        expect(notices[0]).toHaveTextContent(expected);
+        expect(notices[0]).toHaveAttribute('role', 'status');
+        expect(notices[0]).toHaveClass('pr-status-note');
+        expect(notices[0]?.classList.contains('danger')).toBe(danger);
+        expect(within(notices[0] as HTMLElement).getAllByRole('link', { name: 'View sync settings' })).toHaveLength(1);
+      }
+    });
+  });
+
+  it('keeps independent historical diagnostics alongside the single primary notice', async () => {
+    const error = { code: 'network', message: 'safe diagnostic', at: time }, base = status();
+    mockReads(url => url.pathname.endsWith('/github') ? status({ syncEnabled: false, serviceAvailable: false, connection: 'unavailable', poll: { ...base.poll, error }, webhook: { ...base.webhook, error } }) : page([summary()]));
+    renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    expect(await screen.findByText(/Sync is off/)).toBeVisible();
+    expect(screen.getByText(/The last polling attempt failed/)).toBeVisible();
+    expect(screen.getByText(/The last webhook update failed/)).toBeVisible();
+    expect(screen.queryByText(/GitHub integration is not configured/)).toBeNull();
+    expect(screen.queryByText(/GitHub access is unavailable/)).toBeNull();
+  });
+
+  it('shows no primary notice before status has been read', async () => {
+    const pending = new Promise<GitHubStatus>(() => {});
+    mockReads(url => url.pathname.endsWith('/github') ? pending : page([summary()]));
+    const { container } = renderWithLocale(<PullRequestWorkspace {...options()} />, { locale: 'en' });
+    await screen.findByRole('button', { name: '#123 Preserve 123, Open' });
+    expect(container.querySelector('.pr-sync-status .pr-status-note')).toBeNull();
+  });
+
   it('keeps saved records during list failure, retries status separately, and retains the return cursor on an empty page', async () => {
     let failed = false;
     const fetch = mockReads(url => {
