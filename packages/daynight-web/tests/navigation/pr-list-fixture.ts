@@ -22,7 +22,7 @@ export const records = Array.from({ length: 48 }, (_, index) => ({
 export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') => {
   const task = detailFixture(projectId, '00000000-0000-4000-8000-000000000041', { title: 'Existing task' });
   const graph = graphFixture([task]);
-  const state = { scene: 'populated' as Scene, syncOff: false, revision: 1, graphFailure: false, pageReads: [] as string[], detailReads: 0, statusReads: 0, unexpected: [] as string[] };
+  const state = { scene: 'populated' as Scene, syncOff: false, longCounts: false, revision: 1, graphFailure: false, pageReads: [] as string[], detailReads: 0, statusReads: 0, unexpected: [] as string[] };
   const cursors = new Map<string, { offset: number; state: string; query: string }>();
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
@@ -67,7 +67,7 @@ export const installPrList = async (page: Page, locale: 'en' | 'zh-CN' = 'en') =
       const token = (offset: number) => { const key = `opaque:${filter}:${encodeURIComponent(query)}:${offset}`; cursors.set(key, { offset, state: filter, query }); return key; };
       const offset = position.offset;
       return send({ projectId, revision: String(state.revision), items: matches.slice(offset, offset + 6).map(item => ({ ...item, revision: String(state.revision), title: state.revision > 1 && item.number === '1248' ? `${item.title} updated` : item.title })), total: String(matches.length),
-        counts: { active: available ? '12' : '0', merged: available ? '28' : '0', closed: available ? '8' : '0', all: String(all.length) }, previousCursor: offset > 0 ? token(Math.max(0, offset - 6)) : null, nextCursor: offset + 6 < matches.length ? token(offset + 6) : null });
+        counts: state.longCounts ? { active: '9223372036854775807', merged: '9223372036854775807', closed: '9223372036854775807', all: '9223372036854775807' } : { active: available ? '12' : '0', merged: available ? '28' : '0', closed: available ? '8' : '0', all: String(all.length) }, previousCursor: offset > 0 ? token(Math.max(0, offset - 6)) : null, nextCursor: offset + 6 < matches.length ? token(offset + 6) : null });
     }
     if (path.startsWith(`/api/v1/projects/${projectId}/pull-requests/`)) {
       state.detailReads++;
