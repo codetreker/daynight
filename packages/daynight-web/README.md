@@ -758,9 +758,11 @@ edit changes task time or graph geometry.
 
 ## GitHub connection settings
 
-Project settings show GitHub connection and independent polling and Webhook status to all members. Administrators can discover the configured App's installation, connect or reconnect, set the polling interval and disconnect. Discovery checks the App's access to the Project repository, independently of the operator's GitHub account. Disconnect retains synchronized data; private repository data is shared with Project members. A connection schedules the first sync and does not imply it has completed.
+Project settings show GitHub connection, PR synchronization intent, and independent polling and Webhook status to all members. Administrators can discover the configured App's installation, connect or reconnect, switch synchronization, set the polling interval and disconnect. Discovery checks the App's access to the Project repository, independently of the operator's GitHub account. A first connection remains off; reconnecting an unavailable binding retains its saved intent, while disconnecting turns synchronization off and retains saved data. Private repository data is shared with Project members.
 
-Management uses the independent GitHub resource's exact version and shares the synchronous Project management guard. A conflict or unknown write outcome retains the draft and holds the guard until an admitted read reconciles the state or the scope ends, without replaying the write. An existing binding can be disconnected even when the App is unavailable or unconfigured. The [runtime design](../../docs/design/github-connection-runtime.md) describes the server behavior.
+The switch displays the last confirmed `syncEnabled` value. Enabling requires an available service and connection; an administrator can disable an already enabled setting even when the service or authorization is unavailable. Synchronization off is neutral and retains historical observations without presenting old errors as current failures. The PR tab and saved records remain readable, including during a new initialization; refresh reads saved data and does not enable synchronization.
+
+Management uses the independent GitHub resource's exact version and shares the synchronous Project management guard. The separate switch request never submits an interval draft. A conflict or unknown write outcome retains the draft and original page ownership and holds the guard until an admitted read reconciles the state or the scope ends, without replaying the write. An existing binding can be disconnected even when the App is unavailable or unconfigured. The [runtime design](../../docs/design/github-connection-runtime.md) describes the server behavior.
 
 ## Project deletion
 

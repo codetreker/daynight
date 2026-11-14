@@ -43,7 +43,7 @@ export const installPrList = async (page: Page) => {
       state.statusReads++;
       if (state.scene === 'read-error') return send(fault(), 500);
       const missing = state.scene === 'notconnected', initial = state.scene === 'initial';
-      return send({ projectId, version: '1', revision: String(state.revision), serviceAvailable: true,
+      return send({ projectId, version: '1', revision: String(state.revision), serviceAvailable: true, syncEnabled: true,
         connection: missing ? 'not_connected' : state.scene === 'unavailable' ? 'unavailable' : state.scene === 'disconnected' ? 'disconnected' : 'connected',
         repository: missing ? null : { id: '10', fullName: 'codetreker/daynight', private: null },
         installation: missing ? null : { id: '20', accountLogin: 'codetreker' }, pollIntervalMinutes: 5, initializing: initial,
