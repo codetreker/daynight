@@ -1,4 +1,5 @@
 import { operationErrorMessage } from './operation-error';
+import { isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
 import { useRef, useState, useLayoutEffect, useEffect, useId, useCallback, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import type { SessionComposerPresentation } from './session-presentation-slots';
@@ -515,12 +516,12 @@ export function SessionComposer({ state, connected, canInteract = true, actionAd
     event.preventDefault(); dragDepth.current = 0; setImageDrop(false);
     if (imageEditable) addFiles(Array.from(event.dataTransfer.files));
   }} className={`session-composer session-composer-adaptive${compactMenus ? ' session-composer-compact-menus' : ''}`} onPointerDownCapture={() => { keyboardMenuInteraction.current = false; }} onKeyDownCapture={() => { keyboardMenuInteraction.current = true; }} onClickCapture={event => { keyboardMenuInteraction.current = event.detail === 0; }} onSubmit={(event) => { event.preventDefault(); void send(); }} onKeyDown={event => {
-    if (event.key !== 'Escape' || !(controlView || showCommands)) return;
+    if (event.defaultPrevented || event.key !== 'Escape' || !(controlView || showCommands)) return;
     event.stopPropagation();
-    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current) return;
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || composing.current || isNativeSelectPopupOpen(event.target)) return;
     event.preventDefault(); closeControls();
   }}>
-    <SessionControlsPanel controls={controls} state={state} intents={settingIntents} operationProgress={operationProgress} view={controlView} disabled={!controlsAllowed} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
+    <SessionControlsPanel controls={controls} state={state} intents={settingIntents} operationProgress={operationProgress} view={controlView} disabled={!controlsAllowed} nativeSelectTouchMode={presentation?.nativeSelectTouchMode} onClose={closeControls} onSelect={onUpdateSetting} onRefresh={onRefreshControls} />
     {showCommands ? <div ref={commandMenuRef} className="session-command-menu">
       <div className="session-command-heading"><strong>{m.nativeCommands}</strong><div className="session-command-actions"><button type="button" className="inline-link" disabled={!controlsAllowed || refreshing || !onRefreshControls} aria-busy={refreshing} onClick={() => void refreshCommands()}>{refreshing ? m.refreshingCommands : controls?.commandsError ? m.reloadCommands : m.refreshCommands}</button><button type="button" className="inline-link session-command-close" onClick={closeControls}>{m.close}</button></div></div>
       <div className="session-command-body" ref={commandBodyRef}>

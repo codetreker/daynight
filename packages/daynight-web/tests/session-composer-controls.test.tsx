@@ -89,6 +89,10 @@ describe('compact assistant settings', () => {
     expect(screen.getByRole('combobox', { name: controlName })).toBe(select);
     expect(select).toHaveValue(previous);
     expect(select).toBeDisabled();
+    expect(select.parentElement).toHaveAttribute('data-density', 'form');
+    expect(select.parentElement).toHaveAttribute('data-layout', 'fill');
+    expect(select.parentElement).toHaveAttribute('data-touch-mode', 'none');
+    expect(select.parentElement).toHaveAttribute('data-pending', 'true');
     expect(screen.getByRole('button', { name: triggerName })).toHaveAttribute('data-pending', 'true');
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -98,6 +102,7 @@ describe('compact assistant settings', () => {
     view.rerender(element(confirmed, intents));
     expect(select).toHaveValue(next);
     expect(select).toBeEnabled();
+    expect(select.parentElement).toHaveAttribute('data-pending', 'false');
     expect(screen.getByRole('button', { name: triggerName })).not.toHaveAttribute('data-pending');
     expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
     expect(screen.getByRole('textbox')).toBe(input);
@@ -106,6 +111,65 @@ describe('compact assistant settings', () => {
     expect(props.onSend).not.toHaveBeenCalled();
     expect(props.onCancel).not.toHaveBeenCalled();
   });
+});
+
+it('passes named-container touch presentation to settings without replacing the confirmed control', () => {
+  const props = base();
+  const view = render(<SessionComposer {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+  const select = screen.getByRole('combobox', { name: 'Model' });
+  expect(select.parentElement).toHaveAttribute('data-touch-mode', 'none');
+  view.rerender(<SessionComposer {...props} presentation={{ nativeSelectTouchMode: 'container' }} />);
+  expect(screen.getByRole('combobox', { name: 'Model' })).toBe(select);
+  expect(select.parentElement).toHaveAttribute('data-touch-mode', 'container');
+  expect(select).toHaveValue('native-a');
+  expect(props.onUpdateSetting).not.toHaveBeenCalled();
+});
+
+it('leaves native popup Escape cancellation to the browser and retains settings and draft', () => {
+  const props = base(), outer = vi.fn();
+  render(<div onKeyDown={outer}><SessionComposer {...props} /></div>);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Keep settings draft' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Model' }));
+  const select = screen.getByRole('combobox', { name: 'Model' });
+  // This isolates the enclosing handler; native menu cancellation is verified in a browser.
+  const matches = select.matches.bind(select);
+  const popup = vi.spyOn(select, 'matches').mockImplementation(selector => selector === ':open' || matches(selector));
+  expect(fireEvent.keyDown(select, { key: 'Escape', cancelable: true })).toBe(true);
+  expect(screen.getByRole('combobox', { name: 'Model' })).toBe(select);
+  expect(select).toHaveValue('native-a');
+  expect(input).toHaveValue('Keep settings draft');
+  expect(outer).not.toHaveBeenCalled();
+  popup.mockRestore();
+  expect(fireEvent.keyDown(select, { key: 'Escape', cancelable: true })).toBe(false);
+  expect(screen.queryByRole('combobox')).toBeNull();
+  expect(input).toHaveFocus();
+  expect(input).toHaveValue('Keep settings draft');
+  expect(props.onUpdateSetting).not.toHaveBeenCalled();
+  expect(props.onSend).not.toHaveBeenCalled();
+});
+
+it.each(['prevented', 'composing', 'key-code', 'composition-event'] as const)('retains the settings panel and draft for %s Escape', mode => {
+  const props = base();
+  render(<SessionComposer {...props} />);
+  const input = screen.getByRole('textbox');
+  fireEvent.change(input, { target: { value: 'Settings draft during IME' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Permissions' }));
+  const select = screen.getByRole('combobox', { name: 'Approval policy' });
+  if (mode === 'composition-event') fireEvent.compositionStart(input);
+  const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true,
+    ...(mode === 'composing' ? { isComposing: true } : mode === 'key-code' ? { keyCode: 229 } : {}) });
+  if (mode === 'prevented') event.preventDefault();
+  fireEvent(select, event);
+  expect(screen.getByRole('combobox', { name: 'Approval policy' })).toBe(select);
+  expect(input).toHaveValue('Settings draft during IME');
+  expect(event.defaultPrevented).toBe(mode === 'prevented');
+  if (mode === 'composition-event') fireEvent.compositionEnd(input);
+  fireEvent.keyDown(select, { key: 'Escape' });
+  expect(screen.queryByRole('combobox')).toBeNull();
+  expect(input).toHaveFocus();
+  expect(props.onUpdateSetting).not.toHaveBeenCalled();
 });
 
 describe('command candidate reverse navigation', () => {

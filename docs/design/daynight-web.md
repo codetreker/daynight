@@ -182,12 +182,18 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 - 项目设置同时保留执行提醒表单和归属区段。执行提醒读取与写入先通过当前身份准入；可信撤权清除私有内容，缺失或无效身份头的响应不能证明撤权。身份错配且 owner 保留页面时，停止旧读取和发布，保留已有内容与草稿；已派发写入分别记录已确认、可信拒绝和未知结果，不能重发或安装迟到回执。同账户普通准入暂停仍可恢复。`ProjectOwnership` 使用已确认的 `ProjectAccess.canTransfer` 展示入口，打开确认前重验权限；目标来自已加入 Team 的分页列表、UUID 或同 origin 的 Team 页面链接。普通复核保留对话框、目录页与选择；确认等待在途复核并核对操作身份及归属版本。预览返回目标名称、精确版本和转移后的预期角色，确认提交观察到的 ownership、目标版本与当前用户。可信撤权清除未提交的项目及 Team 预览，并隔离私有对话框内容；已派发操作及其不含私有内容的 unknown 核对入口保持归属。冲突要求重新预览并确认；派发后未确认的结果保持 unknown，重读只展示当前事实，不重发或把 404 解释为成功。
 - 成功回执按当前准入重核 access；失权时按原 ticket 撤回对应 `TaskCacheScope` generation，清除所属项目私有视图与打开的任务。失权后按 source Team ID 点读：成功选择原 Team，确定 404 才选择 Personal，网络失败保留成功结果并提供导航重试。提交时捕获的编辑器、草稿版本及导航上下文仍匹配时才关闭对话框或自动进入目标；离开或替换编辑器后的迟到结果不改变新页面状态。结果显示归属认证 Workspace，跨导航保留；权限仍在时留在项目并刷新 access。[转移决策](../../.agents/notes/implemented/feature/2026-11-05-web-project-transfer.md)记录原因和代价。
 - 成员与邀请分区在 `/teams/{teamId}/members` 按身份读取 Team 和完整成员目录，邀请管理位于成员列表下方并保持 admin 读取与写入限制；不使用 Project participant 代替 Team 目录。目录保留 nullable profile 和真实成员版本，以用户 ID 作为资料缺失时的展示回退。角色与移除确认复用 `ManagementDialog` 和 Team mutation 状态；派发后的未知结果保留只读核对，冲突或权限拒绝刷新后要求重新确认。成员操作按登录身份和 Team 保持到跨路由的回执或未知结果；待定与未知操作阻止偏好读取的 404 抢先丢弃结果，核对只展示当前事实。成功回执独立于刷新结果显示，并刷新本人角色与 Team 列表；完成时仍在同一 Team 的任一设置分区则自退回执导航 Personal，离开该 Team 设置后的迟到回执只回退仍指向该 Team 的内存选择，不改变新路由。`useTeamPreference.leaveTeam` 丢弃已退出 Team 的待保存值，复用保存与重试机制将已退出 Team ID 作为替换条件；每次尝试均读取当前存储，仅当仍保存为该 ID 时写入 Personal，其他 Team 或缺失值保持原样。读取或写入失败保留这个条件，沿用保存错误与人工重试入口，后来的本地选择接替待保存值。生产 hook 测试覆盖正常回退、另一标签页选择、缺失记忆、未保存选择及存储故障恢复；完整 `AuthenticatedApp` 测试以延迟自退回执验证 Shared 和 Task 路由及下次默认入口恢复。独立 Project grant 保持不变。Personal 和最后 admin 的控件不可用，服务端仍负责并发权限与最后 admin 检查。
-- Team 成员列表以共享 grid 列轨道和行 subgrid 对齐身份、角色及操作；最后 admin 说明占独立行，避免其高度改变控件与操作的对齐。窄屏把身份移到上一行，说明可换行。角色控件保留原生 select 交互，使用固定尺寸与独立绘制的箭头控制留白；Project 授权的控件样式独立保留。取舍见[成员角色对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-05-team-member-role-alignment.md)。
+- Team 成员列表以共享 grid 列轨道和行 subgrid 对齐身份、角色及操作；最后 admin 说明占独立行，避免其高度改变控件与操作的对齐。窄屏把身份移到上一行，说明可换行。Team 与 Project 角色字段共同使用 `NativeSelect` 的 filter 密度，wrapper 仅提供 120px 外宽与可收缩限制；箭头、字体、焦点和禁用外观由[公共选择组件](native-select.md)拥有。角色变化仍先打开确认，取消保留已确认角色，不产生写入。取舍见[成员角色对齐决策](../../.agents/notes/implemented/bug-fix/2026-11-05-team-member-role-alignment.md)。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
 - `TeamWorkspace` 的外层 `ProjectsProvider` 固定于当前 Team，侧栏与 Team 项目卡片共享目录、刷新及“加载更多”；共享路由不改变其 scope 或重置已加载页。`SharedProjectsPage` 仅在共享正文中挂载独立 `ProjectsProvider`，共享列表的手动刷新和分页只操作该目录。Team 目录等待偏好 ready，Shared 目录只依赖账号／工作空间准入，二者的加载和错误互不替换。
 - 两份目录复用 `GET /api/v1/projects` 的 `teamId` 或 `shared=true` 范围和游标，服务端先过滤再分页，按 ID 去重并保留服务端顺序。Team 真正切换时取消旧请求、清空旧游标并拒绝晚到结果；共享页面卸载后再次进入按页面生命周期首读。`WorkspaceRoutes` 接收共享页面以 layout effect 注册的当前 refresh，清理仅移除对应回调；统一刷新入口调用当前 Team 及已挂载 Shared 目录，供转移、删除、创建、成员移除和不可用回调使用。迟到回执使用当前目录 owner，导航仍受原操作的上下文约束。创建对话框捕获打开时的 Team ID。身份错配且 owner 保留对话框时，停止旧操作等待和结果发布，区分已确认、可信拒绝和未知创建结果；未知结果不能重发，已确认回执不能触发旧身份下的导航或目录更新。
 - 加载下一页失败时保留已加载卡片，错误和重试定位在列表末尾；首次加载失败使用整页错误。
 - 刷新重置分页，从新列表开始。列表没有跨页一致性承诺，不显示未经完整读取的项目总数。目录和配置元数据在请求开始时捕获缓存 generation；可信撤权撤回匹配项并使在途读取失效，持久清理失败保留拒绝及可见错误。fresh 授权读取可以恢复同一 ID；未访问没有准入记录不代表撤权。
+
+### 管理表单与对话框
+
+管理表单中的目标 Team、Token 有效期和 GitHub installation 使用 `NativeSelect` 的 form 密度与 fill 布局，选项、权限和提交时序由各表单拥有。目标 Team 目录选择与手工 ID/链接共用转移草稿及预览；Token 的 never/custom 切换保留日期草稿，提交校验仍由 Token 表单执行。GitHub 字段只呈现服务端返回的单个 candidate，连接须显式确认。
+
+`ManagementDialog` 的 document 键盘监听器尊重 `defaultPrevented` 与 IME 输入。Escape 在真实 select 的原生 popup 打开时通过共享 `isNativeSelectPopupOpen` 判定，只停止向外传播，保留浏览器默认取消，不关闭对话框或清除草稿。普通 Escape、busy 限制、Tab 焦点圈定及关闭回焦点仍由对话框管理。
 
 ### 管理身份展示
 

@@ -16,16 +16,16 @@ type State = {
   directOnly: boolean; actorLost: boolean; loseResponse: boolean; conflict: boolean;
   retainAccess: boolean; transferred: boolean; sourceRead: 'ok' | 'missing' | 'network';
   forbidden: boolean; hold: Promise<void> | null;
-  holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdTeams: Promise<void> | null; paginated: boolean;
+  holdMe: Promise<void> | null; holdAccess: Promise<void> | null; holdTeams: Promise<void> | null; paginated: boolean; longNames: boolean;
   targetVersion: bigint; requests: string[]; writes: string[]; previews: string[];
 };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
+  const state: State = { directOnly: false, actorLost: false, loseResponse: false, conflict: false, retainAccess: false, transferred: false, sourceRead: 'ok', forbidden: false, hold: null, holdMe: null, holdAccess: null, holdTeams: null, paginated: false, longNames: false, targetVersion: 9007199254740993n, requests: [], writes: [], previews: [] };
   const ownership = { teamId: sourceId, version: 1n };
   const grant = { projectId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time };
   const access = () => state.transferred ? { projectId, ownerTeam: target, ownership: { teamId: targetId, version: 2n }, effectiveRole: 'admin', teamRole: null, canTransfer: false, directGrant: grant } : { projectId, ownerTeam: source, ownership, effectiveRole: 'admin', teamRole: state.directOnly ? null : 'admin', canTransfer: !state.directOnly, directGrant: state.directOnly || state.retainAccess ? grant : null };
-  const team = (ref: typeof source | typeof personal) => ({ ...ref, version: 1n, createdAt: time, updatedAt: time, membership: { teamId: ref.id, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time } });
+  const team = (ref: typeof source | typeof personal) => ({ ...ref, name: state.longNames && ref.kind === 'ordinary' ? `${ref.name} — ${'Platform Engineering '.repeat(8)}` : ref.name, version: 1n, createdAt: time, updatedAt: time, membership: { teamId: ref.id, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time } });
   const project = { id: projectId, name: 'Transfer project', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time, ownership, settings: { version: 1n, executionWarningMinutes: 60 } };
   await page.route('**/api/v1/**', async (route: Route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
@@ -86,6 +86,39 @@ const preview = async (page: Page, targetValue = targetId) => {
   await expect(dialog.getByRole('button', { name: 'Confirm transfer' })).toBeEnabled();
   return dialog;
 };
+
+for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
+  test(`native Team menu cancellation retains the transfer draft at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+    const state = await install(page); state.paginated = true; state.longNames = true;
+    await page.setViewportSize({ width, height: 900 }); await start(page);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    const opener = page.getByRole('button', { name: locale === 'en' ? 'Transfer project' : '转移项目', exact: true });
+    await opener.click();
+    const dialog = page.getByRole('dialog'), select = dialog.locator('#transfer-known'), draft = dialog.locator('#transfer-target');
+    await dialog.getByRole('button', { name: locale === 'en' ? 'Load more' : '加载更多' }).click();
+    await select.selectOption(targetId);
+    const geometry = await select.evaluate(element => {
+      const control = element.getBoundingClientRect(), wrapper = element.parentElement!, arrow = wrapper.querySelector('svg')!.getBoundingClientRect();
+      return { width: control.width, fieldWidth: wrapper.parentElement!.clientWidth, height: control.height, arrowInset: control.right - arrow.right, arrowOffset: arrow.top + arrow.height / 2 - control.top - control.height / 2, textOverflow: getComputedStyle(element).textOverflow };
+    });
+    expect(geometry.height).toBe(38); expect(Math.abs(geometry.width - geometry.fieldWidth)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.arrowInset - 12)).toBeLessThanOrEqual(1); expect(Math.abs(geometry.arrowOffset)).toBeLessThanOrEqual(1);
+    expect(geometry.textOverflow).toBe('ellipsis');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await testInfo.attach('select-geometry', { contentType: 'application/json', body: JSON.stringify(geometry) });
+    await page.screenshot({ path: testInfo.outputPath('transfer-select.png') });
+    const arrow = await select.locator('..').locator('svg').boundingBox();
+    await page.mouse.click(arrow!.x + arrow!.width / 2, arrow!.y + arrow!.height / 2);
+    await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(false);
+    await expect(dialog).toBeVisible(); await expect(select).toBeFocused();
+    await expect(select).toHaveValue(targetId); await expect(draft).toHaveValue(targetId);
+    expect(state.writes).toHaveLength(0); expect(state.previews).toHaveLength(0);
+    await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
+    expect(state.writes).toHaveLength(0);
+  });
+}
 
 const leaveAndReturn = async (page: Page): Promise<Page> => {
   const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();

@@ -1,3 +1,4 @@
+import { isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
 import { AccountRefreshNotice } from '../auth/AccountRefreshNotice';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -31,7 +32,12 @@ export const ManagementDialog = ({ title, children, footer, onClose, busy = fals
     const first = dialog.current!.querySelector<HTMLElement>(initialFocus === 'cancel' ? '[data-dialog-cancel]' : '.dialog-body input, .dialog-body textarea, .dialog-body select');
     (first ?? close.current!).focus();
     const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if (event.key === 'Escape') {
+        if (isNativeSelectPopupOpen(event.target)) {
+          event.stopPropagation();
+          return;
+        }
         event.preventDefault();
         if (!callbacks.current.busy) callbacks.current.onClose();
       }

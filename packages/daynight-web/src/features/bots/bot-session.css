@@ -1,7 +1,7 @@
 .bot-session-host, .bot-session-pane { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .bot-session-pane[hidden] { display: none; }
 
-.bot-session-pane .session-presentation-assistant { container: bot-reading / inline-size; background: #fdfdfe; }
+.bot-session-pane .session-presentation-assistant { container: bot-reading native-select-region / inline-size; background: #fdfdfe; }
 .bot-session-pane .session-presentation-assistant .session-timeline { padding: 32px 36px 20px; }
 .bot-session-pane .session-presentation-assistant .session-timeline-content { max-width: 760px; }
 .bot-session-pane .session-presentation-assistant .session-entry { margin-bottom: 29px; }
@@ -60,7 +60,7 @@
   .bot-session-pane .session-presentation-assistant .session-interrupt,
   .bot-session-pane .session-presentation-assistant .session-actions .button { min-width: 44px; min-height: 44px; }
   .bot-session-pane .session-presentation-assistant .session-command-trigger { min-width: 44px; }
-  .bot-session-pane .session-presentation-assistant .session-controls-panel :is(button, select),
+  .bot-session-pane .session-presentation-assistant .session-controls-panel button,
   .bot-session-pane .session-presentation-assistant .session-command-menu button { min-height: 44px; }
   .bot-session-pane .session-presentation-assistant .session-command-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
   .bot-session-pane .session-presentation-assistant .session-command-heading > strong { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }

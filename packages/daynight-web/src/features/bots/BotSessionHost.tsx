@@ -79,7 +79,7 @@ export function BotSessionHost({ cache, displayBinding, actionBinding = null, co
     ...presentation,
     variant: 'assistant',
     renderEmpty: slot => <BotConversationEmpty {...slot} />,
-    composer: { ...presentation?.composer, compactMenus: true },
+    composer: { ...presentation?.composer, compactMenus: true, nativeSelectTouchMode: 'container' },
   };
   // Two admitted navigations can return to this same selection in one commit.
   // The navigation owner's snapshot still changes, so that commit must readmit it.

@@ -4,6 +4,8 @@ Project 管理员通过 GitHub 子资源发现目标仓库的安装、连接、�
 
 已有绑定的仓库改名或更换安装时，发现优先检查保存的名称和安装；必要时分页扫描当前服务 App 自身的安装，并按保存的稳定仓库 ID 寻找目标。找到后仍须实际验证仓库及 PR 读取。扫描超时或部分安装不可检查时，未找到匹配不能视为完整的无安装结果。
 
+Web 连接确认中的 installation 字段通过[公共原生选择组件](native-select.md)呈现发现返回的单个 candidate，不增加占位项或其他安装。字段保留完整标签、当前 candidate 和原有忙碌禁用条件；选择不会提交连接，只有显式确认才派发写入。`ManagementDialog` 保留原生菜单首次 Escape 的取消及未提交草稿，后续关闭与结果核对遵循[Web 管理界面](daynight-web.md)的所有权。
+
 连接与同步意愿独立：首次连接保留默认关闭，不安排后台轮询；重新连接保留原同步意愿，开启时安排完整轮询。实际开启需要服务可用、活动绑定、当前 App ID 和已保存的 available 访问状态；不额外访问 GitHub。开启安排立即完整轮询，但保留 `not_before` 限流期限。关闭不需要 App 或远端验证，保留绑定和 PR。修改间隔在关闭时只保存间隔；开启时不使当前领取失效，执行器完成时使用当前配置计算下一次时间。默认间隔五分钟。
 
 管理员通过 `PATCH /api/v1/projects/{projectId}/github/sync` 提交必填的十进制字符串 `version` 和 JSON boolean `syncEnabled`，成功返回完整状态。权限及精确版本先于同值判断；同值不递增版本。实际切换、断开或重连改变 generation、清除旧领取和提示并保留 PR；断开和 Project 删除同时关闭同步。开启前置不满足分别返回 409 `github_not_configured`、`github_not_connected` 或 `github_connection_unavailable`；提交结果未知返回 503 `github_write_outcome_unknown`，客户端重读而不重发。旧响应必须通过同步开关、有效领取、generation 和 live Project 检查才能发布。
