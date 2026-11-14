@@ -27,9 +27,11 @@ filters use the shared filter variant while retaining their separate values
 and behavior. Worker configuration fields use the form/fill variant; the
 personal prompt preview uses filter/content. Their caller-owned drafts,
 inheritance and save timing remain separate from presentation, and control-mode
-adoption retains a real select ref with two options and no selection. A shared
-popup-state predicate gives enclosing Escape handlers a native observation
-without making the component an event owner.
+adoption retains a real select ref with two options and no selection. Bot
+creation and assistant task forms and record filters also use the shared
+presentation while retaining their business selection rules. A shared popup-state
+predicate gives enclosing Escape handlers a native observation without making
+the component an event owner.
 
 This generalizes the geometry choice recorded in the
 [Worker spacing decision](../bug-fix/2026-11-06-worker-configuration-select-spacing.md)
