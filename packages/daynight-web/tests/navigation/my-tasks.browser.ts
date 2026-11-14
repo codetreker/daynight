@@ -17,6 +17,43 @@ const payload = { observedAt: '2026-11-13T10:00:00Z', inventoryRevision: 'a'.rep
   items: [...Array.from({ length: 16 }, (_, i) => row(i + 1)), { ...row(17), project: { ...project, id: otherProjectId, name: 'Other project', matchedTaskCount: 1 } }], nextCursor: null };
 
 for (const width of [320, 1280]) {
+  test(`startup warning appears without replacing the row at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.clock.install({ time: new Date('2026-11-13T10:00:00Z') });
+    const warning = { ...observation, registration: 'registered', indicator: 'warning', reason: 'disconnected', connectionState: 'disconnected', needsAttention: true };
+    const rows = [row(1), row(2)].map((item, index) => ({
+      ...item, project: { ...item.project, matchedTaskCount: 2 },
+      task: { ...item.task, startedAt: '2026-11-13T09:58:01Z' },
+      session: { ...warning, indicator: index === 0 ? 'warning' : null },
+    }));
+    await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: { ...payload, totalTaskCount: 2, totalProjectCount: 1, items: rows }, headers: { 'Daynight-User-ID': userId } }));
+    await page.goto('/tests/navigation/my-tasks-browser.html');
+    const task = page.getByRole('link', { name: longTask });
+    const taskRow = task.locator('xpath=ancestor::li');
+    const fallbackRow = page.getByRole('link', { name: 'Task 2' }).locator('xpath=ancestor::li');
+    await expect(task).toBeVisible();
+    await expect(taskRow.locator('.my-task-session')).toHaveCount(0);
+    await expect(fallbackRow.locator('.my-task-session')).toHaveCount(0);
+    await page.getByLabel('Language').selectOption('zh-CN');
+    await expect(taskRow.locator('.my-task-session')).toHaveCount(0);
+    await expect(fallbackRow.locator('.my-task-session')).toHaveCount(0);
+    await page.getByLabel('语言').selectOption('en');
+    await task.focus();
+    const originalRow = await taskRow.elementHandle();
+    await page.clock.fastForward(2_000);
+    await expect(taskRow.getByText('Session needs checking · Needs attention')).toBeVisible();
+    await expect(fallbackRow.getByText('Session needs checking · Needs attention')).toBeVisible();
+    await expect(task).toBeFocused();
+    expect(await originalRow!.evaluate(row => row === document.activeElement?.closest('li'))).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.getByLabel('Language').selectOption('zh-CN');
+    await expect(taskRow.getByText('会话需要检查 · 需要关注')).toBeVisible();
+    await expect(fallbackRow.getByText('会话需要检查 · 需要关注')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+for (const width of [320, 1280]) {
   test(`real overview retains layout, links and reading page at ${width}px`, async ({ page, context }) => {
     await page.setViewportSize({ width, height: 800 });
     let requests = 0, responses = 0;

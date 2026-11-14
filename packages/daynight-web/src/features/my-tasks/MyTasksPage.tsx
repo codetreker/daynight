@@ -57,6 +57,7 @@ const Session = ({ item }: { readonly item: PersonalTaskItem }) => {
         : s.registration === 'not_registered' ? 'notRegistered'
           : s.registration !== 'registered' ? 'unavailable'
             : s.indicator ?? (s.connectionState === 'disconnected' || s.lifecycle === 'archived' ? 'warning' : 'unavailable');
+  if (state === 'warning' && item.task.startedAt !== null && Math.max(0, now - Date.parse(item.task.startedAt)) < 120_000) return null;
   return <span className={`my-task-session my-task-session-${state}`}><span className="my-task-session-dot" aria-hidden="true" />{m[state]}{s.needsAttention === true && state !== 'expired' && state !== 'unavailable' && <> · {m.attention}</>}</span>;
 };
 

@@ -76,6 +76,95 @@ describe('personal task overview', () => {
     expect(screen.getByText('Task 0').closest('li')).toBe(row);
   });
 
+  it('hides both warning sources until two minutes of the current execution have elapsed', () => {
+    vi.useFakeTimers();
+    const items = [0, 1, 2].map(n => {
+      const a = item(n);
+      return { ...a, task: { ...a.task, startedAt: anchor }, session: { ...a.session, registration: 'registered' as const,
+        indicator: n === 0 ? 'warning' as const : null, connectionState: n === 1 ? 'disconnected' as const : null,
+        lifecycle: n === 2 ? 'archived' as const : null, needsAttention: true, freshUntil: '2026-11-13T10:05:00Z' } };
+    });
+    mock.value = state(items);
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
+    const row = screen.getByText('Task 0').closest('li')!;
+    const link = within(row).getByRole('link', { name: 'Task 0' });
+    link.focus();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.queryByText(/Session needs checking/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Needs attention/)).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(59_999));
+    fireEvent(document, new Event('visibilitychange'));
+    expect(screen.queryByText(/Session needs checking/)).not.toBeInTheDocument();
+    mock.value = state(items.map(i => ({ ...i, task: { ...i.task, version: '2' } })));
+    view.rerender(<MyTasksPage />);
+    expect(screen.getByText('Task 0').closest('li')).toBe(row);
+    expect(link).toHaveFocus();
+    act(() => vi.advanceTimersByTime(1));
+    fireEvent(document, new Event('visibilitychange'));
+    expect(screen.getAllByText(/Session needs checking · Needs attention/)).toHaveLength(3);
+    view.unmount();
+    renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
+    expect(screen.getAllByText(/Session needs checking · Needs attention/)).toHaveLength(3);
+  });
+
+  it('preserves working, notice, unknown start and observation failure precedence during startup', () => {
+    vi.useFakeTimers();
+    const items = [0, 1, 2, 3, 4, 5, 6].map(n => {
+      const a = item(n);
+      return { ...a, task: { ...a.task, startedAt: n === 2 ? null : anchor }, session: { ...a.session,
+        registration: n === 5 ? 'not_registered' as const : 'registered' as const, indicator: n === 0 ? 'working' as const : n === 1 ? 'notice' as const : 'warning' as const,
+        needsAttention: true, freshUntil: n === 3 ? anchor : '2026-11-13T10:05:00Z',
+        observation: n === 4 ? 'unavailable' as const : 'observed' as const,
+        error: n === 6 ? { code: 'unavailable', message: 'Unavailable' } : null } };
+    });
+    mock.value = state(items);
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
+    expect(screen.getByText(/Session is working/)).toBeInTheDocument();
+    expect(screen.getByText(/Session needs a response · Needs attention/)).toBeInTheDocument();
+    expect(screen.getByText(/Session needs checking · Needs attention/)).toBeInTheDocument();
+    expect(screen.getByText('Session observation expired')).toBeInTheDocument();
+    expect(screen.getAllByText('Session status unavailable')).toHaveLength(2);
+    expect(screen.getByText(/Session not registered/)).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(screen.getByText(/Session is working/)).toBeInTheDocument();
+    expect(screen.getByText(/Session needs a response/)).toBeInTheDocument();
+    view.setLocale('zh-CN');
+    expect(screen.getByText(/会话需要响应 · 需要关注/)).toBeInTheDocument();
+  });
+
+  it('uses the current observation after refresh and when returning from a hidden page', () => {
+    vi.useFakeTimers();
+    const a = item(0);
+    const warning = { ...a, task: { ...a.task, startedAt: anchor }, session: { ...a.session, registration: 'registered' as const,
+      indicator: 'warning' as const, freshUntil: '2026-11-13T10:05:00Z' } };
+    const b = item(1);
+    const secondWarning = { ...warning, task: { ...b.task, startedAt: anchor } };
+    mock.value = state([warning, secondWarning]);
+    const view = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
+    act(() => vi.advanceTimersByTime(60_000));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    const refreshed = { ...warning, observedAt: '2026-11-13T10:01:00Z', receivedMonotonic: performance.now(),
+      session: { ...warning.session, indicator: 'working' as const } };
+    const refreshedWarning = { ...secondWarning, observedAt: refreshed.observedAt, receivedMonotonic: refreshed.receivedMonotonic };
+    mock.value = state([refreshed, refreshedWarning]);
+    view.rerender(<MyTasksPage />);
+    expect(screen.getByText('Session is working')).toBeInTheDocument();
+    view.unmount();
+    const remount = renderWithLocale(<MyTasksPage />, { locale: 'en', taskCache: true });
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    fireEvent(document, new Event('visibilitychange'));
+    act(() => vi.advanceTimersByTime(60_000));
+    visibility.mockReturnValue('visible');
+    fireEvent(document, new Event('visibilitychange'));
+    expect(screen.getByText('Session is working')).toBeInTheDocument();
+    expect(within(screen.getByText('Task 1').closest('li')!).getByText('Session needs checking')).toBeInTheDocument();
+    expect(within(screen.getByText('Task 0').closest('li')!).queryByText(/Session needs checking/)).not.toBeInTheDocument();
+    mock.value = state([{ ...refreshed, session: { ...refreshed.session, indicator: 'warning' as const } }, refreshedWarning]);
+    remount.rerender(<MyTasksPage />);
+    expect(screen.getAllByText('Session needs checking')).toHaveLength(2);
+    visibility.mockRestore();
+  });
+
   it('does not present partial or failed results as a complete empty list or full count', () => {
     const a = item(0);
     mock.value = state([a], { totalTaskCount: null, totalProjectCount: null, loaded: false, error: new Error('failed') });
