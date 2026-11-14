@@ -18,6 +18,11 @@ describe("project tag API", () => {
     expect(page.items[0]).toMatchObject({ id: tag, projectId: project, version: 9223372036854775807n, usage: { tasks: 3, goals: 2 } });
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tags?query=a+%26+%E4%B8%AD&limit=50&cursor=cursor`, expect.anything());
   });
+  it("omits an empty search while retaining pagination", async () => {
+    const fetcher = vi.fn().mockResolvedValue(reply(`{"items":[${resource}],"catalogEpoch":"${epoch}","nextCursor":null}`)); vi.stubGlobal("fetch", fetcher);
+    await expect(listProjectTags(project, { query: "", limit: 50, cursor: "cursor" }, signal(), admission())).resolves.toMatchObject({ items: [{ id: tag }] });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tags?limit=50&cursor=cursor`, expect.anything());
+  });
   it("retains catalog_changed instead of treating an error as an empty page", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(reply('{"error":{"code":"catalog_changed","message":"changed","requestId":"r"}}', 409)));
     await expect(listProjectTags(project, { query: "", limit: 50, cursor: "old" }, signal(), admission())).rejects.toMatchObject({ kind: "server", code: "catalog_changed" });

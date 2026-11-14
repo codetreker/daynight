@@ -271,4 +271,24 @@ func TestTaskTagMixedWriteAndSync(t *testing.T) {
 		return s.TagDAO().DeleteTag(ctx, tagID, 2)
 	}))
 	checkDelta(lower, item.Version+3, nil)
+
+	newTagID := readerID(22)
+	mustOK(t, readerWriteProject(db, ctx, project.ID, func(s store.ProjectWriteScope) error {
+		_, err := s.TagDAO().InsertTag(ctx, model.Tag{ID: newTagID, Name: "After", NameKey: "after", CreatedAt: time.Now()})
+		return err
+	}))
+	recreated := readerSnapshotTask(t, db, project.ID, item.ID)
+	if len(recreated.Tags) != 0 {
+		t.Fatalf("same-name tag restored old association: %#v", recreated.Tags)
+	}
+	mustOK(t, db.ReadSnapshot(ctx, func(s store.SnapshotScope) error {
+		usage, err := s.TagDAO().TagUsage(ctx, project.ID, newTagID)
+		if err != nil {
+			return err
+		}
+		if usage != (model.TagUsage{}) {
+			t.Fatalf("recreated tag has old usage: %#v", usage)
+		}
+		return nil
+	}))
 }
