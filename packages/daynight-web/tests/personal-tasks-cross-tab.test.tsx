@@ -16,7 +16,7 @@ class Channel {
 }
 const row = (task: number, project: number): api.PersonalTaskPage['items'][number] => ({
   project: { id: workerId(project), name: `Project ${project}`, ownerTeam: { id: workerId(9), kind: 'personal', name: null }, executionWarningMinutes: 120, matchedTaskCount: 1 },
-  task: { id: workerId(task), version: '1', title: `Task ${task}`, status: 'in_progress', startedAt: null, allowAgents: true, paused: false, goal: null },
+  task: { id: workerId(task), version: '1', title: `Task ${task}`, status: 'in_progress', startedAt: null, allowAgents: true, paused: false, worker: null, goal: null },
   session: unsupportedSessionObservation(),
 });
 const page = (items: api.PersonalTaskPage['items']): api.PersonalTaskPage => ({ observedAt: WORKER_TIME, inventoryRevision: 'a'.repeat(64), totalTaskCount: items.length, totalProjectCount: items.length, sessionPartial: true, items, nextCursor: null });

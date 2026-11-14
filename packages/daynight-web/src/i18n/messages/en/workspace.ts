@@ -50,7 +50,7 @@ export const workspace: WorkspaceMessages = {
     page: ({ page, pages }) => `Page ${number(page)} of ${number(pages)}`, previous: "Previous", next: "Next",
   },
   sections: { tags: "Tags", label: "Project views", overview: "Overview", tasks: "Task list", prs: "PR list", overviewDescription: "View overall progress and current task status.", tasksDescription: "Browse standalone tasks and dependency chains." },
-  tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", goals: "Goals", unfinishedCount: "Unfinished task count" },
+  tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", goals: "Goals", unfinishedCount: "Unfinished task count", unfinishedChainCount: "Unfinished task chain count" },
   goals: { details: "Goal details", detailsLabel: ({ title }) => `${title}, Goal details`, toggle: ({ title, expanded }) => `${expanded ? "Collapse" : "Expand"} Goal: ${title}`, emptyTasks: "No tasks in this Goal.", list: "Goals", empty: "No goals yet", emptyDetail: "Goals will appear here.", summary: ({ shown, total }) => `${number(shown)} of ${number(total)} goals`, composition: ({ count }) => `${number(count)} tasks` },
   preferences: {
     section: { read: "The saved project view could not be read. You can continue browsing.", invalid: "The saved project view is invalid. Overview is shown by default. You can continue browsing.", write: "The project view could not be saved. It may not return after a reload. You can continue browsing." },

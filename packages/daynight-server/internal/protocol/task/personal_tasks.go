@@ -38,14 +38,25 @@ type PersonalTaskTeam struct {
 }
 
 type PersonalTask struct {
-	ID          string            `json:"id"`
-	Version     string            `json:"version"`
-	Title       string            `json:"title"`
-	Status      string            `json:"status"`
-	StartedAt   *time.Time        `json:"startedAt"`
-	AllowAgents bool              `json:"allowAgents"`
-	Paused      bool              `json:"paused"`
-	Goal        *PersonalTaskGoal `json:"goal"`
+	ID          string              `json:"id"`
+	Version     string              `json:"version"`
+	Title       string              `json:"title"`
+	Status      string              `json:"status"`
+	StartedAt   *time.Time          `json:"startedAt"`
+	AllowAgents bool                `json:"allowAgents"`
+	Paused      bool                `json:"paused"`
+	Goal        *PersonalTaskGoal   `json:"goal"`
+	Worker      *PersonalTaskWorker `json:"worker"`
+}
+
+type PersonalTaskWorker struct {
+	WorkerID string              `json:"workerId"`
+	Machine  PersonalTaskMachine `json:"machine"`
+}
+
+type PersonalTaskMachine struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type PersonalTaskGoal struct {

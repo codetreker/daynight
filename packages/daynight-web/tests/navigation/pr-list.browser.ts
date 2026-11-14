@@ -206,3 +206,58 @@ test('independent PR empty, connection and saved-data notices remain readable at
   }
   expect(state.unexpected).toEqual([]);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 390, 320]) {
+  test(`PR filter arrow and native selection at ${width}px in ${locale}`, async ({ page }, info) => {
+    const state = await installPrList(page, locale);
+    state.longCounts = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    const filter = page.getByRole('combobox', { name: locale === 'en' ? 'Pull request status' : 'PR 状态' });
+    const arrow = page.locator('.pr-filter-arrow');
+    await expect(arrow).toHaveAttribute('aria-hidden', 'true');
+    await expect(arrow.locator('path')).toHaveAttribute('d', 'm2 4 3 3 3-3');
+    await expect(filter.locator('option')).toHaveCount(4);
+    for (const value of ['active', 'merged', 'closed', 'all']) {
+      await filter.selectOption(value);
+      await expect(filter).toHaveValue(value);
+      const geometry = await filter.evaluate((element) => {
+        const select = element as HTMLSelectElement, rect = select.getBoundingClientRect();
+        const icon = select.parentElement!.querySelector('svg')!, box = icon.getBoundingClientRect();
+        const style = getComputedStyle(select), canvas = document.createElement('canvas'), context = canvas.getContext('2d')!;
+        context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        return { right: rect.right - box.right, center: (rect.top + rect.bottom - box.top - box.bottom) / 2,
+          width: box.width, height: box.height, selectHeight: rect.height, appearance: style.appearance,
+          textWidth: context.measureText(select.selectedOptions[0]!.textContent!).width,
+          available: rect.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2,
+          hitSelect: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === select };
+      });
+      expect(geometry.right).toBeCloseTo(12, 0);
+      expect(Math.abs(geometry.center)).toBeLessThanOrEqual(1);
+      expect([geometry.width, geometry.height, geometry.selectHeight, geometry.appearance]).toEqual([10, 10, width <= 740 ? 35 : 37, 'none']);
+      expect(geometry.textWidth).toBeLessThanOrEqual(geometry.available + 1);
+      expect(geometry.hitSelect).toBe(true);
+      await assertFits(page);
+    }
+    await filter.selectOption('active');
+    const box = (await arrow.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(filter).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(filter).toHaveValue('merged');
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#pr-search')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(filter).toBeFocused();
+    expect(await filter.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
+    await capture(page, info, `pr-filter-${locale}-${width}`);
+    state.longCounts = false;
+    state.scene = 'initial';
+    await page.reload();
+    await page.locator('#project-section-tab-prs').click();
+    await expect(filter.locator('option').first()).not.toContainText('·');
+    await assertFits(page);
+    expect(state.unexpected).toEqual([]);
+  });
+}

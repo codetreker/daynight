@@ -7,8 +7,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+func TestActivePersonalTaskWorker(t *testing.T) {
+	claim := &model.WorkerClaim{State: model.WorkerActive, WorkerID: "worker", Machine: model.WorkerMachine{ID: "machine", Name: "name"}}
+	worker := ActivePersonalTaskWorker(claim)
+	if worker == nil || worker.WorkerID != claim.WorkerID || worker.Machine != claim.Machine {
+		t.Fatalf("active worker: %#v", worker)
+	}
+	claim.State = model.WorkerCompleted
+	if ActivePersonalTaskWorker(claim) != nil || ActivePersonalTaskWorker(nil) != nil {
+		t.Fatal("inactive claim exposed")
+	}
+}
 
 func TestPersonalTaskCursorAndRevision(t *testing.T) {
 	actor := "00000000-0000-4000-8000-000000000001"

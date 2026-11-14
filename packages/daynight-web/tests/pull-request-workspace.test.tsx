@@ -211,6 +211,7 @@ describe('pull request workspace', () => {
     await screen.findByRole('dialog');
     act(() => view.rerender(<PullRequestWorkspace {...props} canRead={false} />));
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Pull request status' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: '#123 Preserve 123, Open' })).toBeNull();
   });
 

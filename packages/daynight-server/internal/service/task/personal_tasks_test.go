@@ -45,6 +45,7 @@ type personalSources struct {
 	calls    []string
 	failOn   int
 	failure  error
+	modify   func(int, *store.TaskSessionSource) bool
 }
 
 func (s *personalSources) TaskSessionSources(_ context.Context, project string, ids []string) ([]store.TaskSessionSource, error) {
@@ -55,7 +56,11 @@ func (s *personalSources) TaskSessionSources(_ context.Context, project string, 
 	if s.failOn == len(s.calls) {
 		return nil, s.failure
 	}
-	return []store.TaskSessionSource{{ProjectID: project, TaskID: ids[0], TaskVersion: 1, TaskStatus: model.TaskInProgress}}, nil
+	source := store.TaskSessionSource{ProjectID: project, TaskID: ids[0], TaskVersion: 1, TaskStatus: model.TaskInProgress}
+	if s.modify != nil && !s.modify(len(s.calls), &source) {
+		return nil, nil
+	}
+	return []store.TaskSessionSource{source}, nil
 }
 
 type personalObserver struct {
@@ -121,6 +126,101 @@ func TestPersonalTasksProjectSourcesAndSnapshots(t *testing.T) {
 	}
 	if reader.factCalls != 2 || reader.pageCalls != 1 || *credentials != 4 || len(sources.calls) != 4 || len(observer.projects) != 2 || observer.projects[0] != workProject || observer.projects[1] != personalProject2 {
 		t.Fatalf("calls facts=%d page=%d credentials=%d sources=%v observations=%v", reader.factCalls, reader.pageCalls, *credentials, sources.calls, observer.projects)
+	}
+}
+
+func TestPersonalTasksWorkerSelectionAndFailure(t *testing.T) {
+	worker := &model.WorkerClaim{ClaimID: "claim", State: model.WorkerActive, WorkerID: "worker", Machine: model.WorkerMachine{ID: "machine", Name: "Long 名称"}}
+	t.Run("different and shared workers", func(t *testing.T) {
+		for _, shared := range []bool{false, true} {
+			s, _, sources, _, _, _ := personalFixture(t)
+			second := *worker
+			if !shared {
+				second.WorkerID, second.Machine.ID, second.Machine.Name = "other", "other-machine", "Other"
+			}
+			sources.modify = func(_ int, source *store.TaskSessionSource) bool {
+				if source.ProjectID == workProject {
+					source.Worker = worker
+				} else {
+					source.Worker = &second
+				}
+				return true
+			}
+			result, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+			if err != nil || len(result.Items) != 2 || result.Items[0].Worker == nil || result.Items[1].Worker == nil || result.Items[0].Worker.WorkerID != worker.WorkerID || result.Items[1].Worker.WorkerID != second.WorkerID || result.Items[1].Worker.Machine != second.Machine {
+				t.Fatalf("shared=%v workers=%#v error=%v", shared, result.Items, err)
+			}
+		}
+	})
+	t.Run("session change is partial, worker retained", func(t *testing.T) {
+		s, _, sources, _, _, _ := personalFixture(t)
+		sources.modify = func(call int, source *store.TaskSessionSource) bool {
+			source.Worker = worker
+			if call == 3 {
+				source.Session = &store.TaskSessionStateSource{SessionID: "new"}
+			}
+			return true
+		}
+		result, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+		if err != nil || !result.SessionPartial || result.Items[0].Worker == nil || result.Items[0].Worker.WorkerID != worker.WorkerID {
+			t.Fatalf("session change: %#v %v", result, err)
+		}
+	})
+	t.Run("active despite observation failure", func(t *testing.T) {
+		s, _, sources, observer, _, _ := personalFixture(t)
+		sources.modify = func(_ int, source *store.TaskSessionSource) bool { source.Worker = worker; return true }
+		observer.failure = errors.New("offline")
+		result, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+		if err != nil || !result.SessionPartial || result.Items[0].Worker == nil || result.Items[0].Worker.WorkerID != worker.WorkerID || result.Items[0].Worker.Machine != worker.Machine {
+			t.Fatalf("worker lost: %#v %v", result, err)
+		}
+	})
+	for _, test := range []struct {
+		name   string
+		change func(*store.TaskSessionSource) bool
+	}{
+		{"missing", func(*store.TaskSessionSource) bool { return false }},
+		{"task", func(s *store.TaskSessionSource) bool { s.TaskID = personalTask2; return true }},
+		{"project", func(s *store.TaskSessionSource) bool { s.ProjectID = personalProject2; return true }},
+		{"version", func(s *store.TaskSessionSource) bool { s.TaskVersion++; return true }},
+		{"status", func(s *store.TaskSessionSource) bool { s.TaskStatus = model.TaskDone; return true }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, _, sources, observer, _, _ := personalFixture(t)
+			sources.modify = func(_ int, source *store.TaskSessionSource) bool { return test.change(source) }
+			result, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+			if err == nil || result.Items != nil || len(observer.projects) != 0 {
+				t.Fatalf("invalid source published: %#v %v", result, err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*store.TaskSessionSource)
+	}{
+		{"released", func(s *store.TaskSessionSource) { s.Worker = nil }},
+		{"completed", func(s *store.TaskSessionSource) {
+			copy := *s.Worker
+			copy.State = model.WorkerCompleted
+			s.Worker = &copy
+		}},
+		{"version", func(s *store.TaskSessionSource) { s.TaskVersion++ }},
+	} {
+		t.Run("sampling "+test.name, func(t *testing.T) {
+			s, _, sources, _, _, _ := personalFixture(t)
+			sources.modify = func(call int, source *store.TaskSessionSource) bool {
+				source.Worker = worker
+				if call == 3 {
+					test.change(source)
+				}
+				return true
+			}
+			result, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+			var fault *model.Fault
+			if !errors.As(err, &fault) || fault.Code != "reset_required" || result.Items != nil {
+				t.Fatalf("changed binding published: %#v %v", result, err)
+			}
+		})
 	}
 }
 func TestPersonalTasksEmptyStillChecksCredentialAndRevision(t *testing.T) {

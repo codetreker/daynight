@@ -41,3 +41,15 @@ func sameObservedBinding(selected, current store.TaskSessionSource) bool {
 	}
 	return selected.Session == nil || (selected.Session.SessionID == current.Session.SessionID && selected.Session.Fence == current.Session.Fence && selected.Session.Lifecycle == current.Session.Lifecycle)
 }
+
+// Session lifecycle changes do not change the inventory, but task and claim
+// changes must invalidate the Worker projection from the selected snapshot.
+func samePersonalTaskBinding(selected, current store.TaskSessionSource) bool {
+	if selected.ProjectID != current.ProjectID || selected.TaskID != current.TaskID || selected.TaskVersion != current.TaskVersion || selected.TaskStatus != current.TaskStatus {
+		return false
+	}
+	if (selected.Worker == nil) != (current.Worker == nil) {
+		return false
+	}
+	return selected.Worker == nil || (selected.Worker.ClaimID == current.Worker.ClaimID && selected.Worker.State == current.Worker.State && selected.Worker.UserID == current.Worker.UserID)
+}

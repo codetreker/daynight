@@ -100,7 +100,7 @@ describe('project assignee filtering', () => {
     const view = await mount();
     await waitFor(() => expect(chain(matching[0]! * 10 + 1)).toBeVisible());
     await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
-    expectCounts(matching.length, matching.length * 2, matching.length);
+    expectCounts(matching.length, matching.length, matching.length);
     for (const n of [1, 2, 3]) {
       if (matchingIds.has(n)) expect(chain(n * 10 + 1)).toBeVisible();
       else expect(chain(n * 10 + 1)).toBeNull();
@@ -114,11 +114,11 @@ describe('project assignee filtering', () => {
     await mount();
     await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
     await waitFor(() => expect(row(matching[0]!)).toBeVisible());
-    expectCounts(matching.length, matching.length * 2, matching.length);
+    expectCounts(matching.length, matching.length, matching.length);
     for (const n of [1, 2, 3]) if (!matchingIds.has(n)) expect(row(n)).toBeNull();
   });
 
-  it('counts matching unfinished members and Goal owners independently of list status and scope', async () => {
+  it('counts chains with matching unfinished members and Goal owners independently of list status and scope', async () => {
     const finishedAt = '2026-10-22T10:00:00Z';
     install([
       task(1, TEST_VIEWER_ID, { status: 'proposed' }), task(2, null), task(3, formerUser, { status: 'in_progress', startedAt: finishedAt }),
@@ -135,7 +135,7 @@ describe('project assignee filtering', () => {
       task(502, null, { type: 'goal' }), task(503, formerUser, { type: 'goal', status: 'done', completedAt: finishedAt }),
     ]);
     await mount();
-    expectCounts(4, 5, 4);
+    expectCounts(4, 2, 4);
     await filter('分配给我');
     expectCounts(2, 1, 1);
     expect(chain(11)).toBeVisible();
@@ -151,7 +151,33 @@ describe('project assignee filtering', () => {
     expect(document.querySelector(`[data-goal-id="${id(501)}"]`)).toBeVisible();
     await filter('未分配'); expectCounts(1, 1, 1);
     await filter(/^Former person/); expectCounts(1, 1, 1);
-    await filter('所有负责人'); expectCounts(4, 5, 4);
+    await filter('所有负责人'); expectCounts(4, 2, 4);
+  });
+
+  it('counts only unfinished members matching the assignee inside the top-level scope', async () => {
+    const finishedAt = '2026-10-22T10:00:00Z';
+    install([
+      task(1, TEST_VIEWER_ID, { status: 'done', completedAt: finishedAt }),
+      task(2, otherUser, { dependsOn: [id(1)] }),
+      task(3, null, { status: 'proposed', dependsOn: [id(1)] }),
+      task(4, TEST_VIEWER_ID, { parentId: id(500), dependsOn: [id(5)] }),
+      task(5, otherUser, { status: 'done', completedAt: finishedAt }),
+      task(6, otherUser, { status: 'done', completedAt: finishedAt, parentId: id(500) }),
+      task(7, TEST_VIEWER_ID, { status: 'in_progress', startedAt: finishedAt, dependsOn: [id(6)] }),
+      task(8, TEST_VIEWER_ID, { status: 'cancelled', cancelledAt: finishedAt }),
+      task(9, null, { status: 'done', completedAt: finishedAt, dependsOn: [id(8)] }),
+      task(12, TEST_VIEWER_ID, { status: 'cancelled', cancelledAt: finishedAt }),
+      task(13, null, { status: 'cancelled', cancelledAt: finishedAt, dependsOn: [id(12)] }),
+      task(10, TEST_VIEWER_ID),
+      task(11, otherUser, { externalDependsOn: [id(10)], dependsOn: [id(10)] }),
+      task(500, otherUser, { type: 'goal' }),
+    ]);
+    await mount();
+    expectCounts(2, 2, 1);
+    await filter('分配给我'); expectCounts(1, 1, 0);
+    await filter('未分配'); expectCounts(0, 1, 0);
+    await filter(/^Other person/); expectCounts(1, 1, 1);
+    await filter('所有负责人'); expectCounts(2, 2, 1);
   });
 
   it.each([
@@ -327,23 +353,29 @@ describe('project assignee filtering', () => {
       return within(element);
     };
     await mount(() => waitFor(() => assigneePicker().getByRole('button', { name: /^负责人:/ })));
+    expectCounts(41, 41, 0);
     fireEvent.click(within(pagination('任务链列表')).getByRole('button', { name: '下一页' }));
     expect(pagination('任务链列表')).toHaveTextContent('第 2 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(standalone());
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     expect(pagination('独立任务列表')).toHaveTextContent('第 2 / 3 页');
     fireEvent.click(assigneePicker().getByRole('button', { name: /^负责人:/ }));
     fireEvent.click(await assigneePicker().findByRole('option', { name: '分配给我' }));
     expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(chains());
     expect(pagination('任务链列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(within(pagination('任务链列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(standalone());
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     status('todo');
     expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(chains());
     expect(pagination('任务链列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
   });
 
   it('uses an assignee-specific empty state while the full overview still navigates to an excluded Goal', async () => {
