@@ -9,9 +9,9 @@
 .bot-create-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 24px 0; scrollbar-gutter: stable; }
 .bot-create-dialog .field { display: grid; min-width: 0; gap: 7px; margin: 0 0 18px; }
 .bot-create-dialog .field label { font-size: 12px; color: var(--muted); }
-.bot-create-dialog :is(input, select) { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; padding: 10px; font: inherit; }
+.bot-create-dialog input { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; padding: 10px; font: inherit; }
 .bot-create-dialog #bot-name { min-height: 48px; font-size: 16px; }
-.bot-create-dialog :is(input, select, button, summary):focus-visible { outline: 2px solid var(--indigo); outline-offset: -2px; }
+.bot-create-dialog :is(input, button, summary):focus-visible { outline: 2px solid var(--indigo); outline-offset: -2px; }
 .bot-create-summary { min-height: 24px; color: var(--muted); font-size: 12px; }
 .bot-create-summary > summary { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
 .bot-create-summary-details { overflow-wrap: anywhere; font-size: 12px; margin-block: 8px; }
@@ -39,9 +39,9 @@
   .bot-create-model-row { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
 @media (max-width: 800px), (pointer: coarse) {
-  .bot-create-dialog :is(input, select, button, summary) { min-height: 44px; }
+  .bot-create-dialog :is(input, button, summary) { min-height: 44px; }
   .bot-create-header .close-button { min-width: 44px; }
-  .bot-create-dialog :is(input, select) { font-size: 16px; }
+  .bot-create-dialog input { font-size: 16px; }
 }
 .bot-directory-worker { margin: 0 0 16px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .bot-directory-path { display: flex; gap: 6px; min-width: 0; align-items: center; }

@@ -24,13 +24,14 @@ The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
 an authenticated shell. Project and search status, PR status, and tag match filters
 use the shared filter variant while retaining their separate values and behavior.
-Task platform and PR pagination use compact controls; Task organization and Step
-forms use fill-width form controls. Their callers retain confirmation, numeric
-conversion, drafts and real element refs. A shared popup-state predicate gives
-enclosing Escape handlers a native observation without making the component an
-event owner. Task detail and Step draft handlers leave the native Escape default
-intact while preventing an open picker from closing the enclosing view or
-discarding a draft.
+Bot creation and assistant task forms and record filters also use the shared
+presentation while retaining their business selection rules. Task platform and PR
+pagination use compact controls; Task organization and Step forms use fill-width
+form controls. Their callers retain confirmation, numeric conversion, drafts and
+real element refs. A shared popup-state predicate gives enclosing Escape handlers
+a native observation without making the component an event owner. Task detail
+and Step draft handlers leave the native Escape default intact while preventing
+an open picker from closing the enclosing view or discarding a draft.
 
 This generalizes the geometry choice recorded in the
 [Worker spacing decision](../bug-fix/2026-11-06-worker-configuration-select-spacing.md)
