@@ -20,15 +20,20 @@ type FixtureOptions = {
   readonly gate?: { readonly started: () => void; readonly wait: Promise<void> };
   readonly observe?: (before: TaskDetail, after: TaskDetail) => void;
   readonly exposeUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
+  readonly previousChanges?: Partial<TaskDetail>;
+  readonly exposePreviousUpdate?: (update: (changes: Partial<TaskDetail>) => void) => void;
+  readonly additionalTasks?: readonly TaskDetail[];
 };
 
 async function install(page: Page, running = false, linked = false, large = false, rich = false, paused = false, moveGate?: { started: () => void; wait: Promise<void> }, changes: Partial<TaskDetail> = {}, options: FixtureOptions = {}) {
   const epoch = taskSyncEpoch(projectId);
   let task = detailFixture(projectId, taskId, { title: 'Target task', version: 5n, ...(running ? { status: 'in_progress' as const, ready: false, startedAt: time } : {}), ...(rich ? { assignedTo: TEST_VIEWER_ID } : {}), ...(paused ? { properties: { pullRequests: [], paused: true } } : {}), ...changes });
-  const previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n });
-  const graph = () => ({ ...graphFixture([task, previous]), observedAt: task.updatedAt });
+  let previous = detailFixture(projectId, previousId, { title: 'History origin', ...(linked ? { dependsOn: [taskId], blockedBy: [taskId], ready: false } : {}), version: 5n, ...options.previousChanges });
+  const details = () => [task, previous, ...(options.additionalTasks ?? [])];
+  const graph = () => ({ ...graphFixture(details()), observedAt: task.updatedAt > previous.updatedAt ? task.updatedAt : previous.updatedAt });
   let statusRequests = 0;
   options.exposeUpdate?.((changes) => { task = { ...task, ...changes }; });
+  options.exposePreviousUpdate?.((changes) => { previous = { ...previous, ...changes }; });
   let steps = options.steps ? [...options.steps] : large ? [step, ...Array.from({ length: 100 }, (_, index) => ({ ...step, id: (index + 2).toString(16).padStart(8, '0'), title: `Other ${index + 1}` }))] : [step];
   const writes: string[] = [];
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
@@ -42,11 +47,11 @@ async function install(page: Page, running = false, linked = false, large = fals
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), versionForTask: row => row.id === taskId ? task.version : previous.version, propertiesForTask: row => row.id === taskId ? task.properties : previous.properties }));
+    if (path === `/api/v1/projects/${projectId}/task-sync`) return send(taskSyncFixture(graph(), { epoch, query: taskSyncQuery(url), versionForTask: row => details().find(detail => detail.id === row.id)!.version, propertiesForTask: row => details().find(detail => detail.id === row.id)!.properties }));
     if (path === `/api/v1/projects/${projectId}/task-graph`) return send(graph());
     if (path === `/api/v1/projects/${projectId}/tasks/search` && request.method() === 'POST') {
-      expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, limit: 15 });
-      return send({ projectId, total: 1, items: [{ id: task.id, projectId, tags: task.tags, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
+      expect(request.postDataJSON()).toEqual({ query: `id:${taskId}`, type: 'task', tagIds: [], tagMatch: 'all', untagged: false, limit: 15 });
+      return send({ projectId, total: 1, items: [{ id: task.id, type: task.type, parentId: task.parentId, projectId, tags: task.tags, title: task.title, status: task.status, assignedTo: task.assignedTo, updatedAt: task.updatedAt, cancelledAt: task.cancelledAt, context: null, match: { fields: ['id', 'description'], descriptionSnippet: 'A long matching description '.repeat(5) } }], nextCursor: null });
     }
     if (path === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
@@ -90,7 +95,7 @@ async function install(page: Page, running = false, linked = false, large = fals
       task = { ...task, version: 6n }; steps = steps.filter(value => value.id !== '00000065');
       return send({ projectId, taskId, version: task.version, steps });
     }
-    for (const detail of [task, previous]) {
+    for (const detail of details()) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': epoch });
       if (path === `${base}/steps`) return send({ projectId, taskId: detail.id, version: detail.version, steps: detail.id === taskId ? steps : [] });
@@ -766,3 +771,163 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     expect(writes).toEqual([]);
   });
 }
+
+for (const [width, locale] of [[320, 'zh'], [390, 'en']] as const) {
+  test(`paused task popover supports keyboard, exact detail and history at ${width}px in ${locale}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 480 });
+    const title = 'Long paused task title '.repeat(10);
+    const writes = await install(page, false, false, false, false, true, undefined, { title }, {
+      previousChanges: { title: 'Second paused task', properties: { paused: true } },
+    });
+    if (locale === 'zh') await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'zh-CN'));
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+    await expect(badge).toContainText('2');
+    await badge.focus();
+    await page.keyboard.press('Enter');
+    const menu = page.locator('.project-paused-menu');
+    await expect(menu).toBeVisible();
+    expect(await menu.evaluate(element => element.matches(':popover-open'))).toBe(true);
+    const rect = await menu.boundingBox();
+    expect(rect).not.toBeNull();
+    expect(rect!.x).toBeGreaterThanOrEqual(7);
+    expect(rect!.x + rect!.width).toBeLessThanOrEqual(width - 7);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const rows = menu.getByRole('menuitem');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first()).toContainText('…');
+    for (const row of await rows.all()) expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await page.keyboard.press('End');
+    await expect(rows.last()).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect(rows.first()).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
+    await expect(badge).toBeFocused();
+    await badge.click();
+    await rows.last().click();
+    const dialog = page.locator('.task-detail-dialog');
+    await expect(dialog).toHaveAccessibleName('Second paused task');
+    await expect(menu).toHaveCount(0);
+    await page.goBack();
+    await expect(dialog).toHaveCount(0);
+    await expect(badge).toBeFocused();
+    await page.goForward();
+    await expect(dialog).toHaveAccessibleName('Second paused task');
+    await page.goBack();
+    await expect(badge).toBeFocused();
+    expect(writes).toEqual([]);
+  });
+}
+
+test('paused popover preserves focus on refresh and moves it as tasks disappear', async ({ page }) => {
+  let updateTask!: (changes: Partial<TaskDetail>) => void;
+  let updatePrevious!: (changes: Partial<TaskDetail>) => void;
+  const writes = await install(page, false, false, false, false, true, undefined, { assignedTo: TEST_VIEWER_ID }, {
+    previousChanges: { properties: { paused: true }, assignedTo: TEST_VIEWER_ID }, exposeUpdate: update => { updateTask = update; },
+    exposePreviousUpdate: update => { updatePrevious = update; },
+  });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('button', { name: /^Assignee:/ }).click();
+  await page.getByRole('option', { name: 'Assigned to me' }).click();
+  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await badge.click();
+  const menu = page.locator('.project-paused-menu');
+  const rows = menu.getByRole('menuitem');
+  await expect(rows.first()).toBeFocused();
+  const refresh = async () => {
+    const response = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+    await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+    await response;
+  };
+  await refresh();
+  await expect(menu).toBeVisible();
+  await expect(rows.first()).toBeFocused();
+  updateTask({ status: 'done', ready: false, completedAt: '2026-10-23T09:00:00Z', version: 6n, updatedAt: '2026-10-23T09:00:00Z' });
+  await refresh();
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText('History origin');
+  await expect(rows.first()).toBeFocused();
+  updatePrevious({ assignedTo: null, version: 6n, updatedAt: '2026-10-24T09:00:00Z' });
+  await refresh();
+  await expect(menu).toHaveCount(0);
+  await expect(badge).toHaveCount(0);
+  await expect(page.locator('#project-task-tab-chains')).toBeFocused();
+  expect(writes).toEqual([]);
+});
+
+test('many paused tasks scroll within the native popover and close on outside click', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 360 });
+  const additionalTasks = Array.from({ length: 20 }, (_, index) => detailFixture(projectId,
+    `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    { title: `Additional paused task ${index}`, properties: { paused: true } }));
+  const writes = await install(page, false, false, false, false, true, undefined, {}, { additionalTasks });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await expect(badge).toContainText('21');
+  await badge.click();
+  const menu = page.locator('.project-paused-menu');
+  await expect(menu.getByRole('menuitem')).toHaveCount(21);
+  await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem').last()).toBeFocused();
+  const scrollTop = await menu.evaluate(element => element.scrollTop);
+  expect(scrollTop).toBeGreaterThan(0);
+  const otherPage = await page.context().newPage();
+  await otherPage.bringToFront();
+  await page.bringToFront();
+  await otherPage.close();
+  const refreshed = page.waitForResponse(result => new URL(result.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
+  await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((element: HTMLButtonElement) => element.click());
+  await refreshed;
+  await expect(menu.getByRole('menuitem').last()).toBeFocused();
+  expect(await menu.evaluate(element => element.scrollTop)).toBe(scrollTop);
+  const box = await menu.boundingBox();
+  expect(box!.x).toBeGreaterThanOrEqual(7);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(313);
+  expect(box!.height).toBeLessThanOrEqual(344);
+  await page.mouse.click(2, 2);
+  await expect(menu).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test('closing a chain graph after a paused detail restores its own trigger', async ({ page }) => {
+  await install(page, false, true, false, false, true);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await badge.click();
+  await page.locator('.project-paused-menu').getByRole('menuitem').click();
+  await expect(page.locator('.task-detail-dialog')).toHaveAccessibleName('Target task');
+  await page.goBack();
+  await expect(badge).toBeFocused();
+  const graphTrigger = page.locator(`#task-chain-graph-${taskId}`);
+  await graphTrigger.click();
+  await expect(page.locator('.task-chain-dialog')).toBeVisible();
+  await page.locator('.task-chain-close').click();
+  await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
+  await expect(graphTrigger).toBeFocused();
+});
+
+test('paused Goal child opens its own detail from the project badge', async ({ page }) => {
+  const goalId = '30000000-0000-4000-8000-000000000001';
+  const childId = '40000000-0000-4000-8000-000000000001';
+  const goal = detailFixture(projectId, goalId, { type: 'goal', title: 'Parent Goal', properties: { paused: true } });
+  const child = detailFixture(projectId, childId, { parentId: goalId, title: 'Goal child', properties: { paused: true } });
+  const writes = await install(page, false, false, false, false, false, undefined, {}, { additionalTasks: [goal, child] });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const badge = page.locator('#project-section-panel-tasks .project-section-heading .task-pause-count');
+  await expect(badge).toContainText('1');
+  await badge.click();
+  const rows = page.locator('.project-paused-menu').getByRole('menuitem');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText('Goal child');
+  await rows.first().click();
+  await expect(page.locator('.task-detail-dialog')).toHaveAccessibleName('Goal child');
+  await page.goBack();
+  await expect(badge).toBeFocused();
+  expect(writes).toEqual([]);
+});
