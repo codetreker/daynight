@@ -27,7 +27,7 @@ test('refresh replaces and removes the current Worker even when Session observat
   await page.goto('/tests/navigation/my-tasks-browser.html');
   await expect(page.getByText(`Worker: ${longWorker}`)).toBeVisible();
   await expect(page.getByText('Session status unavailable')).toBeVisible();
-  const replacement = '机器  名称\nA\tB';
+  const replacement = '机器  名称\nA\tB' + ' \t'.repeat(60);
   current = { workerId: taskId(72), machine: { id: taskId(73), name: replacement } };
   await page.getByRole('button', { name: 'Refresh' }).click();
   const worker = page.locator('.my-task-worker');
@@ -37,13 +37,16 @@ test('refresh replaces and removes the current Worker even when Session observat
     const node = el.firstChild!;
     const start = node.textContent!.indexOf('机器');
     const rect = (offset: number) => { const range = document.createRange(); range.setStart(node, start + offset); range.setEnd(node, start + offset + 1); return range.getBoundingClientRect(); };
-    return { firstSpace: rect(2).width, secondSpace: rect(3).width, firstLine: rect(4).top, secondLine: rect(7).top, tab: rect(8).width, overflow: document.documentElement.scrollWidth > innerWidth };
+    const tail = Array.from({ length: 120 }, (_, i) => rect(10 + i));
+    return { firstSpace: rect(2).width, secondSpace: rect(3).width, firstLine: rect(4).top, secondLine: rect(7).top, tab: rect(8).width, overflow: document.documentElement.scrollWidth > innerWidth, tailRight: Math.max(...tail.map(r => r.right)), tailFirstTop: tail[0]!.top, tailLastTop: tail.at(-1)!.top };
   });
   expect(layout.firstSpace).toBeGreaterThan(0);
   expect(layout.secondSpace).toBeGreaterThan(0);
   expect(layout.secondLine).toBeGreaterThan(layout.firstLine);
   expect(layout.tab).toBeGreaterThan(0);
   expect(layout.overflow).toBe(false);
+  expect(layout.tailRight).toBeLessThanOrEqual(320);
+  expect(layout.tailLastTop).toBeGreaterThan(layout.tailFirstTop);
   await expect(page.getByText(`Worker: ${longWorker}`)).toHaveCount(0);
   current = null;
   await page.getByRole('button', { name: 'Refresh' }).click();

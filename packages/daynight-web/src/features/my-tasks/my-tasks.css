@@ -13,7 +13,7 @@
 .my-task-title:hover, .my-task-goal:hover { color: var(--indigo); text-decoration: underline; }
 .my-task-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin-top: 5px; color: #727d90; font-size: 11px; min-width: 0; }
 .my-task-id { font-variant-numeric: tabular-nums; }
-.my-task-worker { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; }
+.my-task-worker { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: break-spaces; }
 .my-task-goal { display: inline-flex; align-items: center; gap: 5px; color: #6264a4; min-width: 0; max-width: 100%; text-decoration: none; }
 .my-task-goal span { overflow-wrap: anywhere; min-width: 0; }
 .my-task-goal svg { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; }
