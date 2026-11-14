@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { createOperation, type Operation } from "../../../src/api/operation.js";
@@ -29,7 +29,7 @@ const fixture = async () => {
   };
   const a = await launch("A"), b = await launch("B"), codex = await launch("codex", "codex");
   const events: string[] = [], states = new Map<string, { proof: ProcessProof; running: boolean; endpoints: boolean; ensures: number; connects: number; stops: number }>();
-  const settings = { responsibilities: false, stopFails: false, captureFails: false, readinessFails: false, endpointRemains: false, mappingsStopped: true, version: "0.9.9" };
+  const settings = { responsibilities: false, stopFails: false, captureFails: false, readinessFails: false, endpointRemains: false, mappingsStopped: true, endpointState: null as { api: boolean; client: boolean } | null, endpointFailure: null as Error | null, resourceFailure: null as Error | null, version: "0.9.9" };
   const uuid = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
   const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: directory, agent: "codex" };
   let frozen: ExecutionConfiguration | null = { agent: "codex", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3, herdrLaunch: a, herdrObservation: { version: "0.9.9", checkedAt: "2026-01-01T00:00:00.000Z" }, toolLaunch: codex, toolObservation: { version: "0.167.1", checkedAt: "2026-01-02T00:00:00.000Z" } };
@@ -52,7 +52,10 @@ const fixture = async () => {
   const build = () => createSharedWorkerHerdr({ paths, homeDirectory: directory, hasResponsibilities: () => settings.responsibilities,
     readExecutionConfiguration: owner => owner.claimId === context.claimId && owner.projectId === context.projectId && owner.taskId === context.taskId && owner.worktreeId === context.worktreeId ? frozen : null,
     confirmMappingsStopped: async () => { events.push("native-trees-stopped"); return settings.mappingsStopped; },
-    inspectEndpoints: async () => ({ api: endpointOwner !== null && stateFor(endpointOwner).endpoints, client: endpointOwner !== null && stateFor(endpointOwner).endpoints }),
+    inspectEndpoints: async () => {
+      if (settings.endpointFailure !== null) throw settings.endpointFailure;
+      return settings.endpointState ?? { api: endpointOwner !== null && stateFor(endpointOwner).endpoints, client: endpointOwner !== null && stateFor(endpointOwner).endpoints };
+    },
     captureProcess: async pid => { events.push("capture"); if (settings.captureFails) throw new Error("Original birth identity unavailable"); const found = [...states.values()].find(state => state.proof.pid === pid); if (!found) throw new Error("Unknown fixture process"); return found.proof; },
     inspectProcess: async proof => [...states.values()].find(state => state.proof.pid === proof.pid)?.running ? "running" : "stopped",
     instanceFactory: options => {
@@ -76,11 +79,58 @@ const fixture = async () => {
           state.running = false; if (!settings.endpointRemains) state.endpoints = false;
           return { apiClosed: true, clientClosed: true, ownedChildClosed: null };
         },
-        tasks: { observe: async () => { events.push(`observe:${key}`); return { selectionKey: key }; } },
+        tasks: {
+          observe: async () => { events.push(`observe:${key}`); return { selectionKey: key }; },
+          listResources: async () => { events.push(`resources:${key}`); if (settings.resourceFailure !== null) throw settings.resourceFailure; return []; },
+        },
       } as unknown as WorkerHerdrAdapter;
     } });
   return { paths, directory, context, a, b, codex, mapping, events, states, settings, stateFor, build, changeFrozen: (value: ExecutionConfiguration | null) => { frozen = value; }, setLegacy: async () => { await mkdir(paths.herdrDirectory, { recursive: true, mode: 0o700 }); await writeFile(instancePaths.configurationFile, "legacy private configuration", { mode: 0o600 }); const state = stateFor("legacy"); state.running = true; state.endpoints = true; endpointOwner = "legacy"; } };
 };
+
+test("observes an absent shared instance through real endpoints without creating its configuration", async () => {
+  const f = await fixture();
+  let root = f.directory;
+  // Real AF_UNIX endpoint names retain their platform limit inside long checkouts.
+  if (process.platform !== "win32") {
+    root = path.join("/tmp", `dn-h-${randomUUID().slice(0, 8)}`);
+    await symlink(f.directory, root); directories.push(root);
+  }
+  const paths = resolveWorkerPaths(root), shared = createSharedWorkerHerdr({ paths, homeDirectory: root, hasResponsibilities: () => false });
+  await expect(shared.observeResources!(operation())).resolves.toEqual([]);
+  expect(readHerdrSharedInstance(paths)).toBeNull();
+  await expect(access(shared.paths.configurationFile)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test.each(["responsibility", "native mapping", "partial endpoint", "endpoint error", "retained configuration", "retained session", "unknown startup", "invalid journal"] as const)("retains an absent instance with %s during resource observation", async variant => {
+  const f = await fixture(), shared = f.build();
+  if (variant === "responsibility") f.settings.responsibilities = true;
+  if (variant === "native mapping") f.settings.mappingsStopped = false;
+  if (variant === "partial endpoint") f.settings.endpointState = { api: true, client: false };
+  if (variant === "endpoint error") f.settings.endpointFailure = new Error("Endpoint permission denied");
+  if (variant === "retained configuration") {
+    await mkdir(f.paths.herdrDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(shared.paths.configurationFile, "retained configuration", { mode: 0o600 });
+  }
+  if (variant === "retained session") await mkdir(shared.paths.sessionDirectory, { recursive: true, mode: 0o700 });
+  if (variant === "unknown startup") await writeHerdrSharedInstance(f.paths, { schemaVersion: 1, current: { launch: f.a, observation: null, daemon: null, phase: "starting" }, pending: { launch: f.a, phase: "starting" } });
+  if (variant === "invalid journal") {
+    await mkdir(f.paths.herdrDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(f.paths.herdrDirectory, "tool-instance.json"), "{}", { mode: 0o600 });
+  }
+  await expect(shared.observeResources!(operation())).rejects.toThrow();
+  expect([...f.states.values()].every(state => state.ensures === 0)).toBe(true);
+  expect(f.events.some(event => event.startsWith("resources:"))).toBe(false);
+});
+
+test("observes a running original daemon and propagates its resource failure without spawning", async () => {
+  const f = await fixture(), shared = f.build(); await shared.prepareSelection(f.a, operation());
+  await expect(shared.observeResources!(operation())).resolves.toEqual([]);
+  expect(f.events).toContain(`resources:${f.a.selectionKey}`);
+  const error = new Error("Original resource inventory failed"); f.settings.resourceFailure = error;
+  await expect(shared.observeResources!(operation())).rejects.toBe(error);
+  expect(f.stateFor(f.a.selectionKey).ensures).toBe(1);
+});
 
 test("starts a frozen shared instance and records the real handshake before admission", async () => {
   const f = await fixture(), shared = f.build();

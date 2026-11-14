@@ -317,6 +317,8 @@ Worktree inspection 在核验清单、目录、唯一注册、common directory �
 
 资源扫描与清理 job 可交错。原 backend 所需停止与归档条件满足后，文件删除确认目录和对应 Git 注册缺失；随后 backend 结算、本地责任和清理调度完成，最后退休清单。Legacy 不以进程内回执丢失要求历史停止证明：完整自有清单缺少原 claim、本地无未完成责任或清理调度、无 Web 或 durable Herdr 冲突、当前 Herdr workspace 和待停止责任缺席，且本进程原 job 已收尾时，核对原目录与精确 Git 注册均不存在后可退休孤立清单。已独立确认后继绑定原位置时，只按原清单身份退休元数据，不访问后继 cwd。仅剩清单的重试不重新停止或归档、不恢复执行槽或同 task 屏障；独立 release 正常返回前完成退休，失败报告已确认释放并保留元数据重试。已有 durable worktreeDeleted 后的本地结算只核对原 retained binding，不重新删除旧路径。仅 LocalTask.done 不证明 Web 或原生 Herdr 的归档条件。local-closed 不排除脱离 stdio 的后代之后继续写入。
 
+孤立清单的 legacy Herdr 观察使用 adapter 的只读资源入口。Linux/Windows 在共享实例串行队列内核对持久实例记录、执行责任、配置与 session 路径、API/client 两个 endpoint 和原 native mapping 进程树；只有实例记录无 current/pending owner、无执行责任、全部路径和 endpoint 缺席且 mapping 已确认停止时，才返回空资源。已有实例按原身份重连并读取 workspace；未知启动、残留责任、权限错误、损坏记录或不完整 endpoint 观察继续失败。该观察不启动 daemon，也不将配置文件缺失单独作为停止证明。Web 与 durable Herdr 的原停止及归档条件保持独立。
+
 资源发现结合清单、Git 注册和目录；清单不含 workerId，须关联本机行、专用 Herdr 或当前自有 claim 才能认定由本 worker 管理。无法证明归属的资源报告并保留。已知项目仓库和专用 Herdr 是扫描范围，不进行全磁盘发现。
 
 ## Workspace 名称与身份
