@@ -56,7 +56,7 @@
 .chain-summary-context>.root-meta{margin-top:0}
 .chain-summary-meta .task-assignee-identity{max-width:100%}
 .chain-summary-meta .assignee-name{max-width:none;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
-.chain-summary-meta .chain-completion-time{padding:3px 4px}
+.chain-summary-meta .chain-completion-time{display:flex;align-items:center;font-size:.75rem;line-height:17px;padding:0 4px}
 @container(max-width:600px){
   .goal-header{grid-template-columns:minmax(0,1fr) auto}
   .chain-summary{grid-column:1/-1;padding:11px 11px 0}

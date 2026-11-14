@@ -180,6 +180,23 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       detailFixture(projectId, outsideId, { title: 'Short chain', assignedTo: TEST_VIEWER_ID }),
       detailFixture(projectId, otherTaskId, { title: 'Chain child', dependsOn: [outsideId], blockedBy: [outsideId], ready: false })];
     currentGraph = graphFixture(details);
+  }, compactChains: () => {
+    const done = { status: 'done' as const, completedAt: '2026-10-22T09:59:30Z' };
+    details = [goal, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }),
+      detailFixture(projectId, firstId, { title: 'Full complete', assignedTo: TEST_VIEWER_ID, ...done }),
+      detailFixture(projectId, secondId, { title: 'Full member', dependsOn: [firstId], ...done }),
+      detailFixture(projectId, otherTask2Id, { title: 'Full pending', assignedTo: TEST_VIEWER_ID }),
+      detailFixture(projectId, layoutChildId, { title: 'Pending member', dependsOn: [otherTask2Id] }),
+      detailFixture(projectId, outsideId, { title: 'Scoped complete', parentId: otherGoalId, ...done }),
+      detailFixture(projectId, otherTaskId, { title: 'Scoped member', dependsOn: [outsideId], ...done }),
+      detailFixture(projectId, layoutWorkerId, { title: 'Scoped unknown', parentId: otherGoalId, status: 'done' }),
+      detailFixture(projectId, singleId, { title: 'Unknown member', dependsOn: [layoutWorkerId], status: 'done' })];
+    currentGraph = graphFixture(details);
+  }, clearCompactCompletion: () => {
+    details = details.map(item => item.id === firstId || item.id === secondId
+      ? { ...item, status: 'cancelled' as const, completedAt: null, cancelledAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n }
+      : item);
+    currentGraph = { ...graphFixture(details), observedAt: '2026-10-22T10:00:01Z' };
   }, setMixedChildren: () => {
     const changedAt = `2026-10-22T10:00:${String(++colorRevision).padStart(2, '0')}Z`;
     details = details.map(item => item.id === singleId ? { ...item, status: 'cancelled' as const, version: item.version + 1n, updatedAt: changedAt, cancelledAt: time } : item);
@@ -2301,7 +2318,39 @@ test('Goal list retires an old epoch and rejects its late background result', as
 });
 
 
-for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`long completed chain metadata remains readable at ${width}px in ${locale}`, async ({ page }) => {
+test('completed and incomplete full and scoped chains have compact desktop headers', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const fixture = await install(page, 'en', 'Owner'); fixture.compactChains();
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Task chains' }).click();
+  const heights: number[] = [];
+  for (const [id, hasTime] of [[firstId, true], [otherTask2Id, false], [outsideId, true], [layoutWorkerId, false]] as const) {
+    const row = page.locator(`[data-chain-id="${id}"]`);
+    const header = row.locator('.goal-header');
+    await expect(header.locator('.chain-completion-time')).toHaveCount(hasTime ? 1 : 0);
+    if (hasTime) await expectChainTimeLayout(header);
+    const sizes = await row.evaluate(element => ({
+      card: element.getBoundingClientRect().height,
+      header: element.querySelector('.goal-header')!.getBoundingClientRect().height,
+      meta: element.querySelector('.chain-summary-meta')!.getBoundingClientRect().height,
+    }));
+    expect(Math.abs(sizes.header - 62)).toBeLessThanOrEqual(1);
+    expect(Math.abs(sizes.card - 64)).toBeLessThanOrEqual(1);
+    expect(sizes.meta).toBeGreaterThanOrEqual(16);
+    expect(sizes.meta).toBeLessThanOrEqual(17);
+    heights.push(sizes.header);
+  }
+  expect(Math.abs(heights[0]! - heights[1]!)).toBeLessThanOrEqual(1);
+  expect(Math.abs(heights[2]! - heights[3]!)).toBeLessThanOrEqual(1);
+  fixture.clearCompactCompletion();
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const updated = page.locator(`[data-chain-id="${firstId}"] .goal-header`);
+  await expect(updated.locator('.chain-completion-time')).toHaveCount(0);
+  expect(Math.abs(await updated.evaluate(element => element.getBoundingClientRect().height) - heights[0]!)).toBeLessThanOrEqual(1);
+});
+
+for (const width of [1440, 1280, 740, 600, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`long completed chain metadata remains readable at ${width}px in ${locale}`, async ({ page }) => {
   const fixture = await install(page, locale); fixture.completionGoal(true);
   await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
   await page.setViewportSize({ width, height: 800 });
