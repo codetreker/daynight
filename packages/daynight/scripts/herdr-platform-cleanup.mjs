@@ -115,6 +115,7 @@ const windowsOriginals = (run, metadata) => {
   const partial = cleanup.partialWorkspace;
   const observation = cleanup.partialWorkspaceObservation;
   const closure = cleanup.partialWorkspaceClosure;
+  const independent = cleanup.partialWorkspaceIndependent;
   const partialStage = run.resourceStage === "preparing-workspace";
   const explicit = partialStage ? [run.daemonPid, run.shellPid] : [run.daemonPid, run.shellPid, run.receipt?.helperPid, run.receipt?.childPid];
   const originals = (Array.isArray(capture?.processes) ? capture.processes : []).map(row => ({ ...row, source: "cim-creation-date-ticks" }));
@@ -134,17 +135,23 @@ const windowsOriginals = (run, metadata) => {
     run.processProofCompleted === undefined && run.sameOriginalNativeAfterInput === undefined &&
     ownerFields.every(field => validOwnerId(run.owner?.[field]) && partial?.owner?.[field] === run.owner[field]) &&
     partial?.binding?.session === "w" && [partial.binding.workspaceId, partial.binding.paneId, partial.binding.terminalId].every(validId) &&
+    validId(partial.tabId) && validId(partial.initialTabId) && partial.tabId !== partial.initialTabId &&
+    validId(partial.initialPaneId) && validId(partial.initialTerminalId) && partial.initialPaneId !== partial.binding.paneId && partial.initialTerminalId !== partial.binding.terminalId &&
     partial.shellPid === run.shellPid && partial.failurePhase === "root-readiness" && partial.layoutVerified === true &&
     ownerFields.every(field => observation?.owner?.[field] === partial.owner[field]) &&
     ["session", "workspaceId", "paneId", "terminalId"].every(field => observation?.binding?.[field] === partial.binding[field]) &&
-    observation?.shellPid === partial.shellPid && observation.failurePhase === partial.failurePhase && observation.layoutVerified === true &&
+    observation?.shellPid === partial.shellPid && ["tabId", "initialTabId", "initialPaneId", "initialTerminalId"].every(field => observation[field] === partial[field]) && observation.failurePhase === partial.failurePhase && observation.layoutVerified === true &&
     ownerFields.every(field => closure?.owner?.[field] === partial.owner[field]) &&
     ["session", "workspaceId", "paneId", "terminalId"].every(field => closure?.binding?.[field] === partial.binding[field]) &&
-    closure?.shellPid === partial.shellPid && closure.failurePhase === partial.failurePhase && closure.layoutVerified === true &&
+    closure?.shellPid === partial.shellPid && ["tabId", "initialTabId", "initialPaneId", "initialTerminalId"].every(field => closure[field] === partial[field]) && closure.failurePhase === partial.failurePhase && closure.layoutVerified === true &&
     closure.noAgentLaunch === true && closure.closeConfirmed === true &&
-    ["ownerAbsent", "workspaceAbsent", "paneAbsent", "terminalAbsent"].every(field => closure.after?.[field] === true) &&
+    ["ownerAbsent", "workspaceAbsent", "paneAbsent", "terminalAbsent", "tabAbsent"].every(field => closure.after?.[field] === true) &&
+    ownerFields.every(field => independent?.owner?.[field] === partial.owner[field]) &&
+    ["session", "workspaceId", "paneId", "terminalId"].every(field => independent?.binding?.[field] === partial.binding[field]) &&
+    ["tabId", "initialTabId", "initialPaneId", "initialTerminalId"].every(field => independent?.[field] === partial[field]) &&
+    ["ownerAbsent", "workspaceAbsent", "paneAbsent", "terminalAbsent", "tabAbsent"].every(field => independent[field] === true) &&
     partial.noAgentLaunch === true && partial.closeConfirmed === true && validReadiness &&
-    ["ownerAbsent", "workspaceAbsent", "paneAbsent", "terminalAbsent"].every(field => partial.after?.[field] === true) &&
+    ["ownerAbsent", "workspaceAbsent", "paneAbsent", "terminalAbsent", "tabAbsent"].every(field => partial.after?.[field] === true) &&
     validId(run.endpoints?.api) && validId(run.endpoints?.client) && run.endpoints.api !== run.endpoints.client &&
     cleanup.mockClosed === true && cleanup.apiClosed === true && cleanup.clientClosed === true;
   const validCapture = explicit.every(validPid) && new Set(explicit).size === explicit.length &&
@@ -159,7 +166,7 @@ const windowsOriginals = (run, metadata) => {
     originals.every(original => after.some(row => row.pid === original.pid && row.parentPid === original.parentPid && row.startToken === original.startToken && row.stage === "after-stop" && row.observation === "exited")) &&
     cleanup.workspaceClosed === true && cleanup.instance?.ownedChildClosed === true && cleanup.instance.apiClosed === true && cleanup.instance.clientClosed === true &&
     !["captureError", "processReadbackError", "workspaceError", "instanceError"].some(key => cleanup[key] !== undefined);
-  const partialFields = ["partialWorkspace", "partialWorkspaceObservation", "partialWorkspaceClosure", "readinessDiagnostics", "readinessDiagnosticError", "readinessVerified"];
+  const partialFields = ["partialWorkspace", "partialWorkspaceObservation", "partialWorkspaceClosure", "partialWorkspaceIndependent", "readinessDiagnostics", "readinessDiagnosticError", "readinessVerified"];
   const valid = run.schemaVersion === 1 && run.platform === "win32" && (partialStage ? validPartial : partialFields.every(field => cleanup[field] === undefined)) && validCapture && validStop;
   return { valid, originals };
 };
@@ -185,30 +192,40 @@ const noResourceInitializationFailure = run => run.schemaVersion === 1 && run.re
   run.processProofCompleted === undefined && run.sameOriginalNativeAfterInput === undefined &&
   run.initialInputAttempts === 0 && Array.isArray(run.requests) && run.requests.length === 0 &&
   run.cleanup.mockClosed === true && Array.isArray(run.cleanup.windowsQueries) && run.cleanup.windowsQueries.length === 0 &&
-  ["processCapture", "originalProcesses", "instance", "workspaceClosed", "partialWorkspace", "partialWorkspaceObservation", "partialWorkspaceClosure", "readinessDiagnostics", "readinessDiagnosticError", "readinessVerified", "apiClosed", "clientClosed", "captureError", "processReadbackError", "workspaceError", "instanceError", "preparationProbes", "preparationProbeSetupError"].every(key => run.cleanup[key] === undefined);
+  ["processCapture", "originalProcesses", "instance", "workspaceClosed", "partialWorkspace", "partialWorkspaceObservation", "partialWorkspaceClosure", "partialWorkspaceIndependent", "readinessDiagnostics", "readinessDiagnosticError", "readinessVerified", "apiClosed", "clientClosed", "captureError", "processReadbackError", "workspaceError", "instanceError", "preparationProbes", "preparationProbeSetupError"].every(key => run.cleanup[key] === undefined);
 
-export const checkHerdrPlatformCleanup = async (directory, { platform = process.platform, observeWindows = observeWindowsCleanup } = {}) => {
+export const checkHerdrPlatformCleanup = async (directory, { platform = process.platform, observeWindows = observeWindowsCleanup, requirePartial = false } = {}) => {
   const entries = await readdir(directory);
   const files = entries.filter(file => /^acceptance-(?:argv-)?(codex|copilot)-.*\.json$/.test(file));
+  const partialFiles = entries.filter(file => /^acceptance-partial-codex-.*\.json$/.test(file));
   const metadataFiles = entries.filter(file => /^acceptance-windows-metadata-.*\.json$/.test(file));
   const evidence = { checkedAt: new Date().toISOString(), runs: [], failures: [] };
-  for (const file of files) {
+  for (const file of [...files, ...partialFiles]) {
     const run = JSON.parse(await readFile(path.join(directory, file), "utf8"));
     const pids = [...new Set([run.daemonPid, run.shellPid, run.receipt?.helperPid, run.receipt?.childPid, ...(run.cleanup.originalProcesses ?? []).map(row => row.pid)].filter(Boolean))];
     const initializationFailure = run.resourceStage === "initialization";
     const resourcesAbsent = noResourceInitializationFailure(run) === true;
     const processResult = resourcesAbsent ? { resourcesAbsent: true, processes: [], processEvidenceError: null } : platform === "win32" ? await observeOriginals(run, false, observeWindows) : { processes: pids.map(inspectPid) };
+    const controlled = partialFiles.includes(file), marker = run.controlledReadinessFailure;
+    const validControlled = controlled && platform === "win32" && run.resourceStage === "preparing-workspace" &&
+      run.officialNativeIdentification === false && run.controlledArgumentRoundTrip === false &&
+      marker?.kind === "after-real-readiness" && marker.realRootVerified === true && marker.shellPid === run.shellPid &&
+      marker.totalMs === 20_000 && Number.isSafeInteger(marker.remainingMs) && marker.remainingMs > 0 && marker.remainingMs <= marker.totalMs &&
+      run.cleanup?.partialWorkspace?.readyValidation === "verified" && run.cleanup?.readinessDiagnostics?.readyFile?.state === "present" &&
+      marker.failureKind === "deadline" && typeof run.error === "string" && run.error.includes("Operation deadline exceeded.") &&
+      run.errorDetails?.name === "HerdrAgentActionError" && typeof run.errorDetails.message === "string" && run.errorDetails.message.includes("The original PowerShell root readiness phase failed");
     const livePids = processResult.processes.filter(row => (row.observation === "same-original" || row.observation === "present")).map(row => row.pid), unknownPids = processResult.processes.filter(row => row.observation === "unknown").map(row => row.pid);
     const endpointsClosed = run.endpoints ? await Promise.all(Object.values(run.endpoints).map(endpoint => closedEndpoint(endpoint, platform))) : [];
     const shortLinkRemoved = !run.shortLink || await lstat(run.shortLink).then(() => false, error => error.code === "ENOENT");
     const preparationProbesClosed = !run.cleanup.preparationProbeSetupError && (run.cleanup.preparationProbes ?? []).every(probe => probe.closed === true);
     const windowsQueriesClosed = (run.cleanup.windowsQueries ?? []).every(query => query.closed === true && query.cleanupConfirmed === true);
-    const result = { file, resourceState: resourcesAbsent ? "no-resource-initialization-failure" : initializationFailure ? "unconfirmed-initialization" : "started", ...processResult, livePids, unknownPids, endpointsClosed, shortLinkRemoved, preparationProbesClosed, windowsQueriesClosed, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
+    const result = { file, resourceState: resourcesAbsent ? "no-resource-initialization-failure" : initializationFailure ? "unconfirmed-initialization" : "started", ...(controlled ? { controlledReadinessFailure: validControlled } : {}), ...processResult, livePids, unknownPids, endpointsClosed, shortLinkRemoved, preparationProbesClosed, windowsQueriesClosed, runtimeDirectoryRemoved: run.cleanup.runtimeDirectoryRemoved === true };
     evidence.runs.push(result);
-    if (initializationFailure && !resourcesAbsent || platform === "win32" && !resourcesAbsent && !result.processStopped || livePids.length || unknownPids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !preparationProbesClosed || !windowsQueriesClosed || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
+    if (controlled && !validControlled || !controlled && marker !== undefined || initializationFailure && !resourcesAbsent || platform === "win32" && !resourcesAbsent && !result.processStopped || livePids.length || unknownPids.length || endpointsClosed.some(value => !value) || !shortLinkRemoved || !preparationProbesClosed || !windowsQueriesClosed || !result.runtimeDirectoryRemoved) evidence.failures.push(file);
   }
   for (const agent of ["codex", "copilot"]) if (!files.some(file => file.startsWith(`acceptance-${agent}-`))) evidence.failures.push(`Missing ${agent} completion evidence.`);
   if (platform === "win32" && !files.some(file => file.startsWith("acceptance-argv-codex-"))) evidence.failures.push("Missing Windows ExternalScript argument evidence.");
+  if (platform === "win32" && requirePartial && partialFiles.length !== 1) evidence.failures.push("Missing or duplicate controlled Windows partial workspace evidence.");
   for (const file of metadataFiles) {
     const run = JSON.parse(await readFile(path.join(directory, file), "utf8"));
     const validIdentity = run.schemaVersion === 1 && run.source === "isolated-ps5-dotnet-oracle" && run.platform === "win32" && validPid(run.pid) && validToken(run.startToken);
