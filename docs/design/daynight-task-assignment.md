@@ -105,7 +105,7 @@ profiles store 按 [viewerUserId,projectId,profileUserId] 隔离内容，记录 
 
 TaskAssigneeIdentity 显示真实 nullable 姓名/头像，name 缺失显示短 UUID，图片失败使用当前身份首字形态；不生成 email。TaskAssigneeSelect 紧邻状态 24px 成组，TaskAssigneeFilter 拥有 all/me/unassigned/user 显示状态。AssigneePicker 的 fixed 菜单在 surface 的焦点所有者子树内，尺寸和 12px 边界按视口计算，随 scroll/resize/fullscreen 及进入动画稳定定位；键盘与 Escape/Tab/外部点击保留现有详情层级和焦点。
 
-ProjectPage 在完整 index 上逐任务联合计算负责人和状态匹配，再筛选顶层条目并分页。ChainList 只要普通分量中有联合匹配成员即保留真实代表，展开全部普通成员，并保留完整 component 进度和依赖；外部前置不充当匹配成员。页签数字另以相同负责人 predicate 投影完整范围，不使用状态匹配或分页后的列表：独立任务逐个计入匹配的未结束成员，任务链对每个范围内成员集合检查是否存在同时匹配负责人且未结束的成员，存在则计一链；Goal 数字依据容器自身负责人和非终态状态。概览与图不继承列表过滤，显式概览定位调整遮挡目标的条件。界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
+ProjectPage 的状态筛选使用[公共原生选择组件](native-select.md)的 filter 密度与 Task 焦点，全部状态以 `all` 表示；负责人搜索选择器仍拥有独立菜单。ProjectPage 在完整 index 上逐任务联合计算负责人和状态匹配，再筛选顶层条目并分页。ChainList 只要普通分量中有联合匹配成员即保留真实代表，展开全部普通成员，并保留完整 component 进度和依赖；外部前置不充当匹配成员。页签数字另以相同负责人 predicate 投影完整范围，不使用状态匹配或分页后的列表：独立任务逐个计入匹配的未结束成员，任务链对每个范围内成员集合检查是否存在同时匹配负责人且未结束的成员，存在则计一链；Goal 数字依据容器自身负责人和非终态状态。概览与图不继承列表过滤，显式概览定位调整遮挡目标的条件。界面不使用规则旁白，只有必要错误、访问状态和恢复入口。
 
 ## 观测与验证
 

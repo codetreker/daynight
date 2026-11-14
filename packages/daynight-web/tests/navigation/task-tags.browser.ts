@@ -358,7 +358,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
 });
 
 
-for (const width of [1100, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
+for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
   const state = await install(page, locale);
   const childLongName = `${longName}X`;
   state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, tags: [{ id: id(93), name: childLongName }] } : item);
@@ -374,6 +374,21 @@ for (const width of [1100, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   const toolbar = page.locator('.project-tasks .task-list-filters').filter({ visible: true });
   await expect(toolbar.locator(':scope > .task-assignee-filter, :scope > .task-status-filter, :scope > .tag-filter-wrap')).toHaveCount(4);
   const status = toolbar.locator('.task-status-filter');
+  const checkSelect = async (container: Locator) => {
+    const wrapper = container.locator('.native-select');
+    await expect(wrapper).toHaveAttribute('data-density', 'filter');
+    await expect(wrapper).toHaveAttribute('data-focus-tone', 'task');
+    const geometry = await wrapper.evaluate(element => {
+      const select = element.querySelector('select')!, arrow = element.querySelector('svg')!;
+      const control = select.getBoundingClientRect(), icon = arrow.getBoundingClientRect();
+      return { height: control.height, inset: control.right - icon.right, center: (control.top + control.bottom - icon.top - icon.bottom) / 2,
+        arrows: element.querySelectorAll('svg').length, appearance: getComputedStyle(select).appearance };
+    });
+    expect(geometry.height).toBe(32); expect(geometry.inset).toBeCloseTo(12, 0);
+    expect(Math.abs(geometry.center)).toBeLessThanOrEqual(1);
+    expect(geometry.arrows).toBe(1); expect(geometry.appearance).toBe('none');
+  };
+  await checkSelect(status);
   const main = toolbar.locator('.tag-filter').nth(0);
   const filter = toolbar.locator('.tag-filter').nth(1);
   expect(await status.evaluate(element => element.nextElementSibling?.className)).toBe('tag-filter-wrap');
@@ -394,6 +409,16 @@ for (const width of [1100, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await search.focus(); await search.fill('Unbroken');
   await expect(filter.getByText(childLongName, { exact: true })).toBeVisible();
   const option = filter.getByLabel(childLongName); await option.check();
+  await checkSelect(filter);
+  const match = filter.locator('select');
+  const arrow = filter.locator('.native-select__arrow');
+  const arrowBox = (await arrow.boundingBox())!;
+  await page.mouse.click(arrowBox.x + arrowBox.width / 2, arrowBox.y + arrowBox.height / 2);
+  await expect.poll(() => match.evaluate(element => element.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => match.evaluate(element => element.matches(':open'))).toBe(false);
+  await expect(filter).toHaveAttribute('open', '');
+  await expect(search).toHaveValue('Unbroken'); await expect(option).toBeChecked();
   await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
   await expect(filter).not.toHaveAttribute('open', '');
   const secondCard = page.locator(`[data-goal-id="${secondGoal.id}"]`);
@@ -433,6 +458,7 @@ for (const width of [1100, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await input.fill('goal'); await input.press('Enter');
   const searchToolbar = page.locator('.task-search-filters');
   await expect(searchToolbar.locator('.tag-filter')).toHaveCount(1);
+  await checkSelect(searchToolbar.locator('.task-status-filter'));
   expect(await searchToolbar.locator('.task-status-filter').evaluate(element => element.nextElementSibling?.className)).toBe('tag-filter-wrap');
   await expect(page.locator('.tag-filter-trigger').filter({ hasText: locale === 'zh-CN' ? '子 Task' : 'Child task' })).toHaveCount(0);
   await input.fill('');

@@ -207,16 +207,16 @@ test('independent PR empty, connection and saved-data notices remain readable at
   expect(state.unexpected).toEqual([]);
 });
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 390, 320]) {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 768, 390, 320]) {
   test(`PR filter arrow and native selection at ${width}px in ${locale}`, async ({ page }, info) => {
     const state = await installPrList(page, locale);
     state.longCounts = true;
     await page.setViewportSize({ width, height: 900 });
     await open(page);
     const filter = page.getByRole('combobox', { name: locale === 'en' ? 'Pull request status' : 'PR 状态' });
-    const arrow = page.locator('.pr-filter-arrow');
+    const arrow = page.locator('.pr-filter-wrap .native-select__arrow');
     await expect(arrow).toHaveAttribute('aria-hidden', 'true');
-    await expect(arrow.locator('path')).toHaveAttribute('d', 'm2 4 3 3 3-3');
+    await expect(arrow.locator('path')).toHaveAttribute('d', 'm2 3.5 3 3 3-3');
     await expect(filter.locator('option')).toHaveCount(4);
     for (const value of ['active', 'merged', 'closed', 'all']) {
       await filter.selectOption(value);
@@ -234,7 +234,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 3
       });
       expect(geometry.right).toBeCloseTo(12, 0);
       expect(Math.abs(geometry.center)).toBeLessThanOrEqual(1);
-      expect([geometry.width, geometry.height, geometry.selectHeight, geometry.appearance]).toEqual([10, 10, width <= 740 ? 35 : 37, 'none']);
+      expect([geometry.width, geometry.height, geometry.selectHeight, geometry.appearance]).toEqual([10, 10, 32, 'none']);
       expect(geometry.textWidth).toBeLessThanOrEqual(geometry.available + 1);
       expect(geometry.hitSelect).toBe(true);
       await assertFits(page);
@@ -243,6 +243,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 800, 3
     const box = (await arrow.boundingBox())!;
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await expect(filter).toBeFocused();
+    await expect.poll(() => filter.evaluate(element => element.matches(':open'))).toBe(true);
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
     await expect(filter).toHaveValue('merged');
