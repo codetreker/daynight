@@ -24,10 +24,9 @@ The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
 an authenticated shell. Project and search status, PR status, and tag match filters
 use the shared filter variant while retaining their separate values and behavior.
-Webhook owner and status filters also use the filter variant; subscription and
-delivery filters use the full-width form variant. Their callers retain scope
-isolation, option eligibility and explicit delivery-filter application. A shared
-popup-state predicate gives enclosing Escape
+Bot creation and assistant task forms and record filters also use the shared
+presentation while retaining their business selection rules. A shared popup-state
+predicate gives enclosing Escape
 handlers a native observation without making the component an event owner.
 
 This generalizes the geometry choice recorded in the
@@ -38,6 +37,10 @@ arrow's inset. The Worker record still owns its existing local implementation;
 the shared component owns the reusable presentation contract. The
 [PR arrow decision](../bug-fix/2026-11-14-pr-filter-arrow-alignment.md) records
 the earlier local implementation and its replacement.
+
+Webhook owner and status filters use the filter variant; subscription and
+delivery filters use the full-width form variant. Their callers retain scope
+isolation, option eligibility and explicit delivery-filter application.
 
 ## Alternatives
 
