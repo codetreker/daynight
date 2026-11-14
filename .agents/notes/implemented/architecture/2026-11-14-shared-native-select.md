@@ -22,7 +22,8 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. A shared popup-state predicate gives enclosing Escape
+an authenticated shell. Bot creation and assistant task forms and record filters
+use the same presentation while retaining their business selection rules. A shared popup-state predicate gives enclosing Escape
 handlers a native observation without making the component an event owner.
 
 This generalizes the geometry choice recorded in the

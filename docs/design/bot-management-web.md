@@ -34,6 +34,8 @@
 
 首次 defaults 未完成时保留名称编辑，暂不允许创建；后续读取保留已有展示与草稿，不插入后台检查状态行。错误显示实际原因和重试入口，重试不重建表单。`creating` 绑定账号 scope 与打开时的助手选择，目标导航使弹窗收起，迟到完成不能把新选择导航回旧结果。语言、同目标后台检查和布局变化不重建表单。
 
+Worker、Agent、model 和 effort 使用[公共原生选择组件](native-select.md)的 form/fill 与 responsive 触控模式；选项和联动仍由表单拥有。原生菜单打开时，Escape 只阻止向外传播，保留浏览器取消操作和表单草稿；IME 与已处理事件不触发外层关闭。
+
 `BotCreateForm` 分开记录 Worker、cwd、Provider、model 和 reasoningEffort 的显式覆盖。名字创建只发 `{id,name}`；查看默认、展开设置和取消菜单不会把预览写入请求。`getBotDefaults` 接收当前覆盖并重新解析有效配置，来源读取 `configuration.selection`，保留 explicit/preference/local/cloud/native/unknown 的区别；没有历史来源的旧记录不伪造来源。使用默认删除对应覆盖，恢复全部默认同时解除显式 Worker。
 
 确认目录或明确选择 Agent、Model、effort 时，将当前解析到的 Worker 固定为显式目标。切换 Worker 清除旧机器的 cwd、Provider、model 和 effort；切换 Provider 保留目录，清除 model 和 effort；切换 model 清除表单 effort，再读取该模型的权威默认。Worker 当前明确 effort 的兼容性由服务端解析与真实能力校验，不能通过 UI 丢弃该配置来绕过错误。显式 Worker 不可用时保留错误，不自动换机。
