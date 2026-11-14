@@ -90,6 +90,9 @@ jobs:
       - name: Verify Session draft browser regressions
         id: session-drafts-browser
         run: pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/session-drafts-playwright.config.ts
+      - name: Verify public native select browser regressions
+        id: native-select-browser
+        run: pnpm --filter @codetreker/daynight-web exec playwright test --config tests/navigation/native-select-playwright.config.ts
       - name: Upload frontend assistant browser evidence
         if: ${{ always() && steps.web-browser.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -110,6 +113,18 @@ jobs:
           path: |
             packages/daynight-web/.tmp/session-drafts-browser/results.json
             packages/daynight-web/.tmp/session-drafts-browser/results/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload public native select browser evidence
+        if: ${{ always() && steps.native-select-browser.outcome != 'skipped' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-web-native-select-browser
+          path: |
+            .tmp/native-select-browser/results.json
+            .tmp/native-select-browser/results/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30

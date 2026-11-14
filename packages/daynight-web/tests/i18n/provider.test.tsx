@@ -43,6 +43,7 @@ describe("language provider and selector", () => {
     await user.click(screen.getByRole("button", { name: "Show semantic notice" }));
     expect(screen.getByTestId("semantic-notice")).toHaveTextContent("The language could not be saved.");
     await user.selectOptions(selectors[1]!, "zh-CN");
+    expect(screen.getAllByRole("combobox", { name: "语言 / Language" })).toEqual(selectors);
     expect(selectors[1]).toHaveFocus();
     selectors.forEach((selector) => expect(selector).toHaveValue("zh-CN"));
     expect(screen.getByRole("textbox")).toBe(input);

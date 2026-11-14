@@ -316,8 +316,6 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .auth-dialog .dialog-body .notice + p { margin-top: 15px; }
 .auth-dialog .dialog-body .notice .button { margin-left: 0; }
 
-:where(.auth-main, .invite-page, .auth-dialog) .locale-control { flex-wrap: wrap; white-space: normal; }
-
 :where(.auth-shell, .auth-page, .invite-page, .auth-dialog) :is(input, select, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
 :where(.auth-shell, .auth-page, .invite-page) h1:focus { outline: none; }
 
@@ -351,7 +349,6 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
   .account-actions { width: 100%; justify-content: flex-start; gap: 10px; }
   .account-actions > .locale-preference { max-width: 100%; }
   .account-actions > .locale-preference:has(.locale-notice) { flex-basis: 100%; }
-  .account-actions .locale-control { flex-wrap: wrap; white-space: normal; }
   .account-button .avatar { width: 26px; height: 26px; font-size: 10px; }
   .account-name { display: none; }
   .notice { font-size: 11px; padding: 11px 13px; }

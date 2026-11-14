@@ -139,6 +139,38 @@ When context does not explain why a control is disabled, its reason may be
 presented on demand near the control. Hover explanations must also be available
 through keyboard focus.
 
+## Share native selection presentation
+
+Use [NativeSelect](design/native-select.md) for native single-line, list and
+multiple selection controls. The common component owns the native element,
+decorative arrow, text clearance, font, border, background, density, focus,
+disabled, invalid, pending and touch presentation. A page chooses the public
+variant and supplies options, values, labels, constraints, events and real refs.
+Search pickers, navigation menus and action menus retain their own semantics.
+
+Consumer classes may set external width, margins and flex/grid placement through
+`wrapperClassName`. They must not restyle the internal control, add a second
+arrow, restore native single-line appearance or override common touch sizing.
+Keep complete option labels, shrink the surrounding layout when necessary and
+verify the rendered result in narrow rows and forms. The component imports its
+own CSS so public and authentication entries have the same appearance without
+requiring the workspace shell.
+
+Use the common compact, filter and form densities rather than per-page heights.
+Opt into responsive or named-container touch sizing where the interface calls
+for it; ordinary compact controls do not enlarge automatically. Native
+`:disabled`, including fieldset inheritance, remains the source of disabled
+presentation. Invalid and pending borders do not remove keyboard focus cues.
+List controls keep their native size, scrolling and multi-selection without a
+dropdown arrow or single-line height.
+
+Enclosing Escape handlers own their existing close and focus-restoration rules.
+They must respect prevented events and IME input, and use the shared native popup
+predicate to preserve an open system selector's first Escape cancellation.
+Stopping propagation for that case must retain the native default action and
+keep the outer dialog or draft open. The common component does not intercept
+selection or keyboard events.
+
 ## Keep rendered interfaces stable during background checks
 
 Run identity, permission, and data checks in the background while preserving

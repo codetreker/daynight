@@ -39,6 +39,7 @@ export const browserConfigs = [
   'locale-continuity-playwright.config.ts',
   'landing-header-playwright.config.ts',
   'setup-guide-playwright.config.ts',
+  'native-select-playwright.config.ts',
   'create-project-mobile-playwright.config.ts',
   'task-view-continuity-playwright.config.ts',
   'project-tags-playwright.config.ts',
