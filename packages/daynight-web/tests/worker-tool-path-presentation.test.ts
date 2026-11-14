@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toolPathApplicationState, toolPathSummaryStates } from '../src/features/workers/tool-path-presentation';
+import { toolPathApplicationState, toolPathSummaryStates, toolSoftwareEntries } from '../src/features/workers/tool-path-presentation';
 import { automaticToolPaths, toolPathActual, toolPathConfiguration, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
 
 describe('tool path application evidence', () => {
@@ -33,5 +33,24 @@ describe('tool path application evidence', () => {
     expect(toolPathSummaryStates({ ...resource, desired: { ...resource.desired!, value: { ...resource.desired!.value, native: { agent: 'copilot', model: null, args: [] } } } }, toolPathTelemetry([failing]), true)).toContain('error');
     expect(toolPathSummaryStates(resource, undefined, true)).toEqual(['not_checked']);
     expect(toolPathSummaryStates({ ...resource, desired: { ...resource.desired!, value: { ...resource.desired!.value, agentControlMode: 'herdr' } } }, toolPathTelemetry(), true)).toEqual(['applied', 'not_checked', 'applied', 'not_checked', 'applied']);
+  });
+});
+
+describe('software summary entries', () => {
+  it('omits only a completely empty unchecked context and preserves order and tool identity', () => {
+    const empty = toolPathObservation('codex', 'herdr', { state: 'not_checked', actual: null });
+    const actual = toolPathActual();
+    const informative = [
+      { ...empty, state: 'checking' as const }, { ...empty, actual }, { ...empty, candidate: actual },
+      { ...empty, reason: 'active_instance' as const }, { ...empty, error: { code: 'not_found' as const, occurredAt: actual.checkedAt } },
+      { ...empty, activeSelectionCount: 1 }, { ...empty, activeSelectionCount: null }, { ...empty, activeSelectionsComplete: false },
+      { ...empty, activeObservationError: 'inventory_unavailable' as const },
+      { ...empty, activeSelections: [{ actual, executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] },
+    ];
+    const web = toolPathObservation();
+    expect(toolSoftwareEntries(toolPathTelemetry([empty, web, toolPathObservation('copilot')]), 'codex')).toEqual([web]);
+    for (const entry of informative) expect(toolSoftwareEntries(toolPathTelemetry([entry]), 'codex')).toEqual([entry]);
+    expect(toolSoftwareEntries(toolPathTelemetry([empty]), 'codex')).toEqual([]);
+    expect(toolSoftwareEntries(toolPathTelemetry([]), 'herdr')).toEqual([]);
   });
 });

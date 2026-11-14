@@ -148,6 +148,46 @@ for (const locale of ['zh-CN', 'en'] as const) test(`${locale} software details 
   await expect(web).toContainText('/opt/daynight/runtime/copilot'); await expect(software).not.toContainText('/opt/draft/copilot');
 });
 
+for (const width of [1440, 390, 320]) test(`software summary and full details survive refresh and language change at ${width}px`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await installTools(page);
+  const longPath = `/opt/${'long-directory/'.repeat(20)}codex`;
+  const empty = (tool: 'codex' | 'copilot' | 'herdr', context: 'web' | 'herdr') => toolObservation(tool, context, { state: 'not_checked', actual: null });
+  state.detail = reportedDetail(toolReport([
+    toolObservation('codex', 'web', { actual: toolActual('codex', 'web', { entryPath: longPath, executablePath: longPath }) }), empty('codex', 'herdr'),
+    toolObservation('copilot', 'web'), empty('copilot', 'herdr'), empty('herdr', 'herdr'),
+  ]));
+  await page.goto(`/workers/${targetWorker}`);
+  const codex = page.locator('.worker-software-tool-paths[data-tool="codex"]');
+  const copilot = page.locator('.worker-software-tool-paths[data-tool="copilot"]');
+  await expect(codex.locator('.worker-tool-version')).toHaveText(['Web · 0.166.0']);
+  await expect(copilot.locator('.worker-tool-version')).toHaveText(['Web · 1.0.105']);
+  await expect(page.locator('.worker-software-tool-paths[data-tool="herdr"]')).toContainText('等待检查');
+  const details = codex.locator('.worker-tool-software-details'), summary = details.locator(':scope > summary');
+  await summary.focus(); await page.keyboard.press('Enter'); await expect(details).toHaveAttribute('open', '');
+  const other = codex.locator('.worker-tool-other-context > summary');
+  await other.focus(); await page.keyboard.press('Enter'); await expect(other.locator('..')).toHaveAttribute('open', '');
+  await expect(codex.locator('[data-context="herdr"]')).toContainText('近期状态未确认');
+  const path = codex.locator('[data-context="web"] [data-selection-role="actual"] .worker-tool-path-value').first();
+  await path.locator(':scope > summary').click(); await expect(path).toContainText(longPath);
+  await other.focus();
+  const anchorTop = await other.evaluate(element => element.getBoundingClientRect().top);
+  const gate = deferredRead(); state.workerGate = gate;
+  const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}` && value.request().method() === 'GET');
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
+  await gate.observed;
+  try { await expect(other).toBeFocused(); await expect(details).toHaveAttribute('open', ''); await noOverflow(page); }
+  finally { gate.release(); state.workerGate = null; await response; }
+  await expect(other).toBeFocused(); await expect(path).toHaveAttribute('open', '');
+  expect(await other.evaluate(element => element.getBoundingClientRect().top)).toBeCloseTo(anchorTop, 0);
+  await page.locator('.locale-control select').selectOption('en');
+  await expect(details).toHaveAttribute('open', ''); await expect(path).toHaveAttribute('open', '');
+  await expect(codex.locator('summary').filter({ hasText: 'Other execution mode' })).toBeFocused();
+  expect(await other.evaluate(element => element.getBoundingClientRect().top)).toBeCloseTo(anchorTop, 0);
+  await noOverflow(page);
+  await info.attach('software-summary', { body: JSON.stringify({ width, codex: await codex.locator('.worker-tool-version').allTextContents(), copilot: await copilot.locator('.worker-tool-version').allTextContents(), scrollWidth: await page.evaluate(() => document.documentElement.scrollWidth) }), contentType: 'application/json' });
+});
+
 for (const sample of [{ width: 1440, locale: 'zh-CN' }, { width: 320, locale: 'en' }] as const) {
   test(`${sample.width}px ${sample.locale} software geometry stays stable throughout visibility revalidation`, async ({ page }, info) => {
     await page.setViewportSize({ width: sample.width, height: 900 });

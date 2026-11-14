@@ -7,6 +7,7 @@
 .worker-tool-state.pending { color: #805b27; background: #fff7e8; }
 .worker-tool-state.checking { color: #285b9f; background: #e9f1ff; }
 .worker-tool-state.error { color: #a3322b; background: #fff0ef; }
+.worker-tool-version .worker-tool-state { margin-left: 7px; }
 .worker-tool-actual { margin-top: 10px; min-width: 0; }
 .worker-tool-selection-heading { font-weight: 600; color: #536077; margin: 0 0 3px; }
 .worker-tool-source, .worker-tool-time, .worker-tool-empty { color: #556176; font-size: 10px; margin-top: 5px; }

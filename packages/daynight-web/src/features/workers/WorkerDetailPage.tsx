@@ -12,6 +12,7 @@ import { followWorkerLink, formatWorkerBytes, WorkerReadNotice, WorkerReadState,
 import { WorkerEditingPanels } from './configuration/WorkerEditingPanels';
 import { WorkerMonitoring } from './WorkerMonitoring';
 import { WorkerToolPathDetails } from './WorkerToolPathDetails';
+import { toolSoftwareEntries } from './tool-path-presentation';
 import { useWorkerPageAnchor } from './useWorkerPageAnchor';
 import { useWorkerMonitoring } from './useWorkerMonitoring';
 import './workers.css';
@@ -46,10 +47,10 @@ const ToolSoftwareRow = ({ tool, telemetry, online, probe }: { readonly tool: To
   const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
   const name = tool === 'herdr' ? 'Herdr' : agentNames[tool];
   if (telemetry === undefined) return <SoftwareRow name={name} probe={probe} />;
-  const entries = telemetry.entries.filter(entry => entry.tool === tool);
+  const entries = toolSoftwareEntries(telemetry, tool);
   return <div className="worker-info-row worker-software-tool-paths" data-tool={tool}><dt>{name}</dt><dd>
     {entries.length === 0 ? <span className="worker-software-unavailable">{m.state.not_checked}</span> : entries.map(entry => <p className="worker-tool-version" key={entry.context}>
-      <span>{entry.context === 'web' ? 'Web' : 'Herdr'}</span>{' · '}<span className="worker-software-version">{entry.actual?.version ?? m.state.not_checked}</span>
+      <span>{entry.context === 'web' ? 'Web' : 'Herdr'}</span>{' · '}{entry.actual !== null && <span className="worker-software-version">{entry.actual.version}</span>}{(entry.actual === null || entry.state === 'checking' || entry.state === 'pending' || entry.state === 'error') && <>{entry.actual !== null && ' '}<span className={`worker-tool-state ${entry.state}`}>{m.state[entry.state]}</span></>}
     </p>)}
     <p className="worker-checked-at worker-tool-connection">
       <span className={online === false ? undefined : 'concealed'} aria-hidden={online !== false}>{m.state.offline}</span>
