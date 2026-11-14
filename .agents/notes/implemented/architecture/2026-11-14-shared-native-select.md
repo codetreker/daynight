@@ -22,7 +22,8 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. A shared popup-state predicate gives enclosing Escape
+an authenticated shell. Project and search status, PR status, and tag match filters
+use the shared filter variant while retaining their separate values and behavior. A shared popup-state predicate gives enclosing Escape
 handlers a native observation without making the component an event owner.
 
 This generalizes the geometry choice recorded in the
@@ -30,7 +31,9 @@ This generalizes the geometry choice recorded in the
 and the archived [language selector decision](../../archived/bug-fix/2026-11-04-language-selector-spacing.md).
 Their original reason remains valid: text padding cannot set a browser-drawn
 arrow's inset. The Worker record still owns its existing local implementation;
-the shared component owns the reusable presentation contract.
+the shared component owns the reusable presentation contract. The
+[PR arrow decision](../bug-fix/2026-11-14-pr-filter-arrow-alignment.md) records
+the earlier local implementation and its replacement.
 
 ## Alternatives
 
