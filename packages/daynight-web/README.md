@@ -1660,8 +1660,12 @@ matches the task-chain header height for equivalent unwrapped content in the
 same font; wrapped content grows naturally, including on narrow screens. The header
 body toggles a flat list of all direct ordinary children. Separate Goal details
 and graph buttons open their readers without changing the disclosure. The Goal
-disclosure starts closed. Scoped progress counts only its own members,
-including separate done and cancelled results. The header shows a localized
+disclosure starts closed. The card owns its rounded outline and clips its contents;
+the heading meets the neutral expanded area at a single divider, and the final
+visible child meets the inner bottom edge without the shared chain-list padding.
+Empty states retain their padding, child rows use their own status colors, and
+completion-time popovers escape the clipping boundary. Scoped progress counts
+only its own members, including separate done and cancelled results. The header shows a localized
 in-progress count of direct children, including zero and paused or manually
 executed tasks. It also shows the shared automatic execution indicator after the
 assignee when any direct child has an active Worker claim. Permission alone,
