@@ -1,3 +1,4 @@
+import { NativeSelect, isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
 import { resolveProjectTags } from '../../api/task-tags';
@@ -139,7 +140,9 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
   const count = value.untagged ? 1 : value.tagIds.length;
   return <div className="tag-filter-wrap">
     <details ref={details} className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={event => {
+      if (event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
       if (event.key === 'Escape' && event.currentTarget.open) {
+        if (isNativeSelectPopupOpen(event.target)) { event.stopPropagation(); return; }
         event.preventDefault(); event.stopPropagation(); controller.setOpen(false);
         event.currentTarget.querySelector<HTMLElement>('summary')?.focus();
       }
@@ -148,7 +151,7 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
       <div className="tag-filter-panel">
         <div className="tag-filter-head"><strong>{title}</strong><button type="button" onClick={clear}>{m.clear}</button></div>
         <input type="search" aria-label={`${title}: ${m.search}`} placeholder={m.search} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
-        <select aria-label={`${title}: AND / OR`} value={value.tagMatch} disabled={value.untagged} onChange={event => update({ ...value, tagMatch: event.target.value as 'all' | 'any' })}><option value="all">{m.all}</option><option value="any">{m.any}</option></select>
+        <NativeSelect density="filter" focusTone="task" layout="fill" wrapperClassName="tag-filter-match" aria-label={`${title}: AND / OR`} value={value.tagMatch} disabled={value.untagged} onChange={event => update({ ...value, tagMatch: event.target.value as 'all' | 'any' })}><option value="all">{m.all}</option><option value="any">{m.any}</option></NativeSelect>
         <label><input type="checkbox" checked={value.untagged} onChange={event => update({ ...value, untagged: event.target.checked, tagIds: event.target.checked ? [] : value.tagIds })} /> {m.untagged}</label>
         {catalog.error !== null ? <p role="alert">{m.error} <button type="button" onClick={catalog.refresh}>{m.retry}</button></p> : catalog.loading && catalog.page === null ? <p>{m.loading}</p> : catalog.page?.items.length === 0 ? <p>{controller.query ? m.noMatches : m.empty}</p> : <div className="tag-filter-options">{catalog.page?.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.tagIds.includes(tag.id)} onChange={event => toggle(tag, event.target.checked)} /> <span>{tag.name}</span></label>)}</div>}
         {catalog.page?.nextCursor && <button type="button" onClick={catalog.next}>{m.next}</button>}

@@ -10,11 +10,11 @@ padding, so the existing spacing cannot ensure a consistent inset.
 
 ## Decision
 
-The PR filter retains its native select and draws a noninteractive, symmetric
-SVG chevron in its own positioned wrapper. The control reserves its existing
-right padding for the arrow, which is centered vertically with a 12px right
-inset. Explicit desktop and narrow heights preserve the control's measured
-native dimensions after removing the browser appearance. The [PR workspace
+The original PR filter retained its native select and drew a noninteractive,
+symmetric SVG chevron in a positioned wrapper, with a 12px right inset and
+explicit desktop and narrow heights. The [shared native select decision](../architecture/2026-11-14-shared-native-select.md)
+now owns this presentation: the PR filter uses its 32px filter variant and
+keeps its responsive full-width layout. The [PR workspace
 read design](../../../../docs/design/github-pr-reading.md) owns its filtering
 and reading behavior.
 
@@ -28,7 +28,6 @@ reimplementing native selection, keyboard, focus and disabled behavior.
 
 ## Consequences
 
-The arrow has stable geometry without changing other selects. The control's
-natural width no longer includes the browser's native arrow slot, while the
-existing responsive full-width layout remains. Browser tests cover the scoped
+The arrow has stable shared geometry. The control's natural width excludes
+the browser's native arrow slot, while the responsive full-width layout remains. Browser tests cover the scoped
 geometry and native interaction alongside the workspace's reading behavior.

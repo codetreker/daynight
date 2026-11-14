@@ -22,7 +22,9 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. Management consumers use the same component: Team and
+an authenticated shell. Project and search status, PR status, and tag match filters
+use the shared filter variant while retaining their separate values and behavior.
+Management consumers use the same component: Team and
 Project roles choose filter density with a 120px layout wrapper; transfer,
 Token expiry and GitHub installation use full-width form density. Their options,
 permission gates, drafts and explicit confirmations remain caller-owned.
@@ -36,7 +38,9 @@ This generalizes the geometry choice recorded in the
 and the archived [language selector decision](../../archived/bug-fix/2026-11-04-language-selector-spacing.md).
 Their original reason remains valid: text padding cannot set a browser-drawn
 arrow's inset. The Worker record still owns its existing local implementation;
-the shared component owns the reusable presentation contract.
+the shared component owns the reusable presentation contract. The
+[PR arrow decision](../bug-fix/2026-11-14-pr-filter-arrow-alignment.md) records
+the earlier local implementation and its replacement.
 
 ## Alternatives
 
