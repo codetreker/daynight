@@ -3,12 +3,12 @@ import { find, ident, parse, walk, type CssNode, type Selector } from 'css-tree'
 const layoutProperties = /^(?:(?:min-|max-)?(?:width|inline-size)|margin(?:-(?:top|right|bottom|left|block(?:-start|-end)?|inline(?:-start|-end)?))?|flex(?:-basis|-grow|-shrink)?|(?:align|justify|place)-self|grid(?:-area|-row(?:-start|-end)?|-column(?:-start|-end)?)?|order)$/;
 const internalClass = (name: string): boolean => name === 'native-select__control' || name === 'native-select__arrow';
 const wrapperClass = (name: string, wrappers: ReadonlySet<string>): boolean => name === 'native-select' || wrappers.has(name);
-type Target = { internal: boolean; wrapper: boolean; pseudo: boolean; descendants: boolean };
+type Target = { internal: boolean; wrapper: boolean; pseudo: boolean; descendants: boolean; siblings: boolean };
 
-const unowned = (): Target => ({ internal: false, wrapper: false, pseudo: false, descendants: false });
+const unowned = (): Target => ({ internal: false, wrapper: false, pseudo: false, descendants: false, siblings: false });
 const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = unowned(), implicitNesting = false): Target => {
   let subject: CssNode[] = [];
-  let wrapperAncestor = false;
+  let ownedAncestor = false;
   const classify = (nodes: CssNode[]): Target => {
     const result = unowned();
     for (const node of nodes) {
@@ -17,13 +17,17 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
         result.descendants = true;
       }
       if (node.type === 'ClassSelector') {
-        result.internal ||= internalClass(ident.decode(node.name));
+        const internal = internalClass(ident.decode(node.name));
+        result.internal ||= internal;
+        result.siblings ||= internal;
         result.wrapper ||= wrapperClass(ident.decode(node.name), wrappers);
         result.descendants ||= result.internal || result.wrapper;
       }
       if (node.type === 'AttributeSelector' && ident.decode(node.name.name).toLowerCase() === 'class' && node.value !== null) {
         const value = node.value.type === 'String' ? node.value.value : ident.decode(node.value.name);
-        result.internal ||= value.includes('native-select__');
+        const internal = value.includes('native-select__');
+        result.internal ||= internal;
+        result.siblings ||= internal;
         result.wrapper ||= value.split(/\s+/).some(name => wrapperClass(name, wrappers));
         result.descendants ||= result.internal || result.wrapper;
       }
@@ -33,6 +37,7 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
         result.wrapper ||= parent.wrapper;
         result.pseudo ||= parent.pseudo;
         result.descendants ||= parent.descendants;
+        result.siblings ||= parent.siblings;
       }
       if (node.type === 'PseudoClassSelector' && ['is', 'where', 'nth-child', 'nth-last-child'].includes(node.name.toLowerCase()) && node.children !== null) {
         node.children.forEach(child => {
@@ -45,6 +50,7 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
             result.wrapper ||= nested.wrapper;
             result.pseudo ||= nested.pseudo;
             result.descendants ||= nested.descendants;
+            result.siblings ||= nested.siblings;
           });
         });
       }
@@ -53,15 +59,18 @@ const targets = (selector: Selector, wrappers: ReadonlySet<string>, parent = uno
   };
   selector.children.forEach(node => {
     if (node.type === 'Combinator') {
-      if (node.name !== '+' && node.name !== '~') wrapperAncestor ||= classify(subject).descendants;
+      const previous = classify(subject);
+      // Internal markers identify children of the shared wrapper; their siblings remain inside that owner.
+      ownedAncestor ||= node.name === '+' || node.name === '~' ? previous.siblings : previous.descendants;
       subject = [];
     } else subject.push(node);
   });
   const result = classify(subject);
   const implicitAncestor = implicitNesting && parent.descendants
     && find(selector, node => node.type === 'NestingSelector') === null;
-  return { ...result, internal: result.internal || wrapperAncestor || implicitAncestor,
-    descendants: result.descendants || wrapperAncestor || implicitAncestor };
+  return { ...result, internal: result.internal || ownedAncestor || implicitAncestor,
+    descendants: result.descendants || ownedAncestor || implicitAncestor,
+    siblings: result.siblings || ownedAncestor || implicitAncestor };
 };
 
 export const inspectSelectCss = (text: string, path: string, wrappers: ReadonlySet<string>): string[] => {

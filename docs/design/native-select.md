@@ -68,7 +68,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 `packages/daynight-web/scripts/native-select-policy.mts` 先枚举完整 `src/` 中的 TS/TSX 和 CSS，再使用 TypeScript 7 的 `typescript/unstable/sync` 项目 API 与 `typescript/unstable/ast` 遍历源码，包括未被其他模块引用的输入。除公共组件文件外，原生 JSX `select` 和标准 React `createElement` 原生创建均失败；React、`createElement` 和 NativeSelect 的导入别名按实际绑定识别，注释、字符串与泛型不作为元素声明。
 
-CSS 使用显式开发依赖 `css-tree` 的 AST 分析完整选择器与声明。公共 CSS 外对 `select`、公共 control/arrow 类或对应标记的内部外观覆盖，以及 `wrapperClassName` 布局类的核心外观、伪元素箭头或 `appearance` 恢复均失败。混合选择器、嵌套规则与条件规则仍接受检查，内部箭头和控件的子节点也归公共 CSS 所有。以受保护选择器为根的 `@scope` 明确拒绝；布局类使用直接规则，内部样式放入公共 CSS。普通 input/textarea 及其他菜单保持各自所有权。检查没有遗留名单或页面豁免。
+CSS 使用显式开发依赖 `css-tree` 的 AST 分析完整选择器与声明。公共 CSS 外对 `select`、公共 control/arrow 类或对应标记的内部外观覆盖，以及 `wrapperClassName` 布局类的核心外观、伪元素箭头或 `appearance` 恢复均失败。混合选择器、嵌套规则与条件规则仍接受检查，内部箭头和控件的子节点、通过内部标记定位的同一公共容器内兄弟节点也归公共 CSS 所有；公共容器之外的相邻字段仍由页面管理。以受保护选择器为根的 `@scope` 明确拒绝；布局类使用直接规则，内部样式放入公共 CSS。普通 input/textarea 及其他菜单保持各自所有权。检查没有遗留名单或页面豁免。
 
 诊断包含相对路径、行号和被违反的规则；文件读取、源码/CSS 解析、缺失 AST 及资源释放错误均令命令失败。TypeScript 快照与 API 在成功和失败路径都释放。检查约束直接声明与样式所有权，不能判断任意绘图代码的视觉意图；真实浏览器和独立审查继续负责重复箭头、几何及原生交互。
 

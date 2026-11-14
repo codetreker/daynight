@@ -82,7 +82,9 @@ The native select policy enumerates every production TS/TSX and CSS input,
 including unreferenced files. TypeScript 7 project snapshots and AST traversal
 recognize native JSX and standard React creation with actual import bindings;
 css-tree parses selectors and declarations for internal control/arrow targets
-and the collected wrapper classes. The common component and its CSS are the
+and the collected wrapper classes. Internal control and arrow markers identify
+children of the shared wrapper, so their siblings and descendants retain that
+owner; fields adjacent to the wrapper retain page ownership. The common component and its CSS are the
 only declaration and presentation owners, with no legacy exemption list.
 Parsing, missing ASTs, file access and resource-release failures fail the command.
 Snapshots and API processes are released on both success and failure. The
