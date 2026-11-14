@@ -17,7 +17,7 @@
 .pr-search-wrap svg { position: absolute; left: 11px; top: 11px; color: #667287; }
 .pr-search-wrap input { min-width: 0; width: 100%; border: 1px solid #dce0e8; background: #fff; border-radius: 7px; color: #556176; font: inherit; font-size: 11px; padding: 10px 12px 10px 33px; }
 .pr-search-wrap input::placeholder { color: #667287; }
-.pr-search-wrap input:focus-visible, .pr-toolbar select:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
+.pr-search-wrap input:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
 .pr-list { list-style: none; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: #fff; min-width: 0; }
 .pr-list:empty { border: 0; }
 .pr-list > li + li { border-top: 1px solid var(--line); }

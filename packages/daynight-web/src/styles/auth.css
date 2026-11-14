@@ -299,9 +299,9 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .field { margin-top: 20px; min-width: 0; }
 .field:first-child { margin-top: 0; }
 .field label { display: block; font-size: 12px; font-weight: 600; color: #4c5870; margin-bottom: 8px; }
-.field :is(input, select, textarea) { font: inherit; color: inherit; width: 100%; max-width: 100%; border: 1px solid #dce0e8; border-radius: 7px; background: #fff; padding: 10px 12px; font-size: 12px; }
-.field :is(input, select, textarea):disabled { color: #747d91; background: #f5f6f9; }
-.field :is(input, select, textarea)[aria-invalid="true"] { border-color: #bb606c; }
+.field :is(input, textarea) { font: inherit; color: inherit; width: 100%; max-width: 100%; border: 1px solid #dce0e8; border-radius: 7px; background: #fff; padding: 10px 12px; font-size: 12px; }
+.field :is(input, textarea):disabled { color: #747d91; background: #f5f6f9; }
+.field :is(input, textarea)[aria-invalid="true"] { border-color: #bb606c; }
 .field .hint { font-size: 11px; color: #7d889b; margin-top: 7px; line-height: 1.8; overflow-wrap: anywhere; }
 .field .hint.error { color: #9b4651; }
 .required { color: #b3545e; }
@@ -315,7 +315,7 @@ dialog.auth-dialog::backdrop { background: #19233560; backdrop-filter: blur(2px)
 .auth-dialog .dialog-body .notice + p { margin-top: 15px; }
 .auth-dialog .dialog-body .notice .button { margin-left: 0; }
 
-:where(.auth-shell, .auth-page, .invite-page, .auth-dialog) :is(input, select, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
+:where(.auth-shell, .auth-page, .invite-page, .auth-dialog) :is(input, textarea):focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
 :where(.auth-shell, .auth-page, .invite-page) h1:focus { outline: none; }
 
 @media (max-width: 1150px) {

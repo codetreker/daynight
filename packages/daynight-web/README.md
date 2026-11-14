@@ -1392,8 +1392,9 @@ include all translated components under the existing coverage gate.
 ## Shared native selection
 
 Import `NativeSelect` from `src/ui/native-select/NativeSelect.tsx` using a relative
-path. It imports its own CSS and supports native single-line, size-based list
-and multiple selection. The [component design](../../docs/design/native-select.md)
+path. It is the only production owner of native select declarations and imports
+its own CSS, which exclusively owns internal control and arrow presentation. It
+supports native single-line, size-based list and multiple selection. The [component design](../../docs/design/native-select.md)
 owns its props, geometry, touch modes and popup-helper usage. The
 [UI principles](../../docs/ui-design.md#share-native-selection-presentation)
 own the reuse rules.
@@ -1401,7 +1402,8 @@ own the reuse rules.
 Pages provide their options, value, labels, constraints, event handlers and real
 `HTMLSelectElement` refs. Choose compact, filter or form density, content or fill
 width, and explicit focus, pending and touch presentation. Consumer
-`wrapperClassName` classes may control external width, margins and flex/grid
+`wrapperClassName` accepts statically resolvable string tokens or literal
+combinations. Their CSS may control external width, margins and flex/grid
 placement; internal skin, arrow and touch sizing belong to the common CSS.
 Keep business confirmation, cancellation, drafts, request timing and errors with
 the consuming feature. The component adds no selection state, placeholder,
@@ -2357,7 +2359,19 @@ The Go module check uses its own unit-test Web resource overlay; see the
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
 `web:test` serially composes two required package commands. `test:harness` runs
-its Node tooling tests, including the coverage checker and asset publication.
+its Node tooling tests, including native select ownership, the coverage checker
+and asset publication. `scripts/native-select-policy.test.mts` exercises the
+real policy against controlled valid and invalid trees and the complete production
+`src/` tree. It verifies native JSX and React creation, import aliases, static
+wrapper tokens, CSS selectors/declarations, parse failures and resource cleanup.
+The [component design](../../docs/design/native-select.md#所有权检查) owns the exact
+rules and limits. Run the production scan independently with
+`pnpm --filter @codetreker/daynight-web test:select-policy`. TypeScript 7 project
+ASTs and the explicit `css-tree` dependency parse all production TS/TSX and CSS,
+including unreferenced inputs; failures include relative paths and line numbers.
+No legacy exemption list is used. Static ownership does not establish rendered
+geometry or system-menu behavior.
+
 `scripts/ci.mts quality` runs full-workspace Web typechecking, the tooling suite,
 the real localhost Dockerfile's `web` target, Vitest coverage with four workers,
 and the statement checker with respective process limits of 1, 3, 5, 15 and 1

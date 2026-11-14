@@ -871,7 +871,15 @@ assets, and publishes them into the Go embed directory. A production Go build
 requires generated assets. Web quality runs full Web typechecking, the module
 harness, the production Docker Web build, the Vitest/V8 suite and a statement
 gate strictly greater than 90%; it does not start the Go service or an installed
-CLI. `pnpm web:test:browser` separately runs the controlled
+CLI. The harness includes the [native select ownership check](design/native-select.md#所有权检查)
+and its controlled-fixture tests. It scans every production TS/TSX and CSS input,
+including unreferenced files, and fails on native creation or internal styling
+outside the common owner, nonstatic wrapper tokens, and parsing or cleanup
+errors. Run the production scan alone with
+`pnpm --filter @codetreker/daynight-web test:select-policy`; `pnpm web:test` and
+CI quality both retain the harness check. It proves direct source ownership;
+rendered geometry and native interaction retain their browser checks.
+`pnpm web:test:browser` separately runs the controlled
 module browser fixtures after Playwright Chromium is installed; see the
 [Web guide](../packages/daynight-web/README.md#validation-and-build). The CI Web quality job contributes its result to the final
 `checks` gate and must succeed when Web validation is selected. The assistant

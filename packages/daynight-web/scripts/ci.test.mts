@@ -12,6 +12,14 @@ import { commandBytes, terminateGroup, type CommandOptions } from './validation/
 
 const repositoryRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
+test('ordinary Web tests and CI harness execute the native select ownership policy', async () => {
+  const { scripts } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.match(scripts.test, /\bpnpm test:harness\b/);
+  assert.match(scripts['test:harness'], /\bnode --test\b.*\bscripts\/native-select-policy\.test\.mts\b/);
+  assert.ok(scripts['test:harness'].endsWith(`&& ${scripts['test:select-policy']}`));
+  assert.equal(scripts['test:select-policy'], 'node scripts/native-select-policy.mts');
+});
+
 const operations = () => {
   const calls: { file: string; args: readonly string[]; options: CommandOptions }[] = [];
   return { calls, command: async (file: string, args: readonly string[], options: CommandOptions) => {
