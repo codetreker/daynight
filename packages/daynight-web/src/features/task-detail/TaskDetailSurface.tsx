@@ -219,7 +219,7 @@ const TaskDetailContent = ({ projectId, taskId, snapshot = null, observation, on
 
   const snapshotNode = snapshot?.index.nodes.get(taskId);
   const retainedDetail = detail !== null && (error !== null || task.displayRequiresFreshRead);
-  const stale = !direct && (task.graphMismatch || detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail));
+  const stale = !direct && (task.graphMismatch || detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail, snapshot?.summaries.get(taskId)));
   const readNoticeEvent = useMemo(() => ({}), [error, retainedDetail]);
   const staleNoticeEvent = useMemo(() => ({}), [stale]);
   const successors = direct ? relations.relations?.successors : snapshot?.index.successors.get(taskId);

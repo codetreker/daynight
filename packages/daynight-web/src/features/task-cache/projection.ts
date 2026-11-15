@@ -22,7 +22,7 @@ const sameTime = (left: string | null, right: string | null): boolean =>
   left === null || right === null ? left === right : compareTimestamps(left, right) === 0;
 
 export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
-  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId && left.titlePreview === right.titlePreview &&
+  left.id === right.id && left.version === right.version && left.type === right.type && left.parentId === right.parentId && left.title === right.title && left.titlePreview === right.titlePreview &&
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.assignedTo === right.assignedTo && left.requiredPlatform === right.requiredPlatform &&
@@ -42,7 +42,7 @@ export const projectSummaries = (project: Project, summaries: readonly TaskSumma
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
   const ordinary = ordered.filter((task) => task.type === "task");
   const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordinary.length, proposed: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 };
-  const tasks = ordinary.map(({ version, properties: _properties, tags: _tags, ...task }) => {
+  const tasks = ordinary.map(({ version, title: _title, properties: _properties, tags: _tags, ...task }) => {
     const state = dependencyStates.get(task.id);
     if (state === undefined || state.taskVersion !== version) throw new GraphDataError();
     const { blockedBy, ready } = state;

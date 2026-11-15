@@ -18,12 +18,13 @@ import "../../styles/task-status-rows.css";
 type StandaloneTaskRowProps = {
   readonly projectId: string;
   readonly task: GraphTask;
+  readonly title: string;
   readonly instanceId: string;
   readonly tags?: readonly TaskTag[];
   readonly onSelectTask: (id: string, trigger: HTMLElement) => void;
 };
 
-export const StandaloneTaskRow = memo(({ projectId, task, instanceId, tags, onSelectTask }: StandaloneTaskRowProps) => {
+export const StandaloneTaskRow = memo(({ projectId, task, title, instanceId, tags, onSelectTask }: StandaloneTaskRowProps) => {
   const { messages: { workspace: { standalone: m, project }, common }, format } = useI18n();
   const execution = useTaskExecution(task);
   const paused = useTaskPaused(task.id);
@@ -32,7 +33,7 @@ export const StandaloneTaskRow = memo(({ projectId, task, instanceId, tags, onSe
   const descriptionId = `${instanceId}-execution`;
   return <li><button className={`standalone-row task-status-surface${execution?.overdue ? " standalone-row-stuck" : ""}`} data-task-status={task.status} id={instanceId} type="button"
     ref={hint.triggerRef} {...hint.triggerEvents} aria-describedby={[execution === null ? null : descriptionId, completion === null ? null : hint.descriptionId].filter(Boolean).join(" ") || undefined} onClick={(event) => { hint.triggerEvents.onClick(); onSelectTask(task.id, event.currentTarget); }}>
-    <span className="root-heading"><span className="root-title">{task.titlePreview}{task.titleTruncated ? "…" : ""}</span>
+    <span className="root-heading"><span className="root-title">{title}</span>
       <span className="root-meta"><span className="standalone-task-id">{task.id}</span> · <time dateTime={task.createdAt}>{m.createdOn({ date: format.date(task.createdAt) })}</time>
       <TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} />
       {execution !== null && <span className="standalone-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</span>}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</span>{tags !== undefined && <TaskTagList tags={tags} />}</span>

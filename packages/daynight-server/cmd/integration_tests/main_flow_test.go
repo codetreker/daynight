@@ -131,9 +131,18 @@ func TestServerAPINormalFlows(t *testing.T) {
 			}
 			var envelope struct {
 				Data map[string]any `json:"data"`
+				Meta struct {
+					WriteOutcome string         `json:"writeOutcome"`
+					Refs         map[string]any `json:"refs"`
+				} `json:"meta"`
 			}
 			if err := json.Unmarshal(encoded, &envelope); err != nil || envelope.Data == nil {
 				t.Fatalf("%s structured content: %s (%v)", name, encoded, err)
+			}
+			if name == "tag_create" || name == "tag_rename" || name == "tag_update" || name == "tag_delete" {
+				if envelope.Meta.WriteOutcome != "confirmed" || envelope.Meta.Refs["projectId"] != project.ID || envelope.Meta.Refs["tagId"] != envelope.Data["id"] && envelope.Meta.Refs["tagId"] != envelope.Data["tagId"] {
+					t.Fatalf("%s receipt differs: %s", name, encoded)
+				}
 			}
 			return envelope.Data
 		}
@@ -143,7 +152,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 		}
 		createdTag := call("tag_create", map[string]any{"projectId": project.ID, "name": " backend "})
 		tagID, ok := createdTag["id"].(string)
-		if !ok || tagID == "" || createdTag["name"] != "backend" || createdTag["version"] != "1" {
+		if !ok || tagID == "" || createdTag["name"] != "backend" || createdTag["version"] != "1" || createdTag["color"] != "#9AA3B2" {
 			t.Fatalf("created tag differs: %+v", createdTag)
 		}
 		conflict := func(name string, arguments map[string]any) {
@@ -167,23 +176,43 @@ func TestServerAPINormalFlows(t *testing.T) {
 			}
 		}
 		conflict("tag_create", map[string]any{"projectId": project.ID, "name": "BACKEND"})
-		other := call("tag_create", map[string]any{"projectId": project.ID, "name": "other"})
+		other := call("tag_create", map[string]any{"projectId": project.ID, "name": "other", "color": "#a1b2c3"})
+		if other["color"] != "#A1B2C3" {
+			t.Fatalf("explicit tag color differs: %+v", other)
+		}
 		conflict("tag_rename", map[string]any{"projectId": project.ID, "tagId": other["id"], "ifVersion": other["version"], "name": "BACKEND"})
 		call("tag_delete", map[string]any{"projectId": project.ID, "tagId": other["id"], "ifVersion": other["version"], "confirm": true})
 		catalog := call("tag_list", map[string]any{"projectId": project.ID, "query": "back"})
 		tags, ok := catalog["items"].([]any)
-		if !ok || len(tags) != 1 || tags[0].(map[string]any)["id"] != tagID || catalog["catalogEpoch"] == "" {
+		if !ok || len(tags) != 1 || tags[0].(map[string]any)["id"] != tagID || tags[0].(map[string]any)["color"] != "#9AA3B2" || catalog["catalogEpoch"] == "" {
 			t.Fatalf("tag catalog differs: %+v", catalog)
 		}
 		shown := call("tag_show", map[string]any{"projectId": project.ID, "tagId": tagID})
-		if shown["id"] != tagID || shown["version"] != "1" {
+		if shown["id"] != tagID || shown["version"] != "1" || shown["color"] != "#9AA3B2" {
 			t.Fatalf("tag read differs: %+v", shown)
 		}
-		renamed := call("tag_rename", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": shown["version"], "name": "platform"})
-		if renamed["id"] != tagID || renamed["name"] != "platform" || renamed["version"] != "2" {
+		colored := call("tag_update", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": shown["version"], "color": "#123abc"})
+		if colored["id"] != tagID || colored["name"] != "backend" || colored["version"] != "2" || colored["color"] != "#123ABC" {
+			t.Fatalf("tag color update differs: %+v", colored)
+		}
+		renamed := call("tag_rename", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": colored["version"], "name": "platform"})
+		if renamed["id"] != tagID || renamed["name"] != "platform" || renamed["version"] != "3" || renamed["color"] != "#123ABC" {
 			t.Fatalf("tag rename differs: %+v", renamed)
 		}
-		deleted := call("tag_delete", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": renamed["version"], "confirm": true})
+		updated := call("tag_update", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": renamed["version"], "name": "release", "color": "#d85656"})
+		if updated["id"] != tagID || updated["name"] != "release" || updated["version"] != "4" || updated["color"] != "#D85656" {
+			t.Fatalf("combined tag update differs: %+v", updated)
+		}
+		persisted := call("tag_show", map[string]any{"projectId": project.ID, "tagId": tagID})
+		if persisted["id"] != tagID || persisted["name"] != "release" || persisted["version"] != "4" || persisted["color"] != "#D85656" {
+			t.Fatalf("persisted tag differs: %+v", persisted)
+		}
+		catalog = call("tag_list", map[string]any{"projectId": project.ID, "query": "release"})
+		tags, ok = catalog["items"].([]any)
+		if !ok || len(tags) != 1 || tags[0].(map[string]any)["id"] != tagID || tags[0].(map[string]any)["color"] != "#D85656" {
+			t.Fatalf("updated tag catalog differs: %+v", catalog)
+		}
+		deleted := call("tag_delete", map[string]any{"projectId": project.ID, "tagId": tagID, "ifVersion": updated["version"], "confirm": true})
 		if deleted["projectId"] != project.ID || deleted["tagId"] != tagID || deleted["deleted"] != true {
 			t.Fatalf("tag deletion differs: %+v", deleted)
 		}
@@ -286,6 +315,10 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if baseline.Project.ID != project.ID || baseline.Epoch == "" || baseline.ObservedAt.IsZero() {
 			t.Fatalf("snapshot identity differs: %+v", baseline)
 		}
+		initial := expectID(t, baseline.Tasks, task.ID, func(item api.TaskViewRecord) string { return item.ID })
+		if initial.Title != task.Title || initial.TitlePreview != task.Title || initial.TitleTruncated {
+			t.Fatalf("snapshot title differs: %+v", initial)
+		}
 		value := []api.PullRequestProperty{{URL: "https://github.com/example/tasks/pull/1", Title: "Normal evidence"}}
 		propertyPath := taskPath(task) + "/properties/pullRequests"
 		updated := requestJSON[api.PropertyResource](t, f, http.MethodPut, propertyPath, map[string]any{"version": task.Version, "valueText": `[{"url":"https://github.com/example/tasks/pull/1","title":"Normal evidence"}]`}, http.StatusOK)
@@ -300,7 +333,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 				t.Fatalf("sync identity differs: %+v", result)
 			}
 			actual := expectID(t, result.Tasks, task.ID, func(task api.TaskViewRecord) string { return task.ID })
-			if actual.Version != resourceVersion(updated.Version) {
+			if actual.Version != resourceVersion(updated.Version) || actual.Title != task.Title || actual.TitlePreview != task.Title || actual.TitleTruncated {
 				t.Fatal("sync lost property mutation version")
 			}
 			requireProperty(t, actual.Properties, "pullRequests", value)

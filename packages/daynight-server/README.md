@@ -274,8 +274,10 @@ and [architecture](../../docs/design/daynight-task-sync.md) define the implement
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
 snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
-exact decimal strings; each intrinsic summary includes explicit nullable
-assignedTo and the complete current properties object, while descriptions,
+exact decimal strings; each intrinsic summary includes the complete title and its
+existing preview and truncation marker, explicit nullable assignedTo and the
+complete current properties object. Historical titles are not truncated by the
+current write limit, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
 bulk property and tag-reference queries share one repeatable-read snapshot.
 The required `dependencyStates` map supplies each visible ordinary Task's exact
@@ -607,14 +609,19 @@ scoped cursors. Team, member, scoped Project, invitation and attachment pages
 use ordinary candidate batches and item-count continuation. Reads preserve full
 items without field-budget admission or repeated prefix encoding.
 
-`tag_list`, `tag_show`, `tag_create`, `tag_rename` and `tag_delete` use the
-shared Project tag service and Control permits. Catalog pages default to 50
-items (maximum 100), return `catalogEpoch` and bind the cursor to the Project,
-principal, query, limit and epoch. Tag versions are exact positive decimal
-strings; rename and deletion require the observed `ifVersion`, and deletion
-also requires `confirm: true`. Usage counts are snapshot hints, not a deletion
-condition. Mutation results retain confirmed, not committed or unknown completion;
-an unknown creation or deletion must not be replayed blindly.
+`tag_list`, `tag_show`, `tag_create`, `tag_rename`, `tag_update` and
+`tag_delete` use the shared Project tag service and Control permits. Catalog
+pages default to 50 items (maximum 100), return `catalogEpoch` and bind the cursor
+to the Project, principal, query, limit and epoch. Full Tag results include the
+canonical uppercase `#RRGGBB` color. Creation accepts an optional color and
+defaults to `#9AA3B2`. `tag_update` requires at least one of `name` and `color`;
+omitted fields retain their values, and both can change atomically. Tag versions
+are exact positive decimal strings; rename, update and deletion require the
+observed `ifVersion`, and deletion also requires `confirm: true`. Usage counts
+are snapshot hints, not a deletion condition. Mutation receipts contain the
+service's committed Tag and retain confirmed, not committed or unknown completion;
+an unknown mutation must not be replayed blindly. Task Tag references remain
+`{id,name}`.
 
 `project_resolve` reads the unique accessible Project for a supplied repository
 address, returning its ID in `data.id`. Equivalent HTTPS, SSH and SCP addresses

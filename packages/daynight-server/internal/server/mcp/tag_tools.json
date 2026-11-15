@@ -86,6 +86,11 @@
                       "goals"
                     ],
                     "additionalProperties": false
+                  },
+                  "color": {
+                    "type": "string",
+                    "pattern": "^#[0-9A-F]{6}$",
+                    "description": "Canonical uppercase RGB color."
                   }
                 },
                 "required": [
@@ -95,7 +100,8 @@
                   "version",
                   "createdAt",
                   "updatedAt",
-                  "usage"
+                  "usage",
+                  "color"
                 ],
                 "additionalProperties": false
               }
@@ -278,6 +284,11 @@
                 "goals"
               ],
               "additionalProperties": false
+            },
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9A-F]{6}$",
+              "description": "Canonical uppercase RGB color."
             }
           },
           "required": [
@@ -287,7 +298,8 @@
             "version",
             "createdAt",
             "updatedAt",
-            "usage"
+            "usage",
+            "color"
           ],
           "additionalProperties": false
         },
@@ -389,6 +401,10 @@
         "name": {
           "type": "string",
           "description": "Trim Unicode whitespace; 1–64 code points after trimming, without control characters."
+        },
+        "color": {
+          "type": "string",
+          "description": "RGB color in #RRGGBB format; hexadecimal digits are case-insensitive. Defaults to #9AA3B2 when omitted."
         }
       },
       "required": [
@@ -451,6 +467,11 @@
                 "goals"
               ],
               "additionalProperties": false
+            },
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9A-F]{6}$",
+              "description": "Canonical uppercase RGB color."
             }
           },
           "required": [
@@ -460,7 +481,8 @@
             "version",
             "createdAt",
             "updatedAt",
-            "usage"
+            "usage",
+            "color"
           ],
           "additionalProperties": false
         },
@@ -635,6 +657,11 @@
                 "goals"
               ],
               "additionalProperties": false
+            },
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9A-F]{6}$",
+              "description": "Canonical uppercase RGB color."
             }
           },
           "required": [
@@ -644,7 +671,213 @@
             "version",
             "createdAt",
             "updatedAt",
-            "usage"
+            "usage",
+            "color"
+          ],
+          "additionalProperties": false
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "outcome": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "requestId"
+          ]
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "requestId": {
+              "type": "string"
+            },
+            "writeOutcome": {
+              "enum": [
+                "confirmed",
+                "not_committed",
+                "unknown"
+              ]
+            },
+            "phase": {
+              "type": "string"
+            },
+            "refs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "requestId"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "data",
+            "meta"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          }
+        },
+        {
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "tag_update",
+    "description": "Update a project tag name and/or color using its exact version. Do not automatically replay an unknown result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "tagId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "description": "Trim Unicode whitespace; 1–64 code points after trimming, without control characters."
+        },
+        "ifVersion": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,18}$",
+          "description": "Exact positive int64 decimal version."
+        },
+        "color": {
+          "type": "string",
+          "description": "RGB color in #RRGGBB format; hexadecimal digits are case-insensitive."
+        }
+      },
+      "required": [
+        "projectId",
+        "tagId",
+        "ifVersion"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "color"
+          ]
+        }
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "projectId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]{0,18}$",
+              "description": "Exact positive int64 decimal version."
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "usage": {
+              "type": "object",
+              "properties": {
+                "tasks": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "goals": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "tasks",
+                "goals"
+              ],
+              "additionalProperties": false
+            },
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9A-F]{6}$",
+              "description": "Canonical uppercase RGB color."
+            }
+          },
+          "required": [
+            "id",
+            "projectId",
+            "name",
+            "version",
+            "createdAt",
+            "updatedAt",
+            "usage",
+            "color"
           ],
           "additionalProperties": false
         },

@@ -61,7 +61,7 @@ describe('required assignment in every task representation', () => {
 describe('assignment freshness and review identity', () => {
   it.each([{ from: null, to: person }, { from: person, to: null }, { from: person, to: otherPerson }])('treats a same-version assignment change as new material %#', ({ from, to }) => {
     const detail = body({ assignedTo: from }); const changed = { ...detail, assignedTo: to }; const node = graphFixture([detail]).tasks[0]!; const changedNode = graphFixture([changed]).tasks[0]!;
-    expect(sameSummary(summary(detail), summary(changed))).toBe(false); expect(isTaskStale(node, detail)).toBe(false); expect(isTaskStale(node, changed)).toBe(true);
+    expect(sameSummary(summary(detail), summary(changed))).toBe(false); expect(isTaskStale(node, detail, summary(detail))).toBe(false); expect(isTaskStale(node, changed, summary(detail))).toBe(true);
     expect(taskDescriptor(node)).not.toBe(taskDescriptor(changedNode)); expect(taskReviewKey(detail)).not.toBe(taskReviewKey(changed));
     expect(sameSummary(summary(detail), summary({ ...detail }))).toBe(true); expect(taskDescriptor(node)).toBe(taskDescriptor({ ...node })); expect(taskReviewKey(detail)).toBe(taskReviewKey({ ...detail }));
   });

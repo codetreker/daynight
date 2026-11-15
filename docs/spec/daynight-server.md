@@ -260,7 +260,7 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | 读取账号拥有的云端目标与逐项应用观测，不受近期窗口限制 |
 | `PUT` | `/api/v1/me/workers/{workerId}/configuration` | 精确目标版本保存完整配置，返回当前配置资源 |
 
-项目成员和管理员可管理标签库。标签名称去除 Unicode 首尾空白后为 1–64 个 code point，拒绝控制字符及 U+2028/U+2029；同项目名称按 ASCII 大小写不区分重名，展示拼写保留。目录默认每页 50 条、最多 100 条，按名称键和 ID 排序；cursor 绑定项目、principal、查询、limit 与目录 epoch。目录名称、颜色或成员变化后旧 cursor 明确失效。使用计数是读取快照中的提示，不属于标签 version；确认删除包括之后新增的关联。resolve 的编码结果最多 512 KiB，超限拒绝而不截断。创建可省略 `color`，默认 `#9AA3B2`；更新必须提供精确 `version` 和至少一个 `name`、`color`，省略字段保持原值。颜色输入经校验规范化为大写 `#RRGGBB`，拒绝无效值和 null。成功回执的 ID 和 version 确认请求的规范颜色已随事务提交；后续读取只证明当前状态。旧标签和 Task/Goal 引用响应不包含颜色。
+项目成员和管理员可管理标签库。标签名称去除 Unicode 首尾空白后为 1–64 个 code point，拒绝控制字符及 U+2028/U+2029；同项目名称按 ASCII 大小写不区分重名，展示拼写保留。目录默认每页 50 条、最多 100 条，按名称键和 ID 排序；cursor 绑定项目、principal、查询、limit 与目录 epoch。目录名称、颜色或成员变化后旧 cursor 明确失效。使用计数是读取快照中的提示，不属于标签 version；确认删除包括之后新增的关联。resolve 的编码结果最多 512 KiB，超限拒绝而不截断。创建可省略 `color`，默认 `#9AA3B2`；更新必须提供精确 `version` 和至少一个 `name`、`color`，省略字段保持原值。颜色输入经校验规范化为大写 `#RRGGBB`，拒绝无效值和 null。成功回执的 ID 和 version 确认请求的规范颜色已随事务提交；后续读取只证明当前状态。旧 REST 标签和 Task/Goal 引用响应不包含颜色。
 
 颜色 resolve 接收 `tagIds` 和可省略的 `catalogEpoch`，在同一授权读取快照校验 epoch 并规范化去重 ID。返回 `catalogEpoch` 和每个唯一 ID 的一项：存在时为 `{id,state:"found",version,color}`，缺失、已删除或跨项目时为 `{id,state:"missing"}`。非法 UUID、权限或 epoch 错误拒绝整批；epoch 不匹配返回 `catalog_changed`。请求沿用 1 MiB JSON 上限，实际编码结果超过 512 KiB 时拒绝，不返回部分结果。
 
@@ -359,7 +359,7 @@ Worker 资源归属来自认证 principal，报告不能提供 userId 或权威�
 
 Project、缓存 epoch、匹配任务和 observedAt 来自一次只读快照；
 同步不复查存储图节点、边或响应字节容量。摘要的业务 version
-使用精确十进制字符串，包含 requiredPlatform、明确 nullable 的 assignedTo 与完整 properties，省略 description 及派生 ready/blockedBy。
+使用精确十进制字符串，包含完整 title、titlePreview、titleTruncated、requiredPlatform、明确 nullable 的 assignedTo 与完整 properties，省略 description 及派生 ready/blockedBy。完整标题与其预览及截断标记来自同一快照，不按当前写入限制截断历史标题。
 任务行及批量读取的完整规范属性来自同一快照，缺失属性不补默认值。读取不调用属性 Normalize/Validate/Admit；自然解码、编码、数据库或事务完成故障继续传播，不返回局部成功。
 每个成功响应必含非 null 的 `sessions: Record<TaskId, "working" | "notice" | "warning" | "pending">`，没有贡献时为 `{}`。它是全项目未删除且进行中 Task 的可靠当前 Web Session 状态集合，独立于任务窗口；即使 `tasks=[]` 也完整返回。键用 Task ID，不重复执行或 Session 身份，不含完整 Current 数据，不维护 Session 增量。状态、适用范围与失败规则由[任务缓存需求](daynight-task-sync.md#轻量-session-集合与列表读取)拥有。Task、Worker 和持久 Session 来自同一只读快照，live 标量取自共享 Engine 的已提交状态；不推进 Session 生命周期。完整 JSON 含状态 map 一次返回，不新增领域读取字节预算；正常编码错误仍会传播。
 纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。

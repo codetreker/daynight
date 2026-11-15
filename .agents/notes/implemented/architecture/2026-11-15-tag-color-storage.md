@@ -8,7 +8,7 @@ Project members need a persistent shared color for each Tag while existing clien
 
 ## Decision
 
-Each Tag stores a canonical uppercase RGB color, with existing and newly created entries defaulting to `#9AA3B2`. A versioned update can change name and color together under the existing project write lock. Actual changes touch associated Tasks and Goals and rotate the catalog epoch in the same transaction. An authorized snapshot resolves requested IDs to their exact versions and colors or identifies missing IDs, with an optional epoch condition. REST writes accept color, and a separate bounded REST projection exposes the snapshot results; existing Tag and Task protocol projections remain unchanged. The [server design](../../../../docs/design/daynight-server.md#领域模型与存储结构) describes the storage and service responsibilities.
+Each Tag stores a canonical uppercase RGB color, with existing and newly created entries defaulting to `#9AA3B2`. A versioned update can change name and color together under the existing project write lock. Actual changes touch associated Tasks and Goals and rotate the catalog epoch in the same transaction. An authorized snapshot resolves requested IDs to their exact versions and colors or identifies missing IDs, with an optional epoch condition. REST writes accept color, and a separate bounded REST projection exposes the snapshot results. Existing REST Tag and Task projections remain unchanged; full MCP Tag results expose color, while MCP Task references retain ID and name. The [server design](../../../../docs/design/daynight-server.md#领域模型与存储结构) describes the storage and service responsibilities.
 
 ## Alternatives
 
@@ -18,4 +18,4 @@ Each Tag stores a canonical uppercase RGB color, with existing and newly created
 
 ## Consequences
 
-Color changes incur the same set-based association touch and epoch rotation as renames. The migration fills existing rows and enforces the stored format, so reads do not synthesize defaults. Clients need a separate color projection and must reconcile its epoch and version with other reads. The MCP adapter does not yet expose the new service capability.
+Color changes incur the same set-based association touch and epoch rotation as renames. The migration fills existing rows and enforces the stored format, so reads do not synthesize defaults. REST consumers need a separate color projection and must reconcile its epoch and version with other reads. MCP Tag tools use the service directly and return its committed color with the Tag.
