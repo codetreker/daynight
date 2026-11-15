@@ -34,6 +34,15 @@ describe("required Task tag references", () => {
     expect(search({ ...searchItem, tags: renamed }).tags).toEqual(renamed);
   });
 
+  it("accepts the existing Task and Goal references but rejects color in a reference", () => {
+    const reference = { id: tags[0]!.id, name: "platform" };
+    const goal = { ...task, type: "goal", parentId: null, allowAgents: false, tags: [reference], progress: { total: 0, done: 0, cancelled: 0, unfinished: 0 } };
+    expect(parseTask({ ...task, tags: [reference] }, projectId).tags).toEqual([reference]);
+    expect(parseTask(goal, projectId).tags).toEqual([reference]);
+    expect(() => parseTask({ ...task, tags: [{ ...reference, color: "#123ABC" }] }, projectId)).toThrow();
+    expect(() => parseTask({ ...goal, tags: [{ ...reference, color: "#123ABC" }] }, projectId)).toThrow();
+  });
+
   it.each([
     ["missing", undefined], ["null", null], ["non-array", {}], ["bad ID", [{ id: "bad", name: "valid" }]],
     ["missing name", [{ id: tags[0]!.id }]], ["empty name", [{ id: tags[0]!.id, name: "" }]],

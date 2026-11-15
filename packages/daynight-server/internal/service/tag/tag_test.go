@@ -226,14 +226,15 @@ type readFixture struct {
 	store.SnapshotScope
 	store.ProjectReader
 	store.TagReader
-	calls     []string
-	accessErr error
-	fail      map[string]error
-	epoch     string
-	page      store.TagPage
-	resolved  []model.Tag
-	item      model.Tag
-	query     store.TagQuery
+	calls      []string
+	accessErr  error
+	fail       map[string]error
+	epoch      string
+	page       store.TagPage
+	resolved   []model.Tag
+	resolveIDs []string
+	item       model.Tag
+	query      store.TagQuery
 }
 
 func (f *readFixture) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
@@ -268,6 +269,7 @@ func (f *readFixture) TagUsage(ctx context.Context, project, id string) (model.T
 }
 func (f *readFixture) ResolveTags(ctx context.Context, project string, ids []string) ([]model.Tag, error) {
 	f.calls = append(f.calls, "resolve")
+	f.resolveIDs = append([]string(nil), ids...)
 	return f.resolved, f.fail["resolve"]
 }
 
@@ -369,6 +371,25 @@ func TestResolveColorsUsesAuthorizedSnapshotAndPreservesMissing(t *testing.T) {
 		if !errors.Is(err, cause) || page.Items != nil || page.CatalogEpoch != "" || f.calls[len(f.calls)-1] != stop {
 			t.Fatalf("stop=%s page=%+v calls=%v err=%v", stop, page, f.calls, err)
 		}
+	}
+}
+
+func TestResolveColorsCanonicalizesIDsAcrossEpochBoundBatches(t *testing.T) {
+	ctx := context.Background()
+	epoch := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	firstID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	secondID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	f := &readFixture{epoch: epoch, resolved: []model.Tag{{ID: firstID, Version: 7, Color: "#123ABC"}}}
+	svc := New(f)
+	first, err := svc.ResolveColors(ctx, principal, projectID, []string{strings.ToUpper(firstID), firstID}, nil)
+	if err != nil || first.CatalogEpoch != epoch || !reflect.DeepEqual(first.Items, []ColorItem{{ID: firstID, Found: true, Version: 7, Color: "#123ABC"}}) || !reflect.DeepEqual(f.resolveIDs, []string{firstID}) {
+		t.Fatalf("first=%+v ids=%v err=%v", first, f.resolveIDs, err)
+	}
+	f.calls = nil
+	f.resolved = []model.Tag{{ID: secondID, Version: 8, Color: "#ABCDEF"}}
+	second, err := svc.ResolveColors(ctx, principal, projectID, []string{secondID, strings.ToUpper(secondID)}, &first.CatalogEpoch)
+	if err != nil || second.CatalogEpoch != first.CatalogEpoch || !reflect.DeepEqual(second.Items, []ColorItem{{ID: secondID, Found: true, Version: 8, Color: "#ABCDEF"}}) || !reflect.DeepEqual(f.resolveIDs, []string{secondID}) || !reflect.DeepEqual(f.calls, []string{"snapshot", "access", "epoch", "resolve"}) {
+		t.Fatalf("second=%+v ids=%v calls=%v err=%v", second, f.resolveIDs, f.calls, err)
 	}
 }
 func TestReadsUseOneAuthorizedSnapshot(t *testing.T) {
