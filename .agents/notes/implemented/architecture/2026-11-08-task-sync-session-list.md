@@ -55,7 +55,9 @@ Task work once.
 The [TaskSync design](../../../../docs/design/daynight-task-sync.md) owns request
 and cache responsibilities; the [Session status design](../../../../docs/design/task-session-status.md)
 owns binding admission, expiry and presentation. The [server projection decision](2026-11-08-task-sync-session-projection.md)
-owns the narrow state producer. The [original annotation decision](../../archived/feature/2026-11-04-task-session-status.md)
+owns the state producer. The [complete observation decision](2026-11-15-task-sync-complete-observations.md)
+adds a separate full Task observation without changing this list's four-state
+admission or aggregation. The [original annotation decision](../../archived/feature/2026-11-04-task-session-status.md)
 established reliable shortcuts and complete chain membership when Current was
 the available authoritative observation; those requirements survive the change
 in list data source.

@@ -26,12 +26,34 @@ func (r taskReadSessionStates) TaskListSessionStates(ctx context.Context, source
 	return map[string]model.SessionListState{}, nil
 }
 
+func (r taskReadSessionStates) TaskSyncSessions(ctx context.Context, principal model.Principal, sources []store.TaskSessionSource) (map[string]model.TaskSyncObservation, map[string]model.SessionListState, error) {
+	if ctx != r.ctx || len(sources) != 0 {
+		r.t.Fatal("unexpected session sources")
+	}
+	return map[string]model.TaskSyncObservation{}, map[string]model.SessionListState{}, nil
+}
+func (r taskReadSessionStates) TaskSyncObservedAt(ctx context.Context) (time.Time, error) {
+	return time.Unix(100, 0).UTC(), ctx.Err()
+}
+
 func (f *taskReadFixture) sync(epoch string, rows func(*time.Time) ([]model.TaskViewRecord, error), people []model.TaskAssigneeFact, overlap time.Duration) *taskservice.TaskSync {
 	f.reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) { f.requireProject(ctx, id); return epoch, nil }
 	f.reader.TaskSyncTasksFn = nil
 	f.reader.TaskSyncDependencyStatesFn = nil
 	f.reader.TaskAssigneesFn = nil
 	f.snapshot.SessionDAOFn = nil
+	f.reader.TaskSyncActiveTasksFn = func(ctx context.Context, id string) ([]store.TaskSyncTaskIdentity, error) {
+		f.requireProject(ctx, id)
+		return []store.TaskSyncTaskIdentity{}, nil
+	}
+	credential := &credentialReaderMock{taskMockBase: f.base.withLabel("credential"), CredentialFn: func(ctx context.Context, p model.Principal) (store.ThreadCredential, error) {
+		f.requireActive()
+		if ctx != f.ctx || p != f.principal {
+			f.t.Fatal("credential identity changed")
+		}
+		return store.ThreadCredential{}, nil
+	}}
+	f.snapshot.CredentialDAOFn = func() store.CredentialReader { f.requireActive(); return credential }
 	if rows != nil {
 		var gotLower *time.Time
 		f.reader.TaskSyncTasksFn = func(ctx context.Context, id string, lower *time.Time, characters int) ([]model.TaskViewRecord, error) {
@@ -122,8 +144,8 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 					t.Fatal("future row acquired an observedAt upper bound")
 				}
 			}
-			if f.reads != repeats {
-				t.Fatalf("snapshot count=%d want=%d", f.reads, repeats)
+			if f.reads != repeats*2 {
+				t.Fatalf("snapshot count=%d want=%d", f.reads, repeats*2)
 			}
 		})
 	}
@@ -199,7 +221,7 @@ func TestTaskSyncProjectAccessAndRowsUseOneScope(t *testing.T) {
 		return []model.TaskViewRecord{before, dependent}, nil
 	}, []model.TaskAssigneeFact{}, 10*time.Second)
 	old, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: oldEpoch})
-	if err != nil || old.Epoch != oldEpoch || old.Project != oldProject || !reflect.DeepEqual(old.ActorAccess, oldAccess) || len(old.Tasks) != 2 || old.Tasks[0].TitlePreview != "Before" || old.Tasks[0].Version != 1 || !slices.Equal(old.Tasks[1].DependsOn, []string{before.ID}) || f.reads != 1 {
+	if err != nil || old.Epoch != oldEpoch || old.Project != oldProject || !reflect.DeepEqual(old.ActorAccess, oldAccess) || len(old.Tasks) != 2 || old.Tasks[0].TitlePreview != "Before" || old.Tasks[0].Version != 1 || !slices.Equal(old.Tasks[1].DependsOn, []string{before.ID}) || f.reads != 2 {
 		t.Fatalf("one old scope: %#v %v", old, err)
 	}
 	f.project.Settings.ExecutionWarningMinutes = 31
@@ -224,7 +246,7 @@ func TestTaskSyncProjectAccessAndRowsUseOneScope(t *testing.T) {
 		return []model.TaskViewRecord{after, dependent}, nil
 	}, []model.TaskAssigneeFact{}, 10*time.Second)
 	fresh, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: oldEpoch})
-	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 || old.Project != oldProject || old.Tasks[0].TitlePreview != "Before" || f.reads != 2 {
+	if err != nil || fresh.Mode != "snapshot" || fresh.Epoch == oldEpoch || fresh.Tasks[0].TitlePreview != "After" || fresh.Project.Settings.ExecutionWarningMinutes != 31 || fresh.ActorAccess.DirectGrant.Version != 9007199254740993 || old.Project != oldProject || old.Tasks[0].TitlePreview != "Before" || f.reads != 4 {
 		t.Fatalf("independent fresh scope: %#v %v", fresh, err)
 	}
 }
@@ -253,7 +275,7 @@ func TestTaskSyncDependencyPatchSharesWindowAndSnapshot(t *testing.T) {
 		return want, nil
 	}
 	result, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{Epoch: epoch, Since: &since})
-	if err != nil || result.Mode != "delta" || len(result.Tasks) != 0 || !reflect.DeepEqual(result.DependencyStates, want) || result.ObservedAt != f.observed || result.Epoch != epoch || result.Sessions == nil || f.reads != 1 || calls != 1 {
+	if err != nil || result.Mode != "delta" || len(result.Tasks) != 0 || !reflect.DeepEqual(result.DependencyStates, want) || result.ObservedAt != f.observed || result.Epoch != epoch || result.Sessions == nil || f.reads != 2 || calls != 1 {
 		t.Fatalf("same snapshot dependency patch: %#v calls=%d err=%v", result, calls, err)
 	}
 }

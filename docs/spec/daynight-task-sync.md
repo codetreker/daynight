@@ -2,7 +2,7 @@
 
 服务端每条同步摘要包含必填 `tags:[{id,name}]`，无关联时为 `[]`。标签改名和删除通过关联条目的新 version 和 updatedAt 出现在普通增量中，不轮换任务缓存 epoch；每条普通 Task 的依赖状态与摘要版本一致。
 
-状态：服务端窗口摘要及完整属性、配置、身份响应头、epoch 和轻量完整 Session 状态集合，以及浏览器 IndexedDB schema 13、原子合并、权威依赖状态与本地图投影、按需详情和版本化人员内容缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
+状态：服务端窗口摘要及完整属性、配置、身份响应头、epoch、Session 四态汇总和完整任务观测，以及浏览器 IndexedDB schema 13、原子合并、权威依赖状态与本地图投影、按需详情和版本化人员内容缓存已实现。摘要业务版本驱动详情更新，成功同步的时钟 receipt 不单独触发未变化详情 GET。
 
 [架构](../design/daynight-task-sync.md)拥有协议、缓存与恢复机制。任务生命周期、依赖性质、附件及计时沿用各自现有合同。摘要与浏览器 Task、详情、图投影都包含[负责人契约](daynight-task-assignment.md)的必填 nullable assignedTo，以及必填 Type/Parent；摘要单独保存普通 Task 的权威依赖状态。schema 13 在严格解析前重建任务内容，并保留人员内容和用户身份；完整 snapshot 可清除可重取的 Session 目录。
 
@@ -65,6 +65,16 @@ Project 内在字段含必填 ownership，同一 epoch 的 delta 中设置与归
 
 每次实际成功同步都取得新 observedAt 与当前 Project；只用于本页显示计时和设置。持久缓存不恢复 performance.now 锚点，重复响应不重建图布局。仅本地摘要的页面不显示最近成功刷新时间、运行中耗时或可能卡住提醒；已完成任务仍可使用持久起止时间显示耗时。概览的近期分类按浏览器本地时区的自然日计算；暂时当前时刻使用本机时间，成功同步后切换为服务端样本与单调时间，分类口径由[Web 需求](daynight-web.md#项目整体进度)拥有。项目设置通过已有 settings.version 合并，迟到响应不得回退设置。
 
+### 完整任务 Session 观测
+
+每个成功 snapshot 和 delta 返回必填非 null 的 `taskObservations` map，覆盖该项目快照中全部可见、`in_progress` 的普通 Task，即使 `tasks=[]` 也不省略。键为规范 Task UUID；每项均含 `taskVersion`、`state`、`observedAt`、`freshUntil`、`needsAttention` 和 `canOpen`。`taskVersion` 为精确正 int64 十进制字符串，`state` 只能是 `no_session`、`not_registered`、`pending`、`working`、`notice`、`warning` 或 `unavailable`；`freshUntil`、`needsAttention` 可为 null，`canOpen` 是布尔值。除 `unavailable` 外 `observedAt` 必须是合法非 null UTC 时间；不可用时可无时间锚点。缺键不能解释为无 Session。
+
+观测失败、身份或绑定不可确认、registration 为 unknown 或 unsupported 时为 `unavailable`。只有确认 `not_applicable` 且 reason 为 `no_execution` 才为 `no_session`；确认未注册才为 `not_registered`。注册后的非 active 生命周期或断开连接为 `warning`；引擎明确的 working、notice、warning 按实际值输出。Web 未断连且活动 unknown 为 `unavailable`，活动已知但连接或同步未完成，或引擎明确 pending 时为 `pending`。Herdr connected 不能推断 working，活动不可靠为 `unavailable`，断开或归档为 `warning`。未知的 `needsAttention` 保持 null。
+
+当前 Session 必须属于当前 active Worker claim。完成后重开并手动开始时，保留的 completed Worker 和旧 Session 仅表示历史，不能成为当前 Session 或入口；确认没有 active claim 时为 `no_session`，不意味着从未有历史。新 claim 只能使用新绑定。`canOpen` 只有在注册、当前执行绑定、阅读入口均经现有准入确认，且 `observedAt` 和 `freshUntil` 均为合法非 null 时间时可以为 true。活动未知但上述独立事实已确认的 `unavailable` 可以打开；观测失败或无时间锚点时不可打开。消费者负责按实际期限撤销入口，不能由服务端伪造新鲜度。
+
+必填 `sessionPartial` 在任一观测为 `unavailable` 时为 true；单项采样失败保留 Task 并明确标为 unavailable。请求取消、认证或项目访问拒绝以及整体快照／读取失败沿原错误路径传播，不能变成空 map 或成功。必填 UTC 时间 `responseTaskAt` 来自采样结束后的最终核验数据库快照，`responseSessionAt` 来自所有批次和最终核验结束后产生 Session 样本的同一 Engine 时钟。两者各属独立时间域，不能用 Engine 时间计算数据库 `startedAt` 的耗时，也不能替换原 `observedAt` 同步水位；时间缺失或非法使读取失败。它们不消除采样至客户端接收之间的处理和传输延迟。协议及采样责任由[同步架构](../design/daynight-task-sync.md#服务端-session-状态投影)拥有。
+
 ### 轻量 Session 集合与列表读取
 
 每个成功 snapshot 和 delta 都包含必填且非 null 的 `sessions` 对象，即使 `tasks=[]` 也重新返回全项目当前适用会话的完整集合。键为 Task ID，值只允许 `working`、`notice`、`warning`、`pending`；无贡献时返回 `{}`。集合不受任务 `since` 窗口限制，不传 claim、Worker、Worktree 或 Session ID，也不传目录、能力、操作、启动报告、原始活动或连接字段，不增加 Session hash、cursor 或版本。
@@ -73,7 +83,7 @@ Project 内在字段含必填 ownership，同一 epoch 的 delta 中设置与归
 
 非 active 生命周期或 disconnected 为 `warning`；已连接且同步的 waiting_input 为 `notice`，idle/stopped 为 `warning`，working 为 `working`。初始化或同步中的可靠会话为 `pending`，表示无角标但仍保留可用的 Session 入口。active 且未断线的 unknown 活动不提供可靠贡献，应省略键。缺少本机 live 状态或 live fence 不匹配时沿用 disconnected、未同步、unknown 的既有归一化，最终为 `warning`；不能把该情况解释为会话不存在。持久 LastSeen 缺席或距今严格超过 30 秒，以及已到 DrainUntil 的生命周期规则保持。
 
-Task、Worker 和持久 Session 的读取共享既有只读数据库快照；live 活动仅从应用共享 Engine 的已提交状态取得。轻量读取不写生命周期，不推进归档、不读取完整 Current，也不改变 Worker 启动、报告、WebSocket、目录、操作、Test/Bot 或 Session 内容访问规则。查询、自然解码和编码、Engine admission、取消及事务完成失败使整个 task-sync 失败，不能变成 `pending` 或成功空集合。状态的最小集合及其判断机制由[同步架构](../design/daynight-task-sync.md#服务端-session-状态投影)拥有；现有列表呈现与入口由[Session 状态设计](../design/task-session-status.md)拥有。
+Task、Worker 和持久 Session 来源在只读数据库快照中读取；释放快照后批量采样应用共享 Engine 的已提交 live 活动，再核验权限、版本和执行绑定。四态汇总与完整观测由同一现场采样按各自规则派生，前者的缺键语义和链／Goal 汇总不被后者改变。读取不写生命周期，不推进归档、不读取完整 Current，也不改变 Worker 启动、报告、WebSocket、目录、操作、Test/Bot 或 Session 内容访问规则。整体查询、自然解码和编码、取消及事务完成失败沿原错误链传播；不可用的单项观测遵循上述 partial 合同。状态的最小集合及其判断机制由[同步架构](../design/daynight-task-sync.md#服务端-session-状态投影)拥有；现有列表呈现与入口由[Session 状态设计](../design/task-session-status.md)拥有。
 
 列表仅使用可见时现有 15 秒 task-sync 更新 Session 状态，不另建逐 Task Current 或 status 请求。初始化或同步期间的 pending 入口、完整链的全部普通成员及根任务、折叠与负责人筛选隐藏成员、warning > notice > working 优先级以及原有导航和可访问性必须保留；Goal 列表展开时直接为可见成员提供各自的 Session 状态与入口，不汇总范围链。完整 Current 内容和操作权限继续由详情客户端核验，列表状态不能成为该授权来源。
 
@@ -109,9 +119,9 @@ direct 来源不要求项目 manifest、图或 SyncTicket；当前身份、项�
 
 响应 ID 集合等于对应快照内窗口条件选中的任务，重复是合法数据；移除“无变化必为零任务”和“只改一个任务必只返回一个任务”的要求。记录实际窗口命中数、重复率、正文与传输字节、IDB 读写及投影耗时。自身字段和依赖状态均未变化的重复数据不得导致重复 IDB 写入、详情失效、图布局或广播。验证 schema 13 重建、持久读回、同版本自身冲突、依赖状态变化的持久化与发布、隐藏终态及未结束前置、Goal 存在但不入图，以及 epoch 和迟到响应隔离。
 
-完整属性随摘要传输和持久化，不截断、不静默丢键。写入入口拥有属性结构、字段、规范化和现有容量规则；同步读取直接装载规范值，不再次校验存储数据，不设置图规模或响应字节预算。完整响应含 `sessions`，自然查询、解码、编码或持久化错误不发布部分结果。详情的 8 MiB 缓存预算不覆盖摘要。测量实际样本、接近写请求上限的 PR 值和较大属性的多任务样本的响应字节、解析与 IDB 提交时间；完整标题应在代表性和边界合法数据上记录任务数、标题长度分布、编码字节、解码和 IDB 写入时间及请求次数，并与同负载的旧投影比较；不承诺所有合法属性总量都能满足浏览器配额。网络或配额失败保留旧有效缓存和水位。
+完整属性随摘要传输和持久化，不截断、不静默丢键。写入入口拥有属性结构、字段、规范化和现有容量规则；同步读取直接装载规范值，不再次校验存储数据，不设置图规模或响应字节预算。完整响应含 `sessions` 和 `taskObservations`，自然查询、解码、编码或持久化错误不发布部分 Task 结果；单项 Session 采样失败按完整观测合同表达。详情的 8 MiB 缓存预算不覆盖摘要。测量实际样本、接近写请求上限的 PR 值和较大属性的多任务样本的响应字节、解析与 IDB 提交时间；完整标题应在代表性和边界合法数据上记录任务数、标题长度分布、编码字节、解码和 IDB 写入时间及请求次数，并与同负载的旧投影比较；不承诺所有合法属性总量都能满足浏览器配额。网络或配额失败保留旧有效缓存和水位。
 
-Session 集合验证覆盖空 delta、无贡献 `{}`、窗口外活动 Task、所有既有状态判断、身份不匹配、缺失 live 和 fence 不匹配、同快照批量读取和自然错误传播。轻量读取不能取得完整 Session 内容、目录或操作。Web 验证同时覆盖 body receipt 的真实顺序、同事务请求基线、snapshot/delta 观察、旧值与旧缺席、30 秒期限、失败与恢复、全部角标/入口及 memory-only 边界。列表/Overview 在多个同步周期内没有完整 current；Session-only 变化不增加 Task 缓存写入、正文失效、普通通知或图计算。
+Session 集合验证覆盖空 delta、无贡献 `{}`、窗口外活动 Task、所有既有状态判断、身份不匹配、缺失 live 和 fence 不匹配、同快照批量读取和自然错误传播。完整观测验证还覆盖 web 和 herdr、全部状态、历史 Worker、变更绑定、partial、取消、访问与凭据变化、精确版本和分离的响应时钟。轻量读取不能取得完整 Session 内容、目录或操作。Web 验证同时覆盖 body receipt 的真实顺序、同事务请求基线、snapshot/delta 观察、旧值与旧缺席、30 秒期限、失败与恢复、全部角标/入口及 memory-only 边界。列表/Overview 在多个同步周期内没有完整 current；Session-only 变化不增加 Task 缓存写入、正文失效、普通通知或图计算。
 
 本合同不新增分页、流式 staging、项目属性字节预算或遥测上传。
 

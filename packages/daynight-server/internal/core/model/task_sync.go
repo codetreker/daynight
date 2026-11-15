@@ -41,13 +41,17 @@ type TaskDependencyState struct {
 }
 
 type TaskSync struct {
-	Mode             string
-	Epoch            string
-	Project          Project
-	ActorAccess      ProjectAccess
-	ObservedAt       time.Time
-	Tasks            []TaskViewRecord
-	DependencyStates map[string]TaskDependencyState
-	AssigneeVersions []TaskAssigneeVersion
-	Sessions         map[string]SessionListState
+	Mode              string
+	Epoch             string
+	Project           Project
+	ActorAccess       ProjectAccess
+	ObservedAt        time.Time
+	Tasks             []TaskViewRecord
+	DependencyStates  map[string]TaskDependencyState
+	AssigneeVersions  []TaskAssigneeVersion
+	Sessions          map[string]SessionListState
+	TaskObservations  map[string]TaskSyncObservation
+	SessionPartial    bool
+	ResponseTaskAt    time.Time
+	ResponseSessionAt time.Time
 }

@@ -337,6 +337,10 @@ func (c *listOperationCapability) TaskSyncTasks(context.Context, string, *time.T
 	return nil, c.fail("TaskSyncTasks")
 }
 
+func (c *listOperationCapability) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
+	return nil, c.fail("TaskSyncActiveTasks")
+}
+
 func (c *listOperationCapability) TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
 	return nil, c.fail("TaskSyncDependencyStates")
 }

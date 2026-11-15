@@ -5,8 +5,31 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 )
+
+func (s *Reader) TaskSyncActiveTasks(ctx context.Context, projectID string) ([]store.TaskSyncTaskIdentity, error) {
+	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.version FROM task_resource_rows t
+		WHERE t.project_id=$1 AND t.effective_deleted_at IS NULL AND t.type='task' AND t.status='in_progress'
+		ORDER BY t.id`, projectID)
+	if err != nil {
+		return nil, pg.QueryError("read task sync active tasks", err)
+	}
+	defer rows.Close()
+	result := make([]store.TaskSyncTaskIdentity, 0)
+	for rows.Next() {
+		var task store.TaskSyncTaskIdentity
+		if err := rows.Scan(&task.ID, &task.Version); err != nil {
+			return nil, pg.QueryError("read task sync active task", err)
+		}
+		result = append(result, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, pg.QueryError("read task sync active tasks", err)
+	}
+	return result, nil
+}
 
 func (s *Reader) TaskCacheEpoch(ctx context.Context, projectID string) (string, error) {
 	var epoch string
