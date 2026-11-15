@@ -27,14 +27,15 @@ type tagOperations interface {
 }
 
 type tagInput struct {
-	ProjectID string `json:"projectId"`
-	TagID     string `json:"tagId"`
-	Name      string `json:"name"`
-	IfVersion string `json:"ifVersion"`
-	Confirm   bool   `json:"confirm"`
-	Query     string `json:"query"`
-	Limit     int    `json:"limit"`
-	Cursor    string `json:"cursor"`
+	ProjectID string  `json:"projectId"`
+	TagID     string  `json:"tagId"`
+	Name      *string `json:"name"`
+	Color     *string `json:"color"`
+	IfVersion string  `json:"ifVersion"`
+	Confirm   bool    `json:"confirm"`
+	Query     string  `json:"query"`
+	Limit     int     `json:"limit"`
+	Cursor    string  `json:"cursor"`
 }
 
 type tagUsage struct {
@@ -46,6 +47,7 @@ type tagData struct {
 	ID        string    `json:"id"`
 	ProjectID string    `json:"projectId"`
 	Name      string    `json:"name"`
+	Color     string    `json:"color"`
 	Version   string    `json:"version"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -54,7 +56,7 @@ type tagData struct {
 
 func mapTag(item tagservice.Item) tagData {
 	t := item.Tag
-	return tagData{ID: t.ID, ProjectID: t.ProjectID, Name: t.Name, Version: Decimal(t.Version), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), Usage: tagUsage{Tasks: item.Usage.Tasks, Goals: item.Usage.Goals}}
+	return tagData{ID: t.ID, ProjectID: t.ProjectID, Name: t.Name, Color: t.Color, Version: Decimal(t.Version), CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(), Usage: tagUsage{Tasks: item.Usage.Tasks, Goals: item.Usage.Goals}}
 }
 
 // RegisterTagTools exposes the project catalog through the shared MCP wrapper.
@@ -75,7 +77,7 @@ func RegisterTagTools(e *Entry, tags tagOperations) error {
 		if name == "tag_list" || name == "tag_show" {
 			register = registerTypedReadTool[tagInput]
 		}
-		if err := register(e, tool, BudgetControl, handler, "projectId", "tagId", "name", "ifVersion", "query", "cursor"); err != nil {
+		if err := register(e, tool, BudgetControl, handler, "projectId", "tagId", "name", "color", "ifVersion", "query", "cursor"); err != nil {
 			return fmt.Errorf("register %s: %w", name, err)
 		}
 	}
@@ -104,7 +106,7 @@ func tagTool(ctx context.Context, actor RequestActor, name string, in tagInput, 
 			return ToolResult{Refs: refs}, err
 		}
 		return ToolResult{Data: mapTag(item), Refs: refs}, nil
-	case "tag_create", "tag_rename", "tag_delete":
+	case "tag_create", "tag_rename", "tag_update", "tag_delete":
 		preflight := ToolResult{WriteOutcome: "not_committed", Phase: "prepare", Refs: refs}
 		var version int64
 		if name != "tag_create" {
@@ -116,10 +118,7 @@ func tagTool(ctx context.Context, actor RequestActor, name string, in tagInput, 
 		}
 		// Enforce the equivalent REST body limit without constraining raw names
 		// before the shared service trims and validates them.
-		bodySize := len(`{"name":}`) + threadJSONStringSize(in.Name)
-		if name == "tag_rename" {
-			bodySize += len(`,"version":`) + len(in.IfVersion)
-		}
+		bodySize := tagWriteBodySize(name, in)
 		if name != "tag_delete" && bodySize > httpx.MaxJSONBody {
 			return preflight, &model.Fault{Code: "invalid_input", Message: "Request body must be valid JSON within the 1 MiB limit."}
 		}
@@ -127,9 +126,11 @@ func tagTool(ctx context.Context, actor RequestActor, name string, in tagInput, 
 		var err error
 		switch name {
 		case "tag_create":
-			result, err = tags.Create(ctx, actor.Principal, in.ProjectID, in.Name, nil)
+			result, err = tags.Create(ctx, actor.Principal, in.ProjectID, *in.Name, in.Color)
 		case "tag_rename":
-			result, err = tags.Update(ctx, actor.Principal, in.ProjectID, in.TagID, version, &in.Name, nil)
+			result, err = tags.Update(ctx, actor.Principal, in.ProjectID, in.TagID, version, in.Name, nil)
+		case "tag_update":
+			result, err = tags.Update(ctx, actor.Principal, in.ProjectID, in.TagID, version, in.Name, in.Color)
 		case "tag_delete":
 			result, err = tags.Delete(ctx, actor.Principal, in.ProjectID, in.TagID, version, in.Confirm)
 		}
@@ -168,6 +169,30 @@ func tagTool(ctx context.Context, actor RequestActor, name string, in tagInput, 
 	default:
 		return ToolResult{}, fmt.Errorf("unknown tag tool %q", name)
 	}
+}
+
+// tagWriteBodySize counts the compact equivalent REST JSON body, including
+// only supplied fields and the numeric (not quoted) version.
+func tagWriteBodySize(name string, in tagInput) int {
+	size := len(`{}`)
+	fields := 0
+	add := func(key string, valueSize int) {
+		if fields > 0 {
+			size++
+		}
+		size += len(key) + 3 + valueSize // quoted key and colon
+		fields++
+	}
+	if name != "tag_create" {
+		add("version", len(in.IfVersion))
+	}
+	if in.Name != nil {
+		add("name", threadJSONStringSize(*in.Name))
+	}
+	if in.Color != nil {
+		add("color", threadJSONStringSize(*in.Color))
+	}
+	return size
 }
 
 // Only the specific unique-index refusal with reliable rollback may be exposed
