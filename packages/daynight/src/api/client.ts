@@ -153,8 +153,9 @@ export type ApiClient = TaskSessionClient & {
   webhookRequest<T>(input: { readonly userId: string; readonly path: string; readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly parse: (value: unknown) => T; readonly statuses?: readonly number[]; readonly body?: unknown; readonly confirmedOperationId?: string }): Promise<T>;
   listTags(projectId: string, query?: TagListQuery): Promise<TagPage>;
   getTag(projectId: string, tagId: string): Promise<Tag>;
-  createTag(projectId: string, name: string): Promise<Tag>;
+  createTag(projectId: string, name: string, color?: string): Promise<Tag>;
   renameTag(projectId: string, tagId: string, name: string, version: bigint): Promise<Tag>;
+  setTagColor(projectId: string, tagId: string, color: string, version: bigint): Promise<Tag>;
   deleteTag(projectId: string, tagId: string, version: bigint): Promise<TagDeletionReceipt>;
   listBots(): Promise<readonly Bot[]>;
   getBot(botId: string): Promise<Bot>;
@@ -805,14 +806,15 @@ export const createApiClient = (options: {
       const project = resourceId(projectId), tag = resourceId(tagId);
       return exchange({ operation: "tag.show", projectId: project }, resourcePath("projects", project, "tags", tag), "GET", { kind: "json", parse: value => parseTag(value, project, tag) }, [200]);
     },
-    createTag: (projectId, name) => {
+    createTag: (projectId, name, color) => {
       const project = resourceId(projectId), path = resourcePath("projects", project, "tags");
       if (!isText(name)) throw new Error("Tag name must be Unicode text without NUL.");
+      if (color !== undefined && !isText(color)) throw new Error("Tag color must be Unicode text without NUL.");
       return exchange({ operation: "tag.create", projectId: project }, path, "POST", { kind: "json", parse: (value, metadata) => {
         const result = parseTag(value, project);
         if (result.name !== normalizedTagName(name) || result.version !== 1n || metadata.locationHeader !== `/api/v1${path}/${result.id}`) throw new ProtocolError("Tag creation response does not match the request.");
         return result;
-      }, confirmMutation: result => result.id }, [201], { kind: "json", value: { name } });
+      }, confirmMutation: result => result.id }, [201], { kind: "json", value: { name, ...(color === undefined ? {} : { color }) } });
     },
     renameTag: (projectId, tagId, name, version) => {
       const project = resourceId(projectId), tag = resourceId(tagId);
@@ -823,6 +825,16 @@ export const createApiClient = (options: {
         if (result.name !== normalizedTagName(name) || result.version !== version && result.version !== version + 1n) throw new ProtocolError("Tag rename response does not match the request.");
         return result;
       }, confirmMutation: result => result.id }, [200], { kind: "json", value: { version, name } });
+    },
+    setTagColor: (projectId, tagId, color, version) => {
+      const project = resourceId(projectId), tag = resourceId(tagId);
+      if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Tag version must be a positive int64.");
+      if (!isText(color)) throw new Error("Tag color must be Unicode text without NUL.");
+      return exchange({ operation: "tag.set-color", projectId: project }, resourcePath("projects", project, "tags", tag), "PATCH", { kind: "json", parse: value => {
+        const result = parseTag(value, project, tag);
+        if (result.version !== version && result.version !== version + 1n) throw new ProtocolError("Tag color response does not match the request.");
+        return result;
+      }, confirmMutation: result => result.id }, [200], { kind: "json", value: { version, color } });
     },
     deleteTag: (projectId, tagId, version) => {
       const project = resourceId(projectId), tag = resourceId(tagId);

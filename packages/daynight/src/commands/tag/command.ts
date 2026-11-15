@@ -34,11 +34,13 @@ export const runTagCommand = async (args: readonly string[], context: CliContext
   const rawProject = command.options.get("--project") as string | undefined;
   const projectId = rawProject === undefined ? undefined : canonicalId(rawProject);
   if (projectId === null) throw new UsageError("project-id must be a hyphenated UUID.", help);
-  const rawTag = action === "show" || action === "rename" || action === "delete" ? command.values[0] : undefined;
+  const rawTag = action === "show" || action === "rename" || action === "set-color" || action === "delete" ? command.values[0] : undefined;
   const tagId = rawTag === undefined ? undefined : canonicalId(rawTag);
   if (tagId === null) throw new UsageError("tag-id must be a hyphenated UUID.", help);
   const name = action === "create" ? command.values[0] : action === "rename" ? command.values[1] : undefined;
   if (name !== undefined && !isNonemptyText(name)) throw new UsageError("Tag name must be nonempty UTF-8 text without NUL characters.", help);
+  const color = action === "create" ? command.options.get("--color") as string | undefined : action === "set-color" ? command.values[1] : undefined;
+  if (color !== undefined && !isText(color)) throw new UsageError("Tag color must be UTF-8 text without NUL characters.", help);
   const query = command.options.get("--query") as string | undefined;
   const cursor = command.options.get("--cursor") as string | undefined;
   if (query !== undefined && !isText(query)) throw new UsageError("query must be UTF-8 text without NUL characters.", help);
@@ -79,14 +81,15 @@ export const runTagCommand = async (args: readonly string[], context: CliContext
       await confirmTeamChange(context, context.prompt?.isInteractive === true ? false : confirmed, "Confirm deletion of the Tag and all associations.", operation.signal, preview.name, "Tag deletion");
       operation.check();
       version ??= preview.version;
-    } else if (action === "rename" && version === undefined) {
+    } else if ((action === "rename" || action === "set-color") && version === undefined) {
       version = (await api.getTag(project.id, tagId!)).version;
       operation.check();
     }
     let result;
     try {
-      result = action === "create" ? await api.createTag(project.id, name!)
+      result = action === "create" ? await api.createTag(project.id, name!, color)
         : action === "rename" ? await api.renameTag(project.id, tagId!, name!, version!)
+        : action === "set-color" ? await api.setTagColor(project.id, tagId!, color!, version!)
         : await api.deleteTag(project.id, tagId!, version!);
     } catch (cause) {
       if (cause instanceof ApiError && cause.confirmedMutationId !== undefined) throw new PublicDiagnosticError(`Tag ${action} was confirmed for ${cause.confirmedMutationId}, but local request cleanup failed.`, 1, { cause });
@@ -98,7 +101,7 @@ export const runTagCommand = async (args: readonly string[], context: CliContext
     try {
       output = asJson ? renderTagJson(result)
         : action === "delete" ? `Tag deleted.\nProject: ${project.id}\nID: ${tagId}\n`
-        : `Tag ${action === "create" ? "created" : "renamed"}.\n${renderTag(result as Parameters<typeof renderTag>[0])}`;
+        : `Tag ${action === "create" ? "created" : action === "set-color" ? "color updated" : "renamed"}.\n${renderTag(result as Parameters<typeof renderTag>[0])}`;
     } catch (cause) { throw new PublicDiagnosticError(message("rendering"), 1, { cause }); }
     return { kind: "confirmed-mutation" as const, output, failureText: message };
   });

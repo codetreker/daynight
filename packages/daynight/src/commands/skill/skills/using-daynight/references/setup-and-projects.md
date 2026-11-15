@@ -72,8 +72,9 @@ Writes also require [write safety](write-safety.md).
 ```bash
 daynight tag list --query bug --limit 50 --project <project-id> --json
 daynight tag show <tag-id> --project <project-id> --json
-daynight tag create "backend" --project <project-id> --json
+daynight tag create "backend" --color '#427DA9' --project <project-id> --json
 daynight tag rename <tag-id> "platform" --if-version <version> --project <project-id> --json
+daynight tag set-color <tag-id> '#123ABC' --if-version <version> --project <project-id> --json
 daynight tag delete <tag-id> --if-version <version> --project <project-id> --confirm --json
 ```
 
@@ -81,12 +82,21 @@ Tag IDs are stable UUIDs; names are display values, not target identities. List
 collects all pages with the same query and limit and returns the catalog epoch;
 a page failure emits no partial result. Text distinguishes an empty catalog
 from no query match; an empty result starting from a cursor describes only the
-remaining pages. Show, create and rename return the complete Tag, version and
-visible Task/Goal usage. The service validates names and Project access.
+remaining pages. Show, create, rename and set-color return the existing Tag
+fields, version and visible Task/Goal usage; text and JSON do not include color.
+Create accepts optional `--color '#RRGGBB'`; omission uses the service default
+`#9AA3B2`. Set-color changes only color, preserving name, ID and associations.
+The service validates names, Project access and six-digit RGB hex colors,
+accepts any RGB value and normalizes colors to uppercase. Quote the leading `#`
+for the shell. A successful Tag write receipt confirms the requested normalized
+color; a later read cannot replace the original receipt.
 
-Rename retains an explicit `--if-version` exactly; omission reads the current
-Tag version before writing. Delete always reads the complete Tag and previews its
-name and visible usage. Interactive deletion requires its displayed JSON string
+Rename and set-color retain an explicit `--if-version` exactly; omission reads
+the current Tag version once before writing. Versions preserve positive int64
+precision. Conflicts and unknown writes are not automatically retried, and local
+output or cleanup failures retain confirmed write outcomes.
+
+Delete always reads the complete Tag and previews its name and visible usage. Interactive deletion requires its displayed JSON string
 literal even with `--confirm`; noninteractive deletion requires `--confirm`.
 The preview counts are hints: confirmation covers all associations at deletion,
 including those added after the read. An explicit version is preserved; otherwise

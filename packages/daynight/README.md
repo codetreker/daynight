@@ -167,8 +167,9 @@ daynight project transfer --to-team <uuid|same-service-link> [--project <uuid>] 
 daynight project delete [--project <uuid>] [--confirm] [--json]
 daynight tag list [--query <query>] [--limit <1-100>] [--cursor <cursor>] [--project <project-id>] [--json]
 daynight tag show <tag-id> [--project <project-id>] [--json]
-daynight tag create <name> [--project <project-id>] [--json]
+daynight tag create <name> [--color '#RRGGBB'] [--project <project-id>] [--json]
 daynight tag rename <tag-id> <name> [--if-version <version>] [--project <project-id>] [--json]
+daynight tag set-color <tag-id> '#RRGGBB' [--if-version <version>] [--project <project-id>] [--json]
 daynight tag delete <tag-id> [--if-version <version>] [--confirm] [--project <project-id>] [--json]
 daynight team list [--json]
 daynight team show [--team <uuid|personal>] [--json]
@@ -639,11 +640,22 @@ query result are distinct in text output. An empty result starting from a cursor
 only describes the remaining pages. A failed page produces an error without
 publishing a partial list.
 
-`show`, `create` and `rename` return the complete Tag, including its version and
-visible Task and Goal usage. Rename uses the supplied `--if-version` exactly; if
-omitted, the CLI reads the current version before submitting. Versions are
-positive decimal int64 values and retain every digit. Name validation and project
-access are enforced by the service.
+`show`, `create`, `rename` and `set-color` return the Tag's existing fields,
+including its version and visible Task and Goal usage. Text and JSON output do
+not include color. Create accepts an optional `--color '#RRGGBB'`; omission uses
+the service default `#9AA3B2`. `set-color <tag-id> '#RRGGBB'` changes only color,
+preserving the name, identity and associations. The service accepts any six-digit
+RGB hex color, normalizes it to uppercase, and rejects invalid colors. Quote
+colors so shells preserve the leading `#`. Name validation and project access
+are also enforced by the service.
+
+Rename and set-color use the supplied `--if-version` exactly; if omitted, the CLI
+reads the current version before submitting. Versions are positive decimal int64
+values and retain every digit. A successful write receipt confirms the requested
+normalized color even though it does not echo color. A later read describes the
+current state and cannot replace that receipt. Conflicts and unknown writes are
+not automatically retried; local rendering or cleanup errors retain a confirmed
+write's outcome.
 
 `delete` reads the Tag's name, version and visible usage before confirmation.
 Interactive deletion requires the displayed JSON string literal of the name,
