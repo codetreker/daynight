@@ -18,7 +18,7 @@ const time = '2026-10-22T10:00:00Z';
 const taskRow = (link: Locator) => link.locator('..').locator('..').locator('..');
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
+  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -48,8 +48,9 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
       return send({ items: state.tags.filter(tag => body.tagIds.includes(tag.id)) });
     }
     if (path === catalogPath && request.method() === 'POST') {
-      const body = request.postDataJSON() as { name: string };
+      const body = request.postDataJSON() as { name: string; color?: string }; state.tagCreates.push(body);
       const tag = { id: id(96), name: body.name }; state.tags.push(tag);
+      state.colors.set(tag.id, body.color ?? '#9AA3B2');
       return send({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }, 201);
     }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
@@ -546,12 +547,25 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await search.fill('');
   const tagName = picker.getByRole('textbox', { name: zh ? '名称' : 'Name', exact: true });
   await tagName.fill('Created independently');
+  const hex = picker.getByRole('textbox', { name: zh ? '十六进制颜色' : 'Hex color' });
+  await expect(hex).toHaveValue('#9AA3B2');
+  if (kind === 'task') {
+    const blue = picker.getByRole('button', { name: zh ? '蓝色 #4C88C7' : 'Blue #4C88C7' });
+    await blue.focus(); await page.keyboard.press('Space');
+    await expect(blue).toHaveAttribute('aria-pressed', 'true');
+    await expect(hex).toHaveValue('#4C88C7');
+  } else {
+    await hex.fill('#12a4cd');
+    await expect(picker.locator('.tag-color-preview .task-tag-dot')).toHaveCSS('background-color', 'rgb(18, 164, 205)');
+  }
   await tagName.press('Enter');
   await expect(tagName).toBeFocused(); await expect(form).toHaveAttribute('data-submits', '0');
   expect(state.writes.filter(write => write === `POST /api/v1/projects/${projectId}/tasks` || write === `POST /api/v1/projects/${projectId}/tags`)).toEqual([]);
   const createTag = picker.getByRole('button', { name: zh ? '新建标签' : 'New tag' });
   await createTag.focus(); await page.keyboard.press('Enter');
   await expect(picker.locator('.tag-picker-selected')).toContainText('Created independently');
+  await expect(hex).toHaveValue('#9AA3B2');
+  expect(state.tagCreates).toEqual([{ name: 'Created independently', color: kind === 'task' ? '#4C88C7' : '#12A4CD' }]);
   await dialog.getByRole('button', { name: zh ? '取消' : 'Cancel', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(state.tags.some(tag => tag.name === 'Created independently')).toBe(true);

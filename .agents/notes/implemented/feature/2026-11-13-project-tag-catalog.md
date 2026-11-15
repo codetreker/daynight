@@ -33,6 +33,14 @@ matching the service's distinction between an absent query and an invalid empty
 parameter; nonempty searches retain their original value. Delete reads the current tag before confirmation;
 conflict and unknown outcomes keep the draft for explicit observation. A write
 interrupted after dispatch remains unknown when the user returns to the section.
+The Web creates and edits colors with presets or an RGB input. Editing pairs a
+fresh Tag read with a color resolve at the same exact version before binding a
+draft or showing current state after a conflict. A bounded retry and an explicit
+retry on mismatch avoid pairing an older color with a newer version. Name and
+color share one conditional update; a confirmed write invalidates the shared
+color projection. Direct creation in Task and Goal pickers adds the Tag to the
+catalog immediately, and later cancellation does not undo it. New drafts use
+gray while edits made during an in-flight create remain intact.
 
 ## Alternatives
 
@@ -48,6 +56,11 @@ make the same name identify a different Tag, so writes use stable UUIDs instead.
 **Persist or accumulate the whole Web catalog.** Catalogs can be large and
 access can change independently of Task cache lifetime. A bounded page and batch
 ID resolution preserve selection without storing private names indefinitely.
+
+**Use the cached color with the catalog version.** The projection deliberately
+retains its last successful color during background reads, so its value may
+belong to an older Tag version. Matching fresh reads prevents overwriting a
+concurrent color change with that stale value.
 
 ## Consequences
 

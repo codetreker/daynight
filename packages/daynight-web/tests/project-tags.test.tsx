@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import { getProjectAccess } from '../src/api/auth';
-import { createProjectTag, deleteProjectTag, getProjectTag, listProjectTags, renameProjectTag, type ProjectTag } from '../src/api/task-tags';
+import { createProjectTag, deleteProjectTag, getProjectTag, listProjectTags, resolveProjectTagColors, updateProjectTag, type ProjectTag, type ProjectTagColorPage } from '../src/api/task-tags';
 import { ProjectAccessBoundary } from '../src/features/projects/ProjectAccess';
 import { ProjectTags } from '../src/features/task-tags/ProjectTags';
 import { createTaskCacheScope } from '../src/features/task-cache/TaskCacheProvider';
@@ -11,7 +11,7 @@ import { TestTaskCacheBoundary } from './helpers/taskCache';
 import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 
 vi.mock('../src/api/auth', async original => ({ ...await original<typeof import('../src/api/auth')>(), getProjectAccess: vi.fn() }));
-vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), resolveProjectTagColors: vi.fn(async (_project: string, ids: string[]) => ({ catalogEpoch: '00000000-0000-4000-8000-000000000051', items: ids.map(id => ({ id, state: 'found', version: 1n, color: '#AABBCC' })) })), listProjectTags: vi.fn(), getProjectTag: vi.fn(), createProjectTag: vi.fn(), renameProjectTag: vi.fn(), deleteProjectTag: vi.fn() }));
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), resolveProjectTagColors: vi.fn(), listProjectTags: vi.fn(), getProjectTag: vi.fn(), createProjectTag: vi.fn(), updateProjectTag: vi.fn(), deleteProjectTag: vi.fn() }));
 const projectId = '00000000-0000-4000-8000-000000000031';
 const tag: ProjectTag = { id: '00000000-0000-4000-8000-000000000041', projectId, name: 'backend', version: 3n, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', usage: { tasks: 2, goals: 1 } };
 const page = { items: [tag], catalogEpoch: '00000000-0000-4000-8000-000000000051', nextCursor: null };
@@ -25,7 +25,8 @@ beforeEach(() => {
   vi.mocked(getProjectAccess).mockReset().mockImplementation(async () => directAccessFixture(projectId));
   vi.mocked(listProjectTags).mockReset().mockResolvedValue(page);
   vi.mocked(getProjectTag).mockReset().mockResolvedValue(tag);
-  vi.mocked(createProjectTag).mockReset(); vi.mocked(renameProjectTag).mockReset(); vi.mocked(deleteProjectTag).mockReset();
+  vi.mocked(resolveProjectTagColors).mockReset().mockImplementation(async (_project, ids) => ({ catalogEpoch: page.catalogEpoch, items: ids.map(id => ({ id, state: 'found', version: tag.version, color: '#AABBCC' })) }));
+  vi.mocked(createProjectTag).mockReset(); vi.mocked(updateProjectTag).mockReset(); vi.mocked(deleteProjectTag).mockReset();
 });
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); });
 
@@ -47,21 +48,108 @@ it('previews the current resource and cancels without a write, then sends its or
 
 it('keeps rename draft through a conflict and requires explicit use of the observed version', async () => {
   const fresh = { ...tag, name: 'current', version: 4n };
-  vi.mocked(renameProjectTag).mockRejectedValueOnce(new ApiError('server', 409, 'version_conflict', null, undefined, undefined, undefined, 'not_committed')).mockResolvedValue({ ...fresh, name: 'draft', version: 5n });
-  vi.mocked(getProjectTag).mockResolvedValue(fresh);
+  vi.mocked(updateProjectTag).mockRejectedValueOnce(new ApiError('server', 409, 'version_conflict', null, undefined, undefined, undefined, 'not_committed')).mockResolvedValue({ ...fresh, name: 'draft', version: 5n });
   setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
-  fireEvent.click(await screen.findByRole('button', { name: 'Rename: backend' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit: backend' }));
   const dialog = screen.getByRole('dialog');
+  await waitFor(() => expect(within(dialog).getByLabelText('Name')).toBeEnabled());
+  vi.mocked(getProjectTag).mockResolvedValue(fresh);
+  vi.mocked(resolveProjectTagColors).mockImplementation(async (_project, ids) => ({ catalogEpoch: page.catalogEpoch, items: ids.map(id => ({ id, state: 'found', version: fresh.version, color: '#112233' })) }));
   fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'draft' } });
   fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
   await within(dialog).findByText(/This tag changed/);
   await within(dialog).findByText('current');
   expect(within(dialog).getByLabelText('Name')).toHaveValue('draft');
-  expect(renameProjectTag).toHaveBeenCalledTimes(1);
+  expect(updateProjectTag).toHaveBeenCalledTimes(1);
   fireEvent.click(within(dialog).getByRole('button', { name: 'Use current version' }));
   fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(renameProjectTag).toHaveBeenCalledTimes(2));
-  expect(vi.mocked(renameProjectTag).mock.calls[1]![3]).toBe(4n);
+  await waitFor(() => expect(updateProjectTag).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(updateProjectTag).mock.calls[1]![3]).toBe(4n);
+});
+
+it.each(['tag-first', 'color-first'] as const)('pairs a fresh version and color after mismatched reads arriving %s', async order => {
+  setup(); await screen.findByText('backend'); await waitFor(() => expect(resolveProjectTagColors).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Edit: backend' })).toBeEnabled());
+  const firstTag = Promise.withResolvers<ProjectTag>();
+  const firstColor = Promise.withResolvers<ProjectTagColorPage>();
+  const fresh = { ...tag, name: 'current', version: 4n };
+  const colorPage = (version: bigint, color: string): ProjectTagColorPage => ({ catalogEpoch: page.catalogEpoch, items: [{ id: tag.id, state: 'found', version, color }] });
+  vi.mocked(getProjectTag).mockReset().mockReturnValueOnce(firstTag.promise).mockResolvedValue(fresh);
+  vi.mocked(resolveProjectTagColors).mockReset().mockReturnValueOnce(firstColor.promise).mockResolvedValue(colorPage(4n, '#112233'));
+  vi.mocked(updateProjectTag).mockResolvedValue({ ...fresh, name: 'draft', version: 5n });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit: backend' }));
+  const dialog = screen.getByRole('dialog');
+  await waitFor(() => expect(getProjectTag).toHaveBeenCalledOnce());
+  if (order === 'tag-first') {
+    await act(async () => firstTag.resolve(tag));
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+    await act(async () => firstColor.resolve(colorPage(4n, '#112233')));
+  } else {
+    await act(async () => firstColor.resolve(colorPage(3n, '#AABBCC')));
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+    await act(async () => firstTag.resolve(fresh));
+  }
+  await waitFor(() => expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#112233'));
+  expect(within(dialog).getByLabelText('Name')).toHaveValue('current');
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'draft' } });
+  fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#a1b2c3' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(updateProjectTag).toHaveBeenCalledOnce());
+  expect(vi.mocked(updateProjectTag).mock.calls[0]!.slice(0, 4)).toEqual([projectId, tag.id, { name: 'draft', color: '#A1B2C3' }, 4n]);
+});
+
+it('blocks saving after repeated mismatched versions and retries the paired read', async () => {
+  setup(); await screen.findByText('backend'); await waitFor(() => expect(resolveProjectTagColors).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Edit: backend' })).toBeEnabled());
+  vi.mocked(resolveProjectTagColors).mockImplementation(async (_project, ids) => ({ catalogEpoch: page.catalogEpoch, items: ids.map(id => ({ id, state: 'found', version: 4n, color: '#112233' })) }));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit: backend' }));
+  const dialog = screen.getByRole('dialog');
+  await within(dialog).findByRole('button', { name: 'Retry' });
+  expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+  expect(updateProjectTag).not.toHaveBeenCalled();
+  vi.mocked(getProjectTag).mockResolvedValue({ ...tag, version: 4n });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#112233'));
+});
+
+it('rejects invalid colors and resets the default for the next creation', async () => {
+  vi.mocked(createProjectTag).mockResolvedValue(tag);
+  setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'New tag' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
+  let dialog = screen.getByRole('dialog');
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'draft' } });
+  fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: 'bad' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  expect(createProjectTag).not.toHaveBeenCalled();
+  expect(within(dialog).getByRole('alert')).toHaveTextContent('#RRGGBB');
+  fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#abcdef' } });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(createProjectTag).toHaveBeenCalledOnce());
+  expect(vi.mocked(createProjectTag).mock.calls[0]![4]).toBe('#ABCDEF');
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  fireEvent.click(screen.getByRole('button', { name: 'New tag' }));
+  dialog = screen.getByRole('dialog');
+  expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#9AA3B2');
+});
+
+it('checks current name and color after an unknown edit without resending the draft', async () => {
+  const fresh = { ...tag, name: 'current', version: 4n };
+  vi.mocked(updateProjectTag).mockImplementation(async (_project, _id, _patch, _version, _signal, admission) => { admission.onDispatch?.(); throw new ApiError('network'); });
+  setup(); await screen.findByText('backend'); await waitFor(() => expect(screen.getByRole('button', { name: 'Edit: backend' })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: 'Edit: backend' }));
+  const dialog = screen.getByRole('dialog');
+  await waitFor(() => expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#AABBCC'));
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'draft' } });
+  fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#ABCDEF' } });
+  vi.mocked(getProjectTag).mockResolvedValue(fresh);
+  vi.mocked(resolveProjectTagColors).mockImplementation(async (_project, ids) => ({ catalogEpoch: page.catalogEpoch, items: ids.map(id => ({ id, state: 'found', version: 4n, color: '#112233' })) }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await within(dialog).findByText(/outcome is unknown/);
+  await within(dialog).findByText('#112233', { exact: false });
+  expect(within(dialog).getByLabelText('Name')).toHaveValue('draft');
+  expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#ABCDEF');
+  expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+  expect(updateProjectTag).toHaveBeenCalledOnce();
 });
 
 it('retains an unknown creation until a successful check and never resends it', async () => {
