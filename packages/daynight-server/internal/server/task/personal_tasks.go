@@ -51,7 +51,7 @@ func personalTaskResponse(page service.PersonalTaskPage) protocol.PersonalTaskPa
 		}
 		out.Items = append(out.Items, protocol.PersonalTaskItem{
 			Project: protocol.PersonalTaskProject{ID: item.Project.ID, Name: item.Project.Name, OwnerTeam: protocol.PersonalTaskTeam{ID: item.Project.OwnerTeamID, Kind: item.Project.OwnerTeamKind, Name: item.Project.OwnerTeamName}, ExecutionWarningMinutes: int64(item.Project.ExecutionWarningMinutes), MatchedTaskCount: item.MatchedTaskCount},
-			Task:    protocol.PersonalTask{ID: item.Task.ID, Version: strconv.FormatInt(item.Task.Version, 10), Title: item.Task.Title, Status: "in_progress", CreatedAt: item.Task.CreatedAt, StartedAt: item.Task.StartedAt, RequiredPlatform: platform, Tags: tags, BlockedBy: append([]string{}, item.Task.BlockedBy...), Ready: item.Task.Ready, AllowAgents: item.Task.AllowAgents, Paused: item.Paused, Goal: goal, Worker: worker}, Session: item.Session,
+			Task:    protocol.PersonalTask{ID: item.Task.ID, Version: strconv.FormatInt(item.Task.Version, 10), Title: item.Task.Title, Status: "in_progress", CreatedAt: item.Task.CreatedAt, StartedAt: item.Task.StartedAt, RequiredPlatform: platform, Tags: tags, BlockedBy: append([]string{}, item.Task.BlockedBy...), Ready: item.Task.Ready, AllowAgents: item.Task.AllowAgents, Paused: item.Paused, Goal: goal, Worker: worker}, Session: item.Session, SessionRow: protocol.SessionRowResponse(item.SessionRow),
 		})
 	}
 	return out

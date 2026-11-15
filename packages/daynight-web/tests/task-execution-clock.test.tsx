@@ -33,8 +33,7 @@ const environment = () => {
   const release = vi.fn(() => { visibility = null; });
   const api: ClockEnvironment = {
     now: () => now, visible: () => visible,
-    schedule: vi.fn((tick) => { const id = ++sequence; ticks.set(id, tick); return id as unknown as ReturnType<typeof setInterval>; }),
-    cancel: vi.fn((timer) => { ticks.delete(timer as unknown as number); }),
+    schedule: vi.fn((tick) => { const id = ++sequence; ticks.set(id, tick); return () => { ticks.delete(id); }; }),
     listen: vi.fn((listener) => { visibility = listener; return release; }),
   };
   return {
@@ -46,6 +45,30 @@ const environment = () => {
 };
 
 describe("execution intervals", () => {
+  it('shares one browser ticker across independently anchored clocks and releases it after the last clock', () => {
+    vi.useFakeTimers();
+    let now = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const first = createTaskExecutionClock(input());
+    const second = createTaskExecutionClock({ ...input(), observedAt: '2026-10-23T01:00:00Z' });
+    const unmountFirst = first.mount(), unmountSecond = second.mount();
+    const releaseFirst = first.subscribeRunning(() => {}), releaseSecond = second.subscribeRunning(() => {});
+    try {
+      expect(vi.getTimerCount()).toBe(1);
+      now += 1_000;
+      vi.advanceTimersByTime(1_000);
+      expect(first.getSnapshot()?.serverMilliseconds).toBe(epoch + 1_000);
+      expect(second.getSnapshot()?.serverMilliseconds).toBe(epoch + 3_601_000);
+      releaseFirst(); unmountFirst();
+      expect(vi.getTimerCount()).toBe(1);
+      releaseSecond(); unmountSecond();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      releaseFirst(); releaseSecond(); unmountFirst(); unmountSecond();
+      vi.useRealTimers(); vi.restoreAllMocks();
+    }
+  });
+
   it("uses a direct observation anchor and updates its warning threshold without remounting", () => {
     vi.useFakeTimers();
     let monotonic = 100;

@@ -29,7 +29,10 @@ The body receipt's monotonic time advances both server response clocks in their
 own domains. The database clock determines the Task's 120-second warning grace;
 the Engine clock determines each observation's expiry from its freshness and
 observation times. Warning suppression does not revoke a separately confirmed
-entry, while expiry and loss of admission do. The [Session status design](../../../../docs/design/task-session-status.md)
+entry, while expiry and loss of admission do. The
+[personal integration](2026-11-15-personal-shared-task-row.md) uses the same pure
+display normalization with its own validated source and per-item response clocks.
+The [Session status design](../../../../docs/design/task-session-status.md)
 owns the detailed display and lifecycle rules. The [complete observation decision](2026-11-15-task-sync-complete-observations.md)
 owns the server protocol; the [list admission decision](2026-11-08-task-sync-session-list.md)
 retains the separate sparse summary's original rationale.

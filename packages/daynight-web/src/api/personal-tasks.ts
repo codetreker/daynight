@@ -4,7 +4,8 @@ import { array, boolean, id, malformed, nonemptyString, record, string, timestam
 import { count, ids, nullableTimestamp, requiredPlatform } from './validation';
 import { parseTaskTags } from './task-tags';
 import { parseApiJson } from './json';
-import type { ExecutionPlatform, TaskTag } from './types';
+import type { ExecutionPlatform, TaskSyncObservation, TaskTag } from './types';
+import { parseTaskSyncObservation } from './task-sync';
 
 export type PersonalTaskProject = {
   readonly id: string; readonly name: string;
@@ -15,6 +16,7 @@ export type PersonalTaskItem = {
   readonly project: PersonalTaskProject;
   readonly task: { readonly id: string; readonly version: string; readonly title: string; readonly status: 'in_progress'; readonly startedAt: string | null; readonly createdAt: string; readonly requiredPlatform: ExecutionPlatform | null; readonly tags: readonly TaskTag[]; readonly blockedBy: readonly string[]; readonly ready: boolean; readonly allowAgents: boolean; readonly paused: boolean; readonly goal: { readonly id: string; readonly title: string } | null; readonly worker: { readonly workerId: string; readonly state: 'active' | 'completed'; readonly machine: { readonly id: string; readonly name: string } } | null };
   readonly session: TaskSessionObservation;
+  readonly sessionRow: TaskSyncObservation;
   readonly observedAt: string; readonly responseTaskAt: string; readonly responseSessionAt: string; readonly receivedMonotonic: number;
 };
 export type PersonalTaskPage = {
@@ -36,7 +38,7 @@ export const parsePersonalTaskPage = (value: unknown): PersonalTaskPage => {
   const inventoryRevision = string(data.inventoryRevision);
   if (!/^[0-9a-f]{64}$/.test(inventoryRevision)) return malformed();
   const items = array(data.items, value => {
-    const item = fields(value, ['project', 'task', 'session']);
+    const item = fields(value, ['project', 'task', 'session', 'sessionRow']);
     const project = fields(item.project, ['id', 'name', 'ownerTeam', 'executionWarningMinutes', 'matchedTaskCount']);
     const team = fields(project.ownerTeam, ['id', 'kind', 'name']);
     if (team.kind !== 'personal' && team.kind !== 'ordinary') return malformed();
@@ -57,11 +59,21 @@ export const parsePersonalTaskPage = (value: unknown): PersonalTaskPage => {
     const machine = worker === null ? null : fields(worker.machine, ['id', 'name']);
     const machineName = machine === null ? null : string(machine.name);
     if (machineName !== null && (machineName.length === 0 || !machineName.isWellFormed())) return malformed();
+    const session = parseTaskSessionObservation(item.session);
+    const sessionRow = parseTaskSyncObservation(item.sessionRow);
+    const active = worker?.state === 'active';
+    if (sessionRow.taskVersion !== BigInt(version) || sessionRow.canOpen && !active || sessionRow.state === 'no_session' && active ||
+      sessionRow.state !== 'no_session' && sessionRow.state !== 'unavailable' && !active) return malformed();
+    if (sessionRow.canOpen && (session.observation !== 'observed' || session.error !== null || session.registration !== 'registered' ||
+      session.sessionId === null || session.claimId === null || session.executionGeneration === null || session.connectionEpoch === null ||
+      session.observedAt !== sessionRow.observedAt || session.freshUntil !== sessionRow.freshUntil ||
+      !(session.agentControlMode === 'web' && session.contentKind === 'native_timeline' || session.agentControlMode === 'herdr' && session.contentKind === 'terminal_recording'))) return malformed();
     return { project: { id: id(project.id), name: title(project.name), ownerTeam: { id: id(team.id), kind, name }, executionWarningMinutes: warning, matchedTaskCount },
       task: { id: id(task.id), version, title: title(task.title), status: 'in_progress' as const, startedAt: nullableTimestamp(task.startedAt), createdAt: timestamp(task.createdAt), requiredPlatform: requiredPlatform(task.requiredPlatform), tags, blockedBy, ready: false, allowAgents: boolean(task.allowAgents), paused: boolean(task.paused), goal: goal === null ? null : { id: id(goal.id), title: title(goal.title) }, worker: worker === null || machine === null ? null : { workerId: id(worker.workerId), state: worker.state as 'active' | 'completed', machine: { id: id(machine.id), name: machineName! } } },
-      session: parseTaskSessionObservation(item.session) };
+      session, sessionRow };
   });
   if (items.length > 100 || new Set(items.map(item => item.task.id)).size !== items.length) return malformed();
+  if (!boolean(data.sessionPartial) && items.some(item => item.sessionRow.state === 'unavailable')) return malformed();
   const nextCursor = data.nextCursor === null ? null : nonemptyString(data.nextCursor);
   if (nextCursor !== null && (new TextEncoder().encode(nextCursor).length > 16_384 || /[\u0000-\u001f\u007f]/u.test(nextCursor))) return malformed();
   return { observedAt: timestamp(data.observedAt), responseTaskAt: timestamp(data.responseTaskAt), responseSessionAt: timestamp(data.responseSessionAt), inventoryRevision, totalTaskCount: count(data.totalTaskCount), totalProjectCount: count(data.totalProjectCount), sessionPartial: boolean(data.sessionPartial), items, nextCursor };

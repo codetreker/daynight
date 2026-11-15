@@ -10,16 +10,22 @@ to investigate before initialization has had a reasonable opportunity to finish.
 
 ## Decision
 
-The personal in-progress list suppresses its complete Session warning for the
-first two minutes of the current Task execution interval. The server's
+Ordinary Task rows suppress the Session check warning and attention suffix for
+the first two minutes of the current Task execution interval. The server's
 `task.startedAt` defines that interval, so a process restart within it does not
-restart the grace period. The [Web specification](../../../../docs/spec/daynight-web.md#我的进行中任务)
+restart the grace period. A separately confirmed, unexpired Session reading
+entry remains available during the warning window. The [Web specification](../../../../docs/spec/daynight-web.md#我的进行中任务)
 owns the visible states and boundary; the [Web design](../../../../docs/design/daynight-web.md#我的进行中任务)
 owns the clock and presentation mechanism.
 
 The rule applies after the final display state is resolved, including the
 disconnected and archived fallback. Existing expiry and unavailable precedence
-remains intact, and no server observation or other view is changed.
+remains intact, and no server observation is changed. The original decision
+covered the personal list's private presentation; the
+[shared-row integration](../architecture/2026-11-15-personal-shared-task-row.md)
+extends the same display rule to project and personal ordinary Task rows while
+retaining independent Session readability. Chain and Goal aggregation keep their
+own rules.
 
 ## Alternatives
 

@@ -1,5 +1,6 @@
 import type { GraphTask } from "../../api/types";
 import { timestampNanoseconds } from "../../time/timestamp";
+import { subscribeBrowserClock } from './browser-ticks';
 
 export type ExecutionTask = Pick<GraphTask, "status" | "allowAgents" | "startedAt" | "completedAt" | "cancelledAt">;
 export type TaskExecution = {
@@ -39,19 +40,16 @@ export const taskExecution = (task: ExecutionTask, snapshot: ClockSnapshot): Tas
   };
 };
 
-type Timer = ReturnType<typeof setInterval>;
 export type ClockEnvironment = {
   readonly now: () => number;
   readonly visible: () => boolean;
-  readonly schedule: (tick: () => void) => Timer;
-  readonly cancel: (timer: Timer) => void;
+  readonly schedule: (tick: () => void) => () => void;
   readonly listen: (listener: () => void) => () => void;
 };
 const browserEnvironment: ClockEnvironment = {
   now: () => performance.now(),
   visible: () => document.visibilityState === "visible",
-  schedule: (tick) => setInterval(tick, 1_000),
-  cancel: (timer) => clearInterval(timer),
+  schedule: subscribeBrowserClock,
   listen: (listener) => {
     document.addEventListener("visibilitychange", listener);
     return () => document.removeEventListener("visibilitychange", listener);
@@ -69,7 +67,7 @@ export const createTaskExecutionClock = (initial: ClockInput | null, environment
   const completionListeners = new Set<() => void>();
   const settingsListeners = new Set<() => void>();
   let mounted = false;
-  let timer: Timer | null = null;
+  let releaseTimer: (() => void) | null = null;
   let releaseVisibility: (() => void) | null = null;
 
   // Publish all samples before notifying any consumer, so a receipt is atomic.
@@ -95,9 +93,9 @@ export const createTaskExecutionClock = (initial: ClockInput | null, environment
     if (active && releaseVisibility === null) releaseVisibility = environment.listen(onVisibility);
     if (!active && releaseVisibility !== null) { releaseVisibility(); releaseVisibility = null; }
     if (!active || !environment.visible()) {
-      if (timer !== null) environment.cancel(timer);
-      timer = null;
-    } else if (timer === null) timer = environment.schedule(publish);
+      releaseTimer?.();
+      releaseTimer = null;
+    } else if (releaseTimer === null) releaseTimer = environment.schedule(publish);
   };
   const subscribeRunning = (listener: () => void) => {
     runningListeners.add(listener);

@@ -1,6 +1,6 @@
-# 项目列表的 Session 状态
+# 普通 Task 列表与项目汇总的 Session 状态
 
-项目独立 Task 行、任务链展开成员和 Goal 展开成员显示各自当前 Session 观测。任务链头和 Goal 标题另显示成员的四态汇总，辅助定位需要响应或检查的会话。任务状态、暂停标记、标题入口及依赖关系保持各自语义；Session 状态不修改任务，不创建或启动 Session。依赖图卡片和助手会话不使用此列表观测。
+项目独立 Task 行、任务链展开成员、Goal 展开成员和个人进行中列表的共享普通 Task 行显示各自当前 Session 观测。任务链头和 Goal 标题另显示成员的四态汇总，辅助定位需要响应或检查的会话。任务状态、暂停标记、标题入口及依赖关系保持各自语义；Session 状态不修改任务，不创建或启动 Session。依赖图卡片和助手会话不使用此列表观测。
 
 ## 状态与入口
 
@@ -14,7 +14,9 @@
 
 进行中 Task 分别显示 `no_session`（无当前执行）、`not_registered`、`pending`、`working`、`notice`、`warning`、`unavailable`、`unobserved` 或 `expired`。缺项或尚未准入显示未观测；单项观测不可用及整体读取失败显示不可用，非 `unavailable` 的成功观测失效显示过期。三者均不是已确认无当前执行；completed Worker 及旧 Session 是历史记录，不提供当前入口。`needsAttention` 仅在真实、有效的事实支持时展示。可读性与活动状态独立：有效且 `canOpen` 的 pending、暂缓 warning 或活动未知的 Session 仍提供入口；过期、观测失败或身份失效不能沿用旧入口。可用入口与行主体是独立控件，只导航该 Task 的 Session，不改变链或 Goal 展开状态。
 
-仅 warning 在真实启动后不足 120 秒时暂缓完整检查提示及关注后缀；启动时间未知时立即展示，满 120 秒后只显示仍有效的观测。重新挂载、刷新和元数据编辑不重置起点。
+项目与个人列表各自的适配器提供同一显示归一化规则所需的观测事实。个人必填 `sessionRow` 与完整 Session 由同一次 Engine 采样生成，复用项目投影规则及服务端 Task 版本、执行来源和采样后 recheck；浏览器严格解析其精确版本和组合，不从完整 Session 缺少的归档／阅读事实或没有 claimId 的轻量 Worker 摘要猜测绑定；completed Worker 和无 active claim 均不能沿用历史 Session 入口。已确认注册、绑定和有效期但活动未知时可保持独立阅读入口，观测失败或绑定未知时不可打开。
+
+仅 warning 在真实启动后不足 120 秒时暂缓完整检查提示及关注后缀，独立且有效的 Session 入口保持可用；启动时间未知时立即展示，满 120 秒后只显示仍有效的观测。重新挂载、刷新和元数据编辑不重置起点。
 
 ### 链与 Goal 汇总
 
@@ -54,7 +56,7 @@
 
 四态汇总观察在 `performance.now() - receivedMonotonic <= 30_000` 时有效，超过 30 秒撤销角标及该贡献入口。发布前检查期限；body 后解码、历史及 IDB 等待超过期限的响应不能短暂显示或续期。store 安排最早到期点的本地 timer，并在恢复展示或文档可见时立即复核，不依赖后台 timer 准时执行。渲染、缓存通知及其它标签页更新均不能续期。
 
-完整行观测分别以 `responseTaskAt` 和 `responseSessionAt` 加 body receipt 后的单调增量推进数据库与 Engine 时钟；解码、历史和缓存等待均计入增量。Task `startedAt` 只与数据库时钟比较，Session 期限只与 Engine 时钟比较，取 `freshUntil` 与 `observedAt + 30s` 的较早值；成功观测的 null freshness 立即过期，观测失败的 unavailable 优先于过期。响应时钟到 body 接收的处理与网络延迟仍有误差。共享计时安排最近变化，不使用逐行定时器。
+完整行观测分别以 `responseTaskAt` 和 `responseSessionAt` 加 body receipt 后的单调增量推进数据库与 Engine 时钟；解码、历史和缓存等待均计入增量。Task `startedAt` 只与数据库时钟比较，Session 期限只与 Engine 时钟比较，取 `freshUntil` 与 `observedAt + 30s` 的较早值；成功观测的 null freshness 立即过期，观测失败的 unavailable 优先于过期。响应时钟到 body 接收的处理与网络延迟仍有误差。项目 store 共享计时安排最近变化；个人列表保留每条响应各自的双时钟和 body receipt，复用执行时钟订阅触发重新判定，后续分页不借用首条时钟。两者不使用逐行定时器。个人读取、账号与项目隔离和失败保留继续由[个人列表设计](daynight-web.md#我的进行中任务)拥有。
 
 正常可见页面的 15 秒同步等待保留尚有效的贡献。当前读取失败撤销旧贡献并在当前授权 Task 行显示不可用，成功同步重新建立观测；auth pause、scope/项目准入失效、账户切换、任务完成或执行绑定变化撤销相应贡献；过期或已被取代的请求不能撤销较新观察。身份恢复继续沿用现有项目同步，没有本地 auth 轮询或 Session retry scheduler。
 
@@ -72,4 +74,4 @@
 
 API 所属测试覆盖必填四态 map、规范 UUID 与容量、非法输入、body→receipt→解码顺序，以及原非成功响应和关系 decoder。缓存与 store 所属测试覆盖同事务请求基线、snapshot/delta overlay、最终 scope fence、旧值与旧缺席、多标签页执行变化、30 秒精确边界、延迟发布、失败/auth pause 和恢复，并证明 Session-only 更新不写 Task 缓存或触发正文与普通通知。
 
-生产组件测试覆盖独立行、链和 Goal 成员的完整状态与独立入口，双时钟、119999／120000ms 宽限、过期及绑定变化；汇总测试覆盖根任务、折叠与筛选隐藏的普通成员、外部前置排除和全部优先级，以及标题、子任务状态与链状态导航动作。少量顺序浏览器流程验证列表/Overview 无 current、现有 task-sync 更新状态、实际 Session 导航、角标几何和内容/草稿稳定；完整客户端与缓存故障矩阵保留在各自模块。性能对照记录同条件请求数、字节及服务端读取工作，不能从理论调度降幅推断生产 CPU 或带宽降幅。决策及替代方案由[列表状态接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存。
+生产组件测试覆盖独立行、链、Goal 成员及个人行的等价完整状态与独立入口，双时钟、119999／120000ms 宽限、过期及绑定变化；汇总测试覆盖根任务、折叠与筛选隐藏的普通成员、外部前置排除和全部优先级，以及标题、子任务状态与链状态导航动作。少量顺序浏览器流程验证列表/Overview 无 current、现有 task-sync 更新状态、实际 Session 导航、角标几何和内容/草稿稳定；完整客户端与缓存故障矩阵保留在各自模块。性能对照记录同条件请求数、字节及服务端读取工作，不能从理论调度降幅推断生产 CPU 或带宽降幅。决策及替代方案由[列表状态接纳决策](../../.agents/notes/implemented/architecture/2026-11-08-task-sync-session-list.md)保存。

@@ -58,7 +58,7 @@ func TestPersonalTaskRoute(t *testing.T) {
 			worker = nil
 		}
 		platform := model.TaskPlatform("linux")
-		return service.PersonalTaskPage{ObservedAt: observed, ResponseTaskAt: testTime, ResponseSessionAt: testTime.Add(time.Hour), InventoryRevision: strings.Repeat("a", 64), TotalTaskCount: 1, TotalProjectCount: 1, SessionPartial: true, Items: []service.PersonalTaskItem{{Project: store.PersonalTaskProject{ID: testProjectID, Name: "Project", OwnerTeamID: testUserID, OwnerTeamKind: "personal", ExecutionWarningMinutes: 120}, Task: store.PersonalTaskRow{ID: testTaskID, Version: 9007199254740993, Title: "Task", CreatedAt: testTime, RequiredPlatform: &platform, Tags: []model.TagReference{{ID: testProjectID, Name: "Tag"}}, BlockedBy: []string{testUserID}, GoalID: &goalID, GoalTitle: &goalTitle}, MatchedTaskCount: 1, Paused: true, Worker: worker, Session: sp.TaskSessionObservation{SchemaVersion: 1, Observation: "unavailable"}}}}, nil
+		return service.PersonalTaskPage{ObservedAt: observed, ResponseTaskAt: testTime, ResponseSessionAt: testTime.Add(time.Hour), InventoryRevision: strings.Repeat("a", 64), TotalTaskCount: 1, TotalProjectCount: 1, SessionPartial: true, Items: []service.PersonalTaskItem{{Project: store.PersonalTaskProject{ID: testProjectID, Name: "Project", OwnerTeamID: testUserID, OwnerTeamKind: "personal", ExecutionWarningMinutes: 120}, Task: store.PersonalTaskRow{ID: testTaskID, Version: 9007199254740993, Title: "Task", CreatedAt: testTime, RequiredPlatform: &platform, Tags: []model.TagReference{{ID: testProjectID, Name: "Tag"}}, BlockedBy: []string{testUserID}, GoalID: &goalID, GoalTitle: &goalTitle}, MatchedTaskCount: 1, Paused: true, Worker: worker, Session: sp.TaskSessionObservation{SchemaVersion: 1, Observation: "unavailable"}, SessionRow: model.TaskSyncObservation{TaskVersion: 9007199254740993, State: "unavailable"}}}}, nil
 	}, auth, logger)
 	request := func(target, token string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, target, nil)
@@ -77,6 +77,9 @@ func TestPersonalTaskRoute(t *testing.T) {
 	}
 	if w.Header().Get("Daynight-User-ID") != testUserID || w.Header().Get("Cache-Control") != "no-store" || !page.SessionPartial || len(page.Items) != 1 || page.Items[0].Task.Version != "9007199254740993" || page.Items[0].Task.Goal.ID != goalID || !page.Items[0].Task.Paused || page.Items[0].Project.MatchedTaskCount != 1 {
 		t.Fatalf("unexpected response: %+v headers %v", page, w.Header())
+	}
+	if page.Items[0].SessionRow.TaskVersion != "9007199254740993" || page.Items[0].SessionRow.State != "unavailable" || page.Items[0].SessionRow.CanOpen {
+		t.Fatalf("session row: %#v", page.Items[0].SessionRow)
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {

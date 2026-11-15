@@ -8,6 +8,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -76,6 +77,7 @@ type personalObserver struct {
 	failure  error
 	clock    func() (time.Time, error)
 	seen     []store.TaskSessionSource
+	row      func(model.TaskSyncObservation) model.TaskSyncObservation
 }
 
 type personalClockSnapshot struct {
@@ -105,6 +107,26 @@ func (o *personalObserver) ObserveTaskSessions(_ context.Context, _ model.Princi
 		return nil, o.failure
 	}
 	return map[string]sp.TaskSessionObservation{sources[0].TaskID: {Observation: "observed"}}, nil
+}
+
+func (o *personalObserver) ObserveTaskSessionRows(ctx context.Context, p model.Principal, sources []store.TaskSessionSource) (map[string]sessioncore.TaskSessionRow, error) {
+	observations, err := o.ObserveTaskSessions(ctx, p, sources)
+	if err != nil {
+		return nil, err
+	}
+	rows := make(map[string]sessioncore.TaskSessionRow, len(sources))
+	for _, source := range sources {
+		at, until := workTime.Add(12*time.Hour), workTime.Add(12*time.Hour+30*time.Second)
+		row := model.TaskSyncObservation{TaskVersion: source.TaskVersion, State: "no_session", ObservedAt: &at, FreshUntil: &until}
+		if source.Worker != nil {
+			row.State = "not_registered"
+		}
+		if o.row != nil {
+			row = o.row(row)
+		}
+		rows[source.TaskID] = sessioncore.TaskSessionRow{Session: observations[source.TaskID], Row: row}
+	}
+	return rows, nil
 }
 func personalFixture(t *testing.T) (*Observations, *personalReader, *personalSources, *personalObserver, *workServiceStore, *int) {
 	t.Helper()
@@ -151,6 +173,61 @@ func TestPersonalTasksProjectSourcesAndSnapshots(t *testing.T) {
 	}
 	if !result.ObservedAt.Equal(workTime) || !result.ResponseTaskAt.Equal(workTime) || !result.ResponseSessionAt.Equal(workTime.Add(12*time.Hour)) {
 		t.Fatalf("clock domains: %#v", result)
+	}
+	for _, item := range result.Items {
+		if item.SessionRow.TaskVersion != item.Task.Version || item.SessionRow.State != "no_session" || item.SessionRow.CanOpen {
+			t.Fatalf("session row lost: %#v", item)
+		}
+	}
+}
+
+func TestPersonalTasksRequiresRowObservationCapability(t *testing.T) {
+	s, reader, _, observer, database, _ := personalFixture(t)
+	s.observer = struct{ SessionObserver }{observer}
+	page, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+	if err == nil || page.Items != nil || reader.factCalls != 0 || database.active {
+		t.Fatalf("missing producer silently accepted: %#v %v", page, err)
+	}
+}
+
+func TestPersonalTasksPreservesRowAdmissionAndRejectsMismatchedVersions(t *testing.T) {
+	s, _, sources, observer, _, _ := personalFixture(t)
+	sources.modify = func(_ int, source *store.TaskSessionSource) bool {
+		source.Worker = &model.WorkerClaim{ClaimID: workGroup, State: model.WorkerActive, WorkerID: workProject, Machine: model.WorkerMachine{ID: personalProject2, Name: "Machine"}}
+		return true
+	}
+	observer.row = func(row model.TaskSyncObservation) model.TaskSyncObservation {
+		row.State, row.CanOpen = "unavailable", true
+		return row
+	}
+	page, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+	if err != nil || len(page.Items) != 2 || !page.Items[0].SessionRow.CanOpen || page.Items[0].SessionRow.State != "unavailable" || len(observer.projects) != 2 {
+		t.Fatalf("reading admission changed or sampled twice: %#v %v samples=%v", page, err, observer.projects)
+	}
+	observer.row = func(row model.TaskSyncObservation) model.TaskSyncObservation { row.TaskVersion++; return row }
+	page, err = s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+	if err == nil || page.Items != nil {
+		t.Fatalf("mismatched row version published: %#v %v", page, err)
+	}
+}
+
+func TestPersonalTasksWithdrawsRowWhenReadingSourceChanges(t *testing.T) {
+	s, _, sources, observer, _, _ := personalFixture(t)
+	sources.modify = func(call int, source *store.TaskSessionSource) bool {
+		source.Worker = &model.WorkerClaim{ClaimID: workGroup, State: model.WorkerActive, WorkerID: workProject, Machine: model.WorkerMachine{ID: personalProject2, Name: "Machine"}}
+		source.Session = &store.TaskSessionStateSource{SessionID: workGroup, ArchiveState: "ready"}
+		if call == 3 {
+			source.Session.ArchiveState = "pending"
+		}
+		return true
+	}
+	observer.row = func(row model.TaskSyncObservation) model.TaskSyncObservation {
+		row.State, row.CanOpen = "warning", true
+		return row
+	}
+	page, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+	if err != nil || !page.SessionPartial || page.Items[0].Session.Observation != "unavailable" || page.Items[0].SessionRow.State != "unavailable" || page.Items[0].SessionRow.CanOpen || page.Items[0].SessionRow.ObservedAt != nil || !page.Items[1].SessionRow.CanOpen {
+		t.Fatalf("stale reading admission published: %#v %v", page, err)
 	}
 }
 

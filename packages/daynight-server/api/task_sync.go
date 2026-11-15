@@ -13,14 +13,7 @@ type TaskDependencyState struct {
 	Ready       bool     `json:"ready"`
 }
 
-type TaskSyncObservation struct {
-	TaskVersion    string     `json:"taskVersion"`
-	State          string     `json:"state"`
-	ObservedAt     *time.Time `json:"observedAt"`
-	FreshUntil     *time.Time `json:"freshUntil"`
-	NeedsAttention *bool      `json:"needsAttention"`
-	CanOpen        bool       `json:"canOpen"`
-}
+type TaskSyncObservation = taskprotocol.SessionRow
 
 type TaskSync struct {
 	Mode              string                         `json:"mode"`
