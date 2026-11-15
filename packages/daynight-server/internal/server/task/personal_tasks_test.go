@@ -53,11 +53,12 @@ func TestPersonalTaskRoute(t *testing.T) {
 		if badTime {
 			observed = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 		}
-		worker := &taskcore.PersonalTaskWorker{WorkerID: testUserID, Machine: model.WorkerMachine{ID: testProjectID, Name: "Machine <one>"}}
+		worker := &taskcore.PersonalTaskWorker{WorkerID: testUserID, State: model.WorkerCompleted, Machine: model.WorkerMachine{ID: testProjectID, Name: "Machine <one>"}}
 		if noWorker {
 			worker = nil
 		}
-		return service.PersonalTaskPage{ObservedAt: observed, InventoryRevision: strings.Repeat("a", 64), TotalTaskCount: 1, TotalProjectCount: 1, SessionPartial: true, Items: []service.PersonalTaskItem{{Project: store.PersonalTaskProject{ID: testProjectID, Name: "Project", OwnerTeamID: testUserID, OwnerTeamKind: "personal", ExecutionWarningMinutes: 120}, Task: store.PersonalTaskRow{ID: testTaskID, Version: 9007199254740993, Title: "Task", GoalID: &goalID, GoalTitle: &goalTitle}, MatchedTaskCount: 1, Paused: true, Worker: worker, Session: sp.TaskSessionObservation{SchemaVersion: 1, Observation: "unavailable"}}}}, nil
+		platform := model.TaskPlatform("linux")
+		return service.PersonalTaskPage{ObservedAt: observed, ResponseTaskAt: testTime, ResponseSessionAt: testTime.Add(time.Hour), InventoryRevision: strings.Repeat("a", 64), TotalTaskCount: 1, TotalProjectCount: 1, SessionPartial: true, Items: []service.PersonalTaskItem{{Project: store.PersonalTaskProject{ID: testProjectID, Name: "Project", OwnerTeamID: testUserID, OwnerTeamKind: "personal", ExecutionWarningMinutes: 120}, Task: store.PersonalTaskRow{ID: testTaskID, Version: 9007199254740993, Title: "Task", CreatedAt: testTime, RequiredPlatform: &platform, Tags: []model.TagReference{{ID: testProjectID, Name: "Tag"}}, BlockedBy: []string{testUserID}, GoalID: &goalID, GoalTitle: &goalTitle}, MatchedTaskCount: 1, Paused: true, Worker: worker, Session: sp.TaskSessionObservation{SchemaVersion: 1, Observation: "unavailable"}}}}, nil
 	}, auth, logger)
 	request := func(target, token string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, target, nil)
@@ -84,8 +85,11 @@ func TestPersonalTaskRoute(t *testing.T) {
 	task := raw["items"].([]any)[0].(map[string]any)["task"].(map[string]any)
 	worker := task["worker"].(map[string]any)
 	machine := worker["machine"].(map[string]any)
-	if len(worker) != 2 || len(machine) != 2 || worker["workerId"] != testUserID || machine["id"] != testProjectID || machine["name"] != "Machine <one>" {
+	if len(worker) != 3 || len(machine) != 2 || worker["workerId"] != testUserID || worker["state"] != "completed" || machine["id"] != testProjectID || machine["name"] != "Machine <one>" {
 		t.Fatalf("worker projection: %#v", worker)
+	}
+	if page.ResponseTaskAt != testTime || !page.ResponseSessionAt.Equal(testTime.Add(time.Hour)) || !page.Items[0].Task.CreatedAt.Equal(testTime) || *page.Items[0].Task.RequiredPlatform != "linux" || len(page.Items[0].Task.Tags) != 1 || len(page.Items[0].Task.BlockedBy) != 1 || page.Items[0].Task.Ready {
+		t.Fatalf("extended projection: %+v", page)
 	}
 	noWorker = true
 	if empty := request(base+"?limit=7&cursor=token", "test-pat"); empty.Code != 200 || !strings.Contains(empty.Body.String(), `"worker":null`) {

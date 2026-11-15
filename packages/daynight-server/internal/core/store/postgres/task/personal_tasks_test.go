@@ -168,6 +168,68 @@ func TestPersonalTaskInventoryCancellation(t *testing.T) {
 	}
 }
 
+func TestPersonalTaskProjectionUsesPageSnapshot(t *testing.T) {
+	db := readerStore(t)
+	project := readerProject(t, db, 1)
+	actor := readerAssigneeUser(t, db, project.ID, 2, true)
+	item := readerTask(t, db, project.ID, 3, model.TaskInProgress)
+	prerequisite := readerTask(t, db, project.ID, 4, model.TaskTodo)
+	tag1, tag2 := readerID(5), readerID(6)
+	readerExec(t, db, `UPDATE tasks SET assigned_to=$1,required_platform='linux' WHERE id=$2`, actor, item.ID)
+	readerExec(t, db, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES($1,$2,$3)`, project.ID, item.ID, prerequisite.ID)
+	readerExec(t, db, `INSERT INTO project_tags(id,project_id,name,name_key,created_at,updated_at) VALUES($1,$3,'Alpha','alpha',now(),now()),($2,$3,'Beta','beta',now(),now())`, tag1, tag2, project.ID)
+	readerExec(t, db, `INSERT INTO task_tags(project_id,task_id,tag_id) VALUES($1,$2,$3),($1,$2,$4)`, project.ID, item.ID, tag1, tag2)
+	var firstRevision string
+	if err := db.ReadSnapshot(t.Context(), func(scope store.SnapshotScope) error {
+		dao := scope.TaskDAO().(store.PersonalTaskReader)
+		facts, err := dao.PersonalTaskFacts(t.Context(), actor)
+		if err != nil {
+			return err
+		}
+		firstRevision, err = taskcore.PersonalTaskRevision(facts)
+		if err != nil {
+			return err
+		}
+		readerExec(t, db, `UPDATE tasks SET status='done',version=version+1 WHERE id=$1`, prerequisite.ID)
+		readerExec(t, db, `UPDATE project_tags SET name='Renamed' WHERE id=$1`, tag1)
+		readerExec(t, db, `DELETE FROM task_tags WHERE task_id=$1 AND tag_id=$2`, item.ID, tag2)
+		readerExec(t, db, `UPDATE tasks SET version=version+1 WHERE id=$1`, item.ID)
+		page, err := dao.PersonalTaskPage(t.Context(), actor, store.PersonalTaskQuery{Limit: 10})
+		if err != nil {
+			return err
+		}
+		row := page.Items[0]
+		if row.CreatedAt.IsZero() || row.RequiredPlatform == nil || *row.RequiredPlatform != model.TaskPlatform("linux") || !reflect.DeepEqual(row.Tags, []model.TagReference{{ID: tag1, Name: "Alpha"}, {ID: tag2, Name: "Beta"}}) || !reflect.DeepEqual(row.BlockedBy, []string{prerequisite.ID}) || row.Ready {
+			t.Fatalf("snapshot projection: %+v", row)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ReadSnapshot(t.Context(), func(scope store.SnapshotScope) error {
+		dao := scope.TaskDAO().(store.PersonalTaskReader)
+		facts, err := dao.PersonalTaskFacts(t.Context(), actor)
+		if err != nil {
+			return err
+		}
+		revision, err := taskcore.PersonalTaskRevision(facts)
+		if err != nil {
+			return err
+		}
+		page, err := dao.PersonalTaskPage(t.Context(), actor, store.PersonalTaskQuery{Limit: 10})
+		if err != nil {
+			return err
+		}
+		row := page.Items[0]
+		if revision == firstRevision || !reflect.DeepEqual(row.Tags, []model.TagReference{{ID: tag1, Name: "Renamed"}}) || len(row.BlockedBy) != 0 || row.BlockedBy == nil || row.Ready {
+			t.Fatalf("fresh projection: revision=%s row=%+v", revision, row)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Tag storage exposes separate association and touch operations; the business
 // writer must coordinate those operations with the corresponding Task version.
 func TestPersonalTaskRevisionWithCoordinatedTagWrites(t *testing.T) {

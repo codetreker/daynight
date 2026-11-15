@@ -4,9 +4,9 @@ import { listPersonalTasks, parsePersonalTaskPage } from '../src/api/personal-ta
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
-const item = () => ({ project: { id: workerId(3), name: 'Project', ownerTeam: { id: workerId(4), kind: 'ordinary', name: 'Team' }, executionWarningMinutes: 120, matchedTaskCount: 1 }, task: { id: workerId(5), version: '9007199254740993', title: 'Task', status: 'in_progress', startedAt: null, allowAgents: true, paused: false, worker: null, goal: null }, session: unsupportedSessionObservation() });
-const page = () => ({ observedAt: WORKER_TIME, inventoryRevision: 'a'.repeat(64), totalTaskCount: 1, totalProjectCount: 1, sessionPartial: true, items: [item()], nextCursor: null });
-afterEach(() => vi.unstubAllGlobals());
+const item = () => ({ project: { id: workerId(3), name: 'Project', ownerTeam: { id: workerId(4), kind: 'ordinary', name: 'Team' }, executionWarningMinutes: 120, matchedTaskCount: 1 }, task: { id: workerId(5), version: '9007199254740993', title: 'Task', status: 'in_progress', startedAt: null, createdAt: '2026-11-13T09:00:00Z', requiredPlatform: null, tags: [], blockedBy: [], ready: false, allowAgents: true, paused: false, worker: null, goal: null }, session: unsupportedSessionObservation() });
+const page = () => ({ observedAt: WORKER_TIME, responseTaskAt: WORKER_TIME, responseSessionAt: WORKER_TIME, inventoryRevision: 'a'.repeat(64), totalTaskCount: 1, totalProjectCount: 1, sessionPartial: true, items: [item()], nextCursor: null });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe('personal task response', () => {
   it('preserves exact version and complete session', () => {
     const parsed = parsePersonalTaskPage(page());
@@ -15,7 +15,7 @@ describe('personal task response', () => {
   });
   it('requires an exact nullable Worker summary with valid IDs and Unicode name', () => {
     const value = page(), row = item();
-    const worker = { workerId: workerId(6), machine: { id: workerId(7), name: '机器 <worker> 🖥️' } };
+    const worker = { workerId: workerId(6), state: 'active', machine: { id: workerId(7), name: '机器 <worker> 🖥️' } };
     const withWorker = (candidate: unknown) => ({ ...value, items: [{ ...row, task: { ...row.task, worker: candidate } }] });
     expect(parsePersonalTaskPage(withWorker(worker)).items[0]?.task.worker).toEqual(worker);
     expect(parsePersonalTaskPage(value).items[0]?.task.worker).toBeNull();
@@ -41,6 +41,43 @@ describe('personal task response', () => {
       { ...value, items: [{ ...row, project: { ...row.project, ownerTeam: { ...row.project.ownerTeam, kind: 'personal' } } }] },
     ]) expect(() => parsePersonalTaskPage(invalid)).toThrow();
   });
+  it('requires complete projection fields and rejects invalid values and duplicate IDs', () => {
+    const value = page(), row = item();
+    const candidate = (changes: Record<string, unknown>) => ({ ...value, items: [{ ...row, task: { ...row.task, ...changes } }] });
+    for (const key of ['createdAt', 'requiredPlatform', 'tags', 'blockedBy', 'ready']) {
+      const task = { ...row.task } as Record<string, unknown>;
+      delete task[key];
+      expect(() => parsePersonalTaskPage({ ...value, items: [{ ...row, task }] })).toThrow();
+    }
+    for (const key of ['responseTaskAt', 'responseSessionAt']) {
+      const missing = { ...value } as Record<string, unknown>;
+      delete missing[key];
+      expect(() => parsePersonalTaskPage(missing)).toThrow();
+      expect(() => parsePersonalTaskPage({ ...value, [key]: 'not a timestamp' })).toThrow();
+    }
+    for (const changes of [
+      { createdAt: null }, { requiredPlatform: 'unix' }, { tags: null }, { blockedBy: ['bad'] }, { ready: true },
+      { tags: [{ id: workerId(8), name: 'one' }, { id: workerId(8), name: 'two' }] },
+      { tags: [{ id: workerId(8), name: 'tag', extra: 1 }] },
+      { blockedBy: [workerId(9), workerId(9)] },
+      { worker: { workerId: workerId(6), state: 'unknown', machine: { id: workerId(7), name: 'machine' } } },
+    ]) expect(() => parsePersonalTaskPage(candidate(changes))).toThrow();
+    expect(() => parsePersonalTaskPage({ ...value, items: [row, row] })).toThrow();
+    const parsed = parsePersonalTaskPage(candidate({ requiredPlatform: 'linux', tags: [{ id: workerId(8), name: '标签' }], blockedBy: [workerId(9)], worker: { workerId: workerId(6), state: 'completed', machine: { id: workerId(7), name: 'machine' } } }));
+    expect(parsed.items[0]?.task).toMatchObject({ requiredPlatform: 'linux', tags: [{ id: workerId(8), name: '标签' }], blockedBy: [workerId(9)], ready: false, worker: { state: 'completed' } });
+  });
+
+  it('records body receipt before JSON decoding', async () => {
+    let now = 100;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const original = JSON.parse;
+    vi.spyOn(JSON, 'parse').mockImplementation((...args) => { now = 5100; return original(...args); });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(wireResponse(page(), { headers: { 'Daynight-User-ID': WORKER_USER } })));
+    const result = await listPersonalTasks(null, new AbortController().signal, { userId: WORKER_USER, onPrincipalMismatch: vi.fn() });
+    expect(result.receivedMonotonic).toBe(100);
+    expect(performance.now() - result.receivedMonotonic).toBe(5000);
+  });
+
   it('accepts a long server cursor containing escaped project and Team names', () => {
     const escaped = '\\u003c'.repeat(256);
     const cursor = btoa(`{"projectName":"${escaped}","teamName":"${escaped}"}`).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -51,7 +88,7 @@ describe('personal task response', () => {
   it('binds requests to the principal and encodes the cursor', async () => {
     const fetch = vi.fn().mockResolvedValue(wireResponse(page(), { headers: { 'Daynight-User-ID': WORKER_USER } }));
     vi.stubGlobal('fetch', fetch);
-    expect(await listPersonalTasks('next/+', new AbortController().signal, { userId: WORKER_USER, onPrincipalMismatch: vi.fn() })).toEqual(parsePersonalTaskPage(page()));
+    expect(await listPersonalTasks('next/+', new AbortController().signal, { userId: WORKER_USER, onPrincipalMismatch: vi.fn() })).toEqual({ ...parsePersonalTaskPage(page()), receivedMonotonic: expect.any(Number) });
     expect(fetch.mock.calls[0]![0]).toBe('/api/v1/me/in-progress-tasks?limit=100&cursor=next%2F%2B');
     const mismatch = vi.fn(); fetch.mockResolvedValueOnce(wireResponse(page(), { headers: { 'Daynight-User-ID': workerId(99) } }));
     await expect(listPersonalTasks(null, new AbortController().signal, { userId: WORKER_USER, onPrincipalMismatch: mismatch })).rejects.toThrow();

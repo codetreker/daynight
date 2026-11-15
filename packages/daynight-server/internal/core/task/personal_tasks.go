@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -142,15 +143,24 @@ func PersonalTaskPaused(raw *string) (bool, error) {
 	return *value, nil
 }
 
-// PersonalTaskWorker exposes only the current claim's display identity.
+// PersonalTaskWorker exposes the retained claim's display identity and state.
 type PersonalTaskWorker struct {
 	WorkerID string
+	State    model.WorkerState
 	Machine  model.WorkerMachine
 }
 
-func ActivePersonalTaskWorker(claim *model.WorkerClaim) *PersonalTaskWorker {
-	if claim == nil || claim.State != model.WorkerActive {
-		return nil
+func RetainedPersonalTaskWorker(claim *model.WorkerClaim) (*PersonalTaskWorker, error) {
+	if claim == nil {
+		return nil, nil
 	}
-	return &PersonalTaskWorker{WorkerID: claim.WorkerID, Machine: claim.Machine}
+	if !claim.State.Valid() || strings.TrimSpace(claim.Machine.Name) == "" || !utf8.ValidString(claim.Machine.Name) || strings.ContainsRune(claim.Machine.Name, 0) {
+		return nil, fmt.Errorf("invalid retained personal task worker")
+	}
+	for _, id := range []string{claim.WorkerID, claim.Machine.ID} {
+		if _, err := model.CanonicalID(id); err != nil {
+			return nil, fmt.Errorf("invalid retained personal task worker identity")
+		}
+	}
+	return &PersonalTaskWorker{WorkerID: claim.WorkerID, State: claim.State, Machine: claim.Machine}, nil
 }

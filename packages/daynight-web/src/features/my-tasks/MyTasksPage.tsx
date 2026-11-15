@@ -8,8 +8,11 @@ import { MyTasksDetailHost } from './MyTasksDetailHost';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { ListPagination } from '../projects/ListPagination';
 import { usePagination } from '../projects/usePagination';
-import { ClockInputProvider, useTaskExecution, useTaskExecutionClock } from '../task-execution/TaskExecutionClock';
+import { ClockInputProvider, useTaskExecutionClock } from '../task-execution/TaskExecutionClock';
 import { TaskExecutionDuration, TaskExecutionWarning } from '../task-execution/TaskExecutionPresentation';
+import { taskExecution } from '../task-execution/clock';
+import { TaskPlatformBadge } from '../task-detail/TaskPlatform';
+import { TaskTagList } from '../task-tags/TaskTagList';
 import { TaskPausedBadge } from '../task-pause/TaskPause';
 import { useMyTasks } from './useMyTasks';
 import './my-tasks.css';
@@ -19,7 +22,7 @@ const messages = {
     eyebrow: 'MINE', title: 'In-progress tasks', subtitle: 'Tasks assigned to you across all your projects.', refresh: 'Refresh',
     loading: 'Loading tasks…', empty: 'No in-progress tasks', emptyDetail: 'Tasks assigned to you will appear here when they are in progress.',
     failed: 'Tasks could not be updated.', retained: 'Showing the last available results.', incomplete: 'The task list is incomplete; counts cannot be confirmed.',
-    retry: 'Retry', personal: 'Personal', goal: (title: string) => `View Goal: ${title}`, worker: (name: string) => `Worker: ${name}`, unknownDuration: 'Execution time unknown',
+    retry: 'Retry', personal: 'Personal', goal: (title: string) => `View Goal: ${title}`, worker: (name: string) => `Worker: ${name}`, completedWorker: (name: string) => `Previous Worker: ${name}`, noWorker: 'No Worker record', blocked: 'Blocked', unknownDuration: 'Execution time unknown',
     sessionPartial: 'Some Session observations are unavailable.', noSession: 'No Session', notRegistered: 'Session not registered',
     unavailable: 'Session status unavailable', expired: 'Session observation expired', working: 'Session is working',
     notice: 'Session needs a response', warning: 'Session needs checking', attention: 'Needs attention',
@@ -30,7 +33,7 @@ const messages = {
     eyebrow: '我的', title: '进行中的任务', subtitle: '查看分配给你的所有项目中的任务。', refresh: '刷新',
     loading: '正在加载任务…', empty: '没有进行中的任务', emptyDetail: '分配给你的任务进入进行中后会显示在这里。',
     failed: '无法更新任务。', retained: '显示上次可用的结果。', incomplete: '任务列表不完整，无法确认数量。',
-    retry: '重试', personal: '个人空间', goal: (title: string) => `查看 Goal：${title}`, worker: (name: string) => `Worker：${name}`, unknownDuration: '执行耗时未知',
+    retry: '重试', personal: '个人空间', goal: (title: string) => `查看 Goal：${title}`, worker: (name: string) => `Worker：${name}`, completedWorker: (name: string) => `历史 Worker：${name}`, noWorker: '无 Worker 记录', blocked: '被阻塞', unknownDuration: '执行耗时未知',
     sessionPartial: '部分 Session 观测暂不可用。', noSession: '没有 Session', notRegistered: 'Session 尚未注册',
     unavailable: 'Session 状态暂不可用', expired: 'Session 观测已过期', working: '会话工作中',
     notice: '会话需要响应', warning: '会话需要检查', attention: '需要关注',
@@ -49,35 +52,42 @@ const Session = ({ item }: { readonly item: PersonalTaskItem }) => {
   // Subscribe even when the task has no start time: Session observations still expire.
   useSyncExternalStore(clock?.subscribeRunning ?? inactive, clock?.getSnapshot ?? noSnapshot, clock?.getSnapshot ?? noSnapshot);
   const s = item.session;
-  const now = Date.parse(item.observedAt) + (performance.now() - item.receivedMonotonic);
-  const expired = s.freshUntil === null || now >= Date.parse(s.freshUntil);
+  const elapsed = performance.now() - item.receivedMonotonic;
+  const sessionNow = Date.parse(item.responseSessionAt) + elapsed;
+  const taskNow = Date.parse(item.responseTaskAt) + elapsed;
+  const expired = s.freshUntil === null || s.observedAt === null || sessionNow >= Math.min(Date.parse(s.freshUntil), Date.parse(s.observedAt) + 30_000);
   const state = s.observation !== 'observed' || s.error !== null ? 'unavailable'
     : expired ? 'expired'
       : s.registration === 'not_applicable' && s.reason === 'no_execution' ? 'noSession'
         : s.registration === 'not_registered' ? 'notRegistered'
           : s.registration !== 'registered' ? 'unavailable'
             : s.indicator ?? (s.connectionState === 'disconnected' || s.lifecycle === 'archived' ? 'warning' : 'unavailable');
-  if (state === 'warning' && item.task.startedAt !== null && Math.max(0, now - Date.parse(item.task.startedAt)) < 120_000) return null;
+  if (state === 'warning' && item.task.startedAt !== null && Math.max(0, taskNow - Date.parse(item.task.startedAt)) < 120_000) return null;
   return <span className={`my-task-session my-task-session-${state}`}><span className="my-task-session-dot" aria-hidden="true" />{m[state]}{s.needsAttention === true && state !== 'expired' && state !== 'unavailable' && <> · {m.attention}</>}</span>;
 };
 
 type OpenDetail = (event: MouseEvent<HTMLAnchorElement>, projectId: string, id: string) => void;
 
 const TaskRow = ({ item, open }: { readonly item: PersonalTaskItem; readonly open: OpenDetail }) => {
-  const { locale, messages: { common } } = useI18n();
+  const { locale, format, messages: { common, workspace: { standalone } } } = useI18n();
   const m = messages[locale];
   const { task, project } = item;
-  const execution = useTaskExecution({ status: task.status, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: null, cancelledAt: null });
+  const clock = useTaskExecutionClock();
+  useSyncExternalStore(clock?.subscribeRunning ?? inactive, clock?.getSnapshot ?? noSnapshot, clock?.getSnapshot ?? noSnapshot);
+  const execution = taskExecution({ status: task.status, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: null, cancelledAt: null },
+    { serverMilliseconds: Date.parse(item.responseTaskAt) + performance.now() - item.receivedMonotonic, warningMinutes: project.executionWarningMinutes });
   const href = (id: string) => taskDetailUrl(project.id, id, { tab: 'overview', path: null });
   return <li className="my-task-row">
     <div className="my-task-main"><a className="my-task-title" href={href(task.id)} onClick={event => open(event, project.id, task.id)}>{task.title}</a>
       <div className="my-task-meta"><span className="my-task-id">{task.id.slice(0, 8)}</span>
+        <time dateTime={task.createdAt}>{standalone.createdOn({ date: format.date(task.createdAt) })}</time>
         {execution === null ? <span>{m.unknownDuration}</span> : <><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</>}
-        {task.worker !== null && <span className="my-task-worker">{m.worker(task.worker.machine.name)}</span>}
+        <span className="my-task-worker">{task.worker === null ? m.noWorker : task.worker.state === 'active' ? m.worker(task.worker.machine.name) : m.completedWorker(task.worker.machine.name)}</span>
         {task.goal !== null && <a className="my-task-goal" href={href(task.goal.id)} onClick={event => open(event, project.id, task.goal!.id)} aria-label={m.goal(task.goal.title)}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg><span>{task.goal.title}</span><span aria-hidden="true">↗</span></a>}
       </div>
+      <TaskTagList tags={task.tags} />
     </div>
-    <div className="my-task-state"><span className="root-status graph-status-in_progress">{common.status.in_progress}</span>{task.paused && <TaskPausedBadge />}<Session item={item} /></div>
+    <div className="my-task-state"><TaskPlatformBadge requiredPlatform={task.requiredPlatform} />{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{m.blocked}</span>}<span className="root-status graph-status-in_progress">{common.status.in_progress}</span>{task.paused && <TaskPausedBadge />}<Session item={item} /></div>
   </li>;
 };
 
@@ -91,7 +101,7 @@ const ProjectGroup = ({ items, complete, ambiguous, savedPage, savePage, open }:
     if (selectedPage !== pagination.page) pagination.onPageChange(selectedPage);
     if (complete && selectedPage !== savedPage) savePage(selectedPage);
   }, [complete, selectedPage, savedPage, pagination.page, pagination.onPageChange, savePage]);
-  const input = useMemo(() => ({ observedAt: first.observedAt, receivedMonotonic: first.receivedMonotonic, warningMinutes: first.project.executionWarningMinutes }), [first.observedAt, first.receivedMonotonic, first.project.executionWarningMinutes]);
+  const input = useMemo(() => ({ observedAt: first.responseTaskAt, receivedMonotonic: first.receivedMonotonic, warningMinutes: first.project.executionWarningMinutes }), [first.responseTaskAt, first.receivedMonotonic, first.project.executionWarningMinutes]);
   const scope = first.project.ownerTeam.kind === 'personal' ? m.personal : first.project.ownerTeam.name!;
   const label = `${first.project.name} · ${scope} · ${first.project.id}`;
   return <section className="my-task-group" aria-label={label}>
