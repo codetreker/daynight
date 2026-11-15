@@ -69,3 +69,12 @@
 
 .task-chain-dialog :focus-visible { outline-color: var(--task-focus); }
 .task-node-goal .task-node-bottom{padding-right:0}
+
+.project-session-status { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; max-width: 130px; }
+.project-session-control, .project-session-text { font-size: 10px; line-height: 1.4; text-align: right; overflow-wrap: anywhere; }
+.project-session-control { min-height: 36px; border: 0; border-radius: 4px; background: transparent; color: var(--task-in_progress-ink); padding: 3px; text-decoration: underline; text-underline-offset: 2px; }
+.project-session-control:focus-visible { outline: 2px solid var(--task-focus); outline-offset: 1px; }
+.project-session-text { color: var(--task-helper); }
+
+.project-session-control:is([data-session-state="notice"], [data-session-state="warning"], [data-needs-attention]),
+.project-session-text:is([data-session-state="notice"], [data-session-state="warning"], [data-needs-attention]) { color: var(--task-attention-ink); }

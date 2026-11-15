@@ -34,7 +34,9 @@ The [requirements](../../../../docs/spec/daynight-task-sync.md#完整任务-sess
 and [design](../../../../docs/design/daynight-task-sync.md#服务端-session-状态投影)
 own the detailed protocol, failure and time rules. This extends the earlier
 [server projection](2026-11-08-task-sync-session-projection.md) and preserves
-the existing [list admission](2026-11-08-task-sync-session-list.md).
+the existing [list admission](2026-11-08-task-sync-session-list.md). The
+[project observation consumer](2026-11-15-project-session-observation-consumption.md)
+uses the complete projection independently for individual Task rows.
 
 ## Alternatives
 

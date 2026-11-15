@@ -1,3 +1,5 @@
+import { ProjectTaskObservationsProvider } from "../task-session-summary/ProjectTaskObservationsProvider";
+import type { ProjectTaskObservationsStore } from "../task-session-summary/project-observations";
 import { TaskSessionSummaryProvider } from "../task-session-summary/TaskSessionSummaryProvider";
 import { TaskPauseProvider } from "../task-pause/TaskPause";
 import { ProjectPausedTasks } from "./ProjectPausedTasks";
@@ -12,11 +14,12 @@ import type { TaskView } from "./useProjectViewPreferences";
 import type { GraphSnapshot } from "./useTaskGraph";
 import type { TaskSessionSummaryStore } from "../task-session-summary/store";
 
-export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, activeView, pausedTasks, onOpenPausedTask, onPausedFocusFallback, unfinishedStandaloneTaskCount, unfinishedChainCount, unfinishedGoalCount, onViewChange, filter, chains, standalone, goals }: {
+export const ProjectTaskWorkspace = ({ snapshot, sessionStore, observationStore, active = true, activeView, pausedTasks, onOpenPausedTask, onPausedFocusFallback, unfinishedStandaloneTaskCount, unfinishedChainCount, unfinishedGoalCount, onViewChange, filter, chains, standalone, goals }: {
   readonly active?: boolean;
   readonly filter?: ReactNode;
   readonly snapshot: GraphSnapshot;
   readonly sessionStore: TaskSessionSummaryStore;
+  readonly observationStore: ProjectTaskObservationsStore;
   readonly activeView: TaskView;
   readonly pausedTasks: readonly GraphTask[];
   readonly onOpenPausedTask: (id: string, trigger: HTMLElement) => void;
@@ -32,7 +35,7 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, ac
   const { messages: { workspace: { project: m, sections } } } = useI18n();
   return <>
     <div className="project-section-heading"><h2>{sections.tasks}</h2><ProjectPausedTasks tasks={pausedTasks} active={active} onOpenTask={onOpenPausedTask} onFocusFallback={onPausedFocusFallback} /></div>
-      <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskSessionSummaryProvider store={sessionStore} active={active}>
+      <TaskPauseProvider taskIds={snapshot.pausedTaskIds}><TaskSessionSummaryProvider store={sessionStore} active={active}><ProjectTaskObservationsProvider store={observationStore} active={active}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
           unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={onViewChange} />
         {filter}
@@ -45,6 +48,6 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, ac
         <div role="tabpanel" id="project-task-panel-goals" aria-labelledby="project-task-tab-goals" hidden={activeView !== "goals"} tabIndex={-1}>
           {activeView === "goals" && <GoalList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...goals} />}
         </div>
-      </TaskSessionSummaryProvider></TaskPauseProvider>
+      </ProjectTaskObservationsProvider></TaskSessionSummaryProvider></TaskPauseProvider>
   </>;
 };

@@ -17,7 +17,7 @@
 客户端摘要最大 updatedAt → 服务端减去配置窗口 → 返回匹配任务摘要
 ```
 
-同一 HTTP 响应另含全项目当前适用 Session 的完整最小状态 map 和进行中普通 Task 的完整观测；Task 水位不筛选这两个集合。`useTaskGraph` 在同一次同步接纳后将四态 map 交给稳定的页面 Session store；该 store 仍拒绝隐藏时的 Session 观察，列表不再逐 Task 读取 Current。Session 状态不改变水位、Task version、properties 或 epoch，也不进入持久缓存和普通 Task 通知。
+同一 HTTP 响应另含全项目当前适用 Session 的完整最小状态 map 和进行中普通 Task 的完整观测；Task 水位不筛选这两个集合。`useTaskGraph` 在同一次同步接纳后将四态 map 与完整观测分别交给独立的页面内存 store；隐藏时拒绝发布 Session 观察，列表不再逐 Task 读取 Current。Session 状态不改变水位、Task version、properties 或 epoch，也不进入持久缓存和普通 Task 通知。
 
 客户端只把已成功合并的项目同步摘要用于计算水位。服务端读取当前任务事实，不保存历史变更流，也不承诺依次返回每个业务版本；一次同步可以从 v5 直接读到 v7。重复行是协议正常部分；前端借助任务已有 version 判断是否替换内容。
 
@@ -166,19 +166,21 @@ Engine 短持 registry mutex 捕获 cell 引用后释放，再逐个锁 cell、�
 
 最终核验数据库快照给出 `responseTaskAt`；所有批次和核验结束后，由生成 Session 样本的同一 Engine 时钟给出 `responseSessionAt`。两者是独立 UTC 时间域，既不能相减得到 Task 执行耗时，也不能替代数据库初始快照的 `observedAt` 或增量水位。无效或缺失时钟使读取失败；响应锚点到 body 接收的处理与传输延迟仍存在。完整 map 与源读取成本随进行中任务数量增长；不增加任意数量／字节限制、截断或逐任务 HTTP。读取不推进生命周期或归档，也不授予 Session 内容与控制权限。
 
-现有 Web 只消费 `sessions`；它忽略新增顶层字段，继续保持原有列表绑定、汇总与时效行为。完整观测的客户端解析、按 Task 版本和执行绑定接纳、双时钟时效及行展示由独立消费者承担，不能将当前四态 store 的 web eligibility 视为完整观测准入。现有浏览器列表读取、聚合、入口和新鲜度由[Session 状态设计](task-session-status.md)拥有。
+Web 分别消费 `sessions` 与完整观测。后者按 Task 版本和执行绑定接纳，使用双时钟计算时效并在项目普通 Task 行展示；四态 store 的 web eligibility 不用于完整观测。浏览器列表读取、聚合、入口和新鲜度由[Session 状态设计](task-session-status.md)拥有。
 
 ### 浏览器 Session 状态接纳
 
-`api/types.ts` 定义必填 `TaskSync.sessions` 与本地 `TaskSyncRead {sync, receivedMonotonic}`。`getTaskSync` 的成功 reader 在 `await response.text()` 完成后立即记录 `performance.now()`，随后才共用 Task graph 文本解码、执行 source scan、精确字段解码及 `parseTaskSync` 校验。四态集合要求普通对象、规范 Task UUID 键和严格合法值，不设置任务条数上限，不接纳缺字段、null 或空对象 fallback。非成功响应沿用原 decoder 与 `parseServerError` 原 JSON 值；其它 API 与 relations decoder 保留各自合同。receipt 不进入 HTTP JSON。
+`api/types.ts` 定义必填 `TaskSync.sessions`、`taskObservations`、`sessionPartial`、`responseTaskAt`、`responseSessionAt` 与本地 `TaskSyncRead {sync, receivedMonotonic}`。`getTaskSync` 的成功 reader 在 `await response.text()` 完成后立即记录 `performance.now()`，随后才共用 Task graph 文本解码、执行 source scan、精确字段解码及 `parseTaskSync` 校验。四态集合要求普通对象、规范 Task UUID 键和严格合法值，不设置任务条数上限，不接纳缺字段、null 或空对象 fallback。非成功响应沿用原 decoder 与 `parseServerError` 原 JSON 值；其它 API 与 relations decoder 保留各自合同。完整观测严格校验规范 UUID、精确正 int64 版本、状态、可空字段和状态／入口组合，缺键不补成无 Session；两个响应时钟必须是有效 UTC 时间。receipt 不进入 HTTP JSON。
 
-`task-cache/execution-binding.ts` 的 `TaskExecutionBinding` 保存 Task status，以及 Worker 的 claimId、workerId、worktreeId、state 与 agentControlMode，缺少 Worker 明确为 null。`TaskSyncTicket` 扩展原 SyncTicket，将这些 slim bindings 从 beginSync 已有的完整 stored Tasks 读取结果建立为不可变 map，与 epoch、水位和 manifest 位于同一事务；不增加事务、持久字段或 Session version。`deriveTaskSyncBindings` 对 snapshot 从响应 Tasks 建立基线，对 delta 使用 ticket.taskBindings 并覆盖响应实际 Tasks。`applySync` 继续按版本合并此刻的持久集合，但该最终集合不能反向改变响应的执行观察。
+`task-cache/execution-binding.ts` 的 `TaskExecutionBinding` 保存 Task status，以及 Worker 的 claimId、workerId、worktreeId、state 与 agentControlMode，缺少 Worker 明确为 null。`TaskSyncTicket` 扩展原 SyncTicket，将这些 slim bindings 和精确 Task 版本从 beginSync 已有的完整 stored Tasks 读取结果分别建立为不可变 map，与 epoch、水位和 manifest 位于同一事务；不增加事务、持久字段或 Session version。`deriveTaskSyncBindings` 与 `deriveTaskSyncVersions` 对 snapshot 从响应 Tasks 建立基线，对 delta 使用 ticket 中各自基线并覆盖响应实际 Tasks。`applySync` 继续按版本合并此刻的持久集合，但该最终集合不能反向改变响应的执行观察。
 
-`useTaskGraph` 保留唯一项目 HTTP 调度与原有 history/applySync 顺序，拥有稳定的 `TaskSessionSummaryStore`。HTTP 前捕获既有 `authRequestsPauseRevision()`，每个 await 后重验取消、请求代次与 scope；仅当 pause revision 未变化时，通过 `Store.replace({project: result.project, observedBindings, sessions, receivedMonotonic})` 发布本次 Session 观察。暂停后恢复不能让暂停前响应重建已撤销贡献；该 gate 不改变原 Task 应用、图发布或 auth shell。结果 manifest 的 userFence、cacheGeneration 和 epoch 必须仍获当前项目准入；snapshot 新建的 generation 用实际结果核验，不要求等于旧 ticket。store 经 ProjectPage、ProjectTaskWorkspace 和 TaskSessionSummaryProvider 传递，Provider 只负责 context 与展示活动。
+`useTaskGraph` 保留唯一项目 HTTP 调度与原有 history/applySync 顺序，拥有稳定且相互独立的 `TaskSessionSummaryStore` 与完整项目观测 store。HTTP 前捕获既有 `authRequestsPauseRevision()`，每个 await 后重验取消、请求代次与 scope；仅当 pause revision 未变化时，分别向两个 store 发布本次 Session 观察。暂停后恢复不能让暂停前响应重建已撤销贡献；该 gate 不改变原 Task 应用、图发布或 auth shell。结果 manifest 的 userFence、cacheGeneration 和 epoch 必须仍获当前项目准入；snapshot 新建的 generation 用实际结果核验，不要求等于旧 ticket。两个 store 经各自 Provider 传给项目列表，Provider 只负责 context 与展示活动。
 
-状态值与完整 map 的键缺席使用相同 observed/current eligible binding 比较；旧 claim 的状态及缺席都不能影响较新执行或续期它的 receipt。其它 cache producer 和标签页只通过既有 Task 通知撤销不匹配绑定，不向本页发布 Session map。响应 key 不属于其 observed eligible Task 为协议错误。entry 的 30 秒期限从 API body receipt 起算，发布前、恢复展示与文档可见时复核；解码和 IDB 延迟不续期。普通在途同步保留尚有效状态，当前失败、auth pause、scope 失效和执行变化撤销相应贡献。
+四态汇总的状态值与 map 的键缺席使用相同 observed/current eligible binding 比较；旧 claim 的状态及缺席都不能影响较新执行或续期它的 receipt。其它 cache producer 和标签页只通过既有 Task 通知撤销不匹配绑定，不向本页发布 Session map。响应 key 不属于其 observed eligible Task 为协议错误。entry 的 30 秒期限从 API body receipt 起算，发布前、恢复展示与文档可见时复核；解码和 IDB 延迟不续期。普通在途同步保留尚有效状态，当前失败、auth pause、scope 失效和执行变化撤销相应贡献。
 
-状态只在页面内存通知自身消费者，不进入 summaries/details、Task properties、version/updatedAt、BroadcastChannel 或普通 CacheEvent，不新增正文重读或图计算。原有 applySync 的 Task 工作执行一次。链聚合仍包含根任务及折叠/筛选隐藏的全部普通成员，外部前置链排除；pending 保留入口，warning > notice > working 优先级及原 UI 保持。详细期限、聚合和交互由[Session 状态设计](task-session-status.md)拥有。
+完整观测还必须匹配当前进行中普通 Task 的精确版本和可空执行绑定；缺项或未准入显示未观测，单项或整体读取失败显示不可用，非 `unavailable` 的成功观测失效显示过期。整体失败投影只属于仍授权的当前项目，身份或项目准入失效时清除；成功同步重新建立观测。它使用响应的数据库与 Engine 时钟分别推进启动宽限与每项期限，细节见[Session 状态设计](task-session-status.md)。它不扩大四态 store 的 web Worker 准入。
+
+状态只在页面内存通知自身消费者，不进入 summaries/details、Task properties、version/updatedAt、BroadcastChannel 或普通 CacheEvent，不新增正文重读或图计算。原有 applySync 的 Task 工作执行一次。链聚合仍包含根任务及折叠/筛选隐藏的全部普通成员，外部前置链排除；pending 不贡献角标，warning > notice > working 优先级及原汇总 UI 保持。详细期限、聚合和交互由[Session 状态设计](task-session-status.md)拥有。
 
 ## 当前权限的内存发布
 
