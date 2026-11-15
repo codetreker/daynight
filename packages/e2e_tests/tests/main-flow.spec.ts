@@ -161,13 +161,13 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await expect(projectGroup).toContainText("No current Session");
   const personalRow = projectGroup.locator('.task-row').filter({ has: page.getByRole('link', { name, exact: true }) });
   await expect(personalRow.locator('.task-row-id')).toHaveText(task.id);
-  const sharedFacts = await personalRow.locator('.task-row-meta').innerText();
+  const sharedFacts = await personalRow.locator('.task-row-meta > :not(.task-row-execution)').allTextContents();
   await page.goto(`${topology.baseURL}/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
   const projectRow = page.locator('.task-row').filter({ has: page.getByRole('link', { name, exact: true }) });
   await expect(projectRow.locator('.task-row-id')).toHaveText(task.id);
-  await expect(projectRow.locator('.task-row-meta')).toHaveText(sharedFacts);
+  await expect(projectRow.locator('.task-row-meta > :not(.task-row-execution)')).toHaveText(sharedFacts);
   await expect(projectRow).toContainText('No current Session');
   await page.goto(`${topology.baseURL}/my-tasks`);
   await projectGroup.getByRole("link", { name, exact: true }).click();
