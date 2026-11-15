@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import { cli, expect, topology } from "./fixtures.ts";
 
-type Tag = { id: string; name: string; color: string; version: number };
+type Tag = { id: string; name: string; version: number };
 type MCPTag = { id: string; projectId: string; name: string; color: string; version: string };
 type Task = { id: string; title: string; parentId: string | null; tags: { id: string; name: string }[] };
 
@@ -69,13 +69,13 @@ export const verifyTagFlow = async (page: Page, projectId: string, serverToken: 
   await emptyDetail.locator(".task-detail-close").click();
 
   const backend = await json<Tag>(["tag", "create", "Backend", "--color", "#D85656"]);
-  expect(backend).toMatchObject({ name: "Backend", color: "#D85656" });
+  expect(backend).toMatchObject({ projectId, name: "Backend" });
   const shown = await mcp("tag_show", { projectId, tagId: backend.id });
   expect(shown).toMatchObject({ id: backend.id, projectId, name: "Backend", color: "#D85656", version: String(backend.version) });
   expect(shown.version).toMatch(/^[1-9][0-9]*$/);
   const other = await json<Tag>(["tag", "create", "Other"]);
   expect(backend.id).not.toBe(other.id);
-  expect(other.color).toBe("#9AA3B2");
+  expect(await mcp("tag_show", { projectId, tagId: other.id })).toMatchObject({ id: other.id, projectId, name: "Other", color: "#9AA3B2" });
   const goalId = await create(["--type", "goal", "--title", "Tagged Goal", "--tag", backend.id]);
   const taskId = await create(["--parent", goalId, "--title", "Tagged child", "--tag", other.id]);
   const controlId = await create(["--parent", goalId, "--title", "Other child", "--tag", other.id]);
