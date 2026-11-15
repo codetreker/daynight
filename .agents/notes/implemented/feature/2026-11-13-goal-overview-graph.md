@@ -15,11 +15,16 @@ reading context.
 The project Goal row opens a graph of every direct Task and each distinct,
 accessible direct prerequisite outside the Goal. Edges retain their actual
 ordinary or external classification and end at a member; external context does
-not recursively expand. Every card opens its Task details. The graph shares the
+not recursively expand. Cards share body inspection and independent Task Details
+with ordinary chains, as defined by the
+[Goal graph inspection decision](2026-11-15-goal-graph-inspection.md). The graph shares the
 canvas and dialog mechanisms with ordinary chains while owning its complete
 projection, compact layout and framing. The original implementation shared the
 chain layout and fitted full bounds on opening; the [compact layout decision](../architecture/2026-11-14-compact-goal-graph-layout.md)
-replaces that choice to preserve readability. Goal and chain resource UUIDs use
+replaces that choice to preserve readability. The original card body opened Task
+details directly; chain graphs supplied dependency inspection. The later
+inspection decision replaces that action to let readers trace dependencies
+within the Goal scope. Goal and chain resource UUIDs use
 the existing history witness and project-scoped direction preference.
 
 The [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)

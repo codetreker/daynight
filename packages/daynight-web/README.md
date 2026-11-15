@@ -2822,7 +2822,19 @@ measured canvas dimensions are ready, fitting within 0.8–1 zoom or anchoring t
 leftmost rank at 0.8 zoom. The root remains vertically centered when already
 leftmost; otherwise the topmost upstream node starts at a 32px canvas inset.
 Goal graphs use a separate compact component and rank-grid layout, with a
-readable initial viewport and an explicit full overview.
+readable initial viewport and an explicit full overview. Their complete projection
+contains every direct member and its accessible direct prerequisites outside the
+Goal. Every 220×96 card has a native inspection body and a sibling Details button;
+Goal cards provide no expansion or external navigation. Complete project ancestry
+drives the shared selection, prerequisite, real-edge and arrow styles, while the
+current projection determines visible highlights and the deduplicated hidden
+upstream count. Selecting a card, selecting another, or clearing with the same
+card or blank canvas never changes geometry or viewport. Same-Goal snapshots
+recompute a still-visible selection; removal or a different Goal clears it.
+Direction changes, explicit fit, Details and fullscreen preserve a valid selection.
+Details uses the existing Task reader and records its own button for focus
+restoration, retaining browser history and draft protection. The shared card
+reserves distinct space for status, execution time and Details.
 Dependency geometry does not require connection-port DOM or per-edge endpoint readiness.
 Graph-local inspection Context supplies presentation roles while controlled node
 geometry/data and memoized content retain stable references. Memoized chain rows retain stable props while graph inspection and details change

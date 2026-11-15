@@ -17,20 +17,26 @@ const index = (count: number) => {
 beforeEach(installGraphMeasurements);
 
 describe('Goal graph canvas', () => {
-  it('renders all 51 nodes and opens a card directly without chain actions', async () => {
+  it('renders all 51 compact cards with separate inspection and Details without chain actions', async () => {
     const open = vi.fn();
     const view = render(<GoalTaskGraph projectId="project" index={index(51)} goalId="goal" direction="horizontal" onDirectionChange={noop} onOpenTask={open} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(51));
-    expect(view.container.querySelectorAll('.task-node-details, .task-node-expand')).toHaveLength(0);
+    expect(view.container.querySelectorAll('.task-node-details')).toHaveLength(51);
+    expect(view.container.querySelectorAll('.task-node-expand')).toHaveLength(0);
     for (const node of view.container.querySelectorAll<HTMLElement>('.react-flow__node')) {
       expect(node.style.width).toBe('220px');
       expect(node.style.height).toBe('96px');
     }
-    const card = screen.getByRole('button', { name: /^task-0, / });
-    expect(card).toHaveAttribute('aria-haspopup', 'dialog');
-    expect(card).not.toHaveAttribute('aria-pressed');
+    const card = screen.getByRole('button', { name: 'task-0, To do' });
+    expect(card).not.toHaveAttribute('aria-haspopup');
+    expect(card).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(card);
-    expect(open).toHaveBeenCalledWith('task-0', card);
+    expect(card).toHaveAttribute('aria-pressed', 'true');
+    expect(open).not.toHaveBeenCalled();
+    const details = screen.getByRole('button', { name: 'task-0, Details' });
+    expect(details).toHaveAttribute('aria-haspopup', 'dialog');
+    fireEvent.click(details);
+    expect(open).toHaveBeenCalledWith('task-0', details);
   });
 
   it('preserves viewport when the same topology is refreshed and handles empty Goals', async () => {
