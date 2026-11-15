@@ -5,7 +5,7 @@ import { useReactFlow, type Node, type NodeProps } from '@xyflow/react';
 import { useTaskExecution } from '../task-execution/TaskExecutionClock';
 import { TaskExecutionDescription, TaskExecutionDuration, TaskExecutionWarning, type TaskExecution } from '../task-execution/TaskExecutionPresentation';
 import { TaskPlatformBadge } from '../task-detail/TaskPlatform';
-import { TaskAgentPermissionBadge } from '../task-detail/TaskAgentPermissionBadge';
+import { TaskAgentPermissionBadge } from '../task-row/TaskAgentPermissionBadge';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskInspectionState } from './inspection';
 import type { GraphTask } from '../../api/types';
