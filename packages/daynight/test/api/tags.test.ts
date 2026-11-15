@@ -70,6 +70,14 @@ describe("project tag catalog API", () => {
     ]);
   });
 
+  it("accepts the existing tag receipt shape and rejects an added color field", async () => {
+    const receipt = tag(firstId, { version: 2n, name: "Platform" });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(receipt)).mockResolvedValueOnce(json({ ...receipt, color: "#123ABC" }));
+    const api = client(fetch);
+    expect(await api.getTag(project, firstId)).toEqual(receipt);
+    await expect(api.getTag(project, firstId)).rejects.toMatchObject({ phase: "protocol" });
+  });
+
   it.each([{ projectId: otherProject }, { id: secondId }, { version: 0 }, { usage: { tasks: -1, goals: 0 } }, { name: " trailing " }])("rejects malformed or mismatched tag responses: %#", async changes => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(tag(firstId, changes)));
     await expect(client(fetch).getTag(project, firstId)).rejects.toMatchObject({ phase: "protocol" });

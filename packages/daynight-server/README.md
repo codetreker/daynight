@@ -207,6 +207,12 @@ Project members manage the tag catalog through `/api/v1/projects/{projectId}/tag
 list, create, read, rename and confirmed deletion use stable IDs and original
 versions. List cursors bind the project, principal, query, page size and catalog
 epoch; `/tags/resolve` validates the complete selection within a bounded response.
+Create accepts an optional color (default `#9AA3B2`); PATCH atomically updates
+name and/or color using the exact version. Color is normalized to uppercase
+`#RRGGBB`. Existing Tag and Task responses retain their original fields.
+`/tags/colors/resolve` returns the exact version and color or a missing state for
+each unique requested ID in one authorized snapshot. An optional catalog epoch
+rejects changed catalogs, and the encoded response is bounded at 512 KiB.
 Visible Task and Goal usage counts are snapshot hints, while deletion removes all
 associations under the Project write lock. Task and Goal creation accepts `tagIds`
 and atomically saves the validated set with the new resource; omission or an empty
@@ -215,7 +221,7 @@ failed validation or response admission rolls back the entire creation. Task and
 `tagIds` set; omission preserves it and an empty array clears it. Mixed metadata
 and tag changes commit atomically with one version increment. Full, list, ready,
 search and sync results contain the current `tags` array, including `[]` when
-empty. Tag rename and deletion reach associated Tasks through ordinary sync
+empty. Tag rename, color changes and deletion reach associated Tasks through ordinary sync
 without rotating the task cache epoch. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
 and [server design](../../docs/design/daynight-server.md#领域模型与存储结构) describe the contract and implementation.
 The application mux mounts all of these modules and requires authentication for

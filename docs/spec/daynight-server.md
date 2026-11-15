@@ -133,7 +133,7 @@ Task 包含以下持久化字段：
 | `startedAt`、`completedAt`、`cancelledAt` | 只读UTC执行起止与取消时间，字段必填但允许`null`，未知事实不补造 |
 | 内部 `deleted_at` | 可空删除时间；不出现在公共 Task JSON，已标记任务退出正常业务读取 |
 
-完整 REST Task、列表、ready、搜索结果和同步摘要，以及 MCP Task 完整和摘要结果包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联，不继承或汇总父子标签。REST 和 MCP 创建可用 `tagIds` 指定本项目标签的完整 ID 集合，省略或 `[]` 表示无标签；创建与关联原子提交，成功回执包含规范化集合的实际引用。失效、已删除或跨项目 ID、权限及响应容量拒绝均不留下部分创建。REST PATCH 和 MCP `task_update` 可用 `tagIds` 指定完整集合：省略保留，`[]` 清空；无效 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。标签改名或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
+完整 REST Task、列表、ready、搜索结果和同步摘要，以及 MCP Task 完整和摘要结果包含必填 `tags` 数组，元素为 `{id,name}`；无关联时为 `[]`。Task 和 Goal 各自拥有独立关联，不继承或汇总父子标签。REST 和 MCP 创建可用 `tagIds` 指定本项目标签的完整 ID 集合，省略或 `[]` 表示无标签；创建与关联原子提交，成功回执包含规范化集合的实际引用。失效、已删除或跨项目 ID、权限及响应容量拒绝均不留下部分创建。REST PATCH 和 MCP `task_update` 可用 `tagIds` 指定完整集合：省略保留，`[]` 清空；无效 ID 整组拒绝。只提交标签时保留执行归属和其他字段；与其他字段组合时按原字段规则在同一事务提交或回滚，实际变更只推进一次版本。标签改名、改色或删除推进关联条目的版本并通过普通增量返回当前引用，不轮换任务缓存 epoch。
 
 完整 Task、列表摘要、搜索、图与同步摘要均输出 `type` 和 `parentId`；最小写回执、仅依赖投影以及工作和 Session 引用保持各自的窄字段集。完整 Goal 读取包含只读 `progress`（total、done、cancelled、unfinished），摘要和同步不含进度。
 
@@ -230,9 +230,10 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET` | `/api/v1/projects/{projectId}/tags` | 项目标签目录，支持名称子串、分页和目录 epoch |
 | `POST` | `/api/v1/projects/{projectId}/tags` | 创建标签，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects/{projectId}/tags/{tagId}` | 按稳定 ID 读取标签及可见 Task/Goal 使用计数 |
-| `PATCH` | `/api/v1/projects/{projectId}/tags/{tagId}` | 按原始 version 重命名标签 |
+| `PATCH` | `/api/v1/projects/{projectId}/tags/{tagId}` | 按原始 version 原子更新标签名称和颜色 |
 | `DELETE` | `/api/v1/projects/{projectId}/tags/{tagId}` | 按原始 version 和明确确认删除标签及全部关联，返回回执 |
 | `POST` | `/api/v1/projects/{projectId}/tags/resolve` | 在当前项目批量解析全部标签 ID，任一失效则拒绝 |
+| `POST` | `/api/v1/projects/{projectId}/tags/colors/resolve` | 按 ID 批量读取颜色和版本，逐项标识缺失 |
 | `POST` | `/api/v1/projects/{projectId}/tasks` | 创建 task，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表，支持显式负责人筛选 |
 | `GET` | `/api/v1/projects/{projectId}/task-assignees` | 返回项目成员与保留负责人目录，或限定 userId 解析；始终有 items/unresolvedUserIds |
@@ -259,7 +260,9 @@ Team 生命周期的公开字段、成员资格、Personal 禁用操作、精确
 | `GET, HEAD` | `/api/v1/me/workers/{workerId}/configuration` | 读取账号拥有的云端目标与逐项应用观测，不受近期窗口限制 |
 | `PUT` | `/api/v1/me/workers/{workerId}/configuration` | 精确目标版本保存完整配置，返回当前配置资源 |
 
-项目成员和管理员可管理标签库。标签名称去除 Unicode 首尾空白后为 1–64 个 code point，拒绝控制字符及 U+2028/U+2029；同项目名称按 ASCII 大小写不区分重名，展示拼写保留。目录默认每页 50 条、最多 100 条，按名称键和 ID 排序；cursor 绑定项目、principal、查询、limit 与目录 epoch。目录名称或成员变化后旧 cursor 明确失效。使用计数是读取快照中的提示，不属于标签 version；确认删除包括之后新增的关联。resolve 的编码结果最多 512 KiB，超限拒绝而不截断。
+项目成员和管理员可管理标签库。标签名称去除 Unicode 首尾空白后为 1–64 个 code point，拒绝控制字符及 U+2028/U+2029；同项目名称按 ASCII 大小写不区分重名，展示拼写保留。目录默认每页 50 条、最多 100 条，按名称键和 ID 排序；cursor 绑定项目、principal、查询、limit 与目录 epoch。目录名称、颜色或成员变化后旧 cursor 明确失效。使用计数是读取快照中的提示，不属于标签 version；确认删除包括之后新增的关联。resolve 的编码结果最多 512 KiB，超限拒绝而不截断。创建可省略 `color`，默认 `#9AA3B2`；更新必须提供精确 `version` 和至少一个 `name`、`color`，省略字段保持原值。颜色输入经校验规范化为大写 `#RRGGBB`，拒绝无效值和 null。成功回执的 ID 和 version 确认请求的规范颜色已随事务提交；后续读取只证明当前状态。旧 REST 标签和 Task/Goal 引用响应不包含颜色。
+
+颜色 resolve 接收 `tagIds` 和可省略的 `catalogEpoch`，在同一授权读取快照校验 epoch 并规范化去重 ID。返回 `catalogEpoch` 和每个唯一 ID 的一项：存在时为 `{id,state:"found",version,color}`，缺失、已删除或跨项目时为 `{id,state:"missing"}`。非法 UUID、权限或 epoch 错误拒绝整批；epoch 不匹配返回 `catalog_changed`。请求沿用 1 MiB JSON 上限，实际编码结果超过 512 KiB 时拒绝，不返回部分结果。
 
 HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 charset。请求体
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
