@@ -41,6 +41,8 @@
 .standalone-item:has(> .project-session-status) > .standalone-row { padding-right: 145px; }
 .standalone-item > .project-session-status { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 120px; }
 @container standalone-list (max-width: 650px) {
-  .standalone-item:has(> .project-session-status) > .standalone-row { padding-right: 110px; }
-  .standalone-item > .project-session-status { right: 8px; width: 96px; }
+  .standalone-item:has(> .project-session-status) > .standalone-row { flex-wrap: wrap; padding-right: 11px; padding-bottom: 48px; }
+  .standalone-item:has(> .project-session-status) .root-heading { flex-basis: 100%; }
+  .standalone-item:has(> .project-session-status) .task-row-status { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; max-width: 100%; }
+  .standalone-item > .project-session-status { right: 8px; top: auto; bottom: 5px; transform: none; width: auto; max-width: calc(100% - 16px); }
 }

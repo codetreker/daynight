@@ -51,7 +51,7 @@ async function install(page: Page, timing = false, completion = false, title = '
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, ...(sessionObservations ? { taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'pending' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: false, canOpen: true }])) } : {}) })); }
+    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, ...(sessionObservations ? { taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'unavailable' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: detail.id === standaloneId, canOpen: true }])) } : {}) })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -388,7 +388,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
   });
 }
 
-for (const locale of ['en', 'zh-CN'] as const) test(`project Session entries remain separate and fit at 320px in ${locale}`, async ({ page }) => {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) test(`project Session entries remain separate and fit at ${width}px in ${locale}`, async ({ page }) => {
   const goalId = '00000000-0000-4000-8000-000000000060';
   const memberId = '00000000-0000-4000-8000-000000000061';
   const worker = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active' as const, userId: TEST_VIEWER_ID,
@@ -398,11 +398,11 @@ for (const locale of ['en', 'zh-CN'] as const) test(`project Session entries rem
   const running = { version: 5n, status: 'in_progress' as const, ready: false, startedAt: time, properties: { worker } };
   const details = [detailFixture(projectId, taskId, { version: 5n, title: 'Chain root', status: 'done' }),
     detailFixture(projectId, successorId, { ...running, title: 'A long chain member title to check wrapping', dependsOn: [taskId] }),
-    detailFixture(projectId, standaloneId, { ...running, title: 'A long standalone task title to check wrapping' }),
+    detailFixture(projectId, standaloneId, { ...running, properties: { worker, paused: true }, requiredPlatform: 'linux', title: 'A long standalone task title to check wrapping' }),
     detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'Goal', status: 'todo' }),
     detailFixture(projectId, memberId, { ...running, parentId: goalId, title: 'A long goal member title to check wrapping' })];
   const state = await install(page, false, false, 'unused', details, true);
-  await page.setViewportSize({ width: 320, height: 844 });
+  await page.setViewportSize({ width, height: 844 });
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
   await page.locator('#project-section-tab-tasks').click();
@@ -422,6 +422,13 @@ for (const locale of ['en', 'zh-CN'] as const) test(`project Session entries rem
   await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
   const standalone = page.locator(`#standalone-task-${standaloneId}`).locator('..');
   await assertFit(standalone);
+  const titleWidth = await standalone.locator('.root-title').evaluate(element => element.getBoundingClientRect().width);
+  expect(titleWidth).toBeGreaterThanOrEqual(width === 320 ? 100 : 240);
+  expect(await standalone.evaluate(element => {
+    const session = element.querySelector('.project-session-control')!.getBoundingClientRect();
+    const status = element.querySelector('.task-row-status')!.getBoundingClientRect();
+    return session.left >= status.right || session.right <= status.left || session.top >= status.bottom || session.bottom <= status.top;
+  })).toBe(true);
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
   await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${standaloneId}/sessions/current`);
