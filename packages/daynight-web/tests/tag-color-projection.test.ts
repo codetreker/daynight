@@ -10,6 +10,7 @@ import { useProjectTags } from '../src/features/task-tags/useProjectTags';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { admitTaskGraph } from './helpers/taskSessions';
 import { taskSyncEpoch } from './helpers/taskSync';
+import { wireResponse } from './helpers/wireJson';
 
 vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTagColors: vi.fn() }));
 
@@ -32,7 +33,7 @@ const scopeFixture = () => {
   let suspended = false;
   const scope = {
     userId: '30000000-0000-4000-8000-000000000001', signal: lifetime.signal, isInvalidated: false,
-    isProjectSuspended: () => suspended, ready: async () => {}, principalMismatch: () => {}, revalidateProjectAccess: revalidate,
+    isProjectSuspended: () => suspended, ready: async () => {}, principalMismatch: () => {}, markProjectReadable: vi.fn(), revalidateProjectAccess: revalidate,
     subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     subscribeTagColors: (listener: (projectId: string) => void) => { colorListeners.add(listener); return () => { colorListeners.delete(listener); }; },
   } as unknown as TaskCacheScope;
@@ -114,6 +115,19 @@ describe('shared tag color projection', () => {
     pending.resolve(page([tag(1), tag(2)], '#ABCDEF'));
     await waitFor(() => expect(store.snapshot().items.get(tag(2))).toMatchObject({ color: '#ABCDEF' }));
     interest.close();
+  });
+
+  it('does not publish a result superseded synchronously during positive admission', async () => {
+    const { scope } = scopeFixture(), store = new TagColorProjection(scope, project);
+    const next = deferred<ProjectTagColorPage>();
+    resolve.mockResolvedValueOnce(page([tag(1)], '#111111')).mockReturnValueOnce(next.promise);
+    vi.mocked(scope.markProjectReadable).mockImplementationOnce(() => store.invalidate());
+    const stop = store.watch([tag(1)]);
+    await waitFor(() => expect(resolve).toHaveBeenCalledTimes(2));
+    expect(store.snapshot().items.size).toBe(0);
+    next.resolve(page([tag(1)], '#222222'));
+    await waitFor(() => expect(store.snapshot().items.get(tag(1))).toMatchObject({ color: '#222222' }));
+    stop();
   });
 
   it('fences late responses after invalidation, revocation and scope disposal', async () => {
@@ -289,6 +303,61 @@ describe('shared tag color projection', () => {
       expect(resolve).toHaveBeenCalledTimes(calls);
       expect(store.snapshot().items.size).toBe(0);
       laterCatalog.unmount(); secondSpy.mockRestore();
+    } finally { stop(); scope.dispose(); }
+  });
+
+  it('prevents an older access recheck from withdrawing a successful color retry', async () => {
+    const userId = '30000000-0000-4000-8000-000000000001';
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const graph = graphFixture([detailFixture(project, tag(1))]);
+    const store = new TagColorProjection(scope, project);
+    const accessResponse = deferred<Response>();
+    const fetch = vi.fn(() => accessResponse.promise);
+    vi.stubGlobal('fetch', fetch);
+    const recheck = vi.spyOn(scope, 'revalidateProjectAccess');
+    const revoke = vi.spyOn(scope, 'revokeProject');
+    let stop = () => {};
+    try {
+      await admitTaskGraph(scope, graph, { versionForTask: () => 1n });
+      resolve.mockRejectedValueOnce(new ApiError('server', 404, 'not_found'))
+        .mockImplementation(async (_project, ids) => page(ids, '#ABCDEF'));
+      stop = store.watch([tag(1)]);
+      await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      const before = scope.getProjectReadRevision(project);
+      store.invalidate();
+      await waitFor(() => expect(store.snapshot().items.get(tag(1))).toMatchObject({ color: '#ABCDEF' }));
+      expect(scope.getProjectReadRevision(project)).toBeGreaterThan(before);
+      expect(resolve).toHaveBeenCalledTimes(2);
+      accessResponse.resolve(wireResponse({ error: { code: 'not_found', message: 'Unavailable', requestId: 'safe' } }, { status: 404, headers: { 'Daynight-User-ID': userId } }));
+      await recheck.mock.results[0]!.value.catch(() => {});
+      expect(revoke).not.toHaveBeenCalled();
+      expect(scope.getAuthorizedProject(project)).not.toBeNull();
+      expect(store.snapshot().items.get(tag(1))).toMatchObject({ color: '#ABCDEF' });
+      expect(resolve).toHaveBeenCalledTimes(2);
+    } finally { stop(); scope.dispose(); }
+  });
+
+  it('admits a successful round containing missing IDs and accepts a newer confirmed denial', async () => {
+    const userId = '30000000-0000-4000-8000-000000000001';
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const graph = graphFixture([detailFixture(project, tag(1))]);
+    const store = new TagColorProjection(scope, project);
+    vi.stubGlobal('fetch', vi.fn(async () => wireResponse({ error: { code: 'not_found', message: 'Unavailable', requestId: 'safe' } }, { status: 404, headers: { 'Daynight-User-ID': userId } })));
+    const revoke = vi.spyOn(scope, 'revokeProject');
+    let stop = () => {};
+    try {
+      await admitTaskGraph(scope, graph, { versionForTask: () => 1n });
+      const before = scope.getProjectReadRevision(project);
+      resolve.mockResolvedValueOnce({ catalogEpoch: 'epoch', items: [{ id: tag(1), state: 'found', version: 1n, color: '#ABCDEF' }, { id: tag(2), state: 'missing' }] });
+      stop = store.watch([tag(1), tag(2)]);
+      await waitFor(() => expect(store.snapshot().items.size).toBe(2));
+      expect(store.snapshot().items.get(tag(2))).toMatchObject({ state: 'missing' });
+      expect(scope.getProjectReadRevision(project)).toBeGreaterThan(before);
+      resolve.mockRejectedValueOnce(new ApiError('server', 404, 'not_found'));
+      store.invalidate();
+      await waitFor(() => expect(revoke).toHaveBeenCalledOnce());
+      expect(scope.getAuthorizedProject(project)).toBeNull();
+      expect(store.snapshot().items.size).toBe(0);
     } finally { stop(); scope.dispose(); }
   });
 });

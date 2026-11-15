@@ -116,7 +116,7 @@ export class TagColorProjection {
     const signal = AbortSignal.any([controller.signal, this.scope.signal]);
     const generation = ++this.generation;
     this.publish({ ...this.value, loading: true, error: null });
-    const live = () => !signal.aborted && generation === this.generation && !this.scope.isInvalidated && !this.scope.isProjectSuspended(this.projectId) && !this.blocked;
+    const live = () => !signal.aborted && generation === this.generation && !this.scope.isInvalidated && !this.scope.hasIdentityMismatch && !this.scope.isProjectSuspended(this.projectId) && !this.blocked;
     try {
       await this.scope.ready(signal);
       let items: ProjectTagColor[] = [];
@@ -140,6 +140,8 @@ export class TagColorProjection {
         }
       }
       await this.scope.ready(signal);
+      if (!live()) return;
+      this.scope.markProjectReadable(this.projectId);
       if (!live()) return;
       this.publish({ items: new Map(items.map(item => [item.id, item])), loading: false, error: null });
     } catch (error) {
