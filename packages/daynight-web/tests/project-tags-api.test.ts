@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pauseAuthRequests } from "../src/api/client";
-import { createProjectTag, deleteProjectTag, getProjectTag, listProjectTags, normalizeTagName, renameProjectTag, resolveProjectTagColors, resolveProjectTags, tagNameKey } from "../src/api/task-tags";
+import { createProjectTag, deleteProjectTag, getProjectTag, listProjectTags, normalizeTagName, renameProjectTag, resolveProjectTagColors, resolveProjectTags, tagNameKey, updateProjectTag } from "../src/api/task-tags";
 
 const project = "10000000-0000-4000-8000-000000000001", user = "20000000-0000-4000-8000-000000000001";
 const tag = "30000000-0000-4000-8000-000000000001", other = "30000000-0000-4000-8000-000000000002", epoch = "40000000-0000-4000-8000-000000000001";
@@ -40,6 +40,30 @@ describe("project tag API", () => {
     await expect(deleteProjectTag(project, tag, 9223372036854775807n, signal(), owner)).resolves.toEqual({ projectId: project, tagId: tag, deleted: true });
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tags/${tag}`, expect.objectContaining({ method: "DELETE", body: '{"version":9223372036854775807,"confirm":true}' }));
     expect(owner.onDispatch).toHaveBeenCalledOnce(); expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it("creates with an optional color and updates name and color in one exact-version request", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(reply(resource, 201)).mockResolvedValueOnce(reply(resource, 201)).mockResolvedValueOnce(reply(resource));
+    vi.stubGlobal("fetch", fetcher);
+    await createProjectTag(project, " Alpha ", signal(), admission());
+    expect(fetcher).toHaveBeenNthCalledWith(1, `/api/v1/projects/${project}/tags`, expect.objectContaining({ method: "POST", body: '{"name":"Alpha"}' }));
+    await createProjectTag(project, " Alpha ", signal(), admission(), "#12ABEF");
+    expect(fetcher).toHaveBeenNthCalledWith(2, `/api/v1/projects/${project}/tags`, expect.objectContaining({ method: "POST", body: '{"name":"Alpha","color":"#12ABEF"}' }));
+    const owner = admission();
+    await updateProjectTag(project, tag, { name: " Alpha ", color: "#12ABEF" }, 9223372036854775806n, signal(), owner);
+    expect(fetcher).toHaveBeenNthCalledWith(3, `/api/v1/projects/${project}/tags/${tag}`, expect.objectContaining({ method: "PATCH", body: '{"version":9223372036854775806,"name":"Alpha","color":"#12ABEF"}' }));
+    expect(owner.onDispatch).toHaveBeenCalledOnce(); expect(owner.onWriteConfirmed).toHaveBeenCalledOnce();
+  });
+  it("submits a color-only update and preserves a rejected conflict without retrying", async () => {
+    const fetcher = vi.fn().mockResolvedValue(reply('{"error":{"code":"version_conflict","message":"changed","requestId":"r"}}', 409)); vi.stubGlobal("fetch", fetcher);
+    const owner = admission();
+    await expect(updateProjectTag(project, tag, { color: "#12ABEF" }, 7n, signal(), owner)).rejects.toMatchObject({ code: "version_conflict" });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tags/${tag}`, expect.objectContaining({ method: "PATCH", body: '{"version":7,"color":"#12ABEF"}' }));
+    expect(owner.onWriteConfirmed).not.toHaveBeenCalled(); expect(owner.onWriteRejected).toHaveBeenCalledOnce();
+  });
+  it("accepts a color-only update receipt without requiring a submitted name", async () => {
+    const fetcher = vi.fn().mockResolvedValue(reply(resource)); vi.stubGlobal("fetch", fetcher);
+    await expect(updateProjectTag(project, tag, { color: "#12ABEF" }, 9223372036854775806n, signal(), admission())).resolves.toMatchObject({ name: "Alpha", version: 9223372036854775807n });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tags/${tag}`, expect.objectContaining({ method: "PATCH", body: '{"version":9223372036854775806,"color":"#12ABEF"}' }));
   });
   it("reports a version conflict and does not retry or replace the submitted version", async () => {
     const fetcher = vi.fn().mockResolvedValue(reply('{"error":{"code":"version_conflict","message":"changed","requestId":"r"}}', 409)); vi.stubGlobal("fetch", fetcher);

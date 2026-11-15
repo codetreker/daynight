@@ -42,6 +42,10 @@ export const normalizeTagName = (value: string): string | null => {
   const name = value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
   return name.length === 0 || Array.from(name).length > 64 || /[\p{Cc}\u2028\u2029]/u.test(name) ? null : name;
 };
+export const normalizeTagColor = (value: string): string | null => {
+  const color = value.trim().toUpperCase();
+  return /^#[0-9A-F]{6}$/.test(color) ? color : null;
+};
 export const tagNameKey = (name: string): string => name.replace(/[A-Z]/g, character => character.toLowerCase());
 
 const parseProjectTag = (value: unknown, project: string, expectedId?: string): ProjectTag => {
@@ -98,15 +102,23 @@ const writeTag = async (project: string, tag: string | null, method: "POST" | "P
       return { projectId: project, tagId: tag!, deleted: true };
     }
     const result = parseProjectTag(value, project, tag ?? undefined);
-    const input = body as { readonly name: string; readonly version?: bigint };
-    if (result.name !== input.name || input.version !== undefined && result.version !== input.version && result.version !== input.version + 1n) return malformed();
+    const input = body as { readonly name?: string; readonly version?: bigint };
+    if (input.name !== undefined && result.name !== input.name || input.version !== undefined && result.version !== input.version && result.version !== input.version + 1n) return malformed();
     return result;
   }, undefined, false, admission.onWriteRejected);
 };
-export const createProjectTag = (projectId: string, name: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTag> => {
+export const createProjectTag = (projectId: string, name: string, signal: AbortSignal, admission: TaskResponseAdmission, color?: string): Promise<ProjectTag> => {
   const project = requestId(projectId), normalized = normalizeTagName(name);
-  if (normalized === null) throw new ApiError("protocol");
-  return writeTag(project, null, "POST", { name: normalized }, signal, admission) as Promise<ProjectTag>;
+  const normalizedColor = color === undefined ? undefined : normalizeTagColor(color);
+  if (normalized === null || normalizedColor === null) throw new ApiError("protocol");
+  return writeTag(project, null, "POST", { name: normalized, ...(normalizedColor === undefined ? {} : { color: normalizedColor }) }, signal, admission) as Promise<ProjectTag>;
+};
+export const updateProjectTag = (projectId: string, tagId: string, fields: { readonly name?: string; readonly color?: string }, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTag> => {
+  const project = requestId(projectId), tag = requestId(tagId);
+  const name = fields.name === undefined ? undefined : normalizeTagName(fields.name);
+  const color = fields.color === undefined ? undefined : normalizeTagColor(fields.color);
+  if (!isTaskVersion(version) || name === null || color === null || name === undefined && color === undefined) throw new ApiError("protocol");
+  return writeTag(project, tag, "PATCH", { version, ...(name === undefined ? {} : { name }), ...(color === undefined ? {} : { color }) }, signal, admission) as Promise<ProjectTag>;
 };
 export const renameProjectTag = (projectId: string, tagId: string, name: string, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTag> => {
   const project = requestId(projectId), tag = requestId(tagId), normalized = normalizeTagName(name);
