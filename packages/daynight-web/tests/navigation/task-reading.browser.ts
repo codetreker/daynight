@@ -12,6 +12,7 @@ const standaloneId = '00000000-0000-4000-8000-000000000043';
 const personalId = '00000000-0000-4000-8000-000000000011';
 const messageId = '00000000-0000-4000-8000-000000000051';
 const time = '2026-10-20T09:00:00Z';
+const taskRow = (link: Locator) => link.locator('..').locator('..').locator('..');
 const description = Array.from({ length: 60 }, (_, i) => `## Section ${i + 1}\n\nLong task description remains readable.`).join('\n\n');
 
 async function expectChainTimeLayout(header: Locator) {
@@ -51,7 +52,7 @@ async function install(page: Page, timing = false, completion = false, title = '
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, ...(sessionObservations ? { taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'unavailable' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: detail.id === standaloneId, canOpen: true }])) } : {}) })); }
+    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, tagsForTask: row => details.find(detail => detail.id === row.id)!.tags, ...(sessionObservations ? { taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'unavailable' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: detail.id === standaloneId, canOpen: true }])) } : {}) })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -103,7 +104,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole('button', { name: locale === 'en' ? 'Close dependency graph' : '关闭依赖图' }).click();
       await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
-      const row = page.locator(`#standalone-task-${standaloneId}`);
+      const row = taskRow(page.locator(`#standalone-task-${standaloneId}`));
       await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
       expect(await row.evaluate(element => {
         const bounds = element.getBoundingClientRect();
@@ -161,14 +162,14 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
       await expectChainTimeLayout(header);
       await expect(page.locator(`[data-chain-id="${taskId}"] .goal-children-heading time[datetime="2026-10-22T09:59:30Z"]`)).toBeVisible();
       const member = page.locator(`#chain-task-${taskId}-${successorId}`);
-      await expect(member.locator('time[datetime="2026-10-22T09:59:50Z"]')).toBeVisible();
+      await expect(taskRow(member).locator('time[datetime="2026-10-22T09:59:50Z"]')).toBeVisible();
       await member.focus();
-      await expect(page.locator(`[data-chain-id="${taskId}"]`).getByRole('tooltip')).toBeVisible();
+      await expect(member).toHaveAttribute('aria-describedby', /.+/);
       await page.keyboard.press('Tab');
       await expect(member).not.toBeFocused();
       await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
       const row = page.locator(`#standalone-task-${standaloneId}`);
-      await expect(row.locator('time[datetime="2026-10-22T09:59:40Z"]')).toBeVisible();
+      await expect(taskRow(row).locator('time[datetime="2026-10-22T09:59:40Z"]')).toBeVisible();
       const descriptions = await row.getAttribute('aria-describedby');
       expect(descriptions?.split(/\s+/).length).toBe(2);
       const descriptionText = await row.evaluate(element => (element.getAttribute('aria-describedby') ?? '').split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' '));
@@ -339,7 +340,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await page.locator('#project-section-tab-tasks').click();
     await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
     for (const [index, status] of statuses.entries()) {
-      const row = page.locator(`#standalone-task-${ids[index]}`);
+      const row = taskRow(page.locator(`#standalone-task-${ids[index]}`));
       await expect(row).toHaveAttribute('data-task-status', status);
       await page.mouse.move(0, 0);
       await expect(row).toHaveCSS('background-color', roleColors[status][0]);
@@ -350,23 +351,23 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       for (const hover of [false, true]) {
         if (hover) await row.hover();
         await expect(row).toHaveCSS('background-color', roleColors[status][hover ? 1 : 0]);
-        for (const selector of ['.root-title', '.root-meta', '.root-status', '.task-agent-permission']) await expectTextContrast(row.locator(selector));
+        for (const selector of ['.task-row-title', '.task-row-meta', '.root-status', '.task-agent-permission']) await expectTextContrast(row.locator(selector));
       }
     }
-    const overdue = page.locator(`#standalone-task-${overdueId}`), blocked = page.locator(`#standalone-task-${blockedId}`);
+    const overdue = taskRow(page.locator(`#standalone-task-${overdueId}`)), blocked = taskRow(page.locator(`#standalone-task-${blockedId}`));
     await page.mouse.move(0, 0);
     await expect(overdue).toHaveCSS('background-color', roleColors.attention[0]);
     await expect(overdue.locator('.root-status')).toHaveCSS('color', roleColors.in_progress[3]);
     await expect(overdue.locator('.task-stuck-label')).toBeVisible();
     await expect(blocked).toHaveCSS('background-color', roleColors.todo[0]);
     await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('color', roleColors.attention[3]);
-    await expect(page.locator(`#standalone-task-${ids[2]} .task-paused-badge`)).toHaveCSS('color', roleColors.attention[3]);
+    await expect(taskRow(page.locator(`#standalone-task-${ids[2]}`)).locator('.task-paused-badge')).toHaveCSS('color', roleColors.attention[3]);
     await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
     const chain = page.locator(`[data-chain-id="${taskId}"]`), header = chain.locator('.goal-header');
     await expect(header).toHaveCSS('background-color', roleColors.proposed[0]);
     await expect(header.locator('.root-progress-track i')).toHaveCSS('background-color', roleColors.done[3]);
     await header.locator('[aria-expanded]').click();
-    await expect(chain.locator('.goal-task-row')).toHaveCSS('background-color', roleColors.proposed[0]);
+    await expect(chain.locator('.task-row')).toHaveCSS('background-color', roleColors.proposed[0]);
     await page.locator(`#task-chain-graph-${taskId}`).click();
     const node = page.locator(`.react-flow__node[data-id="${taskId}"] .task-node`);
     const body = node.locator('.task-node-body');
@@ -412,7 +413,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     await expect(action).toBeVisible(); await expectTextContrast(action); await action.focus(); await expect(action).toBeFocused();
     expect(await item.evaluate(element => {
       const a = element.querySelector('.project-session-control')!.getBoundingClientRect();
-      const title = element.querySelector('.root-title')!.getBoundingClientRect();
+      const title = element.querySelector('.task-row-title')!.getBoundingClientRect();
       const bounds = element.getBoundingClientRect();
       return a.left >= bounds.left && a.right <= bounds.right && a.top >= bounds.top && a.bottom <= bounds.bottom &&
         (a.left >= title.right || a.top >= title.bottom || a.bottom <= title.top) && document.documentElement.scrollWidth <= innerWidth;
@@ -420,15 +421,10 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
     return action;
   };
   await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
-  const standalone = page.locator(`#standalone-task-${standaloneId}`).locator('..');
+  const standalone = taskRow(page.locator(`#standalone-task-${standaloneId}`));
   await assertFit(standalone);
-  const titleWidth = await standalone.locator('.root-title').evaluate(element => element.getBoundingClientRect().width);
+  const titleWidth = await standalone.locator('.task-row-title').evaluate(element => element.getBoundingClientRect().width);
   expect(titleWidth).toBeGreaterThanOrEqual(width === 320 ? 100 : 240);
-  expect(await standalone.evaluate(element => {
-    const session = element.querySelector('.project-session-control')!.getBoundingClientRect();
-    const status = element.querySelector('.task-row-status')!.getBoundingClientRect();
-    return session.left >= status.right || session.right <= status.left || session.top >= status.bottom || session.bottom <= status.top;
-  })).toBe(true);
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
   await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${standaloneId}/sessions/current`);
@@ -436,7 +432,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
   await page.locator(`#task-root-${taskId}`).click();
   const chainToggle = page.locator(`#task-root-${taskId}`);
-  const chainAction = await assertFit(page.locator(`#chain-task-${taskId}-${successorId}`).locator('..').locator('..'));
+  const chainAction = await assertFit(taskRow(page.locator(`#chain-task-${taskId}-${successorId}`)));
   await expect(chainAction).toHaveCSS('color', roleColors.attention[3]);
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
@@ -447,7 +443,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   await page.getByRole('tab', { name: locale === 'en' ? 'Goals' : 'Goal' }).click();
   const goalToggle = page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`);
   await goalToggle.click();
-  const goalAction = await assertFit(page.locator(`[data-goal-id="${goalId}"] .goal-task-row`).first());
+  const goalAction = await assertFit(page.locator(`[data-goal-id="${goalId}"] .task-row`).first());
   await expect(goalAction).toHaveCSS('color', roleColors.attention[3]);
   await page.keyboard.press('Enter');
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
@@ -456,4 +452,108 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
   await page.keyboard.press('Escape'); await expect(goalAction).toBeFocused();
   await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
   expect(state.writes).toEqual([]);
+});
+
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 390, 320]) {
+  test(`shared row keeps ID selection and clipboard separate from navigation at ${width}px in ${locale}`, async ({ page, context }) => {
+    const title = 'A long complete task title 长标题 '.repeat(5);
+    await install(page, false, false, title);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+    const link = page.locator(`#standalone-task-${taskId}`);
+    const row = link.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " task-row ")]');
+    const idText = row.locator('.task-row-id');
+    const copy = row.getByRole('button', { name: locale === 'en' ? 'Copy task ID' : '复制任务 ID' });
+    await expect(link).toHaveAttribute('href', `/projects/${projectId}/tasks/${taskId}`);
+    await expect(idText).toHaveText(taskId);
+    await expect(link).toHaveCSS('font-size', '13px');
+    await expect(idText).toHaveCSS('font-size', '11px');
+    expect(await row.evaluate(element => {
+      const heading = element.querySelector('.task-row-heading')!;
+      const title = element.querySelector('.task-row-title')!.getBoundingClientRect();
+      const id = element.querySelector('.task-row-id')!.getBoundingClientRect();
+      const button = element.querySelector('.task-copy-button')!.getBoundingClientRect();
+      const bounds = heading.getBoundingClientRect();
+      return [title, id, button].every(box => box.width > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1)
+        && element.querySelector('button button, a button, button a, a a') === null && document.documentElement.scrollWidth <= innerWidth;
+    })).toBe(true);
+    await copy.focus(); await page.keyboard.press('Enter');
+    await expect(row.getByRole('status')).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(taskId);
+    await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+    const box = await idText.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const rect = range.getClientRects()[0]!; return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
+    await page.mouse.move(box!.x + 2, box!.y + box!.height / 2); await page.mouse.down();
+    await page.mouse.move(box!.x + Math.min(box!.width - 2, 80), box!.y + box!.height / 2, { steps: 6 }); await page.mouse.up();
+    const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+    expect(selected.length).toBeGreaterThan(0);
+    await page.keyboard.press('Control+C');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+    await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await link.click();
+    await expect(page.locator('.task-detail-dialog')).toBeVisible();
+    await page.keyboard.press('Escape'); await expect(link).toBeFocused();
+  });
+}
+
+for (const kind of ['chain', 'goal'] as const) test(`shared ${kind} row supports modified links, clipboard failure and independent Session`, async ({ page, context }) => {
+  const goalId = '00000000-0000-4000-8000-000000000060';
+  const memberId = '00000000-0000-4000-8000-000000000061';
+  const worker = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active' as const, userId: TEST_VIEWER_ID,
+    workerId: '00000000-0000-4000-8000-000000000072', worktreeId: '00000000-0000-4000-8000-000000000073',
+    machine: { id: '00000000-0000-4000-8000-000000000074', name: 'Test host' }, platform: 'linux' as const,
+    agent: 'codex' as const, agentControlMode: 'web' as const, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+  const running = { version: 5n, status: 'in_progress' as const, ready: false, startedAt: time, properties: { worker } };
+  const details = [detailFixture(projectId, taskId, { version: 5n, title: 'Chain root', status: 'done' }),
+    detailFixture(projectId, successorId, { ...running, title: 'Chain member', dependsOn: [taskId] }),
+    detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'Goal', status: 'todo' }),
+    detailFixture(projectId, memberId, { ...running, parentId: goalId, title: 'Goal member' })];
+  await install(page, false, false, 'unused', details, true);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: kind === 'chain' ? 'Task chains' : 'Goals' }).click();
+  const toggle = kind === 'chain' ? page.locator(`#task-root-${taskId}`) : page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`);
+  await toggle.click();
+  const id = kind === 'chain' ? successorId : memberId;
+  const link = page.locator(kind === 'chain' ? `#chain-task-${taskId}-${id}` : `#chain-task-goal-${goalId}-${id}`);
+  const row = link.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " task-row ")]');
+  await expect(link).toHaveAttribute('href', `/projects/${projectId}/tasks/${id}`);
+  const metaWasHandled = await link.evaluate(element => {
+    let prevented = true;
+    const observe = (event: Event) => { prevented = event.defaultPrevented; event.preventDefault(); };
+    window.addEventListener('click', observe, { once: true });
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true }));
+    return prevented;
+  });
+  expect(metaWasHandled).toBe(false);
+  const popupPromise = context.waitForEvent('page');
+  await link.click({ modifiers: ['Control'] });
+  const popup = await popupPromise; await popup.waitForLoadState();
+  expect(new URL(popup.url()).pathname).toBe(`/projects/${projectId}/tasks/${id}`);
+  await popup.close();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await page.evaluate(() => {
+    const clipboard = navigator.clipboard;
+    const original = clipboard.writeText.bind(clipboard);
+    Object.defineProperty(clipboard, 'writeText', { configurable: true, value: () => { Object.defineProperty(clipboard, 'writeText', { configurable: true, value: original }); return Promise.reject(new Error('denied')); } });
+  });
+  const copy = row.getByRole('button', { name: 'Copy task ID' });
+  await copy.click(); await expect(row.getByRole('alert')).toContainText('Select and copy it manually');
+  await expect(row.locator('.task-row-id')).toHaveText(id);
+  await copy.click(); await expect(row.getByRole('status')).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(id);
+  await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+  const session = row.getByRole('button', { name: /Open Session/ });
+  await session.focus(); await page.keyboard.press('Enter');
+  await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape'); await expect(session).toBeFocused();
 });

@@ -1907,7 +1907,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await expect(row.locator('.goal-list-progress')).not.toHaveText(progress);
   await card.locator('.goal-list-toggle').click();
   for (const [id, status] of [[firstId, 'todo'], [singleId, 'cancelled']] as const) {
-    const member = card.locator(`#chain-task-goal-${goalId}-${id}`).locator('..');
+    const member = card.locator(`#chain-task-goal-${goalId}-${id}`).locator('..').locator('..').locator('..');
     await page.mouse.move(0, 0);
     await expect(member).toHaveCSS('background-color', palette[status][0]);
     await member.hover();
@@ -2223,7 +2223,7 @@ for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-
   await checkOutline(otherGoal, true);
   await expect(firstGoal.locator('.goal-list-contents')).toHaveCSS('border-top-width', '1px');
   await expect(firstGoal.locator('..')).toHaveCSS('row-gap', '8px');
-  for (const control of [firstGoal.locator('.goal-list-toggle'), firstGoal.locator('.goal-list-title'), firstGoal.locator(`#project-goal-detail-${goalId}`), firstGoal.locator(`#project-goal-graph-${goalId}`), firstGoal.locator('.goal-task-main').first(), firstGoal.locator('.goal-task-main').last()]) {
+  for (const control of [firstGoal.locator('.goal-list-toggle'), firstGoal.locator('.goal-list-title'), firstGoal.locator(`#project-goal-detail-${goalId}`), firstGoal.locator(`#project-goal-graph-${goalId}`), firstGoal.locator('.task-row-title').first(), firstGoal.locator('.task-row-title').last()]) {
     await control.scrollIntoViewIfNeeded();
     await control.focus();
     const visibleOutline = await control.evaluate(element => {
@@ -2558,10 +2558,10 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.keyboard.press('Escape');
   await expect(card.getByRole('tooltip')).toBeHidden();
   await toggle.click();
-  await expect(card.locator('.goal-task-row').filter({ hasText: 'Standalone task' })).toContainText(zh ? '待处理' : 'To do');
+  await expect(card.locator('.task-row').filter({ hasText: 'Standalone task' })).toContainText(zh ? '待处理' : 'To do');
   const row = card.locator(`#chain-task-goal-${goalId}-${firstId}`);
-  await expect(row.locator('time')).toHaveAttribute('datetime', '2026-10-22T09:59:10Z');
-  await row.focus(); await expect(row.locator('..').getByRole('tooltip')).toBeVisible();
+  await expect(row.locator('..').locator('..').locator('..').locator('time.completion-time-label')).toHaveAttribute('datetime', '2026-10-22T09:59:10Z');
+  await row.focus(); await expect(row).toHaveAttribute('aria-describedby', /.+/);
   await page.keyboard.press('Tab'); await expect(row).not.toBeFocused();
   expect(await page.locator('button button, button a, a button').count()).toBe(0);
   await detail.click();
@@ -2587,28 +2587,17 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await check();
 });
 
-test('Goal member completion hint remains reachable outside the clipped card', async ({ page }) => {
+test('Goal member exact completion remains accessible from the focused link', async ({ page }) => {
   const fixture = await install(page); fixture.completionGoal();
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const card = page.locator(`[data-goal-id="${otherGoalId}"]`);
   await card.locator('.goal-list-toggle').click();
-  await card.evaluate(element => element.scrollIntoView({ block: 'center' }));
   const member = card.locator(`#chain-task-goal-${otherGoalId}-${outsideId}`);
   await member.focus();
-  const hint = member.locator('..').getByRole('tooltip');
-  await expect(hint).toBeVisible();
-  await expect.poll(() => hint.evaluate(element => {
-    const tip = element.getBoundingClientRect();
-    const bounds = element.closest('.goal-list-card')!.getBoundingClientRect();
-    const x = tip.left + tip.width / 2, y = tip.top + tip.height / 2;
-    return element.matches(':popover-open') && (y > bounds.bottom || y < bounds.top)
-      && element.contains(document.elementFromPoint(x, y));
-  })).toBe(true);
-  await page.keyboard.press('Escape');
-  await expect(hint).toBeHidden();
   await expect(member).toBeFocused();
+  expect(await member.evaluate(element => (element.getAttribute('aria-describedby') ?? '').split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' '))).toContain('2026');
 });
 
 test('touch opens a completed Goal member and reads its completion time', async ({ browser }) => {
@@ -2639,7 +2628,7 @@ test('Goal list completion tick retains pinned hint and expansion while its deta
   await card.locator('.goal-list-toggle').click();
   const disclosure = card.locator('.goal-list-toggle');
   const time = card.locator(`#chain-task-goal-${goalId}-${firstId}`);
-  const label = time.locator('time');
+  const label = time.locator('..').locator('..').locator('..').locator('time.completion-time-label');
   await time.focus();
   const text = await label.textContent();
   const node = await time.elementHandle();
@@ -2647,7 +2636,7 @@ test('Goal list completion tick retains pinned hint and expansion while its deta
   await page.clock.fastForward(61_000);
   await expect(label).not.toHaveText(text!);
   fixture.releaseSync();
-  await expect(time.locator('..').getByRole('tooltip')).toBeVisible();
+  await expect(time).toHaveAttribute('aria-describedby', /.+/);
   await expect(time).toBeFocused();
   expect(await time.evaluate((element, old) => element === old, node)).toBe(true);
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true');

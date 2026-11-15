@@ -1,4 +1,10 @@
 import type { ComponentProps } from 'react';
+
+// These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
+vi.mock('../src/app/router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
 import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -77,10 +83,10 @@ describe('Goal list', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
     const otherCard = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
     fireEvent.click(otherCard.querySelector('.goal-list-toggle')!);
-    expect(otherCard.querySelectorAll('.root-title')).toHaveLength(1);
+    expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(1);
     expect(document.querySelectorAll('.tag-filter')).toHaveLength(1);
     expect(card.querySelector('.tag-filter')).toBeNull();
-    const titles = () => [...card.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent);
+    const titles = () => [...card.querySelectorAll('.task-row-title')].map(node => node.textContent);
     expect(titles()).toEqual(['child']);
     expect(card.querySelector('.root-toggle')).toBeNull();
     expect(card.querySelector('.goal-list-toggle')).toHaveAccessibleDescription(/4 tasks/);
@@ -90,18 +96,18 @@ describe('Goal list', () => {
     expect(openGraph).toHaveBeenCalledWith(goal.id, graphButton);
     fireEvent.click(screen.getByRole('checkbox', { name: 'beta' }));
     expect(titles()).toEqual([]);
-    expect(otherCard.querySelectorAll('.root-title')).toHaveLength(0);
+    expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(0);
     expect(within(card).getByText('No tasks match the filters')).toBeVisible();
     fireEvent.change(screen.getByRole('combobox', { name: 'Child task tag filter: AND / OR' }), { target: { value: 'any' } });
     expect(titles()).toEqual(['child', 'sibling', 'standalone']);
     fireEvent.click(screen.getByRole('checkbox', { name: 'No tags' }));
     expect(titles()).toEqual(['untagged']);
-    expect(otherCard.querySelectorAll('.root-title')).toHaveLength(0);
+    expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(0);
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
     expect(titles()).toEqual(['untagged']);
     fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
-    expect(within(card).getByText('standalone', { selector: '.root-title' })).toBeInTheDocument();
+    expect(within(card).getByText('standalone', { selector: '.task-row-title' })).toBeInTheDocument();
     expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
     vi.mocked(resolveProjectTags).mockRejectedValue(new ApiError('server', 404, 'tag_not_found'));
@@ -141,7 +147,7 @@ describe('Goal list', () => {
       expect(content).not.toBeVisible();
     }
     fireEvent.click(toggle);
-    const child = card.querySelector<HTMLButtonElement>('.goal-task-main')!;
+    const child = card.querySelector<HTMLAnchorElement>('.task-row-title')!;
     child.focus();
     fireEvent.click(card.querySelector('.root-status')!);
     expect(toggle).toHaveFocus();
@@ -275,8 +281,8 @@ describe('Goal list', () => {
     expect(first.querySelector('.goal-list-progress')).toHaveTextContent('0/1 已完成');
     fireEvent.click(toggle);
     fireEvent.click(within(second).getByRole('button', { name: '展开 Goal：other' }));
-    expect([...first.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent)).toEqual(['child', 'standalone']);
-    expect([...second.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent)).toEqual(['solo-other', 'root']);
+    expect([...first.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['child', 'standalone']);
+    expect([...second.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['solo-other', 'root']);
     expect(first.querySelector('.root-toggle')).toBeNull();
     expect(within(first).getByText('已暂停')).toBeVisible();
     expect(first.querySelector('.task-duration')).toHaveTextContent('10 分钟');
@@ -289,9 +295,9 @@ describe('Goal list', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(toggle);
     expect(within(first).queryByText('child')).toBeNull();
-    expect(within(second).getByText('root')).toBeVisible();
+    expect(within(second).getByRole('link', { name: 'root' })).toBeVisible();
     fireEvent.click(toggle);
-    expect(within(first).getByText('child')).toBeVisible();
+    expect(within(first).getByRole('link', { name: 'child' })).toBeVisible();
     fireEvent.click(within(document.querySelector<HTMLElement>('[data-goal-id="empty"]')!).getByRole('button', { name: '展开 Goal：empty' }));
     expect(screen.getByText('此 Goal 暂无子任务。')).toBeVisible();
   });
@@ -307,7 +313,7 @@ describe('Goal list', () => {
     expect(progress.querySelectorAll('i')).toHaveLength(1);
     expect(progress.querySelector('i')).toHaveStyle({ width: '50%' });
     fireEvent.click(toggle);
-    const done = within(card).getByRole('button', { name: /done.*Done/ });
+    const done = within(card).getByRole('link', { name: 'done' });
     done.focus();
     view.rerender(list(snapshot(current.map((item) => item.id === 'done' ? { ...item, status: 'cancelled' } : item))));
     expect(progress).toHaveTextContent('0/1 completed');
@@ -317,7 +323,7 @@ describe('Goal list', () => {
     expect(progress).toHaveTextContent('0/0 completed');
     expect(progress.querySelector('i')).toHaveStyle({ width: '0%' });
     expect(within(card).queryByText('This Goal has no child tasks yet.')).toBeNull();
-    expect(within(card).getByText('cancelled', { selector: '.root-title' })).toBeVisible();
+    expect(within(card).getByText('cancelled', { selector: '.task-row-title' })).toBeVisible();
   });
 
   it('updates membership and dependency changes without losing surviving rows or expansion', () => {
@@ -335,7 +341,7 @@ describe('Goal list', () => {
     view.rerender(list(snapshot(merged)));
     expect(document.getElementById(child.id)).toBe(child);
     expect(child).toHaveFocus();
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(4);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(4);
     expect(card.querySelector('.root-toggle')).toBeNull();
     const moved = merged.map(task => task.id === 'child' ? { ...task, parentId: other.id } : task);
     view.rerender(list(snapshot(moved)));
@@ -367,7 +373,7 @@ describe('Goal list', () => {
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
     expect(toggle).toHaveAccessibleDescription(/8 tasks/);
     fireEvent.click(toggle);
-    const titles = () => [...card.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent);
+    const titles = () => [...card.querySelectorAll('.task-row-title')].map(node => node.textContent);
     expect(titles()).toEqual(['running', 'todo-a', 'todo-b', 'proposed', 'cancelled-newer', 'done-a', 'done-equal', 'done-unknown']);
     const first = document.getElementById('chain-task-goal-goal-todo-a')!;
     view.rerender(list(ordered([goal, other, empty, ...members.toReversed().map(task => task.id === 'running' ? { ...task, status: 'todo' as const } : task)])));
@@ -439,7 +445,7 @@ describe('Goal list', () => {
       expect(within(firstCard).getByText('No tasks match the filters')).toBeVisible();
       expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
       fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
-      const session = firstCard.querySelector<HTMLButtonElement>('.goal-task-row .session-status-action')!;
+      const session = firstCard.querySelector<HTMLButtonElement>('.task-row .session-status-action')!;
       fireEvent.click(session); expect(openSession).toHaveBeenCalledWith(firstTask, session);
       visible(records[1]!, true);
       expect(secondCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'warning');
@@ -456,9 +462,9 @@ describe('Goal list', () => {
       expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
       session.focus();
       replaceSessions({ [siblingTask]: 'working', [secondTask]: 'warning' });
-      const firstRow = document.getElementById(`chain-task-goal-${firstGoal}-${firstTask}`)!.closest<HTMLElement>('.goal-task-row')!;
+      const firstRow = document.getElementById(`chain-task-goal-${firstGoal}-${firstTask}`)!.closest<HTMLElement>('.task-row')!;
       expect(firstRow.querySelector('.session-status-action')).toBeNull();
-      expect(firstRow.querySelector('.goal-task-main')).toHaveFocus();
+      expect(firstRow.querySelector('.task-row-title')).toHaveFocus();
       replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
       visible(records[0]!, false);
       expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();

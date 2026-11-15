@@ -24,7 +24,7 @@ MCP 复用现有 Task 工具管理 Goal，`task_list` 可按类型及 Parent 选
 
 成员从完整项目快照按原次序取得，再整体按 `in_progress`、`todo`、`proposed`、终态稳定排序；前三组保留快照次序。`done` 与 `cancelled` 混排，分别按 `completedAt` 或 `cancelledAt` 的完整时间精度倒序，未知时间在末尾，相同时间或均未知时保留快照次序。创建时间、ID、负责人、就绪、暂停、链归属和依赖拓扑不增加排序优先级。
 
-每个成员采用任务链成员行，显示自身标题、五态、负责人、自动执行许可、机器记录和 Tag，并在适用时显示耗时、完成时间、暂停、就绪、阻塞和 Session 指示。行主体打开 Task 详情，可用的 Session 控件独立打开该任务的 Session；两种动作均不切换 Goal。成员行的完整 Session 状态、时效和启动宽限遵循[项目列表要求](daynight-web.md)。平台徽标、创建时间和卡住提醒不成为成员行的新字段。
+每个成员采用[项目普通 Task 行](daynight-web.md#项目普通-task-行)，显示自身标题、完整 ID、创建时间、五态、负责人、自动执行许可、平台、机器记录和 Tag，并在适用时显示耗时、完成时间、暂停、就绪、阻塞、卡住提醒和 Session 状态。Task 标题及行空白打开详情，可用的 Session 控件独立打开该任务的 Session；复制 ID、文本选择及两种阅读动作均不切换 Goal。成员行的 Session 状态、时效和启动宽限遵循项目列表要求。
 
 标题旁显示直接普通子 Task 的“X 进行中”／“X in progress”，包括零；每个 ID 只计一次，独立 Task 与链内成员均计入，人工执行和暂停中的 `in_progress` Task 也计入。Goal 自身、其他 Goal 的孩子、未归属 Task、链外 external 前置及跨范围链的范围外成员不计入。进行中数量之后显示直属子 Task 的暂停汇总，资格遵循[暂停规则](daynight-web.md#暂停展示与解除)；零数量隐藏，子项标签筛选和展开状态不影响范围。非零数量属于展开按钮的可访问描述。负责人之后、任务组成之前，当任一直接孩子的 Worker claim 为 `active` 时显示采用[共享活动角色](../ui-design.md#attention-activity-health-and-policy)的状态点及“自动执行中”／“Automatic execution active”；`allowAgents` 许可、released／completed／缺失 claim 或仅 Session working 均不触发。提示表示 active claim，不表示 Agent 当前正在输出；子链的完整分量提示不用于推导 Goal 提示。数量和提示在收起与展开时均可读，文字属于展开按钮的可访问内容，装饰点对辅助技术隐藏，不新增独立操作。暂停属性、状态、claim 或 Parent 随已有项目快照变化时更新摘要；无变化核验保留已显示内容和阅读状态，不增加逐 Goal／Task 请求或轮询。
 

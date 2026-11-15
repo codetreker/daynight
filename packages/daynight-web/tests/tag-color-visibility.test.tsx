@@ -22,13 +22,13 @@ it('subscribes only while an expanded chain member is visible and preserves its 
   </TaskExecutionClockProvider></TaskPauseProvider>;
   watched.ids = [];
   const rendered = renderWithLocale(view(false), { locale: 'en', taskCache: true });
-  const row = rendered.container.querySelector('.goal-task-main');
+  const row = rendered.container.querySelector('.task-row-title');
   expect(row).not.toBeNull();
   expect(watched.ids.every(ids => ids.length === 0)).toBe(true);
   watched.ids = []; rendered.rerender(view(true));
   expect(watched.ids.some(ids => ids.includes(tagId))).toBe(true);
-  expect(rendered.container.querySelector('.goal-task-main')).toBe(row);
+  expect(rendered.container.querySelector('.task-row-title')).toBe(row);
   watched.ids = []; rendered.rerender(view(false));
   expect(watched.ids.every(ids => ids.length === 0)).toBe(true);
-  expect(rendered.container.querySelector('.goal-task-main')).toBe(row);
+  expect(rendered.container.querySelector('.task-row-title')).toBe(row);
 });

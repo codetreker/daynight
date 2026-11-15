@@ -20,7 +20,7 @@ const labels = {
   },
 } as const;
 
-export function ProjectSessionStatus({ title, status, statusId, observation, onActivate, showTaskStatus = true }: {
+export function TaskSessionStatus({ title, status, statusId, observation, onActivate, showTaskStatus = true }: {
   readonly title: string; readonly status: TaskProgressStatus; readonly statusId?: string;
   readonly observation: Observation | null; readonly onActivate?: (event: MouseEvent<HTMLButtonElement>) => void;
   readonly showTaskStatus?: boolean;

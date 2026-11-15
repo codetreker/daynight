@@ -19,6 +19,9 @@ cross-tab hints using the existing project cache channel. Scope lifecycle and
 request generations fence stale results. Task references and IndexedDB formats
 remain unchanged. The [Web design](../../../../docs/design/daynight-web.md#task-与-goal-标签展示)
 owns presentation and refresh behavior.
+The [shared Task row decision](2026-11-15-shared-project-task-row.md) owns
+the common project-row interactions that consume this projection. This extends
+the originally neutral presentation in the [Task tag display decision](../feature/2026-11-13-web-task-tag-display.md).
 
 ## Alternatives
 

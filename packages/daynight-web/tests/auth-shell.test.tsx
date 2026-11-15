@@ -868,7 +868,7 @@ describe("authenticated application shell", () => {
       await screen.findByRole("heading", { name: "私有项目" });
       await selectTaskList();
       fireEvent.click(await screen.findByRole("tab", { name: "独立任务" }));
-      fireEvent.click(await screen.findByRole("button", { name: /Lifecycle task/ }));
+      fireEvent.click(await screen.findByRole("link", { name: /Lifecycle task/ }));
       let dialog = screen.getByRole("dialog");
       await within(dialog).findByRole("heading", { name: "Lifecycle task" });
       fireEvent.click(within(dialog).getByRole("button", { name: "待处理" }));
@@ -885,7 +885,7 @@ describe("authenticated application shell", () => {
       await selectTaskList();
       fireEvent.click(await screen.findByRole("tab", { name: "独立任务" }));
       reopening = true;
-      fireEvent.click(await screen.findByRole("button", { name: /Lifecycle task/ }));
+      fireEvent.click(await screen.findByRole("link", { name: /Lifecycle task/ }));
       dialog = screen.getByRole("dialog");
       // This opening's live read is admitted before its pending write is settled.
       await waitFor(() => {

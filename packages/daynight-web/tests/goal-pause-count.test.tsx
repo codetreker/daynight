@@ -13,6 +13,11 @@ import { ProjectTaskObservationsStore } from '../src/features/task-session-summa
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { statesForSummaries, TEST_VIEWER_ID } from './helpers/taskSync';
 
+// This scope fixture uses descriptive Task IDs; route validation has separate coverage.
+vi.mock('../src/app/router', async original => ({
+  ...await original<typeof import('../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
 vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
 const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
@@ -71,7 +76,7 @@ it('summarizes the complete direct scope through the workspace and follows snaps
   fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
   await waitFor(() => expect(screen.getByRole('checkbox', { name: 'alpha' })).toBeVisible());
   fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
-  expect(card.querySelectorAll('.goal-task-row')).toHaveLength(1);
+  expect(card.querySelectorAll('.task-row')).toHaveLength(1);
   expect(count()).toHaveTextContent('3 paused');
   toggle.focus();
   items = items.map(item => item.id === 'child' ? { ...item, properties: { paused: false } } : item.id === 'member' ? { ...item, status: 'done' as const, dependsOn: [] } : item.id === 'standalone' ? { ...item, parentId: 'other' } : item);

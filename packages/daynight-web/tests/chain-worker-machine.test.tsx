@@ -34,6 +34,7 @@ const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: Read
   chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], ...(scopedMembers === undefined ? {} : { scopedMembers }), openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
   standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 const row = (n: number) => document.getElementById(`chain-task-${root.id}-${id(n)}`)!;
+const rowContent = (n: number) => row(n).closest('.task-row')!;
 
 describe('chain worker machine presentation', () => {
   it('projects every claim state and mode strictly without adding properties to graph tasks', () => {
@@ -49,27 +50,28 @@ describe('chain worker machine presentation', () => {
     const onOpenTask = vi.fn();
     const view = renderWithLocale(workspace(snapshot(initial), onOpenTask), { locale: 'zh-CN', taskCache: true });
     fireEvent.click(document.getElementById(`task-root-${root.id}`)!);
-    expect(row(2)).toHaveTextContent('自动执行已开启');
-    expect(row(2)).toHaveTextContent('暂无执行机器记录');
-    expect(row(3)).toHaveTextContent('自动执行已关闭');
-    expect(row(3)).toHaveTextContent(`执行机器记录：${longName}`);
-    expect(row(4)).toHaveTextContent('认领机器：live host');
-    expect(within(row(3)).queryByRole('button')).toBeNull();
+    expect(rowContent(2)).toHaveTextContent('自动执行已开启');
+    expect(rowContent(2)).toHaveTextContent('暂无执行机器记录');
+    expect(rowContent(3)).toHaveTextContent('自动执行已关闭');
+    expect(rowContent(3)).toHaveTextContent(`执行机器记录：${longName}`);
+    expect(rowContent(4)).toHaveTextContent('认领机器：live host');
+    expect(rowContent(3).querySelector('button button, a button, button a, a a')).toBeNull();
     row(3).focus();
-    expect(row(3)).toHaveAccessibleName(new RegExp(longName));
+    expect(row(3)).toHaveAccessibleName('Task 3');
+    expect(rowContent(3)).toHaveTextContent(longName);
     fireEvent.click(row(3));
     expect(onOpenTask).toHaveBeenCalledWith(id(3), row(3));
     view.setLocale('en');
-    expect(row(3)).toHaveTextContent(`Recorded machine: ${longName}`);
-    expect(row(4)).toHaveTextContent('Claim machine: live host');
+    expect(rowContent(3)).toHaveTextContent(`Recorded machine: ${longName}`);
+    expect(rowContent(4)).toHaveTextContent('Claim machine: live host');
     const changed = initial.map((item) => item.id === id(3) ? { ...item, allowAgents: true, properties: { worker: claim('replacement', 'completed') } } : item.id === id(4) ? { ...item, properties: {} } : item);
     view.rerender(workspace(snapshot(changed), onOpenTask));
     expect(document.getElementById(`task-root-${root.id}`)).toHaveAttribute('aria-expanded', 'true');
-    expect(row(3)).toHaveTextContent('Automatic execution on');
-    expect(row(3)).toHaveTextContent('Recorded machine: replacement');
-    expect(row(3)).not.toHaveTextContent(longName);
-    expect(row(4)).toHaveTextContent('No machine record');
-    expect(row(4)).not.toHaveTextContent('live host');
+    expect(rowContent(3)).toHaveTextContent('Automatic execution on');
+    expect(rowContent(3)).toHaveTextContent('Recorded machine: replacement');
+    expect(rowContent(3)).not.toHaveTextContent(longName);
+    expect(rowContent(4)).toHaveTextContent('No machine record');
+    expect(rowContent(4)).not.toHaveTextContent('live host');
   });
 
   it('shows only active claims in the root accessible name and preserves keyboard disclosure', async () => {

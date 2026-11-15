@@ -29,7 +29,7 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, observationStore,
   readonly unfinishedGoalCount: number;
   readonly onViewChange: (view: TaskView) => void;
   readonly chains: Omit<ComponentProps<typeof ChainList>, "index" | "workerMachines" | "summaries">;
-  readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index" | "summaries">;
+  readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index" | "summaries" | "workerMachines">;
   readonly goals: Omit<ComponentProps<typeof GoalList>, "index" | "workerMachines" | "summaries">;
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
@@ -43,7 +43,7 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, observationStore,
           {activeView === "chains" && <section aria-label={m.chains}><ChainList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section>}
         </div>
         <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
-          {activeView === "standalone" && <StandaloneList summaries={snapshot.summaries} index={snapshot.index} {...standalone} />}
+          {activeView === "standalone" && <StandaloneList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...standalone} />}
         </div>
         <div role="tabpanel" id="project-task-panel-goals" aria-labelledby="project-task-tab-goals" hidden={activeView !== "goals"} tabIndex={-1}>
           {activeView === "goals" && <GoalList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...goals} />}

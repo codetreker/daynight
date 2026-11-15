@@ -144,7 +144,7 @@ describe('project assignee filtering', () => {
     expectCounts(2, 1, 0);
     expect(chain(11)).toBeVisible();
     fireEvent.click(chain(11)!);
-    expect(document.getElementById(`goal-children-${id(11)}`)!.querySelectorAll('.goal-task-row')).toHaveLength(5);
+    expect(document.getElementById(`goal-children-${id(11)}`)!.querySelectorAll('.task-row')).toHaveLength(5);
     status('todo');
     expect(chain(11)).toBeNull(); // The viewer's unfinished member is proposed, not todo.
     expectCounts(2, 1, 0);
@@ -205,11 +205,11 @@ describe('project assignee filtering', () => {
     const card = document.querySelector<HTMLElement>(`[data-goal-id="${id(501)}"]`)!;
     expect(card).toBeVisible(); expect(count()).toHaveTextContent(/^2$/);
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(2);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(2);
     fireEvent.click(screen.getByText('子 Task 标签筛选', { selector: 'summary' }));
     const childFilter = screen.getByText('子 Task 标签筛选', { selector: 'summary' }).closest('.tag-filter')!;
     fireEvent.click(within(childFilter as HTMLElement).getByRole('checkbox', { name: '无标签' }));
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(1);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(1);
     expect(card).toHaveTextContent('Task 2');
     expect(count()).toHaveTextContent(/^2$/);
   });
@@ -340,11 +340,11 @@ describe('project assignee filtering', () => {
     expect(chain(1)).toHaveTextContent('1 进行中');
     fireEvent.click(chain(1)!);
     const children = document.getElementById(`goal-children-${id(1)}`)!;
-    expect(children.querySelectorAll('.goal-task-row')).toHaveLength(3);
+    expect(children.querySelectorAll('.task-row')).toHaveLength(3);
     expect(children).toHaveTextContent('Task 2');
     expect(children).toHaveTextContent('Task 4');
     const child = document.getElementById(`chain-task-${id(1)}-${id(3)}`)!;
-    expect(child.closest('.goal-task-row')).toHaveTextContent('被阻塞');
+    expect(child.closest('.task-row')).toHaveTextContent('被阻塞');
     fireEvent.click(child);
     const detail = screen.getByRole('dialog');
     await within(detail).findByRole('heading', { name: 'Task 3' });
@@ -373,7 +373,7 @@ describe('project assignee filtering', () => {
     expect(chain(4)).toBeNull();
     fireEvent.click(chain(1)!);
     const children = document.getElementById(`goal-children-${id(1)}`)!;
-    expect(children.querySelectorAll('.goal-task-row')).toHaveLength(2);
+    expect(children.querySelectorAll('.task-row')).toHaveLength(2);
     expect(children).toHaveTextContent('Task 2');
     expect(children).toHaveTextContent('Task 3');
     fireEvent.click(standalone());
@@ -387,7 +387,7 @@ describe('project assignee filtering', () => {
     expect(chain(1)).toBeNull();
     fireEvent.click(chain(4)!);
     const merged = document.getElementById(`goal-children-${id(4)}`)!;
-    expect(merged.querySelectorAll('.goal-task-row')).toHaveLength(4);
+    expect(merged.querySelectorAll('.task-row')).toHaveLength(4);
     expect(merged).toHaveTextContent('Task 8');
   });
 

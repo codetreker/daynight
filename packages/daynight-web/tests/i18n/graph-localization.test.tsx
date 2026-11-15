@@ -14,6 +14,11 @@ import { renderWithLocale } from '../helpers/renderWithLocale';
 import { progressiveGraph } from '../helpers/graphData';
 import { installGraphMeasurements } from '../graph-measurements';
 
+// These graph fixtures use descriptive IDs; route validation has separate coverage.
+vi.mock('../../src/app/router', async original => ({
+  ...await original<typeof import('../../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
 const time = '2026-10-20T00:00:00Z';
 const graph: GraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },

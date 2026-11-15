@@ -87,7 +87,7 @@ const mount = () => renderWithLocale(<AuthenticatedApp />, { locale: 'en', conta
 const open = async (title: string) => {
   await selectTaskList();
   fireEvent.click(await screen.findByRole('tab', { name: 'Standalone tasks' }));
-  fireEvent.click(screen.getByRole('button', { name: new RegExp(title) }));
+  fireEvent.click(screen.getByRole('link', { name: new RegExp(title) }));
   const dialog = screen.getByRole('dialog');
   await within(dialog).findByRole('heading', { name: title }); return dialog;
 };

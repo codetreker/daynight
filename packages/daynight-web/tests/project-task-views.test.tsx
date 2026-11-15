@@ -182,7 +182,7 @@ describe('project task views', () => {
     expect(tab('goals').querySelector('.graph-count-pill')).toHaveTextContent(/^21$/);
     const goalWithChildren = document.querySelector<HTMLElement>(`[data-goal-id="${goals[0]!.id}"]`)!;
     fireEvent.click(goalWithChildren.querySelector('.goal-list-toggle')!);
-    expect(goalWithChildren.querySelectorAll('.goal-task-main')).toHaveLength(25);
+    expect(goalWithChildren.querySelectorAll('.task-row-title')).toHaveLength(25);
     expect(document.querySelectorAll('.goal-list-card')).toHaveLength(1);
     expect(graphRequest).toHaveBeenCalledOnce();
   });
@@ -204,7 +204,7 @@ describe('project task views', () => {
     expect(document.querySelectorAll('.goal-list-card')).toHaveLength(1);
     const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
-    const children = [...card.querySelectorAll('.goal-task-main')];
+    const children = [...card.querySelectorAll('.task-row-title')];
     expect(children).toHaveLength(3);
     expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${single}`);
     expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${member}`);
@@ -223,22 +223,22 @@ describe('project task views', () => {
     const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
     fireEvent.click(toggle);
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(3);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(3);
     expect(card).toHaveTextContent(`任务 ${c}`);
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(3);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(3);
     await act(async () => { resolve(snapshot(initial)); });
     await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '刷新失败' });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(3);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(3);
     fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
-    await waitFor(() => expect(card.querySelectorAll('.goal-task-main')).toHaveLength(2));
+    await waitFor(() => expect(card.querySelectorAll('.task-row-title')).toHaveLength(2));
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(card.querySelector('.root-toggle')).toBeNull();
-    const children = [...card.querySelectorAll('.goal-task-main')];
+    const children = [...card.querySelectorAll('.task-row-title')];
     expect(children).toHaveLength(2);
     expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${c}`);
     expect(children.map((item) => item.textContent).join(' ')).not.toContain(`任务 ${b}`);
@@ -259,7 +259,7 @@ describe('project task views', () => {
       selectTasks(); await findTab('chains'); fireEvent.click(tab('goals'));
       const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
       fireEvent.click(card.querySelector('.goal-list-toggle')!);
-      expect(card.querySelector('.goal-task-main')).toBeVisible();
+      expect(card.querySelector('.task-row-title')).toBeVisible();
       fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
       await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
       view.rerender(page(second));
@@ -393,11 +393,11 @@ describe('project task views', () => {
     expect(screen.queryByRole('checkbox', { name: '显示所有' })).toBeNull();
     fireEvent.click(goal);
     const list = document.getElementById(`goal-children-${canonicalTask(1)}`)!;
-    const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-main');
+    const childRows = list.querySelectorAll<HTMLAnchorElement>('.task-row-title');
     expect(childRows).toHaveLength(3);
     for (const [position, status] of ['进行中', '待处理', '已完成'].entries()) {
       expect(childRows[position]).toBeVisible();
-      expect(childRows[position]!.closest('.goal-task-row')!.querySelector('.root-status')).toHaveTextContent(status);
+      expect(childRows[position]!.closest('.task-row')!.querySelector('.root-status')).toHaveTextContent(status);
     }
     expect(goal.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     const completedChild = childRows[2]!;
@@ -454,9 +454,9 @@ describe('project task views', () => {
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000003')).toBeNull();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
-    expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('待处理');
-    expect(row('00000000-0000-4000-8000-000000000004').querySelector('.root-status')).toHaveClass('graph-status-todo');
-    expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('可开始');
+    expect(row('00000000-0000-4000-8000-000000000004').closest('.task-row')).toHaveTextContent('待处理');
+    expect(row('00000000-0000-4000-8000-000000000004').closest('.task-row')!.querySelector('.root-status')).toHaveClass('graph-status-todo');
+    expect(row('00000000-0000-4000-8000-000000000004').closest('.task-row')).toHaveTextContent('可开始');
     expect(row('00000000-0000-4000-8000-000000000007')).toBeVisible();
     expectUnfinishedCounts(2, 1);
   });
@@ -464,9 +464,9 @@ describe('project task views', () => {
   it('shows confirmed platform requirements in standalone rows without changing readiness', async () => {
     graphRequest.mockResolvedValue(snapshot(seeds.map((task) => ({ ...task, requiredPlatform: task.id === '00000000-0000-4000-8000-000000000003' ? 'linux' : task.id === '00000000-0000-4000-8000-000000000005' ? 'windows' : null }))));
     mount(); await findTab('standalone'); fireEvent.click(tab('standalone'));
-    expect(row('00000000-0000-4000-8000-000000000003').querySelector('.task-platform')).toHaveTextContent('Linux');
-    expect(row('00000000-0000-4000-8000-000000000005').querySelector('.task-platform')).toHaveTextContent('Windows');
-    expect(row('00000000-0000-4000-8000-000000000003')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005')).toHaveTextContent('进行中');
+    expect(row('00000000-0000-4000-8000-000000000003').closest('.task-row')!.querySelector('.task-platform')).toHaveTextContent('Linux');
+    expect(row('00000000-0000-4000-8000-000000000005').closest('.task-row')!.querySelector('.task-platform')).toHaveTextContent('Windows');
+    expect(row('00000000-0000-4000-8000-000000000003').closest('.task-row')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005').closest('.task-row')).toHaveTextContent('进行中');
   });
 
   it('classifies complete dependencies independently from status and keeps summary and API order intact', async () => {
@@ -478,9 +478,9 @@ describe('project task views', () => {
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
     expect(screen.getByLabelText('显示 1 条，共 1 条任务链')).toHaveTextContent('1 / 1');
     fireEvent.click(tab('standalone'));
-    expect([...document.querySelectorAll('.standalone-row')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000005', 'standalone-task-00000000-0000-4000-8000-000000000003', 'standalone-task-00000000-0000-4000-8000-000000000004']);
+    expect([...document.querySelectorAll('#project-standalone-list .task-row-title')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000005', 'standalone-task-00000000-0000-4000-8000-000000000003', 'standalone-task-00000000-0000-4000-8000-000000000004']);
     expect(screen.queryByTestId('graph-node')).toBeNull();
-    expect(row('00000000-0000-4000-8000-000000000003')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005')).toHaveTextContent('进行中');
+    expect(row('00000000-0000-4000-8000-000000000003').closest('.task-row')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005').closest('.task-row')).toHaveTextContent('进行中');
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000002')).toBeNull();
     expect(screen.queryByRole('checkbox', { name: '显示所有' })).toBeNull();
     fireEvent.click(sectionTab('overview'));
@@ -499,10 +499,10 @@ describe('project task views', () => {
     expectUnfinishedCounts(0, 2);
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000001')).toBeVisible(); expect(row('00000000-0000-4000-8000-000000000002')).toBeVisible();
-    expect(row('00000000-0000-4000-8000-000000000001').querySelector('.task-ready')).toHaveTextContent('可开始');
-    expect(row('00000000-0000-4000-8000-000000000002').querySelector('.graph-blocked-badge')).toHaveTextContent('被阻塞');
-    expect(row('00000000-0000-4000-8000-000000000002').querySelector('.task-ready')).toBeNull();
-    expect(row('00000000-0000-4000-8000-000000000002').querySelector('.root-status')).toHaveTextContent('待处理');
+    expect(row('00000000-0000-4000-8000-000000000001').closest('.task-row')!.querySelector('.task-ready')).toHaveTextContent('可开始');
+    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.graph-blocked-badge')).toHaveTextContent('被阻塞');
+    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.task-ready')).toBeNull();
+    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.root-status')).toHaveTextContent('待处理');
   });
 
   it('counts each unfinished ordinary chain once and keeps both counts independent of visible rows', async () => {
@@ -521,7 +521,7 @@ describe('project task views', () => {
     expect(document.querySelectorAll('.root-toggle')).toHaveLength(3);
     expectUnfinishedCounts(2, 2);
     fireEvent.click(tab('standalone'));
-    expect([...document.querySelectorAll('.standalone-row')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000008', 'standalone-task-00000000-0000-4000-8000-000000000007', 'standalone-task-00000000-0000-4000-8000-000000000009']);
+    expect([...document.querySelectorAll('#project-standalone-list .task-row-title')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000008', 'standalone-task-00000000-0000-4000-8000-000000000007', 'standalone-task-00000000-0000-4000-8000-000000000009']);
     expect(tab('standalone').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务数');
     expect(row('00000000-0000-4000-8000-000000000009')).toBeVisible();
     expectUnfinishedCounts(2, 2);
@@ -1290,11 +1290,11 @@ describe('recent task browsing and pagination', () => {
     mount(); await screen.findByRole('heading', { name: project }); await waitForGraph();
     if (count === 0) {
       expect(tab('goals')).toBeVisible();
-      expect(document.querySelectorAll('.standalone-row, .goal-toggle')).toHaveLength(0);
+      expect(document.querySelectorAll('#project-standalone-list .task-row-title, .goal-toggle')).toHaveLength(0);
       return;
     }
     fireEvent.click(tab(category));
-    const selector = category === 'standalone' ? '.standalone-row' : '.goal-toggle';
+    const selector = category === 'standalone' ? '#project-standalone-list .task-row-title' : '.goal-toggle';
     const label = category === 'standalone' ? '独立任务列表' : '任务链列表';
     const seen: string[] = [];
     const pageCount = Math.ceil(count / 20);
@@ -1587,20 +1587,20 @@ describe('recent task browsing and pagination', () => {
     mount(); await findTab('standalone'); fireEvent.click(tab('standalone'));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(1);
+    expect(document.querySelectorAll('#project-standalone-list .task-row-title')).toHaveLength(1);
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
-    await waitFor(() => expect(document.querySelectorAll('.standalone-row')).toHaveLength(20));
+    await waitFor(() => expect(document.querySelectorAll('#project-standalone-list .task-row-title')).toHaveLength(20));
     expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页'));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(20);
+    expect(document.querySelectorAll('#project-standalone-list .task-row-title')).toHaveLength(20);
   });
 
   it('keeps every Goal child visible inside one top-level page entry', async () => {
     const root = canonicalTask(1);
     graphRequest.mockResolvedValue(snapshot([seed(root), ...Array.from({ length: 30 }, (_, position) => seed(canonicalTask(position + 2), 'todo', [root]))]));
     mount(); fireEvent.click(await findChainRow());
-    expect(document.querySelectorAll('.goal-task-row')).toHaveLength(30);
+    expect(document.querySelectorAll('.task-row')).toHaveLength(30);
     expect(screen.queryByRole('navigation', { name: '任务链列表分页' })).toBeNull();
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
@@ -1614,7 +1614,7 @@ describe('status-first project presentation', () => {
     status === 'done' ? completed(value, when) : seed(canonicalTask(value), status),
     status === 'done' ? completed(value + 1, when, [canonicalTask(value)]) : seed(canonicalTask(value + 1), 'todo', [canonicalTask(value)]),
   ];
-  const presentedIds = (view: 'chains' | 'standalone') => [...document.querySelectorAll(view === 'chains' ? '.root-toggle' : '.standalone-row')]
+  const presentedIds = (view: 'chains' | 'standalone') => [...document.querySelectorAll(view === 'chains' ? '.root-toggle' : '#project-standalone-list .task-row-title')]
     .map((item) => item.id.replace(view === 'chains' ? 'task-root-' : 'standalone-task-', ''));
   const overviewTitles = () => [...document.querySelectorAll('#project-overview-progress .overview-progress-title')]
     .map((item) => item.firstChild!.textContent);
