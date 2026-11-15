@@ -1,4 +1,10 @@
 import { summariesForIndex } from "./helpers/taskSync";
+
+// These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
+vi.mock('../src/app/router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
 import { fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -40,7 +46,7 @@ const noop = () => {};
 const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)}
   representativeIds={['Goal']} allRepresentativeIds={['Goal']} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop}
   onOpenTask={onOpenTask} onOpenSession={onOpenSession} />;
-const child = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!.closest('.goal-task-row')!;
+const child = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!.closest('.task-row')!;
 const expand = () => fireEvent.click(document.getElementById('task-root-Goal')!);
 beforeEach(() => {
   summaries.tasks.clear(); summaries.observedMembers = []; summaries.indicator = 'warning';

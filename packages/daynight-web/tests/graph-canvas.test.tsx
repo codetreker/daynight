@@ -1124,13 +1124,18 @@ describe('initial task viewport policy', () => {
 });
 
 describe('task chain dialog entries', () => {
+  const [A, B, C, D, E, F] = [1, 2, 3, 4, 5, 6].map(n => `20000000-0000-4000-8000-${String(n).padStart(12, '0')}`) as [string, string, string, string, string, string];
+  const ids = new Map([['A', A], ['B', B], ['C', C], ['D', D], ['E', E], ['F', F]]);
+  const leafId = (n: number) => `30000000-0000-4000-8000-${String(n + 1).padStart(12, '0')}`;
+  const chainGraph = { ...graph, tasks: graph.tasks.map(task => ({ ...task, id: ids.get(task.id)!, dependsOn: task.dependsOn.map(id => ids.get(id)!), externalDependsOn: task.externalDependsOn.map(id => ids.get(id)!), blockedBy: task.blockedBy.map(id => ids.get(id)!) })) };
+  const index = buildGraphIndex(chainGraph);
   const mergingGraphs = () => {
-    const tasks: TaskGraphData['tasks'] = ['A', 'B', 'C', 'D', ...Array.from({ length: 55 }, (_, position) => `leaf-${position}`)].map((id) => {
-      const dependsOn = id === 'C' ? ['A'] : id === 'D' ? ['B'] : id.startsWith('leaf-') ? ['D'] : [];
-      return { ...graph.tasks[0]!, id, titlePreview: id, status: 'todo', ready: dependsOn.length === 0, dependsOn, blockedBy: dependsOn };
+    const tasks: TaskGraphData['tasks'] = [A, B, C, D, ...Array.from({ length: 55 }, (_, position) => leafId(position))].map((id) => {
+      const dependsOn = id === C ? [A] : id === D ? [B] : id.startsWith('30000000-') ? [D] : [];
+      return { ...chainGraph.tasks[0]!, id, titlePreview: id, status: 'todo', ready: dependsOn.length === 0, dependsOn, blockedBy: dependsOn };
     });
-    const before = { ...graph, tasks, summary: { proposed: 0, total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: tasks.length - 2 } };
-    const after = { ...before, tasks: tasks.map((task) => task.id === 'D' ? { ...task, dependsOn: ['B', 'C'], blockedBy: ['B', 'C'] } : task) };
+    const before = { ...chainGraph, tasks, summary: { proposed: 0, total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, cancelled: 0, ready: 2, blocked: tasks.length - 2 } };
+    const after = { ...before, tasks: tasks.map((task) => task.id === D ? { ...task, dependsOn: [B, C], blockedBy: [B, C] } : task) };
     return { before: buildGraphIndex(before), after: buildGraphIndex(after) };
   };
 
@@ -1138,33 +1143,33 @@ describe('task chain dialog entries', () => {
     const { before, after } = mergingGraphs();
     const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
-    const view = render(list(before, 'B'));
+    const view = render(list(before, B));
     await waitFor(() => expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(50));
-    const card = view.baseElement.querySelector<HTMLElement>('.react-flow__node[data-id="D"]')!;
+    const card = view.baseElement.querySelector<HTMLElement>(`.react-flow__node[data-id="${D}"]`)!;
     if (control === 'fullscreen') fireEvent.click(toolbarActions(view.baseElement).getByRole('button', { name: '全屏查看' }));
     const focused = control === 'fullscreen' ? toolbarActions(view.baseElement).getByRole('button', { name: '退出全屏' })
       : card.querySelector<HTMLButtonElement>(control === 'footer' ? '.task-node-expand[data-direction="successors"]' : '.task-node-body')!;
     focused.focus();
     expect(focused).toHaveFocus();
-    view.rerender(list(after, 'A'));
+    view.rerender(list(after, A));
     await waitFor(() => expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement));
     if (control !== 'fullscreen') expect(focused.isConnected).toBe(false);
-    expect(view.baseElement.querySelector('#task-root-B')).toBeNull();
+    expect(view.baseElement.querySelector(`#task-root-${B}`)).toBeNull();
     expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(50);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
   });
 
   it('recovers focus to the labeled empty list when the final ordinary edge becomes external', async () => {
-    const tasks: TaskGraphData['tasks'] = ['A', 'B'].map((id) => ({ ...graph.tasks[0]!, id, titlePreview: id, status: 'todo',
-      dependsOn: id === 'B' ? ['A'] : [], blockedBy: id === 'B' ? ['A'] : [], ready: id === 'A' }));
-    const before = buildGraphIndex({ ...graph, tasks, summary: { proposed: 0, total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
-    const after = buildGraphIndex({ ...graph, tasks: tasks.map((task) => task.id === 'B' ? { ...task, externalDependsOn: ['A'] } : task),
+    const tasks: TaskGraphData['tasks'] = [A, B].map((id) => ({ ...chainGraph.tasks[0]!, id, titlePreview: id, status: 'todo',
+      dependsOn: id === B ? [A] : [], blockedBy: id === B ? [A] : [], ready: id === A }));
+    const before = buildGraphIndex({ ...chainGraph, tasks, summary: { proposed: 0, total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
+    const after = buildGraphIndex({ ...chainGraph, tasks: tasks.map((task) => task.id === B ? { ...task, externalDependsOn: [A] } : task),
       summary: { proposed: 0, total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
     const restoreGraphFocus = () => document.getElementById('project-chain-list')?.focus({ preventScroll: true });
-    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} summaries={summariesForIndex(before)} allRepresentativeIds={['A']}
-      representativeIds={['A']} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onRestoreGraphFocus={restoreGraphFocus} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} summaries={summariesForIndex(before)} allRepresentativeIds={[A]}
+      representativeIds={[A]} openGraphTarget={{ kind: 'chain', witnessTaskId: A, rootId: A }} onOpenChain={noop} onCloseChain={noop} onRestoreGraphFocus={restoreGraphFocus} onOpenTask={noop} />);
     await waitFor(() => expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(2));
-    const focused = view.baseElement.querySelector<HTMLButtonElement>('.react-flow__node[data-id="B"] .task-node-body')!;
+    const focused = view.baseElement.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${B}"] .task-node-body`)!;
     focused.focus();
     view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={after} summaries={summariesForIndex(after)} allRepresentativeIds={[]}
       representativeIds={[]} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onRestoreGraphFocus={restoreGraphFocus} onOpenTask={noop} />);
@@ -1181,12 +1186,12 @@ describe('task chain dialog entries', () => {
     document.body.append(outside);
     const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
-    const view = render(list(before, 'B'));
+    const view = render(list(before, B));
     await waitFor(() => expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(50));
-    view.baseElement.querySelector<HTMLButtonElement>('.react-flow__node[data-id="D"] .task-node-body')!.focus();
+    view.baseElement.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${D}"] .task-node-body`)!.focus();
     outside.focus();
-    view.rerender(list(after, 'A'));
-    await waitFor(() => expect(view.baseElement.querySelector('#task-root-B')).toBeNull());
+    view.rerender(list(after, A));
+    await waitFor(() => expect(view.baseElement.querySelector(`#task-root-${B}`)).toBeNull());
     expect(outside).toHaveFocus();
     view.unmount();
     outside.remove();
@@ -1195,16 +1200,16 @@ describe('task chain dialog entries', () => {
   it('renders the presented root order without changing the complete graph index', () => {
     const representativeIds = index.representativeIds.toReversed();
     const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
-    expect([...view.baseElement.querySelectorAll('.root-toggle')].map((root) => root.id)).toEqual(['task-root-F', 'task-root-E', 'task-root-B', 'task-root-A']);
-    expect(index.representativeIds).toEqual(['A', 'B', 'E', 'F']);
-    expect(index.successors.get('A')).toEqual(['C']);
-    expect(index.components.get('A')!.progress).toEqual({ total: 3, done: 1, cancelled: 0, ended: 1, status: 'in_progress' });
+    expect([...view.baseElement.querySelectorAll('.root-toggle')].map((root) => root.id)).toEqual([`task-root-${F}`, `task-root-${E}`, `task-root-${B}`, `task-root-${A}`]);
+    expect(index.representativeIds).toEqual([A, B, E, F]);
+    expect(index.successors.get(A)).toEqual([C]);
+    expect(index.components.get(A)!.progress).toEqual({ total: 3, done: 1, cancelled: 0, ended: 1, status: 'in_progress' });
     expect(screen.getByLabelText('显示 4 条，共 4 条任务链')).toHaveTextContent('4 / 4');
   });
 
   it('retains collapsed root renders during selection and still applies their new snapshot progress', async () => {
     const progressReads = vi.spyOn(index.components, 'get');
-    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: A, rootId: A }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await ready(view.baseElement);
     const originalRoots = [...view.baseElement.querySelectorAll('.root-toggle')];
     const originalCanvas = view.baseElement.querySelector('.task-graph-canvas');
@@ -1213,9 +1218,9 @@ describe('task chain dialog entries', () => {
     expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-status')).toHaveClass('graph-status-todo');
     expect(originalRoots[3]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('待处理');
 
-    for (const selectedTaskId of ['C', 'D', null]) {
+    for (const selectedTaskId of [C, D, null]) {
       progressReads.mockClear();
-      fireEvent.click(nodeButton(selectedTaskId === 'C' ? '合流实现…' : '最终验收'));
+      fireEvent.click(nodeButton(selectedTaskId === C ? '合流实现…' : '最终验收'));
       await waitFor(() => {
         const selectedNodes = view.baseElement.querySelectorAll('.task-node-selected');
         expect(selectedNodes).toHaveLength(selectedTaskId === null ? 0 : 1);
@@ -1229,11 +1234,11 @@ describe('task chain dialog entries', () => {
     }
 
     const refreshed = buildGraphIndex({
-      ...graph,
-      tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })),
+      ...chainGraph,
+      tasks: chainGraph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })),
       summary: { proposed: 0, total: 6, todo: 0, inProgress: 0, done: 6, cancelled: 0, ready: 0, blocked: 0 },
     });
-    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} summaries={summariesForIndex(refreshed)} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} summaries={summariesForIndex(refreshed)} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: A, rootId: A }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
     expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('已完成');
     expect(originalRoots[0]!.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
@@ -1252,7 +1257,7 @@ describe('task chain dialog entries', () => {
     const roots = container.querySelectorAll<HTMLButtonElement>('.root-toggle');
     const graphButtons = container.querySelectorAll<HTMLButtonElement>('.goal-graph-button');
     expect(roots).toHaveLength(4);
-    expect(roots[0]!.id).toBe('task-root-A');
+    expect(roots[0]!.id).toBe(`task-root-${A}`);
     expect(roots[0]!).toHaveAccessibleName(/1\/3 已完成/);
     expect(roots[0]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     for (const root of roots) {
@@ -1264,20 +1269,20 @@ describe('task chain dialog entries', () => {
     fireEvent.click(roots[0]!);
     expect(roots[0]!).toHaveAttribute('aria-expanded', 'true');
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(container.querySelector('#chain-task-A-C')).toBeVisible();
+    expect(container.querySelector(`#chain-task-${A}-${C}`)).toBeVisible();
     fireEvent.click(graphButtons[0]!);
     await ready(container);
     expect(nodeShell('基础 API')).toHaveClass('task-node-done');
-    expect(graphButtons[0]!).toHaveAttribute('aria-controls', 'task-graph-A');
+    expect(graphButtons[0]!).toHaveAttribute('aria-controls', `task-graph-${A}`);
     const firstCanvas = container.querySelector('.task-graph-canvas');
     fireEvent.click(container.querySelector('.task-chain-close')!);
     expect(container.querySelector('.task-graph-canvas')).toBeNull();
     expect(graphButtons[0]!).toHaveFocus();
     expect(roots[0]!).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(graphButtons[1]!);
-    expect((performance.getEntriesByName('daynight:task-layout') as PerformanceMeasure[]).map((entry) => entry.detail)).toEqual([{ rootId: 'B' }]);
+    expect((performance.getEntriesByName('daynight:task-layout') as PerformanceMeasure[]).map((entry) => entry.detail)).toEqual([{ rootId: B }]);
     expect(graphButtons[0]!).not.toHaveAttribute('aria-controls');
-    expect(graphButtons[1]!).toHaveAttribute('aria-controls', 'task-graph-B');
+    expect(graphButtons[1]!).toHaveAttribute('aria-controls', `task-graph-${B}`);
     expect(roots[1]!).toHaveAttribute('aria-expanded', 'false');
     expect(firstCanvas?.isConnected).toBe(false);
     expect(container.querySelectorAll('.task-graph-canvas')).toHaveLength(1);
@@ -1290,8 +1295,8 @@ describe('task chain dialog entries', () => {
 
   it('renders task previews as plain text in the list, modal title and graph nodes', () => {
     const untrusted = '<img src=x onerror=alert(1)>'.repeat(6);
-    const snapshot = { ...graph, tasks: graph.tasks.map((task) => task.id === 'A' ? { ...task, titlePreview: untrusted, titleTruncated: true } : task) };
-    const { container } = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={buildGraphIndex(snapshot)} summaries={summariesForIndex(buildGraphIndex(snapshot))} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const snapshot = { ...chainGraph, tasks: chainGraph.tasks.map((task) => task.id === A ? { ...task, titlePreview: untrusted, titleTruncated: true } : task) };
+    const { container } = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={buildGraphIndex(snapshot)} summaries={summariesForIndex(buildGraphIndex(snapshot))} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: A, rootId: A }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(screen.getAllByText(`${untrusted}…`)).toHaveLength(3);
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('script')).toBeNull();

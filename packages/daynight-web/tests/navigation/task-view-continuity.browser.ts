@@ -150,7 +150,7 @@ test('category switching preserves real scroll and only the browser clamps short
       }
       const pagination = page.getByRole('navigation', { name: 'Standalone task list pagination' });
       await pagination.getByRole('button', { name: 'Next', exact: true }).click();
-      await expect(page.locator('.standalone-row')).toHaveCount(2);
+      await expect(page.locator('#project-standalone-list .task-row-title')).toHaveCount(2);
       const shortExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
       await select(page, 'Task chains'); const longExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
       expect(longExtent).toBeGreaterThan(shortExtent);
@@ -179,7 +179,7 @@ test('a task stays open through merge and split, then focus falls back to the su
   const joined = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
   await refresh.evaluate((element: HTMLButtonElement) => element.click()); await joined;
   await expect(page.locator(`#standalone-task-${child.id}`)).toHaveCount(0); await expect(dialog.locator('.task-detail-title')).toHaveText(child.title);
-  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(page.locator('.standalone-row').first()).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(page.locator('#project-standalone-list .task-row-title').first()).toBeFocused();
   await select(page, 'Task chains'); await page.locator(`#task-chain-graph-${root.id}`).click();
   const graph = page.locator('.task-chain-dialog'), details = page.locator(`.react-flow__node[data-id="${child.id}"] .task-node-details`);
   await expect(details).toBeVisible(); await details.click(); await expect(dialog.locator('.task-detail-title')).toHaveText(child.title);

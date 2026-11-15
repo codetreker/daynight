@@ -49,7 +49,7 @@ for input, or a condition requiring inspection. Red expresses an explicit
 failure or a dangerous action. Ordinary lifecycle backgrounds use neither role.
 An error feedback panel does not create a failed Task lifecycle state.
 
-Preserve the existing overdue precedence: eligible standalone Tasks and graph
+Preserve the existing overdue precedence: eligible ordinary Task rows and graph
 cards may use the attention background over their lifecycle background, while
 retaining the genuine in-progress label and overdue icon or explanation. This
 override does not propagate to chain or overview summaries. Blocked and paused

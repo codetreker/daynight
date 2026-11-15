@@ -22,6 +22,8 @@ observation past its deadline displays expired. Whole-read failure is scoped to
 the currently authorized project and is cleared on loss of admission. The independent,
 chain-member and Goal-member rows use this data and a separate Session action;
 chain and Goal headings keep the existing summary and aggregation rules.
+The [shared Task row decision](2026-11-15-shared-project-task-row.md) owns the
+common project-row presentation consuming this observation.
 
 The body receipt's monotonic time advances both server response clocks in their
 own domains. The database clock determines the Task's 120-second warning grace;

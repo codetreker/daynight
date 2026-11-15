@@ -63,9 +63,9 @@ describe('paused task discovery', () => {
     const view = renderWithLocale(workspace(value, 'standalone'), { locale: 'zh-CN', taskCache: true });
     expect(screen.getByText('2 已暂停')).toBeVisible();
     const paused = document.getElementById(`standalone-task-${id(3)}`)!;
-    expect(within(paused).getByText('已暂停')).toBeVisible();
-    expect(document.getElementById(`standalone-task-${id(4)}`)).not.toHaveTextContent('已暂停');
-    expect(document.getElementById(`standalone-task-${id(5)}`)).not.toHaveTextContent('已暂停');
+    expect(within(paused.closest<HTMLElement>('.task-row')!).getByText('已暂停')).toBeVisible();
+    expect(document.getElementById(`standalone-task-${id(4)}`)!.closest('.task-row')).not.toHaveTextContent('已暂停');
+    expect(document.getElementById(`standalone-task-${id(5)}`)!.closest('.task-row')).not.toHaveTextContent('已暂停');
     view.rerender(workspace(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))), 'standalone'));
     expect(view.container.querySelector('.task-paused-badge')).toBeNull();
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
@@ -143,7 +143,7 @@ describe('paused task discovery', () => {
     expect(within(chain).getByText('2 已暂停')).toBeVisible();
     fireEvent.click(chain);
     expect(within(chain).getByText('2 已暂停')).toBeVisible();
-    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.goal-task-row')).toHaveTextContent('已暂停');
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('已暂停');
     fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'done' } });
     expect(headingCount()).toHaveTextContent('3 已暂停');
     fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
@@ -176,7 +176,7 @@ describe('paused task discovery', () => {
     expect(within(root).getByText('1 已暂停')).toBeVisible();
     expect(within(root).getByText('已暂停')).toBeVisible();
     fireEvent.click(root);
-    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.goal-task-row')).toHaveTextContent('已暂停');
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('已暂停');
     view.rerender(workspace(value, 'chains', id(1)));
     const graph = await screen.findByRole('dialog');
     expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(2);

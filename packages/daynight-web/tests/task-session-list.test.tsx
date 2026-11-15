@@ -103,7 +103,7 @@ it('keeps chain expansion, Task details and pending Session shortcuts as separat
   expect(value.onOpenTask).not.toHaveBeenCalled(); expect(value.onOpenSession).not.toHaveBeenCalled();
   const main = document.getElementById(`chain-task-${rootId}-${childId}`)!;
   fireEvent.click(main); expect(value.onOpenTask).toHaveBeenCalledWith(childId, main);
-  const row = main.closest('.goal-task-row')!;
+  const row = main.closest('.task-row')!;
   const shortcut = within(row as HTMLElement).getByRole('button', { name: /Session 待同步.*打开 Session/ });
   expect(shortcut.querySelector('.session-status-annotation')).toBeNull();
   fireEvent.pointerDown(shortcut, { pointerType: 'touch' }); fireEvent.click(shortcut);
@@ -116,7 +116,7 @@ it('keeps chain expansion, Task details and pending Session shortcuts as separat
 it('keeps focused shortcut nodes and expanded state through Session updates', async () => {
   const value = await fixture({ [childId]: 'notice' });
   fireEvent.click(document.getElementById(`task-root-${rootId}`)!);
-  const row = document.getElementById(`chain-task-${rootId}-${childId}`)!.closest<HTMLElement>('.goal-task-row')!;
+  const row = document.getElementById(`chain-task-${rootId}-${childId}`)!.closest<HTMLElement>('.task-row')!;
   const shortcut = row.querySelector<HTMLButtonElement>('.session-status-action')!;
   const user = userEvent.setup();
   act(() => shortcut.focus());
@@ -137,7 +137,7 @@ it('projects Session observations into independent Goal members and hides them w
   const firstToggle = firstGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   const secondToggle = secondGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   fireEvent.click(firstToggle); fireEvent.click(secondToggle);
-  const indicator = (goal: HTMLElement) => goal.querySelector('.goal-task-row [data-session-state]');
+  const indicator = (goal: HTMLElement) => goal.querySelector('.task-row [data-session-state]');
   expect(indicator(firstGoal)).toHaveAttribute('data-session-state', 'warning');
   expect(indicator(secondGoal)).toHaveAttribute('data-session-state', 'working');
   value.replace({ [childId]: 'notice', [otherId]: 'working', [externalId]: 'warning' });
@@ -146,7 +146,7 @@ it('projects Session observations into independent Goal members and hides them w
   expect(indicator(firstGoal)).toHaveAttribute('data-session-state', 'working');
   expect(indicator(secondGoal)).toHaveAttribute('data-session-state', 'warning');
   value.replace({ [childId]: 'pending', [otherId]: 'working' });
-  const row = firstGoal.querySelector<HTMLElement>(`.goal-task-main[id$="-${childId}"]`)!.closest<HTMLElement>('.goal-task-row')!;
+  const row = firstGoal.querySelector<HTMLElement>(`.task-row-title[id$="-${childId}"]`)!.closest<HTMLElement>('.task-row')!;
   const shortcut = within(row).getByRole('button', { name: /Session 待同步.*打开 Session/ });
   fireEvent.click(shortcut);
   expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);

@@ -76,7 +76,7 @@ it('retains a newer successful summary detail when an older Project read returns
   const old = await startOldProjectRead();
   const before = scope.getProjectReadRevision(projectId);
   fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
-  fireEvent.click(screen.getByRole('button', { name: /Evidence task/ }));
+  fireEvent.click(screen.getByRole('link', { name: 'Evidence task' }));
   const dialog = screen.getByRole('dialog');
   await within(dialog).findByText('Private description');
   expect(getTaskObservation).toHaveBeenCalled();

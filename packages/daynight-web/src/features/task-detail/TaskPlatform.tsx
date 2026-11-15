@@ -9,14 +9,7 @@ import { TaskConfirmation } from './TaskConfirmation';
 import { TaskControlTip, TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 import type { TaskMutationState } from './TaskDetailSession';
 
-export const TaskPlatformBadge = ({ requiredPlatform, compact = false }: {
-  readonly requiredPlatform: ExecutionPlatform | null;
-  readonly compact?: boolean;
-}) => {
-  const { messages: { platform: m } } = useI18n();
-  const label = requiredPlatform === null ? m.any : m.names[requiredPlatform];
-  return <span className={`task-platform${compact ? ' task-platform-compact' : ''}`} title={`${m.title}: ${label}`}>{label}</span>;
-};
+export { TaskPlatformBadge } from '../task-row/TaskPlatformBadge';
 
 export type PlatformConfirmation = { readonly detail: TaskDetail; readonly requiredPlatform: ExecutionPlatform | null };
 export const matchesPlatformReview = (confirmation: PlatformConfirmation, detail: TaskDetail | null): boolean =>

@@ -35,6 +35,6 @@ export const focusProjectList = (view: TaskView, origin: ProjectListOrigin | nul
     if (entry !== null && list.contains(entry) && focusVisible(entry)) return true;
     if (focusVisible(list.querySelector<HTMLElement>('.root-toggle'))) return true;
   }
-  if (view === 'standalone' && focusVisible(list?.querySelector<HTMLElement>('.standalone-row'))) return true;
+  if (view === 'standalone' && focusVisible(list?.querySelector<HTMLElement>('.task-row-title'))) return true;
   return list?.dataset.listEmpty !== "true" && focusVisible(list);
 };

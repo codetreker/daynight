@@ -34,8 +34,8 @@ it.each(['standalone', 'chain', 'goal'] as const)('presents Session state and in
   current.value = { state: 'expired', needsAttention: null, canOpen: false }; view.rerender(<ul>{row()}</ul>);
   expect(within(item).queryByRole('button', { name: /打开 Session/ })).toBeNull();
   expect(item).toHaveTextContent('Session 观测过期');
-  expect(item.querySelector(kind === 'standalone' ? '.standalone-row' : '.goal-task-main')).toHaveFocus();
-  fireEvent.click(item.querySelector(kind === 'standalone' ? '.standalone-row' : '.goal-task-main')!);
+  expect(item.querySelector('.task-row-title')).toHaveFocus();
+  fireEvent.click(item.querySelector('.task-row-title')!);
   expect(openTask).toHaveBeenCalledOnce();
 });
 

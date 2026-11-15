@@ -11,11 +11,10 @@ no horizontal overflow while its titles are unreadable.
 
 ## Decision
 
-The standalone list establishes a named inline-size container. At widths of
-650px or less, rows use the existing mobile spacing, vertical right-aligned
-badges, smaller metadata and hidden chevron. Wider lists retain inline badges.
-The title stays flexible without a fixed minimum that could overflow phones.
-All badge content and the full-row detail button remain intact.
+The standalone list established a named inline-size container. At widths of
+650px or less, rows used mobile spacing, vertical right-aligned badges, smaller
+metadata and a hidden chevron; wider lists retained inline badges. The title
+stayed flexible without a fixed minimum that could overflow phones.
 
 The initial 600px reference leaves a roughly 604px list in a 1000px expanded
 window. Long English badges, including Paused, still squeeze its title below
@@ -23,8 +22,9 @@ window. Long English badges, including Paused, still squeeze its title below
 keeping the expanded 1100px layout horizontal.
 
 The [compact list decision](../../archived/simplification/2026-10-28-compact-task-list.md)
-records the analogous chain-row container layout. Standalone rows have their own
-container so this change does not alter chain rows or navigation breakpoints.
+records the analogous chain-row container layout. The later [shared Task row
+decision](../architecture/2026-11-15-shared-project-task-row.md) unifies the
+ordinary row presentation across project lists while retaining their owners.
 The [Web specification](../../../../docs/spec/daynight-web.md) owns required
 behavior and the [Web design](../../../../docs/design/daynight-web.md) describes
 composition.

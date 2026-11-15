@@ -115,7 +115,7 @@ const openChildFromChain = async () => {
   const toggle = await screen.findByRole('button', { name: /^Task 1/, expanded: false });
   fireEvent.click(toggle);
   const children = document.getElementById(`goal-children-${parent}`)!;
-  fireEvent.click(within(children).getByRole('button', { name: /^Task 2/ }));
+  fireEvent.click(within(children).getByRole('link', { name: /^Task 2/ }));
   const dialog = await screen.findByRole('dialog', { name: 'Task 2' });
   await within(dialog).findByRole('heading', { name: 'Task 2' });
   return dialog;
@@ -139,7 +139,7 @@ describe('status in shared production task details', () => {
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
-    fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
+    fireEvent.click(screen.getByRole('link', { name: /Task 3/ }));
     dialog = detailDialog();
     await within(dialog).findByRole('heading', { name: 'Task 3' });
     const statusButton = within(dialog).getByRole('button', { name: 'To do' });
@@ -258,7 +258,7 @@ describe('status in shared production task details', () => {
     const openStandalone = async (title: string) => {
       await selectTaskList();
       fireEvent.click(await screen.findByRole('tab', { name: 'Standalone tasks' }));
-      fireEvent.click(await screen.findByRole('button', { name: new RegExp(title) }));
+      fireEvent.click(await screen.findByRole('link', { name: new RegExp(title) }));
       const dialog = detailDialog();
       await within(dialog).findByRole('heading', { name: title });
       return dialog;
@@ -299,7 +299,7 @@ describe('status in shared production task details', () => {
     vi.mocked(setTaskStatus).mockImplementation(async () => commit(standalone));
     const view = await mount(); await screen.findByRole('tab', { name: 'Standalone tasks' });
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
-    fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
+    fireEvent.click(screen.getByRole('link', { name: /Task 3/ }));
     let dialog = detailDialog();
     await within(dialog).findByRole('heading', { name: 'Task 3' });
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
@@ -307,7 +307,7 @@ describe('status in shared production task details', () => {
     const current = records.get(standalone)!;
     records.set(standalone, { ...current, status, ready: false, version: current.version + 1n, updatedAt: '2026-10-22T00:02:00Z' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
-    fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
+    fireEvent.click(screen.getByRole('link', { name: /Task 3/ }));
     dialog = detailDialog();
     await within(dialog).findByRole('button', { name: status === 'done' ? 'Done' : 'In progress' });
     expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
@@ -389,7 +389,7 @@ describe('status in shared production task details', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     closeGraph();
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
-    fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
+    fireEvent.click(screen.getByRole('link', { name: /Task 3/ }));
     const otherDialog = detailDialog();
     await within(otherDialog).findByRole('heading', { name: 'Task 3' });
     await act(async () => { mutation.resolve(commit()); });
