@@ -779,8 +779,8 @@ describe("detail freshness", () => {
     expect(taskReviewKey(classified)).toBe(taskReviewKey({ ...classified, externalDependsOn: [otherTask, taskId] }));
     expect(taskReviewKey(classified)).not.toBe(taskReviewKey({ ...classified, externalDependsOn: [otherTask] }));
     expect(taskReviewKey(classified)).not.toBe(taskReviewKey({ ...classified, allowAgents: true }));
-    expect(isTaskStale({ ...node, allowAgents: true }, detail)).toBe(true);
-    expect(isTaskStale({ ...node, requiredPlatform: 'linux' }, detail)).toBe(true);
+    expect(isTaskStale({ ...node, allowAgents: true }, detail, { title: detail.title })).toBe(true);
+    expect(isTaskStale({ ...node, requiredPlatform: 'linux' }, detail, { title: detail.title })).toBe(true);
     expect(taskDescriptor({ ...node, requiredPlatform: 'linux' })).not.toBe(taskDescriptor(node));
     expect(taskReviewKey({ ...detail, requiredPlatform: 'linux' })).not.toBe(taskReviewKey(detail));
     expect(taskDescriptor({ ...node, allowAgents: true })).not.toBe(taskDescriptor(node));
@@ -790,19 +790,19 @@ describe("detail freshness", () => {
     const dependencies = { dependsOn: [taskId, otherTask], blockedBy: [taskId, otherTask], ready: false };
     const classified = { ...node, ...dependencies, externalDependsOn: [taskId, otherTask] };
     const reordered = { ...detail, ...dependencies, externalDependsOn: [otherTask, taskId] };
-    expect(isTaskStale(classified, reordered)).toBe(false);
+    expect(isTaskStale(classified, reordered, { title: reordered.title })).toBe(false);
     expect(taskDescriptor(classified)).toBe(taskDescriptor({ ...classified, externalDependsOn: [otherTask, taskId] }));
-    expect(isTaskStale({ ...classified, externalDependsOn: [otherTask] }, reordered)).toBe(true);
+    expect(isTaskStale({ ...classified, externalDependsOn: [otherTask] }, reordered, { title: reordered.title })).toBe(true);
     expect(taskDescriptor(classified)).not.toBe(taskDescriptor({ ...classified, externalDependsOn: [otherTask] }));
     expect(classified.updatedAt).toBe(reordered.updatedAt);
   });
 
   it("accepts the same fields and order-independent dependency sets", () => {
-    expect(isTaskStale(node, detail)).toBe(false);
+    expect(isTaskStale(node, detail, { title: detail.title })).toBe(false);
     expect(taskDescriptor({ ...node, dependsOn: [taskId, otherTask], blockedBy: [taskId, otherTask] })).toBe(
       taskDescriptor({ ...node, dependsOn: [otherTask, taskId], blockedBy: [otherTask, taskId] }));
     expect(isTaskStale({ ...node, dependsOn: [taskId, otherTask], blockedBy: [taskId, otherTask] },
-      { ...detail, dependsOn: [otherTask, taskId], blockedBy: [otherTask, taskId] })).toBe(false);
+      { ...detail, dependsOn: [otherTask, taskId], blockedBy: [otherTask, taskId] }, { title: detail.title })).toBe(false);
   });
 
   it.each([
@@ -811,19 +811,25 @@ describe("detail freshness", () => {
     { ...node, ready: false }, { ...node, dependsOn: [otherTask] }, { ...node, blockedBy: [otherTask] },
     { ...node, titlePreview: "另一个标题" }, { ...node, titleTruncated: true },
   ])("detects changed snapshot-derived fields %#", (changed) => {
-    expect(isTaskStale(changed, detail)).toBe(true);
+    expect(isTaskStale(changed, detail, { title: detail.title })).toBe(true);
   });
 
   it("detects a dependency completion changing readiness with no task updatedAt change", () => {
     const blocked = { ...node, dependsOn: [otherTask], blockedBy: [otherTask], ready: false };
     const newlyReady = { ...detail, dependsOn: [otherTask], blockedBy: [], ready: true };
     expect(blocked.updatedAt).toBe(newlyReady.updatedAt);
-    expect(isTaskStale(blocked, newlyReady)).toBe(true);
+    expect(isTaskStale(blocked, newlyReady, { title: newlyReady.title })).toBe(true);
+  });
+
+  it("treats different titles with the same preview as stale", () => {
+    const prefix = "😀".repeat(160);
+    const samePreview = { ...node, titlePreview: prefix, titleTruncated: true };
+    expect(isTaskStale(samePreview, { ...detail, title: prefix + "new" }, { title: prefix + "old" })).toBe(true);
   });
 
   it("compares Unicode code point previews without truncating a surrogate pair", () => {
     const title = "😀".repeat(161);
-    expect(isTaskStale({ ...node, titlePreview: "😀".repeat(160), titleTruncated: true }, { ...detail, title })).toBe(false);
+    expect(isTaskStale({ ...node, titlePreview: "😀".repeat(160), titleTruncated: true }, { ...detail, title }, { title })).toBe(false);
   });
 });
 

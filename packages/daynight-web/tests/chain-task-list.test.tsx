@@ -1,3 +1,4 @@
+import { summariesForIndex } from "./helpers/taskSync";
 import { useRef, useState, type ReactElement } from 'react';
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -57,7 +58,7 @@ const render = (ui: ReactElement) => {
   return { ...view, rerender: (next: ReactElement) => view.rerender(clock(next)) };
 };
 const noop = () => {};
-const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
   openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
@@ -88,7 +89,7 @@ describe('Goal task lists', () => {
     ];
     const index = indexOf(items);
     const onOpenTask = vi.fn();
-    render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Outside']} allRepresentativeIds={['Outside']}
+    render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Outside']} allRepresentativeIds={['Outside']}
       scopedMembers={new Map([['Outside', ['Inside']]])} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />);
     const header = document.getElementById('task-root-Outside')!;
     expect(header).toHaveTextContent('Outside');
@@ -109,7 +110,7 @@ describe('Goal task lists', () => {
     const newer = { ...task('Newer', 'done', ['Older', 'External'], ['External']), completedAt: '2026-10-22T12:00:00Z' };
     const external = { ...task('External', 'done'), completedAt: '2026-10-25T10:00:00Z' };
     const scoped = new Map([['Outside', ['Older', 'Newer']]]);
-    const tree = (last: GraphTask) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={indexOf([outside, older, last, external])}
+    const tree = (last: GraphTask) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={indexOf([outside, older, last, external])} summaries={summariesForIndex(indexOf([outside, older, last, external]))}
       representativeIds={['Outside']} allRepresentativeIds={['Outside']} scopedMembers={scoped} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(tree(newer));
     const aggregate = () => screen.queryByRole('button', { name: '查看 Outside 的完成时间' });
@@ -142,7 +143,7 @@ describe('Goal task lists', () => {
     const index = indexOf([task('First', 'done'), task('Second', 'todo', ['First']), task('Other', 'done'), task('Last', 'todo', ['Other'])]);
     const scopedMembers = new Map([['First', ['First', 'Second']], ['Other', ['Other', 'Last']]]);
     const onRevealed = vi.fn();
-    const tree = (revealTaskId: string | null) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['First', 'Other']} allRepresentativeIds={['First', 'Other']}
+    const tree = (revealTaskId: string | null) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['First', 'Other']} allRepresentativeIds={['First', 'Other']}
       scopedMembers={scopedMembers} revealTaskId={revealTaskId} onRevealed={onRevealed} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(tree(null));
     fireEvent.click(document.getElementById('task-root-Other')!);
@@ -259,7 +260,7 @@ describe('Goal task lists', () => {
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
       const opener = useRef<HTMLElement | null>(null);
-      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={(id, trigger) => { opener.current = trigger; setOpenChainId(id); }} onCloseChain={() => setOpenChainId(null)}
         onRestoreGraphFocus={() => opener.current?.focus({ preventScroll: true })} onOpenTask={onOpenTask} />;
     };
@@ -342,7 +343,7 @@ describe('shared scoped chain presentation', () => {
 
   const Instance = ({ id }: { readonly id: string }) => {
     const [expanded, setExpanded] = useState(false);
-    return <ScopedTaskChainRow projectId={projectId} index={index} rootId="Outside" memberIds={members} progress={progress}
+    return <ScopedTaskChainRow projectId={projectId} index={index} summaries={summariesForIndex(index)} rootId="Outside" memberIds={members} progress={progress}
       workerMachines={machines} instanceId={id} expanded={expanded} onExpandedChange={setExpanded} open={false}
       onOpenTask={onOpenTask} onOpenChain={onOpenChain} />;
   };

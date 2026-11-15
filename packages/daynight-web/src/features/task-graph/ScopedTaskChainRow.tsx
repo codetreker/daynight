@@ -16,7 +16,7 @@ import type { ScopedChainProgress } from './scoped-chain-progress';
 export type ScopedTaskChainRowProps = {
   readonly projectId: string;
   readonly index: GraphIndex;
-  readonly summaries?: ReadonlyMap<string, TaskSummary>;
+  readonly summaries: ReadonlyMap<string, TaskSummary>;
   readonly rootId: string;
   readonly memberIds: readonly string[];
   readonly progress: ScopedChainProgress;
@@ -59,6 +59,6 @@ export const ScopedTaskChainRow = memo(forwardRef<HTMLLIElement, ScopedTaskChain
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={childrenId} {...(sessionIndicator === null ? {} : { onActivate: () => onExpandedChange(true) })} />
       <button className="button goal-graph-button" type="button" id={`task-chain-graph-${instanceId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined} onClick={(event) => onOpenChain(memberIds[0]!, event.currentTarget)}>{m.viewDependencies}</button>
     </div>
-    <div id={childrenId} hidden={!expanded} className="goal-children"><ul className="goal-task-list">{tasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} {...(summaries?.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={instanceId} workerMachine={workerMachines.get(task.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul></div>
+    <div id={childrenId} hidden={!expanded} className="goal-children"><ul className="goal-task-list">{tasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} title={summaries.get(task.id)!.title} {...(summaries.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={instanceId} workerMachine={workerMachines.get(task.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul></div>
   </li>;
 }));

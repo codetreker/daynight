@@ -9,7 +9,7 @@ import type { GraphIndex } from "../task-graph/model";
 type StandaloneListProps = {
   readonly projectId: string;
   readonly index: GraphIndex;
-  readonly summaries?: ReadonlyMap<string, TaskSummary>;
+  readonly summaries: ReadonlyMap<string, TaskSummary>;
   readonly taskIds: readonly string[];
   readonly allTaskIds: readonly string[];
   readonly onSelectTask: (id: string, trigger: HTMLElement) => void;
@@ -35,7 +35,7 @@ export const StandaloneList = ({ projectId, index, summaries, taskIds, allTaskId
       ) : taskIds.length === 0 ? (
         <div className="state-box"><h3>{assignment.noMatches}</h3></div>
       ) : (
-        <ul className="standalone-list">{taskIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} {...(summaries?.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`standalone-task-${id}`} onSelectTask={onSelectTask} />)}</ul>
+        <ul className="standalone-list">{taskIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} title={summaries.get(id)!.title} {...(summaries.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`standalone-task-${id}`} onSelectTask={onSelectTask} />)}</ul>
       )}
       {pagination !== undefined && <ListPagination label={m.list} {...pagination} />}
     </section>

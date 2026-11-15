@@ -39,14 +39,20 @@ func serverAPITaskTagsNormalFlow(t *testing.T, f *fixture) {
 		t.Fatalf("goal and child creation fields differ: goal=%+v child=%+v untagged=%+v", goal, child, untagged)
 	}
 	baseline := requestJSON[api.TaskSync](t, f, http.MethodGet, syncPath(project.ID), nil, http.StatusOK)
-	updated := requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "tagIds": []string{tag.ID}}, http.StatusOK)
+	for _, original := range []api.Task{goal, child} {
+		item := expectID(t, baseline.Tasks, original.ID, func(item api.TaskViewRecord) string { return item.ID })
+		if item.Title != original.Title || item.TitlePreview != original.Title || item.TitleTruncated {
+			t.Fatalf("sync title differs: %+v", item)
+		}
+	}
+	updated := requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "title": "Updated tagged task", "tagIds": []string{tag.ID}}, http.StatusOK)
 	check := func(tags []taskprotocol.RESTTagReference) {
 		t.Helper()
 		if len(tags) != 1 || tags[0].ID != tag.ID || tags[0].Name != tag.Name {
 			t.Fatalf("tag references differ: %+v", tags)
 		}
 	}
-	if updated.ID != task.ID || updated.Version != task.Version+1 {
+	if updated.ID != task.ID || updated.Version != task.Version+1 || updated.Title != "Updated tagged task" {
 		t.Fatalf("updated task differs: %+v", updated)
 	}
 	check(updated.Tags)
@@ -59,7 +65,7 @@ func serverAPITaskTagsNormalFlow(t *testing.T, f *fixture) {
 	delta := requestJSON[api.TaskSync](t, f, http.MethodGet, deltaPath(project.ID, baseline), nil, http.StatusOK)
 	summary := expectID(t, delta.Tasks, task.ID, func(item api.TaskViewRecord) string { return item.ID })
 	check(summary.Tags)
-	if delta.Epoch != baseline.Epoch || summary.Version != resourceVersion(updated.Version) || delta.DependencyStates[task.ID].TaskVersion != summary.Version {
+	if delta.Epoch != baseline.Epoch || summary.Version != resourceVersion(updated.Version) || summary.Title != updated.Title || summary.TitlePreview != updated.Title || summary.TitleTruncated || delta.DependencyStates[task.ID].TaskVersion != summary.Version {
 		t.Fatalf("sync differs: %+v", delta)
 	}
 	second := createTask(t, f, project, "Another tagged task", map[string]any{"status": "todo"})

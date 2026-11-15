@@ -1,6 +1,10 @@
 import type { ProjectPersonVersion, ProjectAccess } from "../../src/api/auth-types";
 import type { GraphTask, TaskGraph, TaskProperties, TaskSummary, TaskSync, TaskSyncRead, TaskTag } from '../../src/api/types';
+import type { GraphIndex } from '../../src/features/task-graph/model';
 import { stringifyWireJson, wireResponse } from './wireJson';
+
+const fixtureTitles = new WeakMap<GraphTask, string>();
+export const rememberFixtureTitle = (task: GraphTask, title: string): GraphTask => { fixtureTitles.set(task, title); return task; };
 
 export const TEST_VIEWER_ID = '00000000-0000-4000-8000-000000000201';
 export const TEST_PROFILE_VERSION = 'a'.repeat(64);
@@ -55,7 +59,7 @@ const graphAssigneeVersions = (graph: TaskGraph): readonly ProjectPersonVersion[
 
 export const summariesForGraph = (graph: TaskGraph): ReadonlyMap<string, TaskSummary> => new Map(graph.tasks.map((task) => {
   const { blockedBy: _blockedBy, ready: _ready, ...intrinsic } = task;
-  return [task.id, { ...intrinsic, version: 1n, properties: {}, tags: [] }];
+  return [task.id, { ...intrinsic, title: task.titlePreview, version: 1n, properties: {}, tags: [] }];
 }));
 
 export const statesForSummaries = (tasks: readonly TaskSummary[]) => new Map(tasks.map((task) => {
@@ -68,7 +72,7 @@ export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, assigneeVersi
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({ assignedTo: task.assignedTo,
-    id: task.id, type: task.type, parentId: task.parentId, version: versionForTask(task).toString(), properties: propertiesForTask(task), tags: tagsForTask(task), titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
+    id: task.id, type: task.type, parentId: task.parentId, version: versionForTask(task).toString(), properties: propertiesForTask(task), tags: tagsForTask(task), title: fixtureTitles.get(task) ?? task.titlePreview, titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
     status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
     allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt, cancelledAt: task.cancelledAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
@@ -120,3 +124,8 @@ export const createGraphSyncFixture = ({ propertiesForTask = () => ({}) }: { rea
     },
   };
 };
+
+export const summariesForIndex = (index: GraphIndex): ReadonlyMap<string, TaskSummary> => new Map([...index.nodes.values()].map((task) => {
+  const { blockedBy: _blockedBy, ready: _ready, ...intrinsic } = task;
+  return [task.id, { ...intrinsic, title: task.titlePreview + (task.titleTruncated ? "…" : ""), version: 1n, properties: {}, tags: [] }];
+}));

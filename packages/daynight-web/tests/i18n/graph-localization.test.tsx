@@ -1,3 +1,4 @@
+import { summariesForIndex } from "../helpers/taskSync";
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -62,34 +63,34 @@ describe('localized task graph presentation', () => {
       ],
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} summaries={summariesForIndex(waitingIndex)} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
       openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
-    const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
+    const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked, No Goal' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-progress-label')).toHaveTextContent('0/2 completed');
-    expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '发布检查, To do, external prerequisite, No Goal' })).toBeVisible();
     view.setLocale('zh-CN');
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('待处理');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞' })).toBe(selected);
-    expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置' })).toBeVisible();
+    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞, 未归属 Goal' })).toBe(selected);
+    expect(screen.getByRole('button', { name: '发布检查，待处理，外部前置, 未归属 Goal' })).toBeVisible();
     expect(layout).toHaveBeenCalledTimes(1);
   });
 
   it('retranslates mounted memoized rows, nodes, dependencies and controls while retaining layout, selection and viewport', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
       openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={select} onCloseChain={noop} />, { locale: 'en', taskCache: true });
     await ready(view.baseElement);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
     expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
     expect(view.baseElement.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 in progress');
     expect(screen.getByText('Chain 3 · External 2 · Tasks 5/5 · Dependencies 4/4')).toBeTruthy();
-    const selected = screen.getByRole('button', { name: '合流实现…, In progress' });
+    const selected = screen.getByRole('button', { name: '合流实现…, In progress, No Goal' });
     fireEvent.click(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收, To do, blocked, outside the selected dependency path' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '设计方案, Done, external prerequisite, prerequisite of the selected task' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收, To do, blocked, No Goal, outside the selected dependency path' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '设计方案, Done, external prerequisite, No Goal, prerequisite of the selected task' })).toBeTruthy();
     const initialTransform = viewport(view.baseElement).style.transform;
     fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
     await waitFor(() => expect(viewport(view.baseElement).style.transform).not.toBe(initialTransform));
@@ -106,9 +107,9 @@ describe('localized task graph presentation', () => {
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
     expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(1);
     expect(view.baseElement.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 进行中');
-    expect(screen.getByRole('button', { name: '合流实现…，进行中，已选中' })).toBe(selected);
+    expect(screen.getByRole('button', { name: '合流实现…，进行中, 未归属 Goal，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
-    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞, 未归属 Goal，不在所选依赖路径中' })).toBeTruthy();
     expect(screen.getByRole('img', { name: '普通依赖：前置任务 A → 后续任务 C，所选依赖路径' })).toBe(relation);
     expect(screen.getByRole('group', { name: '任务依赖关系' })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole('button', { name: '放大' })).toHaveAttribute('title', '放大'));
@@ -234,11 +235,11 @@ describe('localized task graph presentation', () => {
   it('renders empty and filtered chain states in the chosen language', () => {
     const props = { index, allRepresentativeIds: [], representativeIds: [], openGraphTarget: null,
       onOpenChain: noop, onCloseChain: noop, onOpenTask: noop };
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
+    const view = renderWithLocale(<ChainList summaries={summariesForIndex(props.index)} workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
     const completeIndex = buildGraphIndex({ ...graph, summary: { proposed: 0, total: 5, todo: 0, inProgress: 0, done: 5, cancelled: 0, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
-    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} summaries={summariesForIndex(completeIndex)} allRepresentativeIds={representativeIds} />);
     expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
   });
 

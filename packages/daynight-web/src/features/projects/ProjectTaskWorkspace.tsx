@@ -25,9 +25,9 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, ac
   readonly unfinishedChainCount: number;
   readonly unfinishedGoalCount: number;
   readonly onViewChange: (view: TaskView) => void;
-  readonly chains: Omit<ComponentProps<typeof ChainList>, "index" | "workerMachines">;
-  readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index">;
-  readonly goals: Omit<ComponentProps<typeof GoalList>, "index" | "workerMachines">;
+  readonly chains: Omit<ComponentProps<typeof ChainList>, "index" | "workerMachines" | "summaries">;
+  readonly standalone: Omit<ComponentProps<typeof StandaloneList>, "index" | "summaries">;
+  readonly goals: Omit<ComponentProps<typeof GoalList>, "index" | "workerMachines" | "summaries">;
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
   return <>
@@ -37,13 +37,13 @@ export const ProjectTaskWorkspace = ({ snapshot, sessionStore, active = true, ac
           unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={onViewChange} />
         {filter}
         <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
-          {activeView === "chains" && <section aria-label={m.chains}><ChainList index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section>}
+          {activeView === "chains" && <section aria-label={m.chains}><ChainList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...chains} /></section>}
         </div>
         <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
-          {activeView === "standalone" && <StandaloneList index={snapshot.index} {...standalone} />}
+          {activeView === "standalone" && <StandaloneList summaries={snapshot.summaries} index={snapshot.index} {...standalone} />}
         </div>
         <div role="tabpanel" id="project-task-panel-goals" aria-labelledby="project-task-tab-goals" hidden={activeView !== "goals"} tabIndex={-1}>
-          {activeView === "goals" && <GoalList index={snapshot.index} workerMachines={snapshot.workerMachines} {...goals} />}
+          {activeView === "goals" && <GoalList summaries={snapshot.summaries} index={snapshot.index} workerMachines={snapshot.workerMachines} {...goals} />}
         </div>
       </TaskSessionSummaryProvider></TaskPauseProvider>
   </>;
