@@ -15,7 +15,15 @@ the same query, limit and epoch before publishing output, and preserves exact
 int64 versions for conditional writes. Deletion previews the current name and
 visible usage, then confirms removal of all associations. An explicit version
 remains the caller's original condition; an omitted version uses the preview.
-Unknown mutations are not replayed.
+Create accepts an optional color and leaves its default, validation and RGB
+normalization to the service. Set-color sends only color and the exact version;
+an omitted version is read once before writing. The existing strict REST Tag
+parser and CLI output fields remain unchanged. Successful ID/version receipts
+confirm the requested normalized color under the service write contract, without
+a subsequent read that could observe another mutation. Local output or cleanup
+failures preserve that confirmation. Unknown mutations are not replayed. The
+[color decision](../architecture/2026-11-15-tag-color-storage.md) records why
+REST color reads use a separate projection.
 
 The Web exposes the catalog as a member-accessible project section. It holds a
 single scope-owned page and checks the first page's epoch before retaining a

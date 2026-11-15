@@ -4,6 +4,7 @@ import { renderBashCompletion } from "../../../src/commands/completion/bash.js";
 import { renderZshCompletion } from "../../../src/commands/completion/zsh.js";
 import { createApiClient, createOperation, stringifyApiJson } from "../../../src/api/index.js";
 import { UsageError } from "../../../src/cli/context.js";
+import * as tagRendering from "../../../src/commands/tag/rendering.js";
 import { runTagCommand } from "../../../src/commands/tag/command.js";
 import type { TagCommandDependencies } from "../../../src/commands/tag/command.js";
 
@@ -16,14 +17,14 @@ const project = { id: projectId, name: "Project", repoUrl: "https://example.test
 const tag = { id: tagId, projectId, name: "Example", version: 9007199254740993n, createdAt: timestamp, updatedAt: timestamp, usage: { tasks: 4, goals: 2 } };
 const response = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: { "content-type": "application/json" } });
 
-const fixture = (handler: (url: URL, init: RequestInit) => Response | Promise<Response>) => {
+const fixture = (handler: (url: URL, init: RequestInit) => Response | Promise<Response>, signal?: AbortSignal) => {
   const fetcher = vi.fn<typeof fetch>(async (input, init) => handler(new URL(String(input)), init ?? {}));
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: () => "unused", workingDirectory: () => "unused",
     stdout: vi.fn<(text: string) => void>(), stderr: vi.fn<(text: string) => void>(), stdoutBytes: vi.fn(async () => {}),
   };
   const runServerCommand: TagCommandDependencies["runServerCommand"] = async (current, command) => {
-    const operation = createOperation();
+    const operation = createOperation(signal === undefined ? {} : { signal });
     try {
       const serverUrl = "https://server.example";
       const api = createApiClient({ serverUrl, serverToken: "fixture-token", operation, fetch: fetcher });
@@ -47,6 +48,13 @@ describe("tag command", () => {
     await expect(runTagCommand(["list", "--limit", "101"], f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
     await expect(runTagCommand(["show", "invalid"], f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
     await expect(runTagCommand(["rename", tagId, "Name", "--if-version", "9223372036854775808"], f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
+    await runTagCommand(["create", "--help"], f.context, f.dependencies);
+    expect(f.context.stdout.mock.calls.at(-1)![0]).toContain("--color");
+    await runTagCommand(["set-color", "--help"], f.context, f.dependencies);
+    expect(f.context.stdout.mock.calls.at(-1)![0]).toContain("--if-version");
+    await expect(runTagCommand(["set-color", "invalid", "#123ABC"], f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
+    await expect(runTagCommand(["set-color", tagId, "#123ABC", "--if-version", "0"], f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
+    await expect(runTagCommand(["set-color", tagId], f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
     expect(f.fetcher).not.toHaveBeenCalled();
   });
 
@@ -131,18 +139,98 @@ describe("tag command", () => {
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
-  it.each(["create", "rename"])("does not replay an unknown %s outcome", async (action) => {
+  it.each(["create", "rename", "set-color"])("does not replay an unknown %s outcome", async (action) => {
     let writes = 0;
     const f = fixture((url, init) => {
       const p = mockProject(url); if (p) return p;
       if (init.method === "POST" || init.method === "PATCH") { writes++; throw new Error("connection lost"); }
       return response(tag);
     });
-    const args = action === "create" ? ["create", "Example"] : ["rename", tagId, "New", "--if-version", "9007199254740995"];
+    const args = action === "create" ? ["create", "Example"] : [action, tagId, action === "set-color" ? "#123ABC" : "New", "--if-version", "9007199254740995"];
     await expect(runTagCommand([...args, "--project", projectId], f.context, f.dependencies)).rejects.toMatchObject({ outcomeUnconfirmed: true });
     expect(writes).toBe(1);
     expect(f.context.stdout).not.toHaveBeenCalled();
-    if (action === "rename") expect(f.fetcher.mock.calls).toHaveLength(2);
+    if (action !== "create") expect(f.fetcher.mock.calls).toHaveLength(2);
+  });
+
+
+  it("creates a colored dash-prefixed name through repository project selection", async () => {
+    const f = fixture((url, init) => {
+      expect(url.pathname).toBe(path);
+      expect(init.method).toBe("POST");
+      expect(String(init.body)).toBe('{"name":"--Example","color":"#1a2b3c"}');
+      return new Response(stringifyApiJson({ ...tag, name: "--Example", version: 1n }), { status: 201, headers: { "content-type": "application/json", location: `${path}/${tagId}` } });
+    });
+    await runTagCommand(["create", "--color", "#1a2b3c", "--", "--Example"], f.context, f.dependencies);
+    expect(f.dependencies.resolveProject).toHaveBeenCalledOnce();
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("Tag created.");
+    expect(f.context.stdout.mock.calls[0]![0]).not.toContain("#1a2b3c");
+    expect(f.fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, "9007199254740995"])("sets only color using the exact supplied or observed version (%s)", async explicit => {
+    const submitted = explicit === undefined ? tag.version : BigInt(explicit);
+    const f = fixture((url, init) => {
+      const p = mockProject(url); if (p) return p;
+      expect(url.pathname).toBe(`${path}/${tagId}`);
+      if (init.method === "GET") return response(tag);
+      expect(init.method).toBe("PATCH");
+      expect(String(init.body)).toBe(`{"version":${submitted},"color":"#aB12cd"}`);
+      return response({ ...tag, version: submitted + 1n });
+    });
+    await runTagCommand(["set-color", tagId.toUpperCase(), "#aB12cd", "--project", projectId, ...(explicit === undefined ? [] : ["--if-version", explicit]), "--json"], f.context, f.dependencies);
+    expect(f.fetcher.mock.calls.map(([, options]) => options!.method)).toEqual(explicit === undefined ? ["GET", "GET", "PATCH"] : ["GET", "PATCH"]);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain(`"version":${submitted + 1n}`);
+    expect(f.context.stdout.mock.calls[0]![0]).not.toContain('"color"');
+  });
+
+  it.each([{ status: 400, code: "invalid_request" }, { status: 403, code: "forbidden" }, { status: 409, code: "version_conflict" }])("reports color $code without output or replay", async ({ status, code }) => {
+    const f = fixture((url, init) => {
+      const p = mockProject(url); if (p) return p;
+      expect(init.method).toBe("PATCH");
+      return response({ error: { code, message: "Refused", requestId: "request" } }, status);
+    });
+    await expect(runTagCommand(["set-color", tagId, "invalid", "--if-version", "9007199254740995", "--project", projectId], f.context, f.dependencies)).rejects.toMatchObject({ status, code, confirmedRefusal: true });
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+
+  it("does not write color after cancellation while reading the current version", async () => {
+    const cancellation = new AbortController();
+    const f = fixture((url, init) => {
+      const p = mockProject(url); if (p) return p;
+      expect(init.method).toBe("GET");
+      cancellation.abort();
+      return response(tag);
+    }, cancellation.signal);
+    await expect(runTagCommand(["set-color", tagId, "#123ABC", "--project", projectId], f.context, f.dependencies)).rejects.toThrow();
+    expect(f.fetcher.mock.calls.map(([, options]) => options!.method)).toEqual(["GET", "GET"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("retains confirmation when local color response cleanup fails", async () => {
+    const f = fixture((url) => {
+      const p = mockProject(url); if (p) return p;
+      const result = response(tag);
+      const reader = result.body!.getReader(), release = reader.releaseLock.bind(reader);
+      Object.defineProperty(reader, "releaseLock", { value: () => { release(); throw new Error("release failed"); } });
+      Object.defineProperty(result.body, "getReader", { value: () => reader });
+      return result;
+    });
+    await expect(runTagCommand(["set-color", tagId, "#123ABC", "--if-version", String(tag.version), "--project", projectId], f.context, f.dependencies)).rejects.toThrow(`Tag set-color was confirmed for ${tagId}, but local request cleanup failed.`);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+    expect(f.fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains confirmation when local color output rendering fails", async () => {
+    const f = fixture(url => mockProject(url) ?? response(tag));
+    const rendering = vi.spyOn(tagRendering, "renderTag").mockImplementationOnce(() => { throw new Error("render failed"); });
+    try {
+      await expect(runTagCommand(["set-color", tagId, "#123ABC", "--if-version", String(tag.version), "--project", projectId], f.context, f.dependencies)).rejects.toThrow(`Tag set-color was confirmed for ${tagId}, but local rendering failed.`);
+      expect(f.context.stdout).not.toHaveBeenCalled();
+      expect(f.fetcher).toHaveBeenCalledTimes(2);
+    } finally { rendering.mockRestore(); }
   });
 
   it("confirms the exact preview name interactively before using the observed version", async () => {
@@ -161,7 +249,14 @@ describe("tag command", () => {
   it("exposes Tag operations and options in generated shell completion", () => {
     const tagCommand = commandTree.commands!.find(({ name }) => name === "tag")!;
     expect(renderBashCompletion(commandTree)).toContain("'tag'");
-    expect(renderBashCompletion(tagCommand)).toContain("dn_children=('list' 'show' 'create' 'rename' 'delete')");
+    expect(renderBashCompletion(tagCommand)).toContain("dn_children=('list' 'show' 'create' 'rename' 'set-color' 'delete')");
+    const creation = tagCommand.commands!.find(({ name }) => name === "create")!;
+    expect(renderBashCompletion(creation)).toContain("'--color'");
+    expect(renderZshCompletion(creation)).toContain("--color=");
+    const coloring = tagCommand.commands!.find(({ name }) => name === "set-color")!;
+    expect(renderBashCompletion(coloring)).toContain("dn_argument_count=2");
+    for (const option of ["--if-version=", "--project=", "--json"]) expect(renderZshCompletion(coloring)).toContain(option);
+    expect(renderZshCompletion(tagCommand)).toContain("set-color:Set a Tag color");
     const deletion = tagCommand.commands!.find(({ name }) => name === "delete")!;
     const bash = renderBashCompletion(deletion);
     expect(bash).toContain("dn_options=('--project' '--if-version' '--confirm' '--json' '-h' '--help')");
