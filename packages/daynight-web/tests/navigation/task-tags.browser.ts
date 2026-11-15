@@ -17,11 +17,11 @@ const chained = detailFixture(projectId, id(14), { title: 'Chain child', parentI
 const time = '2026-10-22T10:00:00Z';
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], observedAt: time };
+  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/resolve')) state.writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/resolve') && !path.endsWith('/tags/colors/resolve')) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     const graph = () => ({ ...graphFixture(state.tasks), observedAt: state.observedAt });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
@@ -36,6 +36,11 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
       if (state.holdCatalog) { state.holdCatalog = false; state.heldCatalog = true; await new Promise<void>(resolve => { state.releaseCatalog = resolve; }); state.heldCatalog = false; }
       const query = url.searchParams.get('query')?.toLowerCase() ?? '';
       return send({ items: state.tags.filter(tag => tag.name.toLowerCase().includes(query)).map(tag => ({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: id(999), nextCursor: null });
+    }
+    if (path === `${catalogPath}/colors/resolve` && request.method() === 'POST') {
+      const body = request.postDataJSON() as { tagIds: string[]; catalogEpoch?: string };
+      if (body.catalogEpoch && body.catalogEpoch !== id(999)) return send({ error: { code: 'catalog_changed', message: 'Changed', requestId: 'fixture' } }, 409);
+      return send({ catalogEpoch: id(999), items: body.tagIds.map(tagId => state.tags.some(tag => tag.id === tagId) ? { id: tagId, state: 'found', version: 1, color: state.colors.get(tagId) ?? '#9AA3B2' } : { id: tagId, state: 'missing' }) });
     }
     if (path === `${catalogPath}/resolve` && request.method() === 'POST') {
       const body = request.postDataJSON() as { tagIds: string[] };
@@ -396,8 +401,10 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   const mainTrigger = main.locator('summary');
   await mainTrigger.focus(); await page.keyboard.press('Enter');
   await expect(main).toHaveAttribute('open', '');
-  const mainBounds = await main.locator('.tag-filter-panel').boundingBox();
-  expect(mainBounds).not.toBeNull(); expect(mainBounds!.width).toBeGreaterThanOrEqual(Math.min(285, width - 32)); expect(mainBounds!.x).toBeGreaterThanOrEqual(0); expect(mainBounds!.x + mainBounds!.width).toBeLessThanOrEqual(width + 1);
+  await expect.poll(async () => {
+    const bounds = await main.locator('.tag-filter-panel').boundingBox();
+    return bounds !== null && bounds.width >= Math.min(285, width - 32) && bounds.x >= 0 && bounds.x + bounds.width <= width + 1;
+  }).toBe(true);
   await page.keyboard.press('Escape'); await expect(mainTrigger).toBeFocused();
   const card = page.locator(`[data-goal-id="${goal.id}"]`);
   await card.locator('.goal-list-toggle').click();
@@ -617,5 +624,59 @@ for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     expect(heights.restored).toBe(heights.compact);
   }
   await row.focus(); await expect(row).toBeFocused();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+});
+
+for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag colors agree across catalog, task and controls at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale);
+  const zh = locale === 'zh-CN';
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const row = page.locator(`#standalone-task-${standalone.id}`);
+  const white = row.locator('.task-tag').filter({ hasText: longName });
+  const black = row.locator('.task-tag').filter({ hasText: 'Another label' });
+  await expect(white.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expect(black.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(0, 0, 0)');
+  for (const chip of [white, black]) {
+    const ratios = await chip.evaluate(element => {
+      const rgb = (value: string) => value.match(/\d+/g)!.slice(0, 3).map(Number);
+      const luminance = (value: string) => rgb(value).map(c => c / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i]!, 0);
+      const contrast = (a: string, b: string) => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05); };
+      const style = getComputedStyle(element), dot = getComputedStyle(element.querySelector('.task-tag-dot')!);
+      return { text: contrast(style.color, style.backgroundColor), outline: contrast(dot.borderColor, style.backgroundColor) };
+    });
+    expect(ratios.text).toBeGreaterThanOrEqual(4.5);
+    expect(ratios.outline).toBeGreaterThanOrEqual(3);
+  }
+  await page.locator('#project-task-tab-goals').click();
+  const card = page.locator(`[data-goal-id="${goal.id}"]`);
+  const goalChip = card.locator('.goal-list-summary .task-tag').filter({ hasText: 'Goal label' });
+  await expect(goalChip.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(216, 86, 86)');
+  const mainFilter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  await mainFilter.locator('summary').focus(); await page.keyboard.press('Enter');
+  const option = mainFilter.getByRole('checkbox', { name: 'Goal label' });
+  await expect(option).toBeVisible();
+  await expect(option.locator('..').locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(216, 86, 86)');
+  await option.focus(); await page.keyboard.press('Space'); await expect(option).toBeChecked();
+  await page.keyboard.press('Escape');
+  await expect(mainFilter.locator('summary')).toBeFocused();
+  const selected = mainFilter.locator('..').locator('.tag-filter-selected .task-tag').filter({ hasText: 'Goal label' });
+  await expect(selected.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(216, 86, 86)');
+  await card.locator(`#project-goal-detail-${goal.id}`).click();
+  const dialog = page.locator('.goal-detail-surface');
+  await dialog.getByRole('button', { name: zh ? '编辑标签' : 'Edit tags' }).click();
+  const picker = dialog.locator('.tag-picker');
+  const selectedChip = picker.locator('.tag-picker-selected .task-tag').filter({ hasText: 'Goal label' });
+  await expect(selectedChip.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(216, 86, 86)');
+  await expect(picker.getByRole('checkbox', { name: 'Goal label' }).locator('..').locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(216, 86, 86)');
+  await dialog.locator('.task-detail-close').click();
+  await page.getByRole('tab', { name: zh ? '标签' : 'Tags', exact: true }).click();
+  const catalogChip = page.locator('.project-tags-list .task-tag').filter({ hasText: 'Goal label' });
+  await expect(catalogChip.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(216, 86, 86)');
+  state.colors.set(id(90), '#00FF00');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(catalogChip.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(0, 255, 0)');
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
 });

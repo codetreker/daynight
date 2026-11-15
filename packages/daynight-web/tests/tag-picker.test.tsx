@@ -8,7 +8,7 @@ import { TagPicker } from '../src/features/task-tags/TagPicker';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
 
 const env = vi.hoisted(() => ({ scope: null as any, access: null as any, listeners: new Set<(event: any) => void>() }));
-vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn(), createProjectTag: vi.fn() }));
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn(), resolveProjectTagColors: vi.fn(async (_project: string, ids: string[]) => ({ catalogEpoch: '00000000-0000-4000-8000-000000000051', items: ids.map(id => ({ id, state: 'found', version: 1n, color: '#AABBCC' })) })), createProjectTag: vi.fn() }));
 vi.mock('../src/features/task-cache/TaskCacheProvider', () => ({ useTaskCacheScope: () => env.scope }));
 vi.mock('../src/features/projects/ProjectAccess', () => ({ useProjectAccessSession: () => env.access.session, useProjectAccess: () => env.access }));
 const projectId = '00000000-0000-4000-8000-000000000031';
@@ -23,7 +23,7 @@ const Harness = ({ initial = [], onChange = () => {} }: { initial?: readonly Tas
 };
 beforeEach(() => {
   env.listeners.clear();
-  env.scope = { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { env.listeners.add(listener); return () => env.listeners.delete(listener); } };
+  env.scope = { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), markProjectReadable: vi.fn(), notifyTagColors: vi.fn(), subscribeTagColors: () => () => {}, isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { env.listeners.add(listener); return () => env.listeners.delete(listener); } };
   env.access = { session: { waitForFreshAccess: vi.fn().mockResolvedValue({}), revalidateAfterMutation: vi.fn().mockResolvedValue({}) } };
   list.mockReset().mockResolvedValue(page([alpha]));
   resolve.mockReset().mockImplementation(async (_project, ids) => ids.map(id => id === alpha.id ? alpha : beta));

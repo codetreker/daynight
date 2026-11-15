@@ -18,7 +18,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/colors/resolve')) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
@@ -31,6 +31,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
       if (state.hold) { state.hold = false; state.started = true; await gate.promise; }
       const query = url.searchParams.get('query') ?? '';
       return send({ items: tag.name.toLowerCase().includes(query.toLowerCase()) ? [tag] : [], catalogEpoch: epoch, nextCursor: null });
+    }
+    if (path === `/api/v1/projects/${projectId}/tags/colors/resolve`) {
+      const body = request.postDataJSON() as { tagIds: string[] };
+      return send({ catalogEpoch: epoch, items: body.tagIds.map(id => id === tagId ? { id, state: 'found', version: 3, color: '#D85656' } : { id, state: 'missing' }) });
     }
     if (path === `/api/v1/projects/${projectId}/tags/${tagId}` && request.method() === 'GET') return send(tag);
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);

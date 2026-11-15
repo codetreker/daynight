@@ -94,6 +94,7 @@ export class TaskCacheScope {
   private readonly channel: BroadcastChannel | null;
   private readonly lifetime = new AbortController();
   private readonly listeners = new Set<(event: CacheEvent) => void>();
+  private readonly tagColorListeners = new Set<(projectId: string, admitted?: true) => void>();
   private readonly projectionListeners = new Set<(event: CacheEvent) => void>();
   private readonly projectionHints = new Set<Promise<void>>();
   private readonly projectionHintProjects = new Map<Promise<void>, string>();
@@ -140,6 +141,7 @@ export class TaskCacheScope {
   private readonly projectionSnapshotAncestors = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, readonly string[]>>();
   private readonly deniedProjects = new Map<string, SyncTicket>();
   private readonly projectPurges = new Map<string, Promise<void>>();
+  private readonly pendingTagColorAdmissions = new Map<string, { readonly readRevision: number; readonly scopeRevision: number; readonly directRevision: number; readonly userFence: string | null }>();
   private invalidated = false;
   private identityMismatch = false;
   private readonly admission = new AbortController();
@@ -172,6 +174,11 @@ export class TaskCacheScope {
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;
       if (hint.projectId !== null && typeof hint.projectId !== "string") return;
       if (this.identityMismatch && !("revokedGeneration" in hint) && !("unboundProjectDenial" in hint)) return;
+      if ("tagColorsChanged" in hint) {
+        if (hint.tagColorsChanged !== true || typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId) return;
+        this.emitTagColors(hint.projectId);
+        return;
+      }
       if ("unboundProjectDenial" in hint) {
         if (hint.unboundProjectDenial !== true || typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId) return;
         this.receiveUnboundProjectDenial(hint.projectId);
@@ -451,6 +458,22 @@ export class TaskCacheScope {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
+  subscribeTagColors = (listener: (projectId: string, admitted?: true) => void): (() => void) => {
+    this.tagColorListeners.add(listener);
+    return () => { this.tagColorListeners.delete(listener); };
+  };
+  // Only a locally admitted read may restore a withdrawn color projection;
+  // ordinary invalidations and peer hints carry no access authority.
+  private emitTagColors(projectId: string, admitted?: true): void {
+    if (this.isInvalidated || this.identityMismatch || authRequestsPaused()) return;
+    for (const listener of this.tagColorListeners) admitted ? listener(projectId, true) : listener(projectId);
+  }
+  notifyTagColors(projectId: string, broadcast = true): void {
+    projectId = requestId(projectId);
+    if (this.isInvalidated || this.identityMismatch || this.isProjectSuspended(projectId)) return;
+    this.emitTagColors(projectId);
+    if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId, tagColorsChanged: true });
+  }
   subscribeProjection = (listener: (event: CacheEvent) => void): (() => void) => {
     this.projectionListeners.add(listener);
     return () => { this.projectionListeners.delete(listener); };
@@ -1000,6 +1023,11 @@ export class TaskCacheScope {
       await transaction.objectStore("projects").put(invalidated(this.userId, projectId, userFence, "access", nextHistory(manifest)));
     }, lifetime)).then(() => {
       if (this.deniedProjects.get(projectId) === ticket) this.deniedProjects.delete(projectId);
+      const admission = this.pendingTagColorAdmissions.get(projectId);
+      this.pendingTagColorAdmissions.delete(projectId);
+      if (admission !== undefined && admission.userFence === this.userFence && admission.readRevision === this.getProjectReadRevision(projectId) &&
+        admission.scopeRevision === this.getProjectRevision(projectId) && admission.directRevision === this.getDirectRevision(projectId) &&
+        !this.isDirectProjectBlocked(projectId)) this.emitTagColors(projectId, true);
       this.hint(projectId);
     }).catch((error: unknown) => {
       if (notifyFailure) {
@@ -1380,6 +1408,7 @@ export class TaskCacheScope {
     }
     this.authorizedProjects.add(ticket.projectId);
     const project = this.materialize(result.manifest, result.stored, response.assigneeVersions);
+    if (!this.isDirectProjectBlocked(ticket.projectId)) this.emitTagColors(ticket.projectId, true);
     if (result.changed) this.hint(ticket.projectId);
     if (result.changed || versionsChanged) this.emit({ projectId: ticket.projectId });
     return { project, changed: result.changed, changedTaskIds: result.changedTaskIds };
@@ -1582,6 +1611,15 @@ export class TaskCacheScope {
     const revision = this.getProjectReadRevision(projectId) + 1;
     this.readableProjects.set(projectId, revision);
     this.projectReadRevisions.set(projectId, revision);
+    if (!this.isDirectProjectBlocked(projectId)) {
+      this.pendingTagColorAdmissions.delete(projectId);
+      this.emitTagColors(projectId, true);
+    } else if (this.deniedProjects.has(projectId)) {
+      // The successful read can finish before the older denial's cleanup.
+      // Preserve its fences, not its contents, until that cleanup commits.
+      this.pendingTagColorAdmissions.set(projectId, { readRevision: revision, scopeRevision: this.getProjectRevision(projectId),
+        directRevision: this.getDirectRevision(projectId), userFence: this.userFence });
+    }
   }
   getProjectReadRevision(projectId: string): number { return this.projectReadRevisions.get(projectId) ?? 0; }
   canRevokeProjectRead(ticket: SyncTicket, revision: number): boolean {
@@ -1798,7 +1836,7 @@ export class TaskCacheScope {
     this.unboundProjectDenials.clear();
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already committed. */ } }
-    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
+    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.pendingTagColorAdmissions.clear(); this.listeners.clear(); this.projectionListeners.clear();
     this.purge = this.transaction(async (transaction) => {
       const stored = await transaction.objectStore("userScopes").get(this.userId);
       let currentFence: string | null = null;
@@ -1823,7 +1861,7 @@ export class TaskCacheScope {
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already completed. */ } }
     this.pending.clear(); this.channel?.close(); this.database.close();
-    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
+    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.pendingTagColorAdmissions.clear(); this.listeners.clear(); this.projectionListeners.clear();
   }
 }
 

@@ -6,6 +6,8 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { useProjectAccess } from '../projects/ProjectAccess';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { tagMessages } from './messages';
+import { TagColorChip, TagColorFeedback } from './TagColor';
+import { useTagColors } from './useTagColors';
 import { useProjectTags } from './useProjectTags';
 
 export const TagPicker = ({ projectId, value, onChange, canWrite, onCreatingChange, onNameDirty }: {
@@ -15,6 +17,8 @@ export const TagPicker = ({ projectId, value, onChange, canWrite, onCreatingChan
   const { locale } = useI18n(); const m = tagMessages[locale];
   const scope = useTaskCacheScope(); const access = useProjectAccess(projectId);
   const catalog = useProjectTags(projectId);
+  const colorIds = [...value.map(tag => tag.id), ...(catalog.page?.items.map(tag => tag.id) ?? [])];
+  const colors = useTagColors(projectId, colorIds);
   const [name, setName] = useState(''); const nameRef = useRef(name); nameRef.current = name;
   const attemptedName = useRef(''); const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -71,7 +75,7 @@ export const TagPicker = ({ projectId, value, onChange, canWrite, onCreatingChan
       if (signal.aborted || scope.isInvalidated || scope.isProjectSuspended(projectId)) return;
       const current = latest.current.value;
       if (!current.some(item => item.id === tag.id)) latest.current.onChange([...current, { id: tag.id, name: tag.name }]);
-      if (nameRef.current === name) { setName(''); onNameDirty?.(false); } catalog.refresh();
+      if (nameRef.current === name) { setName(''); onNameDirty?.(false); } scope.notifyTagColors(projectId); catalog.refresh();
     } catch (error) {
       if (signal.aborted || isAbortError(error)) return;
       const uncertain = dispatched && (confirmed || !(error instanceof ApiError) || error.writeOutcome !== 'not_committed' && (error.kind !== 'server' || error.status === null || error.status >= 500 || error.code === 'write_outcome_unknown'));
@@ -106,12 +110,13 @@ export const TagPicker = ({ projectId, value, onChange, canWrite, onCreatingChan
     finally { if (!signal.aborted) setChecking(false); }
   };
   return <div className="tag-picker">
-    <div className="tag-picker-selected">{value.map(tag => <span className="task-tag" key={tag.id}>{tag.name} <button type="button" aria-label={`${locale === 'zh-CN' ? '移除' : 'Remove'} ${tag.name}`} onClick={() => toggle(tag)}>×</button></span>)}</div>
+    <div className="tag-picker-selected">{value.map(tag => <TagColorChip key={tag.id} name={tag.name} item={colors.items.get(tag.id)}><button type="button" aria-label={`${locale === 'zh-CN' ? '移除' : 'Remove'} ${tag.name}`} onClick={() => toggle(tag)}>×</button></TagColorChip>)}</div>
+    <TagColorFeedback projectId={projectId} ids={colorIds} onRetry={catalog.refresh} />
     <label>{m.search}<input type="search" value={catalog.query} onChange={event => catalog.setQuery(event.currentTarget.value)} /></label>
     {catalog.loading && catalog.page === null && <p role="status">{m.loading}</p>}
     {catalog.error !== null && <div role="alert">{m.readError} <button className="button" type="button" onClick={catalog.refresh}>{m.retry}</button></div>}
     {resolveError && <div role="alert">{m.readError} <button className="button" type="button" onClick={() => setResolveRetry(value => value + 1)}>{m.retry}</button></div>}
-    {catalog.page !== null && <><div className="tag-picker-options">{catalog.page.items.length === 0 ? <p>{catalog.query ? m.noMatches : m.empty}</p> : catalog.page.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.some(item => item.id === tag.id)} onChange={() => toggle(tag)} /> {tag.name}</label>)}</div><div className="tag-picker-actions"><button className="button" type="button" disabled={catalog.loading} onClick={catalog.first}>{m.first}</button><button className="button" type="button" disabled={catalog.loading || catalog.page.nextCursor === null} onClick={catalog.next}>{m.next}</button></div></>}
+    {catalog.page !== null && <><div className="tag-picker-options">{catalog.page.items.length === 0 ? <p>{catalog.query ? m.noMatches : m.empty}</p> : catalog.page.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.some(item => item.id === tag.id)} onChange={() => toggle(tag)} /> <TagColorChip name={tag.name} item={colors.items.get(tag.id)} /></label>)}</div><div className="tag-picker-actions"><button className="button" type="button" disabled={catalog.loading} onClick={catalog.first}>{m.first}</button><button className="button" type="button" disabled={catalog.loading || catalog.page.nextCursor === null} onClick={catalog.next}>{m.next}</button></div></>}
     <div className="tag-picker-create"><label>{m.name}<input value={name} disabled={unknown} onChange={event => { setName(event.currentTarget.value); onNameDirty?.(event.currentTarget.value !== ''); setCreateError(null); }} /></label><button className="button" type="button" disabled={!canWrite || creating || unknown} onClick={() => { void create(); }}>{creating ? m.saving : m.create}</button></div>
     <p>{locale === 'zh-CN' ? '新标签立即加入项目标签库；取消编辑不会删除它。' : 'New tags are added to the project immediately; cancelling editing will not delete them.'}</p>
     {createError !== null && <div role="alert">{createError}{unknown && <><p>{m.name}: {attemptedName.current}</p><button className="button" type="button" disabled={checking} onClick={() => { void inspectCreate(); }}>{checking ? m.checking : m.check}</button>{matches !== null && <><p>{m.current}: {matches.length ? matches.map(tag => tag.name).join(', ') : m.noMatches}</p><button className="button" type="button" onClick={() => { setUnknown(false); setCreateError(null); setMatches(null); }}>{m.checked}</button></>}</>}</div>}
