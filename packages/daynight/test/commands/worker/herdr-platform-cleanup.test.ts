@@ -399,7 +399,10 @@ test.skipIf(process.platform !== "win32")("reads one live original through the i
     await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     // The policy matrix controls OS results; this single mechanism case keeps
     // GetProcessById, SafeHandle and exact StartTime acquisition on a live child.
-    const observed = await cleanup.observeWindowsCleanup([{ pid: child.pid, source: "dotnet-start-time-ticks" }], { captureStages: true });
+    const observed = await cleanup.observeWindowsCleanup([{ pid: child.pid, source: "dotnet-start-time-ticks" }], {
+      captureStages: true,
+      execute: (file: string, args: string[], options: { captureStages: boolean }) => cleanup.runCleanupQuery(file, args, { ...options, timeoutMs: 20_000, cleanupMs: 2000 }),
+    });
     const diagnostic = JSON.stringify(observed);
     console.log(`Independent .NET cleanup observer: ${diagnostic}`);
     expect(observed.error, diagnostic).toBeNull();
@@ -417,7 +420,7 @@ test.skipIf(process.platform !== "win32")("reads one live original through the i
       await join(2000); throw error;
     }
   }
-}, 20_000);
+}, 30_000);
 
 test("rejects a live endpoint even when the process observation is missing", async () => {
   await windowsFixture(async (directory, run) => {

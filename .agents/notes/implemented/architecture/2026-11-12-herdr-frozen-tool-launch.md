@@ -268,7 +268,9 @@ the real PowerShell 5 query, same-source birth comparison and script entry point
 their success remains mandatory. POSIX entry tests and the observer's real child
 timeout/close test retain their direct process coverage. One Windows mechanism
 test reads a live owned process through .NET; policy cases do not repeat that
-system query. Script exit-code tests control the checker result at its module
+system query. Its [test-specific query budget](../testing/2026-11-15-windows-cleanup-mechanism-budget.md)
+accommodates delayed PowerShell startup while preserving shared query deadlines
+and failure semantics. Script exit-code tests control the checker result at its module
 boundary without starting another OS query.
 
 ## Alternatives
