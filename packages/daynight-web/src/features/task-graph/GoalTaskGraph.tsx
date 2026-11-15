@@ -5,7 +5,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { type CanvasLayout, type GraphDirection } from './layout';
 import { layoutGoalGraph, type GoalLayoutSize } from './goal-layout';
 import { projectGoal, goalTopologyKey } from './goal-projection';
-import type { GraphIndex, GraphProjection } from './model';
+import { tracePrerequisites, type GraphIndex, type GraphProjection } from './model';
 import { TaskGraphCanvas, useGraphFocusRecovery } from './TaskGraphCanvas';
 import { TaskGraphToolbar } from './TaskGraphToolbar';
 import type { TaskFlowNode } from './TaskNode';
@@ -22,8 +22,8 @@ type Props = {
   readonly fullscreen?: { readonly active: boolean; readonly onToggle: () => void; readonly buttonRef: RefObject<HTMLButtonElement | null> };
 };
 
-const emptyInspection = { selectedTaskId: null, highlightedIds: new Set<string>() };
-const clearInspection = () => {};
+const emptyHighlight: ReadonlySet<string> = new Set();
+const onFramingReset = () => {};
 const emptyGeometry: CanvasLayout = { nodes: [], edges: [], width: 0, height: 0, direction: 'horizontal' };
 const padding = 0.15;
 type LayoutRequest = { readonly id: number; readonly goalId: string; readonly topologyKey: string; readonly direction: GraphDirection;
@@ -49,6 +49,19 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
   const [request, setRequest] = useState<LayoutRequest | null>(null);
   const resetButton = useRef<HTMLButtonElement>(null);
   const projection = useMemo(() => projectGoal(index, goalId), [index, goalId]);
+  const visibleIds = useMemo(() => new Set([...projection.mainIds, ...projection.externalIds]), [projection]);
+  const [selection, setSelection] = useState<{ goalId: string; taskId: string | null }>({ goalId, taskId: null });
+  const selectedTaskId = selection.goalId === goalId && selection.taskId !== null && visibleIds.has(selection.taskId) ? selection.taskId : null;
+  if (selection.goalId !== goalId || selection.taskId !== selectedTaskId) setSelection({ goalId, taskId: selectedTaskId });
+  const highlightedIds = useMemo(() => selectedTaskId === null ? emptyHighlight : tracePrerequisites(index, selectedTaskId), [index, selectedTaskId]);
+  const inspection = useMemo(() => ({ selectedTaskId, highlightedIds }), [selectedTaskId, highlightedIds]);
+  const hiddenUpstreamCount = useMemo(() => [...highlightedIds].filter((id) => !visibleIds.has(id)).length, [highlightedIds, visibleIds]);
+  const onInspectTask = useCallback((id: string) => {
+    setSelection((current) => ({ goalId, taskId: current.goalId === goalId && current.taskId === id ? null : id }));
+  }, [goalId]);
+  const clearInspection = useCallback(() => {
+    setSelection((current) => current.taskId === null ? current : { goalId, taskId: null });
+  }, [goalId]);
   const topologyKey = goalTopologyKey(projection);
   const hasTasks = projection.mainIds.size + projection.externalIds.size > 0;
   const createRequest = useCallback((layoutSize: GoalLayoutSize, mode: LayoutRequest['mode']): LayoutRequest => ({
@@ -94,9 +107,9 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
       style: { width: node.width, height: node.height }, data: {
         task, kind: node.kind, ownerLabel: node.kind === 'external' ? owner : null,
         center: { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 },
-        size: { width: node.width, height: node.height }, actions: { kind: 'goal', onOpenTask },
+        size: { width: node.width, height: node.height }, actions: { kind: 'goal', onInspectTask, onOpenTask },
       } };
-  }), [geometry, index, summaries, m, onOpenTask]);
+  }), [geometry, index, summaries, m, onInspectTask, onOpenTask]);
   const viewportFactory = useCallback(() => {
     const bounds = boundsOf(geometry!);
     const { width, height } = activeRequest!.size;
@@ -117,15 +130,15 @@ export const GoalTaskGraph = ({ projectId, index, summaries, goalId, direction, 
   }, []);
   const fit = useCallback(() => { if (latestSize.current !== null && hasTasks) setRequest(createRequest(latestSize.current, 'overview')); }, [createRequest, hasTasks]);
   const retry = useCallback(() => { if (latestSize.current !== null) setRequest(createRequest(latestSize.current, 'readable')); }, [createRequest]);
-  return <div className="task-graph" data-visible-task-count={projection.mainIds.size + projection.externalIds.size} data-total-task-count={projection.mainIds.size + projection.externalIds.size} ref={containerRef} onFocusCapture={onFocusCapture}>
-    <TaskGraphToolbar title={m.goalTitle} summary={m.goalCounts({ main: projection.mainIds.size, external: projection.externalIds.size, edges: projection.edges.length })} status=""
+  return <div className="task-graph" data-hidden-upstream-count={hiddenUpstreamCount} data-visible-task-count={projection.mainIds.size + projection.externalIds.size} data-total-task-count={projection.mainIds.size + projection.externalIds.size} ref={containerRef} onFocusCapture={onFocusCapture}>
+    <TaskGraphToolbar title={m.goalTitle} summary={m.goalCounts({ main: projection.mainIds.size, external: projection.externalIds.size, edges: projection.edges.length })} status={hiddenUpstreamCount === 0 ? '' : m.hiddenPrerequisites({ count: hiddenUpstreamCount })}
       direction={direction} onDirectionChange={onDirectionChange} directionLabel={m.orientation} horizontalLabel={m.horizontal} verticalLabel={m.vertical}
       fullscreen={fullscreen} enterFullscreenLabel={m.enterFullscreen} exitFullscreenLabel={m.exitFullscreen}
       resetButton={resetButton} onReset={fit} resetLabel={m.goalFit}
       notice={directionIssue === undefined ? undefined : m.orientationIssue[directionIssue]} />
     {!hasTasks ? <div className="graph-error">{m.goalEmpty}</div>
-        : <><TaskGraphCanvas canvasId={`flow-${goalId}`} nodes={nodes} geometry={fallbackGeometry} inspection={emptyInspection} onClearInspection={clearInspection}
-          viewportFactory={viewportFactory} framingKey={`${activeRequest?.id ?? 'waiting'}`} framingRevision={null} onFramingReset={clearInspection}
+        : <><TaskGraphCanvas canvasId={`flow-${goalId}`} nodes={nodes} geometry={fallbackGeometry} inspection={inspection} onClearInspection={clearInspection}
+          viewportFactory={viewportFactory} framingKey={`${activeRequest?.id ?? 'waiting'}`} framingRevision={null} onFramingReset={onFramingReset}
           minZoom={minZoom} maxZoom={1.8} fitViewOptions={fitViewOptions} framingReady={geometry !== null} onSizeChange={onSizeChange} onFitView={fit}
           overlay={result.error ? <div className="graph-error" role="alert"><h3>{m.layoutErrorTitle}</h3><p>{m.goalLayoutError}</p><button type="button" className="button" onClick={retry}>{project.retryRefresh}</button></div> : undefined} />
           {!result.error && <div className="graph-foot"><span>{m.directionLegend}</span><span>{m.goalExternalLegend}</span></div>}</>}

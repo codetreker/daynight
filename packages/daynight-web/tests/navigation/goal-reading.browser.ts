@@ -272,6 +272,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const targetChild = detailFixture(projectId, otherTask2Id, { parentId: otherGoalId, title: 'Other second task', dependsOn: [otherTaskId] });
     details = [goal, { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], ready: false }, second, single, targetGoal, targetRoot, targetChild];
     currentGraph = graphFixture(details);
+  }, addGoalInspectionGraph: () => {
+    details = [goal,
+      { ...first, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], ready: false },
+      { ...single, dependsOn: [otherTaskId], externalDependsOn: [otherTaskId], ready: false },
+      { ...second, dependsOn: [firstId, singleId], blockedBy: [firstId, singleId] },
+      detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }),
+      detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [otherTask2Id] }),
+      detailFixture(projectId, otherTask2Id, { title: 'Hidden ancestor', dependsOn: [outsideId] }),
+      detailFixture(projectId, outsideId, { title: 'Hidden root' })];
+    currentGraph = graphFixture(details);
   }, addTwoExternalTasks: () => {
     details = [...all, detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Other goal', ready: false }),
       detailFixture(projectId, otherTaskId, { parentId: otherGoalId, title: 'Other task', dependsOn: [secondId], blockedBy: [secondId], ready: false }),
@@ -816,7 +826,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
     const badge = element.getBoundingClientRect(), canvas = element.closest('.task-graph-canvas')!.getBoundingClientRect();
     return badge.left >= canvas.left && badge.right <= canvas.right && badge.top >= canvas.top && badge.bottom <= canvas.bottom;
   })).toBe(true);
-  await graph.locator(`[data-id="${secondId}"] .task-node-body`).click();
+  await graph.locator(`[data-id="${secondId}"] .task-node-details`).click();
   const child = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
   await expect(child).toBeVisible();
   await page.keyboard.press('Escape');
@@ -2390,12 +2400,28 @@ test('Goal list graph navigation and history retain the source and scroll', asyn
   await open.click();
   const graphDialog = page.locator(`#task-graph-${goalId}`);
   await expect(graphDialog).toBeVisible();
-  const task = graphDialog.locator(`[data-id="${firstId}"] .task-node-body`);
+  const inspect = graphDialog.locator(`[data-id="${firstId}"] .task-node-body`);
+  await inspect.click();
+  const task = graphDialog.locator(`[data-id="${firstId}"] .task-node-details`);
   await task.click();
   const detail = page.getByRole('dialog', { name: 'First task', exact: true });
   await expect(detail).toBeVisible();
+  await detail.getByRole('tab', { name: 'Attachments', exact: true }).click();
+  await page.goBack();
+  await expect(detail.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await detail.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await detail.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = detail.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Goal graph Task draft');
   await page.keyboard.press('Escape');
+  const confirm = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(draft).toHaveValue('Goal graph Task draft');
+  await detail.getByRole('button', { name: 'Close task details' }).click();
+  await confirm.getByRole('button', { name: 'Discard and leave' }).click();
   await expect(detail).toHaveCount(0); await expect(task).toBeFocused();
+  await expect(inspect).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
   await expect(open).toBeFocused();
   await expect(goalToggle).toHaveAttribute('aria-expanded', 'true');
@@ -2688,6 +2714,16 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   const nodes = dialog.locator('.react-flow__node');
   const viewport = dialog.locator('.react-flow__viewport');
   await expect(nodes).toHaveCount(30);
+  expect(await nodes.first().evaluate(element => {
+    const node = element.querySelector('.task-node')!.getBoundingClientRect();
+    const details = element.querySelector('.task-node-details')!.getBoundingClientRect();
+    const statuses = [...element.querySelectorAll('.task-node-bottom > *')].map(item => item.getBoundingClientRect());
+    const title = element.querySelector('.task-node-title')!.getBoundingClientRect();
+    const inside = (box: DOMRect) => box.left >= node.left - 1 && box.right <= node.right + 1 && box.top >= node.top - 1 && box.bottom <= node.bottom + 1;
+    const separate = (a: DOMRect, b: DOMRect) => a.right <= b.left + 1 || b.right <= a.left + 1 || a.bottom <= b.top + 1 || b.bottom <= a.top + 1;
+    return [details, ...statuses, title].every(inside) && statuses.every(status => separate(details, status)) && separate(details, title);
+  })).toBe(true);
+
   const grid = async () => nodes.evaluateAll(elements => elements.map(element => {
     const matrix = new DOMMatrix(getComputedStyle(element).transform);
     return { x: matrix.e, y: matrix.f };
@@ -2744,7 +2780,7 @@ test.describe('Goal compact graph on touch screens', () => {
     await page.locator(`#project-goal-graph-${goalId}`).click();
     const dialog = page.locator(`#task-graph-${goalId}`);
     const viewport = dialog.locator('.react-flow__viewport');
-    const task = dialog.locator('[data-id="00000000-0000-4000-8000-000000000800"] .task-node-body');
+    const task = dialog.locator('[data-id="00000000-0000-4000-8000-000000000800"] .task-node-details');
     await expect(task).toBeVisible();
     const box = await task.boundingBox();
     expect(box).not.toBeNull();
@@ -2767,7 +2803,7 @@ test.describe('Goal compact graph on touch screens', () => {
 
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal overview graph preserves reading and keyboard focus at ${width}px in ${locale}`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 800 });
-  const fixture = await install(page, locale); fixture.addExternalGoalChain();
+  const fixture = await install(page, locale); fixture.addGoalInspectionGraph();
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
@@ -2780,29 +2816,52 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await expect(dialog.locator('.task-node')).toHaveCount(4);
   for (const id of [firstId, secondId, singleId, otherTaskId]) await expect(dialog.locator(`[data-id="${id}"] .task-node-body`)).toHaveCount(1);
   await expect(dialog.locator(`[data-id="${otherTask2Id}"]`)).toHaveCount(0);
-  await expect(dialog.locator('.task-node-details, .task-node-expand')).toHaveCount(0);
+  await expect(dialog.locator('.task-node-details')).toHaveCount(4);
+  await expect(dialog.locator('.task-node-expand')).toHaveCount(0);
   const topology = { nodes: [firstId, secondId, singleId, otherTaskId].map(id => ({ id })), edges: [
     { id: `${otherTaskId}->${firstId}`, source: otherTaskId, target: firstId, external: true },
+    { id: `${otherTaskId}->${singleId}`, source: otherTaskId, target: singleId, external: true },
     { id: `${firstId}->${secondId}`, source: firstId, target: secondId, external: false },
+    { id: `${singleId}->${secondId}`, source: singleId, target: secondId, external: false },
   ] };
   if (width === 1440 && locale === 'en') expect(await checkDependencyGeometry(page, topology, info)).toEqual({ total: 0, examples: [] });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  const external = dialog.locator(`[data-id="${otherTaskId}"] .task-node-body`);
+  const viewport = dialog.locator('.react-flow__viewport');
+  const positions = () => dialog.locator('.react-flow__node').evaluateAll(elements => elements.map(element => [element.getAttribute('data-id'), (element as HTMLElement).style.transform]));
+  const selected = dialog.locator(`[data-id="${secondId}"] .task-node-body`);
+  await selected.focus();
+  const before = await viewport.getAttribute('style'), beforePositions = await positions();
+  await page.keyboard.press(' ');
+  await expect(selected).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.locator('.task-node-prerequisite')).toHaveCount(3);
+  await expect(dialog.locator('.task-dependency-edge[data-inspection="highlighted"]')).toHaveCount(4);
+  await expect(dialog.locator('.graph-hidden-prerequisites')).toHaveText(locale === 'en' ? '2 additional upstream tasks are hidden' : '另有2个上游未展开');
+  await page.screenshot({ path: info.outputPath(`goal-inspection-${width}-${locale}.png`) });
+  await expect(page.getByRole('dialog', { name: 'Second task', exact: true })).toHaveCount(0);
+  await expect(viewport).toHaveAttribute('style', before!);
+  expect(await positions()).toEqual(beforePositions);
+  const externalBody = dialog.locator(`[data-id="${otherTaskId}"] .task-node-body`);
+  await externalBody.focus(); await page.keyboard.press('Enter');
+  await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
+  await expect(dialog.locator('.task-node-selected')).toHaveCount(1);
+  const external = dialog.locator(`[data-id="${otherTaskId}"] .task-node-details`);
   await external.focus(); await page.keyboard.press('Enter');
   const detail = page.getByRole('dialog', { name: 'Other task', exact: true });
   await expect(detail).toBeVisible();
-  const viewport = dialog.locator('.react-flow__viewport');
   const transform = await viewport.evaluate(el => (el as HTMLElement).style.transform);
   await page.keyboard.press('Escape');
   await expect(detail).toHaveCount(0);
   await expect(dialog).toBeVisible();
   expect(await viewport.evaluate(el => (el as HTMLElement).style.transform)).toBe(transform);
   await expect(external).toBeFocused();
+  await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
   await dialog.locator('[data-direction="vertical"]').click();
   await expect(dialog.locator('[data-direction="vertical"]')).toHaveAttribute('aria-checked', 'true');
+  await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
   if (width === 1440 && locale === 'en') expect(await checkDependencyGeometry(page, topology, info, undefined, 'vertical')).toEqual({ total: 0, examples: [] });
   await dialog.locator('.graph-fullscreen-toggle').click();
   await expect(dialog.locator('.task-node')).toHaveCount(4);
+  await expect(externalBody).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
@@ -2904,7 +2963,7 @@ test('Goal overview retires an invalidated Goal and cancels its old sync', async
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(fixture.syncHeld).toBe(true);
   fixture.advanceEpoch(); fixture.retireGoal();
-  await dialog.locator(`[data-id="${firstId}"] .task-node-body`).click();
+  await dialog.locator(`[data-id="${firstId}"] .task-node-details`).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(`[data-goal-id="${goalId}"]`)).toHaveCount(0);
   fixture.releaseSync();

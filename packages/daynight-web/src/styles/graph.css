@@ -68,7 +68,6 @@
 }
 
 .task-chain-dialog :focus-visible { outline-color: var(--task-focus); }
-.task-node-goal .task-node-bottom{padding-right:0}
 
 .project-session-status { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; max-width: 130px; }
 .project-session-control, .project-session-text { font-size: 10px; line-height: 1.4; text-align: right; overflow-wrap: anywhere; }
