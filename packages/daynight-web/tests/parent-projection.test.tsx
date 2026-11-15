@@ -24,7 +24,7 @@ const Probe = ({ mode = 'summary' }: { readonly mode?: 'summary' | 'direct' }) =
   useEffect(() => owner.subscribeProject(project, graph.refresh), [owner, graph.refresh]);
   const snapshot = graph.snapshot;
   useEffect(() => { if (mode === 'summary' && snapshot !== null) owner.observe(project, task, snapshot.index.nodes.get(task)); }, [owner, snapshot, mode]);
-  return <><output data-testid="projection">{snapshot === null ? 'unavailable' : `${snapshot.index.nodes.get(task)?.parentId}:${projectTaskScope(snapshot.index, firstGoal).progress.done}:${projectTaskScope(snapshot.index, secondGoal).progress.done}`}</output><output data-testid="goal-title">{snapshot?.summaries.get(firstGoal)?.title ?? 'unavailable'}</output><output data-testid="goal-status">{snapshot?.summaries.get(firstGoal)?.status ?? 'unavailable'}</output><output data-testid="error">{graph.error === null ? 'none' : 'error'}</output></>;
+  return <><output data-testid="projection">{snapshot === null ? 'unavailable' : `${snapshot.index.nodes.get(task)?.parentId}:${projectTaskScope(snapshot.index, firstGoal).progress.done}:${projectTaskScope(snapshot.index, secondGoal).progress.done}`}</output><output data-testid="goal-title">{snapshot?.summaries.get(firstGoal)?.title ?? 'unavailable'}</output><output data-testid="goal-version">{snapshot?.summaries.get(firstGoal)?.version.toString() ?? 'unavailable'}</output><output data-testid="sync-revision">{snapshot?.revision ?? 0}</output><output data-testid="goal-status">{snapshot?.summaries.get(firstGoal)?.status ?? 'unavailable'}</output><output data-testid="error">{graph.error === null ? 'none' : 'error'}</output></>;
 };
 beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()); scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); });
 afterEach(() => { scope.dispose(); sessions = null; vi.unstubAllGlobals(); });
@@ -244,7 +244,13 @@ it('publishes the complete edited Goal title while an older project sync is dela
   act(() => sessions!.editGoal(project, firstGoal, after.title, after.description, before.version));
   await waitFor(() => expect(screen.getByTestId('goal-title')).toHaveTextContent(after.title));
   await waitFor(() => expect(heldUrl).not.toBeNull());
+  expect(screen.getByTestId('goal-version')).toHaveTextContent(after.version.toString());
+  const previousRevision = Number(screen.getByTestId('sync-revision').textContent);
   const details = [original, before, second];
   await act(async () => { finishSync(taskSyncResponse(graphFixture(details), { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(heldUrl!), versionForTask: item => details.find(value => value.id === item.id)!.version, propertiesForTask: item => details.find(value => value.id === item.id)!.properties })); await heldSync; });
-  await waitFor(() => expect(screen.getByTestId('goal-title')).toHaveTextContent(after.title));
+  // The revision advances only after the delayed sync is parsed, applied and published.
+  await waitFor(() => expect(Number(screen.getByTestId('sync-revision').textContent)).toBeGreaterThan(previousRevision));
+  expect(scope.getAuthorizedProject(project)!.summaries.get(firstGoal)).toMatchObject({ title: before.title, version: before.version });
+  expect(screen.getByTestId('goal-title')).toHaveTextContent(after.title);
+  expect(screen.getByTestId('goal-version')).toHaveTextContent(after.version.toString());
 });
