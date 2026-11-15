@@ -313,7 +313,7 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	assertProjectError(t, projectRequest(outsideHandler, http.MethodGet, path, ""), http.StatusNotFound, "not_found")
 
 	database := newHTTPTestStore(t)
-	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 1, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 1, "sessions": 1})
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 2, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 2, "active": 1, "credential": 1})
 	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
 	projects.ProjectAccessFn = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 		plan.Called("access")
@@ -362,14 +362,21 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 		requireProject(id)
 		return []model.TaskAssigneeFact{}, nil
 	}
-	sessions := &taskHTTPSessionReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync sessions")}
-	sessions.CurrentTaskSessionSourcesFn = func(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
-		plan.Called("sessions")
+	tasks.TaskSyncActiveTasksFn = func(ctx context.Context, id string) ([]store.TaskSyncTaskIdentity, error) {
+		plan.Called("active")
 		requireProject(id)
-		return []store.TaskSessionSource{}, nil
+		return []store.TaskSyncTaskIdentity{}, nil
+	}
+	credential := &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync credential")}
+	credential.CredentialFn = func(ctx context.Context, principal model.Principal) (store.ThreadCredential, error) {
+		plan.Called("credential")
+		if principal != admin {
+			t.Fatalf("credential principal: %#v", principal)
+		}
+		return store.ThreadCredential{}, nil
 	}
 	snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync snapshot"),
-		ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return tasks }, SessionDAOFn: func() store.SessionReader { return sessions },
+		ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return tasks }, CredentialDAOFn: func() store.CredentialReader { return credential },
 		ObservedAtFn: func(context.Context) (time.Time, error) { plan.Called("observed"); return project.UpdatedAt, nil },
 	}
 	database.ReadSnapshotCall = func(ctx context.Context, read func(store.SnapshotScope) error) error {
@@ -380,6 +387,61 @@ func TestTaskSyncHTTPAuthenticationAndProjectMembership(t *testing.T) {
 	result := decodeResponse[api.TaskSync](t, projectRequest(handler, http.MethodGet, path, ""), http.StatusOK)
 	if result.Project.ID != project.ID || result.Tasks == nil {
 		t.Fatalf("authorized project snapshot: %#v", result)
+	}
+}
+
+func TestTaskSyncHTTPRevokedCredentialDuringRecheck(t *testing.T) {
+	project, _, principal := taskHTTPMockModels()
+	database := newHTTPTestStore(t)
+	plan := newHTTPCallPlan(t, map[string]int{"snapshot": 2, "access": 1, "project": 1, "epoch": 1, "tasks": 1, "dependencies": 1, "assignees": 1, "observed": 1, "active": 1, "credential": 1})
+	projects := &taskHTTPProjectReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync project")}
+	projects.ProjectAccessFn = func(_ context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
+		plan.Called("access")
+		if actor != principal || id != project.ID {
+			t.Fatalf("access principal or project mismatch")
+		}
+		return taskHTTPMockAccess(project, principal), nil
+	}
+	projects.ProjectFn = func(context.Context, string) (model.Project, error) { plan.Called("project"); return project, nil }
+	tasks := &taskHTTPReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync task")}
+	tasks.TaskCacheEpochFn = func(context.Context, string) (string, error) { plan.Called("epoch"); return testEpoch, nil }
+	tasks.TaskSyncTasksFn = func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error) {
+		plan.Called("tasks")
+		return []model.TaskViewRecord{}, nil
+	}
+	tasks.TaskSyncDependencyStatesFn = func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error) {
+		plan.Called("dependencies")
+		return map[string]model.TaskDependencyState{}, nil
+	}
+	tasks.TaskAssigneesFn = func(context.Context, string) ([]model.TaskAssigneeFact, error) {
+		plan.Called("assignees")
+		return []model.TaskAssigneeFact{}, nil
+	}
+	tasks.TaskSyncActiveTasksFn = func(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
+		plan.Called("active")
+		return []store.TaskSyncTaskIdentity{}, nil
+	}
+	credential := &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "revoked credential")}
+	credential.CredentialFn = func(_ context.Context, actor model.Principal) (store.ThreadCredential, error) {
+		plan.Called("credential")
+		if actor != principal {
+			t.Fatalf("credential principal: %#v", actor)
+		}
+		return store.ThreadCredential{}, model.ErrNotFound
+	}
+	snapshot := &taskHTTPSnapshotScopeMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync snapshot"),
+		ProjectDAOFn: func() store.ProjectReader { return projects }, TaskDAOFn: func() store.TaskReader { return tasks }, CredentialDAOFn: func() store.CredentialReader { return credential },
+		ObservedAtFn: func(context.Context) (time.Time, error) { plan.Called("observed"); return project.UpdatedAt, nil },
+	}
+	database.ReadSnapshotCall = func(ctx context.Context, read func(store.SnapshotScope) error) error {
+		plan.Called("snapshot")
+		return read(snapshot)
+	}
+	handler := taskComponentHandler(t, database, io.Discard, principal)
+	response := projectRequest(handler, http.MethodGet, syncPath(project.ID), "")
+	assertProjectError(t, response, http.StatusUnauthorized, "unauthenticated")
+	if strings.Contains(response.Body.String(), `"taskObservations"`) {
+		t.Fatalf("revoked response exposed observations: %s", response.Body)
 	}
 }
 

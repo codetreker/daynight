@@ -8,7 +8,7 @@
 异常判定与事项跟进。列表文字角标只表达当前观测，不执行 Watchdog 的计时、
 报告或直接处理策略。
 
-列表仅消费现有项目 `task-sync` 返回的完整 `sessions` 集合，在页面可见时按 15 秒周期观察；隐藏时仍拒绝 Session 观察。每项为 Task ID 与 `working | notice | warning | pending` 之一，不读取完整 `/sessions/current`，不另建逐任务 HTTP 调度。服务端的可靠关联、live 状态和期限判断由[同步架构](daynight-task-sync.md#服务端-session-状态投影)拥有。
+当前列表仅消费项目 `task-sync` 返回的完整 `sessions` 集合，在页面可见时按 15 秒周期观察；隐藏时仍拒绝 Session 观察。服务端同时提供覆盖全部进行中普通 Task 的 `taskObservations`、partial 和双时钟锚点；当前列表不解析或接纳这些字段，其与四态汇总的差异由[同步架构](daynight-task-sync.md#服务端-session-状态投影)定义。每项四态为 Task ID 与 `working | notice | warning | pending` 之一，不读取完整 `/sessions/current`，不另建逐任务 HTTP 调度。
 
 | `sessions[taskId]` | 角标 | 含义与入口 |
 |---|---|---|

@@ -650,6 +650,11 @@ func (s *unexpectedTaskReader) TaskSyncTasks(context.Context, string, *time.Time
 	panic("unreachable")
 }
 
+func (s *unexpectedTaskReader) TaskSyncActiveTasks(context.Context, string) ([]store.TaskSyncTaskIdentity, error) {
+	s.reject("TaskSyncActiveTasks")
+	panic("unreachable")
+}
+
 type unexpectedIdentityDAO struct{ unexpectedDAO }
 
 func (s *unexpectedIdentityDAO) CleanupCredentials(context.Context, time.Time) error {

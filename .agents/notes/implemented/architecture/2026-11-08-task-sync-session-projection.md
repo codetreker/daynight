@@ -22,15 +22,17 @@ empty object, and the HTTP converter preserves that result without a fallback.
 
 A narrow read-only SessionReader shares TaskSync's existing database snapshot.
 It reads the relevant in-progress Tasks' Worker binding and current persisted
-Session scalars in one project query, decodes their canonical fields normally,
-and avoids content, catalogues, operations and mutation capabilities. The
+Session scalars, decodes their canonical fields normally, and avoids content,
+catalogues, operations and mutation capabilities. The
 [canonical batch-read decision](../simplification/2026-11-09-task-canonical-batch-reads.md)
 removes stored-field and capacity revalidation while preserving actual binding
-and Engine fence comparisons.
-TaskSync accepts a consumer-owned single-method `SessionStateReader`, and
-application composition supplies the existing shared Engine. This preserves a
-narrow dependency on state reads rather than the Engine's content and lifecycle
-API. The shared Engine separately reads committed live scalars under short cell locks.
+and Engine fence comparisons. The [complete observation decision](2026-11-15-task-sync-complete-observations.md)
+extends this read to web and herdr sources, adds binding rechecks after sampling,
+and derives the four-state projection and complete observations from the same
+live samples. The original single-method consumer interface kept TaskSync
+independent of the Engine's content and lifecycle API; the current interface
+retains a narrow sampling dependency while providing both projections and the
+Engine response clock. The shared Engine reads committed live scalars under short cell locks.
 Registry references are captured before cell reads, and any registry recheck
 occurs after the cell unlock, preserving lock order. The resulting observation
 is consistent for durable bindings but does not claim one atomic instant across
@@ -67,8 +69,8 @@ count. Its independent observations also need their own Task binding admission.
 
 **Make TaskSync import the concrete Session Engine.** That exposes more than
 the consumer needs and introduces a package cycle through existing core Session
-tests that consume the Task service. The consumer-owned one-method interface
-keeps production composition on the same Engine and preserves independent
+tests that consume the Task service. The original consumer-owned one-method
+interface kept production composition on the same Engine and preserved independent
 module validation.
 
 **Push Session deltas or add another versioned feed.** Replay, subscription
@@ -87,8 +89,8 @@ count or response-byte admission.
 The complete map is re-read on each successful sync even if Tasks do not change.
 Ordinary Worker decoding and live mutex waits remain real work; mutex waits cannot be
 instantly cancelled. No cross-instance live-state bus is introduced, so missing
-local live state preserves the established disconnected projection. Any query,
-natural decode, Engine admission, encoding or transaction failure fails the
-complete sync. No partial success or silent empty fallback is added. Task
-properties are loaded in one batch, and full Current remains the content and
-authorization owner.
+local live state preserves the established disconnected projection. Whole-read,
+natural decode, encoding and transaction failures continue to fail the sync;
+individual observation failures are represented by the complete observation
+protocol rather than a silently successful empty result. Task properties are
+loaded in one batch, and full Current remains the content and authorization owner.

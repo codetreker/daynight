@@ -268,6 +268,7 @@ type taskHTTPReaderMock struct {
 	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpochFn           func(context.Context, string) (string, error)
 	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
 
@@ -369,6 +370,11 @@ func (mock *taskHTTPReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (s
 func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
 	mock.need("TaskSyncTasks", mock.TaskSyncTasksFn != nil)
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncActiveTasks(ctx context.Context, project string) ([]store.TaskSyncTaskIdentity, error) {
+	mock.need("TaskSyncActiveTasks", mock.TaskSyncActiveTasksFn != nil)
+	return mock.TaskSyncActiveTasksFn(ctx, project)
 }
 
 func (mock *taskHTTPReaderMock) TaskSyncDependencyStates(ctx context.Context, projectID string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
@@ -878,7 +884,12 @@ func (f *taskHTTPFixture) expectSnapshot(want map[string]int, configure func(*ta
 	for name, count := range want {
 		counts[name] = count
 	}
-	counts["snapshot"], counts["access"] = 1, 1
+	if counts["snapshot"] == 0 {
+		counts["snapshot"] = 1
+	}
+	if counts["access"] == 0 {
+		counts["access"] = 1
+	}
 	plan := newHTTPCallPlan(f.t, counts)
 	base := newTaskHTTPMockBase(f.t, "Task HTTP snapshot")
 	reader := &taskHTTPReaderMock{taskHTTPMockBase: base.withLabel("tasks")}
@@ -1012,7 +1023,16 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, states map[str
 		state.BlockedBy = copyTaskHTTPSlice(state.BlockedBy)
 		stateCopy[id] = state
 	}
-	f.expectSnapshot(map[string]int{"project": 1, "epoch": 1, "sync": 1, "dependencies": 1, "people": 1, "observed": 1, "sessions": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, _ *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
+	active := make([]store.TaskSyncTaskIdentity, 0)
+	sources := make(map[string]store.TaskSessionSource)
+	for _, row := range rows {
+		if row.Type == model.TaskTypeTask && row.Status == model.TaskInProgress {
+			active = append(active, store.TaskSyncTaskIdentity{ID: row.ID, Version: row.Version})
+			sources[row.ID] = store.TaskSessionSource{ProjectID: f.project.ID, TaskID: row.ID, TaskVersion: row.Version, TaskStatus: row.Status}
+		}
+	}
+	batchCount := (len(active) + 199) / 200
+	f.expectSnapshot(map[string]int{"snapshot": 2, "access": 2, "project": 1, "epoch": 1, "sync": 1, "dependencies": 1, "people": 1, "observed": 2, "active": 1, "sessions": 2 * batchCount, "credential": 1}, func(reader *taskHTTPReaderMock, _ *taskHTTPProjectReaderMock, sessions *taskHTTPSessionReaderMock, scope *taskHTTPSnapshotScopeMock, plan *httpCallPlan) {
 		reader.TaskCacheEpochFn = func(ctx context.Context, id string) (string, error) {
 			f.require(ctx, id)
 			plan.Called("epoch")
@@ -1044,11 +1064,34 @@ func (f *taskHTTPFixture) expectSync(rows []model.TaskViewRecord, states map[str
 			plan.Called("people")
 			return copyTaskHTTPAssigneeFacts(facts), nil
 		}
-		sessions.CurrentTaskSessionSourcesFn = func(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
+		reader.TaskSyncActiveTasksFn = func(ctx context.Context, id string) ([]store.TaskSyncTaskIdentity, error) {
+			f.require(ctx, id)
+			plan.Called("active")
+			return active, nil
+		}
+		sessions.TaskSessionSourcesFn = func(ctx context.Context, id string, ids []string) ([]store.TaskSessionSource, error) {
 			f.require(ctx, id)
 			plan.Called("sessions")
-			return []store.TaskSessionSource{}, nil
+			result := make([]store.TaskSessionSource, 0, len(ids))
+			for _, taskID := range ids {
+				source, ok := sources[taskID]
+				if !ok {
+					unexpectedHTTPCall(f.t, "Session source task")
+				}
+				result = append(result, source)
+			}
+			return result, nil
 		}
+		credential := &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(f.t, "sync credential")}
+		credential.CredentialFn = func(ctx context.Context, principal model.Principal) (store.ThreadCredential, error) {
+			f.require(ctx, f.project.ID)
+			plan.Called("credential")
+			if principal != f.principal {
+				unexpectedHTTPCall(f.t, "credential principal")
+			}
+			return store.ThreadCredential{}, nil
+		}
+		scope.CredentialDAOFn = func() store.CredentialReader { return credential }
 	})
 }
 

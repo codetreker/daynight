@@ -3,6 +3,7 @@ package task_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -266,34 +267,38 @@ func TestGraphReadErrorsAndCompletionNeverReturnPartialGraph(t *testing.T) {
 }
 
 func TestTaskSyncCompletionDiscardsConstructedResult(t *testing.T) {
-	f := newTaskReadFixture(t)
-	epoch := taskReadID(90)
-	row := taskReadView(taskReadID(1), "Property read", 1, f.observed)
-	sync := f.sync(epoch, func(lower *time.Time) ([]model.TaskViewRecord, error) {
-		if lower != nil {
-			t.Fatal("normal snapshot acquired an incremental lower bound")
-		}
-		return []model.TaskViewRecord{row}, nil
-	}, []model.TaskAssigneeFact{}, 10*time.Second)
-	baseline, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
-	if err != nil || len(baseline.Tasks) != 1 || baseline.Tasks[0].ID != row.ID || baseline.Sessions == nil || f.reads != 1 {
-		t.Fatalf("baseline Task sync: %#v %v", baseline, err)
-	}
-	want := []string{"read store.ReadSnapshot", "snapshot.ProjectDAO", "project reader.ProjectAccess", "snapshot.ProjectDAO", "project reader.Project", "snapshot.TaskDAO", "task reader.TaskCacheEpoch", "task reader.TaskSyncTasks", "task reader.TaskSyncDependencyStates", "task reader.TaskAssignees", "snapshot.ObservedAt", "snapshot.SessionDAO", "Session reader.CurrentTaskSessionSources"}
-	if !slices.Equal(f.base.trace.snapshot(), want) {
-		t.Fatalf("baseline Task sync calls: %v", f.base.trace.snapshot())
-	}
-	failure := taskSnapshotCompletionFailure()
-	read := f.store.ReadSnapshotFn
-	f.store.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-		if err := read(ctx, work); err != nil {
-			t.Fatalf("successful Task sync callback failed: %v", err)
-		}
-		return failure
-	}
-	result, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
-	requireTaskSnapshotCompletion(t, result, err, failure)
-	if f.reads != 2 || !slices.Equal(f.base.trace.snapshot(), append(append([]string{}, want...), want...)) {
-		t.Fatalf("Task sync snapshot calls: %d, trace: %v", f.reads, f.base.trace.snapshot())
+	for _, failRead := range []int{1, 2} {
+		t.Run(fmt.Sprintf("snapshot_%d", failRead), func(t *testing.T) {
+			f := newTaskReadFixture(t)
+			row := taskReadView(taskReadID(1), "Property read", 1, f.observed)
+			sync := f.sync(taskReadID(90), func(lower *time.Time) ([]model.TaskViewRecord, error) {
+				if lower != nil {
+					t.Fatal("normal snapshot acquired an incremental lower bound")
+				}
+				return []model.TaskViewRecord{row}, nil
+			}, []model.TaskAssigneeFact{}, 10*time.Second)
+			baseline, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
+			if err != nil || len(baseline.Tasks) != 1 || baseline.Tasks[0].ID != row.ID || baseline.Sessions == nil || f.reads != 2 {
+				t.Fatalf("baseline Task sync: %#v %v", baseline, err)
+			}
+			failure := taskSnapshotCompletionFailure()
+			read := f.store.ReadSnapshotFn
+			attempt := 0
+			f.store.ReadSnapshotFn = func(ctx context.Context, work func(store.SnapshotScope) error) error {
+				attempt++
+				if err := read(ctx, work); err != nil {
+					return err
+				}
+				if attempt == failRead {
+					return failure
+				}
+				return nil
+			}
+			result, err := sync.Get(f.ctx, f.principal, f.project.ID, taskservice.TaskSyncRequest{})
+			requireTaskSnapshotCompletion(t, result, err, failure)
+			if attempt != failRead || f.reads != 2+failRead {
+				t.Fatalf("snapshot count %d, reads %d", attempt, f.reads)
+			}
+		})
 	}
 }

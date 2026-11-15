@@ -533,6 +533,7 @@ type taskHTTPReaderMock struct {
 	TaskGraphTasksFn           func(context.Context, string, string, store.TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpochFn           func(context.Context, string) (string, error)
 	TaskSyncTasksFn            func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncActiveTasksFn      func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStatesFn func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }
 
@@ -632,6 +633,11 @@ func (mock *taskHTTPReaderMock) TaskCacheEpoch(p0 context.Context, p1 string) (s
 func (mock *taskHTTPReaderMock) TaskSyncTasks(p0 context.Context, p1 string, p2 *time.Time, p3 int) ([]model.TaskViewRecord, error) {
 	mock.need("TaskSyncTasks", mock.TaskSyncTasksFn != nil)
 	return mock.TaskSyncTasksFn(p0, p1, p2, p3)
+}
+
+func (mock *taskHTTPReaderMock) TaskSyncActiveTasks(ctx context.Context, project string) ([]store.TaskSyncTaskIdentity, error) {
+	mock.need("TaskSyncActiveTasks", mock.TaskSyncActiveTasksFn != nil)
+	return mock.TaskSyncActiveTasksFn(ctx, project)
 }
 
 func (mock *taskHTTPReaderMock) TaskSyncDependencyStates(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
