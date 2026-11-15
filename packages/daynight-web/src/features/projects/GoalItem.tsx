@@ -93,7 +93,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, childTagFilter, wo
     <div id={childrenId} ref={content} hidden={!expanded} className="goal-list-contents">{expanded && <>
       {count === 0 && <p className="goal-list-empty">{m.emptyTasks}</p>}
       {count > 0 && !childTagFilter.invalid && visibleTasks.length === 0 && <p className="goal-list-empty">{assignment.noMatches}</p>}
-      {visibleTasks.length > 0 && <ul className="goal-task-list">{visibleTasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} title={summaries.get(task.id)!.title} {...(summaries.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={`goal-${goal.id}`} workerMachine={workerMachines.get(task.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
+      {visibleTasks.length > 0 && <ul className="goal-task-list">{visibleTasks.map((task) => <TaskMemberRow key={task.id} projectId={projectId} task={task} summary={summaries.get(task.id)!} title={summaries.get(task.id)!.title} {...(summaries.get(task.id) === undefined ? {} : { tags: summaries.get(task.id)!.tags })} instanceId={`goal-${goal.id}`} workerMachine={workerMachines.get(task.id)} onOpenTask={(id, trigger) => onOpenListTask(id, trigger, goal.id)} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>}
     </>}</div>
   </li>;
 };

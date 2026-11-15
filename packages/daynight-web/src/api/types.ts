@@ -142,6 +142,15 @@ export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
 
 export type TaskListSessionState = "working" | "notice" | "warning" | "pending";
 
+export type TaskSyncObservation = {
+  readonly taskVersion: bigint;
+  readonly state: "no_session" | "not_registered" | "pending" | "working" | "notice" | "warning" | "unavailable";
+  readonly observedAt: string | null;
+  readonly freshUntil: string | null;
+  readonly needsAttention: boolean | null;
+  readonly canOpen: boolean;
+};
+
 export type TaskDependencyState = {
   readonly taskVersion: bigint;
   readonly blockedBy: readonly string[];
@@ -155,6 +164,10 @@ export type TaskSync = {
   readonly epoch: string;
   readonly project: Project;
   readonly observedAt: string;
+  readonly responseTaskAt: string;
+  readonly responseSessionAt: string;
+  readonly sessionPartial: boolean;
+  readonly taskObservations: Readonly<Record<string, TaskSyncObservation>>;
   readonly tasks: readonly TaskSummary[];
   readonly dependencyStates: Readonly<Record<string, TaskDependencyState>>;
   readonly sessions: Readonly<Record<string, TaskListSessionState>>;

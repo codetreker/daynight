@@ -1,6 +1,7 @@
 import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,12 +35,13 @@ const seeds = [summary(1, { status: 'done', properties: { paused: true } }), sum
 const snapshot = (tasks = seeds): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map((task) => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
 let sessionScope: TaskCacheScope;
 let sessionStore: TaskSessionSummaryStore;
-beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
-afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
+let observationStore: ProjectTaskObservationsStore;
+beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); observationStore = new ProjectTaskObservationsStore(sessionScope, project.id); });
+afterEach(() => { observationStore.dispose(); sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
-const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView={activeView}
+const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} observationStore={observationStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView={activeView}
   unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
   unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openGraphTarget: openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
@@ -71,7 +73,7 @@ describe('paused task discovery', () => {
 
   it('keeps project count across filtered and paginated lists', () => {
     const value = snapshot();
-    const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView="standalone"
+    const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} observationStore={observationStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView="standalone"
       unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
       unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
       chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}

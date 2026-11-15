@@ -7,8 +7,9 @@ import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
 import type { CachedProject, TaskSyncTicket, TaskCacheScope } from "../task-cache/project-cache";
-import { deriveTaskSyncBindings } from "../task-cache/execution-binding";
+import { deriveTaskSyncBindings, deriveTaskSyncVersions, validateTaskSyncObservationBindings } from "../task-cache/execution-binding";
 import { TaskSessionSummaryStore } from "../task-session-summary/store";
+import { ProjectTaskObservationsStore } from "../task-session-summary/project-observations";
 import { useOptionalTaskDetailSessions } from '../task-detail/TaskDetailSession';
 import { projectCommittedTasks, type CommittedTaskProjection } from './committed-task-projection';
 
@@ -51,7 +52,8 @@ export const useTaskGraph = (projectId: string) => {
   const committed = useSyncExternalStore(subscribeCommitted, committedSnapshot);
   const access = useProjectAccessSession(projectId);
   const sessionStore = useMemo(() => new TaskSessionSummaryStore(scope, projectId), [scope, projectId]);
-  useEffect(() => { sessionStore.start(); return () => sessionStore.dispose(); }, [sessionStore]);
+  const observationStore = useMemo(() => new ProjectTaskObservationsStore(scope, projectId), [scope, projectId]);
+  useEffect(() => { sessionStore.start(); observationStore.start(); return () => { sessionStore.dispose(); observationStore.dispose(); }; }, [sessionStore, observationStore]);
   const [state, setState] = useState<GraphState>(() => initialState(projectId, scope));
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
@@ -119,6 +121,9 @@ export const useTaskGraph = (projectId: string) => {
         if (!historyRetry) { void request(false, true, confirmationRetry); return; }
         throw new ApiError("protocol");
       }
+      const observedBindings = deriveTaskSyncBindings(ticket, response);
+      const observedVersions = deriveTaskSyncVersions(ticket, response);
+      validateTaskSyncObservationBindings(response, observedBindings, observedVersions);
       const applyStarted = performance.now();
       const result = await scope.applySync(ticket, response, signal);
       console.debug("Task sync", { cycle_id: cycleId, project_id: projectId, received: response.tasks.length,
@@ -128,7 +133,8 @@ export const useTaskGraph = (projectId: string) => {
       if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess, automatic);
       scope.notifyTagColors(projectId);
       if (sessionAdmission === authRequestsPauseRevision()) {
-        sessionStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, response), sessions: response.sessions, receivedMonotonic });
+        sessionStore.replace({ project: result.project, observedBindings, sessions: response.sessions, receivedMonotonic });
+        observationStore.replace({ project: result.project, observedBindings, observedVersions, sync: response, receivedMonotonic });
       }
       liveAccess.current = true;
       receipt.current = { observedAt: response.observedAt, receivedMonotonic, receivedAt, revision };
@@ -144,7 +150,7 @@ export const useTaskGraph = (projectId: string) => {
           else if (!confirmationRetry) void request(false, historyRetry, true);
           return;
         }
-        sessionStore.clear();
+        sessionStore.clear(); observationStore.clear();
         try { if (ticket !== null && !await scope.revokeProject(ticket, signal, true, error as ApiError)) return; }
         catch (storageError) { if (!isAbortError(storageError)) error = storageError; }
         if (scope.hasIdentityMismatch) return;
@@ -152,13 +158,13 @@ export const useTaskGraph = (projectId: string) => {
         setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error });
       }
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
-      if (!missing) sessionStore.clear();
+      if (!missing) { sessionStore.clear(); observationStore.fail(); }
       setState((previous) => {
         const snapshot = missing ? null : previous.projectId === projectId && previous.scope === scope ? previous.snapshot : null;
         return { projectId, scope, snapshot, status: snapshot === null ? "error" : "ready", refreshing: false, error };
       });
     } finally { if (revision === generation.current) active.current = null; }
-  }, [projectId, scope, publish, access, sessionStore]);
+  }, [projectId, scope, publish, access, sessionStore, observationStore]);
 
   useEffect(() => {
     liveAccess.current = false; receipt.current = null;
@@ -212,5 +218,5 @@ export const useTaskGraph = (projectId: string) => {
   const historyGeneration = scope.getHistoryGeneration(projectId);
   const projection = useMemo(() => visible.snapshot === null ? null : projectCommittedTasks(visible.snapshot, committed, { cacheGeneration, scopeRevision, historyGeneration }),
     [visible.snapshot, committed, cacheGeneration, scopeRevision, historyGeneration]);
-  return { snapshot: projection?.snapshot ?? visible.snapshot, status: visible.status, refreshing: visible.refreshing, error: projection?.error ?? visible.error, refresh, sessionStore };
+  return { snapshot: projection?.snapshot ?? visible.snapshot, status: visible.status, refreshing: visible.refreshing, error: projection?.error ?? visible.error, refresh, sessionStore, observationStore };
 };

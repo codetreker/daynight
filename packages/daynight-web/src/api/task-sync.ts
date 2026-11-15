@@ -4,13 +4,19 @@ import { isTaskVersion } from "./json";
 import { parseTaskProperties, readTaskPaused, readWorkerClaim } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { ProjectPersonVersion } from "./auth-types";
-import type { TaskDependencyState, TaskListSessionState, TaskSummary, TaskSync } from "./types";
+import type { TaskDependencyState, TaskListSessionState, TaskSummary, TaskSync, TaskSyncObservation } from "./types";
 import { nullableId, taskStatusFields, taskTypeFields } from "./validation";
 import { parseTaskTags } from "./task-tags";
 
 const ids = (value: unknown): string[] => {
   const result = array(value, id);
   if (new Set(result).size !== result.length) return malformed();
+  return result;
+};
+
+const syncTimestamp = (value: unknown): string => {
+  const result = timestamp(value);
+  if (result.startsWith("0000-")) return malformed();
   return result;
 };
 
@@ -24,6 +30,31 @@ const parseTaskSessions = (value: unknown): Readonly<Record<string, TaskListSess
     sessions[taskId] = state;
   }
   return sessions;
+};
+
+const parseTaskObservations = (value: unknown): Readonly<Record<string, TaskSyncObservation>> => {
+  const data = record(value);
+  if (Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null) return malformed();
+  const result: Record<string, TaskSyncObservation> = {};
+  for (const [taskId, value] of Object.entries(data)) {
+    if (id(taskId) !== taskId) return malformed();
+    const item = record(value);
+    const fields = ["taskVersion", "state", "observedAt", "freshUntil", "needsAttention", "canOpen"];
+    if (Object.keys(item).length !== fields.length || fields.some((field) => !Object.hasOwn(item, field))) return malformed();
+    const version = string(item.taskVersion);
+    if (!/^[1-9][0-9]*$/.test(version)) return malformed();
+    const taskVersion = BigInt(version);
+    if (!isTaskVersion(taskVersion)) return malformed();
+    const state = item.state;
+    if (state !== "no_session" && state !== "not_registered" && state !== "pending" && state !== "working" && state !== "notice" && state !== "warning" && state !== "unavailable") return malformed();
+    const observedAt = item.observedAt === null ? null : syncTimestamp(item.observedAt);
+    const freshUntil = item.freshUntil === null ? null : syncTimestamp(item.freshUntil);
+    const needsAttention = item.needsAttention === null ? null : boolean(item.needsAttention);
+    const canOpen = boolean(item.canOpen);
+    if (state !== "unavailable" && observedAt === null || canOpen && (observedAt === null || freshUntil === null || state === "no_session" || state === "not_registered")) return malformed();
+    result[taskId] = { taskVersion, state, observedAt, freshUntil, needsAttention, canOpen };
+  }
+  return result;
 };
 
 export const parseDependencyState = (value: unknown): TaskDependencyState => {
@@ -91,11 +122,14 @@ export const parseTaskSync = (value: unknown, projectId: string, userId?: string
     }),
     actorAccess: parseProjectAccess(data.actorAccess, projectId, userId),
     mode: data.mode, epoch: id(data.epoch), project: project(data.project),
-    observedAt: timestamp(data.observedAt), tasks: array(data.tasks, parseTaskSummary),
+    observedAt: timestamp(data.observedAt), responseTaskAt: syncTimestamp(data.responseTaskAt),
+    responseSessionAt: syncTimestamp(data.responseSessionAt), sessionPartial: boolean(data.sessionPartial),
+    taskObservations: parseTaskObservations(data.taskObservations), tasks: array(data.tasks, parseTaskSummary),
     dependencyStates: parseDependencyStates(data.dependencyStates),
     sessions: parseTaskSessions(data.sessions),
   };
-  if (new Set(result.assigneeVersions.map((person) => person.userId)).size !== result.assigneeVersions.length ||
+  if (!result.sessionPartial && Object.values(result.taskObservations).some((observation) => observation.state === "unavailable") ||
+    new Set(result.assigneeVersions.map((person) => person.userId)).size !== result.assigneeVersions.length ||
     result.project.id !== projectId || result.actorAccess.ownership.teamId !== result.project.ownership.teamId ||
     result.actorAccess.ownership.version !== result.project.ownership.version ||
     new Set(result.tasks.map((task) => task.id)).size !== result.tasks.length) return malformed();

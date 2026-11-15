@@ -22,6 +22,7 @@ export type SyncTicket = {
 };
 export type TaskSyncTicket = SyncTicket & {
   readonly taskBindings: ReadonlyMap<string, TaskExecutionBinding>;
+  readonly taskVersions: ReadonlyMap<string, bigint>;
 };
 export type TaskReadFence = {
   readonly userId: string; readonly userFence: string; readonly projectId: string; readonly taskId: string;
@@ -1104,7 +1105,7 @@ export class TaskCacheScope {
         const tasks = manifest.state === "active" ? (await this.stored(transaction, manifest)).tasks : [];
         return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt,
           generationAncestors: manifest.generationAncestors ?? [], unknownAncestors: manifest.unknownAncestors === true, scopeRevision,
-          taskBindings: new Map(tasks.map((task) => [task.id, taskExecutionBinding(task)])) };
+          taskBindings: new Map(tasks.map((task) => [task.id, taskExecutionBinding(task)])), taskVersions: new Map(tasks.map((task) => [task.id, task.version])) };
       }, signal);
       if (scopeRevision !== this.getProjectRevision(projectId)) return released();
       if (!this.histories.has(projectId)) this.histories.set(projectId, { epoch: ticket.epoch, generation: 0 });

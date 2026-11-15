@@ -3,7 +3,7 @@ import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { GraphTask, Project, TaskStatus } from "../../api/types";
-import { navigate, taskDetailUrl } from "../../app/router";
+import { navigate } from "../../app/router";
 import { browserNavigation } from "../../app/navigation";
 import { useProjectHistory } from "../../app/use-page-history";
 import { ProjectDraftHost } from "../task-detail/TaskDraftNavigation";
@@ -297,9 +297,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (!focusVisible(document.getElementById(`project-task-tab-${currentView.current}`)) &&
       !focusVisible(document.getElementById("project-section-tab-tasks"))) focusVisible(heading.current);
   }, []);
-  const onOpenSession = useCallback((id: string) => {
-    navigate(taskDetailUrl(projectId, id, { tab: "session", path: null }));
-  }, [projectId]);
+  const onOpenSession = useCallback((id: string, trigger: HTMLElement) => {
+    const insideProjectGraph = trigger.closest(".task-chain-dialog") !== null;
+    history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph,
+      navigation: { tab: "session", path: null }, goalChildren: null } }, false, () => {
+      listOrigin.current = insideProjectGraph ? null : { view: activeView, sourceGoalId: trigger.closest<HTMLElement>("[data-goal-id]")?.dataset.goalId ?? null, resourceWitness: id, trigger };
+      restoreRequested.current = false; pausedOrigin.current = null; originalTrigger.current = insideProjectGraph ? trigger : null; searchTrigger.current = false; setNotice(null);
+    });
+  }, [activeView, history.select, selection]);
   const onSelectRelation = useCallback((id: string) => {
     history.select({ ...selection, detail: { id, source: detailSelection?.source === "direct" || snapshot === null ? "direct" : "summary",
       insideProjectGraph: detailSelection?.insideProjectGraph ?? false, navigation: { tab: "overview", path: null }, goalChildren: null } }, false);
@@ -671,13 +676,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {section === "tasks" && graphState}
             <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} tagFilter={<TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTasks={pausedTasks} onOpenPausedTask={onOpenPausedTask} onPausedFocusFallback={onPausedFocusFallback} active={section === "tasks" && !searchActive}
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} observationStore={graph.observationStore} pausedTasks={pausedTasks} onOpenPausedTask={onOpenPausedTask} onPausedFocusFallback={onPausedFocusFallback} active={section === "tasks" && !searchActive}
               filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<NativeSelect density="filter" focusTone="task" value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></NativeSelect></label>{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
               unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={selectView}
               chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
-              standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
+              standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onOpenSession, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
               goals={{ projectId, goals: pageGoals, childTagFilter, total: allGoals.length, onOpenGoal: onOpenTask, onOpenGoalGraph, onOpenGoalGraphTask: onOpenTask, graphError: graph.error, onRefreshGraph: graph.refresh, pagination: goalPagination,
                 openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
