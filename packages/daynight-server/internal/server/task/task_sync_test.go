@@ -39,8 +39,8 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	parent := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 	result := syncModel()
 	result.Tasks = []model.TaskViewRecord{
-		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, Tags: []model.TagReference{{ID: "tag-id", Name: "<&标签"}}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
-		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
+		{ID: testTaskID, Type: model.TaskTypeTask, ParentID: &parent, Title: "private-root-title", TitlePreview: "private-root-title", Status: model.TaskDone, Version: 3, Properties: model.TaskProperties{}, Tags: []model.TagReference{{ID: "tag-id", Name: "<&标签"}}, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp},
+		{ID: "55555555-5555-4555-8555-555555555555", Type: model.TaskTypeTask, Title: strings.Repeat("😀", 160) + "<&尾", TitlePreview: strings.Repeat("😀", 160), TitleTruncated: true, Status: model.TaskTodo, Version: 9007199254740993, Properties: model.TaskProperties{}, DependsOn: []string{testTaskID}, ExternalDependsOn: []string{testTaskID}, RequiredPlatform: &platform, AllowAgents: true, CreatedAt: stamp, UpdatedAt: stamp},
 	}
 	result.DependencyStates = map[string]model.TaskDependencyState{
 		testTaskID:         {TaskVersion: 3, BlockedBy: nil, Ready: false},
@@ -63,7 +63,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 	}
 	for i, value := range result.Tasks {
 		item := got.Tasks[i]
-		if item.ID != value.ID || item.Type != value.Type || !reflect.DeepEqual(item.ParentID, value.ParentID) || item.Status != string(value.Status) || item.Version != strconv.FormatInt(value.Version, 10) || item.TitlePreview != value.TitlePreview || item.TitleTruncated != value.TitleTruncated || item.AllowAgents != value.AllowAgents || item.CreatedAt != value.CreatedAt || item.UpdatedAt != value.UpdatedAt || !reflect.DeepEqual(item.StartedAt, value.StartedAt) || !reflect.DeepEqual(item.CompletedAt, value.CompletedAt) || !reflect.DeepEqual(item.CancelledAt, value.CancelledAt) || !slices.Equal(item.DependsOn, value.DependsOn) || !slices.Equal(item.ExternalDependsOn, value.ExternalDependsOn) || item.DependsOn == nil || item.ExternalDependsOn == nil || !reflect.DeepEqual(item.Properties, api.TaskProperties(value.Properties)) {
+		if item.ID != value.ID || item.Type != value.Type || !reflect.DeepEqual(item.ParentID, value.ParentID) || item.Status != string(value.Status) || item.Version != strconv.FormatInt(value.Version, 10) || item.Title != value.Title || item.TitlePreview != value.TitlePreview || item.TitleTruncated != value.TitleTruncated || item.AllowAgents != value.AllowAgents || item.CreatedAt != value.CreatedAt || item.UpdatedAt != value.UpdatedAt || !reflect.DeepEqual(item.StartedAt, value.StartedAt) || !reflect.DeepEqual(item.CompletedAt, value.CompletedAt) || !reflect.DeepEqual(item.CancelledAt, value.CancelledAt) || !slices.Equal(item.DependsOn, value.DependsOn) || !slices.Equal(item.ExternalDependsOn, value.ExternalDependsOn) || item.DependsOn == nil || item.ExternalDependsOn == nil || !reflect.DeepEqual(item.Properties, api.TaskProperties(value.Properties)) {
 			t.Fatalf("intrinsic projection %d=%+v want=%+v", i, item, value)
 		}
 	}
@@ -89,7 +89,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		}
 	}
 	for _, item := range raw.Tasks {
-		if len(item) != 19 {
+		if len(item) != 20 || item["title"] == nil {
 			t.Fatalf("unexpected summary fields: %+v", item)
 		}
 		for _, field := range []string{"description", "blockedBy", "ready"} {

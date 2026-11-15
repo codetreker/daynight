@@ -14,9 +14,10 @@ same-version conflicting representation cannot safely drive detail admission.
 Web Task details, summaries and search results require tag references. The shared
 parser validates their identities and names, and summary equality includes the
 references. Graph tasks retain their narrower graph representation. Task cache
-schema 12 clears incompatible project, summary and detail projections before
-parsing; identity, profiles and compatible Session history retain their existing
-upgrade rules. A normal versioned delta updates affected summaries and invalidates
+schema 12 cleared incompatible project, summary and detail projections before
+parsing. The subsequent [complete-title decision](2026-11-15-task-sync-full-titles.md)
+rebuilds these projections under schema 13; identity, profiles and compatible
+Session history retain their existing upgrade rules. A normal versioned delta updates affected summaries and invalidates
 their details without rotating the Task cache epoch. The
 [task synchronization design](../../../../docs/design/daynight-task-sync.md)
 owns the cache and admission mechanisms.

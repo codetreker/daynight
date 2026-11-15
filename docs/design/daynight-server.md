@@ -82,7 +82,7 @@ store 先投影任务自身的 160 字符标题预览、业务 version、状态�
 关闭任务 rows 后，以选中 task IDs 的一次 `ANY` 查询批量读取并装配完整规范属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。读取直接装入 `json.RawMessage`，不调用属性 Normalize/Validate/Admit，也不复查图规模或读取响应字节。正常解码、编码、数据库和事务完成错误沿原链路传播。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整标题、标题预览及完整属性，普通属性变化不轮换 epoch。读取直接装入 `json.RawMessage`，不调用属性 Normalize/Validate/Admit，也不复查图规模或读取响应字节。正常解码、编码、数据库和事务完成错误沿原链路传播。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
 
 ## 目录与调用方向
 

@@ -12,7 +12,7 @@ const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { type: "task", parentId: null, assignedTo: null, tags: [], id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task = { type: "task", parentId: null, assignedTo: null, tags: [], id: taskId, version: "9007199254740993", properties: {}, title: "Task", titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const dependencyStates = { [taskId]: { taskVersion: task.version, blockedBy: [], ready: true } };
 const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, tasks: [task], dependencyStates, sessions: {} };
 const signal = () => new AbortController().signal;
@@ -160,12 +160,12 @@ describe("strict summary protocol", () => {
   it.each([undefined, null, 1, 1n, "", "0", "-1", "+1", "01", "1.0", "1e1", "9223372036854775808"])("rejects noncanonical versions %#", (version) => {
     expect(() => parseTaskSummary({ ...task, version })).toThrow("invalid response");
   });
-  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "updatedAt", "version", "properties"])("requires %s", (field) => {
+  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "updatedAt", "version", "properties", "title"])("requires %s", (field) => {
     const incomplete: Record<string, unknown> = { ...task }; delete incomplete[field];
     expect(() => parseTaskSummary(incomplete)).toThrow("invalid response");
   });
   it.each([
-    { properties: null }, { properties: [] }, { properties: 17 },
+    { title: null }, { title: 7 }, { properties: null }, { properties: [] }, { properties: 17 },
     { status: "pending" }, { requiredPlatform: "android" }, { dependsOn: [taskId, taskId] },
     { externalDependsOn: [projectId] }, { updatedAt: "2026-02-30T00:00:00Z" },
     { createdAt: "2026-10-20T00:00:00.1234567890Z" }, { startedAt: "2026-10-20T00:00:00+00:00" },

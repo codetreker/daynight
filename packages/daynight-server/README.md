@@ -268,8 +268,10 @@ and [architecture](../../docs/design/daynight-task-sync.md) define the implement
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
 snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
-exact decimal strings; each intrinsic summary includes explicit nullable
-assignedTo and the complete current properties object, while descriptions,
+exact decimal strings; each intrinsic summary includes the complete title and its
+existing preview and truncation marker, explicit nullable assignedTo and the
+complete current properties object. Historical titles are not truncated by the
+current write limit, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
 bulk property and tag-reference queries share one repeatable-read snapshot.
 The required `dependencyStates` map supplies each visible ordinary Task's exact

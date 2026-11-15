@@ -67,7 +67,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   const result: TaskSummary = {
     id: id(data.id), version, properties, tags: parseTaskTags(data.tags),
     ...taskTypeFields(data),
-    titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
+    title: string(data.title), titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
     ...taskStatusFields(data), dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),
     assignedTo: nullableId(data.assignedTo),

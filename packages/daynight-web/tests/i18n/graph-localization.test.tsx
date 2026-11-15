@@ -1,3 +1,4 @@
+import { summariesForIndex } from "../helpers/taskSync";
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -62,7 +63,7 @@ describe('localized task graph presentation', () => {
       ],
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={waitingIndex} summaries={summariesForIndex(waitingIndex)} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
       openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} />, { locale: 'en', taskCache: true });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
     expect(view.container.querySelector('.goal-row[data-chain-id="A"] > .goal-header .root-status')).toHaveTextContent('To do');
@@ -78,7 +79,7 @@ describe('localized task graph presentation', () => {
   it('retranslates mounted memoized rows, nodes, dependencies and controls while retaining layout, selection and viewport', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
+    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
       openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onOpenTask={select} onCloseChain={noop} />, { locale: 'en', taskCache: true });
     await ready(view.baseElement);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
@@ -234,11 +235,11 @@ describe('localized task graph presentation', () => {
   it('renders empty and filtered chain states in the chosen language', () => {
     const props = { index, allRepresentativeIds: [], representativeIds: [], openGraphTarget: null,
       onOpenChain: noop, onCloseChain: noop, onOpenTask: noop };
-    const view = renderWithLocale(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
+    const view = renderWithLocale(<ChainList summaries={summariesForIndex(props.index)} workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} />, { locale: 'en', taskCache: true });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
     const completeIndex = buildGraphIndex({ ...graph, summary: { proposed: 0, total: 5, todo: 0, inProgress: 0, done: 5, cancelled: 0, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
-    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" {...props} index={completeIndex} summaries={summariesForIndex(completeIndex)} allRepresentativeIds={representativeIds} />);
     expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
   });
 

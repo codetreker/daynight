@@ -1,3 +1,4 @@
+import { summariesForIndex } from "./helpers/taskSync";
 import { summariesForGraph } from './helpers/taskSync';
 import { act, fireEvent, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,7 +31,7 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
 };
 const noop = () => {};
 const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
-  <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openGraphTarget={null}
+  <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={value.index} summaries={summariesForIndex(value.index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openGraphTarget={null}
     onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />
 </TaskExecutionClockProvider>;
 const row = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!;

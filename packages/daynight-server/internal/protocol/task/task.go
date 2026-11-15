@@ -55,6 +55,7 @@ type SyncRecord struct {
 	ID                string                     `json:"id"`
 	Type              model.TaskType             `json:"type"`
 	ParentID          *string                    `json:"parentId"`
+	Title             string                     `json:"title"`
 	TitlePreview      string                     `json:"titlePreview"`
 	TitleTruncated    bool                       `json:"titleTruncated"`
 	Status            string                     `json:"status"`
@@ -77,7 +78,7 @@ func RESTSyncRecord(t model.TaskViewRecord) SyncRecord {
 		value := string(*t.RequiredPlatform)
 		platform = &value
 	}
-	return SyncRecord{Properties: properties(t.Properties, false), Tags: RESTTags(t.Tags), ID: t.ID, Type: t.Type, ParentID: t.ParentID, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
+	return SyncRecord{Properties: properties(t.Properties, false), Tags: RESTTags(t.Tags), ID: t.ID, Type: t.Type, ParentID: t.ParentID, Title: t.Title, TitlePreview: t.TitlePreview, TitleTruncated: t.TitleTruncated,
 		Status: string(t.Status), Version: strconv.FormatInt(t.Version, 10), DependsOn: array(t.DependsOn, false), ExternalDependsOn: array(t.ExternalDependsOn, false),
 		RequiredPlatform: platform, AssignedTo: t.AssignedTo, AllowAgents: t.AllowAgents, CreatedAt: t.CreatedAt.UTC(), UpdatedAt: t.UpdatedAt.UTC(),
 		StartedAt: optionalTime(t.StartedAt), CompletedAt: optionalTime(t.CompletedAt), CancelledAt: optionalTime(t.CancelledAt)}

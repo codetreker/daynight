@@ -13,7 +13,7 @@ export const materializeDetail = (detail: TaskIntrinsicDetail, node: GraphTask):
 const summaryOf = (detail: TaskIntrinsicDetail): TaskSummary => {
   const { projectId: _projectId, title, description: _description, ...summary } = detail;
   const characters = Array.from(title);
-  return { ...summary, titlePreview: characters.slice(0, 160).join(""), titleTruncated: characters.length > 160 };
+  return { ...summary, title, titlePreview: characters.slice(0, 160).join(""), titleTruncated: characters.length > 160 };
 };
 const sameIntrinsicDetail = (left: TaskIntrinsicDetail, right: TaskIntrinsicDetail): boolean =>
   left.projectId === right.projectId && left.title === right.title && left.description === right.description &&

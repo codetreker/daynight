@@ -1,3 +1,4 @@
+import { summariesForIndex } from "./helpers/taskSync";
 import { fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,7 +32,7 @@ const graph: TaskGraph = {
 };
 const index = buildGraphIndex(graph);
 const noop = () => {};
-const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
+const content = (onOpenSession = vi.fn(), onOpenTask = vi.fn()) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)}
   representativeIds={['Goal']} allRepresentativeIds={['Goal']} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop}
   onOpenTask={onOpenTask} onOpenSession={onOpenSession} />;
 const child = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!.closest('.goal-task-row')!;

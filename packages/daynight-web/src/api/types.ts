@@ -134,6 +134,7 @@ export type AttachmentPage = {
 };
 
 export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
+  readonly title: string;
   readonly version: bigint;
   readonly properties: TaskProperties;
   readonly tags: readonly TaskTag[];

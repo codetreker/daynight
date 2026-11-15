@@ -24,7 +24,7 @@ const Probe = ({ mode = 'summary' }: { readonly mode?: 'summary' | 'direct' }) =
   useEffect(() => owner.subscribeProject(project, graph.refresh), [owner, graph.refresh]);
   const snapshot = graph.snapshot;
   useEffect(() => { if (mode === 'summary' && snapshot !== null) owner.observe(project, task, snapshot.index.nodes.get(task)); }, [owner, snapshot, mode]);
-  return <><output data-testid="projection">{snapshot === null ? 'unavailable' : `${snapshot.index.nodes.get(task)?.parentId}:${projectTaskScope(snapshot.index, firstGoal).progress.done}:${projectTaskScope(snapshot.index, secondGoal).progress.done}`}</output><output data-testid="goal-status">{snapshot?.summaries.get(firstGoal)?.status ?? 'unavailable'}</output><output data-testid="error">{graph.error === null ? 'none' : 'error'}</output></>;
+  return <><output data-testid="projection">{snapshot === null ? 'unavailable' : `${snapshot.index.nodes.get(task)?.parentId}:${projectTaskScope(snapshot.index, firstGoal).progress.done}:${projectTaskScope(snapshot.index, secondGoal).progress.done}`}</output><output data-testid="goal-title">{snapshot?.summaries.get(firstGoal)?.title ?? 'unavailable'}</output><output data-testid="goal-status">{snapshot?.summaries.get(firstGoal)?.status ?? 'unavailable'}</output><output data-testid="error">{graph.error === null ? 'none' : 'error'}</output></>;
 };
 beforeEach(() => { vi.stubGlobal('indexedDB', new IDBFactory()); scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); });
 afterEach(() => { scope.dispose(); sessions = null; vi.unstubAllGlobals(); });
@@ -216,4 +216,35 @@ it('publishes the Parent receipt to project progress after the direct detail is 
   act(() => unsubscribe());
   await act(async () => { committed = true; finishWrite(resourceResponse(moved, TEST_VIEWER_ID)); await write; });
   await waitFor(() => expect(screen.getByTestId('projection')).toHaveTextContent(`${secondGoal}:0:1`));
+});
+
+
+it('publishes the complete edited Goal title while an older project sync is delayed', async () => {
+  const prefix = '😀'.repeat(160);
+  const before = { ...first, title: prefix + ' old' };
+  const after = { ...before, title: prefix + ' new', version: before.version + 1n };
+  let committed = false;
+  let finishSync!: (response: Response) => void;
+  let heldUrl: URL | null = null;
+  const heldSync = new Promise<Response>(resolve => { finishSync = resolve; });
+  vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+    const parsed = new URL(url, location.origin);
+    if (parsed.pathname.endsWith('/task-sync')) {
+      if (committed) { heldUrl = parsed; return heldSync; }
+      const details = [original, before, second];
+      return Promise.resolve(taskSyncResponse(graphFixture(details), { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(parsed), versionForTask: item => details.find(value => value.id === item.id)!.version, propertiesForTask: item => details.find(value => value.id === item.id)!.properties }));
+    }
+    if (init?.method === 'PATCH') { committed = true; return Promise.resolve(resourceResponse(after, TEST_VIEWER_ID)); }
+    return Promise.resolve(resourceResponse(parsed.pathname.endsWith(firstGoal) ? committed ? after : before : original, TEST_VIEWER_ID));
+  }));
+  render(<TaskCacheProvider scope={scope}><TaskDetailSessionProvider><Probe /></TaskDetailSessionProvider></TaskCacheProvider>);
+  await waitFor(() => expect(screen.getByTestId('goal-title')).toHaveTextContent(before.title));
+  act(() => sessions!.openDirect(project, firstGoal));
+  await waitFor(() => expect(sessions!.snapshot(project, firstGoal).requiresFreshRead).toBe(false));
+  act(() => sessions!.editGoal(project, firstGoal, after.title, after.description, before.version));
+  await waitFor(() => expect(screen.getByTestId('goal-title')).toHaveTextContent(after.title));
+  await waitFor(() => expect(heldUrl).not.toBeNull());
+  const details = [original, before, second];
+  await act(async () => { finishSync(taskSyncResponse(graphFixture(details), { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(heldUrl!), versionForTask: item => details.find(value => value.id === item.id)!.version, propertiesForTask: item => details.find(value => value.id === item.id)!.properties })); await heldSync; });
+  await waitFor(() => expect(screen.getByTestId('goal-title')).toHaveTextContent(after.title));
 });

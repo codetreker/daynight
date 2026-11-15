@@ -680,7 +680,7 @@ export class TaskDetailSessions {
     entry.observedVersion = version;
     entry.observedTask = task;
     this.synchronizeSteps(entry);
-    if (entry.mismatch !== null && task !== undefined && !isTaskStale(task, entry.mismatch)) entry.mismatch = null;
+    if (entry.mismatch !== null && task !== undefined && !isTaskStale(task, entry.mismatch, this.scope.getAuthorizedProject(projectId)?.summaries.get(taskId))) entry.mismatch = null;
     const matching = entry.state.detail !== null && entry.state.detail.version === version && task !== undefined;
     const detail = matching && (entry.state.detail!.ready !== task.ready || !sameIds(entry.state.detail!.blockedBy, task.blockedBy)) ? materializeDetail(entry.state.detail!, task) : entry.state.detail;
     const requiresFreshRead = entry.liveVersion !== version || entry.liveOpeningGeneration !== entry.openingGeneration || !admitted || entry.mismatch !== null || !matching ||
@@ -908,7 +908,7 @@ export class TaskDetailSessions {
       return;
     }
     // Compare the server fields before local materialization preserves dependency-race evidence.
-    entry.mismatch = isTaskStale(node, detail) ? detail : null;
+    entry.mismatch = isTaskStale(node, detail, this.scope.getAuthorizedProject(projectId)?.summaries.get(taskId)) ? detail : null;
     if (writeGeneration === null || writeGeneration === entry.generation) entry.liveVersion = detail.version;
     if (readOpeningGeneration !== null) entry.liveOpeningGeneration = readOpeningGeneration;
     entry.withdrawn = false;
@@ -1448,7 +1448,7 @@ export class TaskDetailSessions {
       : retired.fence === null || !this.scope.isTaskReadCurrent(retired.fence)) || ticket.cacheGeneration !== review.cacheGeneration ||
       ticket.scopeRevision !== review.scopeRevision || this.scope.getProjectRevision(projectId) !== review.scopeRevision ||
       project?.manifest.cacheGeneration !== review.cacheGeneration || this.summaryVersion(projectId, taskId) !== operation.version ||
-      isTaskStale(project.index.nodes.get(taskId), review.detail)) throw new TaskMutationReviewExpired();
+      isTaskStale(project.index.nodes.get(taskId), review.detail, project.summaries.get(taskId))) throw new TaskMutationReviewExpired();
     // A later direct observation can invalidate, but never authorize, the original summary review.
     if (retired !== undefined && project.manifest.epoch !== null && this.hasNewerObservation(entry, project.manifest.epoch, operation.version)) throw new TaskMutationReviewExpired();
   }
@@ -1781,7 +1781,7 @@ export class TaskDetailSessions {
           actualVersion = detail.version;
           entry.committedVersion = detail.version;
           if ("historyGeneration" in requestTicket) {
-            const projectReceipt = operation.action === 'parent' || operation.action === 'status' && (detail.type === 'goal' || detail.parentId !== null);
+            const projectReceipt = (operation.action === 'parent' || operation.action === 'editGoal') || operation.action === 'status' && (detail.type === 'goal' || detail.parentId !== null);
             this.publish(entry, { ...entry.state, ...(projectReceipt ? { detail: preserveCollection(entry.state.detail, detail), status: "ready" as const, graphMismatch: true } : {}), requiresFreshRead: true,
               mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null, publicationPending: true } });
             if (projectReceipt) this.publishCommittedTask(projectId, previous, detail, projectFence);
@@ -1793,11 +1793,11 @@ export class TaskDetailSessions {
           await this.runMutationStage(projectId, taskId, operation, signal, () => {
             if (this.disposed || !this.admitMutationOutcome(projectId, taskId, operation, requestTicket, null, confirmed, actualVersion)) return;
             this.publish(entry, { ...entry.state, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } });
-            if (operation.action === 'parent' || operation.action === 'status' && (detail.type === 'goal' || detail.parentId !== null)) this.publishCommittedTask(projectId, previous, detail, projectFence);
+            if ((operation.action === 'parent' || operation.action === 'editGoal') || operation.action === 'status' && (detail.type === 'goal' || detail.parentId !== null)) this.publishCommittedTask(projectId, previous, detail, projectFence);
             this.refreshProject(projectId);
           });
         }, undefined, true, async () => {
-          if (operation.action !== "parent" && (operation.action !== "status" || detail.type !== "goal" && detail.parentId === null) || !("historyGeneration" in requestTicket)) return;
+          if (operation.action !== "parent" && operation.action !== "editGoal" && (operation.action !== "status" || detail.type !== "goal" && detail.parentId === null) || !("historyGeneration" in requestTicket)) return;
           validateResponse();
           if (!await this.scope.verifyTaskRead(requestTicket, signal) || !this.scope.isTaskHistoryConfirmedCurrent(requestTicket)) return;
           const epoch = review.receipt?.epoch;
