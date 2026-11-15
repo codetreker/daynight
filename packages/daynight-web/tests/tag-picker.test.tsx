@@ -23,7 +23,7 @@ const Harness = ({ initial = [], onChange = () => {} }: { initial?: readonly Tas
 };
 beforeEach(() => {
   env.listeners.clear();
-  env.scope = { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), notifyTagColors: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { env.listeners.add(listener); return () => env.listeners.delete(listener); } };
+  env.scope = { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), notifyTagColors: vi.fn(), subscribeTagColors: () => () => {}, isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { env.listeners.add(listener); return () => env.listeners.delete(listener); } };
   env.access = { session: { waitForFreshAccess: vi.fn().mockResolvedValue({}), revalidateAfterMutation: vi.fn().mockResolvedValue({}) } };
   list.mockReset().mockResolvedValue(page([alpha]));
   resolve.mockReset().mockImplementation(async (_project, ids) => ids.map(id => id === alpha.id ? alpha : beta));

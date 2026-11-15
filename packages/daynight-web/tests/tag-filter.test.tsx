@@ -8,7 +8,7 @@ import { LocaleProvider } from '../src/i18n/LocaleProvider';
 const data = vi.hoisted(() => ({
   catalogActive: vi.fn(),
   listeners: new Set<(event: { projectId: string; directAccessUncertain?: boolean; accessRevoked?: boolean; accessRestored?: boolean }) => void>(),
-  scope: { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: vi.fn() },
+  scope: { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: vi.fn(), subscribeTagColors: vi.fn(() => () => {}) },
   page: { items: [{ id: 'a', name: 'bug' }, { id: 'b', name: 'backend' }], catalogEpoch: 'one', nextCursor: null as string | null },
 }));
 vi.mock('../src/features/task-cache/TaskCacheProvider', () => ({ useTaskCacheScope: () => data.scope }));
