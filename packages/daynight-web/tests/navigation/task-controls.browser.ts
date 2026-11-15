@@ -1058,19 +1058,24 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     await page.locator('#project-section-tab-tasks').click();
     await page.locator('#project-task-tab-standalone').click();
+    const titleFits = (selector: string) => page.locator(selector).evaluate(element => {
+      const container = element.closest('.root-heading')!.getBoundingClientRect();
+      const range = document.createRange(); range.selectNodeContents(element);
+      return [...range.getClientRects()].every(rect => rect.left >= container.left - 1 && rect.right <= container.right + 1);
+    });
     const standalone = page.locator(`#standalone-task-${taskId}`);
     await expect(standalone.locator('.root-title')).toHaveText(title);
-    expect(await standalone.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await titleFits(`#standalone-task-${taskId} .root-title`)).toBe(true);
     await page.locator('#project-task-tab-chains').click();
     await page.locator(`#task-root-${previousId}`).click();
     const chain = page.locator(`[id="chain-task-${previousId}-${chainTaskId}"]`);
     await expect(chain.locator('.root-title')).toHaveText(title);
-    expect(await chain.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await titleFits(`[id="chain-task-${previousId}-${chainTaskId}"] .root-title`)).toBe(true);
     await page.locator('#project-task-tab-goals').click();
     await page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`).click();
     const goal = page.locator(`[id="chain-task-goal-${goalId}-${goalTaskId}"]`);
     await expect(goal.locator('.root-title')).toHaveText(title);
-    expect(await goal.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await titleFits(`[id="chain-task-goal-${goalId}-${goalTaskId}"] .root-title`)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     expect(detailReads).toEqual([]);
   });
