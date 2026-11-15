@@ -187,7 +187,7 @@ func TestAccessAndEmptySyncActorProjection(t *testing.T) {
 		accessHTTPProject(t, tx, test.principal, project, expected, "sync", &since, nil)
 		deltaResponse := projectRequest(handler, http.MethodGet, syncPath(project.ID)+"?epoch="+snapshot.Epoch+"&since=9999-12-31T23:59:59Z", "")
 		delta := decodeResponse[api.TaskSync](t, deltaResponse, http.StatusOK)
-		if !reflect.DeepEqual(snapshot.ActorAccess, access) || !reflect.DeepEqual(delta.ActorAccess, access) || delta.Mode != "delta" || delta.Tasks == nil || len(delta.Tasks) != 0 || !strings.Contains(deltaResponse.Body.String(), `"actorAccess":`) {
+		if !reflect.DeepEqual(snapshot.ActorAccess, access) || !reflect.DeepEqual(delta.ActorAccess, access) || delta.Mode != "delta" || delta.Tasks == nil || len(delta.Tasks) != 0 || snapshot.TaskObservations == nil || delta.TaskObservations == nil || len(delta.TaskObservations) != 0 || snapshot.SessionPartial || delta.SessionPartial || snapshot.ResponseTaskAt.IsZero() || snapshot.ResponseSessionAt.IsZero() || delta.ResponseTaskAt.IsZero() || delta.ResponseSessionAt.IsZero() || !strings.Contains(deltaResponse.Body.String(), `"actorAccess":`) {
 			t.Fatalf("actor projection missing from empty sync: %#v %#v", snapshot, delta)
 		}
 	}
@@ -253,15 +253,17 @@ func (d accessHTTPProjectReader) ProjectParticipants(ctx context.Context, id str
 
 type accessHTTPSnapshot struct {
 	store.SnapshotScope
-	project  store.ProjectReader
-	task     store.TaskReader
-	session  store.SessionReader
-	observed func(context.Context) (time.Time, error)
+	project    store.ProjectReader
+	task       store.TaskReader
+	session    store.SessionReader
+	credential store.CredentialReader
+	observed   func(context.Context) (time.Time, error)
 }
 
-func (s accessHTTPSnapshot) ProjectDAO() store.ProjectReader { return s.project }
-func (s accessHTTPSnapshot) TaskDAO() store.TaskReader       { return s.task }
-func (s accessHTTPSnapshot) SessionDAO() store.SessionReader { return s.session }
+func (s accessHTTPSnapshot) ProjectDAO() store.ProjectReader       { return s.project }
+func (s accessHTTPSnapshot) TaskDAO() store.TaskReader             { return s.task }
+func (s accessHTTPSnapshot) SessionDAO() store.SessionReader       { return s.session }
+func (s accessHTTPSnapshot) CredentialDAO() store.CredentialReader { return s.credential }
 func (s accessHTTPSnapshot) ObservedAt(ctx context.Context) (time.Time, error) {
 	return s.observed(ctx)
 }
@@ -270,6 +272,7 @@ type accessHTTPTaskReader struct {
 	store.TaskReader
 	epoch        func(context.Context, string) (string, error)
 	sync         func(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	active       func(context.Context, string) ([]store.TaskSyncTaskIdentity, error)
 	dependencies func(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 	people       func(context.Context, string) ([]model.TaskAssigneeFact, error)
 	presence     func(context.Context, string, string) (store.TaskPresence, error)
@@ -282,6 +285,9 @@ func (d accessHTTPTaskReader) TaskCacheEpoch(ctx context.Context, id string) (st
 func (d accessHTTPTaskReader) TaskSyncTasks(ctx context.Context, id string, lower *time.Time, preview int) ([]model.TaskViewRecord, error) {
 	return d.sync(ctx, id, lower, preview)
 }
+func (d accessHTTPTaskReader) TaskSyncActiveTasks(ctx context.Context, id string) ([]store.TaskSyncTaskIdentity, error) {
+	return d.active(ctx, id)
+}
 func (d accessHTTPTaskReader) TaskSyncDependencyStates(ctx context.Context, id string, lower *time.Time) (map[string]model.TaskDependencyState, error) {
 	return d.dependencies(ctx, id, lower)
 }
@@ -293,15 +299,6 @@ func (d accessHTTPTaskReader) TaskPresence(ctx context.Context, project, id stri
 }
 func (d accessHTTPTaskReader) TaskGraphTasks(ctx context.Context, project, id string, selection store.TaskGraphSelection, preview int) ([]model.GraphTask, error) {
 	return d.graph(ctx, project, id, selection, preview)
-}
-
-type accessHTTPSessionReader struct {
-	store.SessionReader
-	sources func(context.Context, string) ([]store.TaskSessionSource, error)
-}
-
-func (d accessHTTPSessionReader) CurrentTaskSessionSources(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
-	return d.sources(ctx, id)
 }
 
 type accessHTTPIdentityUserDAO struct {
@@ -321,10 +318,14 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 		facts := projectHTTPCopyGraphTask(*graphTask)
 		graphTask = &facts
 	}
-	snapshotCalls := projectHTTPCount(t, 1)
+	readCount := 1
+	if kind == "sync" {
+		readCount = 2
+	}
+	snapshotCalls := projectHTTPCount(t, readCount)
 	reader := accessHTTPProjectReader{}
 	if kind != "list" {
-		calls := projectHTTPCount(t, 1)
+		calls := projectHTTPCount(t, readCount)
 		reader.ProjectAccessCall = func(ctx context.Context, actor model.Principal, id string) (model.ProjectAccess, error) {
 			calls()
 			projectHTTPCheck(t, actor, p)
@@ -362,11 +363,11 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 	}
 	snapshot := accessHTTPSnapshot{project: reader}
 	if kind == "sync" || kind == "graph" {
-		observed := projectHTTPCount(t, 1)
+		observed := projectHTTPCount(t, readCount)
 		snapshot.observed = func(context.Context) (time.Time, error) { observed(); return v.UpdatedAt, nil }
 	}
 	if kind == "sync" {
-		epoch, sync, dependencies, people, sources := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
+		epoch, sync, dependencies, people, active := projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1), projectHTTPCount(t, 1)
 		snapshot.task = accessHTTPTaskReader{
 			epoch: func(ctx context.Context, id string) (string, error) {
 				epoch()
@@ -391,11 +392,17 @@ func accessHTTPProject(t *testing.T, tx *httpTestStore, p model.Principal, v mod
 				projectHTTPCheck(t, id, v.ID)
 				return []model.TaskAssigneeFact{}, nil
 			},
+			active: func(ctx context.Context, id string) ([]store.TaskSyncTaskIdentity, error) {
+				active()
+				projectHTTPCheck(t, id, v.ID)
+				return []store.TaskSyncTaskIdentity{}, nil
+			},
 		}
-		snapshot.session = accessHTTPSessionReader{sources: func(ctx context.Context, id string) ([]store.TaskSessionSource, error) {
-			sources()
-			projectHTTPCheck(t, id, v.ID)
-			return []store.TaskSessionSource{}, nil
+		credential := projectHTTPCount(t, 1)
+		snapshot.credential = &taskHTTPCredentialReaderMock{taskHTTPMockBase: newTaskHTTPMockBase(t, "sync credential"), CredentialFn: func(ctx context.Context, actor model.Principal) (store.ThreadCredential, error) {
+			credential()
+			projectHTTPCheck(t, actor, p)
+			return store.ThreadCredential{}, nil
 		}}
 	}
 	if kind == "graph" {
