@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 const f = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({ ...await original<typeof import("node:child_process")>(), execFile: f.exec }));
-import { inspectBootstrapProcessProof, inspectProcessProof, confirmControllerProcessesStopped, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
+import { inspectBootstrapProcessProof, inspectProcessProof, confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, stopControllerProcesses } from "../../../src/commands/controller/process-proof.js";
 import { stopControllerBootstrap } from "../../../src/commands/controller/launch-observation.js";
 
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -52,6 +52,19 @@ it("does not confirm a stopped tree when an original native birth has conflictin
   });
   f.exec.mockImplementation((_file, args, _options, callback) => callback(null, args.includes("-A") ? "" : "4202 4000 9999 S Thu Nov 12 15:53:09 2026 changed\n"));
   await expect(confirmControllerProcessesStopped(proof, [native], Date.now() + 5000)).rejects.toThrow(/conflicting identity/);
+});
+
+it("keeps a same-birth Darwin command conflict unconfirmed until the original and group stop", async () => {
+  Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+  vi.spyOn(process, "kill").mockReturnValue(true);
+  let exited = false;
+  f.exec.mockImplementation((_file, args, _options, callback) => callback(null, args.includes("-A")
+    ? "" : exited ? "4101 4000 4101 Z Thu Nov 12 15:53:09 2026 (node)\n" : "4101 4000 4101 Rs Thu Nov 12 15:53:09 2026 (node)\n"));
+  const error = await confirmControllerProcessesStopped(proof, []).catch(error => error);
+  expect(error).toBeInstanceOf(ControllerProcessIdentityConflictError);
+  expect(error).toMatchObject({ pid: proof.pid, evidence: { sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false } });
+  exited = true;
+  expect(await confirmControllerProcessesStopped(proof, [])).toBe(true);
 });
 
 it("waits through Darwin's exiting state without signaling incomplete identity or claiming a full tree stopped", async () => {

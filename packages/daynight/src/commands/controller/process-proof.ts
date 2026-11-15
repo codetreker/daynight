@@ -27,6 +27,11 @@ export const captureControllerProcessProof = async (launchId: string): Promise<P
   return process.platform === "win32" ? { ...proof, jobObjectName: await createOwnedControllerJob(launchId, process.pid) } : proof;
 };
 type ProcessMismatch = { status: string | null; sameBirth: boolean; sameParent: boolean; sameGroup: boolean; sameCommand: boolean };
+export class ControllerProcessIdentityConflictError extends Error {
+  constructor(readonly pid: number, readonly evidence: ProcessMismatch) {
+    super("An original process has conflicting identity evidence; complete stop is unconfirmed.");
+  }
+}
 const inspectProcessState = async (proof: ProcessProof, timeoutMs: number, onMismatch?: (evidence: ProcessMismatch) => void): Promise<"running" | "stopped" | "replaced" | "exiting"> => {
   validPid(proof.pid);
   if (process.platform === "win32") return inspectWindowsProcessProof(proof, timeoutMs, onMismatch);
@@ -82,7 +87,7 @@ const confirmRetainedProcessesStopped = async (controller: ProcessProof, native:
     const state = await bounded(deadline, () => inspectProcessState(proof, remaining(deadline), evidence => { mismatch = evidence; }));
     remaining(deadline);
     if (state === "running" || state === "exiting") return false;
-    if (state === "replaced" && mismatch?.sameBirth === true) throw new Error("An original process has conflicting identity evidence; complete stop is unconfirmed.");
+    if (state === "replaced" && mismatch?.sameBirth === true) throw new ControllerProcessIdentityConflictError(proof.pid, mismatch);
   }
   return true;
 };

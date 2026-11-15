@@ -42,6 +42,14 @@ in progress. Native proofs observed before
 and after shutdown are deduplicated by original process identity before cleanup.
 No timeout race releases fixture ownership while its cleanup continues.
 
+Darwin can expose a discarded command as `(node)` while the original process
+still has a non-exiting status. The complete-stop check reports a typed identity
+conflict, including its PID and mismatch fields, and never confirms that
+observation as stopped. The fixture may reobserve this specific conflict within
+its existing deadline, without signaling the uncertain process. Only a later
+complete Controller, native-process and group or Job proof permits success;
+persistent conflicts and unrelated observation failures remain errors.
+
 Only the owning fixture's controlled startup logs, launch records, journal state
 and parent/child ticket paths are diagnosed. Log reads are bounded and marked
 when truncated. Startup and cleanup failures remain failures; unknown process
