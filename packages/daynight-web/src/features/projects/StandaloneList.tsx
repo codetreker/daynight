@@ -13,10 +13,11 @@ type StandaloneListProps = {
   readonly taskIds: readonly string[];
   readonly allTaskIds: readonly string[];
   readonly onSelectTask: (id: string, trigger: HTMLElement) => void;
+  readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
   readonly pagination?: PaginationState;
 };
 
-export const StandaloneList = ({ projectId, index, summaries, taskIds, allTaskIds, onSelectTask, pagination }: StandaloneListProps) => {
+export const StandaloneList = ({ projectId, index, summaries, taskIds, allTaskIds, onSelectTask, onOpenSession, pagination }: StandaloneListProps) => {
   const { messages: { workspace: { standalone: m }, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
@@ -35,7 +36,7 @@ export const StandaloneList = ({ projectId, index, summaries, taskIds, allTaskId
       ) : taskIds.length === 0 ? (
         <div className="state-box"><h3>{assignment.noMatches}</h3></div>
       ) : (
-        <ul className="standalone-list">{taskIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} title={summaries.get(id)!.title} {...(summaries.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`standalone-task-${id}`} onSelectTask={onSelectTask} />)}</ul>
+        <ul className="standalone-list">{taskIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} summary={summaries.get(id)!} title={summaries.get(id)!.title} {...(summaries.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`standalone-task-${id}`} onSelectTask={onSelectTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
       )}
       {pagination !== undefined && <ListPagination label={m.list} {...pagination} />}
     </section>

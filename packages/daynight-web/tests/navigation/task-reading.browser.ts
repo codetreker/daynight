@@ -33,15 +33,16 @@ async function expectChainTimeLayout(header: Locator) {
   expect(layout).toEqual({ belowTitle: true, inMeta: true, alignedLeft: true, insideHeader: true, separate: true, noHorizontalOverflow: true });
 }
 
-async function install(page: Page, timing = false, completion = false, title = 'Reading task', variants?: readonly TaskDetail[]) {
+async function install(page: Page, timing = false, completion = false, title = 'Reading task', variants?: readonly TaskDetail[], sessionObservations = false) {
   const task = detailFixture(projectId, taskId, { title, description, version: 5n, ...(timing ? { status: 'in_progress' as const, ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z' } : {}), ...(completion ? { status: 'done' as const, ready: false, completedAt: '2026-10-22T09:59:30Z' } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Successor', version: 5n, dependsOn: [taskId], blockedBy: completion ? [] : [taskId], ready: false, ...(completion ? { status: 'done' as const, completedAt: '2026-10-22T09:59:50Z' } : {}) });
   const standalone = detailFixture(projectId, standaloneId, { title: 'Running standalone task', version: 5n, status: completion ? 'done' : 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T09:00:10Z', ...(completion ? { completedAt: '2026-10-22T09:59:40Z' } : {}) });
   const details = variants ?? (timing || completion ? [task, successor, standalone] : [task]); const graph = graphFixture(details);
   const message = { id: messageId, author: { userId: TEST_VIEWER_ID, displayName: 'Reader', Agent: false }, body: 'Discussion text', createdAt: '2026-10-20T09:00:00.000Z' };
-  const state = { writes: [] as string[], holdSync: null as Promise<void> | null, syncReads: 0 };
+  const state = { reads: [] as string[], writes: [] as string[], holdSync: null as Promise<void> | null, syncReads: 0 };
   await page.context().route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    if (request.method() === 'GET') state.reads.push(path);
     if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID, ...extra } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
@@ -50,7 +51,7 @@ async function install(page: Page, timing = false, completion = false, title = '
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties })); }
+    if (path === `/api/v1/projects/${projectId}/task-sync`) { state.syncReads++; if (state.holdSync) await state.holdSync; return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: () => 5n, propertiesForTask: row => details.find(detail => detail.id === row.id)!.properties, ...(sessionObservations ? { taskObservations: Object.fromEntries(details.filter(detail => detail.type === 'task' && detail.status === 'in_progress').map(detail => [detail.id, { taskVersion: 5n, state: detail.id === successorId ? 'notice' as const : detail.id.endsWith('061') ? 'warning' as const : 'pending' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: false, canOpen: true }])) } : {}) })); }
     for (const detail of details) {
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
@@ -386,3 +387,66 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     expect(state.writes).toEqual([]);
   });
 }
+
+for (const locale of ['en', 'zh-CN'] as const) test(`project Session entries remain separate and fit at 320px in ${locale}`, async ({ page }) => {
+  const goalId = '00000000-0000-4000-8000-000000000060';
+  const memberId = '00000000-0000-4000-8000-000000000061';
+  const worker = { claimId: '00000000-0000-4000-8000-000000000071', state: 'active' as const, userId: TEST_VIEWER_ID,
+    workerId: '00000000-0000-4000-8000-000000000072', worktreeId: '00000000-0000-4000-8000-000000000073',
+    machine: { id: '00000000-0000-4000-8000-000000000074', name: 'Long machine name for layout verification' }, platform: 'linux' as const,
+    agent: 'codex' as const, agentControlMode: 'web' as const, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+  const running = { version: 5n, status: 'in_progress' as const, ready: false, startedAt: time, properties: { worker } };
+  const details = [detailFixture(projectId, taskId, { version: 5n, title: 'Chain root', status: 'done' }),
+    detailFixture(projectId, successorId, { ...running, title: 'A long chain member title to check wrapping', dependsOn: [taskId] }),
+    detailFixture(projectId, standaloneId, { ...running, title: 'A long standalone task title to check wrapping' }),
+    detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'Goal', status: 'todo' }),
+    detailFixture(projectId, memberId, { ...running, parentId: goalId, title: 'A long goal member title to check wrapping' })];
+  const state = await install(page, false, false, 'unused', details, true);
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+  await page.locator('#project-section-tab-tasks').click();
+  const openLabel = locale === 'en' ? /Open Session/ : /打开 Session/;
+  const assertFit = async (item: Locator) => {
+    const action = item.getByRole('button', { name: openLabel });
+    await expect(action).toBeVisible(); await expectTextContrast(action); await action.focus(); await expect(action).toBeFocused();
+    expect(await item.evaluate(element => {
+      const a = element.querySelector('.project-session-control')!.getBoundingClientRect();
+      const title = element.querySelector('.root-title')!.getBoundingClientRect();
+      const bounds = element.getBoundingClientRect();
+      return a.left >= bounds.left && a.right <= bounds.right && a.top >= bounds.top && a.bottom <= bounds.bottom &&
+        (a.left >= title.right || a.top >= title.bottom || a.bottom <= title.top) && document.documentElement.scrollWidth <= innerWidth;
+    })).toBe(true);
+    return action;
+  };
+  await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务' }).click();
+  const standalone = page.locator(`#standalone-task-${standaloneId}`).locator('..');
+  await assertFit(standalone);
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
+  await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${standaloneId}/sessions/current`);
+  await page.keyboard.press('Escape'); await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+  await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+  await page.locator(`#task-root-${taskId}`).click();
+  const chainToggle = page.locator(`#task-root-${taskId}`);
+  const chainAction = await assertFit(page.locator(`#chain-task-${taskId}-${successorId}`).locator('..').locator('..'));
+  await expect(chainAction).toHaveCSS('color', roleColors.attention[3]);
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
+  await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${successorId}/sessions/current`);
+  await expect(chainToggle).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape'); await expect(chainAction).toBeFocused();
+  await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+  await page.getByRole('tab', { name: locale === 'en' ? 'Goals' : 'Goal' }).click();
+  const goalToggle = page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`);
+  await goalToggle.click();
+  const goalAction = await assertFit(page.locator(`[data-goal-id="${goalId}"] .goal-task-row`).first());
+  await expect(goalAction).toHaveCSS('color', roleColors.attention[3]);
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
+  await expect.poll(() => state.reads).toContain(`/api/v1/projects/${projectId}/tasks/${memberId}/sessions/current`);
+  await expect(goalToggle).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape'); await expect(goalAction).toBeFocused();
+  await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+});

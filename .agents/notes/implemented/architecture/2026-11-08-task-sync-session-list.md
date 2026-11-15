@@ -19,8 +19,9 @@ The existing TaskSync is the only list Session read; its visible-page period is
 fifteen seconds. Its required complete four-state map feeds a page-local store owned by `useTaskGraph`, with
 `ProjectPage`, `ProjectTaskWorkspace` and the summary Provider passing the same
 instance to presentation consumers. The Provider owns presentation activity,
-not another producer or scheduler. Existing annotations, pending shortcuts,
-whole ordinary chain membership and warning/notice/working precedence remain.
+not another producer or scheduler. Chain and Goal annotations, pending summary contributions, whole ordinary
+chain membership and warning/notice/working precedence remain. Individual row
+shortcuts use the complete observation consumer.
 
 The API returns local `TaskSyncRead {sync, receivedMonotonic}`. The successful
 reader captures the monotonic receipt immediately after `response.text()` and
@@ -56,8 +57,9 @@ The [TaskSync design](../../../../docs/design/daynight-task-sync.md) owns reques
 and cache responsibilities; the [Session status design](../../../../docs/design/task-session-status.md)
 owns binding admission, expiry and presentation. The [server projection decision](2026-11-08-task-sync-session-projection.md)
 owns the state producer. The [complete observation decision](2026-11-15-task-sync-complete-observations.md)
-adds a separate full Task observation without changing this list's four-state
-admission or aggregation. The [original annotation decision](../../archived/feature/2026-11-04-task-session-status.md)
+adds a separate full Task observation without changing four-state admission or
+aggregation. The [project observation consumer](2026-11-15-project-session-observation-consumption.md)
+uses that complete data for individual rows independently of this summary. The [original annotation decision](../../archived/feature/2026-11-04-task-session-status.md)
 established reliable shortcuts and complete chain membership when Current was
 the available authoritative observation; those requirements survive the change
 in list data source.
@@ -89,8 +91,8 @@ local body receipt survives those delays without another server clock field.
 List visibility, disclosure and filtering no longer generate full Current
 requests. One complete minimal map shares the project's existing synchronization
 period; ordinary polling waits retain unexpired states, while accepted failures
-and auth/scope loss retract them. Reliable pending Sessions keep their shortcuts
-without an annotation. Full Current content and control authorization remain
+and auth/scope loss retract them. Pending does not contribute an annotation;
+individual shortcuts now follow complete observations. Full Current content and control authorization remain
 owned by the detail client.
 
 Request binding reconstruction and scope admission remain necessary work even

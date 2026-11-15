@@ -9,6 +9,7 @@ import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskE
 import { ProjectTaskWorkspace } from '../src/features/projects/ProjectTaskWorkspace';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { statesForSummaries, TEST_VIEWER_ID } from './helpers/taskSync';
 
@@ -23,18 +24,20 @@ const summary = (id: string, type: 'task' | 'goal', parentId: string | null, sta
 const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map(task => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
 let scope: TaskCacheScope;
 let store: TaskSessionSummaryStore;
+let observationStore: ProjectTaskObservationsStore;
 beforeEach(() => {
   scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   store = new TaskSessionSummaryStore(scope, projectId);
+  observationStore = new ProjectTaskObservationsStore(scope, projectId);
   vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [{ id: 'tag-a', name: 'alpha', projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }], catalogEpoch: 'epoch', nextCursor: null });
   vi.mocked(resolveProjectTags).mockReset().mockResolvedValue([{ id: 'tag-a', name: 'alpha' }]);
 });
-afterEach(() => { store.dispose(); scope.dispose(); });
+afterEach(() => { observationStore.dispose(); store.dispose(); scope.dispose(); });
 const noop = () => {};
 const ChildFilteredWorkspace = ({ items }: { readonly items: TaskSummary[] }) => {
   const filter = useTagFilter(projectId);
   const value = snapshot(items);
-  return <TaskExecutionClockProvider projectId={projectId} snapshot={value}><ProjectTaskWorkspace snapshot={value} sessionStore={store} activeView="goals" pausedTasks={[]} onOpenPausedTask={() => {}} onPausedFocusFallback={() => {}} unfinishedStandaloneTaskCount={0} unfinishedChainCount={0} unfinishedGoalCount={2} onViewChange={noop} filter={<TagFilter controller={filter} child />}
+  return <TaskExecutionClockProvider projectId={projectId} snapshot={value}><ProjectTaskWorkspace snapshot={value} sessionStore={store} observationStore={observationStore} activeView="goals" pausedTasks={[]} onOpenPausedTask={() => {}} onPausedFocusFallback={() => {}} unfinishedStandaloneTaskCount={0} unfinishedChainCount={0} unfinishedGoalCount={2} onViewChange={noop} filter={<TagFilter controller={filter} child />}
     goals={{ projectId, childTagFilter: filter, goals: [value.summaries.get('goal')!, value.summaries.get('other')!], total: 2, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
     chains={{ projectId, representativeIds: [], allRepresentativeIds: [], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
     standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;

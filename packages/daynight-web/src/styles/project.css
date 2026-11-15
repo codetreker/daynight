@@ -36,3 +36,11 @@
 }
 
 .overview-progress-row:focus-visible,.standalone-row:focus-visible,.project-task-tab:focus-visible { outline-color: var(--task-focus); }
+
+.standalone-item { position: relative; min-width: 0; }
+.standalone-item:has(> .project-session-status) > .standalone-row { padding-right: 145px; }
+.standalone-item > .project-session-status { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 120px; }
+@container standalone-list (max-width: 650px) {
+  .standalone-item:has(> .project-session-status) > .standalone-row { padding-right: 110px; }
+  .standalone-item > .project-session-status { right: 8px; width: 96px; }
+}

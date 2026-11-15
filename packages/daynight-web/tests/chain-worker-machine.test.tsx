@@ -1,6 +1,7 @@
 import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -24,10 +25,11 @@ const child = (n: number, changes: Partial<TaskSummary> = {}) => task(n, { depen
 const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map((task) => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
 let sessionScope: TaskCacheScope;
 let sessionStore: TaskSessionSummaryStore;
-beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
-afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
+let observationStore: ProjectTaskObservationsStore;
+beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); observationStore = new ProjectTaskObservationsStore(sessionScope, project.id); });
+afterEach(() => { observationStore.dispose(); sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
-const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace pausedTasks={[]} onOpenPausedTask={() => {}} onPausedFocusFallback={() => {}} sessionStore={sessionStore} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainCount={1} onViewChange={noop}
+const workspace = (value: GraphSnapshot, onOpenTask = noop, scopedMembers?: ReadonlyMap<string, readonly string[]>) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace pausedTasks={[]} onOpenPausedTask={() => {}} onPausedFocusFallback={() => {}} sessionStore={sessionStore} observationStore={observationStore} snapshot={value} activeView="chains" unfinishedStandaloneTaskCount={0} unfinishedChainCount={1} onViewChange={noop}
   unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
   chains={{ projectId: project.id, representativeIds: [root.id], allRepresentativeIds: [root.id], ...(scopedMembers === undefined ? {} : { scopedMembers }), openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask }}
   standalone={{ projectId: project.id, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;

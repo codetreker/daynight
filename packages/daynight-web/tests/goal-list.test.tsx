@@ -2,11 +2,13 @@ import type { ComponentProps } from 'react';
 import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TaskSummary, WorkerClaim } from '../src/api/types';
+import type { TaskSummary, TaskSync, WorkerClaim } from '../src/api/types';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
-import { deriveTaskSyncBindings } from '../src/features/task-cache/execution-binding';
+import { deriveTaskSyncBindings, deriveTaskSyncVersions } from '../src/features/task-cache/execution-binding';
 import { TaskSessionSummaryProvider } from '../src/features/task-session-summary/TaskSessionSummaryProvider';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
+import { ProjectTaskObservationsProvider } from '../src/features/task-session-summary/ProjectTaskObservationsProvider';
 import { detailFixture, graphFixture, snapshotFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 import { buildGraphIndex } from '../src/features/task-graph/model';
@@ -389,11 +391,17 @@ describe('Goal list', () => {
     const graph = graphFixture(details); const value = snapshotFixture(details);
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const signal = new AbortController().signal; const ticket = await scope.beginSync(projectId, signal);
-    const sync = taskSyncFromGraph(graph, { sessions: { [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' }, versionForTask: () => 1n,
+    const observationMap = (sessions: TaskSync['sessions']): TaskSync['taskObservations'] => Object.fromEntries(Object.entries(sessions).map(([id, state]) => [id, {
+      taskVersion: 1n, state, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: null, canOpen: true,
+    }]));
+    const sessions = { [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' } as const;
+    const sync = taskSyncFromGraph(graph, { sessions, taskObservations: observationMap(sessions), versionForTask: () => 1n,
       propertiesForTask: (task) => details.find(item => item.id === task.id)!.properties });
     const result = await scope.applySync(ticket, sync, signal);
     const store = new TaskSessionSummaryStore(scope, projectId); store.start();
     store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions: sync.sessions, receivedMonotonic: performance.now() });
+    const observationStore = new ProjectTaskObservationsStore(scope, projectId); observationStore.start();
+    observationStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), observedVersions: deriveTaskSyncVersions(ticket, sync), sync, receivedMonotonic: performance.now() });
     const records: { callback: IntersectionObserverCallback; element: Element | null; disconnect: ReturnType<typeof vi.fn<() => void>> }[] = [];
     class Observer {
       record: typeof records[number];
@@ -404,13 +412,13 @@ describe('Goal list', () => {
     vi.stubGlobal('IntersectionObserver', Observer);
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const openSession = vi.fn();
-    const renderGoals = (current: GraphSnapshot) => <TaskSessionSummaryProvider store={store}>
+    const renderGoals = (current: GraphSnapshot) => <TaskSessionSummaryProvider store={store}><ProjectTaskObservationsProvider store={observationStore} active>
       <TaskExecutionClockProvider projectId={projectId} snapshot={current}><FilteredGoalList projectId={projectId} index={current.index} summaries={current.summaries}
         goals={[current.summaries.get(firstGoal)!, current.summaries.get(secondGoal)!]} total={2} workerMachines={current.workerMachines}
         onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop}
         openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} onOpenSession={openSession} /></TaskExecutionClockProvider>
       <button type="button">Outside</button>
-    </TaskSessionSummaryProvider>;
+    </ProjectTaskObservationsProvider></TaskSessionSummaryProvider>;
     const view = createLocaleRender('en', { taskCache: true })(renderGoals(value));
     try {
       expect(records).toHaveLength(2);
@@ -435,7 +443,11 @@ describe('Goal list', () => {
       fireEvent.click(session); expect(openSession).toHaveBeenCalledWith(firstTask, session);
       visible(records[1]!, true);
       expect(secondCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'warning');
-      const replaceSessions = (sessions: typeof sync.sessions) => act(() => store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions, receivedMonotonic: performance.now() }));
+      const replaceSessions = (sessions: typeof sync.sessions) => act(() => {
+        const receivedMonotonic = performance.now();
+        store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions, receivedMonotonic });
+        observationStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), observedVersions: deriveTaskSyncVersions(ticket, sync), sync: { ...sync, taskObservations: observationMap(sessions) }, receivedMonotonic });
+      });
       replaceSessions({ [firstTask]: 'working', [siblingTask]: 'warning', [secondTask]: 'warning' });
       expect(aggregate).toHaveAttribute('data-session-indicator', 'warning');
       replaceSessions({ [firstTask]: 'working', [siblingTask]: 'pending', [secondTask]: 'warning' });
@@ -443,9 +455,13 @@ describe('Goal list', () => {
       replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
       expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
       session.focus();
+      replaceSessions({ [siblingTask]: 'working', [secondTask]: 'warning' });
+      const firstRow = document.getElementById(`chain-task-goal-${firstGoal}-${firstTask}`)!.closest<HTMLElement>('.goal-task-row')!;
+      expect(firstRow.querySelector('.session-status-action')).toBeNull();
+      expect(firstRow.querySelector('.goal-task-main')).toHaveFocus();
+      replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
       visible(records[0]!, false);
-      expect(firstCard.querySelector('.session-status-action')).toBeNull();
-      expect(firstCard.querySelector('.goal-task-main')).toHaveFocus();
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
       expect(secondCard.querySelector('.session-status-action')).toBeVisible();
       visible(records[0]!, true);
       firstCard.querySelector<HTMLButtonElement>('.goal-list-row .session-status-action')!.focus();
@@ -490,11 +506,12 @@ describe('Goal list', () => {
       await act(async () => {
         const completedResult = await scope.applySync(completedTicket, completedSync, signal);
         store.replace({ project: completedResult.project, observedBindings: deriveTaskSyncBindings(completedTicket, completedSync), sessions: completedSync.sessions, receivedMonotonic: performance.now() });
+        observationStore.replace({ project: completedResult.project, observedBindings: deriveTaskSyncBindings(completedTicket, completedSync), observedVersions: deriveTaskSyncVersions(completedTicket, completedSync), sync: completedSync, receivedMonotonic: performance.now() });
         view.rerender(renderGoals(snapshotFixture(completedDetails)));
       });
       expect(firstCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'working');
       expect(fetch).not.toHaveBeenCalled();
-    } finally { view.unmount(); expect(records.every((record) => record.disconnect.mock.calls.length > 0)).toBe(true); store.dispose(); scope.dispose(); vi.unstubAllGlobals(); }
+    } finally { view.unmount(); expect(records.every((record) => record.disconnect.mock.calls.length > 0)).toBe(true); observationStore.dispose(); store.dispose(); scope.dispose(); vi.unstubAllGlobals(); }
   });
 
 });

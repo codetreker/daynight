@@ -1,3 +1,4 @@
+import { ApiError } from "../../api/client";
 import { readWorkerClaim } from "../../api/task-properties";
 import type { TaskSummary, TaskSync, WorkerClaim } from "../../api/types";
 import type { TaskSyncTicket } from "./project-cache";
@@ -29,4 +30,22 @@ export const deriveTaskSyncBindings = (ticket: TaskSyncTicket, response: TaskSyn
   const observed = new Map(response.mode === "snapshot" ? [] : ticket.taskBindings);
   for (const task of response.tasks) observed.set(task.id, taskExecutionBinding(task));
   return observed;
+};
+
+export const deriveTaskSyncVersions = (ticket: TaskSyncTicket, response: TaskSync): ReadonlyMap<string, bigint> => {
+  const versions = new Map(response.mode === "snapshot" ? [] : ticket.taskVersions);
+  for (const task of response.tasks) versions.set(task.id, task.version);
+  return versions;
+};
+
+/** Validate only bindings whose version is known from the request or response. */
+export const validateTaskSyncObservationBindings = (response: TaskSync, bindings: ReadonlyMap<string, TaskExecutionBinding>, versions: ReadonlyMap<string, bigint>): void => {
+  for (const [id, observation] of Object.entries(response.taskObservations)) {
+    const binding = bindings.get(id);
+    if (binding === undefined || versions.get(id) !== observation.taskVersion) continue;
+    const active = binding.status === "in_progress" && binding.worker?.state === "active";
+    if (binding.status !== "in_progress" || observation.canOpen && !active ||
+      observation.state === "no_session" && active ||
+      observation.state !== "no_session" && observation.state !== "unavailable" && !active) throw new ApiError("protocol");
+  }
 };

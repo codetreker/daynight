@@ -30,6 +30,7 @@ export const fixtureTaskEpoch = (projectId: string): string => observedEpochs.ge
 
 export type TaskSyncFixtureOptions = {
   readonly sessions?: TaskSync['sessions'];
+  readonly taskObservations?: TaskSync['taskObservations'];
   readonly actorAccess?: ProjectAccess;
   readonly assigneeVersions?: readonly ProjectPersonVersion[];
   readonly query?: { readonly epoch?: string; readonly since?: string };
@@ -38,9 +39,10 @@ export type TaskSyncFixtureOptions = {
   readonly propertiesForTask?: (task: GraphTask) => TaskProperties;
   readonly tagsForTask?: (task: GraphTask) => readonly TaskTag[];
 };
-type WireTaskSync = Omit<TaskSync, 'tasks' | 'dependencyStates'> & {
+type WireTaskSync = Omit<TaskSync, 'tasks' | 'dependencyStates' | 'taskObservations'> & {
   readonly tasks: readonly (Omit<TaskSummary, 'version'> & { readonly version: string })[];
   readonly dependencyStates: Readonly<Record<string, { readonly taskVersion: string; readonly blockedBy: readonly string[]; readonly ready: boolean }>>;
+  readonly taskObservations: Readonly<Record<string, Omit<TaskSync['taskObservations'][string], 'taskVersion'> & { readonly taskVersion: string }>>;
 };
 
 const nanoseconds = (timestamp: string): bigint => {
@@ -67,7 +69,7 @@ export const statesForSummaries = (tasks: readonly TaskSummary[]) => new Map(tas
   return [task.id, { taskVersion: task.version, blockedBy, ready: task.status === 'todo' && blockedBy.length === 0 }] as const;
 }));
 
-export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}), tagsForTask = () => [] }: TaskSyncFixtureOptions): WireTaskSync => {
+export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, taskObservations, assigneeVersions = graphAssigneeVersions(graph), actorAccess = directAccessFixture(graph.project.id), query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}), tagsForTask = () => [] }: TaskSyncFixtureOptions): WireTaskSync => {
   rememberTaskEpoch(graph.project.id, epoch);
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
@@ -80,7 +82,14 @@ export const taskSyncFixture = (graph: TaskGraph, { sessions = {}, assigneeVersi
   const selectedIds = new Set(tasks.map((task) => task.id));
   const dependencyStates = Object.fromEntries(graph.tasks.filter((task) => task.type === 'task' && (selectedIds.has(task.id) || task.dependsOn.some((id) => selectedIds.has(id)))).map((task) => [task.id,
     { taskVersion: versionForTask(task).toString(), blockedBy: task.blockedBy, ready: task.ready }]));
-  return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks, dependencyStates, sessions };
+  const observations: TaskSync['taskObservations'] = taskObservations ?? Object.fromEntries(graph.tasks.filter((task) => task.type === 'task' && task.status === 'in_progress').map((task) => [task.id, {
+    taskVersion: versionForTask(task), state: 'unavailable', observedAt: null, freshUntil: null, needsAttention: null, canOpen: false,
+  }]));
+  return { assigneeVersions, actorAccess, mode, epoch, project: graph.project, observedAt: graph.observedAt,
+    responseTaskAt: graph.observedAt, responseSessionAt: graph.observedAt,
+    sessionPartial: Object.values(observations).some((item) => item.state === 'unavailable'),
+    taskObservations: Object.fromEntries(Object.entries(observations).map(([id, item]) => [id, { ...item, taskVersion: item.taskVersion.toString() }])),
+    tasks, dependencyStates, sessions };
 };
 
 export const taskSyncResponse = (graph: TaskGraph, { viewerId, ...options }: TaskSyncFixtureOptions & { readonly viewerId: string }, init: ResponseInit = {}): Response =>
@@ -94,6 +103,7 @@ export const taskSyncQuery = (url: URL): NonNullable<TaskSyncFixtureOptions['que
 export const taskSyncFromGraph = (graph: TaskGraph, options: TaskSyncFixtureOptions): TaskSync => {
   const sync = taskSyncFixture(graph, options);
   return { ...sync, tasks: sync.tasks.map((task) => ({ ...task, version: BigInt(task.version) })),
+    taskObservations: Object.fromEntries(Object.entries(sync.taskObservations).map(([id, item]) => [id, { ...item, taskVersion: BigInt(item.taskVersion) }])),
     dependencyStates: Object.fromEntries(Object.entries(sync.dependencyStates).map(([id, state]) => [id, { ...state, taskVersion: BigInt(state.taskVersion) }])) };
 };
 
