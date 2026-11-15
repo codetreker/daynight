@@ -228,6 +228,9 @@ var projectGitHubSyncSQL string
 //go:embed migrations/072_personal_in_progress.sql
 var personalInProgressSQL string
 
+//go:embed migrations/074_tag_color.sql
+var tagColorSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -309,6 +312,7 @@ var schemaMigrations = []migration{
 	{version: 71, sql: assistantTasksSQL},
 	{version: 72, sql: personalInProgressSQL},
 	{version: 73, sql: projectGitHubSyncSQL},
+	{version: 74, sql: tagColorSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

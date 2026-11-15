@@ -1,4 +1,4 @@
--- Schema snapshot version: 73
+-- Schema snapshot version: 74
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -562,7 +562,9 @@ CREATE TABLE "project_tags" (
     "name_key" "text" NOT NULL COLLATE "pg_catalog"."C",
     "version" bigint DEFAULT 1 NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
-    "updated_at" timestamp with time zone NOT NULL
+    "updated_at" timestamp with time zone NOT NULL,
+    "color" "text" DEFAULT '#9AA3B2'::"text" NOT NULL,
+    CONSTRAINT "project_tags_color_check" CHECK (("color" ~ '^#[0-9A-F]{6}$'::"text"))
 );
 
 CREATE TABLE "projects" (

@@ -197,7 +197,7 @@ func TestPersonalTaskRevisionWithCoordinatedTagWrites(t *testing.T) {
 	}
 	before := revision()
 	if err := readerWriteProject(db, t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
-		_, err := scope.TagDAO().InsertTag(t.Context(), model.Tag{ID: tagID, ProjectID: project.ID, Name: "Alpha", NameKey: "alpha", CreatedAt: now})
+		_, err := scope.TagDAO().InsertTag(t.Context(), model.Tag{ID: tagID, ProjectID: project.ID, Name: "Alpha", NameKey: "alpha", Color: "#9AA3B2", CreatedAt: now})
 		if err != nil {
 			return err
 		}
@@ -214,7 +214,7 @@ func TestPersonalTaskRevisionWithCoordinatedTagWrites(t *testing.T) {
 		t.Fatal("association with Task update did not change revision")
 	}
 	if err := readerWriteProject(db, t.Context(), project.ID, func(scope store.ProjectWriteScope) error {
-		_, err := scope.TagDAO().UpdateTag(t.Context(), tagID, 1, "Beta", "beta", now)
+		_, err := scope.TagDAO().UpdateTag(t.Context(), tagID, 1, "Beta", "beta", "#9AA3B2", now)
 		if err != nil {
 			return err
 		}

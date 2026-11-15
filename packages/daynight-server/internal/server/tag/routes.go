@@ -22,8 +22,8 @@ import (
 type Operations interface {
 	List(context.Context, model.Principal, string, tagservice.ListInput) (tagservice.Page, error)
 	Get(context.Context, model.Principal, string, string) (tagservice.Item, error)
-	Create(context.Context, model.Principal, string, string) (tagservice.WriteResult, error)
-	Rename(context.Context, model.Principal, string, string, int64, string) (tagservice.WriteResult, error)
+	Create(context.Context, model.Principal, string, string, *string) (tagservice.WriteResult, error)
+	Update(context.Context, model.Principal, string, string, int64, *string, *string) (tagservice.WriteResult, error)
 	Delete(context.Context, model.Principal, string, string, int64, bool) (tagservice.WriteResult, error)
 	Resolve(context.Context, model.Principal, string, []string) ([]model.TagReference, error)
 }
@@ -153,7 +153,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request, p model.Princip
 	}
 	if err == nil {
 		var result tagservice.WriteResult
-		result, err = h.operations.Create(r.Context(), p, projectID, name)
+		result, err = h.operations.Create(r.Context(), p, projectID, name, nil)
 		if err == nil {
 			logger = logger.With("tag_id", result.Item.Tag.ID, "tx_outcome", string(result.Outcome), "phase", result.Phase)
 			logger.InfoContext(r.Context(), "tag created", "component", "tag", "request_id", httpx.RequestID(r.Context()))
@@ -190,7 +190,7 @@ func (h *handler) rename(w http.ResponseWriter, r *http.Request, p model.Princip
 	}
 	if err == nil {
 		var result tagservice.WriteResult
-		result, err = h.operations.Rename(r.Context(), p, projectID, tagID, version, name)
+		result, err = h.operations.Update(r.Context(), p, projectID, tagID, version, &name, nil)
 		if err == nil {
 			logger = logger.With("tx_outcome", string(result.Outcome), "phase", result.Phase)
 			logger.InfoContext(r.Context(), "tag renamed", "component", "tag", "request_id", httpx.RequestID(r.Context()))

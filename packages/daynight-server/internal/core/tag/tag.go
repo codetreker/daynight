@@ -42,6 +42,21 @@ func Fold(value string) string {
 	}, value)
 }
 
+const DefaultColor = "#9AA3B2"
+
+// Color validates an RGB value and returns its canonical uppercase spelling.
+func Color(value string) (string, error) {
+	if len(value) != 7 || value[0] != '#' {
+		return "", Fault("invalid_tag_color", "Tag color must be a #RRGGBB value.", nil)
+	}
+	for _, c := range value[1:] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return "", Fault("invalid_tag_color", "Tag color must be a #RRGGBB value.", nil)
+		}
+	}
+	return strings.ToUpper(value), nil
+}
+
 func Version(version int64) error {
 	if version < 1 {
 		return Fault("invalid_input", "Version must be positive.", nil)

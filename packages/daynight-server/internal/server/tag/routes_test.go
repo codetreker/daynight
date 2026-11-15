@@ -50,17 +50,23 @@ func (m *operationMock) Get(c context.Context, p model.Principal, project, id st
 	}
 	return m.get(c, p, project, id)
 }
-func (m *operationMock) Create(c context.Context, p model.Principal, project, name string) (service.WriteResult, error) {
+func (m *operationMock) Create(c context.Context, p model.Principal, project, name string, color *string) (service.WriteResult, error) {
+	if color != nil {
+		m.t.Fatal("legacy create supplied color")
+	}
 	if m.create == nil {
 		m.t.Fatal("unexpected Create")
 	}
 	return m.create(c, p, project, name)
 }
-func (m *operationMock) Rename(c context.Context, p model.Principal, project, id string, v int64, name string) (service.WriteResult, error) {
+func (m *operationMock) Update(c context.Context, p model.Principal, project, id string, v int64, name, color *string) (service.WriteResult, error) {
+	if name == nil || color != nil {
+		m.t.Fatal("legacy rename must supply only name")
+	}
 	if m.rename == nil {
 		m.t.Fatal("unexpected Rename")
 	}
-	return m.rename(c, p, project, id, v, name)
+	return m.rename(c, p, project, id, v, *name)
 }
 func (m *operationMock) Delete(c context.Context, p model.Principal, project, id string, v int64, confirm bool) (service.WriteResult, error) {
 	if m.delete == nil {
@@ -137,7 +143,7 @@ func decode[T any](t *testing.T, w *httptest.ResponseRecorder, status int) T {
 }
 func item() service.Item {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	return service.Item{Tag: model.Tag{ID: tagID, ProjectID: projectID, Name: "Alpha", Version: 7, CreatedAt: now, UpdatedAt: now}, Usage: model.TagUsage{Tasks: 2, Goals: 1}}
+	return service.Item{Tag: model.Tag{ID: tagID, ProjectID: projectID, Name: "Alpha", Color: "#123456", Version: 7, CreatedAt: now, UpdatedAt: now}, Usage: model.TagUsage{Tasks: 2, Goals: 1}}
 }
 func committed() service.WriteResult {
 	return service.WriteResult{Item: item(), ProjectID: projectID, TagID: tagID, Deleted: true, Phase: "commit", Outcome: store.TransactionCommitted}
@@ -177,6 +183,9 @@ func TestRoutesProjectInputAndResponses(t *testing.T) {
 	}
 	w := f.request("POST", collection, `{"name":"Alpha"}`, true)
 	created := decode[api.Tag](t, w, 201)
+	if strings.Contains(w.Body.String(), `"color"`) {
+		t.Fatalf("legacy tag response includes color: %s", w.Body)
+	}
 	if created.ID != tagID || w.Header().Get("Location") != collection+"/"+tagID {
 		t.Fatalf("creation: %+v %v", created, w.Header())
 	}
@@ -220,6 +229,8 @@ func TestRejectsBeforeBusinessCalls(t *testing.T) {
 	}{
 		{"POST", collection, `{"name":"a"}`, 401, false},
 		{"POST", collection, `{"name":"a","extra":1}`, 400, true},
+		{"POST", collection, `{"name":"a","color":"#123456"}`, 400, true},
+		{"PATCH", collection + "/" + tagID, `{"version":7,"name":"a","color":"#123456"}`, 400, true},
 		{"POST", collection, `{"name":"\ud800"}`, 400, true},
 		{"PATCH", collection + "/" + tagID, `{"version":0,"name":"a"}`, 400, true},
 		{"DELETE", collection + "/" + tagID, `{"version":7}`, 400, true},

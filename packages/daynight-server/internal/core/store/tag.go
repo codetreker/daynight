@@ -46,7 +46,7 @@ type TagWriteDAO interface {
 	TagUsage(context.Context, string) (model.TagUsage, error)
 	ResolveTags(context.Context, []string) ([]model.Tag, error)
 	InsertTag(context.Context, model.Tag) (model.Tag, error)
-	UpdateTag(context.Context, string, int64, string, string, time.Time) (model.Tag, error)
+	UpdateTag(context.Context, string, int64, string, string, string, time.Time) (model.Tag, error)
 	DeleteTag(context.Context, string, int64) error
 }
 
