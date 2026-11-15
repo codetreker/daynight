@@ -315,3 +315,104 @@ func TestTaskSyncFailuresAndCancellation(t *testing.T) {
 		}
 	})
 }
+
+func TestSyncBindingEqualRejectsExecutionChanges(t *testing.T) {
+	finalization := "finalization"
+	original := store.TaskSessionSource{
+		ProjectID: syncProjectID, TaskID: "task", TaskVersion: 7, TaskStatus: model.TaskInProgress,
+		Worker:  &model.WorkerClaim{ClaimID: "claim", State: model.WorkerActive, UserID: "owner", WorkerID: "worker", WorktreeID: "worktree", AgentControlMode: model.AgentControlModeWeb, Agent: model.AgentCodex},
+		Session: &store.TaskSessionStateSource{SessionID: "session", Backend: "web", OwnerID: "owner", ServerInstance: "server", ArchiveState: "ready", TerminalFinalizationID: &finalization, Lifecycle: "active"},
+	}
+	tests := []struct {
+		name   string
+		change func(*store.TaskSessionSource)
+	}{
+		{"project", func(s *store.TaskSessionSource) { s.ProjectID = "other" }},
+		{"task", func(s *store.TaskSessionSource) { s.TaskID = "other" }},
+		{"version", func(s *store.TaskSessionSource) { s.TaskVersion++ }},
+		{"status", func(s *store.TaskSessionSource) { s.TaskStatus = model.TaskDone }},
+		{"missing worker", func(s *store.TaskSessionSource) { s.Worker = nil }},
+		{"claim", func(s *store.TaskSessionSource) { s.Worker.ClaimID = "other" }},
+		{"worker state", func(s *store.TaskSessionSource) { s.Worker.State = model.WorkerCompleted }},
+		{"worker user", func(s *store.TaskSessionSource) { s.Worker.UserID = "other" }},
+		{"worker id", func(s *store.TaskSessionSource) { s.Worker.WorkerID = "other" }},
+		{"worktree", func(s *store.TaskSessionSource) { s.Worker.WorktreeID = "other" }},
+		{"mode", func(s *store.TaskSessionSource) { s.Worker.AgentControlMode = model.AgentControlModeHerdr }},
+		{"agent", func(s *store.TaskSessionSource) { s.Worker.Agent = model.AgentClaude }},
+		{"missing session", func(s *store.TaskSessionSource) { s.Session = nil }},
+		{"session id", func(s *store.TaskSessionSource) { s.Session.SessionID = "other" }},
+		{"fence", func(s *store.TaskSessionSource) { s.Session.Fence.ConnectionEpoch = "2" }},
+		{"lifecycle", func(s *store.TaskSessionSource) { s.Session.Lifecycle = "archived" }},
+		{"backend", func(s *store.TaskSessionSource) { s.Session.Backend = "herdr" }},
+		{"owner", func(s *store.TaskSessionSource) { s.Session.OwnerID = "other" }},
+		{"instance", func(s *store.TaskSessionSource) { s.Session.ServerInstance = "other" }},
+		{"archive", func(s *store.TaskSessionSource) { s.Session.ArchiveState = "pending" }},
+		{"finalization", func(s *store.TaskSessionSource) { s.Session.TerminalFinalizationID = nil }},
+		{"identity", func(s *store.TaskSessionSource) { s.Session.Identity.WorkerID = "other" }},
+	}
+	if !syncBindingEqual(original, original) {
+		t.Fatal("identical binding rejected")
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := original
+			worker, session := *original.Worker, *original.Session
+			changed.Worker, changed.Session = &worker, &session
+			tc.change(&changed)
+			if syncBindingEqual(original, changed) {
+				t.Fatal("changed binding accepted")
+			}
+		})
+	}
+	withoutWorker := original
+	withoutWorker.Worker, withoutWorker.Session = nil, nil
+	if !syncBindingEqual(withoutWorker, withoutWorker) {
+		t.Fatal("matching unassigned binding rejected")
+	}
+}
+
+func TestValidateSyncObservation(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fresh := now.Add(30 * time.Second)
+	zero := time.Time{}
+	outOfRange := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	valid := model.TaskSyncObservation{TaskVersion: 7, State: "working", ObservedAt: &now, FreshUntil: &fresh, CanOpen: true}
+	for _, state := range []string{"no_session", "not_registered", "pending", "working", "notice", "warning", "unavailable"} {
+		t.Run("valid "+state, func(t *testing.T) {
+			v := valid
+			v.State = state
+			v.CanOpen = false
+			if err := validateSyncObservation(v, 7); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	tests := []struct {
+		name        string
+		observation model.TaskSyncObservation
+		version     int64
+		valid       bool
+	}{
+		{"no anchor unavailable", model.TaskSyncObservation{TaskVersion: 7, State: "unavailable"}, 7, true},
+		{"unknown freshness", model.TaskSyncObservation{TaskVersion: 7, State: "working", ObservedAt: &now}, 7, true},
+		{"zero task version", valid, 0, false},
+		{"mismatched version", valid, 8, false},
+		{"invalid state", model.TaskSyncObservation{TaskVersion: 7, State: "unknown", ObservedAt: &now}, 7, false},
+		{"missing observed", model.TaskSyncObservation{TaskVersion: 7, State: "working"}, 7, false},
+		{"zero observed", model.TaskSyncObservation{TaskVersion: 7, State: "working", ObservedAt: &zero}, 7, false},
+		{"out of range observed", model.TaskSyncObservation{TaskVersion: 7, State: "working", ObservedAt: &outOfRange}, 7, false},
+		{"zero freshness", model.TaskSyncObservation{TaskVersion: 7, State: "working", ObservedAt: &now, FreshUntil: &zero}, 7, false},
+		{"out of range freshness", model.TaskSyncObservation{TaskVersion: 7, State: "working", ObservedAt: &now, FreshUntil: &outOfRange}, 7, false},
+		{"open without observed", model.TaskSyncObservation{TaskVersion: 7, State: "unavailable", FreshUntil: &fresh, CanOpen: true}, 7, false},
+		{"open without freshness", model.TaskSyncObservation{TaskVersion: 7, State: "working", ObservedAt: &now, CanOpen: true}, 7, false},
+		{"open unavailable with anchors", model.TaskSyncObservation{TaskVersion: 7, State: "unavailable", ObservedAt: &now, FreshUntil: &fresh, CanOpen: true}, 7, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSyncObservation(tc.observation, tc.version)
+			if (err == nil) != tc.valid {
+				t.Fatalf("validation: %v", err)
+			}
+		})
+	}
+}
