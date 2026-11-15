@@ -572,7 +572,7 @@ func resourceLogReferences(name string, refs map[string]any) []any {
 			{"projectId", "project_id"}, {"taskId", "task_id"}, {"replyTo", "reply_to"},
 			{"claimId", "claim_id"}, {"messageId", "message_id"}, {"candidateMessageId", "candidate_message_id"},
 		}
-	case "tag_list", "tag_show", "tag_create", "tag_rename", "tag_delete":
+	case "tag_list", "tag_show", "tag_create", "tag_rename", "tag_update", "tag_delete":
 		fields = []struct{ key, attr string }{
 			{"projectId", "project_id"}, {"tagId", "tag_id"}, {"candidateTagId", "candidate_tag_id"},
 		}
