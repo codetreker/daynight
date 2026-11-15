@@ -97,8 +97,11 @@ remain with their CLI and service owners.
 
 The tag journey reads empty catalogs in the Web catalog, shared child filter and
 Task editor, then creates a shared catalog and independently tagged Goal and
-child Tasks through the CLI. It verifies toolbar order as Assignee, Status, Tag
-filter and Child task tag filter. Web reads and edits the child's tags, uses the
+child Tasks through the CLI. It reads a CLI-created color through MCP, associates
+the same tag with the Goal and child, and checks their actual Web color markers
+before and after a versioned MCP update and reload. An uncolored CLI creation
+also verifies the server's default gray marker. It verifies toolbar order as
+Assignee, Status, Tag filter and Child task tag filter. Web reads and edits the child's tags, uses the
 shared toolbar condition to filter sibling Tasks and clears it to restore them;
 CLI reads the saved set, renames and confirms deletion of a shared tag. Web
 reloads and CLI readback verify current names, retained identities and association

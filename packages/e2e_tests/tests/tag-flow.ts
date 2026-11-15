@@ -1,10 +1,34 @@
 import type { Page } from "@playwright/test";
 import { cli, expect, topology } from "./fixtures.ts";
 
-type Tag = { id: string; name: string; version: number };
+type Tag = { id: string; name: string; color: string; version: number };
+type MCPTag = { id: string; projectId: string; name: string; color: string; version: string };
 type Task = { id: string; title: string; parentId: string | null; tags: { id: string; name: string }[] };
 
-export const verifyTagFlow = async (page: Page, projectId: string): Promise<void> => {
+export const verifyTagFlow = async (page: Page, projectId: string, serverToken: string): Promise<void> => {
+  const mcp = async (name: string, args: Record<string, string>, write = false): Promise<MCPTag> => {
+    const response = await fetch(`${topology.baseURL}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25", Authorization: `Bearer ${serverToken}` },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    expect(response.status, `${name} HTTP status`).toBe(200);
+    const rpc = await response.json() as { jsonrpc?: string; id?: number; error?: { code?: number }; result?: { isError?: boolean; structuredContent?: { data?: MCPTag; error?: { writeOutcome?: string; phase?: string }; meta?: { writeOutcome?: string; refs?: { projectId?: string; tagId?: string } } } } };
+    expect(rpc.jsonrpc).toBe("2.0");
+    expect(rpc.id).toBe(1);
+    if (rpc.error !== undefined) throw new Error(`${name} JSON-RPC error code: ${typeof rpc.error.code === "number" ? rpc.error.code : "unavailable"}`);
+    if (rpc.result?.isError === true) {
+      const error = rpc.result.structuredContent?.error;
+      const outcome = ["confirmed", "not_committed", "unknown"].find(value => value === error?.writeOutcome) ?? "unavailable";
+      const phase = ["prepare", "commit", "output"].find(value => value === error?.phase) ?? "unavailable";
+      throw new Error(`${name} tool error: writeOutcome=${outcome} phase=${phase}`);
+    }
+    const content = rpc.result?.structuredContent;
+    expect(content?.data, `${name} structured data`).toBeDefined();
+    if (write) expect(content?.meta).toMatchObject({ writeOutcome: "confirmed", refs: { projectId, tagId: args.tagId } });
+    return content!.data!;
+  };
   const json = async <T>(args: string[]): Promise<T> => JSON.parse((await cli([...args, "--project", projectId, "--json"])).stdout) as T;
   const create = async (args: string[]): Promise<string> => {
     const result = await cli(["task", "create", "--project", projectId, ...args]);
@@ -44,9 +68,14 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await emptyEditor.getByRole("button", { name: "Cancel", exact: true }).click();
   await emptyDetail.locator(".task-detail-close").click();
 
-  const backend = await json<Tag>(["tag", "create", "Backend"]);
+  const backend = await json<Tag>(["tag", "create", "Backend", "--color", "#D85656"]);
+  expect(backend).toMatchObject({ name: "Backend", color: "#D85656" });
+  const shown = await mcp("tag_show", { projectId, tagId: backend.id });
+  expect(shown).toMatchObject({ id: backend.id, projectId, name: "Backend", color: "#D85656", version: String(backend.version) });
+  expect(shown.version).toMatch(/^[1-9][0-9]*$/);
   const other = await json<Tag>(["tag", "create", "Other"]);
   expect(backend.id).not.toBe(other.id);
+  expect(other.color).toBe("#9AA3B2");
   const goalId = await create(["--type", "goal", "--title", "Tagged Goal", "--tag", backend.id]);
   const taskId = await create(["--parent", goalId, "--title", "Tagged child", "--tag", other.id]);
   const controlId = await create(["--parent", goalId, "--title", "Other child", "--tag", other.id]);
@@ -73,6 +102,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   const childRow = card.locator(".task-row").filter({ has: page.locator(`#chain-task-goal-${goalId}-${taskId}`) });
   const control = card.locator(`#chain-task-goal-${goalId}-${controlId}`);
   await expect(childRow.locator(".task-tag")).toHaveText(["Other"]);
+  await expect(childRow.locator(".task-tag-dot")).toHaveCSS("background-color", "rgb(154, 163, 178)");
   await expect(control).toBeVisible();
   await child.click();
   const detail = page.locator(".task-detail-dialog");
@@ -97,6 +127,28 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   expect(edited.tags).toHaveLength(2);
   expect(edited.tags).toEqual(expect.arrayContaining([{ id: backend.id, name: "Backend" }, { id: other.id, name: "Other" }]));
   await detail.locator(".task-detail-close").click();
+  const goalColor = card.locator(".goal-list-summary .task-tag").filter({ hasText: "Backend" }).locator(".task-tag-dot");
+  const childColor = childRow.locator(".task-tag").filter({ hasText: "Backend" }).locator(".task-tag-dot");
+  await expect(goalColor).toHaveCSS("background-color", "rgb(216, 86, 86)");
+  await expect(childColor).toHaveCSS("background-color", "rgb(216, 86, 86)");
+  const updated = await mcp("tag_update", { projectId, tagId: backend.id, ifVersion: shown.version, color: "#4C88C7" }, true);
+  expect(updated).toMatchObject({ id: backend.id, projectId, name: "Backend", color: "#4C88C7" });
+  expect(updated.version).toMatch(/^[1-9][0-9]*$/);
+  expect(BigInt(updated.version)).toBeGreaterThan(BigInt(shown.version));
+  const reloadColors = async () => {
+    const sync = page.waitForResponse(response => response.url().includes(`/api/v1/projects/${projectId}/task-sync`) && response.request().method() === "GET" && response.status() === 200);
+    await page.reload();
+    await sync;
+    await page.locator("#project-section-tab-tasks").click();
+    await page.locator("#project-task-tab-goals").click();
+    await card.locator(".goal-list-toggle").click();
+    await expect(goalColor).toHaveCSS("background-color", "rgb(76, 136, 199)");
+    await expect(childColor).toHaveCSS("background-color", "rgb(76, 136, 199)");
+  };
+  await reloadColors();
+  await reloadColors();
+  expect(await read(goalId)).toMatchObject({ id: goalId, parentId: null, tags: [{ id: backend.id, name: "Backend" }] });
+  expect(await read(taskId)).toMatchObject({ id: taskId, parentId: goalId, tags: expect.arrayContaining([{ id: backend.id, name: "Backend" }, { id: other.id, name: "Other" }]) });
   await expect(card.locator(".tag-filter")).toHaveCount(0);
   await filter.locator("summary").click();
   await expect(filter.getByRole("checkbox", { name: "Backend" })).toBeVisible();
@@ -115,7 +167,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await page.keyboard.press("Escape");
   await expect(filter).not.toHaveAttribute("open", "");
 
-  const renamed = await json<Tag>(["tag", "rename", backend.id, "Platform", "--if-version", String(backend.version)]);
+  const renamed = await json<Tag>(["tag", "rename", backend.id, "Platform", "--if-version", updated.version]);
   expect(renamed).toMatchObject({ id: backend.id, name: "Platform" });
   await page.reload();
   await page.locator("#project-section-tab-tasks").click();
@@ -150,5 +202,5 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await filter.locator('input[type="search"]').fill("");
   await page.keyboard.press("Escape");
   await expect(filter).not.toHaveAttribute("open", "");
-  console.log(`Tag journey: project=${projectId} goal=${goalId} task=${taskId} control=${controlId} renamed/deleted=${backend.id} retained=${other.id}`);
+  console.log(`Tag journey: project=${projectId} goal=${goalId} task=${taskId} control=${controlId} renamed/deleted=${backend.id} retained=${other.id} colors=#D85656→#4C88C7 default=#9AA3B2`);
 };

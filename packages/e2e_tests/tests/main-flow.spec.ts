@@ -189,9 +189,16 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   await refreshedHit.click();
   await expect(page.getByRole("dialog").getByRole("button", { name: "Done", exact: true })).toBeVisible();
 
+  // MCP and Session registration use the PAT issued to the CLI by device login.
+  // Keep it out of the browser and Playwright traces.
+  const configModule = pathToFileURL(path.join(path.dirname(topology.cliEntry), "config/server.js")).href;
+  const { loadServerConfiguration } = await import(configModule) as { loadServerConfiguration(paths: { stateDirectory: string; configFile: string }): Promise<{ serverToken?: string }> };
+  const { serverToken } = await loadServerConfiguration({ stateDirectory: topology.cliConfigDirectory, configFile: path.join(topology.cliConfigDirectory, "config.yml") });
+  if (serverToken === undefined) throw new Error("CLI device login did not save its Worker credential.");
+
   await verifyCompletionFlow(page, projectId!, task.id);
   await verifyControllerImages(page);
-  await verifyTagFlow(page, projectId!);
+  await verifyTagFlow(page, projectId!, serverToken);
 
   // These API registrations exercise the assembled service without starting a
   // Worker process. Resource stopping and archival are owned by their modules.
@@ -209,12 +216,6 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
     expect(response.status(), await response.text()).toBe(200);
     return await response.json() as Task & { properties: { worker: { claimId: string; worktreeId: string } } };
   };
-  // Session registration is a Worker operation and requires the PAT issued to
-  // the CLI by device login. Keep it out of the browser and Playwright traces.
-  const configModule = pathToFileURL(path.join(path.dirname(topology.cliEntry), "config/server.js")).href;
-  const { loadServerConfiguration } = await import(configModule) as { loadServerConfiguration(paths: { stateDirectory: string; configFile: string }): Promise<{ serverToken?: string }> };
-  const { serverToken } = await loadServerConfiguration({ stateDirectory: topology.cliConfigDirectory, configFile: path.join(topology.cliConfigDirectory, "config.yml") });
-  if (serverToken === undefined) throw new Error("CLI device login did not save its Worker credential.");
   const register = async (claimId: string, worktreeId: string) => {
     const response = await fetch(`${topology.baseURL}${taskRoot}/sessions`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${serverToken}` },
