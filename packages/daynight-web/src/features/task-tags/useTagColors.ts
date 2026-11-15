@@ -57,7 +57,11 @@ export class TagColorProjection {
         this.cancel(); this.publish(empty()); this.invalidate();
       }
     });
-    this.unsubscribeColors = this.scope.subscribeTagColors(projectId => { if (projectId === this.projectId) this.invalidate(); });
+    this.unsubscribeColors = this.scope.subscribeTagColors((projectId, admitted) => {
+      if (projectId !== this.projectId) return;
+      if (admitted) { if (!this.blocked) return; this.blocked = false; }
+      this.invalidate();
+    });
   }
   private stop(): void {
     this.cancel(); this.unsubscribeScope?.(); this.unsubscribeScope = null;

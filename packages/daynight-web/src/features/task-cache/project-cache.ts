@@ -93,7 +93,7 @@ export class TaskCacheScope {
   private readonly channel: BroadcastChannel | null;
   private readonly lifetime = new AbortController();
   private readonly listeners = new Set<(event: CacheEvent) => void>();
-  private readonly tagColorListeners = new Set<(projectId: string) => void>();
+  private readonly tagColorListeners = new Set<(projectId: string, admitted?: true) => void>();
   private readonly projectionListeners = new Set<(event: CacheEvent) => void>();
   private readonly projectionHints = new Set<Promise<void>>();
   private readonly projectionHintProjects = new Map<Promise<void>, string>();
@@ -456,13 +456,15 @@ export class TaskCacheScope {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
-  subscribeTagColors = (listener: (projectId: string) => void): (() => void) => {
+  subscribeTagColors = (listener: (projectId: string, admitted?: true) => void): (() => void) => {
     this.tagColorListeners.add(listener);
     return () => { this.tagColorListeners.delete(listener); };
   };
-  private emitTagColors(projectId: string): void {
+  // Only a locally admitted read may restore a withdrawn color projection;
+  // ordinary invalidations and peer hints carry no access authority.
+  private emitTagColors(projectId: string, admitted?: true): void {
     if (this.isInvalidated || this.identityMismatch || authRequestsPaused()) return;
-    for (const listener of this.tagColorListeners) listener(projectId);
+    for (const listener of this.tagColorListeners) admitted ? listener(projectId, true) : listener(projectId);
   }
   notifyTagColors(projectId: string, broadcast = true): void {
     projectId = requestId(projectId);
@@ -1399,6 +1401,7 @@ export class TaskCacheScope {
     }
     this.authorizedProjects.add(ticket.projectId);
     const project = this.materialize(result.manifest, result.stored, response.assigneeVersions);
+    if (!this.isDirectProjectBlocked(ticket.projectId)) this.emitTagColors(ticket.projectId, true);
     if (result.changed) this.hint(ticket.projectId);
     if (result.changed || versionsChanged) this.emit({ projectId: ticket.projectId });
     return { project, changed: result.changed, changedTaskIds: result.changedTaskIds };
@@ -1601,6 +1604,7 @@ export class TaskCacheScope {
     const revision = this.getProjectReadRevision(projectId) + 1;
     this.readableProjects.set(projectId, revision);
     this.projectReadRevisions.set(projectId, revision);
+    if (!this.isDirectProjectBlocked(projectId)) this.emitTagColors(projectId, true);
   }
   getProjectReadRevision(projectId: string): number { return this.projectReadRevisions.get(projectId) ?? 0; }
   canRevokeProjectRead(ticket: SyncTicket, revision: number): boolean {

@@ -2,8 +2,11 @@ import { waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import { resolveProjectTagColors, type ProjectTagColorPage } from '../src/api/task-tags';
-import type { CacheEvent, TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { createTaskCacheScope, type CacheEvent, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TagColorProjection } from '../src/features/task-tags/useTagColors';
+import { detailFixture, graphFixture } from './helpers/taskDetail';
+import { admitTaskGraph } from './helpers/taskSessions';
+import { taskSyncEpoch } from './helpers/taskSync';
 
 vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), resolveProjectTagColors: vi.fn() }));
 
@@ -195,5 +198,51 @@ describe('shared tag color projection', () => {
     await Promise.resolve();
     expect(resolve).toHaveBeenCalledTimes(count);
     stop();
+  });
+
+  it('resumes only after real scope admission, not a peer color hint, after ordinary revocation', async () => {
+    class Channel {
+      static channels = new Set<Channel>();
+      onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+      constructor(readonly name: string) { Channel.channels.add(this); }
+      postMessage(value: unknown) {
+        for (const other of Channel.channels) if (other !== this && other.name === this.name) queueMicrotask(() => other.onmessage?.({ data: value } as MessageEvent<unknown>));
+      }
+      close() { Channel.channels.delete(this); }
+    }
+    vi.stubGlobal('BroadcastChannel', Channel);
+    const userId = '30000000-0000-4000-8000-000000000001';
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const peer = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const graph = graphFixture([detailFixture(project, tag(1))]);
+    const seed = () => admitTaskGraph(scope, graph, { versionForTask: () => 1n });
+    const store = new TagColorProjection(scope, project);
+    let stop = () => {};
+    try {
+      await seed();
+      resolve.mockImplementation(async (_project, ids) => page(ids));
+      stop = store.watch([tag(1)]);
+      await waitFor(() => expect(store.snapshot().items.size).toBe(1));
+      const ticket = await scope.beginSync(project, scope.signal);
+      expect(await scope.revokeProject(ticket, scope.signal, false)).toBe(true);
+      expect(store.snapshot().items.size).toBe(0);
+      const hint = vi.fn();
+      const unlisten = scope.subscribeTagColors(hint);
+      const previousCalls = resolve.mock.calls.length;
+      peer.notifyTagColors(project);
+      await waitFor(() => expect(hint).toHaveBeenCalledWith(project));
+      expect(resolve).toHaveBeenCalledTimes(previousCalls);
+      unlisten();
+      resolve.mockImplementation(async (_project, ids) => page(ids, '#ABCDEF'));
+      await seed();
+      await waitFor(() => expect(store.snapshot().items.get(tag(1))).toMatchObject({ color: '#ABCDEF' }));
+
+      const next = await scope.beginSync(project, scope.signal);
+      expect(await scope.revokeProject(next, scope.signal, false)).toBe(true);
+      const direct = await scope.beginTaskRead(project, tag(1), 1, 1, scope.signal);
+      expect(await scope.observeHistory(direct, taskSyncEpoch(project), scope.signal)).toBe('current');
+      scope.markProjectReadable(project);
+      await waitFor(() => expect(store.snapshot().items.get(tag(1))).toMatchObject({ color: '#ABCDEF' }));
+    } finally { stop(); scope.dispose(); peer.dispose(); }
   });
 });
