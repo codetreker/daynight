@@ -245,6 +245,24 @@ const waitForFile = async (filename: string, timeoutMs = 5_000): Promise<string>
   }
 };
 
+const waitForFixturePid = async (filename: string, timeoutMs = 5_000, wait = () => new Promise<void>((resolve) => { setTimeout(resolve, 10); })): Promise<number> => {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      const contents = await readFile(filename, "utf8");
+      const pid = Number(contents);
+      if (/^[1-9][0-9]*$/.test(contents) && Number.isSafeInteger(pid)) return pid;
+    } catch (cause) {
+      if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
+    }
+    if (Date.now() >= deadline) throw new Error(`Fixture did not publish a valid PID in ${filename} within ${timeoutMs} ms.`);
+    await wait();
+  }
+};
+
+const publishFixturePid = (ready: string, beforeRename = ""): string =>
+  `const pending=${JSON.stringify(`${ready}.tmp`)};fs.writeFileSync(pending,String(process.pid));${beforeRename}fs.renameSync(pending,${JSON.stringify(ready)});`;
+
 const processGroupOf = (pid: number): number => {
   const pgid = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf8", timeout: 5_000 }).trim());
   if (!Number.isSafeInteger(pgid) || pgid <= 1) throw new Error(`Invalid fixture process group: ${pgid}`);
@@ -276,6 +294,75 @@ const waitForGroupGone = async (pgid: number): Promise<void> => {
 };
 
 describe("update subprocess supervision", () => {
+  it("waits for the complete PID to be atomically published", async () => {
+    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-refresh-supervision");
+    await mkdir(temporary, { recursive: true });
+    const directory = await mkdtemp(path.join(temporary, "PID barrier "));
+    directories.push(directory);
+    const ready = path.join(directory, "ready");
+    const pending = path.join(directory, "ready.tmp");
+    const hook = `fs.writeFileSync(pending,'');process.send('staged');await new Promise(resolve=>process.once('message',resolve));fs.writeFileSync(pending,String(process.pid));`;
+    const child = spawn(process.execPath, ["--eval", `(async()=>{const fs=require('node:fs');${publishFixturePid(ready, hook)}})().catch(error=>{console.error(error);process.exitCode=1;});`], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    let stderr = "";
+    child.stderr!.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    const closed = new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+    const staged = new Promise<void>((resolve, reject) => {
+      child.once("message", () => resolve());
+      child.once("close", () => reject(new Error(`PID publisher exited before staging: ${stderr}`)));
+    });
+    let resume!: () => void;
+    let observed!: () => void;
+    const attempted = new Promise<void>((resolve) => { observed = resolve; });
+    const barrier = new Promise<void>((resolve) => { resume = resolve; });
+    const within = async <T>(promise: Promise<T>, stage: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`PID fixture ${stage} timed out.`)), 5_000); })]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    let result: Promise<number> | undefined;
+    try {
+      await within(staged, "staging");
+      expect(await readFile(pending, "utf8")).toBe("");
+      result = waitForFixturePid(ready, 5_000, () => { observed(); return barrier; });
+      await within(Promise.race([attempted, result.then(() => { throw new Error("PID became ready before publication."); })]), "readiness observation");
+      await writeFile(pending, "12");
+      await expect(readFile(ready, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      child.send("publish");
+      expect(await within(closed, "publication"), stderr).toBe(0);
+      resume();
+      await expect(result).resolves.toBe(child.pid);
+    } finally {
+      resume();
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await within(closed, "cleanup");
+      if (result) await within(result.catch(() => {}), "reader cleanup");
+    }
+  }, 20_000);
+
+  it.each(["", "0", "-1", "12x", " 12", "9007199254740992"])("does not accept invalid fixture PID %j", async (contents) => {
+    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-refresh-supervision");
+    await mkdir(temporary, { recursive: true });
+    const directory = await mkdtemp(path.join(temporary, "Invalid PID "));
+    directories.push(directory);
+    const ready = path.join(directory, "ready");
+    await writeFile(ready, contents);
+    await expect(waitForFixturePid(ready, 0)).rejects.toThrow("Fixture did not publish a valid PID");
+    let retries = 0;
+    await expect(waitForFixturePid(ready, 5_000, async () => { retries++; await writeFile(ready, String(process.pid)); })).resolves.toBe(process.pid);
+    expect(retries).toBe(1);
+  });
+
+  it("preserves fixture PID read errors", async () => {
+    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-refresh-supervision");
+    await mkdir(temporary, { recursive: true });
+    const directory = await mkdtemp(path.join(temporary, "PID read error "));
+    directories.push(directory);
+    await expect(waitForFixturePid(directory)).rejects.toMatchObject({ code: "EISDIR" });
+  });
+
   it.skipIf(process.platform !== "win32").each(["capture", "inherit"] as const)("keeps Windows console handles usable with %s output", async (output) => {
     const { spawn: spawnTerminal } = await import("node-pty");
     const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/update-console");
@@ -602,7 +689,7 @@ try{const output=await runUpdateCommand({executable:process.execPath,arguments:[
     const stop = path.join(directory, "stop");
     const leaf = path.join(directory, "leaf.cjs");
     const helper = path.join(directory, "helper.cjs");
-    await writeFile(leaf, `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`);
+    await writeFile(leaf, `const fs=require('node:fs');${publishFixturePid(ready)}setInterval(()=>{if(fs.existsSync(${JSON.stringify(stop)}))process.exit(0);},10);`);
     await writeFile(helper, `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,[${JSON.stringify(leaf)}],{stdio:'ignore'});child.unref();const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(timer);process.exit(0);}},10);`);
     const moduleUrl = new URL("../../../src/commands/update/updater.ts", import.meta.url).href;
     const driver = `const cp=require('node:child_process');const {syncBuiltinESMExports}=require('node:module');const originalSpawn=cp.spawn;let resume;
@@ -621,7 +708,7 @@ try{await runUpdateCommand({executable:process.execPath,arguments:[${JSON.string
     });
     void requested.catch(() => {});
     try {
-      const pid = Number(await waitForFile(ready));
+      const pid = await waitForFixturePid(ready);
       const pgid = processGroupOf(pid);
       await writeFile(release, "release");
       await requested;
