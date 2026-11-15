@@ -8,11 +8,11 @@ import { LocaleProvider } from '../src/i18n/LocaleProvider';
 const data = vi.hoisted(() => ({
   catalogActive: vi.fn(),
   listeners: new Set<(event: { projectId: string; directAccessUncertain?: boolean; accessRevoked?: boolean; accessRestored?: boolean }) => void>(),
-  scope: { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: vi.fn() },
+  scope: { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), markProjectReadable: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: vi.fn(), subscribeTagColors: vi.fn(() => () => {}) },
   page: { items: [{ id: 'a', name: 'bug' }, { id: 'b', name: 'backend' }], catalogEpoch: 'one', nextCursor: null as string | null },
 }));
 vi.mock('../src/features/task-cache/TaskCacheProvider', () => ({ useTaskCacheScope: () => data.scope }));
-vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), resolveProjectTags: vi.fn() }));
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), resolveProjectTags: vi.fn(), resolveProjectTagColors: vi.fn(async (_project: string, ids: string[]) => ({ catalogEpoch: '00000000-0000-4000-8000-000000000051', items: ids.map(id => ({ id, state: 'found', version: 1n, color: '#AABBCC' })) })) }));
 vi.mock('../src/features/task-tags/useProjectTags', async () => {
   const { useState } = await import('react');
   return { useProjectTags: (_project: string, active: boolean) => {

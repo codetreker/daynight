@@ -25,7 +25,7 @@ export const projectTaskRowModel = ({ task, title, tags, workerMachine, hasSumma
     : { kind: workerMachine.state === 'active' ? 'active' : 'historical', name: workerMachine.machine.name },
 });
 
-export const ProjectTaskRow = ({ projectId, task, title, summary, tags, workerMachine, instanceId, onOpenTask, onOpenSession }: {
+export const ProjectTaskRow = ({ projectId, task, title, summary, tags, workerMachine, instanceId, active = true, onOpenTask, onOpenSession }: {
   readonly projectId: string;
   readonly task: GraphTask;
   readonly title: string;
@@ -33,13 +33,14 @@ export const ProjectTaskRow = ({ projectId, task, title, summary, tags, workerMa
   readonly tags?: readonly TaskTag[];
   readonly workerMachine: Pick<WorkerClaim, 'state' | 'machine'> | undefined;
   readonly instanceId: string;
+  readonly active?: boolean;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => {
   const paused = useTaskPaused(task.id);
   const session = useProjectTaskObservation(task, summary);
   const model = projectTaskRowModel({ task, title, ...(tags === undefined ? {} : { tags }), workerMachine, hasSummary: summary !== undefined, paused, session });
-  return <TaskRow model={model} href={taskDetailUrl(projectId, task.id, { tab: 'overview', path: null })} instanceId={instanceId}
+  return <TaskRow model={model} projectId={projectId} tagsActive={active} href={taskDetailUrl(projectId, task.id, { tab: 'overview', path: null })} instanceId={instanceId}
     assignee={<TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} />} onOpenTask={onOpenTask}
     {...(onOpenSession === undefined ? {} : { onOpenSession })} />;
 };

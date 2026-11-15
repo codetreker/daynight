@@ -32,6 +32,10 @@ export type ProjectTag = TaskTag & {
 };
 export type ProjectTagPage = { readonly items: readonly ProjectTag[]; readonly catalogEpoch: string; readonly nextCursor: string | null };
 export type ProjectTagQuery = { readonly query: string; readonly limit: number; readonly cursor: string | null };
+export type ProjectTagColor =
+  | { readonly id: string; readonly state: "found"; readonly version: bigint; readonly color: string }
+  | { readonly id: string; readonly state: "missing" };
+export type ProjectTagColorPage = { readonly catalogEpoch: string; readonly items: readonly ProjectTagColor[] };
 
 export const normalizeTagName = (value: string): string | null => {
   if (!value.isWellFormed()) return null;
@@ -125,4 +129,32 @@ export const resolveProjectTags = async (projectId: string, tagIds: readonly str
     if (items.length !== ids.length || items.some(item => !ids.includes(item.id))) return malformed();
     return items;
   });
+};
+
+export const resolveProjectTagColors = async (projectId: string, tagIds: readonly string[], catalogEpoch: string | null, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTagColorPage> => {
+  const project = requestId(projectId), ids = tagIds.map(requestId);
+  const epoch = catalogEpoch === null ? null : requestId(catalogEpoch);
+  if (ids.length > 100 || new Set(ids).size !== ids.length) throw new ApiError("protocol");
+  const response = await request(`${base(project)}/colors/resolve`, signal, {
+    method: "POST", headers, body: JSON.stringify({ tagIds: ids, ...(epoch === null ? {} : { catalogEpoch: epoch }) }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  return json(response, signal, value => {
+    if (response.status !== 200) return malformed();
+    const data = record(value), resultEpoch = id(data.catalogEpoch);
+    if (epoch !== null && resultEpoch !== epoch) return malformed();
+    const items = array(data.items, (item): ProjectTagColor => {
+      const entry = record(item), tag = id(entry.id);
+      if (entry.state === "missing") {
+        if (Object.keys(entry).length !== 2) return malformed();
+        return { id: tag, state: "missing" };
+      }
+      if (entry.state !== "found" || Object.keys(entry).length !== 4 || !isTaskVersion(entry.version) ||
+        typeof entry.color !== "string" || !/^#[0-9A-F]{6}$/.test(entry.color)) return malformed();
+      return { id: tag, state: "found", version: entry.version, color: entry.color };
+    });
+    const requested = new Set(ids), returned = new Set(items.map(item => item.id));
+    if (items.length !== ids.length || returned.size !== items.length || items.some(item => !requested.has(item.id))) return malformed();
+    return { catalogEpoch: resultEpoch, items };
+  }, decodePage);
 };

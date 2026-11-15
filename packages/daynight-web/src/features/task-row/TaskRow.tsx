@@ -11,6 +11,7 @@ import { TaskExecutionDescription, TaskExecutionDuration, TaskExecutionWarning }
 import { TaskPausedBadge } from '../task-pause/TaskPause';
 import { TaskSessionStatus } from './TaskSessionStatus';
 import { TaskTagList } from '../task-tags/TaskTagList';
+import { TagColorFeedback } from '../task-tags/TagColor';
 import { CopyButton } from './CopyButton';
 import type { TaskRowModel } from './model';
 import '../../styles/graph.css';
@@ -21,6 +22,8 @@ export type { TaskRowModel } from './model';
 
 type TaskRowProps = {
   readonly model: TaskRowModel;
+  readonly projectId: string;
+  readonly tagsActive?: boolean;
   readonly href: string;
   readonly instanceId: string;
   readonly assignee: ReactNode;
@@ -28,7 +31,7 @@ type TaskRowProps = {
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 };
 
-export const TaskRow = memo(({ model, href, instanceId, assignee, onOpenTask, onOpenSession }: TaskRowProps) => {
+export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instanceId, assignee, onOpenTask, onOpenSession }: TaskRowProps) => {
   const { locale, messages: { workspace: { standalone, project }, common, graph, inspection: { detail } }, format } = useI18n();
   const execution = useTaskExecution(model);
   const completion = useCompletionTime(completedAtFor(model));
@@ -36,15 +39,31 @@ export const TaskRow = memo(({ model, href, instanceId, assignee, onOpenTask, on
   const labelId = useId();
   const titleRef = useRef<HTMLAnchorElement | null>(null);
   const setTitleRef = useCallback((element: HTMLAnchorElement | null) => { titleRef.current = element; hint.triggerRef(element); }, [hint.triggerRef]);
-  const focusedSession = useRef<HTMLElement | null>(null);
+  const rowRef = useRef<HTMLLIElement | null>(null);
+  const focusIdentity = JSON.stringify([projectId, model.id, instanceId]);
+  const currentIdentity = useRef(focusIdentity);
+  currentIdentity.current = focusIdentity;
+  const focusedControl = useRef<{ element: HTMLElement; identity: string } | null>(null);
   const pointer = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
-  useLayoutEffect(() => {
-    const control = focusedSession.current;
-    if (control === null || control.isConnected) return;
-    focusedSession.current = null;
+  const restoreFocus = useCallback(() => {
+    const control = focusedControl.current;
+    if (control === null) return;
+    if (control.identity !== currentIdentity.current) { focusedControl.current = null; return; }
+    if (control.element.isConnected) return;
+    focusedControl.current = null;
     if (document.activeElement === document.body && titleRef.current?.isConnected && titleRef.current.closest('[hidden], [inert]') === null)
       titleRef.current.focus({ preventScroll: true });
-  });
+  }, []);
+  useLayoutEffect(restoreFocus);
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (row === null) return;
+    // Feedback owns its own subscription, so its Retry button can disappear
+    // without rendering this row again.
+    const observer = new MutationObserver(restoreFocus);
+    observer.observe(row, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [restoreFocus]);
   const open = (event: MouseEvent<HTMLAnchorElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.defaultPrevented) return;
     const selection = window.getSelection();
@@ -69,9 +88,11 @@ export const TaskRow = memo(({ model, href, instanceId, assignee, onOpenTask, on
   const tagMessage = model.tags === 'unknown' ? locale === 'zh-CN' ? '标签未知' : 'Tags unknown'
     : model.tags === 'error' ? locale === 'zh-CN' ? '标签读取失败' : 'Tags unavailable' : null;
   const descriptionIds = [execution === null ? null : `${labelId}-execution`, completion === null ? null : hint.descriptionId].filter(Boolean).join(' ') || undefined;
-  return <li className="task-row-item" onFocusCapture={(event) => {
-    focusedSession.current = event.target instanceof HTMLElement && event.target.classList.contains('session-status-action') ? event.target : null;
-  }} onBlurCapture={(event) => { if (event.relatedTarget !== null) focusedSession.current = null; }}>
+  return <li ref={rowRef} className="task-row-item" onFocusCapture={(event) => {
+    const target = event.target;
+    focusedControl.current = target instanceof HTMLElement && (target.classList.contains('session-status-action') || target.matches('.task-tag-color-feedback button'))
+      ? { element: target, identity: focusIdentity } : null;
+  }} onBlurCapture={(event) => { if (event.relatedTarget !== null && event.relatedTarget !== document.body) focusedControl.current = null; }}>
     <div className={`task-row task-status-surface${execution?.overdue ? ' standalone-row-stuck' : ''}`} data-task-status={model.status}
       onPointerDown={(event) => { if (event.button === 0) pointer.current = { x: event.clientX, y: event.clientY, dragged: false }; }}
       onPointerMove={(event) => { if (pointer.current !== null && (Math.abs(event.clientX - pointer.current.x) > 3 || Math.abs(event.clientY - pointer.current.y) > 3)) pointer.current.dragged = true; }}
@@ -89,7 +110,7 @@ export const TaskRow = memo(({ model, href, instanceId, assignee, onOpenTask, on
             : model.status === 'in_progress' && <span>{locale === 'zh-CN' ? '耗时未知' : 'Duration unknown'}</span>}
           {completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}
         </div>
-        {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList tags={model.tags} />}
+        {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
       </div>
       <div className="task-row-status">
         {model.paused && <TaskPausedBadge />}
@@ -102,5 +123,6 @@ export const TaskRow = memo(({ model, href, instanceId, assignee, onOpenTask, on
       {execution !== null && <TaskExecutionDescription execution={execution} id={`${labelId}-execution`} />}
       {hint.hint}
     </div>
+    {tagsActive && typeof model.tags !== 'string' && model.tags.length > 0 && <TagColorFeedback projectId={projectId} ids={model.tags.map(tag => tag.id)} />}
   </li>;
 });

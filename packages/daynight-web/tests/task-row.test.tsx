@@ -1,8 +1,16 @@
-import { act, fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useSyncExternalStore } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClockInputProvider } from '../src/features/task-execution/TaskExecutionClock';
 import { TaskRow, type TaskRowModel } from '../src/features/task-row/TaskRow';
 import { renderWithLocale } from './helpers/renderWithLocale';
+
+const colors = vi.hoisted(() => ({ value: { items: new Map(), loading: false, error: null as unknown, retry: vi.fn() }, listeners: new Set<() => void>() }));
+vi.mock('../src/features/task-tags/useTagColors', () => ({ useTagColors: () => useSyncExternalStore(
+  (listener: () => void) => { colors.listeners.add(listener); return () => { colors.listeners.delete(listener); }; }, () => colors.value,
+) }));
+beforeEach(() => { colors.value = { items: new Map(), loading: false, error: null, retry: vi.fn() }; });
+const publishColor = (error: unknown) => act(() => { colors.value = { ...colors.value, error }; for (const listener of colors.listeners) listener(); });
 
 const id = '20000000-0000-4000-8000-000000000001';
 const base: TaskRowModel = {
@@ -13,7 +21,7 @@ const base: TaskRowModel = {
 };
 const clock = { observedAt: '2026-10-20T10:01:00Z', receivedMonotonic: 0, warningMinutes: 1 } as const;
 const tree = (model: TaskRowModel, open = vi.fn(), session = vi.fn(), instanceId = 'instance') =>
-  <ClockInputProvider input={clock}><ul><TaskRow model={model} href={`/projects/p/tasks/${model.id}`} instanceId={instanceId}
+  <ClockInputProvider input={clock}><ul><TaskRow projectId="project" model={model} href={`/projects/p/tasks/${model.id}`} instanceId={instanceId}
     assignee={<span>Assignee: Unassigned</span>} onOpenTask={open} onOpenSession={session} /></ul></ClockInputProvider>;
 
 describe('shared task row', () => {
@@ -68,7 +76,7 @@ describe('shared task row', () => {
 
   it('gives each rendered instance distinct descriptions while retaining the same target', () => {
     const model = { ...base, status: 'done' as const, startedAt: '2026-10-20T10:00:00Z', completedAt: '2026-10-20T10:00:30Z' };
-    renderWithLocale(<ClockInputProvider input={clock}><ul>{['first', 'second'].map(instanceId => <TaskRow key={instanceId} model={model} href={`/projects/p/tasks/${id}`} instanceId={instanceId} assignee={null} onOpenTask={() => {}} />)}</ul></ClockInputProvider>, { locale: 'en' });
+    renderWithLocale(<ClockInputProvider input={clock}><ul>{['first', 'second'].map(instanceId => <TaskRow key={instanceId} projectId="project" model={model} href={`/projects/p/tasks/${id}`} instanceId={instanceId} assignee={null} onOpenTask={() => {}} />)}</ul></ClockInputProvider>, { locale: 'en' });
     const links = screen.getAllByRole('link', { name: 'Complete task title' });
     expect(links.map(link => link.id)).toEqual(['first', 'second']);
     expect(links[0]!.getAttribute('aria-describedby')).not.toBe(links[1]!.getAttribute('aria-describedby'));
@@ -102,6 +110,47 @@ describe('shared task row', () => {
     view.rerender(tree({ ...model, session: { state: 'expired', needsAttention: null, canOpen: false } }));
     expect(screen.getByText('Session observation expired')).toBeVisible();
     expect(screen.queryByRole('button', { name: /Open Session/ })).toBeNull();
+  });
+
+
+  it('restores focus to the task title when a focused color retry disappears after recovery', async () => {
+    colors.value = { ...colors.value, error: new Error('unavailable') };
+    renderWithLocale(tree(base), { locale: 'en' });
+    const title = screen.getByRole('link', { name: base.title });
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    retry.focus(); expect(retry).toHaveFocus();
+    publishColor(null);
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('does not steal focus after the user leaves the color retry or its task is removed', async () => {
+    colors.value = { ...colors.value, error: new Error('unavailable') };
+    const view = renderWithLocale(<><button type="button">Outside</button>{tree(base)}</>, { locale: 'en' });
+    const outside = screen.getByRole('button', { name: 'Outside' });
+    screen.getByRole('button', { name: 'Retry' }).focus();
+    outside.focus();
+    publishColor(null);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull());
+    expect(outside).toHaveFocus();
+    publishColor(new Error('unavailable'));
+    screen.getByRole('button', { name: 'Retry' }).focus();
+    view.rerender(<><button type="button">Outside</button></>);
+    outside.focus();
+    publishColor(null);
+    await act(async () => {});
+    expect(outside).toHaveFocus();
+  });
+
+  it('does not focus a different task when the old task identity is replaced', async () => {
+    colors.value = { ...colors.value, error: new Error('unavailable') };
+    const view = renderWithLocale(<><button type="button">Outside</button>{tree(base)}</>, { locale: 'en' });
+    screen.getByRole('button', { name: 'Retry' }).focus();
+    colors.value = { ...colors.value, error: null };
+    view.rerender(<><button type="button">Outside</button>{tree({ ...base, id: '20000000-0000-4000-8000-000000000002', title: 'Other task' })}</>);
+    await act(async () => {});
+    expect(screen.getByRole('link', { name: 'Other task' })).not.toHaveFocus();
+    expect(document.body).toHaveFocus();
   });
 
 });

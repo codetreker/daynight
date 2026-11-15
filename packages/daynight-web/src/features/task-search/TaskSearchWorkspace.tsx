@@ -7,6 +7,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { TaskAssigneeFilter, type AssigneeFilter } from '../task-assignment/TaskAssigneeFilter';
 import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 import { TaskTagList } from '../task-tags/TaskTagList';
+import { TagColorFeedback } from '../task-tags/TagColor';
 import type { TaskSearchController } from './useTaskSearch';
 import '../../styles/task-search.css';
 import '../../styles/task-status-rows.css';
@@ -68,11 +69,11 @@ export const TaskSearchWorkspace = ({ projectId, search, inputRef, onOpenTask, t
           <button type="button" className="task-search-result task-status-surface" data-task-status={item.status} aria-label={m.open({ title: item.title })} onClick={(event) => onOpenTask(item.id, event.currentTarget)}>
             <span className="task-search-result-body"><span className="task-search-title">{item.title}</span>
               {item.context !== null && <span className="task-search-context">◇ {item.context.title}</span>}
-              <TaskTagList tags={item.tags} />
+              <TaskTagList projectId={projectId} tags={item.tags} feedback={false} />
               <span className="task-search-match">{item.match.fields.length === 0 ? m.negativeMatch : item.match.fields.map(field => matchLabels[field]).join(' · ')}{item.match.descriptionSnippet === null ? '' : ` · ${item.match.descriptionSnippet}`}</span>
               <span className="task-search-meta"><span>{item.id}</span><TaskAssigneeIdentity projectId={projectId} assignedTo={item.assignedTo} /><time dateTime={item.updatedAt}>{m.updated({ date: format.dateTime(item.updatedAt) })}</time></span>
             </span><span className={`root-status graph-status-${item.status}`}>{common.status[item.status]}</span><span className="task-search-chevron" aria-hidden="true">›</span>
-          </button></li>)}</ul>}
+          </button><TagColorFeedback projectId={projectId} ids={item.tags.map(tag => tag.id)} /></li>)}</ul>}
         {(search.page > 1 || (search.total ?? 0) > 15) && <nav className="list-pagination" aria-label={pagination.label({ list: m.heading })}><span className="list-pagination-page">{pagination.page({ page: search.page, pages: Math.max(1, Math.ceil((search.total ?? 0) / 15)) })}</span><div className="list-pagination-controls"><button className="button" type="button" aria-disabled={!search.canPrevious || search.busy} onClick={() => { if (search.canPrevious && !search.busy) search.previous(); }}>{pagination.previous}</button><button className="button" type="button" aria-disabled={!search.canNext || search.busy} onClick={() => { if (search.canNext && !search.busy) search.next(); }}>{pagination.next}</button></div></nav>}
       </section>
     </>}

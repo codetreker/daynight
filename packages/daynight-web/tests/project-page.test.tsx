@@ -10,7 +10,7 @@ import { getProject } from "../src/api/project-settings";
 import { getProjectAccess } from "../src/api/auth";
 import { directAccessFixture, TEST_VIEWER_ID } from "./helpers/taskSync";
 import { searchTasks, TaskSearchError } from "../src/api/task-search";
-import { listProjectTags, resolveProjectTags } from "../src/api/task-tags";
+import { listProjectTags, resolveProjectTagColors, resolveProjectTags } from "../src/api/task-tags";
 import type { GraphTask, TaskDetail, TaskGraph, TaskStatus } from "../src/api/types";
 import { ProjectPage } from "../src/features/projects/ProjectPage";
 import type { GraphSnapshot } from "../src/features/projects/useTaskGraph";
@@ -26,7 +26,7 @@ const localeRender = createLocaleRender("zh-CN");
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
 vi.mock("../src/api/client", async (original) => { const actual = await original<typeof import("../src/api/client")>(); const { fixtureTaskEpoch } = await import("./helpers/taskSync"); const read = vi.fn(); return { ...actual, getTask: read, getTaskObservation: async (...args: Parameters<typeof actual.getTask>) => ({ detail: await read(...(args[4] === undefined ? args.slice(0, 4) : args)), epoch: fixtureTaskEpoch(args[0]) }), getTaskSync: vi.fn() }; });
-vi.mock("../src/api/task-tags", async (original) => ({ ...await original<typeof import("../src/api/task-tags")>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
+vi.mock("../src/api/task-tags", async (original) => ({ ...await original<typeof import("../src/api/task-tags")>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn(), resolveProjectTagColors: vi.fn() }));
 vi.mock("../src/api/task-search", async (original) => ({ ...await original<typeof import("../src/api/task-search")>(), searchTasks: vi.fn() }));
 vi.mock("../src/api/project-settings", async (original) => ({ ...await original<typeof import("../src/api/project-settings")>(), getProject: vi.fn() }));
 vi.mock("../src/api/auth", async (original) => ({ ...await original<typeof import("../src/api/auth")>(), getProjectAccess: vi.fn() }));
@@ -116,6 +116,7 @@ beforeEach(() => {
   vi.mocked(getProjectAccess).mockReset().mockImplementation(async (id, _signal, admission) => directAccessFixture(id, admission.userId));
   vi.mocked(searchTasks).mockReset();
   vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [], catalogEpoch: "00000000-0000-4000-8000-000000000001", nextCursor: null });
+  vi.mocked(resolveProjectTagColors).mockReset().mockImplementation(async (_project, ids, epoch) => ({ catalogEpoch: epoch ?? A, items: ids.map(id => ({ id, state: "found", version: 1n, color: "#9AA3B2" })) }));
   syncFixture.reset();
   servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
@@ -462,7 +463,7 @@ describe("project dashboard", () => {
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     fireEvent.change(input, { target: { value: "query" } }); fireEvent.submit(input.closest("form")!);
     await screen.findByText("选中的标签已不可用，请移除后重新查询。");
-    await waitFor(() => expect(screen.getByText(/已不可用/, { selector: ".tag-filter-chip" })).toHaveTextContent("已删除"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "移除 已删除" }).parentElement).toHaveTextContent("已删除 · 已不可用"));
     expect(searchTasks).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "移除 已删除" }));
     await waitFor(() => expect(searchTasks).toHaveBeenCalledTimes(2));

@@ -10,11 +10,14 @@ reducing the amount of work visible at once.
 
 ## Decision
 
-Ordinary tag displays render no element for an empty set. Goal and Task row
-accessible references include the tag region only when it exists. Reconciliation
+Ordinary tag displays render no element for an empty set. The Goal disclosure's
+accessible description includes its tag region only when it exists; the shared
+Task row displays tags as separate row content. Reconciliation
 still explicitly identifies an observed empty set, distinguishing it from an
 unknown write outcome or a failed read. The [earlier display decision](../feature/2026-11-13-web-task-tag-display.md)
-retains the independent item data and wrapping behavior.
+retains the independent item data and wrapping behavior, while the [shared row
+decision](../architecture/2026-11-15-shared-project-task-row.md) owns Task
+row interactions.
 
 ## Alternatives
 

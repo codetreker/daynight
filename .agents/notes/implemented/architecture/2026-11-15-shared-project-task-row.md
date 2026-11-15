@@ -16,7 +16,10 @@ shared row must not absorb.
 Project lists use a shared ordinary Task row and a list-independent, read-only
 presentation model. The project adapter supplies full titles, tags, timing,
 permission, platform, Worker records and admitted Session observations from
-existing project data. The row does not fetch, filter, paginate or aggregate.
+existing project data. The row does not fetch Task or list data, filter,
+paginate or aggregate. Tag colors use the shared, bounded project projection
+described in the [color decision](2026-11-15-web-tag-color-projection.md),
+without a separate Task read for each row.
 Complete-chain representatives retain their separate detail entry; scope and
 ordering remain with each list owner. The [flat Goal list decision](../simplification/2026-11-13-goal-flat-list.md)
 continues to own direct-member scope, and the [project Session observation decision](2026-11-15-project-session-observation-consumption.md)

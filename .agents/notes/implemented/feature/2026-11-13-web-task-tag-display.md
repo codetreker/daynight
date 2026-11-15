@@ -16,7 +16,9 @@ The original display used a shared neutral tag list for each item's references
 and a localized empty state. The [empty tag decision](../simplification/2026-11-14-hide-empty-task-tags.md)
 replaces that empty state while retaining the shared nonempty display. Project
 rows obtain the matching item's tags from the synchronized summary;
-details use their own data or a newer summary for the same ID. Goal child rows
+the [color projection decision](../architecture/2026-11-15-web-tag-color-projection.md)
+adds shared color presentation to those references.
+Details use their own data or a newer summary for the same ID. Goal child rows
 show the child's tags, and Goal details show the Goal's tags. Names wrap instead
 of truncating. The [Web requirements](../../../../docs/spec/daynight-web.md#task-与-goal-标签展示)
 and [design](../../../../docs/design/daynight-web.md#task-与-goal-标签展示)

@@ -1045,6 +1045,12 @@ Cards contain child rows without their own filter controls. Search results place
 the shared project tag filter directly after Status; child filtering belongs to
 the ordinary Goal view.
 
+Visible and selected Tags share their project color across the catalog, lists,
+search, details, pickers and filters. Names remain visible; loading, missing
+colors and read errors have distinct feedback. Background reads retain the last
+successful colors and can be retried. The color projection resolves only the
+IDs in use and does not change the Task cache format.
+
 Assignee supports All, Assigned to me, Unassigned and a person; status supports
 all five Task statuses. Project conditions must match the same task before
 pagination. Standalone rows match directly; a chain with any matching ordinary

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pauseAuthRequests } from "../src/api/client";
-import { createProjectTag, deleteProjectTag, getProjectTag, listProjectTags, normalizeTagName, renameProjectTag, resolveProjectTags, tagNameKey } from "../src/api/task-tags";
+import { createProjectTag, deleteProjectTag, getProjectTag, listProjectTags, normalizeTagName, renameProjectTag, resolveProjectTagColors, resolveProjectTags, tagNameKey } from "../src/api/task-tags";
 
 const project = "10000000-0000-4000-8000-000000000001", user = "20000000-0000-4000-8000-000000000001";
 const tag = "30000000-0000-4000-8000-000000000001", other = "30000000-0000-4000-8000-000000000002", epoch = "40000000-0000-4000-8000-000000000001";
@@ -64,6 +64,63 @@ describe("project tag API", () => {
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tags/resolve`, expect.objectContaining({ body: JSON.stringify({ tagIds: [tag, other] }) }));
     fetcher.mockResolvedValue(reply(JSON.stringify({ items: [{ id: tag, name: "Alpha" }] })));
     await expect(resolveProjectTags(project, [tag, other], signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+  });
+  it("resolves color and missing IDs with exact versions and a bound epoch", async () => {
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(reply(`{"catalogEpoch":"${epoch}","items":[{"id":"${other}","state":"missing"},{"id":"${tag}","state":"found","version":9223372036854775807,"color":"#A1B2C3"}]}`)));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(resolveProjectTagColors(project, [tag, other], null, signal(), admission())).resolves.toEqual({
+      catalogEpoch: epoch, items: [{ id: other, state: "missing" }, { id: tag, state: "found", version: 9223372036854775807n, color: "#A1B2C3" }],
+    });
+    expect(fetcher).toHaveBeenLastCalledWith(`/api/v1/projects/${project}/tags/colors/resolve`, expect.objectContaining({ method: "POST", body: JSON.stringify({ tagIds: [tag, other] }) }));
+    await resolveProjectTagColors(project, [tag, other], epoch, signal(), admission());
+    expect(fetcher).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ body: JSON.stringify({ tagIds: [tag, other], catalogEpoch: epoch }) }));
+  });
+  it("rejects malformed or incomplete color pages without substituting a color", async () => {
+    const found = (id = tag, version: unknown = 1, color: unknown = "#AABBCC") => ({ id, state: "found", version, color });
+    const badPages: unknown[] = [
+      { catalogEpoch: epoch, items: [found()] },
+      { catalogEpoch: epoch, items: [found(), found()] },
+      { catalogEpoch: epoch, items: [found(), { id: project, state: "missing" }] },
+      { catalogEpoch: epoch, items: [found(), { id: other, state: "missing", color: "#AABBCC" }] },
+      { catalogEpoch: epoch, items: [found(tag, 0), { id: other, state: "missing" }] },
+      { catalogEpoch: epoch, items: [found(tag, 1, "#aabbcc"), { id: other, state: "missing" }] },
+      { catalogEpoch: epoch, items: [found(tag, "1"), { id: other, state: "missing" }] },
+      { catalogEpoch: epoch, items: [{ id: tag, state: "unknown" }, { id: other, state: "missing" }] },
+      { catalogEpoch: other, items: [found(), { id: other, state: "missing" }] },
+    ];
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    for (const page of badPages) {
+      fetcher.mockResolvedValueOnce(reply(JSON.stringify(page)));
+      await expect(resolveProjectTagColors(project, [tag, other], epoch, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    }
+    fetcher.mockResolvedValueOnce(reply(`{"catalogEpoch":"${epoch}","items":[{"id":"${tag}","state":"found","version":9223372036854775808,"color":"#AABBCC"},{"id":"${other}","state":"missing"}]}`));
+    await expect(resolveProjectTagColors(project, [tag, other], epoch, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+  });
+  it("rejects invalid batches before dispatch and preserves server and identity errors", async () => {
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    await expect(resolveProjectTagColors(project, [tag, tag], null, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    await expect(resolveProjectTagColors(project, Array.from({ length: 101 }, (_, index) => `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`), null, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    await expect(resolveProjectTagColors(project, ["invalid"], null, signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    await expect(resolveProjectTagColors(project, [tag], "invalid", signal(), admission())).rejects.toMatchObject({ kind: "protocol" });
+    expect(fetcher).not.toHaveBeenCalled();
+    fetcher.mockResolvedValueOnce(reply('{"error":{"code":"catalog_changed","message":"changed","requestId":"r"}}', 409));
+    await expect(resolveProjectTagColors(project, [tag], epoch, signal(), admission())).rejects.toMatchObject({ kind: "server", code: "catalog_changed" });
+    fetcher.mockResolvedValueOnce(reply('{"error":{"code":"permission_denied","message":"denied","requestId":"r"}}', 403));
+    await expect(resolveProjectTagColors(project, [tag], null, signal(), admission())).rejects.toMatchObject({ kind: "server", code: "permission_denied", status: 403 });
+    const owner = admission(); fetcher.mockResolvedValueOnce(reply("{}", 200, other));
+    await expect(resolveProjectTagColors(project, [tag], null, signal(), owner)).rejects.toMatchObject({ kind: "protocol", code: "principal_mismatch" });
+    expect(owner.onPrincipalMismatch).toHaveBeenCalledOnce();
+  });
+  it("accepts a full batch and keeps network errors and cancellation separate from missing", async () => {
+    const ids = Array.from({ length: 100 }, (_, index) => `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`);
+    const fetcher = vi.fn().mockResolvedValueOnce(reply(JSON.stringify({ catalogEpoch: epoch, items: ids.map(id => ({ id, state: "missing" })) })));
+    vi.stubGlobal("fetch", fetcher);
+    expect((await resolveProjectTagColors(project, ids, null, signal(), admission())).items).toHaveLength(100);
+    fetcher.mockRejectedValueOnce(new Error("offline"));
+    await expect(resolveProjectTagColors(project, [tag], null, signal(), admission())).rejects.toMatchObject({ kind: "network" });
+    const cancelled = new AbortController(); cancelled.abort();
+    await expect(resolveProjectTagColors(project, [tag], null, cancelled.signal, admission())).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
   it("validates trimmed Unicode names and ASCII-only folding", () => {
     expect(normalizeTagName("  名😀  ")).toBe("名😀"); expect(normalizeTagName("😀".repeat(64))).not.toBeNull();

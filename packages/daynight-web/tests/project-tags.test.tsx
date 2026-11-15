@@ -11,7 +11,7 @@ import { TestTaskCacheBoundary } from './helpers/taskCache';
 import { directAccessFixture, TEST_VIEWER_ID } from './helpers/taskSync';
 
 vi.mock('../src/api/auth', async original => ({ ...await original<typeof import('../src/api/auth')>(), getProjectAccess: vi.fn() }));
-vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), getProjectTag: vi.fn(), createProjectTag: vi.fn(), renameProjectTag: vi.fn(), deleteProjectTag: vi.fn() }));
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), resolveProjectTagColors: vi.fn(async (_project: string, ids: string[]) => ({ catalogEpoch: '00000000-0000-4000-8000-000000000051', items: ids.map(id => ({ id, state: 'found', version: 1n, color: '#AABBCC' })) })), listProjectTags: vi.fn(), getProjectTag: vi.fn(), createProjectTag: vi.fn(), renameProjectTag: vi.fn(), deleteProjectTag: vi.fn() }));
 const projectId = '00000000-0000-4000-8000-000000000031';
 const tag: ProjectTag = { id: '00000000-0000-4000-8000-000000000041', projectId, name: 'backend', version: 3n, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', usage: { tasks: 2, goals: 1 } };
 const page = { items: [tag], catalogEpoch: '00000000-0000-4000-8000-000000000051', nextCursor: null };

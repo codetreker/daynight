@@ -325,6 +325,26 @@ describe('standalone full task details', () => {
     await screen.findByRole('button', { name: '后续任务，普通依赖' });
   });
 
+  it('refreshes colors from direct detail reads even when task synchronization fails', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const tagId = '00000000-0000-4000-8000-000000000091';
+    const fixture = installed(detailFixture(projectId, taskId, { title: '独立任务', tags: [{ id: tagId, name: '颜色标签' }] }));
+    let color = '#D85656';
+    fixture.fetcher.mockImplementation(async (url, options) => {
+      const path = new URL(url, location.origin).pathname;
+      if (path === `${root}/task-sync`) return new Response(JSON.stringify({ error: { code: 'internal_error', message: 'failed' } }), { status: 503, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
+      if (path === `${root}/tags/colors/resolve`) return resourceResponse({ catalogEpoch: fixtureTaskEpoch(projectId), items: [{ id: tagId, state: 'found', version: 1n, color }] }, TEST_VIEWER_ID);
+      return fixture.handler(url, options);
+    });
+    window.history.replaceState(null, '', address());
+    render(<App />);
+    const chip = await screen.findByText('颜色标签');
+    await waitFor(() => expect(chip.parentElement?.querySelector('.task-tag-dot')).toHaveStyle({ backgroundColor: '#D85656' }));
+    color = '#2454D8';
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await waitFor(() => expect(chip.parentElement?.querySelector('.task-tag-dot')).toHaveStyle({ backgroundColor: '#2454D8' }));
+  });
+
   it('refreshes direct details every fifteen seconds while retaining the mounted view', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const fixture = installed();

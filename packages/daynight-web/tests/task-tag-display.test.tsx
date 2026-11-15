@@ -51,7 +51,7 @@ it('shows each item’s own tags and updates them without remounting an expanded
 });
 
 it('omits empty tag markup in both languages and selects the newest same-task tag data', () => {
-  const rendered = renderWithLocale(<TaskTagList tags={[]} />, { locale: 'en' });
+  const rendered = renderWithLocale(<TaskTagList projectId={project} tags={[]} />, { locale: 'en' });
   expect(rendered.container).toBeEmptyDOMElement();
   rendered.setLocale('zh-CN');
   expect(rendered.container).toBeEmptyDOMElement();
