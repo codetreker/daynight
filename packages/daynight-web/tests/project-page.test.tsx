@@ -40,12 +40,12 @@ vi.mock("../src/features/task-graph/ChainList", () => ({ ChainList: ({ index, re
     {[...projectChain(index, root).mainIds].map((id) => <button key={id} onClick={(event) => onOpenTask(id, event.currentTarget)}>节点 {index.nodes.get(id)!.titlePreview}</button>)}
   </div>}
 </div>)}{pagination !== undefined && <ListPagination label="任务链列表" {...pagination} />}</div> }));
-vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
-  projectId: string; taskId: string; snapshot: GraphSnapshot | null; observation: { kind: string }; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
+vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ projectId, taskId, snapshot, observation, navigation, onSelectTask, onClose, onRestoreFocus, onRefreshGraph }: {
+  projectId: string; taskId: string; snapshot: GraphSnapshot | null; observation: { kind: string }; navigation: { tab: string }; onSelectTask: (id: string) => void; onClose: () => void; onRestoreFocus: () => void; onRefreshGraph: () => void;
 }) => {
   const state = useTaskDetail(projectId, taskId, snapshot?.revision ?? 0, snapshot?.index.nodes.get(taskId));
   useEffect(() => () => onRestoreFocus(), [onRestoreFocus]);
-  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="observation-kind">{observation.kind}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
+  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="detail-tab">{navigation.tab}</p><p data-testid="observation-kind">{observation.kind}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
     <button onClick={() => onSelectTask(C)}>关系跳转</button><button onClick={() => onSelectTask(X)}>未知关系</button>
     <button onClick={onRefreshGraph}>刷新全图</button><button onClick={onClose}>关闭详情</button></aside>;
 } }));
@@ -627,13 +627,19 @@ describe("project dashboard", () => {
     expect([input.selectionStart, input.selectionEnd]).toEqual([0, 0]);
   });
 
-  it("routes session shortcuts directly to the selected task session tab", async () => {
+  it("opens the selected task Session in the project reader", async () => {
     graphRequest.mockResolvedValue(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    fireEvent.click(await findListButton(`进入会话 ${A}`));
-    expect(window.location.pathname).toBe(`/projects/${projectId}/tasks/${A}`);
-    expect(window.location.search).toBe('?tab=session');
-    expect(screen.queryByLabelText('详情测试外壳')).toBeNull();
+    const shortcut = await findListButton(`进入会话 ${A}`);
+    shortcut.focus(); fireEvent.click(shortcut);
+    expect(await screen.findByLabelText('详情测试外壳')).toBeVisible();
+    expect(detail().getByTestId('selected-task')).toHaveTextContent(A);
+    expect(detail().getByTestId('detail-tab')).toHaveTextContent('session');
+    expect(window.location.pathname).toBe(`/projects/${projectId}`);
+    expect(window.location.search).toBe('');
+    fireEvent.click(detail().getByRole('button', { name: '关闭详情' }));
+    await waitFor(() => expect(screen.queryByLabelText('详情测试外壳')).toBeNull());
+    expect(shortcut).toHaveFocus();
   });
 
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
