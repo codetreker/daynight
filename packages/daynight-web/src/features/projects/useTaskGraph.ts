@@ -126,6 +126,7 @@ export const useTaskGraph = (projectId: string) => {
         cache_hit: ticket.epoch !== null, apply_ms: performance.now() - applyStarted });
       if (signal.aborted || revision !== generation.current || scope.hasIdentityMismatch) return;
       if (accessTicket !== undefined) access?.publishSync(accessTicket, response.actorAccess, automatic);
+      scope.notifyTagColors(projectId);
       if (sessionAdmission === authRequestsPauseRevision()) {
         sessionStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, response), sessions: response.sessions, receivedMonotonic });
       }

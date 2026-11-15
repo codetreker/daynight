@@ -44,12 +44,12 @@ export const TaskTagsEditor = ({ projectId, detail, tags, canMutate, mutation, s
       setVersion(detail.version); baseline.current = submittedIds.current; setSubmitted(false);
     }
   }, [draft, current, detail, version, nameDirty, creating]);
-  const observedTags = detail.tags.length === 0 ? <p>{zh ? '无' : 'None'}</p> : <TaskTagList tags={detail.tags} />;
+  const observedTags = detail.tags.length === 0 ? <p>{zh ? '无' : 'None'}</p> : <TaskTagList projectId={projectId} tags={detail.tags} />;
   const unresolved = current?.phase === 'unknown' || current?.phase === 'conflict' || current?.phase === 'reconciled';
   const stale = draft !== null && detail.version !== version && (current === null || current.phase === 'refused' || current.phase === 'confirmed' && !current.reconciling && !current.publicationPending);
   return <div ref={root} tabIndex={-1} onKeyDown={event => { if (draft !== null && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } }}>
     <div className="task-tags-summary">
-      <TaskTagList tags={tags} />
+      <TaskTagList projectId={projectId} tags={tags} />
       <button className="button" type="button" ref={trigger} disabled={!canMutate || draft !== null} onClick={() => { setSubmitted(false); setVersion(detail.version); baseline.current = detail.tags.map(tag => tag.id); setDraft([...detail.tags]); }}>{zh ? '编辑标签' : 'Edit tags'}</button>
     </div>
     {draft === null && mutation.operation?.action === 'tags' && (mutation.phase === 'unknown' || mutation.reconciliationError !== null) && <div role="alert"><p>{mutation.phase === 'unknown' || mutation.reconciledFrom === 'unknown' ? m.unknown : m.readError}</p>{mutation.reconciliationError !== null && <p>{m.readError}</p>}<button className="button" type="button" ref={recovery} disabled={mutation.reconciling} onClick={reconcile}>{mutation.reconciling ? m.checking : m.check}</button></div>}

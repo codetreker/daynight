@@ -19,6 +19,14 @@ const row = (number: number, project = 3, count = 1): api.PersonalTaskPage['item
 const page = (items: api.PersonalTaskPage['items'], nextCursor: string | null = null, totalTaskCount = items.length, totalProjectCount = new Set(items.map(item => item.project.id)).size): api.PersonalTaskRead => ({ observedAt: WORKER_TIME, responseTaskAt: WORKER_TIME, responseSessionAt: WORKER_TIME, receivedMonotonic: performance.now(), inventoryRevision: 'a'.repeat(64), totalTaskCount, totalProjectCount, sessionPartial: true, items, nextCursor });
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.restoreAllMocks(); });
 describe('personal task inventory', () => {
+  it('invalidates colors for visible projects on each complete refresh', async () => {
+    const scope = scopeFor(), notify = vi.spyOn(scope, 'notifyTagColors');
+    vi.spyOn(api, 'listPersonalTasks').mockResolvedValue(page([row(10), row(11, 4)]));
+    const { result } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scope) }); await flush();
+    expect(notify.mock.calls.map(call => call[0])).toEqual([workerId(3), workerId(4)]);
+    act(() => result.current.refresh()); await flush();
+    expect(notify.mock.calls.map(call => call[0])).toEqual([workerId(3), workerId(4), workerId(3), workerId(4)]);
+  });
   it('shows initial pages as incomplete and publishes consistent totals at completion', async () => {
     const later = deferred<api.PersonalTaskRead>();
     const load = vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(page([row(10, 3, 2)], 'next', 2, 1)).mockImplementationOnce(() => later.promise);

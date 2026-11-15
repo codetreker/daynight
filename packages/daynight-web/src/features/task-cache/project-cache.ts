@@ -93,6 +93,7 @@ export class TaskCacheScope {
   private readonly channel: BroadcastChannel | null;
   private readonly lifetime = new AbortController();
   private readonly listeners = new Set<(event: CacheEvent) => void>();
+  private readonly tagColorListeners = new Set<(projectId: string) => void>();
   private readonly projectionListeners = new Set<(event: CacheEvent) => void>();
   private readonly projectionHints = new Set<Promise<void>>();
   private readonly projectionHintProjects = new Map<Promise<void>, string>();
@@ -171,6 +172,11 @@ export class TaskCacheScope {
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;
       if (hint.projectId !== null && typeof hint.projectId !== "string") return;
       if (this.identityMismatch && !("revokedGeneration" in hint) && !("unboundProjectDenial" in hint)) return;
+      if ("tagColorsChanged" in hint) {
+        if (hint.tagColorsChanged !== true || typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId) return;
+        this.emitTagColors(hint.projectId);
+        return;
+      }
       if ("unboundProjectDenial" in hint) {
         if (hint.unboundProjectDenial !== true || typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId) return;
         this.receiveUnboundProjectDenial(hint.projectId);
@@ -450,6 +456,20 @@ export class TaskCacheScope {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
+  subscribeTagColors = (listener: (projectId: string) => void): (() => void) => {
+    this.tagColorListeners.add(listener);
+    return () => { this.tagColorListeners.delete(listener); };
+  };
+  private emitTagColors(projectId: string): void {
+    if (this.isInvalidated || this.identityMismatch || authRequestsPaused()) return;
+    for (const listener of this.tagColorListeners) listener(projectId);
+  }
+  notifyTagColors(projectId: string, broadcast = true): void {
+    projectId = requestId(projectId);
+    if (this.isInvalidated || this.identityMismatch || this.isProjectSuspended(projectId)) return;
+    this.emitTagColors(projectId);
+    if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId, tagColorsChanged: true });
+  }
   subscribeProjection = (listener: (event: CacheEvent) => void): (() => void) => {
     this.projectionListeners.add(listener);
     return () => { this.projectionListeners.delete(listener); };

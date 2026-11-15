@@ -1036,6 +1036,7 @@ export class TaskDetailSessions {
       }
       entry.receipt = { fence, ...observation }; entry.liveVersion = observation.detail.version; entry.liveOpeningGeneration = opening;
       this.scope.markProjectReadable(projectId);
+      this.scope.notifyTagColors(projectId);
       entry.historyRetry = false; entry.historyHintRetry = false; entry.withdrawn = false; entry.directParentReadFailed = false;
       const currentMutation = entry.state.mutation;
       const receiptGeneration = currentMutation.operation === null ? undefined : this.receiptReadGenerations.get(currentMutation.operation);

@@ -13,10 +13,20 @@ const page = (id: string, nextCursor: string | null, total = 2): TaskSearchPage 
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
 const world = () => {
   const listeners = new Set<(event: CacheEvent) => void>(); const lifetime = new AbortController(); let revision = 0;
-  const scope = { userId: user, signal: lifetime.signal, isInvalidated: false, principalMismatch: vi.fn(), ready: vi.fn(async () => {}), getProjectRevision: () => revision, markProjectReadable: vi.fn(), revalidateProjectAccess: vi.fn(async () => {}), subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as TaskCacheScope;
+  const scope = { userId: user, signal: lifetime.signal, isInvalidated: false, principalMismatch: vi.fn(), ready: vi.fn(async () => {}), getProjectRevision: () => revision, markProjectReadable: vi.fn(), notifyTagColors: vi.fn(), revalidateProjectAccess: vi.fn(async () => {}), subscribe: (listener: (event: CacheEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); } } as unknown as TaskCacheScope;
   return { scope, abort: () => lifetime.abort(), bump: () => { revision++; }, emit: (event: CacheEvent) => { revision++; for (const listener of listeners) listener(event); } };
 };
 afterEach(() => { vi.clearAllMocks(); vi.useRealTimers(); });
+
+it('invalidates colors on successful repeated search reads without a task graph', async () => {
+  vi.mocked(searchTasks).mockResolvedValue(page('a', null, 1));
+  const { scope } = world(); const { result } = renderHook(() => useTaskSearch(project, scope, ''));
+  act(() => { result.current.setDraft('query'); result.current.submit(); });
+  await waitFor(() => expect(scope.notifyTagColors).toHaveBeenCalledTimes(1));
+  act(() => result.current.retry());
+  await waitFor(() => expect(scope.notifyTagColors).toHaveBeenCalledTimes(2));
+  expect(scope.notifyTagColors).toHaveBeenCalledWith(project);
+});
 
 it('separates draft, filters and cursors, and retires later cursors after reading page one again', async () => {
   const search = vi.mocked(searchTasks); search.mockResolvedValueOnce(page('a', 'cursor')).mockResolvedValueOnce(page('b', null)).mockResolvedValueOnce(page('a', 'new-cursor'));

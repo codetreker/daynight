@@ -85,7 +85,7 @@ const TaskRow = ({ item, open }: { readonly item: PersonalTaskItem; readonly ope
         <span className="my-task-worker">{task.worker === null ? m.noWorker : task.worker.state === 'active' ? m.worker(task.worker.machine.name) : m.completedWorker(task.worker.machine.name)}</span>
         {task.goal !== null && <a className="my-task-goal" href={href(task.goal.id)} onClick={event => open(event, project.id, task.goal!.id)} aria-label={m.goal(task.goal.title)}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg><span>{task.goal.title}</span><span aria-hidden="true">↗</span></a>}
       </div>
-      <TaskTagList tags={task.tags} />
+      <TaskTagList projectId={project.id} tags={task.tags} />
     </div>
     <div className="my-task-state"><TaskPlatformBadge requiredPlatform={task.requiredPlatform} />{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{m.blocked}</span>}<span className="root-status graph-status-in_progress">{common.status.in_progress}</span>{task.paused && <TaskPausedBadge />}<Session item={item} /></div>
   </li>;

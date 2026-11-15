@@ -102,6 +102,7 @@ export const useMyTasks = (readEnabled: boolean) => {
         for (const projectId of cleanupErrors.keys()) if (!scope.isProjectionDenied(projectId)) cleanupErrors.delete(projectId);
         const filtered = visible(scope, prepared, items), denied = scope.projectionSnapshotHasDenials(prepared) || filtered.length !== items.length;
         const error = scope.projectionSnapshotError(prepared) ?? cleanupErrors.values().next().value ?? null;
+        for (const projectId of new Set(filtered.map(item => item.project.id))) scope.notifyTagColors(projectId);
         projection.fence = prepared;
         projection.hasComplete ||= !denied && error === null;
         setState(old => {

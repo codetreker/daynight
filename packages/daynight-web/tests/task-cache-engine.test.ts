@@ -76,6 +76,19 @@ afterEach(() => {
   for (const database of connections.splice(0)) database.close();
 });
 
+it("notifies same-account tabs of color invalidation without relaying the hint", async () => {
+  const first = scope(); const peer = scope(); const other = scope(otherUser);
+  const local = vi.fn(), remote = vi.fn(), unrelated = vi.fn();
+  first.subscribeTagColors(local); peer.subscribeTagColors(remote); other.subscribeTagColors(unrelated);
+  first.notifyTagColors(projectId);
+  await vi.waitFor(() => expect(remote).toHaveBeenCalledWith(projectId));
+  expect(local).toHaveBeenCalledWith(projectId);
+  expect(unrelated).not.toHaveBeenCalled();
+  expect(Channel.hints).toEqual([{ userId, projectId, tagColorsChanged: true }]);
+  first.notifyTagColors(projectId, false);
+  expect(Channel.hints).toHaveLength(1);
+});
+
 it("atomically saves task data and reopens the exact maximum without granting local access", async () => {
   const first = scope(); const result = await seed(first, [task(1), task(2, { updatedAt: later, version: 9_007_199_254_740_993n })]);
   const database = await inspect();

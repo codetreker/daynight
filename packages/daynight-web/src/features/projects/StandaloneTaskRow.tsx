@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskTagList } from "../task-tags/TaskTagList";
+import { TagColorFeedback } from "../task-tags/TagColor";
 import type { GraphTask, TaskTag } from "../../api/types";
 import { completedAtFor } from "../task-completion/model";
 import { useCompletionTime } from "../task-completion/useCompletionTime";
@@ -36,8 +37,8 @@ export const StandaloneTaskRow = memo(({ projectId, task, title, instanceId, tag
     <span className="root-heading"><span className="root-title">{title}</span>
       <span className="root-meta"><span className="standalone-task-id">{task.id}</span> · <time dateTime={task.createdAt}>{m.createdOn({ date: format.date(task.createdAt) })}</time>
       <TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} />
-      {execution !== null && <span className="standalone-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</span>}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</span>{tags !== undefined && <TaskTagList tags={tags} />}</span>
+      {execution !== null && <span className="standalone-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</span>}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}</span>{tags !== undefined && <TaskTagList projectId={projectId} tags={tags} feedback={false} />}</span>
     <span className="task-row-status">{paused && <TaskPausedBadge />}<TaskAgentPermissionBadge allowAgents={task.allowAgents} /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} /><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
     <svg className="standalone-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-  </button>{hint.hint}{execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}</li>;
+  </button>{tags !== undefined && <TagColorFeedback projectId={projectId} ids={tags.map(tag => tag.id)} />}{hint.hint}{execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}</li>;
 });

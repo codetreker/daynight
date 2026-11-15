@@ -7,7 +7,7 @@ import { completionProgress } from '../task-graph/completion-progress';
 import type { TaskScope } from '../task-graph/scope';
 
 export const GoalInformation = ({ detail, tags, tagsEditor, scope, graphError, onRefreshGraph }: {
-  readonly detail: Pick<TaskDetail, 'id' | 'createdAt' | 'updatedAt' | 'tags'>;
+  readonly detail: Pick<TaskDetail, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'tags'>;
   readonly tags?: readonly TaskTag[];
   readonly tagsEditor?: ReactNode;
   readonly scope: TaskScope | null;
@@ -26,7 +26,7 @@ export const GoalInformation = ({ detail, tags, tagsEditor, scope, graphError, o
         <div><dt>{zh ? '修改时间' : 'Modified'}</dt><dd><time dateTime={detail.updatedAt}>{format.dateTime(detail.updatedAt)}</time></dd></div>
       </dl>
     </section>
-    <section className="goal-information-section"><h3>{zh ? '标签' : 'Tags'}</h3>{tagsEditor ?? <TaskTagList tags={tags ?? detail.tags} />}</section>
+    <section className="goal-information-section"><h3>{zh ? '标签' : 'Tags'}</h3>{tagsEditor ?? <TaskTagList projectId={detail.projectId} tags={tags ?? detail.tags} />}</section>
     <section className="goal-information-section">
       <h3>{zh ? '任务统计' : 'Task statistics'}</h3>
       {scope !== null && progress !== null && <>

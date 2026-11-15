@@ -47,6 +47,7 @@ export const useProjectTags = (projectId: string, active = true) => {
       }
       await scope.ready(signal);
       if (signal.aborted || ticket !== generation.current || scope.isInvalidated) return;
+      scope.notifyTagColors(projectId, false);
       setState(previous => {
         if (previous.scope !== scope || previous.projectId !== projectId || previous.query !== query) return previous;
         return { ...previous, cursor: resultCursor, page, loading: false, refreshing: false, error: null };

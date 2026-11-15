@@ -6,6 +6,8 @@ import type { TaskTag } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useProjectTags } from './useProjectTags';
+import { TagColorChip, TagColorFeedback } from './TagColor';
+import { useTagColors } from './useTagColors';
 import './tag-filter.css';
 
 export type TagFilterValue = { readonly tagIds: readonly string[]; readonly tagMatch: 'all' | 'any'; readonly untagged: boolean };
@@ -96,7 +98,7 @@ export const useTagFilter = (projectId: string, active = true) => {
     setStored(previous => previous.scope === scope && previous.projectId === projectId ? { ...previous, unidentified: previous.value.tagIds.length > 0, afterRemoval: false } : previous);
     setRevision(value => value + 1);
   }, [scope, projectId]);
-  return { open, setOpen, query, setQuery, value: state.value, invalid: state.unidentified || state.invalidIds.length > 0, invalidIds: state.invalidIds, names: state.names, error: state.error, update, markInvalid, retry: () => setRevision(value => value + 1), catalog };
+  return { projectId, open, setOpen, query, setQuery, value: state.value, invalid: state.unidentified || state.invalidIds.length > 0, invalidIds: state.invalidIds, names: state.names, error: state.error, update, markInvalid, retry: () => setRevision(value => value + 1), catalog };
 };
 
 export type TagFilterController = ReturnType<typeof useTagFilter>;
@@ -109,6 +111,8 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
   const { locale } = useI18n(); const m = messages[locale];
   const { value, names, invalidIds, catalog, update } = controller;
   const title = child ? m.child : m.title;
+  const colorIds = [...value.tagIds, ...(controller.open ? catalog.page?.items.map(tag => tag.id) ?? [] : [])];
+  const colors = useTagColors(controller.projectId, colorIds);
   const details = useRef<HTMLDetailsElement>(null);
   useLayoutEffect(() => {
     if (!controller.open) return;
@@ -153,14 +157,15 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
         <input type="search" aria-label={`${title}: ${m.search}`} placeholder={m.search} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
         <NativeSelect density="filter" focusTone="task" layout="fill" wrapperClassName="tag-filter-match" aria-label={`${title}: AND / OR`} value={value.tagMatch} disabled={value.untagged} onChange={event => update({ ...value, tagMatch: event.target.value as 'all' | 'any' })}><option value="all">{m.all}</option><option value="any">{m.any}</option></NativeSelect>
         <label><input type="checkbox" checked={value.untagged} onChange={event => update({ ...value, untagged: event.target.checked, tagIds: event.target.checked ? [] : value.tagIds })} /> {m.untagged}</label>
-        {catalog.error !== null ? <p role="alert">{m.error} <button type="button" onClick={catalog.refresh}>{m.retry}</button></p> : catalog.loading && catalog.page === null ? <p>{m.loading}</p> : catalog.page?.items.length === 0 ? <p>{controller.query ? m.noMatches : m.empty}</p> : <div className="tag-filter-options">{catalog.page?.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.tagIds.includes(tag.id)} onChange={event => toggle(tag, event.target.checked)} /> <span>{tag.name}</span></label>)}</div>}
+        {catalog.error !== null ? <p role="alert">{m.error} <button type="button" onClick={catalog.refresh}>{m.retry}</button></p> : catalog.loading && catalog.page === null ? <p>{m.loading}</p> : catalog.page?.items.length === 0 ? <p>{controller.query ? m.noMatches : m.empty}</p> : <div className="tag-filter-options">{catalog.page?.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.tagIds.includes(tag.id)} onChange={event => toggle(tag, event.target.checked)} /> <TagColorChip name={tag.name} item={colors.items.get(tag.id)} /></label>)}</div>}
         {catalog.page?.nextCursor && <button type="button" onClick={catalog.next}>{m.next}</button>}
         {catalog.cursor !== null && <button type="button" onClick={catalog.first}>{m.first}</button>}
         {!child && onManage !== undefined && <div className="tag-filter-manage"><button type="button" onClick={onManage}>{m.manage}</button></div>}
       </div>
     </details>
+    <TagColorFeedback projectId={controller.projectId} ids={colorIds} onRetry={catalog.refresh} />
     {controller.invalid && <p className="tag-filter-error" role="alert">{m.invalid}</p>}
     {controller.error !== null && <p className="tag-filter-error" role="alert">{m.resolveError} <button type="button" onClick={controller.retry}>{m.retry}</button></p>}
-    {(value.tagIds.length > 0 || value.untagged) && <div className="tag-filter-selected">{value.tagIds.map(id => <span className="tag-filter-chip" key={id}>{names[id] ?? id}{invalidIds.includes(id) ? ` · ${m.removed}` : ''}<button type="button" aria-label={`${m.remove} ${names[id] ?? id}`} onClick={() => update({ ...value, tagIds: value.tagIds.filter(selected => selected !== id) })}>×</button></span>)}{value.untagged && <span className="tag-filter-chip">{m.untagged}<button type="button" aria-label={`${m.remove} ${m.untagged}`} onClick={() => update({ ...value, untagged: false })}>×</button></span>}</div>}
+    {(value.tagIds.length > 0 || value.untagged) && <div className="tag-filter-selected">{value.tagIds.map(id => <TagColorChip className="tag-filter-chip" key={id} name={`${names[id] ?? id}${invalidIds.includes(id) && colors.items.get(id)?.state !== 'missing' ? ` · ${m.removed}` : ''}`} item={colors.items.get(id)}><button type="button" aria-label={`${m.remove} ${names[id] ?? id}`} onClick={() => update({ ...value, tagIds: value.tagIds.filter(selected => selected !== id) })}>×</button></TagColorChip>)}{value.untagged && <span className="tag-filter-chip">{m.untagged}<button type="button" aria-label={`${m.remove} ${m.untagged}`} onClick={() => update({ ...value, untagged: false })}>×</button></span>}</div>}
   </div>;
 };

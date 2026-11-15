@@ -113,7 +113,7 @@ const ChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, re
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
         <RepresentativeDetail task={task} rootId={rootId} title={title} onOpenTask={onOpenTask} />
       </div>
-      <ul className="goal-task-list">{members.map((member) => <TaskMemberRow key={member.id} projectId={projectId} task={member} title={summaries.get(member.id)!.title} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
+      <ul className="goal-task-list">{members.map((member) => <TaskMemberRow key={member.id} active={expanded} projectId={projectId} task={member} title={summaries.get(member.id)!.title} tags={summaries.get(member.id)!.tags} instanceId={rootId} workerMachine={workerMachines.get(member.id)} onOpenTask={onOpenTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
     </div>
   </li>;
 });

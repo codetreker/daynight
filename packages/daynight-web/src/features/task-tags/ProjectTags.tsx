@@ -6,6 +6,8 @@ import { ManagementDialog } from '../management/ManagementDialog';
 import { useProjectAccess } from '../projects/ProjectAccess';
 import { useTaskCacheScope, type TaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { tagMessages } from './messages';
+import { TagColorChip, TagColorFeedback } from './TagColor';
+import { useTagColors } from './useTagColors';
 import { useProjectTags } from './useProjectTags';
 import './project-tags.css';
 
@@ -42,6 +44,8 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
   const { locale } = useI18n(); const m = tagMessages[locale];
   const scope = useTaskCacheScope(); const access = useProjectAccess(projectId);
   const catalog = useProjectTags(projectId, active);
+  const colorIds = active ? catalog.page?.items.map(tag => tag.id) ?? [] : [];
+  const colors = useTagColors(projectId, colorIds);
   const saved = useRef(draftsFor(scope).get(projectId) ?? null);
   const [dialog, setDialog] = useState<Dialog | null>(() => saved.current?.dialog ?? null);
   const [phase, setPhase] = useState<Phase>(() => saved.current?.phase ?? 'idle');
@@ -158,7 +162,7 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
       if (dialog.kind === 'create') await createProjectTag(projectId, name!, s, writeAdmission);
       else if (dialog.kind === 'rename') await renameProjectTag(projectId, dialog.tag.id, name!, dialog.tag.version, s, writeAdmission);
       else await deleteProjectTag(projectId, dialog.tag.id, dialog.preview!.version, s, writeAdmission);
-      if (!s.aborted) { write.current = null; setDialog(null); setPhase('idle'); catalog.refresh(); }
+      if (!s.aborted) { write.current = null; setDialog(null); setPhase('idle'); scope.notifyTagColors(projectId); catalog.refresh(); }
     } catch (failure) {
       if (write.current !== operation || s.aborted) return;
       write.current = null;
@@ -182,7 +186,8 @@ const ProjectTagsContent = ({ projectId, active }: { readonly projectId: string;
     {catalog.refreshing && <p role="status">{m.refreshing}</p>}
     {catalog.loading && catalog.page === null && <p role="status">{m.loading}</p>}
     {catalog.error !== null && <div role="alert"><p>{m.readError}</p><button className="button" type="button" onClick={catalog.refresh}>{m.retry}</button></div>}
-    {catalog.page !== null && <>{catalog.page.items.length === 0 ? <p>{catalog.query ? m.noMatches : m.empty}</p> : <ul className="project-tags-list">{catalog.page.items.map((tag) => <li key={tag.id}><div className="project-tags-name"><strong>{tag.name}</strong><span>{m.usage(tag.usage.tasks, tag.usage.goals)}</span></div><div className="project-tags-actions"><button className="button" type="button" disabled={!canWrite} onClick={() => open({ kind: 'rename', name: tag.name, tag, preview: null })} aria-label={`${m.rename}: ${tag.name}`}>{m.rename}</button><button className="button" type="button" disabled={!canWrite} onClick={() => startDelete(tag)} aria-label={`${m.remove}: ${tag.name}`}>{m.remove}</button></div></li>)}</ul>}
+    <TagColorFeedback projectId={projectId} ids={colorIds} onRetry={catalog.refresh} />
+    {catalog.page !== null && <>{catalog.page.items.length === 0 ? <p>{catalog.query ? m.noMatches : m.empty}</p> : <ul className="project-tags-list">{catalog.page.items.map((tag) => <li key={tag.id}><div className="project-tags-name"><strong><TagColorChip name={tag.name} item={colors.items.get(tag.id)} /></strong><span>{m.usage(tag.usage.tasks, tag.usage.goals)}</span></div><div className="project-tags-actions"><button className="button" type="button" disabled={!canWrite} onClick={() => open({ kind: 'rename', name: tag.name, tag, preview: null })} aria-label={`${m.rename}: ${tag.name}`}>{m.rename}</button><button className="button" type="button" disabled={!canWrite} onClick={() => startDelete(tag)} aria-label={`${m.remove}: ${tag.name}`}>{m.remove}</button></div></li>)}</ul>}
       <div className="project-tags-pagination"><button className="button" type="button" disabled={catalog.loading} onClick={catalog.first}>{m.first}</button><button className="button" type="button" disabled={catalog.loading || catalog.page.nextCursor === null} onClick={catalog.next}>{m.next}</button></div></>}
     {dialog !== null && <ManagementDialog title={dialog.kind === 'create' ? m.create : dialog.kind === 'rename' ? m.rename : m.deleteTitle} busy={phase === 'pending'} suspended={!active || access.status === 'unavailable' || scope.isInvalidated || scope.isProjectSuspended(projectId)} onClose={close} initialFocus={dialog.kind === 'delete' ? 'cancel' : 'input'} footer={<><button className="button" data-dialog-cancel type="button" disabled={phase === 'pending' || phase === 'unknown' && !checked} onClick={close}>{phase === 'unknown' ? m.checked : m.cancel}</button><button className={`button ${dialog.kind === 'delete' ? 'danger' : 'primary'}`} type="submit" form="project-tag-form" disabled={!canWrite || phase !== 'idle' || reading || dialog.kind === 'delete' && dialog.preview === null}>{phase === 'pending' ? m.saving : dialog.kind === 'delete' ? m.deleteConfirm : m.save}</button></>}>
       <form id="project-tag-form" onSubmit={(event) => { void submit(event); }}>

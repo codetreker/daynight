@@ -12,7 +12,7 @@ const page = (name: string, catalogEpoch = epoch, nextCursor: string | null = nu
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const reset = () => {
   state.listeners.clear(); state.list.mockReset(); state.access = null;
-  state.scope = { userId: "user", signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { state.listeners.add(listener); return () => state.listeners.delete(listener); } };
+  state.scope = { userId: "user", signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), notifyTagColors: vi.fn(), ready: vi.fn().mockResolvedValue(undefined), subscribe: (listener: (event: any) => void) => { state.listeners.add(listener); return () => state.listeners.delete(listener); } };
 };
 afterEach(() => { vi.useRealTimers(); });
 
@@ -22,6 +22,7 @@ describe("scoped project tag pages", () => {
     state.list.mockResolvedValueOnce(page("first", epoch, "cursor")).mockResolvedValueOnce(page("second")).mockReturnValueOnce(pending.promise);
     const view = renderHook(() => useProjectTags(project));
     await waitFor(() => expect(view.result.current.page?.items[0]?.name).toBe("first"));
+    expect(state.scope.notifyTagColors).toHaveBeenCalledWith(project, false);
     act(() => view.result.current.next());
     await waitFor(() => expect(view.result.current.page?.items[0]?.name).toBe("second"));
     act(() => window.dispatchEvent(new Event("focus")));
