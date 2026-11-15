@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	projectcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
@@ -40,12 +41,13 @@ func (r *personalReader) PersonalTaskPage(_ context.Context, actor string, query
 
 type personalSources struct {
 	store.SessionReader
-	t        *testing.T
-	database *workServiceStore
-	calls    []string
-	failOn   int
-	failure  error
-	modify   func(int, *store.TaskSessionSource) bool
+	t         *testing.T
+	database  *workServiceStore
+	calls     []string
+	failOn    int
+	failure   error
+	modify    func(int, *store.TaskSessionSource) bool
+	duplicate bool
 }
 
 func (s *personalSources) TaskSessionSources(_ context.Context, project string, ids []string) ([]store.TaskSessionSource, error) {
@@ -60,6 +62,9 @@ func (s *personalSources) TaskSessionSources(_ context.Context, project string, 
 	if s.modify != nil && !s.modify(len(s.calls), &source) {
 		return nil, nil
 	}
+	if s.duplicate {
+		return []store.TaskSessionSource{source, source}, nil
+	}
 	return []store.TaskSessionSource{source}, nil
 }
 
@@ -69,6 +74,22 @@ type personalObserver struct {
 	projects []string
 	after    func()
 	failure  error
+	clock    func() (time.Time, error)
+	seen     []store.TaskSessionSource
+}
+
+type personalClockSnapshot struct {
+	store.SnapshotScope
+	clock func() (time.Time, error)
+}
+
+func (s personalClockSnapshot) ObservedAt(context.Context) (time.Time, error) { return s.clock() }
+
+func (o *personalObserver) TaskObservationTime(context.Context) (time.Time, error) {
+	if o.clock != nil {
+		return o.clock()
+	}
+	return workTime.Add(12 * time.Hour), nil
 }
 
 func (o *personalObserver) ObserveTaskSessions(_ context.Context, _ model.Principal, sources []store.TaskSessionSource) (map[string]sp.TaskSessionObservation, error) {
@@ -76,6 +97,7 @@ func (o *personalObserver) ObserveTaskSessions(_ context.Context, _ model.Princi
 		o.t.Fatalf("sampled while snapshot held or wrong sources: %#v", sources)
 	}
 	o.projects = append(o.projects, sources[0].ProjectID)
+	o.seen = append(o.seen, sources...)
 	if o.after != nil {
 		o.after()
 	}
@@ -127,16 +149,110 @@ func TestPersonalTasksProjectSourcesAndSnapshots(t *testing.T) {
 	if reader.factCalls != 2 || reader.pageCalls != 1 || *credentials != 4 || len(sources.calls) != 4 || len(observer.projects) != 2 || observer.projects[0] != workProject || observer.projects[1] != personalProject2 {
 		t.Fatalf("calls facts=%d page=%d credentials=%d sources=%v observations=%v", reader.factCalls, reader.pageCalls, *credentials, sources.calls, observer.projects)
 	}
+	if !result.ObservedAt.Equal(workTime) || !result.ResponseTaskAt.Equal(workTime) || !result.ResponseSessionAt.Equal(workTime.Add(12*time.Hour)) {
+		t.Fatalf("clock domains: %#v", result)
+	}
+}
+
+func TestPersonalTasksCompletedWorkerIsHistorical(t *testing.T) {
+	s, _, sources, observer, _, _ := personalFixture(t)
+	worker := &model.WorkerClaim{ClaimID: "old", State: model.WorkerCompleted, WorkerID: workProject, Machine: model.WorkerMachine{ID: personalProject2, Name: "Machine"}}
+	sources.modify = func(_ int, source *store.TaskSessionSource) bool {
+		source.Worker = worker
+		source.Session = &store.TaskSessionStateSource{SessionID: "old session"}
+		return true
+	}
+	result, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+	if err != nil || result.Items[0].Worker == nil || result.Items[0].Worker.State != model.WorkerCompleted {
+		t.Fatalf("retained worker: %#v %v", result, err)
+	}
+	for _, source := range observer.seen {
+		if source.Worker != nil || source.Session != nil {
+			t.Fatalf("historical execution sampled as current: %#v", source)
+		}
+	}
+}
+
+func TestPersonalTasksRejectsInvalidSessionClock(t *testing.T) {
+	for _, invalidCall := range []int{1, 2} {
+		s, _, _, observer, _, _ := personalFixture(t)
+		calls := 0
+		observer.clock = func() (time.Time, error) {
+			calls++
+			if calls == invalidCall {
+				return time.Time{}, nil
+			}
+			return workTime, nil
+		}
+		result, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+		if err == nil || result.Items != nil {
+			t.Fatalf("invalid clock published: %#v %v", result, err)
+		}
+	}
+}
+
+func TestPersonalTasksRejectsInvalidFinalDatabaseClock(t *testing.T) {
+	s, _, _, _, database, _ := personalFixture(t)
+	calls := 0
+	database.snapshot = personalClockSnapshot{SnapshotScope: database.snapshot, clock: func() (time.Time, error) {
+		calls++
+		if calls == 1 {
+			return workTime, nil
+		}
+		return time.Time{}, nil
+	}}
+	page, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+	if err == nil || page.Items != nil || calls != 2 {
+		t.Fatalf("invalid database clock published: %#v %v", page, err)
+	}
+}
+
+func TestPersonalTasksClocksFollowSamplingAndFinalRecheck(t *testing.T) {
+	s, _, _, observer, database, _ := personalFixture(t)
+	dbClock, sessionClock := workTime, workTime.Add(12*time.Hour)
+	database.snapshot = personalClockSnapshot{SnapshotScope: database.snapshot, clock: func() (time.Time, error) { return dbClock, nil }}
+	observer.clock = func() (time.Time, error) { return sessionClock, nil }
+	observer.after = func() { sessionClock = sessionClock.Add(25 * time.Second); dbClock = dbClock.Add(10 * time.Second) }
+	page, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+	if err != nil || !page.ObservedAt.Equal(workTime) || !page.ResponseTaskAt.Equal(workTime.Add(20*time.Second)) || !page.ResponseSessionAt.Equal(workTime.Add(12*time.Hour+50*time.Second)) {
+		t.Fatalf("response clocks did not follow both samples and recheck: %#v %v", page, err)
+	}
 }
 
 func TestPersonalTasksWorkerSelectionAndFailure(t *testing.T) {
-	worker := &model.WorkerClaim{ClaimID: "claim", State: model.WorkerActive, WorkerID: "worker", Machine: model.WorkerMachine{ID: "machine", Name: "Long 名称"}}
+	worker := &model.WorkerClaim{ClaimID: "claim", State: model.WorkerActive, WorkerID: workProject, Machine: model.WorkerMachine{ID: personalProject2, Name: "Long 名称"}}
+	t.Run("duplicate source", func(t *testing.T) {
+		s, _, sources, observer, _, _ := personalFixture(t)
+		sources.duplicate = true
+		page, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+		if err == nil || page.Items != nil || len(observer.projects) != 0 {
+			t.Fatalf("duplicate source published: %#v %v", page, err)
+		}
+	})
+	t.Run("invalid worker", func(t *testing.T) {
+		for _, change := range []func(*model.WorkerClaim){
+			func(w *model.WorkerClaim) { w.State = "invalid" },
+			func(w *model.WorkerClaim) { w.WorkerID = "invalid" },
+			func(w *model.WorkerClaim) { w.Machine.ID = "invalid" },
+			func(w *model.WorkerClaim) { w.Machine.Name = "" },
+		} {
+			s, _, sources, observer, _, _ := personalFixture(t)
+			invalid := *worker
+			change(&invalid)
+			sources.modify = func(_ int, source *store.TaskSessionSource) bool { source.Worker = &invalid; return true }
+			page, err := s.PersonalTasks(t.Context(), personalPrincipal(), 0, nil)
+			var stage *PersonalTaskError
+			if !errors.As(err, &stage) || stage.Phase != "select" || page.Items != nil || len(observer.projects) != 0 {
+				t.Fatalf("invalid worker published: %#v %v", page, err)
+			}
+		}
+	})
 	t.Run("different and shared workers", func(t *testing.T) {
 		for _, shared := range []bool{false, true} {
 			s, _, sources, _, _, _ := personalFixture(t)
 			second := *worker
 			if !shared {
-				second.WorkerID, second.Machine.ID, second.Machine.Name = "other", "other-machine", "Other"
+				second.WorkerID, second.Machine.ID, second.Machine.Name = personalTask2, workGroup, "Other"
 			}
 			sources.modify = func(_ int, source *store.TaskSessionSource) bool {
 				if source.ProjectID == workProject {
@@ -202,6 +318,11 @@ func TestPersonalTasksWorkerSelectionAndFailure(t *testing.T) {
 		{"completed", func(s *store.TaskSessionSource) {
 			copy := *s.Worker
 			copy.State = model.WorkerCompleted
+			s.Worker = &copy
+		}},
+		{"machine", func(s *store.TaskSessionSource) {
+			copy := *s.Worker
+			copy.Machine.Name = "changed"
 			s.Worker = &copy
 		}},
 		{"version", func(s *store.TaskSessionSource) { s.TaskVersion++ }},

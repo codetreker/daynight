@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -66,8 +67,10 @@ func loadSelectedExecutionSourcesWithPolicy(ctx context.Context, snapshot store.
 	for start := 0; start < len(tasks); start += 200 {
 		end := min(start+200, len(tasks))
 		ids := make([]string, end-start)
+		expected := make(map[string]executionIdentity, end-start)
 		for i, t := range tasks[start:end] {
 			ids[i] = t.ID
+			expected[t.ID] = t
 		}
 		sources, err := snapshot.SessionDAO().TaskSessionSources(ctx, projectID, ids)
 		if err != nil {
@@ -80,7 +83,17 @@ func loadSelectedExecutionSourcesWithPolicy(ctx context.Context, snapshot store.
 			continue
 		}
 		for _, source := range sources {
+			if strict {
+				task, exists := expected[source.TaskID]
+				_, duplicate := selected.values[source.TaskID]
+				if !exists || duplicate || source.ProjectID != projectID || source.TaskVersion != task.Version || source.TaskStatus != model.TaskInProgress {
+					return nil, fmt.Errorf("personal task source does not match selected row")
+				}
+			}
 			selected.values[source.TaskID] = source
+		}
+		if strict && len(sources) != len(ids) {
+			return nil, fmt.Errorf("personal task sources are incomplete")
 		}
 	}
 	return selectedObservationSnapshot{reader: selected}, nil

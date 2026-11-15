@@ -17,6 +17,14 @@ func copyObservationPointer[T any](value *T) *T {
 	return observationPointer(*value)
 }
 
+// TaskObservationTime uses the same clock as Session observations.
+func (s *Engine) TaskObservationTime(ctx context.Context) (time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	return s.now().UTC(), nil
+}
+
 // ObserveTaskSessions consumes authorized Task snapshot sources. It samples only
 // committed live scalars; authorization and selected Task versions remain owned
 // by the caller's snapshot coordinator.

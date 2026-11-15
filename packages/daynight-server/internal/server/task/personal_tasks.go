@@ -30,7 +30,7 @@ type personalTaskHandler struct {
 }
 
 func personalTaskResponse(page service.PersonalTaskPage) protocol.PersonalTaskPage {
-	out := protocol.PersonalTaskPage{ObservedAt: page.ObservedAt, InventoryRevision: page.InventoryRevision, TotalTaskCount: page.TotalTaskCount, TotalProjectCount: page.TotalProjectCount, SessionPartial: page.SessionPartial, Items: make([]protocol.PersonalTaskItem, 0, len(page.Items)), NextCursor: page.NextCursor}
+	out := protocol.PersonalTaskPage{ObservedAt: page.ObservedAt, ResponseTaskAt: page.ResponseTaskAt, ResponseSessionAt: page.ResponseSessionAt, InventoryRevision: page.InventoryRevision, TotalTaskCount: page.TotalTaskCount, TotalProjectCount: page.TotalProjectCount, SessionPartial: page.SessionPartial, Items: make([]protocol.PersonalTaskItem, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, item := range page.Items {
 		var goal *protocol.PersonalTaskGoal
 		if item.Task.GoalID != nil && item.Task.GoalTitle != nil {
@@ -38,11 +38,20 @@ func personalTaskResponse(page service.PersonalTaskPage) protocol.PersonalTaskPa
 		}
 		var worker *protocol.PersonalTaskWorker
 		if item.Worker != nil {
-			worker = &protocol.PersonalTaskWorker{WorkerID: item.Worker.WorkerID, Machine: protocol.PersonalTaskMachine{ID: item.Worker.Machine.ID, Name: item.Worker.Machine.Name}}
+			worker = &protocol.PersonalTaskWorker{WorkerID: item.Worker.WorkerID, State: string(item.Worker.State), Machine: protocol.PersonalTaskMachine{ID: item.Worker.Machine.ID, Name: item.Worker.Machine.Name}}
+		}
+		var platform *string
+		if item.Task.RequiredPlatform != nil {
+			value := string(*item.Task.RequiredPlatform)
+			platform = &value
+		}
+		tags := make([]protocol.RESTTagReference, 0, len(item.Task.Tags))
+		for _, tag := range item.Task.Tags {
+			tags = append(tags, protocol.RESTTagReference{ID: tag.ID, Name: tag.Name})
 		}
 		out.Items = append(out.Items, protocol.PersonalTaskItem{
 			Project: protocol.PersonalTaskProject{ID: item.Project.ID, Name: item.Project.Name, OwnerTeam: protocol.PersonalTaskTeam{ID: item.Project.OwnerTeamID, Kind: item.Project.OwnerTeamKind, Name: item.Project.OwnerTeamName}, ExecutionWarningMinutes: int64(item.Project.ExecutionWarningMinutes), MatchedTaskCount: item.MatchedTaskCount},
-			Task:    protocol.PersonalTask{ID: item.Task.ID, Version: strconv.FormatInt(item.Task.Version, 10), Title: item.Task.Title, Status: "in_progress", StartedAt: item.Task.StartedAt, AllowAgents: item.Task.AllowAgents, Paused: item.Paused, Goal: goal, Worker: worker}, Session: item.Session,
+			Task:    protocol.PersonalTask{ID: item.Task.ID, Version: strconv.FormatInt(item.Task.Version, 10), Title: item.Task.Title, Status: "in_progress", CreatedAt: item.Task.CreatedAt, StartedAt: item.Task.StartedAt, RequiredPlatform: platform, Tags: tags, BlockedBy: append([]string{}, item.Task.BlockedBy...), Ready: item.Task.Ready, AllowAgents: item.Task.AllowAgents, Paused: item.Paused, Goal: goal, Worker: worker}, Session: item.Session,
 		})
 	}
 	return out

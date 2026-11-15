@@ -16,10 +16,10 @@ class Channel {
 }
 const row = (task: number, project: number): api.PersonalTaskPage['items'][number] => ({
   project: { id: workerId(project), name: `Project ${project}`, ownerTeam: { id: workerId(9), kind: 'personal', name: null }, executionWarningMinutes: 120, matchedTaskCount: 1 },
-  task: { id: workerId(task), version: '1', title: `Task ${task}`, status: 'in_progress', startedAt: null, allowAgents: true, paused: false, worker: null, goal: null },
+  task: { id: workerId(task), version: '1', title: `Task ${task}`, status: 'in_progress', startedAt: null, createdAt: '2026-11-13T09:00:00Z', requiredPlatform: null, tags: [], blockedBy: [], ready: false, allowAgents: true, paused: false, worker: null, goal: null },
   session: unsupportedSessionObservation(),
 });
-const page = (items: api.PersonalTaskPage['items']): api.PersonalTaskPage => ({ observedAt: WORKER_TIME, inventoryRevision: 'a'.repeat(64), totalTaskCount: items.length, totalProjectCount: items.length, sessionPartial: true, items, nextCursor: null });
+const page = (items: api.PersonalTaskPage['items']): api.PersonalTaskRead => ({ observedAt: WORKER_TIME, responseTaskAt: WORKER_TIME, responseSessionAt: WORKER_TIME, receivedMonotonic: performance.now(), inventoryRevision: 'a'.repeat(64), totalTaskCount: items.length, totalProjectCount: items.length, sessionPartial: true, items, nextCursor: null });
 afterEach(() => { Channel.channels.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it('withdraws a project in another cache scope and ignores its late in-flight page', async () => {
@@ -28,7 +28,7 @@ it('withdraws a project in another cache scope and ignores its late in-flight pa
   const peer = createTaskCacheScope({ userId: WORKER_USER, onIdentityMismatch: vi.fn() });
   const signal = new AbortController().signal;
   const ticket = await owner.beginSync(workerId(3), signal);
-  const old = Promise.withResolvers<api.PersonalTaskPage>(), fresh = Promise.withResolvers<api.PersonalTaskPage>();
+  const old = Promise.withResolvers<api.PersonalTaskRead>(), fresh = Promise.withResolvers<api.PersonalTaskRead>();
   const load = vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(page([row(10, 3), row(11, 4)]))
     .mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
   const wrapper = ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={peer}>{children}</TaskCacheProvider>;

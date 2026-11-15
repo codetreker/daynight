@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 )
 
 // PersonalTaskProject describes all mutable facts used to fence an active project.
@@ -36,7 +38,12 @@ type PersonalTaskPosition struct {
 type PersonalTaskRow struct {
 	ProjectID, ID, Title string
 	Version              int64
+	CreatedAt            time.Time
 	StartedAt            *time.Time
+	RequiredPlatform     *model.TaskPlatform
+	Tags                 []model.TagReference
+	BlockedBy            []string
+	Ready                bool
 	AllowAgents          bool
 	GoalID, GoalTitle    *string
 	PausedRaw            *string

@@ -69,7 +69,7 @@ export const useMyTasks = (readEnabled: boolean) => {
           await scope.ready(signal);
           if (!current()) return;
           const page = await listPersonalTasks(cursor, signal, { userId: scope.userId, onPrincipalMismatch: scope.principalMismatch });
-          const received = performance.now();
+          const received = page.receivedMonotonic;
           if (!current()) return;
           if (revision === null) { revision = page.inventoryRevision; totalTasks = page.totalTaskCount; totalProjects = page.totalProjectCount; }
           else if (revision !== page.inventoryRevision || totalTasks !== page.totalTaskCount || totalProjects !== page.totalProjectCount) throw new ApiError('protocol');
@@ -80,7 +80,7 @@ export const useMyTasks = (readEnabled: boolean) => {
             if (group !== undefined && !sameProject(group.project, item.project)) throw new ApiError('protocol');
             if (group === undefined) projects.set(item.project.id, { project: item.project, count: 1 });
             else group.count++;
-            items.push({ ...item, observedAt: page.observedAt, receivedMonotonic: received });
+            items.push({ ...item, observedAt: page.observedAt, responseTaskAt: page.responseTaskAt, responseSessionAt: page.responseSessionAt, receivedMonotonic: received });
           }
           sessionPartial ||= page.sessionPartial; lastObservedAt = page.observedAt; lastReceived = received;
           cursor = page.nextCursor;

@@ -15,18 +15,27 @@ const scopeFor = (userId = WORKER_USER) => { const scope = createTaskCacheScope(
 const wrapper = (scope: TaskCacheScope) => ({ children }: { readonly children: ReactNode }) => <TaskCacheProvider scope={scope}>{children}</TaskCacheProvider>;
 const flush = () => act(async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; };
-const row = (number: number, project = 3, count = 1): api.PersonalTaskPage['items'][number] => ({ project: { id: workerId(project), name: `Project ${project}`, ownerTeam: { id: workerId(9), kind: 'personal', name: null }, executionWarningMinutes: 120, matchedTaskCount: count }, task: { id: workerId(number), version: '1', title: `Task ${number}`, status: 'in_progress', startedAt: null, allowAgents: true, paused: false, worker: null, goal: null }, session: unsupportedSessionObservation() });
-const page = (items: api.PersonalTaskPage['items'], nextCursor: string | null = null, totalTaskCount = items.length, totalProjectCount = new Set(items.map(item => item.project.id)).size): api.PersonalTaskPage => ({ observedAt: WORKER_TIME, inventoryRevision: 'a'.repeat(64), totalTaskCount, totalProjectCount, sessionPartial: true, items, nextCursor });
+const row = (number: number, project = 3, count = 1): api.PersonalTaskPage['items'][number] => ({ project: { id: workerId(project), name: `Project ${project}`, ownerTeam: { id: workerId(9), kind: 'personal', name: null }, executionWarningMinutes: 120, matchedTaskCount: count }, task: { id: workerId(number), version: '1', title: `Task ${number}`, status: 'in_progress', startedAt: null, createdAt: '2026-11-13T09:00:00Z', requiredPlatform: null, tags: [], blockedBy: [], ready: false, allowAgents: true, paused: false, worker: null, goal: null }, session: unsupportedSessionObservation() });
+const page = (items: api.PersonalTaskPage['items'], nextCursor: string | null = null, totalTaskCount = items.length, totalProjectCount = new Set(items.map(item => item.project.id)).size): api.PersonalTaskRead => ({ observedAt: WORKER_TIME, responseTaskAt: WORKER_TIME, responseSessionAt: WORKER_TIME, receivedMonotonic: performance.now(), inventoryRevision: 'a'.repeat(64), totalTaskCount, totalProjectCount, sessionPartial: true, items, nextCursor });
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.restoreAllMocks(); });
 describe('personal task inventory', () => {
   it('shows initial pages as incomplete and publishes consistent totals at completion', async () => {
-    const later = deferred<api.PersonalTaskPage>();
+    const later = deferred<api.PersonalTaskRead>();
     const load = vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(page([row(10, 3, 2)], 'next', 2, 1)).mockImplementationOnce(() => later.promise);
     const { result } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scopeFor()) }); await flush();
     expect(result.current.items.map(x => x.task.id)).toEqual([workerId(10)]); expect(result.current.loaded).toBe(false); expect(result.current.totalTaskCount).toBeNull();
     later.resolve(page([row(11, 3, 2)], null, 2, 1)); await flush();
     expect(result.current.items.map(x => x.task.id)).toEqual([workerId(10), workerId(11)]); expect(result.current.totalTaskCount).toBe(2); expect(result.current.loaded).toBe(true);
     expect(load).toHaveBeenCalledTimes(2);
+  });
+  it('retains the response clocks and receipt for the page that produced each item', async () => {
+    const first = { ...page([row(10, 3, 2)], 'next', 2, 1), responseTaskAt: '2026-11-13T10:01:00Z', responseSessionAt: '2026-11-13T20:01:00Z', receivedMonotonic: 100 };
+    const second = { ...page([row(11, 3, 2)], null, 2, 1), responseTaskAt: '2026-11-13T10:02:00Z', responseSessionAt: '2026-11-13T20:02:00Z', receivedMonotonic: 200 };
+    vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const { result } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scopeFor()) }); await flush();
+    expect(result.current.items.map(item => [item.observedAt, item.responseTaskAt, item.responseSessionAt, item.receivedMonotonic])).toEqual([
+      [WORKER_TIME, first.responseTaskAt, first.responseSessionAt, 100], [WORKER_TIME, second.responseTaskAt, second.responseSessionAt, 200],
+    ]);
   });
   it.each(['revision', 'total', 'duplicate', 'cursor', 'project', 'group count'] as const)('rejects inconsistent %s without claiming completeness', async variant => {
     const first = page([row(10, 3, 2)], 'next', 2, 1);
@@ -44,7 +53,7 @@ describe('personal task inventory', () => {
     expect(result.current.items.map(x => x.task.id)).toEqual([workerId(10)]); expect(result.current.loaded).toBe(true); expect(result.current.stale).toBe(true); expect(load).toHaveBeenCalledTimes(2);
   });
   it('withdraws matching projects, fences late pages and requires a fresh read on restoration', async () => {
-    const scope = scopeFor(), pending = deferred<api.PersonalTaskPage>(), fresh = deferred<api.PersonalTaskPage>();
+    const scope = scopeFor(), pending = deferred<api.PersonalTaskRead>(), fresh = deferred<api.PersonalTaskRead>();
     let publish!: (event: CacheEvent) => void;
     vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
     const load = vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(page([row(10), row(11, 4)])).mockImplementationOnce(() => pending.promise).mockImplementationOnce(() => fresh.promise);
@@ -65,7 +74,7 @@ describe('personal task inventory', () => {
     expect(result.current.items.map(x => x.task.id)).toEqual([workerId(11)]); expect(result.current.loaded).toBe(false); expect(result.current.totalTaskCount).toBeNull(); expect(result.current.error).toBe(failure);
   });
   it('coalesces a manual refresh while a read is in flight', async () => {
-    const pending = deferred<api.PersonalTaskPage>();
+    const pending = deferred<api.PersonalTaskRead>();
     const load = vi.spyOn(api, 'listPersonalTasks').mockImplementationOnce(() => pending.promise).mockResolvedValueOnce(page([row(11)]));
     const { result } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scopeFor()) }); await flush();
     act(() => { result.current.refresh(); result.current.refresh(); }); await flush(); expect(load).toHaveBeenCalledTimes(1);
@@ -87,7 +96,7 @@ describe('personal task failure and lifetime', () => {
     expect(result.current.items).toEqual([]); expect(result.current.totalTaskCount).toBeNull(); expect(result.current.error).toBe(failure);
   });
   it('discards late results after invalidation and unmount', async () => {
-    const scope = scopeFor(), pending = deferred<api.PersonalTaskPage>();
+    const scope = scopeFor(), pending = deferred<api.PersonalTaskRead>();
     vi.spyOn(api, 'listPersonalTasks').mockImplementationOnce(() => pending.promise);
     const { result, unmount } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scope) }); await flush();
     act(() => scope.principalMismatch()); await flush(); pending.resolve(page([row(10)])); await flush();
@@ -97,7 +106,7 @@ describe('personal task failure and lifetime', () => {
 
 describe('personal task refresh scheduling', () => {
   it('keeps refresh failure visible until a successful replacement is available', async () => {
-    const later = deferred<api.PersonalTaskPage>();
+    const later = deferred<api.PersonalTaskRead>();
     const load = vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(page([row(10)])).mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(() => later.promise);
     const { result } = renderHook(() => useMyTasks(true), { wrapper: wrapper(scopeFor()) }); await flush();
     act(() => result.current.refresh()); await flush(); expect(result.current.error).toEqual(new Error('offline'));
@@ -129,7 +138,7 @@ describe('personal task projection generations', () => {
     expect(result.current.items).toHaveLength(1); expect(result.current.totalTaskCount).toBe(1); expect(load).toHaveBeenCalledTimes(1);
   });
   it('retains the remaining published rows while rechecking after project removal', async () => {
-    const scope = scopeFor(), later = deferred<api.PersonalTaskPage>(); let publish!: (event: CacheEvent) => void;
+    const scope = scopeFor(), later = deferred<api.PersonalTaskRead>(); let publish!: (event: CacheEvent) => void;
     vi.spyOn(scope, 'subscribeProjection').mockImplementation(listener => { publish = listener; return () => {}; });
     vi.spyOn(api, 'listPersonalTasks').mockResolvedValueOnce(page([row(10), row(11, 4)]))
       .mockResolvedValueOnce(page([row(12, 4, 2)], 'next', 2, 1)).mockImplementationOnce(() => later.promise);
@@ -139,7 +148,7 @@ describe('personal task projection generations', () => {
     later.resolve(page([row(13, 4, 2)], null, 2, 1)); await flush(); expect(result.current.items.map(x => x.task.id)).toEqual([workerId(12), workerId(13)]);
   });
   it('prevents a retired account from publishing over the new account', async () => {
-    const firstScope = scopeFor(), secondScope = scopeFor(workerId(99)), pending = deferred<api.PersonalTaskPage>();
+    const firstScope = scopeFor(), secondScope = scopeFor(workerId(99)), pending = deferred<api.PersonalTaskRead>();
     vi.spyOn(api, 'listPersonalTasks').mockImplementationOnce(() => pending.promise).mockResolvedValueOnce(page([row(11, 4)]));
     function Capture() { const data = useMyTasks(true); return <span data-testid="row">{data.items.map(item => item.task.id).join(',')}</span>; }
     const view = render(<TaskCacheProvider scope={firstScope}><Capture /></TaskCacheProvider>);
