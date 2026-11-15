@@ -24,4 +24,4 @@ const ReadingControl = () => {
   return null;
 };
 window.addEventListener('pagehide', () => scope.dispose(), { once: true });
-createRoot(document.getElementById('root')!).render(<LocaleProvider initial={{ locale: 'en', issue: null }}><CurrentAccountProvider user={{ id: scope.userId, name: null }} admissionBlocked={false}><TaskCacheProvider scope={scope}><TaskAssigneesProvider><TaskDetailSessionProvider><main style={{ padding: 16 }}><LanguageSelector /><ReadingControl /><MyTasksPage /></main></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider></LocaleProvider>);
+createRoot(document.getElementById('root')!).render(<LocaleProvider initial={{ locale: 'en', issue: null }}><CurrentAccountProvider user={{ id: scope.userId, name: 'Current Reader', avatarUrl: '/reader-avatar.svg' }} admissionBlocked={false}><TaskCacheProvider scope={scope}><TaskAssigneesProvider><TaskDetailSessionProvider><main style={{ padding: 16 }}><LanguageSelector /><ReadingControl /><MyTasksPage /></main></TaskDetailSessionProvider></TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider></LocaleProvider>);

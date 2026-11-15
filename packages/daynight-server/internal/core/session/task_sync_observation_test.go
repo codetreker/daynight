@@ -8,8 +8,30 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+func TestTaskSessionRowsUsesOneSampleForDetailsAndReadingAdmission(t *testing.T) {
+	engine, principal, source, _ := observationFixture(t)
+	at, calls := engine.now(), 0
+	engine.now = func() time.Time { calls++; return at.Add(time.Duration(calls-1) * time.Second) }
+	rows, err := engine.ObserveTaskSessionRows(t.Context(), principal, []store.TaskSessionSource{source})
+	row := rows[source.TaskID]
+	if err != nil || calls != 1 || row.Session.ObservedAt == nil || !row.Session.ObservedAt.Equal(at) || !reflect.DeepEqual(row.Session.ObservedAt, row.Row.ObservedAt) || !reflect.DeepEqual(row.Session.FreshUntil, row.Row.FreshUntil) || !row.Row.CanOpen {
+		t.Fatalf("samples=%d row=%#v error=%v", calls, row, err)
+	}
+}
+
+func TestTaskSessionRowDoesNotOpenFailedObservation(t *testing.T) {
+	engine, _, source, _ := observationFixture(t)
+	at, until := engine.now(), engine.now().Add(30*time.Second)
+	observation := sp.TaskSessionObservation{Observation: "observed", Registration: "registered", ObservedAt: &at, FreshUntil: &until, Error: &sp.OperationError{Code: "offline", Message: "offline"}}
+	row := taskSessionRowObservation(source, nil, observation, at)
+	if row.State != "unavailable" || row.CanOpen || row.TaskVersion != source.TaskVersion {
+		t.Fatalf("failed observation admitted reading: %#v", row)
+	}
+}
 
 func TestTaskSyncSessionProjection(t *testing.T) {
 	for _, test := range []struct {
@@ -84,6 +106,10 @@ func TestTaskSyncSessionProjection(t *testing.T) {
 			}
 			if (item.NeedsAttention == nil) != (test.attention == nil) || item.NeedsAttention != nil && *item.NeedsAttention != *test.attention {
 				t.Fatalf("attention = %v, want %v", item.NeedsAttention, test.attention)
+			}
+			rows, err := e.ObserveTaskSessionRows(t.Context(), principal, []store.TaskSessionSource{source})
+			if err != nil || !reflect.DeepEqual(rows[source.TaskID].Row, item) {
+				t.Fatalf("personal/project row mismatch: %#v %#v %v", rows[source.TaskID].Row, item, err)
 			}
 			if item.State != "unavailable" && (item.ObservedAt == nil || !item.ObservedAt.Equal(e.now())) {
 				t.Fatalf("observation timestamp = %v", item.ObservedAt)

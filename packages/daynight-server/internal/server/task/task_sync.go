@@ -60,7 +60,7 @@ func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
 	result.ResponseTaskAt = sync.ResponseTaskAt.UTC()
 	result.ResponseSessionAt = sync.ResponseSessionAt.UTC()
 	for id, observation := range sync.TaskObservations {
-		result.TaskObservations[id] = api.TaskSyncObservation{TaskVersion: strconv.FormatInt(observation.TaskVersion, 10), State: observation.State, ObservedAt: observation.ObservedAt, FreshUntil: observation.FreshUntil, NeedsAttention: observation.NeedsAttention, CanOpen: observation.CanOpen}
+		result.TaskObservations[id] = taskprotocol.SessionRowResponse(observation)
 	}
 	for id, state := range sync.DependencyStates {
 		blocked := append([]string{}, state.BlockedBy...)

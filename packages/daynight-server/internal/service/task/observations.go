@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -15,6 +16,9 @@ import (
 
 type SessionObserver interface {
 	ObserveTaskSessions(context.Context, model.Principal, []store.TaskSessionSource) (map[string]sp.TaskSessionObservation, error)
+}
+type personalSessionRowObserver interface {
+	ObserveTaskSessionRows(context.Context, model.Principal, []store.TaskSessionSource) (map[string]sessioncore.TaskSessionRow, error)
 }
 type Observations struct {
 	database   store.SnapshotReader
@@ -98,10 +102,10 @@ func (s *Observations) observeBatch(ctx context.Context, snapshot store.Snapshot
 }
 
 func (s *Observations) observeExecutionBatch(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []executionIdentity, observed time.Time) (map[string]sp.TaskSessionObservation, bool, error) {
-	return s.observeExecutionBatchWithPolicy(ctx, snapshot, principal, projectID, tasks, observed, false)
+	return s.observeExecutionBatchWithPolicy(ctx, snapshot, principal, projectID, tasks, observed, false, nil)
 }
 
-func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []executionIdentity, observed time.Time, strictSourceErrors bool) (map[string]sp.TaskSessionObservation, bool, error) {
+func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snapshot store.SnapshotScope, principal model.Principal, projectID string, tasks []executionIdentity, observed time.Time, strictSourceErrors bool, rows map[string]model.TaskSyncObservation) (map[string]sp.TaskSessionObservation, bool, error) {
 	result := make(map[string]sp.TaskSessionObservation, len(tasks))
 	partial := false
 	for _, task := range tasks {
@@ -157,7 +161,7 @@ func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snap
 			}
 			matched = append(matched, source)
 		}
-		observations, err := s.observer.ObserveTaskSessions(ctx, principal, matched)
+		observations, rowObservations, err := s.sampleExecutionBatch(ctx, principal, matched, rows != nil)
 		if ctx.Err() != nil {
 			return nil, false, ctx.Err()
 		}
@@ -188,7 +192,7 @@ func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snap
 			if strictSourceErrors && recheckErr == nil && (!currentExists || !initialExists || !samePersonalTaskBinding(initial, source)) {
 				return nil, false, personalTaskPhase("recheck", &model.Fault{Code: "reset_required", Message: "Tasks changed during this personal inventory; restart the inventory."})
 			}
-			if recheckErr == nil && (!currentExists || !initialExists || !sameObservedBinding(initial, source)) {
+			if recheckErr == nil && (!currentExists || !initialExists || !sameObservedBinding(initial, source) || rows != nil && !syncBindingEqual(initial, source)) {
 				result[task.ID] = unavailableObservation(observed, "execution_changed")
 				partial = true
 				continue
@@ -198,7 +202,39 @@ func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snap
 			}
 			partial = partial || observation.Observation != "observed"
 			result[task.ID] = observation
+			if rows != nil && observation.Observation == "observed" {
+				row, exists := rowObservations[task.ID]
+				if !exists {
+					return nil, false, fmt.Errorf("missing personal task row observation")
+				}
+				if err := validateSyncObservation(row, task.Version); err != nil {
+					return nil, false, err
+				}
+				rows[task.ID] = row
+				partial = partial || row.State == "unavailable"
+			}
 		}
 	}
 	return result, partial, nil
+}
+
+func (s *Observations) sampleExecutionBatch(ctx context.Context, principal model.Principal, sources []store.TaskSessionSource, includeRows bool) (map[string]sp.TaskSessionObservation, map[string]model.TaskSyncObservation, error) {
+	if !includeRows {
+		observations, err := s.observer.ObserveTaskSessions(ctx, principal, sources)
+		return observations, nil, err
+	}
+	observer, ok := s.observer.(personalSessionRowObserver)
+	if !ok {
+		return nil, nil, fmt.Errorf("personal task row observer is unavailable")
+	}
+	sampled, err := observer.ObserveTaskSessionRows(ctx, principal, sources)
+	if err != nil {
+		return nil, nil, err
+	}
+	observations := make(map[string]sp.TaskSessionObservation, len(sampled))
+	rows := make(map[string]model.TaskSyncObservation, len(sampled))
+	for id, sample := range sampled {
+		observations[id], rows[id] = sample.Session, sample.Row
+	}
+	return observations, rows, nil
 }

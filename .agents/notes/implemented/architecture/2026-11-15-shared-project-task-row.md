@@ -50,4 +50,6 @@ Equivalent Task facts now have the same presentation and actions across project
 lists, while summaries, scope and navigation stay with their existing owners.
 The adapter and explicit model add a mapping boundary and must preserve unknown,
 failed and confirmed-empty states. Full-chain representatives remain a distinct
-entry; the personal in-progress list has its own integration responsibility.
+entry. The [personal-list integration](2026-11-15-personal-shared-task-row.md)
+reuses this row through an account-projection adapter, supplies actual Parent
+Goal links and preserves the personal list's independent admission and navigation.

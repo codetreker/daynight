@@ -4,6 +4,8 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery, TEST_VIEWER_ID } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
+import { unsupportedSessionObservation } from '../../../daynight/src/api/task-observation';
+import { TEST_PROFILE_VERSION } from '../helpers/taskSync';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
@@ -556,4 +558,48 @@ for (const kind of ['chain', 'goal'] as const) test(`shared ${kind} row supports
   await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await page.keyboard.press('Escape'); await expect(session).toBeFocused();
+});
+
+test('equivalent ordinary Tasks share facts across standalone, chain, Goal and personal lists', async ({ page }) => {
+  const goalId = '00000000-0000-4000-8000-000000000060';
+  const memberId = '00000000-0000-4000-8000-000000000061';
+  const common = { version: 5n, status: 'in_progress' as const, ready: false, assignedTo: TEST_VIEWER_ID, requiredPlatform: 'linux' as const };
+  const details = [detailFixture(projectId, taskId, { version: 5n, title: 'Completed root', status: 'done' }),
+    detailFixture(projectId, standaloneId, { ...common, title: 'Equivalent standalone' }),
+    detailFixture(projectId, successorId, { ...common, title: 'Equivalent chain', dependsOn: [taskId] }),
+    detailFixture(projectId, goalId, { version: 5n, type: 'goal', title: 'Actual Goal' }),
+    detailFixture(projectId, memberId, { ...common, parentId: goalId, title: 'Equivalent Goal member' })];
+  await install(page, false, false, 'unused', details);
+  const graph = graphFixture(details), running = details.filter(task => task.status === 'in_progress');
+  const row = { taskVersion: 5n, state: 'no_session' as const, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: false, canOpen: false };
+  await page.route('**/api/v1/projects/*/task-assignees*', route => route.fulfill({ body: stringifyWireJson({ items: [{ userId: TEST_VIEWER_ID, name: 'Reader', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/api/v1/projects/*/task-sync*', route => route.fulfill({ body: stringifyWireJson(taskSyncFixture(graph, { query: taskSyncQuery(new URL(route.request().url())), versionForTask: () => 5n, taskObservations: Object.fromEntries(running.map(task => [task.id, row])) })), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ body: stringifyWireJson({ observedAt: graph.observedAt, responseTaskAt: graph.observedAt, responseSessionAt: graph.observedAt, inventoryRevision: 'b'.repeat(64), totalTaskCount: 3, totalProjectCount: 1, sessionPartial: false, nextCursor: null,
+    items: running.map(task => ({ project: { id: projectId, name: graph.project.name, ownerTeam: directAccessFixture(projectId).ownerTeam, executionWarningMinutes: 60, matchedTaskCount: 3 },
+      task: { id: task.id, version: '5', title: task.title, status: 'in_progress', startedAt: null, createdAt: task.createdAt, requiredPlatform: task.requiredPlatform, tags: [], blockedBy: [], ready: false, allowAgents: false, paused: false, worker: null, goal: task.parentId === null ? null : { id: goalId, title: 'Actual Goal' } },
+      session: { ...unsupportedSessionObservation(), observation: 'observed', registration: 'not_applicable', reason: 'no_execution', error: null, observedAt: row.observedAt, freshUntil: row.freshUntil }, sessionRow: { ...row, taskVersion: '5' } })) }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } }));
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
+  await page.locator('#project-section-tab-tasks').click();
+  const facts = async (id: string) => {
+    const element = page.locator('.task-row').filter({ has: page.locator(`.task-row-id:text-is("${id}")`) });
+    await expect(element.locator('.assignee-name')).toHaveText('Reader');
+    return element.evaluate(row => ({ meta: Array.from(row.querySelector('.task-row-meta')!.children).filter(child => !child.matches('.task-row-goal')).map(child => child.textContent), state: row.querySelector('.task-row-status')!.textContent, background: getComputedStyle(row).backgroundColor, titleSize: getComputedStyle(row.querySelector('.task-row-title')!).fontSize, idSize: getComputedStyle(row.querySelector('.task-row-id')!).fontSize }));
+  };
+  await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+  const expected = await facts(standaloneId);
+  await page.getByRole('tab', { name: 'Task chains', exact: true }).click();
+  await page.locator(`#task-root-${taskId}`).click();
+  expect(await facts(successorId)).toEqual(expected);
+  await page.getByRole('tab', { name: 'Goals', exact: true }).click();
+  await page.locator(`[data-goal-id="${goalId}"] .goal-list-toggle`).click();
+  expect(await facts(memberId)).toEqual(expected);
+  await expect(page.locator('.task-row-goal')).toHaveCount(0);
+  await page.getByRole('link', { name: 'In-progress tasks', exact: true }).click();
+  for (const task of running) {
+    expect(await facts(task.id)).toEqual(expected);
+    await expect(page.getByRole('link', { name: task.title, exact: true })).toHaveAttribute('href', `/projects/${projectId}/tasks/${task.id}`);
+  }
+  await expect(page.locator('.task-row-goal')).toHaveCount(1);
+  await expect(page.locator('.task-row-goal')).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
 });

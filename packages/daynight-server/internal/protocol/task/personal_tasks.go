@@ -20,9 +20,10 @@ type PersonalTaskPage struct {
 }
 
 type PersonalTaskItem struct {
-	Project PersonalTaskProject       `json:"project"`
-	Task    PersonalTask              `json:"task"`
-	Session sp.TaskSessionObservation `json:"session"`
+	Project    PersonalTaskProject       `json:"project"`
+	Task       PersonalTask              `json:"task"`
+	Session    sp.TaskSessionObservation `json:"session"`
+	SessionRow SessionRow                `json:"sessionRow"`
 }
 
 type PersonalTaskProject struct {

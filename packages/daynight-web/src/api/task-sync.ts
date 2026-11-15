@@ -32,27 +32,31 @@ const parseTaskSessions = (value: unknown): Readonly<Record<string, TaskListSess
   return sessions;
 };
 
+export const parseTaskSyncObservation = (value: unknown): TaskSyncObservation => {
+  const item = record(value);
+  const fields = ["taskVersion", "state", "observedAt", "freshUntil", "needsAttention", "canOpen"];
+  if (Object.keys(item).length !== fields.length || fields.some((field) => !Object.hasOwn(item, field))) return malformed();
+  const version = string(item.taskVersion);
+  if (!/^[1-9][0-9]*$/.test(version)) return malformed();
+  const taskVersion = BigInt(version);
+  if (!isTaskVersion(taskVersion)) return malformed();
+  const state = item.state;
+  if (state !== "no_session" && state !== "not_registered" && state !== "pending" && state !== "working" && state !== "notice" && state !== "warning" && state !== "unavailable") return malformed();
+  const observedAt = item.observedAt === null ? null : syncTimestamp(item.observedAt);
+  const freshUntil = item.freshUntil === null ? null : syncTimestamp(item.freshUntil);
+  const needsAttention = item.needsAttention === null ? null : boolean(item.needsAttention);
+  const canOpen = boolean(item.canOpen);
+  if (state !== "unavailable" && observedAt === null || canOpen && (observedAt === null || freshUntil === null || state === "no_session" || state === "not_registered")) return malformed();
+  return { taskVersion, state, observedAt, freshUntil, needsAttention, canOpen };
+};
+
 const parseTaskObservations = (value: unknown): Readonly<Record<string, TaskSyncObservation>> => {
   const data = record(value);
   if (Object.getPrototypeOf(data) !== Object.prototype && Object.getPrototypeOf(data) !== null) return malformed();
   const result: Record<string, TaskSyncObservation> = {};
   for (const [taskId, value] of Object.entries(data)) {
     if (id(taskId) !== taskId) return malformed();
-    const item = record(value);
-    const fields = ["taskVersion", "state", "observedAt", "freshUntil", "needsAttention", "canOpen"];
-    if (Object.keys(item).length !== fields.length || fields.some((field) => !Object.hasOwn(item, field))) return malformed();
-    const version = string(item.taskVersion);
-    if (!/^[1-9][0-9]*$/.test(version)) return malformed();
-    const taskVersion = BigInt(version);
-    if (!isTaskVersion(taskVersion)) return malformed();
-    const state = item.state;
-    if (state !== "no_session" && state !== "not_registered" && state !== "pending" && state !== "working" && state !== "notice" && state !== "warning" && state !== "unavailable") return malformed();
-    const observedAt = item.observedAt === null ? null : syncTimestamp(item.observedAt);
-    const freshUntil = item.freshUntil === null ? null : syncTimestamp(item.freshUntil);
-    const needsAttention = item.needsAttention === null ? null : boolean(item.needsAttention);
-    const canOpen = boolean(item.canOpen);
-    if (state !== "unavailable" && observedAt === null || canOpen && (observedAt === null || freshUntil === null || state === "no_session" || state === "not_registered")) return malformed();
-    result[taskId] = { taskVersion, state, observedAt, freshUntil, needsAttention, canOpen };
+    result[taskId] = parseTaskSyncObservation(value);
   }
   return result;
 };

@@ -21,6 +21,7 @@ type PersonalTaskItem struct {
 	Paused           bool
 	Worker           *taskcore.PersonalTaskWorker
 	Session          sp.TaskSessionObservation
+	SessionRow       model.TaskSyncObservation
 }
 
 type PersonalTaskPage struct {
@@ -55,6 +56,9 @@ func personalTaskPhase(phase string, err error) error {
 func (s *Observations) PersonalTasks(ctx context.Context, principal model.Principal, limit int, cursor *string) (PersonalTaskPage, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
+	if _, ok := s.observer.(personalSessionRowObserver); !ok {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("personal task row observer is unavailable"))
 	}
 	selection, err := taskcore.SelectPersonalTasks(principal.UserID, limit, cursor)
 	if err != nil {
@@ -180,6 +184,7 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 		return PersonalTaskPage{}, personalTaskPhase("select", err)
 	}
 	allObservations := map[string]sp.TaskSessionObservation{}
+	rowObservations := map[string]model.TaskSyncObservation{}
 	sessionClock, ok := s.observer.(interface {
 		TaskObservationTime(context.Context) (time.Time, error)
 	})
@@ -195,7 +200,7 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 	}
 	observationTime = observationTime.UTC()
 	for _, project := range order {
-		observations, partial, observeErr := s.observeExecutionBatchWithPolicy(ctx, sources[project], principal, project, identities[project], observationTime, true)
+		observations, partial, observeErr := s.observeExecutionBatchWithPolicy(ctx, sources[project], principal, project, identities[project], observationTime, true, rowObservations)
 		if observeErr != nil {
 			var stage *PersonalTaskError
 			if !errors.As(observeErr, &stage) {
@@ -235,7 +240,17 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 		return PersonalTaskPage{}, personalTaskPhase("recheck", err)
 	}
 	for i := range result.Items {
-		result.Items[i].Session = allObservations[result.Items[i].Task.ID]
+		item := &result.Items[i]
+		item.Session = allObservations[item.Task.ID]
+		if item.Session.Observation != "observed" {
+			item.SessionRow = model.TaskSyncObservation{TaskVersion: item.Task.Version, State: "unavailable"}
+			continue
+		}
+		row, exists := rowObservations[item.Task.ID]
+		if !exists {
+			return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("missing personal task row observation"))
+		}
+		item.SessionRow = row
 	}
 	return result, nil
 }

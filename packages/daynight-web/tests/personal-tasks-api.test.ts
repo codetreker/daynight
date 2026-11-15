@@ -4,7 +4,7 @@ import { listPersonalTasks, parsePersonalTaskPage } from '../src/api/personal-ta
 import { wireResponse } from './helpers/wireJson';
 import { WORKER_TIME, WORKER_USER, workerId } from './helpers/workers';
 
-const item = () => ({ project: { id: workerId(3), name: 'Project', ownerTeam: { id: workerId(4), kind: 'ordinary', name: 'Team' }, executionWarningMinutes: 120, matchedTaskCount: 1 }, task: { id: workerId(5), version: '9007199254740993', title: 'Task', status: 'in_progress', startedAt: null, createdAt: '2026-11-13T09:00:00Z', requiredPlatform: null, tags: [], blockedBy: [], ready: false, allowAgents: true, paused: false, worker: null, goal: null }, session: unsupportedSessionObservation() });
+const item = () => ({ project: { id: workerId(3), name: 'Project', ownerTeam: { id: workerId(4), kind: 'ordinary', name: 'Team' }, executionWarningMinutes: 120, matchedTaskCount: 1 }, task: { id: workerId(5), version: '9007199254740993', title: 'Task', status: 'in_progress', startedAt: null, createdAt: '2026-11-13T09:00:00Z', requiredPlatform: null, tags: [], blockedBy: [], ready: false, allowAgents: true, paused: false, worker: null, goal: null }, session: unsupportedSessionObservation(), sessionRow: { taskVersion: '9007199254740993', state: 'unavailable', observedAt: null, freshUntil: null, needsAttention: null, canOpen: false } });
 const page = () => ({ observedAt: WORKER_TIME, responseTaskAt: WORKER_TIME, responseSessionAt: WORKER_TIME, inventoryRevision: 'a'.repeat(64), totalTaskCount: 1, totalProjectCount: 1, sessionPartial: true, items: [item()], nextCursor: null });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 describe('personal task response', () => {
@@ -12,6 +12,29 @@ describe('personal task response', () => {
     const parsed = parsePersonalTaskPage(page());
     expect(parsed.items[0]?.task.version).toBe('9007199254740993');
     expect(parsed.items[0]?.session).toEqual(unsupportedSessionObservation());
+    expect(parsed.items[0]?.sessionRow).toEqual({ ...item().sessionRow, taskVersion: 9007199254740993n });
+  });
+  it('requires a current-version row and independently proven current execution before opening a Session', () => {
+    const value = page(), row = item();
+    const active = { ...row, task: { ...row.task, worker: { workerId: workerId(6), state: 'active', machine: { id: workerId(7), name: 'Machine' } } },
+      session: { ...row.session, observation: 'observed' as const, registration: 'registered' as const, sessionId: workerId(8), claimId: workerId(9),
+        executionGeneration: '1', connectionEpoch: '1', agentControlMode: 'web' as const, contentKind: 'native_timeline' as const,
+        observedAt: WORKER_TIME, freshUntil: '2026-11-13T10:00:30Z', error: null } };
+    const observation = { taskVersion: row.task.version, state: 'unavailable', observedAt: WORKER_TIME, freshUntil: '2026-11-13T10:00:30Z', needsAttention: null, canOpen: true };
+    const candidate = (sessionRow: unknown, selected = active) => ({ ...value, items: [{ ...selected, sessionRow }] });
+    expect(parsePersonalTaskPage(candidate(observation)).items[0]?.sessionRow.canOpen).toBe(true);
+    for (const invalid of [
+      candidate(undefined), candidate(null), candidate({ ...observation, taskVersion: '1' }),
+      candidate({ ...observation, observedAt: null }), candidate({ ...observation, freshUntil: null }),
+      candidate({ ...observation, state: 'no_session', canOpen: false }),
+      candidate({ ...observation, state: 'not_registered' }),
+      { ...value, items: [{ ...row, sessionRow: observation }] },
+      { ...value, items: [{ ...active, task: { ...active.task, worker: { ...active.task.worker, state: 'completed' } }, sessionRow: observation }] },
+      ...[{ sessionId: null }, { claimId: null }, { registration: 'not_registered' }, { error: { code: 'offline', message: 'offline' } },
+        { freshUntil: null }, { observation: 'unavailable' }, { contentKind: 'terminal_recording' }].map(change => ({ ...value, items: [{ ...active, session: { ...active.session, ...change }, sessionRow: observation }] })),
+    ]) expect(() => parsePersonalTaskPage(invalid)).toThrow();
+    const { sessionRow: _sessionRow, ...missing } = row;
+    expect(() => parsePersonalTaskPage({ ...value, items: [missing] })).toThrow();
   });
   it('requires an exact nullable Worker summary with valid IDs and Unicode name', () => {
     const value = page(), row = item();

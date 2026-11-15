@@ -674,6 +674,6 @@ Go 模块与 startup/shutdown job 分别使用独立 PostgreSQL 服务并归档�
 
 [账号读取合同](../spec/daynight-personal-in-progress-tasks.md)通过账号权限关系与有效删除视图，在数据库中筛选本人进行中普通 Task、聚合完整项目数量并以有界页面返回投影。Parent Goal 标题来自实际父资源；页面选择包含创建时间及平台，排除 lookahead 后按项目与页面 Task 批量读取标签和实际未结束的前置关系。暂停属性和 Session 来源也来自同一快照。服务按 Task ID、Project ID、版本和状态核对来源，由个人任务规则选择保留的 active 或 completed Worker 及机器摘要；无 Session 注册也可取得记录。来源缺失、不一致或严格读取错误拒绝整页，HTTP 不查询 Worker 目录或逐任务追加读取。
 
-选择快照验证凭据并读取活跃项目事实、页面和 Session 来源，结束后才采样 Session。发布前在新快照复核凭据及清单 revision，并从该快照取得数据库时钟 `responseTaskAt`；采样和复核完成后从 Session Engine 时钟取得 `responseSessionAt`。二者分别供 Task 时间和 Session 时效判断，不替代原 `observedAt` 水位。权限或清单变化拒绝发布，普通观测失败保留行及已确认的 Worker 并报告部分观测。标签、前置状态及 claim 获取、完成或释放造成的版本事实变化在复核时重置清单；最终复核后的变化由后续刷新反映。revision 是按项目 ID 排序的规范事实向量的 SHA-256，包含项目归属、设置、匹配数及项目全部 Task 的 epoch、数量和版本和，不包含 Session 或时钟。版本和使用精确十进制，避免溢出。
+选择快照验证凭据并读取活跃项目事实、页面和 Session 来源，结束后才采样 Session。同一次 Engine 采样同时生成既有完整 `session` 和必填 `sessionRow`；后者复用项目 TaskSync 的完整行观测规则，保留 Task 精确版本、归一化状态、观测时间、有效期、关注事实及独立阅读资格。完整 Session 未提供的归档和现场阅读事实由该投影拥有，客户端无需猜测或追加读取。两份投影共同经过所选 Task 版本、执行来源和采样后复核，不能把旧绑定观测套到新执行。发布前在新快照复核凭据及清单 revision，并从该快照取得数据库时钟 `responseTaskAt`；采样和复核完成后从 Session Engine 时钟取得 `responseSessionAt`。二者分别供 Task 时间和 Session 时效判断，不替代原 `observedAt` 水位。权限或清单变化拒绝发布，普通观测失败保留行及已确认的 Worker 并报告部分观测。标签、前置状态及 claim 获取、完成或释放造成的版本事实变化在复核时重置清单；最终复核后的变化由后续刷新反映。revision 是按项目 ID 排序的规范事实向量的 SHA-256，包含项目归属、设置、匹配数及项目全部 Task 的 epoch、数量和版本和，不包含 Session 或时钟。版本和使用精确十进制，避免溢出。
 
 每页选择与最终复核均聚合活跃项目全部 Task 历史；无关更新可能重置遍历，持续变化不保证完成。该机制复用既有项目版本事实，不依赖进程内快照或持久化全局版本。真实成本取决于数据和负载，不承诺性能收益。

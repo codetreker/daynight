@@ -14,26 +14,85 @@ const longTag = 'LongTag'.repeat(9);
 const longWorker = 'WorkerWithAnUnbrokenLongName'.repeat(5) + '中文机器名称'.repeat(10);
 const project = { id: projectId, name: longProject, ownerTeam: { id: teamId, kind: 'ordinary', name: 'Team' }, executionWarningMinutes: 120, matchedTaskCount: 16 };
 const observation = { ...unsupportedSessionObservation(), observation: 'observed', registration: 'not_applicable', reason: 'no_execution', error: null, observedAt: '2026-11-13T10:00:00Z', freshUntil: '2026-11-13T11:00:00Z' };
-const row = (n: number) => ({ project, task: { id: taskId(n), version: '1', title: n === 1 ? longTask : `Task ${n}`, status: 'in_progress', startedAt: null, createdAt: '2026-11-13T09:00:00Z', requiredPlatform: n === 1 ? 'linux' : null, tags: n === 1 ? [{ id: taskId(90), name: longTag }] : [], blockedBy: n === 1 ? [taskId(91)] : [], ready: false, allowAgents: false, paused: false, worker: n === 1 ? { workerId: taskId(70), state: 'active', machine: { id: taskId(71), name: longWorker } } : null, goal: n === 1 ? { id: goalId, title: longGoal } : null }, session: observation });
-const payload = { observedAt: '2026-11-13T10:00:00Z', responseTaskAt: '2026-11-13T10:00:00Z', responseSessionAt: '2026-11-13T10:00:00Z', inventoryRevision: 'a'.repeat(64), totalTaskCount: 17, totalProjectCount: 2, sessionPartial: false,
+const sessionRow = { taskVersion: '1', state: 'no_session', observedAt: observation.observedAt, freshUntil: observation.freshUntil, needsAttention: false, canOpen: false };
+const registered = { ...observation, registration: 'registered', reason: 'working', sessionId: taskId(80), claimId: taskId(81), executionGeneration: '1', connectionEpoch: '1', agentControlMode: 'web', contentKind: 'native_timeline', indicator: 'working', activity: 'working', lifecycle: 'active', connectionState: 'connected' };
+const row = (n: number) => ({ project, task: { id: taskId(n), version: '1', title: n === 1 ? longTask : `Task ${n}`, status: 'in_progress', startedAt: null, createdAt: '2026-11-13T09:00:00Z', requiredPlatform: n === 1 ? 'linux' : null, tags: n === 1 ? [{ id: taskId(90), name: longTag }] : [], blockedBy: n === 1 ? [taskId(91)] : [], ready: false, allowAgents: false, paused: false, worker: n === 1 ? { workerId: taskId(70), state: 'active', machine: { id: taskId(71), name: longWorker } } : null, goal: n === 1 ? { id: goalId, title: longGoal } : null }, session: observation, sessionRow: n === 1 ? { ...sessionRow, state: 'unavailable', observedAt: null, freshUntil: null, needsAttention: null } : sessionRow });
+const payload = { observedAt: '2026-11-13T10:00:00Z', responseTaskAt: '2026-11-13T10:00:00Z', responseSessionAt: '2026-11-13T10:00:00Z', inventoryRevision: 'a'.repeat(64), totalTaskCount: 17, totalProjectCount: 2, sessionPartial: true,
   items: [...Array.from({ length: 16 }, (_, i) => row(i + 1)), { ...row(17), project: { ...project, id: otherProjectId, name: 'Other project', matchedTaskCount: 1 } }], nextCursor: null };
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390, 1280]) {
+  test(`personal shared row preserves ID, profile and independent links at ${width}px in ${locale}`, async ({ page, context }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    let projectReads = 0;
+    await page.route('**/api/v1/projects/**/task-assignees*', route => { projectReads++; return route.abort(); });
+    await page.route('**/api/v1/projects/**/tags/colors/resolve', route => route.fulfill({ json: { catalogEpoch: taskId(92), items: [{ id: taskId(90), state: 'found', color: '#123456', version: 1 }] }, headers: { 'Daynight-User-ID': userId } }));
+    await page.route('**/reader-avatar.svg', route => route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17"><circle cx="8" cy="8" r="8" fill="blue"/></svg>' }));
+    await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: payload, headers: { 'Daynight-User-ID': userId } }));
+    await context.route('**/projects/**', route => route.fulfill({ contentType: 'text/html', body: 'Detail destination' }));
+    await page.goto('/tests/navigation/my-tasks-browser.html');
+    await page.getByLabel('Language').selectOption(locale);
+    const link = page.getByRole('link', { name: longTask, exact: true });
+    const task = link.locator('xpath=ancestor::li');
+    const id = task.locator('.task-row-id');
+    const copy = task.getByRole('button', { name: locale === 'en' ? 'Copy task ID' : '复制任务 ID' });
+    await expect(link).toHaveCSS('font-size', '13px');
+    await expect(id).toHaveCSS('font-size', '11px');
+    await expect(id).toHaveText(taskId(1));
+    await expect(task.locator('.assignee-name')).toHaveText('Current Reader');
+    await expect.poll(() => task.locator('.assignee-avatar img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    expect(projectReads).toBe(0);
+    expect(await task.evaluate(element => element.querySelector('a a, a button, button a, button button') === null && document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await copy.focus(); await page.keyboard.press('Enter');
+    await expect(task.getByRole('status')).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(taskId(1));
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    const box = await id.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const rect = range.getClientRects()[0]!; return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
+    await page.mouse.move(box.x + 2, box.y + box.height / 2); await page.mouse.down();
+    await page.mouse.move(box.x + Math.min(box.width - 2, 80), box.y + box.height / 2, { steps: 6 }); await page.mouse.up();
+    const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+    expect(selected.length).toBeGreaterThan(0);
+    await page.keyboard.press('Control+C');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await page.evaluate(() => {
+      const original = navigator.clipboard.writeText.bind(navigator.clipboard);
+      Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: () => { Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: original }); return Promise.reject(new Error('denied')); } });
+    });
+    await copy.click(); await expect(task.getByRole('alert')).toBeVisible();
+    await expect(id).toHaveText(taskId(1));
+    await copy.click(); expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(taskId(1));
+    const goal = task.locator('.task-row-goal');
+    for (const target of [link, goal]) {
+      const metaHandled = await target.evaluate(element => { let prevented = true; window.addEventListener('click', event => { prevented = event.defaultPrevented; event.preventDefault(); }, { once: true }); element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, metaKey: true })); return prevented; });
+      expect(metaHandled).toBe(false);
+      const opened = context.waitForEvent('page'); await target.click({ modifiers: ['Control'] });
+      const popup = await opened; await popup.waitForLoadState();
+      expect(new URL(popup.url()).pathname).toBe(await target.getAttribute('href'));
+      await popup.close();
+    }
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    if (locale === 'en') await page.screenshot({ path: `.tmp/personal-shared-row-${width}.png`, fullPage: true });
+  });
+}
 
 test('refresh replaces and removes the current Worker even when Session observation is unavailable', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 800 });
   let current = row(1).task.worker;
   await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: {
     ...payload, totalTaskCount: 1, totalProjectCount: 1, sessionPartial: true,
-    items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, task: { ...row(1).task, worker: current, paused: true }, session: unsupportedSessionObservation() }],
+    items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, task: { ...row(1).task, worker: current, paused: true }, session: unsupportedSessionObservation(), sessionRow: { ...sessionRow, state: 'unavailable', observedAt: null, freshUntil: null, needsAttention: null } }],
   }, headers: { 'Daynight-User-ID': userId } }));
   await page.goto('/tests/navigation/my-tasks-browser.html');
-  await expect(page.getByText(`Worker: ${longWorker}`)).toBeVisible();
-  await expect(page.getByText('Session status unavailable')).toBeVisible();
+  await expect(page.getByText(`Claim machine: ${longWorker}`)).toBeVisible();
+  await expect(page.getByText('Session unavailable')).toBeVisible();
   const replacement = '机器  名称\nA\tB' + ' \t'.repeat(60);
   current = { workerId: taskId(72), state: 'active', machine: { id: taskId(73), name: replacement } };
   await page.getByRole('button', { name: 'Refresh' }).click();
-  const worker = page.locator('.my-task-worker');
+  const worker = page.locator('.task-row-machine');
   await expect(worker).toBeVisible();
-  await expect.poll(() => worker.textContent()).toBe(`Worker: ${replacement}`);
+  await expect.poll(() => worker.textContent()).toBe(`Claim machine: ${replacement}`);
   const layout = await worker.evaluate(el => {
     const node = el.firstChild!;
     const start = node.textContent!.indexOf('机器');
@@ -48,27 +107,27 @@ test('refresh replaces and removes the current Worker even when Session observat
   expect(layout.overflow).toBe(false);
   expect(layout.tailRight).toBeLessThanOrEqual(320);
   expect(layout.tailLastTop).toBeGreaterThan(layout.tailFirstTop);
-  await expect(page.getByText(`Worker: ${longWorker}`)).toHaveCount(0);
+  await expect(page.getByText(`Claim machine: ${longWorker}`)).toHaveCount(0);
   current = { ...current, state: 'completed' };
   await page.getByRole('button', { name: 'Refresh' }).click();
-  await expect(worker).toHaveText(`Previous Worker: ${replacement}`);
+  await expect(worker).toHaveText(`Recorded machine: ${replacement}`);
   await page.getByLabel('Language').selectOption('zh-CN');
-  await expect(worker).toHaveText(`历史 Worker：${replacement}`);
+  await expect(worker).toHaveText(`执行机器记录：${replacement}`);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   current = null;
   await page.getByRole('button', { name: '刷新' }).click();
-  await expect(worker).toHaveText('无 Worker 记录');
+  await expect(worker).toHaveText('暂无执行机器记录');
 });
 
-for (const width of [320, 1280]) {
+for (const width of [320, 390, 1280]) {
   test(`startup warning appears without replacing the row at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 800 });
     await page.clock.install({ time: new Date('2026-11-13T10:00:00Z') });
     const warning = { ...observation, registration: 'registered', indicator: 'warning', reason: 'disconnected', connectionState: 'disconnected', needsAttention: true };
     const rows = [row(1), row(2)].map((item, index) => ({
       ...item, project: { ...item.project, matchedTaskCount: 2 },
-      task: { ...item.task, startedAt: '2026-11-13T09:58:01Z' },
-      session: { ...warning, indicator: index === 0 ? 'warning' : null },
+      task: { ...item.task, worker: row(1).task.worker, startedAt: '2026-11-13T09:58:01Z' },
+      session: { ...warning, indicator: index === 0 ? 'warning' : null }, sessionRow: { ...sessionRow, state: 'warning', needsAttention: true },
     }));
     await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ json: { ...payload, totalTaskCount: 2, totalProjectCount: 1, items: rows }, headers: { 'Daynight-User-ID': userId } }));
     await page.goto('/tests/navigation/my-tasks-browser.html');
@@ -76,11 +135,11 @@ for (const width of [320, 1280]) {
     const taskRow = task.locator('xpath=ancestor::li');
     const fallbackRow = page.getByRole('link', { name: 'Task 2' }).locator('xpath=ancestor::li');
     await expect(task).toBeVisible();
-    await expect(taskRow.locator('.my-task-session')).toHaveCount(0);
-    await expect(fallbackRow.locator('.my-task-session')).toHaveCount(0);
+    await expect(taskRow.locator('[data-session-state]')).toHaveCount(0);
+    await expect(fallbackRow.locator('[data-session-state]')).toHaveCount(0);
     await page.getByLabel('Language').selectOption('zh-CN');
-    await expect(taskRow.locator('.my-task-session')).toHaveCount(0);
-    await expect(fallbackRow.locator('.my-task-session')).toHaveCount(0);
+    await expect(taskRow.locator('[data-session-state]')).toHaveCount(0);
+    await expect(fallbackRow.locator('[data-session-state]')).toHaveCount(0);
     await page.getByLabel('语言').selectOption('en');
     await task.focus();
     const originalRow = await taskRow.elementHandle();
@@ -91,8 +150,8 @@ for (const width of [320, 1280]) {
     expect(await originalRow!.evaluate(row => row === document.activeElement?.closest('li'))).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.getByLabel('Language').selectOption('zh-CN');
-    await expect(taskRow.getByText('会话需要检查 · 需要关注')).toBeVisible();
-    await expect(fallbackRow.getByText('会话需要检查 · 需要关注')).toBeVisible();
+    await expect(taskRow.getByText('Session 需要检查 · 需要关注')).toBeVisible();
+    await expect(fallbackRow.getByText('Session 需要检查 · 需要关注')).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
@@ -117,7 +176,7 @@ for (const width of [320, 1280]) {
     await expect(task).toHaveAttribute('href', `/projects/${projectId}/tasks/${taskId(1)}`);
     await expect(goal).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
     await expect(goal).toBeVisible();
-    const worker = group.getByText(`Worker: ${longWorker}`);
+    const worker = group.getByText(`Claim machine: ${longWorker}`);
     await expect(worker).toBeVisible();
     expect(await worker.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -129,7 +188,7 @@ for (const width of [320, 1280]) {
     await page.getByLabel('Language').selectOption('zh-CN');
     await expect(page.getByRole('heading', { name: '进行中的任务' })).toBeVisible();
     await expect(group.getByRole('link', { name: `查看 Goal：${longGoal}` })).toBeVisible();
-    await expect(group.getByText(`Worker：${longWorker}`)).toBeVisible();
+    await expect(group.getByText(`认领机器：${longWorker}`)).toBeVisible();
     await expect(group.getByText(longTag)).toBeVisible();
     await expect(group.getByText('被阻塞')).toBeVisible();
     await expect(group.getByText('Linux')).toBeVisible();
@@ -170,7 +229,7 @@ for (const width of [320, 1280]) {
     await page.route('**/api/v1/**', async route => {
       const url = new URL(route.request().url()), path = url.pathname;
       const send = (body: unknown, status = 200, extra: Record<string, string> = {}) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': userId, ...extra } });
-      if (path === '/api/v1/me/in-progress-tasks') return send(listed ? { ...payload, totalTaskCount: 1, totalProjectCount: 1, items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 } }] } : { ...payload, totalTaskCount: 0, totalProjectCount: 0, items: [] });
+      if (path === '/api/v1/me/in-progress-tasks') return send(listed ? { ...payload, totalTaskCount: 1, totalProjectCount: 1, items: [{ ...row(1), project: { ...project, matchedTaskCount: 1 }, session: registered, sessionRow: { ...sessionRow, state: 'working', canOpen: true } }] } : { ...payload, totalTaskCount: 0, totalProjectCount: 0, items: [] });
       if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId, userId));
       if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId, name: 'Owner', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
       if (path === `/api/v1/projects/${projectId}/task-sync`) {
@@ -203,6 +262,10 @@ for (const width of [320, 1280]) {
     await page.keyboard.press('Escape');
     await expect(taskDialog).toHaveCount(0);
     await expect(task).toBeFocused();
+    const session = task.locator('xpath=ancestor::li').getByRole('button', { name: /Open Session/ });
+    await session.focus(); await page.keyboard.press('Enter');
+    await expect(taskDialog.getByRole('tab', { name: 'Session', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('Escape'); await expect(session).toBeFocused();
     const goal = page.getByRole('link', { name: `View Goal: ${longGoal}` });
     failGraph = true;
     await goal.click();

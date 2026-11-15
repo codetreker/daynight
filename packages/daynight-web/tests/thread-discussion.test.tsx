@@ -15,7 +15,7 @@ const resource = (value: unknown, status = 200) => new Response(JSON.stringify(v
 const page = (items: readonly ThreadMessage[], hasMoreBefore = false, hasMoreAfter = false) => resource({ items, hasMoreBefore, hasMoreAfter });
 const Harness = ({ active = true, occupied = () => {}, admissionBlocked = false, parentUnavailable = false }: { readonly active?: boolean; readonly occupied?: (value: boolean) => void; readonly admissionBlocked?: boolean; readonly parentUnavailable?: boolean }) => {
   const owner = useRef<HTMLDivElement>(null);
-  return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice' }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} parentUnavailable={parentUnavailable} /></div></CurrentAccountProvider>;
+  return <CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Current Alice', avatarUrl: null }} admissionBlocked={admissionBlocked}><div ref={owner}><TaskDiscussion projectId={projectId} taskId={taskId} active={active} owner={owner as RefObject<HTMLElement | null>} onDetailsOpenChange={occupied} parentUnavailable={parentUnavailable} /></div></CurrentAccountProvider>;
 };
 const render = (ui = <Harness />) => renderWithLocale(ui, { locale: 'zh-CN', taskCache: true });
 

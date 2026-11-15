@@ -72,6 +72,10 @@ func validSyncTime(value time.Time) bool {
 }
 
 func (s *Engine) taskSyncObservation(principal model.Principal, source store.TaskSessionSource, live *taskSessionLiveState, now time.Time) model.TaskSyncObservation {
+	return taskSessionRowObservation(source, live, s.observeTaskSession(principal, source, live, now, false), now)
+}
+
+func taskSessionRowObservation(source store.TaskSessionSource, live *taskSessionLiveState, observation sp.TaskSessionObservation, now time.Time) model.TaskSyncObservation {
 	result := model.TaskSyncObservation{TaskVersion: source.TaskVersion, State: "unavailable"}
 	// Retained completed claims and their Sessions are machine history, not the
 	// current execution of a manually restarted Task.
@@ -94,7 +98,6 @@ func (s *Engine) taskSyncObservation(principal model.Principal, source store.Tas
 	if source.Session != nil && source.Session.Backend == "herdr" && source.Session.Identity.OwnerUserID != source.Session.OwnerID {
 		return result
 	}
-	observation := s.observeTaskSession(principal, source, live, now, false)
 	if observation.ObservedAt != nil && validSyncTime(*observation.ObservedAt) {
 		result.ObservedAt = observation.ObservedAt
 	}
@@ -102,7 +105,7 @@ func (s *Engine) taskSyncObservation(principal model.Principal, source store.Tas
 		result.FreshUntil = observation.FreshUntil
 	}
 	result.NeedsAttention = observation.NeedsAttention
-	if observation.Observation != "observed" || result.ObservedAt == nil {
+	if observation.Observation != "observed" || observation.Error != nil || result.ObservedAt == nil {
 		return result
 	}
 	switch observation.Registration {

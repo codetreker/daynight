@@ -27,11 +27,12 @@ type TaskRowProps = {
   readonly href: string;
   readonly instanceId: string;
   readonly assignee: ReactNode;
+  readonly goal?: { readonly title: string; readonly href: string; readonly onOpen: (trigger: HTMLElement) => void };
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 };
 
-export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instanceId, assignee, onOpenTask, onOpenSession }: TaskRowProps) => {
+export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instanceId, assignee, goal, onOpenTask, onOpenSession }: TaskRowProps) => {
   const { locale, messages: { workspace: { standalone, project }, common, graph, inspection: { detail } }, format } = useI18n();
   const execution = useTaskExecution(model);
   const completion = useCompletionTime(completedAtFor(model));
@@ -109,6 +110,10 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
           {execution !== null ? <span className="task-row-execution"><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</span>
             : model.status === 'in_progress' && <span>{locale === 'zh-CN' ? '耗时未知' : 'Duration unknown'}</span>}
           {completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}
+          {goal !== undefined && <a className="task-row-goal" href={goal.href} aria-label={locale === 'zh-CN' ? `查看 Goal：${goal.title}` : `View Goal: ${goal.title}`} onClick={event => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.defaultPrevented) return;
+            event.preventDefault(); goal.onOpen(event.currentTarget);
+          }}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg><span>{goal.title}</span><span aria-hidden="true">↗</span></a>}
         </div>
         {typeof model.tags === 'string' ? <span className="task-row-meta">{tagMessage}</span> : <TaskTagList projectId={projectId} tags={model.tags} active={tagsActive} feedback={false} />}
       </div>

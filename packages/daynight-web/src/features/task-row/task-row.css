@@ -11,7 +11,12 @@
 .task-row-copy-feedback { font-size: 11px; color: var(--task-helper); overflow-wrap: anywhere; }
 .task-row-copy-error { color: var(--task-attention-ink); }
 .task-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 8px; margin-top: 2px; color: var(--task-helper); font-size: 11px; line-height: 1.5; min-width: 0; }
-.task-row-machine { overflow-wrap: anywhere; min-width: 0; }
+.task-row-machine { overflow-wrap: anywhere; min-width: 0; max-width: 100%; white-space: break-spaces; }
+.task-row-goal { display: inline-flex; align-items: center; gap: 5px; color: var(--task-helper); min-width: 0; max-width: 100%; text-decoration: none; }
+.task-row-goal span { overflow-wrap: anywhere; min-width: 0; }
+.task-row-goal svg { width: 13px; height: 13px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.task-row-goal:hover { text-decoration: underline; }
+.task-row-goal:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 2px; }
 .task-row-execution { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .task-row .task-row-status { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .task-row-status .project-session-status { position: static; }

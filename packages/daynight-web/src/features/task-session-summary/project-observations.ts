@@ -2,6 +2,7 @@ import { authRequestsPaused, subscribeAuthPause } from '../../api/client';
 import type { TaskSync, TaskSummary } from '../../api/types';
 import { sameTaskExecutionBinding, taskExecutionBinding, type TaskExecutionBinding } from '../task-cache/execution-binding';
 import type { CachedProject, TaskCacheScope } from '../task-cache/project-cache';
+import { normalizeTaskSession, taskSessionNextChange } from './observation';
 
 type Fence = Pick<CachedProject['manifest'], 'userId' | 'projectId' | 'userFence' | 'cacheGeneration' | 'epoch'>;
 type Entry = {
@@ -91,18 +92,11 @@ export class ProjectTaskObservationsStore {
       for (const [id, entry] of this.entries) {
         const task = project.summaries.get(id);
         if (task === undefined || task.type !== 'task' || task.status !== 'in_progress' || task.version !== entry.version || !sameTaskExecutionBinding(entry.binding, taskExecutionBinding(task))) { this.entries.delete(id); continue; }
-        const elapsed = Math.max(0, now - entry.receivedMonotonic);
-        const o = entry.observation;
-        const expiry = o.observedAt === null || o.freshUntil === null ? -Infinity : Math.min(Date.parse(o.freshUntil), Date.parse(o.observedAt) + 30_000);
-        const remaining = expiry - (entry.responseSessionAt + elapsed);
-        const expired = remaining <= 0;
-        const graceRemaining = entry.startedAt === null ? -Infinity : Date.parse(entry.startedAt) + 120_000 - (entry.responseTaskAt + elapsed);
-        const state = o.state === 'unavailable' ? 'unavailable' : expired ? 'expired' : o.state === 'warning' && graceRemaining > 0 ? null : o.state;
-        const value = { state, needsAttention: expired || state === null ? null : o.needsAttention, canOpen: !expired && o.canOpen } satisfies ProjectTaskObservation;
+        const value = normalizeTaskSession(entry.observation, entry, now);
         const previous = this.view.get(id);
         next.set(id, previous?.state === value.state && previous.needsAttention === value.needsAttention && previous.canOpen === value.canOpen ? previous : value);
-        if (!expired && Number.isFinite(remaining)) nextChange = Math.min(nextChange, remaining);
-        if (state === null && Number.isFinite(graceRemaining)) nextChange = Math.min(nextChange, graceRemaining);
+        const remaining = taskSessionNextChange(entry.observation, entry, now);
+        if (remaining !== null) nextChange = Math.min(nextChange, remaining);
       }
     }
     if (next.size !== this.view.size || [...next].some(([id, value]) => this.view.get(id) !== value)) { this.view = next; for (const listener of this.listeners) listener(); }
