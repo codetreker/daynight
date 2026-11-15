@@ -39,6 +39,19 @@ func TestNameRules(t *testing.T) {
 		})
 	}
 }
+
+func TestColorRules(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"#abcdef", "#ABCDEF"}, {"#012345", "#012345"}, {"#FFFFFF", "#FFFFFF"},
+		{"#000000", "#000000"}, {"#12345", ""}, {"#1234567", ""},
+		{"123456", ""}, {"#12345g", ""}, {" #123456", ""}, {"", ""},
+	} {
+		got, err := Color(tc.input)
+		if got != tc.want || (err != nil) != (tc.want == "") || (err != nil && code(err) != "invalid_tag_color") {
+			t.Fatalf("Color(%q) = %q, %v", tc.input, got, err)
+		}
+	}
+}
 func TestCursorBindsEveryCatalogFact(t *testing.T) {
 	original := Cursor{Version: 1, ProjectID: "project", UserID: "user", CredentialID: "credential", Kind: model.PATCredential, Query: "a", Limit: 50, Epoch: "epoch", NameKey: "name", ID: "99b2ee65-c2b5-48a2-a0db-d6f8fab8a5ba"}
 	encoded := EncodeCursor(original)

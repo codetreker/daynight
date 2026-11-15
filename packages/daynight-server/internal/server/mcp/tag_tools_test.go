@@ -42,19 +42,27 @@ func (f tagTestOperations) Get(ctx context.Context, p model.Principal, project, 
 	}
 	return f.get(ctx, p, project, id)
 }
-func (f tagTestOperations) Create(ctx context.Context, p model.Principal, project, name string) (tagservice.WriteResult, error) {
+func (f tagTestOperations) Create(ctx context.Context, p model.Principal, project, name string, color *string) (tagservice.WriteResult, error) {
+	if color != nil {
+		f.t.Error("legacy create supplied color")
+		return tagservice.WriteResult{}, errors.New("unexpected color")
+	}
 	if f.create == nil {
 		f.t.Error("unexpected Create")
 		return tagservice.WriteResult{}, errors.New("unexpected Create")
 	}
 	return f.create(ctx, p, project, name)
 }
-func (f tagTestOperations) Rename(ctx context.Context, p model.Principal, project, id string, version int64, name string) (tagservice.WriteResult, error) {
+func (f tagTestOperations) Update(ctx context.Context, p model.Principal, project, id string, version int64, name, color *string) (tagservice.WriteResult, error) {
+	if name == nil || color != nil {
+		f.t.Error("legacy rename must supply only name")
+		return tagservice.WriteResult{}, errors.New("unexpected update fields")
+	}
 	if f.rename == nil {
 		f.t.Error("unexpected Rename")
 		return tagservice.WriteResult{}, errors.New("unexpected Rename")
 	}
-	return f.rename(ctx, p, project, id, version, name)
+	return f.rename(ctx, p, project, id, version, *name)
 }
 func (f tagTestOperations) Delete(ctx context.Context, p model.Principal, project, id string, version int64, confirm bool) (tagservice.WriteResult, error) {
 	if f.delete == nil {
@@ -66,7 +74,7 @@ func (f tagTestOperations) Delete(ctx context.Context, p model.Principal, projec
 
 func tagTestItem(name string) tagservice.Item {
 	stamp := time.Date(2026, 11, 13, 1, 2, 3, 0, time.UTC)
-	return tagservice.Item{Tag: model.Tag{ID: testTargetID, ProjectID: testProjectID, Name: name, Version: 9007199254740993, CreatedAt: stamp, UpdatedAt: stamp}, Usage: model.TagUsage{Tasks: 2, Goals: 3}}
+	return tagservice.Item{Tag: model.Tag{ID: testTargetID, ProjectID: testProjectID, Name: name, Color: "#123456", Version: 9007199254740993, CreatedAt: stamp, UpdatedAt: stamp}, Usage: model.TagUsage{Tasks: 2, Goals: 3}}
 }
 func tagTestWrite(item tagservice.Item) tagservice.WriteResult {
 	return tagservice.WriteResult{Item: item, ProjectID: testProjectID, TagID: testTargetID, Phase: "commit", Outcome: store.TransactionCommitted}
@@ -184,6 +192,9 @@ func TestTagToolsDiscoveryAndProtocol(t *testing.T) {
 					}
 					data = object(t, data["items"].([]any)[0])
 				}
+				if _, ok := data["color"]; ok {
+					t.Errorf("legacy output includes color: %+v", data)
+				}
 				if tc.name == "tag_delete" {
 					if data["projectId"] != testProjectID || data["tagId"] != testTargetID || data["deleted"] != true {
 						t.Errorf("delete: %+v", data)
@@ -255,6 +266,19 @@ func TestTagToolsInputBoundaryAndCoreName(t *testing.T) {
 			t.Fatalf("invalid core name: %+v calls=%d", structured(t, result), calls)
 		}
 		validateDiscoveredResult(t, client, "tag_create", result)
+	}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"tag_create", map[string]any{"projectId": testProjectID, "name": "a", "color": "#123456"}},
+		{"tag_rename", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1", "name": "a", "color": "#123456"}},
+	} {
+		beforeCreate, beforeRename := calls, renameCalls
+		result = tagTestCall(t, client, tc.name, tc.args)
+		if !result.IsError || calls != beforeCreate || renameCalls != beforeRename {
+			t.Fatalf("%s accepted color or invoked service: %+v", tc.name, result)
+		}
 	}
 	for _, version := range []any{nil, "0", "01", "+1", "9223372036854775808", 1} {
 		args := map[string]any{"projectId": testProjectID, "tagId": testTargetID, "name": "backend"}

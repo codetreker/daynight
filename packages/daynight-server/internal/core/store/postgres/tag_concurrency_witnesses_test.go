@@ -152,7 +152,7 @@ func TestTagDeletionSerializesWithAttachAndCreate(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					_, err = scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "tag", NameKey: "tag", CreatedAt: now})
+					_, err = scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "tag", NameKey: "tag", Color: "#9AA3B2", CreatedAt: now})
 					return err
 				}); err != nil {
 					t.Fatal(err)
@@ -234,7 +234,7 @@ func TestTagDeleteRollbackAndLostCommitReceipt(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if _, err = scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "tag", NameKey: "tag", CreatedAt: now}); err != nil {
+				if _, err = scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "tag", NameKey: "tag", Color: "#9AA3B2", CreatedAt: now}); err != nil {
 					return err
 				}
 				return scope.TaskTagDAO().ReplaceTaskTags(ctx, task.ID, []string{tagID})
