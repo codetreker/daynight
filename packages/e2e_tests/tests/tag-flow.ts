@@ -70,8 +70,9 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await expect(card.locator(".goal-list-summary .task-tag")).toHaveText(["Backend"]);
   await card.locator(".goal-list-toggle").click();
   const child = card.locator(`#chain-task-goal-${goalId}-${taskId}`);
+  const childRow = card.locator(".task-row").filter({ has: page.locator(`#chain-task-goal-${goalId}-${taskId}`) });
   const control = card.locator(`#chain-task-goal-${goalId}-${controlId}`);
-  await expect(child.locator(".task-tag")).toHaveText(["Other"]);
+  await expect(childRow.locator(".task-tag")).toHaveText(["Other"]);
   await expect(control).toBeVisible();
   await child.click();
   const detail = page.locator(".task-detail-dialog");
@@ -121,9 +122,9 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await page.locator("#project-task-tab-goals").click();
   await expect(card.locator(".goal-list-summary .task-tag")).toHaveText(["Platform"]);
   await card.locator(".goal-list-toggle").click();
-  await expect(child.locator(".task-tag")).toHaveCount(2);
-  await expect(child.locator(".task-tag").filter({ hasText: "Platform" })).toHaveCount(1);
-  await expect(child.locator(".task-tag").filter({ hasText: "Other" })).toHaveCount(1);
+  await expect(childRow.locator(".task-tag")).toHaveCount(2);
+  await expect(childRow.locator(".task-tag").filter({ hasText: "Platform" })).toHaveCount(1);
+  await expect(childRow.locator(".task-tag").filter({ hasText: "Other" })).toHaveCount(1);
   expect((await read(goalId)).tags).toEqual([{ id: backend.id, name: "Platform" }]);
   expect((await read(taskId)).tags).toEqual(expect.arrayContaining([{ id: backend.id, name: "Platform" }, { id: other.id, name: "Other" }]));
 
@@ -139,7 +140,7 @@ export const verifyTagFlow = async (page: Page, projectId: string): Promise<void
   await expect(card).toBeVisible();
   await expect(card.locator(".goal-list-summary .task-tag-list")).toHaveCount(0);
   await card.locator(".goal-list-toggle").click();
-  await expect(child.locator(".task-tag")).toHaveText(["Other"]);
+  await expect(childRow.locator(".task-tag")).toHaveText(["Other"]);
   await filter.locator("summary").click();
   await filter.locator('input[type="search"]').fill("Other");
   await expect(filter.getByRole("checkbox", { name: "Other" })).toBeVisible();
