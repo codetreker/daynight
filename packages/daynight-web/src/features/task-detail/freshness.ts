@@ -1,4 +1,4 @@
-import type { GraphTask, TaskDetail } from "../../api/types";
+import type { GraphTask, TaskDetail, TaskSummary } from "../../api/types";
 import { compareTimestamps } from "../task-cache/projection";
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean =>
@@ -7,8 +7,8 @@ const sameIds = (left: readonly string[], right: readonly string[]): boolean =>
 const sameTime = (left: string | null, right: string | null): boolean =>
   left === null || right === null ? left === right : compareTimestamps(left, right) === 0;
 
-export const isTaskStale = (snapshotNode: GraphTask | undefined, detail: TaskDetail): boolean => {
-  if (snapshotNode === undefined) return true;
+export const isTaskStale = (snapshotNode: GraphTask | undefined, detail: TaskDetail, summary: Pick<TaskSummary, "title"> | undefined): boolean => {
+  if (snapshotNode === undefined || summary === undefined || summary.title !== detail.title) return true;
   const title = Array.from(detail.title);
   return snapshotNode.id !== detail.id || !sameTime(snapshotNode.updatedAt, detail.updatedAt) || !sameTime(snapshotNode.createdAt, detail.createdAt) ||
     !sameTime(snapshotNode.startedAt, detail.startedAt) || !sameTime(snapshotNode.completedAt, detail.completedAt) || !sameTime(snapshotNode.cancelledAt, detail.cancelledAt) || snapshotNode.status !== detail.status ||

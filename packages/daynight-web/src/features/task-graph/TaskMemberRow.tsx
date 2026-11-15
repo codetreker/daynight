@@ -17,6 +17,7 @@ import { TaskAssigneeIdentity } from '../task-assignment/TaskAssigneeIdentity';
 type TaskMemberRowProps = {
   readonly projectId: string;
   readonly task: GraphTask;
+  readonly title: string;
   readonly instanceId: string;
   readonly tags?: readonly TaskTag[];
   readonly workerMachine: Pick<WorkerClaim, "state" | "machine"> | undefined;
@@ -24,7 +25,7 @@ type TaskMemberRowProps = {
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 };
 
-export const TaskMemberRow = memo(({ projectId, task, instanceId, tags, workerMachine, onOpenTask, onOpenSession }: TaskMemberRowProps) => {
+export const TaskMemberRow = memo(({ projectId, task, title, instanceId, tags, workerMachine, onOpenTask, onOpenSession }: TaskMemberRowProps) => {
   const { messages: { graph, workspace: { project } } } = useI18n();
   const execution = useTaskExecution(task);
   const paused = useTaskPaused(task.id);
@@ -46,7 +47,6 @@ export const TaskMemberRow = memo(({ projectId, task, instanceId, tags, workerMa
   const labelId = useId();
   const summary = useTaskSessionSummary(task.id);
   const session = task.status === 'in_progress' ? summary : null;
-  const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   return <li onFocusCapture={(event) => {
     focusedSession.current = event.target instanceof HTMLElement && event.target.classList.contains('session-status-action') ? event.target : null;
   }} onBlurCapture={(event) => {
@@ -55,7 +55,7 @@ export const TaskMemberRow = memo(({ projectId, task, instanceId, tags, workerMa
     <div className="goal-task-row task-status-surface" data-task-status={task.status}>
       <button className="goal-task-main" data-task-status={task.status} id={`chain-task-${instanceId}-${task.id}`} aria-labelledby={`${labelId}-title${tags !== undefined && tags.length > 0 ? ` ${labelId}-tags` : ""} ${labelId}-assignee ${labelId}-permission ${labelId}-machine${paused ? ` ${labelId}-paused` : ''} ${labelId}-status${task.ready ? ` ${labelId}-ready` : ''}${task.blockedBy.length > 0 ? ` ${labelId}-blocked` : ''}`} type="button" ref={mainRef} {...hint.triggerEvents} aria-describedby={[execution === null ? null : `${labelId}-execution`, completion === null ? null : hint.descriptionId].filter(Boolean).join(" ") || undefined} onClick={(event) => { hint.triggerEvents.onClick(); onOpenTask(task.id, event.currentTarget); }} aria-haspopup="dialog">
         <span className={`goal-task-dot graph-status-${task.status}`} aria-hidden="true" />
-        <span className="root-heading"><span className="root-title" id={`${labelId}-title`}>{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}<span className="task-assignee-row-meta"><span id={`${labelId}-assignee`} className="goal-task-assignee"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span><span id={`${labelId}-permission`}><TaskAgentPermissionBadge allowAgents={task.allowAgents} /></span><span id={`${labelId}-machine`} className="goal-task-machine">{workerMachine === undefined ? graph.noMachineRecord : workerMachine.state === "active" ? graph.claimMachine({ name: workerMachine.machine.name }) : graph.recordedMachine({ name: workerMachine.machine.name })}</span></span>{tags !== undefined && <TaskTagList id={`${labelId}-tags`} tags={tags} />}</span>
+        <span className="root-heading"><span className="root-title" id={`${labelId}-title`}>{title}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}{completion !== null && <CompletionTimeLabel value={completion} {...hint.labelEvents} />}<span className="task-assignee-row-meta"><span id={`${labelId}-assignee`} className="goal-task-assignee"><TaskAssigneeIdentity projectId={projectId} assignedTo={task.assignedTo} /></span><span id={`${labelId}-permission`}><TaskAgentPermissionBadge allowAgents={task.allowAgents} /></span><span id={`${labelId}-machine`} className="goal-task-machine">{workerMachine === undefined ? graph.noMachineRecord : workerMachine.state === "active" ? graph.claimMachine({ name: workerMachine.machine.name }) : graph.recordedMachine({ name: workerMachine.machine.name })}</span></span>{tags !== undefined && <TaskTagList id={`${labelId}-tags`} tags={tags} />}</span>
       </button>
       {hint.hint}{execution !== null && <TaskExecutionDescription execution={execution} id={`${labelId}-execution`} />}
       <span className="goal-task-status">{paused && <span id={`${labelId}-paused`}><TaskPausedBadge /></span>}<SessionStatus statusId={`${labelId}-status`} title={title} status={task.status} indicator={session?.indicator ?? null}

@@ -21,8 +21,8 @@ var tagToolsJSON []byte
 type tagOperations interface {
 	List(context.Context, model.Principal, string, tagservice.ListInput) (tagservice.Page, error)
 	Get(context.Context, model.Principal, string, string) (tagservice.Item, error)
-	Create(context.Context, model.Principal, string, string) (tagservice.WriteResult, error)
-	Rename(context.Context, model.Principal, string, string, int64, string) (tagservice.WriteResult, error)
+	Create(context.Context, model.Principal, string, string, *string) (tagservice.WriteResult, error)
+	Update(context.Context, model.Principal, string, string, int64, *string, *string) (tagservice.WriteResult, error)
 	Delete(context.Context, model.Principal, string, string, int64, bool) (tagservice.WriteResult, error)
 }
 
@@ -127,9 +127,9 @@ func tagTool(ctx context.Context, actor RequestActor, name string, in tagInput, 
 		var err error
 		switch name {
 		case "tag_create":
-			result, err = tags.Create(ctx, actor.Principal, in.ProjectID, in.Name)
+			result, err = tags.Create(ctx, actor.Principal, in.ProjectID, in.Name, nil)
 		case "tag_rename":
-			result, err = tags.Rename(ctx, actor.Principal, in.ProjectID, in.TagID, version, in.Name)
+			result, err = tags.Update(ctx, actor.Principal, in.ProjectID, in.TagID, version, &in.Name, nil)
 		case "tag_delete":
 			result, err = tags.Delete(ctx, actor.Principal, in.ProjectID, in.TagID, version, in.Confirm)
 		}

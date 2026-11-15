@@ -31,11 +31,11 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 	observed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	completion, err := db.WriteProject(ctx, projectID, func(scope store.ProjectWriteScope) error {
 		for i, name := range []string{"A_1", "a%2", "中", "z"} {
-			item, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: ids[i], Name: name, NameKey: name, CreatedAt: observed})
+			item, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: ids[i], Name: name, NameKey: name, Color: "#123ABC", CreatedAt: observed})
 			if err != nil {
 				return err
 			}
-			if item.ProjectID != projectID || item.Version != 1 || !item.CreatedAt.Equal(observed) || !item.UpdatedAt.Equal(observed) {
+			if item.ProjectID != projectID || item.Version != 1 || item.Color != "#123ABC" || !item.CreatedAt.Equal(observed) || !item.UpdatedAt.Equal(observed) {
 				t.Fatalf("insert: %+v", item)
 			}
 		}
@@ -54,14 +54,14 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 	}
 	// The same name is independent across Projects; the name key is unique within one Project.
 	completion, err = db.WriteProject(ctx, other, func(scope store.ProjectWriteScope) error {
-		_, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: uuid.NewString(), Name: "A_1", NameKey: "A_1", CreatedAt: observed})
+		_, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: uuid.NewString(), Name: "A_1", NameKey: "A_1", Color: "#9AA3B2", CreatedAt: observed})
 		return err
 	})
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("other project: %+v %v", completion, err)
 	}
 	completion, err = db.WriteProject(ctx, projectID, func(scope store.ProjectWriteScope) error {
-		_, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: uuid.NewString(), Name: "duplicate", NameKey: "A_1", CreatedAt: observed})
+		_, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: uuid.NewString(), Name: "duplicate", NameKey: "A_1", Color: "#9AA3B2", CreatedAt: observed})
 		return err
 	})
 	failed, state := store.DatabaseErrorFacts(err)
@@ -71,7 +71,7 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 
 	// A duplicate identity is not a name collision.
 	completion, err = db.WriteProject(ctx, projectID, func(scope store.ProjectWriteScope) error {
-		_, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: ids[0], Name: "distinct", NameKey: "distinct", CreatedAt: observed})
+		_, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: ids[0], Name: "distinct", NameKey: "distinct", Color: "#9AA3B2", CreatedAt: observed})
 		return err
 	})
 	if failed, state := store.DatabaseErrorFacts(err); !failed || state != "23505" || errors.Is(err, store.ErrTagNameConflict) || completion.Outcome != store.TransactionNotCommitted {
@@ -110,7 +110,7 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if len(resolved) != 2 || resolved[0].ID >= resolved[1].ID {
+		if len(resolved) != 2 || resolved[0].ID >= resolved[1].ID || resolved[0].Color != "#123ABC" || resolved[1].Color != "#123ABC" {
 			t.Fatalf("resolve: %+v", resolved)
 		}
 		_, err = r.Tag(ctx, other, ids[0])
@@ -138,18 +138,18 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 		if usage != (model.TagUsage{}) {
 			t.Fatalf("write-scope usage: %+v", usage)
 		}
-		_, err = scope.TagDAO().UpdateTag(ctx, ids[0], 2, "bad", "bad", observed)
+		_, err = scope.TagDAO().UpdateTag(ctx, ids[0], 2, "bad", "bad", "#9AA3B2", observed)
 		if !errors.Is(err, store.ErrTagWriteConflict) {
 			t.Fatalf("stale update: %v", err)
 		}
 		if err := scope.TagDAO().DeleteTag(ctx, ids[0], 2); !errors.Is(err, store.ErrTagWriteConflict) {
 			t.Fatalf("stale delete: %v", err)
 		}
-		updated, err := scope.TagDAO().UpdateTag(ctx, ids[0], 1, "Renamed", "renamed", observed.Add(time.Second))
+		updated, err := scope.TagDAO().UpdateTag(ctx, ids[0], 1, "Renamed", "renamed", "#FEDCBA", observed.Add(time.Second))
 		if err != nil {
 			return err
 		}
-		if updated.Version != 2 || updated.Name != "Renamed" || !updated.UpdatedAt.Equal(observed.Add(time.Second)) {
+		if updated.Version != 2 || updated.Name != "Renamed" || updated.Color != "#FEDCBA" || !updated.UpdatedAt.Equal(observed.Add(time.Second)) {
 			t.Fatalf("updated: %+v", updated)
 		}
 		return scope.TagDAO().DeleteTag(ctx, ids[3], 1)
@@ -162,7 +162,7 @@ func TestCatalogPersistenceAndQueries(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if item.Name != "Renamed" || item.Version != 2 {
+		if item.Name != "Renamed" || item.Color != "#FEDCBA" || item.Version != 2 {
 			t.Fatalf("persisted: %+v", item)
 		}
 		_, err = scope.TagDAO().Tag(ctx, projectID, ids[3])
@@ -299,7 +299,7 @@ func TestDAOErrorsRetainCauses(t *testing.T) {
 	if _, err = w.InsertTag(ctx, model.Tag{}); !errors.Is(err, pgx.ErrTxClosed) {
 		t.Fatalf("closed insert: %v", err)
 	}
-	if _, err = w.UpdateTag(ctx, uuid.NewString(), 1, "a", "a", time.Now()); !errors.Is(err, pgx.ErrTxClosed) {
+	if _, err = w.UpdateTag(ctx, uuid.NewString(), 1, "a", "a", "#9AA3B2", time.Now()); !errors.Is(err, pgx.ErrTxClosed) {
 		t.Fatalf("closed update: %v", err)
 	}
 	if err = w.DeleteTag(ctx, uuid.NewString(), 1); !errors.Is(err, pgx.ErrTxClosed) {

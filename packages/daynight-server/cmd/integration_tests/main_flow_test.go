@@ -286,6 +286,10 @@ func TestServerAPINormalFlows(t *testing.T) {
 		if baseline.Project.ID != project.ID || baseline.Epoch == "" || baseline.ObservedAt.IsZero() {
 			t.Fatalf("snapshot identity differs: %+v", baseline)
 		}
+		initial := expectID(t, baseline.Tasks, task.ID, func(item api.TaskViewRecord) string { return item.ID })
+		if initial.Title != task.Title || initial.TitlePreview != task.Title || initial.TitleTruncated {
+			t.Fatalf("snapshot title differs: %+v", initial)
+		}
 		value := []api.PullRequestProperty{{URL: "https://github.com/example/tasks/pull/1", Title: "Normal evidence"}}
 		propertyPath := taskPath(task) + "/properties/pullRequests"
 		updated := requestJSON[api.PropertyResource](t, f, http.MethodPut, propertyPath, map[string]any{"version": task.Version, "valueText": `[{"url":"https://github.com/example/tasks/pull/1","title":"Normal evidence"}]`}, http.StatusOK)
@@ -300,7 +304,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 				t.Fatalf("sync identity differs: %+v", result)
 			}
 			actual := expectID(t, result.Tasks, task.ID, func(task api.TaskViewRecord) string { return task.ID })
-			if actual.Version != resourceVersion(updated.Version) {
+			if actual.Version != resourceVersion(updated.Version) || actual.Title != task.Title || actual.TitlePreview != task.Title || actual.TitleTruncated {
 				t.Fatal("sync lost property mutation version")
 			}
 			requireProperty(t, actual.Properties, "pullRequests", value)

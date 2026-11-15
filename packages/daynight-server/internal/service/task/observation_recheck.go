@@ -51,5 +51,5 @@ func samePersonalTaskBinding(selected, current store.TaskSessionSource) bool {
 	if (selected.Worker == nil) != (current.Worker == nil) {
 		return false
 	}
-	return selected.Worker == nil || (selected.Worker.ClaimID == current.Worker.ClaimID && selected.Worker.State == current.Worker.State && selected.Worker.UserID == current.Worker.UserID)
+	return selected.Worker == nil || (selected.Worker.ClaimID == current.Worker.ClaimID && selected.Worker.State == current.Worker.State && selected.Worker.UserID == current.Worker.UserID && selected.Worker.WorkerID == current.Worker.WorkerID && selected.Worker.Machine == current.Worker.Machine && selected.Worker.WorktreeID == current.Worker.WorktreeID && selected.Worker.AgentControlMode == current.Worker.AgentControlMode)
 }

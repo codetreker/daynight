@@ -1,3 +1,4 @@
+import { summariesForIndex } from "./helpers/taskSync";
 import { summariesForGraph } from './helpers/taskSync';
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -106,7 +107,7 @@ describe("task execution presentation", () => {
     const rowIndex = buildGraphIndex(rowGraph);
     const ids = rows.map(({ id }) => id);
     const view = renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(30_000), graph: rowGraph, index: rowIndex }}>
-      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={rowIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} />
+      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={rowIndex} summaries={summariesForIndex(rowIndex)} taskIds={ids} allTaskIds={ids} onSelectTask={noop} />
     </TaskExecutionClockProvider>, { locale, taskCache: true });
     const running = document.getElementById("standalone-task-running")!;
     const completed = document.getElementById("standalone-task-completed")!;
@@ -150,8 +151,8 @@ describe("task execution presentation", () => {
     const select = vi.fn();
     renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(30_000), graph: rowGraph, index: rowIndex }}>
       <TaskPauseProvider taskIds={new Set([item.id])}><ul className="standalone-list">
-        <StandaloneTaskRow projectId="00000000-0000-4000-8000-000000000101" task={item} instanceId="goal-one-task-repeated" onSelectTask={select} />
-        <StandaloneTaskRow projectId="00000000-0000-4000-8000-000000000101" task={item} instanceId="goal-two-task-repeated" onSelectTask={select} />
+        <StandaloneTaskRow title={item.titlePreview} projectId="00000000-0000-4000-8000-000000000101" task={item} instanceId="goal-one-task-repeated" onSelectTask={select} />
+        <StandaloneTaskRow title={item.titlePreview} projectId="00000000-0000-4000-8000-000000000101" task={item} instanceId="goal-two-task-repeated" onSelectTask={select} />
       </ul></TaskPauseProvider>
     </TaskExecutionClockProvider>, { locale: "en", taskCache: true });
     const first = document.getElementById("goal-one-task-repeated")!;
@@ -174,7 +175,7 @@ describe("task execution presentation", () => {
     const manualIndex = buildGraphIndex(manualGraph);
     const content = (elapsed: number) => <TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(elapsed), graph: manualGraph, index: manualIndex }}>
       <TaskGraph index={manualIndex} rootId="A" onOpenTask={noop} />
-      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} />
+      <StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={manualIndex} summaries={summariesForIndex(manualIndex)} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} />
     </TaskExecutionClockProvider>;
     const view = renderWithLocale(content(3_601_000), { locale, taskCache: true });
     await waitFor(() => expect(view.container.querySelector(".task-node-in_progress")).not.toBeNull());
@@ -199,7 +200,7 @@ describe("task execution presentation", () => {
     const unknownIndex = buildGraphIndex({ ...graph, tasks: [task("unknown-running", { status: "in_progress" }), task("unknown-done", { completedAt: start })],
       summary: { ...graph.summary, total: 2, inProgress: 1, done: 1 } });
     const ids = ["unknown-running", "unknown-done"];
-    const view = renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={null}><StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} /></TaskExecutionClockProvider>, { locale, taskCache: true });
+    const view = renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={null}><StandaloneList projectId="00000000-0000-4000-8000-000000000101" index={unknownIndex} summaries={summariesForIndex(unknownIndex)} taskIds={ids} allTaskIds={ids} onSelectTask={noop} /></TaskExecutionClockProvider>, { locale, taskCache: true });
     expect(view.container.querySelector(".task-duration, .task-stuck-label")).toBeNull();
   });
 });

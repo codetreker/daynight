@@ -14,7 +14,7 @@ export type CommittedTaskProjection = {
 
 const summaryOf = ({ projectId: _projectId, title, description: _description, ready: _ready, blockedBy: _blockedBy, ...summary }: TaskDetail): TaskSummary => {
   const characters = Array.from(title);
-  return { ...summary, titlePreview: characters.slice(0, 160).join(''), titleTruncated: characters.length > 160 };
+  return { ...summary, title, titlePreview: characters.slice(0, 160).join(''), titleTruncated: characters.length > 160 };
 };
 
 // These receipts are a view-only bridge until the versioned sync catches up.

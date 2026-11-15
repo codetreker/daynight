@@ -14,6 +14,7 @@ type Tag struct {
 	ProjectID string
 	Name      string
 	NameKey   string
+	Color     string
 	Version   int64
 	CreatedAt time.Time
 	UpdatedAt time.Time

@@ -1,3 +1,4 @@
+import { summariesForIndex } from "./helpers/taskSync";
 import { useContext, useEffect, useRef, useState, type RefObject } from 'react';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -118,7 +119,7 @@ describe('task dependency canvas', () => {
     const data: TaskGraphData = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, parentId: task.id === 'C' ? 'g1' : task.id === 'B' ? 'g2' : null })) };
     const goal = (id: string, title: string): TaskSummary => {
       const { blockedBy: _blockedBy, ready: _ready, ...rest } = data.tasks[0]!;
-      return { ...rest, tags: [], id, type: 'goal', titlePreview: title, properties: {}, version: 1n };
+      return { ...rest, tags: [], id, type: 'goal', title, titlePreview: title, properties: {}, version: 1n };
     };
     const summaries = new Map([['g1', goal('g1', '目标一')], ['g2', goal('g2', '目标二')]]);
     const view = render(<TaskGraph index={buildGraphIndex(data)} summaries={summaries} rootId="A" onOpenTask={noop} />);
@@ -1135,7 +1136,7 @@ describe('task chain dialog entries', () => {
 
   it.each(['body', 'footer', 'fullscreen'] as const)('keeps %s focus inside the modal when a merge changes the representative', async (control) => {
     const { before, after } = mergingGraphs();
-    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
+    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(50));
@@ -1160,12 +1161,12 @@ describe('task chain dialog entries', () => {
     const after = buildGraphIndex({ ...graph, tasks: tasks.map((task) => task.id === 'B' ? { ...task, externalDependsOn: ['A'] } : task),
       summary: { proposed: 0, total: 2, todo: 2, inProgress: 0, done: 0, cancelled: 0, ready: 1, blocked: 1 } });
     const restoreGraphFocus = () => document.getElementById('project-chain-list')?.focus({ preventScroll: true });
-    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} allRepresentativeIds={['A']}
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={before} summaries={summariesForIndex(before)} allRepresentativeIds={['A']}
       representativeIds={['A']} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onRestoreGraphFocus={restoreGraphFocus} onOpenTask={noop} />);
     await waitFor(() => expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(2));
     const focused = view.baseElement.querySelector<HTMLButtonElement>('.react-flow__node[data-id="B"] .task-node-body')!;
     focused.focus();
-    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={after} allRepresentativeIds={[]}
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={after} summaries={summariesForIndex(after)} allRepresentativeIds={[]}
       representativeIds={[]} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onRestoreGraphFocus={restoreGraphFocus} onOpenTask={noop} />);
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     expect(view.baseElement.querySelector('.completed-chain-control')).toBeNull();
@@ -1178,7 +1179,7 @@ describe('task chain dialog entries', () => {
     const outside = document.createElement('button');
     outside.textContent = '详情关闭控件';
     document.body.append(outside);
-    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index}
+    const list = (index: typeof before, openChainId: string) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)}
       allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.baseElement.querySelectorAll('.react-flow__node')).toHaveLength(50));
@@ -1193,7 +1194,7 @@ describe('task chain dialog entries', () => {
 
   it('renders the presented root order without changing the complete graph index', () => {
     const representativeIds = index.representativeIds.toReversed();
-    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect([...view.baseElement.querySelectorAll('.root-toggle')].map((root) => root.id)).toEqual(['task-root-F', 'task-root-E', 'task-root-B', 'task-root-A']);
     expect(index.representativeIds).toEqual(['A', 'B', 'E', 'F']);
     expect(index.successors.get('A')).toEqual(['C']);
@@ -1203,7 +1204,7 @@ describe('task chain dialog entries', () => {
 
   it('retains collapsed root renders during selection and still applies their new snapshot progress', async () => {
     const progressReads = vi.spyOn(index.components, 'get');
-    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const view = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await ready(view.baseElement);
     const originalRoots = [...view.baseElement.querySelectorAll('.root-toggle')];
     const originalCanvas = view.baseElement.querySelector('.task-graph-canvas');
@@ -1232,7 +1233,7 @@ describe('task chain dialog entries', () => {
       tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })),
       summary: { proposed: 0, total: 6, todo: 0, inProgress: 0, done: 6, cancelled: 0, ready: 0, blocked: 0 },
     });
-    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    view.rerender(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={refreshed} summaries={summariesForIndex(refreshed)} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
     expect(originalRoots[2]!.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('已完成');
     expect(originalRoots[0]!.closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
@@ -1245,7 +1246,7 @@ describe('task chain dialog entries', () => {
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
       const opener = useRef<HTMLElement | null>(null);
-      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={(id, trigger) => { opener.current = trigger; setOpenChainId(id); }} onCloseChain={() => setOpenChainId(null)} onRestoreGraphFocus={() => opener.current?.focus({ preventScroll: true })} onOpenTask={noop} />;
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={(id, trigger) => { opener.current = trigger; setOpenChainId(id); }} onCloseChain={() => setOpenChainId(null)} onRestoreGraphFocus={() => opener.current?.focus({ preventScroll: true })} onOpenTask={noop} />;
     };
     const { baseElement: container } = render(<Wrapper />);
     const roots = container.querySelectorAll<HTMLButtonElement>('.root-toggle');
@@ -1290,7 +1291,7 @@ describe('task chain dialog entries', () => {
   it('renders task previews as plain text in the list, modal title and graph nodes', () => {
     const untrusted = '<img src=x onerror=alert(1)>'.repeat(6);
     const snapshot = { ...graph, tasks: graph.tasks.map((task) => task.id === 'A' ? { ...task, titlePreview: untrusted, titleTruncated: true } : task) };
-    const { container } = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={buildGraphIndex(snapshot)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    const { container } = render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={buildGraphIndex(snapshot)} summaries={summariesForIndex(buildGraphIndex(snapshot))} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openGraphTarget={{ kind: 'chain', witnessTaskId: 'A', rootId: 'A' }} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(screen.getAllByText(`${untrusted}…`)).toHaveLength(3);
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('script')).toBeNull();

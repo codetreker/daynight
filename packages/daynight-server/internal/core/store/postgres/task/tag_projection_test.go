@@ -249,7 +249,7 @@ func TestTaskTagMixedWriteAndSync(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, err := s.TagDAO().UpdateTag(ctx, tagID, 1, "After", "after", observed); err != nil {
+		if _, err := s.TagDAO().UpdateTag(ctx, tagID, 1, "After", "after", "#9AA3B2", observed); err != nil {
 			return err
 		}
 		_, err = s.TaskTagDAO().TouchTaggedTasks(ctx, tagID, observed)
@@ -274,7 +274,7 @@ func TestTaskTagMixedWriteAndSync(t *testing.T) {
 
 	newTagID := readerID(22)
 	mustOK(t, readerWriteProject(db, ctx, project.ID, func(s store.ProjectWriteScope) error {
-		_, err := s.TagDAO().InsertTag(ctx, model.Tag{ID: newTagID, Name: "After", NameKey: "after", CreatedAt: time.Now()})
+		_, err := s.TagDAO().InsertTag(ctx, model.Tag{ID: newTagID, Name: "After", NameKey: "after", Color: "#9AA3B2", CreatedAt: time.Now()})
 		return err
 	}))
 	recreated := readerSnapshotTask(t, db, project.ID, item.ID)

@@ -17,7 +17,7 @@ const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
 const project = { id: projectId, name: 'Project', repoUrl: 'https://example.test/project', ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (id: string, type: 'task' | 'goal', parentId: string | null, status: TaskSummary['status'], changes: Partial<TaskSummary> = {}): TaskSummary => ({
-  tags: [], id, type, parentId, status, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
+  tags: [], id, type, parentId, status, title: id, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
   dependsOn: [], externalDependsOn: [], properties: {}, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes,
 });
 const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map(task => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
@@ -35,7 +35,7 @@ const ChildFilteredWorkspace = ({ items }: { readonly items: TaskSummary[] }) =>
   const filter = useTagFilter(projectId);
   const value = snapshot(items);
   return <TaskExecutionClockProvider projectId={projectId} snapshot={value}><ProjectTaskWorkspace snapshot={value} sessionStore={store} activeView="goals" pausedTasks={[]} onOpenPausedTask={() => {}} onPausedFocusFallback={() => {}} unfinishedStandaloneTaskCount={0} unfinishedChainCount={0} unfinishedGoalCount={2} onViewChange={noop} filter={<TagFilter controller={filter} child />}
-    goals={{ projectId, childTagFilter: filter, goals: [value.summaries.get('goal')!, value.summaries.get('other')!], summaries: value.summaries, total: 2, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
+    goals={{ projectId, childTagFilter: filter, goals: [value.summaries.get('goal')!, value.summaries.get('other')!], total: 2, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
     chains={{ projectId, representativeIds: [], allRepresentativeIds: [], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
     standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 };

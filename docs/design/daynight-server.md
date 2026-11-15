@@ -82,7 +82,7 @@ store 先投影任务自身的 160 字符标题预览、业务 version、状态�
 关闭任务 rows 后，以选中 task IDs 的一次 `ANY` 查询批量读取并装配完整规范属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。读取直接装入 `json.RawMessage`，不调用属性 Normalize/Validate/Admit，也不复查图规模或读取响应字节。正常解码、编码、数据库和事务完成错误沿原链路传播。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整标题、标题预览及完整属性，普通属性变化不轮换 epoch。读取直接装入 `json.RawMessage`，不调用属性 Normalize/Validate/Admit，也不复查图规模或读取响应字节。正常解码、编码、数据库和事务完成错误沿原链路传播。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
 
 ## 目录与调用方向
 
@@ -187,7 +187,9 @@ Project/Task ID 使用应用生成的 UUID；[Thread 消息](daynight-task-threa
 
 `063_task_assignment_all_index.sql` 增加完整项目/负责人/keyset 索引，以支持视图上的负责人查询；部分索引继续保留。查询仍过滤有效删除状态。索引会维护所有任务行，并在迁移事务构建期间阻塞相关写入。
 
-`070_task_tags.sql` 为 Project 增加独立的 `tag_catalog_epoch`，并建立标签库 `project_tags` 与关联表 `task_tags`。标签名称键按 `C` 排序，同一 Project 内由唯一索引保证唯一；关联以 `(project_id, task_id, tag_id)` 为主键，反向索引支持标签到条目的集合操作。两表不复制名称，也不引入外键或触发器。旧 Task 自然拥有空关联。标签目录在同一读取快照按名称键和 ID 分页、按字面子串查询及批量解析；使用计数通过有效删除视图统计可见 Task 和 Goal，包含终态。项目写事务提供原始版本条件写、关联集合替换、关联条目版本与时间的集合 touch，以及包含已删除保留条目的关联清理。独立 epoch 旋转不修改 Project 元数据或 `task_cache_epoch`。`core/tag` 拥有名称、版本与标签库规则；`service/tag` 在同一项目写作用域核验权限、原始版本并协调关联 touch 与删除，读取在同一快照核验权限和计数；`server/tag` 负责 REST 解析、认证接入、编码与错误映射。创建、实际改名和删除仅旋转标签目录 epoch；改名和删除集合 touch 关联条目，删除清除包括已删除保留条目的全部关联，不读取所有条目正文或失效任务缓存。目录 cursor 绑定项目、principal、查询、limit、epoch 和排序位置；批量解析以实际编码限制输出并拒绝任何失效 ID。设计取舍见[标签存储决策](../../.agents/notes/implemented/architecture/2026-11-13-project-tag-storage.md)与[标签目录决策](../../.agents/notes/implemented/feature/2026-11-13-project-tag-catalog.md)。
+`070_task_tags.sql` 为 Project 增加独立的 `tag_catalog_epoch`，并建立标签库 `project_tags` 与关联表 `task_tags`。标签名称键按 `C` 排序，同一 Project 内由唯一索引保证唯一；关联以 `(project_id, task_id, tag_id)` 为主键，反向索引支持标签到条目的集合操作。两表不复制名称，也不引入外键或触发器。旧 Task 自然拥有空关联。标签目录在同一读取快照按名称键和 ID 分页、按字面子串查询及批量解析；使用计数通过有效删除视图统计可见 Task 和 Goal，包含终态。项目写事务提供原始版本条件写、关联集合替换、关联条目版本与时间的集合 touch，以及包含已删除保留条目的关联清理。独立 epoch 旋转不修改 Project 元数据或 `task_cache_epoch`。`core/tag` 拥有名称、版本与标签库规则；`service/tag` 在同一项目写作用域核验权限、原始版本并协调关联 touch 与删除，读取在同一快照核验权限和计数；`server/tag` 负责 REST 解析、认证接入、编码与错误映射。创建、实际改名、改色和删除旋转标签目录 epoch；改名、改色和删除集合 touch 关联条目，删除清除包括已删除保留条目的全部关联，不读取所有条目正文或失效任务缓存。目录 cursor 绑定项目、principal、查询、limit、epoch 和排序位置；名称引用批量解析以实际编码限制输出并拒绝任何失效 ID。设计取舍见[标签存储决策](../../.agents/notes/implemented/architecture/2026-11-13-project-tag-storage.md)与[标签目录决策](../../.agents/notes/implemented/feature/2026-11-13-project-tag-catalog.md)。
+
+`074_tag_color.sql` 为 Tag 增加非空大写 `#RRGGBB` 色值，既有和省略颜色的新 Tag 均为 `#9AA3B2`。服务在项目写锁内先校验原始版本，再原子更新名称和颜色；实际改色与改名一样 touch 关联 Task/Goal 并旋转目录 epoch，同值不写入。颜色批量读取在同一授权快照校验可选 epoch，并按规范化去重后的 ID 返回精确版本和颜色或明确缺失。现有 REST、MCP 和 Task 标签引用投影不包含颜色，也不扩大既有回执预算。设计取舍见[颜色存储决策](../../.agents/notes/implemented/architecture/2026-11-15-tag-color-storage.md)。
 
 `core/task` 规范化并排序标签集合。创建省略或提交空集合时无关联；项目锁内校验候选及全部标签后，在原创建事务写入 Task/Goal 和关联，重新加载实际引用并核对集合，响应准入失败回滚全部写入。创建不 touch 条目，保留原始版本和数据库时间。更新省略标签保留、空集合清除，即使无变化也检查原始版本。`service/task` 的独立关联操作在项目锁内检查成员、有效 Task/Goal 和全部本项目标签；实际变化替换关联并使用锁后数据库时间 touch 一次，不改变执行归属或冻结 Session。PATCH 仅提交 `tagIds` 时使用独立关联操作；混合 metadata 时在原写事务校验最终集合，关联替换与 metadata 写入、响应准入共同提交或回滚，最多推进一次版本。单资源读取及完整写回执在同一事务加载真实标签引用；列表、ready、搜索和同步在截取选定页后批量加载引用，与任务行共享快照。关联变化不旋转任务缓存 epoch。
 
@@ -670,8 +672,8 @@ Go 模块与 startup/shutdown job 分别使用独立 PostgreSQL 服务并归档�
 
 ## 账号进行中任务读取
 
-[账号读取合同](../spec/daynight-personal-in-progress-tasks.md)通过账号权限关系与有效删除视图，在数据库中筛选本人进行中普通 Task、聚合完整项目数量并以有界页面返回轻量投影。Parent Goal 标题来自实际父资源；暂停属性和 Session 来源按页面批量读取。服务从同一快照捕获的内存来源按 Task ID、Project ID、版本和状态核对行，由个人任务规则选择 active claim 的 Worker 和机器摘要；无 Session 注册也可取得 claim。来源缺失或不一致以及严格读取错误拒绝选择，HTTP 仅映射摘要，不查询 Worker 目录或逐任务追加读取。
+[账号读取合同](../spec/daynight-personal-in-progress-tasks.md)通过账号权限关系与有效删除视图，在数据库中筛选本人进行中普通 Task、聚合完整项目数量并以有界页面返回投影。Parent Goal 标题来自实际父资源；页面选择包含创建时间及平台，排除 lookahead 后按项目与页面 Task 批量读取标签和实际未结束的前置关系。暂停属性和 Session 来源也来自同一快照。服务按 Task ID、Project ID、版本和状态核对来源，由个人任务规则选择保留的 active 或 completed Worker 及机器摘要；无 Session 注册也可取得记录。来源缺失、不一致或严格读取错误拒绝整页，HTTP 不查询 Worker 目录或逐任务追加读取。
 
-选择快照验证凭据并读取活跃项目事实、页面和 Session 来源，结束后才采样 Session。发布前在新快照复核凭据及清单 revision；权限或清单变化拒绝发布，普通观测失败保留行及已确认的 Worker 并报告部分观测。claim 获取、完成或释放改变 Task 版本，复核发现变化时重置清单；最终复核后的变化由后续刷新反映。revision 是按项目 ID 排序的规范事实向量的 SHA-256，包含项目归属、设置、匹配数及项目全部 Task 的 epoch、数量和版本和，不包含 Session 或时钟。版本和使用精确十进制，避免溢出。
+选择快照验证凭据并读取活跃项目事实、页面和 Session 来源，结束后才采样 Session。发布前在新快照复核凭据及清单 revision，并从该快照取得数据库时钟 `responseTaskAt`；采样和复核完成后从 Session Engine 时钟取得 `responseSessionAt`。二者分别供 Task 时间和 Session 时效判断，不替代原 `observedAt` 水位。权限或清单变化拒绝发布，普通观测失败保留行及已确认的 Worker 并报告部分观测。标签、前置状态及 claim 获取、完成或释放造成的版本事实变化在复核时重置清单；最终复核后的变化由后续刷新反映。revision 是按项目 ID 排序的规范事实向量的 SHA-256，包含项目归属、设置、匹配数及项目全部 Task 的 epoch、数量和版本和，不包含 Session 或时钟。版本和使用精确十进制，避免溢出。
 
 每页选择与最终复核均聚合活跃项目全部 Task 历史；无关更新可能重置遍历，持续变化不保证完成。该机制复用既有项目版本事实，不依赖进程内快照或持久化全局版本。真实成本取决于数据和负载，不承诺性能收益。

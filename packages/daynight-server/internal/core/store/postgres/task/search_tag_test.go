@@ -97,7 +97,7 @@ func TestSearchTagQualificationSharesSnapshotAndFence(t *testing.T) {
 		if _, err := scope.TaskTagDAO().TouchTaggedTasks(ctx, tagID, time.Now()); err != nil {
 			return err
 		}
-		_, err := scope.TagDAO().UpdateTag(ctx, tagID, 1, "Renamed", "renamed", time.Now())
+		_, err := scope.TagDAO().UpdateTag(ctx, tagID, 1, "Renamed", "renamed", "#9AA3B2", time.Now())
 		return err
 	})
 	if err != nil || completion.Outcome != store.TransactionCommitted {

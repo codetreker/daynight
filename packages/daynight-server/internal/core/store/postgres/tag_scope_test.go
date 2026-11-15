@@ -31,7 +31,7 @@ func TestTagScopesShareSnapshotAndProjectTransaction(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "Before", NameKey: "before", CreatedAt: now}); err != nil {
+		if _, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "Before", NameKey: "before", Color: "#9AA3B2", CreatedAt: now}); err != nil {
 			return err
 		}
 		if err := scope.TaskTagDAO().ReplaceTaskTags(ctx, task.ID, []string{tagID}); err != nil {
@@ -55,7 +55,7 @@ func TestTagScopesShareSnapshotAndProjectTransaction(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "Before", NameKey: "before", CreatedAt: now}); err != nil {
+		if _, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "Before", NameKey: "before", Color: "#9AA3B2", CreatedAt: now}); err != nil {
 			return err
 		}
 		if err := scope.TaskTagDAO().ReplaceTaskTags(ctx, task.ID, []string{tagID}); err != nil {
@@ -83,7 +83,7 @@ func TestTagScopesShareSnapshotAndProjectTransaction(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if _, err := write.TagDAO().UpdateTag(ctx, tagID, original.Version, "After", "after", now); err != nil {
+			if _, err := write.TagDAO().UpdateTag(ctx, tagID, original.Version, "After", "after", "#9AA3B2", now); err != nil {
 				return err
 			}
 			return write.ProjectDAO().RotateTagCatalogEpoch(ctx)
@@ -164,7 +164,7 @@ func TestTagDeleteAndAttachSerialize(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "tag", NameKey: "tag", CreatedAt: now})
+		_, err = scope.TagDAO().InsertTag(ctx, model.Tag{ID: tagID, Name: "tag", NameKey: "tag", Color: "#9AA3B2", CreatedAt: now})
 		return err
 	}); err != nil {
 		t.Fatal(err)

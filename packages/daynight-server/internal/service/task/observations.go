@@ -150,6 +150,11 @@ func (s *Observations) observeExecutionBatchWithPolicy(ctx context.Context, snap
 				result[task.ID] = unavailableObservation(observed, "execution_changed")
 				continue
 			}
+			// A completed retained claim is historical after a manual restart.
+			if strictSourceErrors && source.TaskStatus == model.TaskInProgress && source.Worker != nil && source.Worker.State == model.WorkerCompleted {
+				source.Worker = nil
+				source.Session = nil
+			}
 			matched = append(matched, source)
 		}
 		observations, err := s.observer.ObserveTaskSessions(ctx, principal, matched)

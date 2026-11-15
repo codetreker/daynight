@@ -17,6 +17,7 @@ type TaskViewRecord struct {
 	ParentID          *string
 	Properties        TaskProperties
 	ID                string
+	Title             string
 	TitlePreview      string
 	TitleTruncated    bool
 	Status            TaskStatus

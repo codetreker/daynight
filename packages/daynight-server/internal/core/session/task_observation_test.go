@@ -36,6 +36,19 @@ func observationFixture(t *testing.T) (*Engine, model.Principal, store.TaskSessi
 	return engine, actor, source, live
 }
 
+func TestTaskObservationTimeUsesEngineClockAndHonorsCancellation(t *testing.T) {
+	engine, _, _, _ := observationFixture(t)
+	at, err := engine.TaskObservationTime(t.Context())
+	if err != nil || !at.Equal(engine.now()) || at.Location() != time.UTC {
+		t.Fatalf("clock: %v %v", at, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := engine.TaskObservationTime(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation: %v", err)
+	}
+}
+
 func TestTaskObservationSeparatesIndicatorAndSending(t *testing.T) {
 	for _, test := range []struct {
 		name                                string

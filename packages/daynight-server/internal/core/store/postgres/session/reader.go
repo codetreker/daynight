@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
@@ -70,7 +71,14 @@ func (r *Reader) CurrentTaskSessionSources(ctx context.Context, projectID string
 }
 
 func taskSessionWorker(raw string) (*model.WorkerClaim, error) {
-	return taskproperties.Worker(model.TaskProperties{"worker": json.RawMessage(raw)})
+	worker, err := taskproperties.Worker(model.TaskProperties{"worker": json.RawMessage(raw)})
+	if err != nil {
+		return nil, err
+	}
+	if worker == nil {
+		return nil, fmt.Errorf("stored worker property is null")
+	}
+	return worker, nil
 }
 
 func decodeTaskSessionState(raw []byte, state *store.TaskSessionStateSource) error {
