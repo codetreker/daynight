@@ -140,6 +140,7 @@ export class TaskCacheScope {
   private readonly projectionSnapshotAncestors = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, readonly string[]>>();
   private readonly deniedProjects = new Map<string, SyncTicket>();
   private readonly projectPurges = new Map<string, Promise<void>>();
+  private readonly pendingTagColorAdmissions = new Map<string, { readonly readRevision: number; readonly scopeRevision: number; readonly directRevision: number; readonly userFence: string | null }>();
   private invalidated = false;
   private identityMismatch = false;
   private readonly admission = new AbortController();
@@ -1021,6 +1022,11 @@ export class TaskCacheScope {
       await transaction.objectStore("projects").put(invalidated(this.userId, projectId, userFence, "access", nextHistory(manifest)));
     }, lifetime)).then(() => {
       if (this.deniedProjects.get(projectId) === ticket) this.deniedProjects.delete(projectId);
+      const admission = this.pendingTagColorAdmissions.get(projectId);
+      this.pendingTagColorAdmissions.delete(projectId);
+      if (admission !== undefined && admission.userFence === this.userFence && admission.readRevision === this.getProjectReadRevision(projectId) &&
+        admission.scopeRevision === this.getProjectRevision(projectId) && admission.directRevision === this.getDirectRevision(projectId) &&
+        !this.isDirectProjectBlocked(projectId)) this.emitTagColors(projectId, true);
       this.hint(projectId);
     }).catch((error: unknown) => {
       if (notifyFailure) {
@@ -1604,7 +1610,15 @@ export class TaskCacheScope {
     const revision = this.getProjectReadRevision(projectId) + 1;
     this.readableProjects.set(projectId, revision);
     this.projectReadRevisions.set(projectId, revision);
-    if (!this.isDirectProjectBlocked(projectId)) this.emitTagColors(projectId, true);
+    if (!this.isDirectProjectBlocked(projectId)) {
+      this.pendingTagColorAdmissions.delete(projectId);
+      this.emitTagColors(projectId, true);
+    } else if (this.deniedProjects.has(projectId)) {
+      // The successful read can finish before the older denial's cleanup.
+      // Preserve its fences, not its contents, until that cleanup commits.
+      this.pendingTagColorAdmissions.set(projectId, { readRevision: revision, scopeRevision: this.getProjectRevision(projectId),
+        directRevision: this.getDirectRevision(projectId), userFence: this.userFence });
+    }
   }
   getProjectReadRevision(projectId: string): number { return this.projectReadRevisions.get(projectId) ?? 0; }
   canRevokeProjectRead(ticket: SyncTicket, revision: number): boolean {
@@ -1821,7 +1835,7 @@ export class TaskCacheScope {
     this.unboundProjectDenials.clear();
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already committed. */ } }
-    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
+    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.pendingTagColorAdmissions.clear(); this.listeners.clear(); this.projectionListeners.clear();
     this.purge = this.transaction(async (transaction) => {
       const stored = await transaction.objectStore("userScopes").get(this.userId);
       let currentFence: string | null = null;
@@ -1846,7 +1860,7 @@ export class TaskCacheScope {
     this.directProjects.clear(); this.directAuthorizedRevisions.clear(); this.directHintCounts.clear(); this.directRecheckPending.clear(); this.directRecheckWorks.clear(); this.directRecheckErrors.clear();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already completed. */ } }
     this.pending.clear(); this.channel?.close(); this.database.close();
-    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.listeners.clear(); this.projectionListeners.clear();
+    this.projections.clear(); this.authorizedProjects.clear(); this.historyPreviews.clear(); this.uncertainHistory.clear(); this.pendingTagColorAdmissions.clear(); this.listeners.clear(); this.projectionListeners.clear();
   }
 }
 

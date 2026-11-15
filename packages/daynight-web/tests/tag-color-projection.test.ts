@@ -1,14 +1,17 @@
-import { waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { createElement, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
-import { resolveProjectTagColors, type ProjectTagColorPage } from '../src/api/task-tags';
+import { listProjectTags, resolveProjectTagColors, type ProjectTagColorPage } from '../src/api/task-tags';
 import { createTaskCacheScope, type CacheEvent, type TaskCacheScope } from '../src/features/task-cache/project-cache';
+import { TaskCacheProvider } from '../src/features/task-cache/TaskCacheProvider';
 import { TagColorProjection } from '../src/features/task-tags/useTagColors';
+import { useProjectTags } from '../src/features/task-tags/useProjectTags';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { admitTaskGraph } from './helpers/taskSessions';
 import { taskSyncEpoch } from './helpers/taskSync';
 
-vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), resolveProjectTagColors: vi.fn() }));
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTagColors: vi.fn() }));
 
 const project = '10000000-0000-4000-8000-000000000001';
 const tag = (n: number) => `20000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -36,7 +39,7 @@ const scopeFixture = () => {
   return { scope, lifetime, emit: (event: CacheEvent) => { for (const listener of listeners) listener(event); }, emitColors: (projectId: string) => { for (const listener of colorListeners) listener(projectId); }, suspend: (value: boolean) => { suspended = value; }, listeners, colorListeners, revalidate };
 };
 const resolve = vi.mocked(resolveProjectTagColors);
-beforeEach(() => { resolve.mockReset(); });
+beforeEach(() => { resolve.mockReset(); vi.mocked(listProjectTags).mockReset(); });
 
 describe('shared tag color projection', () => {
   it('deduplicates observers and publishes all batches atomically, including missing IDs', async () => {
@@ -244,5 +247,48 @@ describe('shared tag color projection', () => {
       scope.markProjectReadable(project);
       await waitFor(() => expect(store.snapshot().items.get(tag(1))).toMatchObject({ color: '#ABCDEF' }));
     } finally { stop(); scope.dispose(); peer.dispose(); }
+  });
+
+  it('resumes a newly mounted catalog read after real scope cleanup, while a later withdrawal fences it', async () => {
+    const userId = '30000000-0000-4000-8000-000000000001';
+    const scope = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() });
+    const graph = graphFixture([detailFixture(project, tag(1))]);
+    const store = new TagColorProjection(scope, project);
+    const wrapper = ({ children }: { readonly children: ReactNode }) => createElement(TaskCacheProvider, { scope, children });
+    let stop = () => {};
+    try {
+      await admitTaskGraph(scope, graph, { versionForTask: () => 1n });
+      resolve.mockImplementation(async (_project, ids) => page(ids));
+      vi.mocked(listProjectTags).mockResolvedValue({ items: [], catalogEpoch: taskSyncEpoch(project), nextCursor: null });
+      stop = store.watch([tag(1)]);
+      await waitFor(() => expect(store.snapshot().items.size).toBe(1));
+      const ticket = await scope.beginSync(project, scope.signal);
+      const started = deferred<void>(), release = deferred<void>();
+      const ready = scope.ready.bind(scope);
+      const spy = vi.spyOn(scope, 'ready').mockImplementationOnce(async signal => { started.resolve(); await release.promise; await ready(signal); });
+      const cleanup = scope.revokeProject(ticket, scope.signal, false);
+      await started.promise;
+      const catalog = renderHook(() => useProjectTags(project), { wrapper });
+      await waitFor(() => expect(catalog.result.current.page).not.toBeNull());
+      expect(store.snapshot().items.size).toBe(0);
+      await act(async () => { release.resolve(); expect(await cleanup).toBe(true); });
+      await waitFor(() => expect(store.snapshot().items.size).toBe(1));
+      catalog.unmount(); spy.mockRestore();
+
+      await admitTaskGraph(scope, graph, { versionForTask: () => 1n });
+      const next = await scope.beginSync(project, scope.signal);
+      const nextStarted = deferred<void>(), nextRelease = deferred<void>();
+      const secondSpy = vi.spyOn(scope, 'ready').mockImplementationOnce(async signal => { nextStarted.resolve(); await nextRelease.promise; await ready(signal); });
+      const secondCleanup = scope.revokeProject(next, scope.signal, false);
+      await nextStarted.promise;
+      const laterCatalog = renderHook(() => useProjectTags(project), { wrapper });
+      await waitFor(() => expect(laterCatalog.result.current.page).not.toBeNull());
+      act(() => scope.suspendProject(project));
+      const calls = resolve.mock.calls.length;
+      await act(async () => { nextRelease.resolve(); expect(await secondCleanup).toBe(true); });
+      expect(resolve).toHaveBeenCalledTimes(calls);
+      expect(store.snapshot().items.size).toBe(0);
+      laterCatalog.unmount(); secondSpy.mockRestore();
+    } finally { stop(); scope.dispose(); }
   });
 });
