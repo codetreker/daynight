@@ -43,7 +43,7 @@ const mount = async ({ delayed = false, supported = true, telemetry = true } = {
     act(() => { browserNavigation().navigate(`/workers/${id}`); rendered.rerender(view(id, active)); }); await flush();
   } };
 };
-const shortcut = () => screen.getByRole('button', { name: 'Tool paths', exact: true });
+const shortcut = () => screen.getByRole('button', { name: 'Tool paths' });
 const summary = () => screen.getByText('Tool paths', { selector: 'summary' });
 
 describe('Worker software tool path shortcut', () => {
@@ -54,7 +54,7 @@ describe('Worker software tool path shortcut', () => {
     expect(state.requested()).toBe(true); expect(screen.queryByText('Tool paths', { selector: 'summary' })).toBeNull();
     await state.resolve();
     expect(summary().closest('details')).toHaveAttribute('open');
-    expect(screen.getByRole('textbox', { name: 'Codex', exact: true })).toBeVisible();
+    expect(screen.getByRole('textbox', { name: 'Codex' })).toBeVisible();
     expect(state.writes).toEqual([]);
   });
 
@@ -71,7 +71,7 @@ describe('Worker software tool path shortcut', () => {
     expect(screen.getByRole('textbox', { name: 'Concurrent task limit' })).toBe(input);
     expect(input).toHaveValue('-'); expect(summary().closest('details')).toHaveAttribute('open');
     summary().closest('details')!.open = false;
-    fireEvent.click(within(screen.getByRole('tabpanel', { name: 'Configuration' })).getByRole('button', { name: 'Refresh', exact: true })); await flush();
+    fireEvent.click(within(screen.getByRole('tabpanel', { name: 'Configuration' })).getByRole('button', { name: 'Refresh' })); await flush();
     expect(summary().closest('details')).not.toHaveAttribute('open'); expect(input).toHaveValue('-');
     fireEvent.click(screen.getByRole('tab', { name: 'Runtime monitoring' })); fireEvent.click(shortcut()); await flush();
     expect(summary().closest('details')).toHaveAttribute('open'); expect(state.writes).toEqual([]);
