@@ -200,7 +200,7 @@ describe('project assignee filtering', () => {
     expect(count()).toHaveTextContent(/^2$/);
     fireEvent.click(screen.getByText('标签筛选', { selector: 'summary' }));
     const goalFilter = screen.getByText('标签筛选', { selector: 'summary' }).closest('.tag-filter')!;
-    fireEvent.click(within(goalFilter as HTMLElement).getByRole('checkbox', { name: '无标签' }));
+    fireEvent.click(within(goalFilter as HTMLElement).getByRole('checkbox', { name: '仅无标签' }));
     expect(document.querySelector(`[data-goal-id="${id(500)}"]`)).toBeNull();
     const card = document.querySelector<HTMLElement>(`[data-goal-id="${id(501)}"]`)!;
     expect(card).toBeVisible(); expect(count()).toHaveTextContent(/^2$/);
@@ -208,7 +208,7 @@ describe('project assignee filtering', () => {
     expect(card.querySelectorAll('.task-row-title')).toHaveLength(2);
     fireEvent.click(screen.getByText('子 Task 标签筛选', { selector: 'summary' }));
     const childFilter = screen.getByText('子 Task 标签筛选', { selector: 'summary' }).closest('.tag-filter')!;
-    fireEvent.click(within(childFilter as HTMLElement).getByRole('checkbox', { name: '无标签' }));
+    fireEvent.click(within(childFilter as HTMLElement).getByRole('checkbox', { name: '仅无标签' }));
     expect(card.querySelectorAll('.task-row-title')).toHaveLength(1);
     expect(card).toHaveTextContent('Task 2');
     expect(count()).toHaveTextContent(/^2$/);

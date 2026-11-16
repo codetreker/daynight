@@ -23,7 +23,8 @@ and event boundaries.
 
 Position and height follow the visible viewport rectangle, falling back to the
 layout viewport where `visualViewport` is unavailable. The natural panel width
-remains the current 285px, capped by the available width with side margins.
+is 352px, capped by the available width with side margins. At the time of this
+decision the existing skin used 285px; the selector decision later changed it.
 Available space above and below the anchor is intersected with the visible
 rectangle before choosing placement. Extremely small visible areas reduce margins
 and padding, and placement may overlap the anchor to retain a scrollport. The
@@ -31,9 +32,9 @@ list and, when needed, the panel itself
 scroll so that controls remain reachable. The [toolbar decision](../feature/2026-11-14-unified-tag-filter-toolbar.md)
 retains the independent filter ownership and its original placement rationale.
 
-The local lifecycle does not own filter data or the panel's presentation. This
-keeps the existing native matching control and skin while allowing the separate
-selector presentation to change without duplicating event and geometry rules.
+The local lifecycle does not own filter data or the panel's presentation. The
+[selector decision](../feature/2026-11-16-tag-filter-selector.md) owns the radio
+matching controls and skin without duplicating event and geometry rules.
 
 ## Alternatives
 

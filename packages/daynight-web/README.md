@@ -1045,6 +1045,14 @@ Cards contain child rows without their own filter controls. Search results place
 the shared project tag filter directly after Status; child filtering belongs to
 the ordinary Goal view.
 
+The shared selector applies changes immediately. Its search and filter clear
+actions are independent; clearing the filter retains the search and match mode.
+The tag rows, pagination, untagged option and native match radios share one
+panel. Match mode remains selected but disabled with an explanation until at
+least two IDs are selected. The trigger counts active conditions and removable
+chips retain unavailable names. Only the main filter provides tag management.
+The [Web specification](../../docs/spec/daynight-web.md) owns these behaviors.
+
 Visible and selected Tags share their project color across the catalog, lists,
 search, details, pickers and filters. Names remain visible; loading, missing
 colors and read errors have distinct feedback. Background reads retain the last

@@ -162,7 +162,7 @@ export const verifyTagFlow = async (page: Page, projectId: string, serverToken: 
   await filter.getByRole("checkbox", { name: "Backend" }).check();
   await expect(child).toBeVisible();
   await expect(control).toHaveCount(0);
-  await filter.getByRole("button", { name: "Clear", exact: true }).click();
+  await filter.getByRole("button", { name: "Clear filter", exact: true }).click();
   await expect(control).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(filter).not.toHaveAttribute("open", "");
