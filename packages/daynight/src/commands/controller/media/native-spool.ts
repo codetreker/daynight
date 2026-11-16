@@ -10,9 +10,9 @@ export type NativeMediaSpool = {
 };
 
 /** Wire staging uses the same media owner as uploads, capture and native pins. */
-export const openNativeMediaSpool = (filename: string, maximumBytes: number, reserve: (bytes: number) => void, removed: () => void): NativeMediaSpool => {
+export const openNativeMediaSpool = (filename: string, maximumBytes: number, assertOpen: () => void, removed: () => void): NativeMediaSpool => {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 134_217_728) throw new Error("Native media spool maximum exceeds its bound.");
-  reserve(0);
+  assertOpen();
   let writer: number | null = openSync(filename, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   const identity = fstatSync(writer);
   let bytes = 0, sealed = false, deleted = false, unlinked = false, removalSynced = false, readers = 0;
@@ -33,7 +33,7 @@ export const openNativeMediaSpool = (filename: string, maximumBytes: number, res
       if (sealed || writer === null) throw new Error("Native media spool is sealed.");
       if (!(chunk instanceof Uint8Array) || chunk.byteLength > 65_536) throw new Error("Native media spool chunk exceeds its bound.");
       if (bytes + chunk.byteLength > maximumBytes) throw new Error("Native media spool exceeds its bound.");
-      reserve(bytes + chunk.byteLength);
+      assertOpen();
       let offset = 0;
       while (offset < chunk.byteLength) {
         const written = writeSync(writer, chunk, offset, chunk.byteLength - offset, bytes);

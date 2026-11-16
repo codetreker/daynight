@@ -19,12 +19,12 @@ normal closure and Worker execution-file deletion never create, open, read,
 update or release `controller/media/budget.sqlite`. Existing files may remain
 untouched; they carry no authority and require no journal format migration.
 
-Metadata admission and the 512 MiB free-space watermark remain in force. Actual
-media bytes, private hard-link identity and outstanding unwritten source,
-preparation and wire-spool bytes still inform the space needed for a write.
-Maintenance checks its remaining disk peak, including VACUUM temporary space,
-and checks ordinary admission after cleanup. These measurements do not persist a
-cross-execution charge or promise exclusive capacity against another writer.
+The ledger removal originally retained the independent metadata policy,
+512 MiB free-space watermark and remaining-work disk peak estimates. The later
+[free-space and peak admission removal](2026-11-16-controller-free-space-admission-removal.md)
+removes that watermark and those estimates, including media scans and unwritten
+byte accounting used only for prediction. Metadata admission remains in force;
+maintenance checks actual metadata after cleanup.
 
 Execution, Session, claim, generation, attempt and native identities retain
 their existing owners. Storage permits, reader barriers, stopping evidence,
@@ -69,13 +69,12 @@ obsolete file untouched avoids adding another ownership or recovery mechanism.
 ## Consequences
 
 Historical reservations and cumulative execution size no longer block otherwise
-admitted work. Controller media can consume more local disk; the remaining
-watermark does not reserve space against concurrent filesystem users, and actual
-storage failures continue to fail the operation. Existing media and execution
+admitted work. Controller media can consume more local disk, and actual storage
+failures continue to fail the operation. Existing media and execution
 files retain their original lifecycle and are not swept to satisfy admission.
 
 Single-image and message limits, archive and protocol limits, decoder memory and
-concurrency, outbox backpressure, logical content limits, metadata admission and
-free-space admission remain independently owned policies. Reintroducing a local
+concurrency, outbox backpressure, logical content limits and metadata admission
+remain independently owned policies. Reintroducing a local
 cumulative quota would require an explicit policy decision and new accounting
 ownership, rather than reactivating stale `allocations` rows.

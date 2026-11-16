@@ -2,14 +2,16 @@ import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { statfsSync } from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { TimelineEntry } from "../../../src/session/protocol.js";
 import { assertImageHistoryAvailable, syncControllerImageHistory } from "../../../src/commands/controller/media/history-sync.js";
 import { createControllerCaptureBridge } from "../../../src/commands/controller/media/capture.js";
+vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>(), statfsSync: vi.fn(() => ({ bavail: 0n, bsize: 4096n })) }));
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.mocked(statfsSync).mockClear(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (count = 1, text = "durable history") => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-history-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
@@ -39,7 +41,7 @@ const receiver = (failOnce = false) => {
   return { request, rows, calls };
 };
 
-test("active history uses the original grant and exact current SQL history in one MiB chunks", async () => {
+test("active history uses the original grant and exact SQL history without predicting disk growth", async () => {
   const text = "x".repeat(1048576), f = await fixture(2, text), server = receiver();
   try {
     await syncControllerImageHistory({ ...f, request: server.request });
@@ -47,6 +49,7 @@ test("active history uses the original grant and exact current SQL history in on
     expect(JSON.parse(row.bytes.toString()).entries.map((entry: { content: unknown }) => entry.content)).toEqual([[{ type: "text", text }], [{ type: "text", text }]]);
     expect(server.calls.filter(call => call.method === "PUT")).toHaveLength(3);
     expect(f.journal.prepareImageHistorySync()).toBeNull();
+    expect(statfsSync).not.toHaveBeenCalled();
   } finally { f.journal.close(); }
 });
 

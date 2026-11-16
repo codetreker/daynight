@@ -86,18 +86,17 @@ for (const [module, name, version, tables] of owners) {
   } finally { db.close(); if (permit !== undefined) permit.release(); }
 }
 const { controllerJournalFormat, controllerJournalFormatForMigration } = await load("commands/controller/journal-format.js");
-const { createTimelineMaintenanceReservation } = await load("commands/controller/content/maintenance.js");
 const { openTimelineStore } = await load("commands/controller/content/timeline-store.js");
 assert.equal(currentSqliteVersion(controllerJournalFormat), 12);
 const timelineFile = path.join(directory, "canonical-timeline.sqlite"), timelinePermit = acquireControllerStoragePermit(timelineFile);
-let reservation, timelineDb;
-const timelineFormat = controllerJournalFormatForMigration(db => reservation ??= createTimelineMaintenanceReservation(db, { journalFile: timelineFile, storagePermit: timelinePermit }));
+let timelineDb;
+const timelineFormat = controllerJournalFormatForMigration(() => ({ storagePermit: timelinePermit }));
 const entry = { entryId: "00000000-0000-4000-8000-000000000001", entrySeq: "9007199254740993", revision: "9007199254740995", kind: "assistant_message", content: [{ type: "text", text: "Installed 正文 😀" }] };
 const replacement = { ...entry, revision: "9007199254740996", content: [{ type: "text", text: "Reopened 当前正文 🧩" }] };
 try {
   timelineDb = openSqliteDatabase({ file: timelineFile, format: timelineFormat, allowCreate: false, onMigration: () => {} });
   let writing = false;
-  const timeline = openTimelineStore(timelineDb, { assertWrite: bytes => { assert.equal(writing, true); reservation.assertReservedWrite(bytes); } });
+  const timeline = openTimelineStore(timelineDb, { assertWrite: () => { assert.equal(writing, true); } });
   assert.throws(() => timeline.save(entry), /original journal write transaction/);
   runSqliteImmediate(timelineDb, () => { writing = true; try { timeline.save(entry); timeline.save(replacement); } finally { writing = false; } });
   assert.deepEqual(timeline.get(entry.entryId), replacement);

@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
@@ -23,7 +22,9 @@ vi.mock("node:fs", async original => {
 const roots: string[] = [];
 afterEach(async () => { faults.operation = ""; faults.target = ""; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "dn-resource-files-")); roots.push(root);
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/resource-files-tests");
+  await mkdir(base, { recursive: true });
+  const root = await mkdtemp(path.join(base, "r-")); roots.push(root);
   return { journal: path.join(root, "journal.sqlite"), sessionId: randomUUID() };
 };
 const descriptor = (bytes: Buffer) => ({ resourceId: randomUUID(), status: "available" as const, name: "original.png", mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null });
@@ -130,4 +131,26 @@ test.each(["descriptor", "blob", "pins", "index"] as const)("a %s deletion failu
   const reopened = openResourceFiles(journal, sessionId);
   const lease = reopened.acquireResource(resource.resourceId);
   try { expect(lease.read("0", 100)).toEqual(bytes); } finally { lease.close(); }
+});
+
+test.each(["root", "resources", "blobs"] as const)("resource ownership rejects a linked %s directory without following it", async kind => {
+  const { journal, sessionId } = await fixture(), pending = `${journal}.pending-content`;
+  const target = path.join(path.dirname(journal), "outside"); await mkdir(target, { mode: 0o700 });
+  const sentinel = path.join(target, "sentinel"); await writeFile(sentinel, "retained outside bytes", { mode: 0o600 });
+  if (kind !== "root") openResourceFiles(journal, sessionId);
+  const linked = kind === "root" ? pending : path.join(pending, kind);
+  if (kind !== "root") await rm(linked, { recursive: true });
+  await symlink(target, linked, process.platform === "win32" ? "junction" : "dir");
+  expect(() => openResourceFiles(journal, sessionId)).toThrow(/directory/);
+  expect(await readFile(sentinel, "utf8")).toBe("retained outside bytes");
+});
+
+test.skipIf(process.platform === "win32")("resource reads reject a linked blob even when its bytes match the saved descriptor", async () => {
+  const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId), bytes = Buffer.from("original"), resource = descriptor(bytes);
+  files.writeResource(resource, bytes);
+  const blob = path.join(files.root, "blobs", filename(resource.resourceId).replace(/\.json$/, ".bin"));
+  const outside = path.join(path.dirname(journal), "outside.bin"); await writeFile(outside, bytes, { mode: 0o400 });
+  await rm(blob); await symlink(outside, blob);
+  expect(() => files.acquireResource(resource.resourceId)).toThrow("Corrupt pending resource content.");
+  expect(await readFile(outside)).toEqual(bytes);
 });

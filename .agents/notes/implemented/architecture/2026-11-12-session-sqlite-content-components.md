@@ -33,7 +33,8 @@ Conversion preserves the original execution, operation, provenance and stopping
 evidence. Only committed pointers select historical file sources. The [local mapping decision](2026-11-16-controller-local-format-mapping.md) limits conversion to necessary fields without auditing business integrity. Source export and SQL import share the original permit. The original decision
 used a local peak reservation to reclaim history beyond normal metadata admission;
 the [capacity-free conversion decision](2026-11-16-controller-capacity-free-upgrades.md)
-removes that admission from conversion while preserving maintenance limits.
+removes that admission from conversion while preserving the original maintenance
+ordering.
 
 Stopped maintenance retains ownership through reader barriers, recognized source
 retirement, in-place VACUUM, a post-VACUUM TRUNCATE checkpoint, actual file and
@@ -46,11 +47,12 @@ resuming deletes. A new SQL reader which captured the old index may reread one
 provably changed inventory; unchanged or still-referenced missing files continue
 to fail. The resource owner never caches legacy references for later inventory
 writes or rollback. A busy reader retains the files and pending flag. Failures
-preserve the actual committed phase; reentry checks the additional disk space
-needed for remaining work. The [media ledger
-removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
-replaces the original absolute execution reservation and refund mechanism while
-retaining metadata and free-space admission. The [component
+preserve the actual committed phase; reentry resumes remaining work under the
+same permit and checks metadata at the original admission boundaries. The [media
+ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+replaces the original absolute execution reservation and refund mechanism. The later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes remaining-work and VACUUM peak estimates while retaining metadata admission. The [component
 design](../../../../docs/design/session-sqlite-content.md) owns the interfaces,
 ordering, budgets and recovery behavior. The [storage ownership
 decision](2026-11-12-controller-storage-ownership.md) continues to own permits,
@@ -108,8 +110,9 @@ original synchronous connection preserves the same lifetime as the permit.
 pragma is omitted by the shipped build and changes process-global state with TEMP
 schema side effects. Connection-local memory storage avoids disk temporary files,
 but adds a potentially large RAM peak and changing it deletes TEMP objects. The
-selected disk peak policy retains file-backed compaction and scopes the existing
-built-in VFS directory lookup.
+original disk peak design retained file-backed compaction and scoped the
+existing built-in VFS directory lookup. Removing peak admission preserves this
+private temporary-directory boundary.
 
 ## Consequences
 
@@ -120,8 +123,10 @@ SQLite busy timeouts bound lock waiting, and deadlines are checked before and
 after synchronous phases. A JavaScript timer cannot interrupt native VACUUM;
 expiration after it returns preserves the completed phase and pending maintenance.
 
-This adds explicit physical peak accounting and maintenance sequencing without
-changing Session protocols, resource paths, input origins or native execution.
+Maintenance sequencing and private temporary-file ownership remain explicit
+without changing Session protocols, resource paths, input origins or native
+execution. Actual writes determine whether compaction can complete; a failure
+retains its real committed phase and pending cleanup responsibility.
 
 The production journal uses these components through the original
 role-specific preparation entry. Generated stress data documents its own content and operating conditions; absent

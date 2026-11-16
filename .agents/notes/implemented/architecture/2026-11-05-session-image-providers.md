@@ -121,10 +121,12 @@ with one committed current body row and preserves the same guarantee. The Provid
 current committed view rather than replaying an older entry draft.
 
 Provider aliases, cursors and occurrence state use the existing bounded metadata
-store. Wire spools include actual and unwritten bytes in free-space checks and
-retain their files until readers stop and removal is durable. The [media ledger
+store. Wire spools retain their files until readers stop and removal is durable.
+The [media ledger
 removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
-supersedes the shared cumulative media accounting. Transcript index writers
+supersedes the shared cumulative media accounting; the later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes spool growth estimates without changing file lifetime. Transcript index writers
 retain a process-bound reservation across crashes; recovery must prove that the
 original writer stopped before admitting another writer. None of these private
 adapters creates an independent upload or public resource protocol.

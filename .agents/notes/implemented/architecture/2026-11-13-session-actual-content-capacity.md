@@ -59,6 +59,8 @@ some short-transaction work for a single source of truth. Temporary files and
 control records do not consume logical content capacity but remain subject to
 real storage failures and their original cleanup barriers. Compatibility
 receipts do not promise that later writes will succeed. Controller-local metadata
-and free-space admission remain independent of the service's content policy. The
+admission remains independent of the service's content policy. The
 [Controller media ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
-separately supersedes its cumulative media reservations.
+separately supersedes its cumulative media reservations; the later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes Controller disk predictions without changing the service content policy.

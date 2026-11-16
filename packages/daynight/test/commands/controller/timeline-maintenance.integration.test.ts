@@ -5,13 +5,13 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { controllerJournalReadOptions, prepareControllerStorage, upgradeControllerJournal } from "../../../src/commands/controller/storage-preparation.js";
-import { maintainControllerTimeline, createTimelineMaintenanceReservation } from "../../../src/commands/controller/content/maintenance.js";
+import { maintainControllerTimeline } from "../../../src/commands/controller/content/maintenance.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { sessionBinding, type TimelineEntry } from "../../../src/session/protocol.js";
 import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
-import { ControllerStorageFreeSpaceError, assertControllerStorageCapacity } from "../../../src/commands/controller/storage-capacity.js";
+import { assertControllerStorageCapacity } from "../../../src/commands/controller/storage-capacity.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { readSqliteDatabase, type SqliteMigrationEvent } from "../../../src/platform/sqlite-access.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
@@ -294,7 +294,7 @@ test("a held v9 WAL snapshot prevents retirement and retains original files unti
   } finally { reader.close(); db.close(); f.permit.release(); }
 });
 
-test("an incident source beyond the ordinary metadata ceiling imports using its own peak and settles after retirement", () => {
+test("an incident source beyond the ordinary metadata ceiling imports and settles after retirement", () => {
   const f = fixture();
   fs.truncateSync(f.old, CONTROLLER_METADATA_BYTES + 1048576);
   try {
@@ -357,30 +357,37 @@ test("an unknown successful marker COMMIT is read back before a later settlement
   } finally { db.close(); f.permit.release(); }
 });
 
-test("a settlement refusal leaves the actual cleared marker available for a later retry", () => {
-  const f = fixture(), db = upgrade(f), reservation = createTimelineMaintenanceReservation(db, { ...f.request, storagePermit: f.permit });
+test("a metadata settlement refusal leaves the actual cleared marker available for a later retry", () => {
+  const f = fixture(), db = upgrade(f), exec = db.exec.bind(db);
+  const history = `${f.file}.history-sync`, retained = path.join(history, "retained.json");
   try {
-    const original = reservation.settleNormalAdmission;
-    reservation.settleNormalAdmission = () => { throw new ControllerStorageFreeSpaceError(); };
-    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, reservation, onMigration: () => {} })).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
+    vi.spyOn(db, "exec").mockImplementation(source => {
+      const result = exec(source);
+      if (source === "COMMIT") {
+        fs.mkdirSync(history, { mode: 0o700 }); fs.writeFileSync(retained, "", { mode: 0o600 });
+        fs.truncateSync(retained, CONTROLLER_METADATA_BYTES + 1048576);
+      }
+      return result;
+    });
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
     expect(marker(db)).toBe(0);
-    reservation.settleNormalAdmission = original;
-    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, reservation, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
+    restoreMocks(); fs.unlinkSync(retained);
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
   } finally { db.close(); f.permit.release(); }
 });
 
-test.each(["maintenance", "preparation"] as const)("completed cleanup uses ordinary admission without an unused compaction peak through %s", entry => {
+test.each(["maintenance", "preparation"] as const)("completed cleanup admits %s without predicting free space", entry => {
   const f = fixture(), db = upgrade(f);
   try {
     expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
     expect(marker(db)).toBe(0);
-    const space = fs.statfsSync(f.root, { bigint: true });
-    vi.spyOn(fs, "statfsSync").mockReturnValue({ ...space, bsize: 1n, bavail: 536870913n });
+    const statfs = vi.spyOn(fs, "statfsSync").mockReturnValue({ bsize: 4096n, bavail: 0n } as never);
     expect(() => assertControllerStorageCapacity(f.file, db)).not.toThrow();
     const result = entry === "maintenance"
       ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
       : prepareControllerStorage(f.request, f.permit, () => {});
     expect(result).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(statfs).not.toHaveBeenCalled();
 
   } finally { db.close(); f.permit.release(); }
 });
@@ -529,14 +536,18 @@ test("actual occupation verification failure cannot clear pending", () => {
   } finally { db.close(); f.permit.release(); }
 });
 
-test("isolated preparation recognizes only a pure wrapped capacity refusal as waiting and retains v9 sources", () => {
+test("isolated preparation imports, retires and compacts without a free-space probe", () => {
   const f = fixture();
   try {
-    const space = fs.statfsSync(f.root, { bigint: true });
-    vi.spyOn(fs, "statfsSync").mockReturnValue({ ...space, bavail: 0n });
-    expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
-    restoreMocks(); const db = new Database(f.file, { readonly: true });
-    try { expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); expect(fs.existsSync(f.old)).toBe(true); } finally { db.close(); }
+    const statfs = vi.spyOn(fs, "statfsSync").mockReturnValue({ bavail: 0n, bsize: 4096n } as never);
+    expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(statfs).not.toHaveBeenCalled();
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
+      expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(false);
+      expect(openTimelineStore(db, { assertWrite: () => { throw new Error("Read is not a writer."); } }).get(f.entry.entryId)).toEqual(f.entry);
+    } finally { db.close(); }
   } finally { f.permit.release(); }
 });
 

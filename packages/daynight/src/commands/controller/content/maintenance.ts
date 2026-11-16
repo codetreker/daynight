@@ -8,11 +8,9 @@ import { runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationEvent
 import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../../../platform/sqlite-error.js";
 import { currentSqliteVersion, inspectSqlite } from "../../../platform/sqlite-format.js";
 import { parseStoredTimelineEntry } from "../../../session/protocol.js";
-import { controllerJournalFormat, type JournalMigrationContext } from "../journal-format.js";
-import { preflightPendingTimeline } from "../pending-content.js";
-import { CONTROLLER_SETTLEMENT_BYTES, controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
-import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
-import { controllerStorageMediaUsage, assertControllerStorageCapacity, isControllerStorageCapacityError, assertControllerStorageFreeSpace } from "../storage-capacity.js";
+import { controllerJournalFormat } from "../journal-format.js";
+import { controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
+import { assertControllerStorageCapacity, isControllerStorageCapacityError } from "../storage-capacity.js";
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
 import { assertControllerStorageRole, controllerStorageExecutionRow, controllerTimelineCleanupPending, observeControllerStorage, reportControllerStorageEvent, type ControllerStorageObservation, type ControllerStoragePreparation, type ControllerStorageRequest } from "../storage-preparation.js";
 import { openTimelineStore } from "./timeline-store.js";
@@ -24,92 +22,10 @@ const timeout = (deadline?: number): number => {
   return Math.min(5000, remaining);
 };
 const warn = (message: string, cause: unknown): void => { process.emitWarning(`${message} ${JSON.stringify(serializeSqliteError(cause))}`); };
-const hasTable = (db: Database.Database, name: string): boolean => db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(name) !== undefined;
 const size = (file: string): number => {
   try { const stat = lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Controller maintenance source is not a private regular file."); return stat.size; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0; throw error; }
 };
-export type TimelineMaintenanceReservation = JournalMigrationContext & {
-  refresh(additionalBytes?: number): void;
-  assertReservedWrite(additionalBytes: number): void;
-  settleNormalAdmission(): void;
-};
-/** Maintenance accounts for retained sources and remaining work before compaction. */
-export const createTimelineMaintenanceReservation = (db: Database.Database, options: {
-  journalFile: string; storagePermit: ControllerStoragePermit; deadline?: number;
-}): TimelineMaintenanceReservation => {
-  const { journalFile, storagePermit, deadline } = options;
-  let admitted = false, maximumWrite = 0;
-  const assertContext = (): void => {
-    assertControllerStoragePermit(storagePermit, journalFile);
-    timeout(deadline);
-    if (!db.memory && db.name !== journalFile) throw new Error("Controller timeline reservation context is invalid.");
-  };
-  const refresh = (additionalBytes = 0): void => {
-    assertContext();
-    if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) throw new TypeError("Controller timeline growth must be a nonnegative safe integer.");
-    const media = controllerStorageMediaUsage(journalFile, db);
-    let bodyBytes = 0, entryCount = 0, exportBytes = 0, largestWrite = 65536;
-    if (hasTable(db, "projection")) {
-      let serializedTimelineBytes = Buffer.byteLength('{"entries":[]}');
-      for (const row of db.prepare("SELECT CAST(rowid AS TEXT) AS seq,value FROM projection ORDER BY rowid").iterate() as Iterable<{ seq: string; value: string }>) {
-        const entry = parseStoredTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
-        const bytes = Buffer.byteLength(JSON.stringify(entry)), backupBytes = Buffer.byteLength(JSON.stringify(row));
-        serializedTimelineBytes += bytes + (entryCount > 0 ? 1 : 0); entryCount++; bodyBytes += bytes;
-        if (entryCount > 100000 || serializedTimelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
-        exportBytes += bytes * 2 + backupBytes;
-        largestWrite = Math.max(largestWrite, bytes + backupBytes + 16384);
-      }
-    } else if (hasTable(db, "content_index")) {
-      const row = controllerStorageExecutionRow(db);
-      if (row === undefined) {
-        if (db.prepare("SELECT 1 FROM content_index LIMIT 1").get() !== undefined) throw new Error("Legacy archive content has no original controller execution.");
-      } else {
-        const snapshot = JSON.parse(row.snapshot) as { sessionId: string };
-        const preflight = () => preflightPendingTimeline(db, snapshot.sessionId);
-        const totals = db.inTransaction ? preflight() : db.transaction(preflight).deferred();
-        bodyBytes = totals.byteLength; entryCount = totals.entryCount;
-      }
-      const columns = db.pragma("table_info(content_index)") as { name: string }[];
-      if (columns.every(column => column.name !== "content_bytes")) exportBytes += bodyBytes;
-      largestWrite = Math.max(largestWrite, bodyBytes + 16384);
-    }
-    if (hasTable(db, "resources")) {
-      let count = 0, descriptors = 0, resourceBytes = 0;
-      for (const row of db.prepare("SELECT descriptor,content FROM resources").iterate() as Iterable<{ descriptor: string; content: Buffer | null }>) {
-        count++; descriptors += Buffer.byteLength(row.descriptor); resourceBytes += row.content === null ? 0 : row.content.length;
-        if (count > 1000 || descriptors > 4 * 1048576 || resourceBytes > 1073741824) throw new Error("Pending session resource budget exceeded.");
-        const backup = Buffer.byteLength(JSON.stringify({ descriptor: row.descriptor, content: row.content === null ? null : row.content.toString("base64") }));
-        exportBytes += (row.content === null ? 0 : row.content.length) + backup + Buffer.byteLength(row.descriptor) + 128;
-        largestWrite = Math.max(largestWrite, backup + 16384);
-      }
-    }
-    const physical = controllerJournalPhysicalBytes(journalFile, db);
-    const importedGrowth = bodyBytes * 2 + entryCount * 256 + 65536;
-    const projectedDatabase = Math.max(physical.databaseBytes, Number(db.pragma("page_count", { simple: true })) * Number(db.pragma("page_size", { simple: true }))) + importedGrowth;
-    const growth = exportBytes + importedGrowth + projectedDatabase * 2 + Math.max(largestWrite, additionalBytes) + CONTROLLER_SETTLEMENT_BYTES;
-    if (!Number.isSafeInteger(growth)) throw new Error("Controller timeline peak exceeds the supported byte count.");
-    if (!db.memory) assertControllerStorageFreeSpace(journalFile, growth + Math.max(0, media.reservedBytes - media.actualBytes));
-    admitted = true; maximumWrite = Math.max(maximumWrite, largestWrite, additionalBytes);
-  };
-  const assertReservedWrite = (additionalBytes: number): void => {
-    assertContext();
-    if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) throw new TypeError("Controller timeline growth must be a nonnegative safe integer.");
-    if (!admitted) refresh(additionalBytes);
-    else if (additionalBytes > maximumWrite) throw new Error("Controller timeline write exceeds its admitted maintenance peak.");
-  };
-  const reservation: TimelineMaintenanceReservation = {
-    storagePermit,
-    refresh,
-    assertReservedWrite,
-    settleNormalAdmission: () => {
-      assertContext();
-      assertControllerStorageCapacity(journalFile, db);
-    },
-  };
-  return reservation;
-};
-
 type RetainedSource = { file: string; dev: number; ino: number; bytes: number; modified: number };
 const privateDirectory = (directory: string): void => {
   const stat = lstatSync(directory);
@@ -230,7 +146,7 @@ const vacuum = (db: Database.Database, deadline?: number): void => {
   }
   // sqlite3RunVacuum has finalized its statements and detached its temporary
   // database before exec returns, including its error path. Unknown leftovers
-  // remain visible and charged rather than being swept as owned data:
+  // remain visible rather than being swept as owned data:
   // https://github.com/WiseLibs/better-sqlite3/blob/0d704b07468d7a8d993badce89cf2b0fbfb8dda1/deps/sqlite3/sqlite3.c#L162570-L162599
   try {
     if (readdirSync(directory).length !== 0) throw new Error("Controller journal compaction retained temporary files.");
@@ -260,11 +176,15 @@ const validateCommitted = (db: Database.Database): ReturnType<ReturnType<typeof 
 /** Operate an already committed current-format connection under its original permit; the caller retains both handles. */
 export const maintainControllerTimeline = (options: {
   db: Database.Database; request: Exclude<ControllerStorageRequest, { mode: "upgrade-only" }>; storagePermit: ControllerStoragePermit;
-  reservation?: TimelineMaintenanceReservation; onMigration?: SqliteMigrationReporter;
+  onMigration?: SqliteMigrationReporter;
 }): ControllerStoragePreparation => {
   const { db, request, storagePermit } = options;
   assertControllerStoragePermit(storagePermit, request.journalFile);
   if (db.inTransaction || db.memory || db.name !== request.journalFile) throw new Error("Controller timeline maintenance requires its original idle connection.");
+  const assertAccess = (): void => {
+    assertControllerStoragePermit(storagePermit, request.journalFile);
+    timeout(request.deadline);
+  };
   const currentVersion = currentSqliteVersion(controllerJournalFormat);
   const observation: ControllerStorageObservation = { role: request.mode, roleResult: "pending" };
   observeControllerStorage(observation, db, request.mode === "writer" ? request.ticket : undefined);
@@ -277,7 +197,6 @@ export const maintainControllerTimeline = (options: {
   }
   if (db.pragma("journal_mode", { simple: true }) !== "wal") throw new Error("Controller timeline maintenance requires its original WAL journal.");
   db.pragma("synchronous = FULL"); db.pragma("wal_autocheckpoint = 1000");
-  const reservation = options.reservation ?? createTimelineMaintenanceReservation(db, { ...request, storagePermit });
   const started = Date.now(), migrationId = randomUUID();
   const report = (phase: string, kind: SqliteMigrationEvent["kind"], metrics: Record<string, number | string | boolean> = {}, outcome: SqliteOutcome = "committed", cause?: unknown): void => {
     const event: SqliteMigrationEvent = { migrationId, database: controllerJournalFormat.name, file: request.journalFile, kind, phase, fromVersion: currentVersion, toVersion: currentVersion, durationMs: Date.now() - started, outcome, storage: metrics, ...(cause === undefined ? {} : { error: serializeSqliteError(cause) }) };
@@ -286,8 +205,12 @@ export const maintainControllerTimeline = (options: {
   let phase = "storage-admission", maintenanceOutcome: SqliteOutcome = "committed";
   try {
     const totals = validateCommitted(db);
-    if (!controllerTimelineCleanupPending(db)) { reservation.settleNormalAdmission(); report(phase, "completed", { ...totals, pending: false }); return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false }; }
-    reservation.refresh();
+    if (!controllerTimelineCleanupPending(db)) {
+      assertAccess(); assertControllerStorageCapacity(request.journalFile, db);
+      report(phase, "completed", { ...totals, pending: false });
+      return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false };
+    }
+    assertAccess();
     if (snapshot === null) throw new Error("Controller timeline cleanup has no original execution.");
     phase = "legacy-timeline-retirement"; report(phase, "started", { ...totals });
     const sources = retirementSources(request.journalFile, snapshot.sessionId);
@@ -299,7 +222,7 @@ export const maintainControllerTimeline = (options: {
     if (retirementSources(request.journalFile, snapshot.sessionId).length !== 0) throw new Error("Controller timeline retirement left recognized source files.");
     report(phase, "completed", { retiredBytes: sources.reduce((sum, source) => sum + source.bytes, 0) });
     phase = "journal-compaction"; report(phase, "started", { ...controllerJournalPhysicalBytes(request.journalFile, db) });
-    reservation.refresh();
+    assertAccess();
     const pre = checkpoint(db, request.deadline);
     vacuum(db, request.deadline);
     const post = checkpoint(db, request.deadline);
@@ -325,7 +248,7 @@ export const maintainControllerTimeline = (options: {
     }
     validateCommitted(db);
     if (controllerTimelineCleanupPending(db)) throw new Error("Controller timeline cleanup marker did not commit.");
-    reservation.settleNormalAdmission();
+    assertAccess(); assertControllerStorageCapacity(request.journalFile, db);
     report(phase, "completed", { ...controllerJournalPhysicalBytes(request.journalFile, db), pending: false });
     return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false };
   } catch (cause) {

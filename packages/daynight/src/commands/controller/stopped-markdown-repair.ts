@@ -8,7 +8,6 @@ import { runSqliteImmediate } from "../../platform/sqlite-access.js";
 import { openSessionContent } from "./content/session-content.js";
 import { openControllerOutbox } from "./outbox-store.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
-import { controllerStorageMediaUsage, assertControllerStorageFreeSpace } from "./storage-capacity.js";
 import { createMarkdownImageProjector, type MarkdownProjectedOccurrence, type MarkdownProjectionState } from "./markdown/projection.js";
 import { parseSourceEvent } from "../../session/controller-protocol.js";
 import { parseTimelineEntry, parseSessionResource, type SessionResource, type TimelineEntry } from "../../session/protocol.js";
@@ -98,10 +97,6 @@ export async function repairStoppedMarkdownProjections(options: {
       if (!db.inTransaction) throw new Error("Stopped repair publication requires its original transaction.");
       assertOriginal(db);
       const budget = controllerMetadataBudget(journalPath, db); budget.assert(additional, true, growth);
-      if (additional > 0) {
-        const media = controllerStorageMediaUsage(journalPath, db);
-        assertControllerStorageFreeSpace(journalPath, Math.max(0, media.reservedBytes - media.actualBytes) + additional);
-      }
     },
   });
   await options.beforeWrite?.();
@@ -208,10 +203,6 @@ export async function repairStoppedMarkdownProjections(options: {
         const oldRefs = sessionArchiveReferences([captured.entry], false), newRefs = sessionArchiveReferences([entry]);
         if ([...oldRefs.resources].some(id => !newRefs.resources.has(id))) failure("retained_resource_lost");
         for (const value of resources) if (value.resource) {
-          if (value.bytes) {
-            const media = controllerStorageMediaUsage(journalPath, db);
-            assertControllerStorageFreeSpace(journalPath, Math.max(0, media.reservedBytes - media.actualBytes) + value.bytes.byteLength * 2);
-          }
           source.resourceFiles.saveResource({ resource: value.resource, data: null }, value.bytes);
         }
         for (const id of newRefs.resources) {
