@@ -17,3 +17,9 @@ GitHub API 固定使用 `https://api.github.com` 和 `X-GitHub-Api-Version: 2026
 403 的权限拒绝与 403/429 限流分别表达；限流错误携带根据 `Retry-After` 和剩余配额重置时间计算的恢复时间，无时间提示的 secondary limit 至少等待一分钟。调用方负责调度及保留已存数据。错误不包含响应正文、token、私钥或 secret；该组件不记录正文或凭据。
 
 独立 App 登记用提交的 RSA 私钥签发 App JWT，向固定 origin 的 `GET /app` 证明外部 App ID，并保存返回的名称和 slug。登记的 45 秒总预算包含输入读取、远端证明和事务；外部请求不持有数据库锁。认证失败或身份不匹配与上游故障分别表达，响应正文及凭据不进入错误或日志。该能力尚未接入生产路由。
+
+## 独立 App 客户端的资源所有权
+
+独立 App provider 按本地 App UUID 与 credentialVersion 借用远端 client；每次借用读取当前活 App 的凭据快照，版本不符时拒绝。快照读取不授予使用权限，调用者仍须在执行与发布时按数据库中的当前授权和版本设置 fence。不同 App 或凭据版本使用不同 client、installation token 缓存和 transport。管理操作证明拟保存的凭据时直接使用该输入创建临时 client，不使用已保存的缓存。
+
+provider 跟踪活动借用，最多保留 64 个零借用 client，按最近使用顺序淘汰；旧凭据不再接受新借用，最后一次释放后关闭其空闲连接。关闭时先停止新的借用并取消等待中的读取，调用方负责取消并 drain 已借用的工作。关闭期限到达时仍被使用的资源保留，返回清理失败；最后释放后才能关闭 transport。该组件尚未接入现有固定 App runtime。
