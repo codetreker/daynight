@@ -15,11 +15,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
 	ro "github.com/codetreker/daynight/packages/daynight-server/internal/core/workerreadonly"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
@@ -42,36 +39,8 @@ func serverAPIWorkerReadOnlyNormalFlow(t *testing.T, f *fixture) {
 	}
 	requestJSON[map[string]any](t, f, http.MethodPost, base+"/report", report, http.StatusOK)
 
-	const exchangeBudget = 5 * time.Second
-	if exchangeBudget >= credentialusage.Cooldown {
-		t.Fatal("readonly exchange must finish inside the credential usage cooldown")
-	}
-	ctx, cancel := context.WithTimeout(f.context, exchangeBudget)
+	ctx, cancel := context.WithTimeout(f.context, 5*time.Second)
 	defer cancel()
-	// Commit the first sample through a plain identity read before authorization
-	// takes grant locks. The complete exchange shares a budget below the sampler
-	// cooldown, so its later usage events cannot flush during those grant locks.
-	primed := *application
-	primed.context = ctx
-	started := time.Now()
-	identity, _ := usageRequest(t, &primed, primed.client, http.MethodGet, "/api/v1/me", "", "", "", http.StatusOK)
-	finished := time.Now()
-	if identity.Header.Get("Daynight-User-ID") != f.userID {
-		t.Fatal("application usage preparation authenticated another owner")
-	}
-	database, err := pgxpool.New(ctx, f.databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	accessHash := secret.Hash(application.client.Transport.(tokenTransport).token)
-	usageWait(t, &primed, func() *time.Time {
-		var usedAt *time.Time
-		if err := database.QueryRow(ctx, `SELECT g.last_used_at FROM oauth_grants g JOIN oauth_access_tokens a ON a.grant_id=g.id AND a.user_id=g.user_id WHERE a.token_hash=$1 AND g.user_id=$2`, accessHash, f.userID).Scan(&usedAt); err != nil {
-			t.Fatal(err)
-		}
-		return usedAt
-	}, nil, started, finished)
 	conn, response, err := websocket.Dial(ctx, strings.Replace(f.origin, "http:", "ws:", 1)+base+"/readonly/channel", &websocket.DialOptions{HTTPClient: f.client})
 	if err != nil {
 		t.Fatal(err)

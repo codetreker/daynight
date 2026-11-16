@@ -1991,9 +1991,7 @@ IDs, versions, authors, settings, progress, bytes and MIME through application
 and native access. Public refresh, owner grant reads and revocation, explicit
 reconnection and credential usage retain the same real family. The readonly
 flow keeps the actual PAT-authenticated Worker channel and dispatches its HTTP
-request through an S2S-issued API grant for that owner. Its first identity GET
-observes committed usage before readonly grant rechecks; preparation and the
-exchange share a five-second budget shorter than the sampler cooldown.
+request through an S2S-issued API grant for that owner.
 
 Webhook management uses an API grant to read the event catalog, create a
 disabled endpoint with a Project subscription, read its operation and signing
@@ -2010,9 +2008,6 @@ mints its Controller grant and performs WebSocket hello and synchronization.
 HTTP current-state readback and native and API browser snapshots retain the
 same identity, generation and native Session ID. A Controller timeline event
 arrives through both browser WebSockets with exact content and source identity.
-The synchronous live-channel phase closes those sockets with checked cleanup
-before the task is reopened under a new claim. The [normal-flow readiness decision](../../.agents/notes/implemented/testing/2026-11-16-api-normal-flow-readiness.md)
-owns these preparation and lifetime constraints.
 Go HTTP and WebSocket clients exercise the actual service and persistence
 assembly. The Session flow also uploads a real first image chunk over HTTP,
 completes validation using the packaged CLI image decoder and verifies the
