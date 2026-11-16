@@ -238,13 +238,13 @@ Details、reset、全屏、模态、附件和焦点继续使用现有生命周�
 不用要求定位任务仍是代表，也不因代表改变而覆盖仍有效的原任务。
 因此普通边合并或拆分后，仍存在的定位任务可保留所关注的那部分。
 图有效性要求定位任务存在且 `component.memberIds.size > 1`，不依赖列表筛选及当前页。
-不存在或成为单成员时关闭浮层并清除定位任务；
+不存在或成为单成员时关闭浮层并清除定位任务；该机制尚未满足[数据变化时的界面连续性要求](../ui-design.md#preserve-interface-continuity-when-data-changes)。
 离开任务列表或任务链类别也清除打开状态，返回和重载均不自动打开。
 类别和共享页面位置记录保持原格式；两个类别共享状态与负责人筛选。状态只在本次访问中保留，负责人选择按认证账号和项目在本浏览器恢复，详见[负责人偏好决策](../../.agents/notes/implemented/feature/2026-11-09-project-assignee-filter-preference.md)。
 
 只有状态或同一拓扑内容刷新时继续保留可见集合、视口和检查。
 `VisibleTaskGraph` 只按代表 rootId 保持呈现生命周期，`GraphVisibility.topologyKey` 则记录有序主成员集合。
-代表不变而 M 变化时，只重置 S、局部检查及旧动作，并通过按 topologyKey 重建的 InitialViewport 重新 framing。
+代表不变而 M 变化时，只重置 S、局部检查及旧动作，并通过按 topologyKey 重建的 InitialViewport 重新 framing；对仍有效状态和视口的保留尚未满足上述连续性要求。
 TaskCanvas、ReactFlow 和 TaskChainDialog 保持挂载，因此全屏、活动详情及各自的 inert/滚动锁不被退出。
 有效定位任务的代表变化初始化对应图，TaskChainDialog 仍保持打开；由稳定列表层处理已脱离控件的焦点。
 派生身份不保证合并拆分前后保留相同的 S 或视口，但同代表的拓扑重置不重建呈现所有者。

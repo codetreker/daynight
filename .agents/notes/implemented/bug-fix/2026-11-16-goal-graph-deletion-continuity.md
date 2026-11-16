@@ -57,5 +57,5 @@ departure prevents delayed recovery from reopening the graph after a leave-and-B
 round trip; checking only the entry ID when the snapshot arrives cannot detect
 that intervening navigation. The graph can remount while the new
 epoch is confirmed, so this decision preserves navigation context rather than
-continuous rendering of retired content. Existing synchronization and focus
+continuous rendering of retired content. The later [data-update continuity rule](../process/2026-11-16-ui-data-update-continuity.md) requires continuous presentation and retained valid viewport, which this recovery does not yet satisfy. Existing synchronization and focus
 owners provide the recovery without a new API or stored history format.

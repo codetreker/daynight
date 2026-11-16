@@ -537,7 +537,7 @@ S ⊆ P，包含代表，当前实际可见 ID
 代表不变而成员变化时，重算有界 S、清除检查和旧动作，并用按 topologyKey 重建的 InitialViewport 重新定位。
 VisibleTaskGraph 仅按 rootId 挂载，因此同代表下的 TaskCanvas 与 ReactFlow 仍是原实例，
 图浮层所有者及活动详情的 inert/滚动锁持续有效。有效定位任务的代表变化会初始化对应图，
-浮层保持打开；任务不再属于可见多成员链时关闭浮层并清除定位任务。
+浮层保持打开；任务不再属于可见多成员链时关闭浮层并清除定位任务。该关闭、成员变化时重置有效检查和自动 framing 尚未满足[数据变化时的界面连续性要求](../ui-design.md#preserve-interface-continuity-when-data-changes)。
 
 ChainList 在 keyed 行之外持有焦点记录；原控件已脱离且焦点落到 BODY 才恢复到存活链入口、筛选控件或有可访问名称的列表区域，
 已有详情和列表外有效焦点保持。同一画布内的节点/footer 焦点仍由本地策略处理。
