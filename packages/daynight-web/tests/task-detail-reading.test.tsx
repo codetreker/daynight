@@ -1,11 +1,10 @@
-import { createRef, useState } from 'react';
+import { useState } from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { TaskDetailNavigation } from '../src/app/router';
 import type { Attachment, AttachmentPage } from '../src/api/types';
 import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
-import type { AttachmentKeyboardOwner } from '../src/features/task-detail/attachments/AttachmentPreview';
 import type { AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
 import { LanguageSelector } from '../src/i18n/LanguageSelector';
 import { createLocaleRender, renderWithLocale } from './helpers/renderWithLocale';
@@ -13,7 +12,7 @@ import { createLocaleRender, renderWithLocale } from './helpers/renderWithLocale
 const render = createLocaleRender('zh-CN');
 const projectId = '00000000-0000-4000-8000-000000000100';
 const taskId = '00000000-0000-4000-8000-000000000001';
-const root = `/api/v1/projects/${projectId}/tasks/${taskId}/preview/`;
+const root = `https://${taskId}.preview.daynight.test/api/v1/projects/${projectId}/tasks/${taskId}/preview/`;
 const time = '2026-10-21T00:00:00Z';
 const file = (path: string, contentType = 'text/markdown'): Attachment => ({ path, contentType, sizeBytes: 10, createdAt: time, updatedAt: time });
 const deferred = <T,>() => {
@@ -178,7 +177,7 @@ describe('task description reading', () => {
     expect(api.readText).toHaveBeenCalledOnce();
   });
 
-  it('preserves frame identity and current browser keyboard ownership across description and tab navigation', async () => {
+  it('preserves frame identity across description and tab navigation', async () => {
     const api = fixture([file('mockui/index.html', 'text/html')]);
     render(reading(api, '[原型](mockui/index.html)'));
     fireEvent.click(screen.getByRole('link', { name: '原型' }));
@@ -191,30 +190,23 @@ describe('task description reading', () => {
     expect(api.list).toHaveBeenCalledOnce();
   });
 
-  it('preserves a loaded frame, upload draft and controller while keyboard ownership changes', async () => {
+  it('preserves a loaded frame, upload draft and controller across updates', async () => {
     const api = fixture([file('mockui/index.html', 'text/html')]);
-    const ownerRoot = createRef<HTMLElement>();
-    const onEscape = vi.fn();
-    const content = (keyboardOwner?: AttachmentKeyboardOwner) => <main ref={ownerRoot}><TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="Description" selection={{ tab: 'attachments', path: 'mockui/index.html' }} overview={(description) => description} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} /></main>;
-    const view = render(content());
+    const content = (description: string) => <main><TaskDetailReading projectId={projectId} taskId={taskId} api={api} description={description} selection={{ tab: 'attachments', path: 'mockui/index.html' }} overview={(description) => description} /></main>;
+    const view = render(content('Description'));
     const frame = await screen.findByTitle('HTML 预览：mockui/index.html') as HTMLIFrameElement;
     fireEvent.load(frame);
-    const frameDocument = frame.contentDocument!;
     screen.getByText('上传文件', { selector: 'summary' }).parentElement!.setAttribute('open', '');
     const fileInput = screen.getByLabelText('选择一个文件') as HTMLInputElement;
     const upload = new File(['draft'], 'draft.txt', { type: 'text/plain' });
     fireEvent.change(fileInput, { target: { files: [upload] } });
     const path = screen.getByRole('textbox', { name: '目标相对路径' });
     fireEvent.change(path, { target: { value: 'draft/未提交.txt' } });
-    view.rerender(content({ root: ownerRoot, onEscape }));
-    fireEvent.keyDown(frameDocument, { key: 'Escape' });
-    expect(onEscape).toHaveBeenCalledOnce();
+    view.rerender(content('Updated description'));
     expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
     expect(screen.getByLabelText('选择一个文件')).toBe(fileInput);
     expect(fileInput.files?.[0]).toBe(upload);
     expect(path).toHaveValue('draft/未提交.txt');
-    view.rerender(content());
-    expect(fireEvent.keyDown(frameDocument, { key: 'Escape' })).toBe(true);
     expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
     expect(api.list).toHaveBeenCalledOnce();
     expect(api.checkPreview).toHaveBeenCalledOnce();

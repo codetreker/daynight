@@ -507,8 +507,31 @@ export const attachmentPageUrl = (projectId: string, taskId: string, path: strin
 export const attachmentDownloadUrl = (projectId: string, taskId: string, path: string): string =>
   `${attachmentTaskUrl(projectId, taskId)}/attachments/files/${encodedAttachmentPath(path)}`;
 
-export const attachmentPreviewRoot = (projectId: string, taskId: string): string =>
-  `${attachmentTaskUrl(projectId, taskId)}/preview/`;
+const previewOrigin = (): URL => {
+  const value = document.querySelector<HTMLMetaElement>('meta[name="daynight-preview-origin"]')?.content;
+  try {
+    if (value === undefined) throw new Error("Missing preview origin");
+    const origin = new URL(value);
+    if (!['http:', 'https:'].includes(origin.protocol) || origin.origin !== value || origin.username !== '' || origin.password !== '') throw new Error("Invalid preview origin");
+    return origin;
+  } catch (error) {
+    throw new ApiError("protocol", undefined, "protocol", null, error);
+  }
+};
+
+export const previewLoginUrl = (): string => `${previewOrigin().origin}/auth/sso/start`;
+
+export const attachmentPreviewRoot = (projectId: string, taskId: string): string => {
+  const task = requestId(taskId);
+  const origin = previewOrigin();
+  const taskHost = `${task}.${origin.hostname}`;
+  origin.hostname = taskHost;
+  if (origin.hostname !== taskHost) throw new ApiError("protocol");
+  return `${origin.origin}${attachmentTaskUrl(projectId, task)}/preview/`;
+};
+
+export const attachmentPreviewHeadUrl = (projectId: string, taskId: string, path: string): string =>
+  `${attachmentTaskUrl(projectId, taskId)}/preview/${encodedAttachmentPath(path)}`;
 
 export const attachmentPreviewUrl = (projectId: string, taskId: string, path: string): string =>
   `${attachmentPreviewRoot(projectId, taskId)}${encodedAttachmentPath(path)}`;
@@ -570,7 +593,7 @@ export const readAttachmentText = async (projectId: string, taskId: string, path
 };
 
 export const checkAttachmentPreview = async (projectId: string, taskId: string, path: string, signal: AbortSignal): Promise<void> => {
-  const response = await request(attachmentPreviewUrl(projectId, taskId, path), signal, { method: "HEAD" });
+  const response = await request(attachmentPreviewHeadUrl(projectId, taskId, path), signal, { method: "HEAD" });
   responseSignal(response, signal).throwIfAborted();
   if (!response.ok) {
     const header = response.headers.get("X-Request-ID");

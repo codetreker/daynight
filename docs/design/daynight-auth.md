@@ -9,11 +9,9 @@
 
 ## 已采纳的架构边界
 
-附件维持现有可信同源执行。HTML 拥有浏览者当前主站权限，资源请求复用主站会话与
-项目成员检查。普通 iframe、相对资源、同源文档键盘桥和单 origin 部署继续使用。
-独立预览域名/origin、预览凭据、bootstrap 交换及其配套设施不属于本方案；
-鉴权实现必须遵守，不能从项目成员权限推导出预览隔离工程。此约束的选择依据记录在
-[附件架构决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)。
+附件 HTML 在 Task 独立 origin 执行，预览凭据关联原主站 session，资源请求继续检查
+项目成员。普通 iframe 和相对资源保留，不使用跨源键盘桥。[预览入口决策](../../.agents/notes/implemented/architecture/2026-11-16-default-task-preview.md)记录隔离与部署取舍；
+[原附件决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)保留历史背景。
 
 ## 现状与可复用机制
 
@@ -362,7 +360,7 @@ GET/HEAD `/api/v1/me` 继续使用原 read-committed 读取、完整 DTO 和 ETa
 
 ### 预览 SSO 身份模块
 
-Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览 SSO 操作，生产 HTTP 入口已接入显式浏览器导航；主站普通登录 callback 和原附件入口仍使用原有流程。短期登录记录保存已校验的原始返回目标和 state、code 摘要。初始化 state、签发一次性 code、兑换、完成和过期清理均由模块处理。返回目标校验独立于 UniAuth 的 returnPath 校验，允许受约束的主站完成页和 Task 预览附件地址，同时保留原始编码与 query；原登录目标仍受原有 4096-byte 限制。
+Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览 SSO 操作，生产 HTTP 入口接入浏览器导航，主站登录 callback 在设置会话 Cookie 后启动 SSO。短期登录记录保存已校验的原始返回目标和 state、code 摘要。初始化 state、签发一次性 code、兑换、完成和过期清理均由模块处理。返回目标校验独立于 UniAuth 的 returnPath 校验，允许受约束的主站完成页和 Task 预览附件地址，同时保留原始编码与 query；原登录目标仍受原有 4096-byte 限制。
 
 兑换在同一事务中消费 code、锁定并检查来源 session，并替换该 session 的 preview 凭据摘要；只有确认提交后才向调用者返回明文凭据。完成操作要求凭据属于记录中的原 session，取回目标并删除记录。预览认证通过独立摘要查找同一 session，沿用其用户、到期和注销语义。事务失败或提交结果未知不交付凭据，也不自动重放。再次 SSO 会替换该 session 的预览凭据，并发或账号切换可能使浏览器持有失效凭据。
 
@@ -382,7 +380,7 @@ Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览
 
 生产预览 Cookie 为 `__Secure-daynight_preview_session; Domain=<preview hostname>; Path=/; Secure; HttpOnly; SameSite=Lax`，到期时间取自来源 session。state Cookie 的名称由 state 摘要派生，值等于 state，仅属于 bare preview host，成功兑换后清理。主站 `__Host-daynight_session` 和原登录绑定 Cookie 保持原作用域。HTTP 测试模式使用非 Secure 测试名称。
 
-SSO 只有普通 GET 导航，没有 CORS 交换、Provider、同步接口或后台轮询。所有响应使用 no-store、no-referrer；错误页按 Accept-Language 提供中英文、请求 ID、手动重新 SSO 和主站入口。主站未登录时，可在新标签页登录并返回重试原授权页；Cookie 未写入时不会自动在两个域循环，主站已建立的 session 继续有效。返回目标仅由 Identity 保存和校验，跳转链传递短 ID、state 和 code，保留原始 escaped path/query 及原 `/auth/complete` 两参数。直接 URL 的 fragment 由浏览器按导航继承。
+SSO 只有普通 GET 导航，没有 CORS 交换、Provider、同步接口或后台轮询。所有响应使用 no-store、no-referrer；错误页按 Accept-Language 提供中英文、请求 ID、手动重新 SSO 和主站入口。主站未登录时，可在新标签页登录并返回重试原授权页；Cookie 未写入时不会自动在两个域循环，主站已建立的 session 继续有效。主站 callback 创建短期记录失败或结果未知时，失败页保留已构造的 `/auth/complete` 入口供用户继续账户发布与原目标，不重放创建或上游 callback。返回目标仅由 Identity 保存和校验，跳转链传递短 ID、state 和 code，保留原始 escaped path/query 及原 `/auth/complete` 两参数。直接 URL 的 fragment 由浏览器按导航继承。
 
 Host 分发在主站 CORS/mux 之前保留整个 preview 命名空间：bare host 仅服务三个 SSO 路径，单层规范 UUID Task Host 仅服务对应附件预览；畸形 preview Host 拒绝，其他 Host 保留主站处理。独立入口校验 preview Cookie；未认证的 document/iframe GET 先创建保存原始目标的短期记录并启动 SSO，其他资源返回非 HTML 错误。详情见[附件设计](daynight-task-attachments.md#独立-task-预览-host)。部署健康探针使用数值 loopback URL 和显式 `Host: localhost`，在内部端口与公开 origin 端口不同或重合时仍进入主站健康处理。请求日志仅记录请求 ID、阶段和结果分类，不输出 code/state 查询、Cookie、秘密或完整返回地址；代理访问日志也必须排除这些信息。
 
@@ -448,7 +446,7 @@ Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精
 主站默认 HTTPS，使用 __Host- 会话/绑定 Cookie；显式 HTTP 主站测试配置使用不带
 该前缀和 Secure 的测试名称，仍为 host-only、HttpOnly、Lax。SDK gateway 的
 literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
-主站同源预览使用主站 Cookie；独立 Task Host 使用关联同一 session 的预览 Cookie，两者均执行项目授权。
+主站 HEAD 使用主站凭据；Task Host 使用关联同一 session 的预览 Cookie，两者均执行项目授权。
 
 ### OAuth family 的固定 profile 与 API 授权
 
@@ -958,9 +956,9 @@ Project 删除的原操作 owner 单独记录实际派发与可信回执，本�
 邀请复制失败可恢复，关闭前清楚提示无法再次读取。界面验证覆盖桌面、窄屏、长内容、加载、空、错误、
 失效、禁用和键盘焦点。
 
-附件 HEAD、GET、图片/PDF/iframe 和相对资源共用主站会话，保留既有同源文档键盘
-处理；401 显示明确错误并引导重新登录，不返回登录 HTML。HTML 继续可信执行，
-主站 API 始终按当前浏览者实际身份授权，不宣称隔离上传代码。
+附件 HEAD 在主站验证，图片/PDF/iframe 与相对资源在 Task Host 验证预览凭据。
+文档失效时使用标准 SSO，子资源保持非 HTML 错误；图片失败可在新标签重新 SSO
+并在原页重试。主站 API 按当前浏览者实际身份授权。
 
 ## CLI 设备授权
 
@@ -1155,4 +1153,4 @@ CLI 不增加认证预检往返，保持既有 request/operation/response/累计
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
 普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；admin 可通过直接成员 API 添加完整外部身份并读回实际关系。项目转移提供服务端预览和提交，CLI 与 Web 使用该预览及回执；Web 项目设置负责确认、缓存撤权和结果导航。Team 邀请的公开接收入口可登录、确认并加入；Team 设置的成员与邀请分区、Project 成员页管理各自邀请，Team 接收回执可进入真实 Team 上下文。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
-当前 Web 的可信同源 HTML 保持原权限模型；独立 Task Host 提供单独 origin 和预览凭据。K1 和已准入传输语义保持。
+Web 附件预览使用 Task Host 的独立 origin 和预览凭据。K1 和已准入传输语义保持。

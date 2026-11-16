@@ -1,6 +1,7 @@
 import { appendFileSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { createServer, connect, type Socket } from 'node:net';
+import { createServer as createTLSServer } from 'node:tls';
 import path from 'node:path';
 import { runCommand, startCommand, type ManagedCommand } from './command.ts';
 import { createLifecycle } from './lifecycle.ts';
@@ -35,9 +36,9 @@ const wait = async (milliseconds: number): Promise<void> => {
   });
 };
 
-const forward = async (publicPort: number, targetPort: number): Promise<void> => {
+const forward = async (publicPort: number, targetPort: number, tls = false): Promise<void> => {
   const sockets = new Set<Socket>();
-  const listener = createServer((incoming) => {
+  const onConnection = (incoming: Socket): void => {
     const target = connect({ host: '127.0.0.1', port: targetPort });
     for (const socket of [incoming, target]) {
       sockets.add(socket);
@@ -46,7 +47,10 @@ const forward = async (publicPort: number, targetPort: number): Promise<void> =>
     }
     incoming.pipe(target).pipe(incoming);
     incoming.once('close', () => { target.destroy(); });
-  });
+  };
+  const listener = tls
+    ? createTLSServer({ cert: await readFile(path.join(artifacts, 'daynight-ca.pem')), key: await readFile(path.join(artifacts, 'daynight-key.pem')) }, onConnection)
+    : createServer(onConnection);
   await new Promise<void>((resolve, reject) => {
     listener.once('error', reject);
     listener.listen(publicPort, '0.0.0.0', () => { listener.off('error', reject); resolve(); });
@@ -144,7 +148,7 @@ const main = async (): Promise<void> => {
   const authInternalPort = await reservePort(publicPorts);
   await forward(configuration.authPort, authInternalPort);
   const authURL = `http://127.0.0.1:${configuration.authPort}`;
-  const baseURL = `http://127.0.0.1:${configuration.serverPort}`;
+  const baseURL = `https://app.daynight.localhost:${configuration.serverPort}`;
   const proxyURL = `http://127.0.0.1:${configuration.proxyPort}`;
   const environment: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
@@ -165,10 +169,10 @@ const main = async (): Promise<void> => {
   });
   const credentials = await awaitServerConfiguration();
   const serverInternalPort = await reservePort(publicPorts);
-  await forward(configuration.serverPort, serverInternalPort);
+  await forward(configuration.serverPort, serverInternalPort, true);
   await writeServerConfig(daynightRoot, {
     listenAddress: `127.0.0.1:${serverInternalPort}`, publicOrigin: baseURL,
-    previewOrigin: `http://127.0.0.1:${configuration.serverPort === 65535 ? 65534 : configuration.serverPort + 1}`,
+    previewOrigin: `https://preview.daynight.localhost:${configuration.serverPort}`,
     databaseURL: configuration.databaseURL, storageRoot: path.join(runDirectory, 'private', 'storage'),
     authURL, appId: credentials.appId, appSecret: credentials.appSecret, callbackURL: `${baseURL}/auth/callback`,
   });

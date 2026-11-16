@@ -2410,8 +2410,8 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 	if response.Code != 204 || response.Body.Len() != 0 || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("delete result: %d %s %v", response.Code, response.Body, response.Header())
 	}
-	for _, call := range []struct{ method, suffix, body string }{{http.MethodGet, "", ""}, {http.MethodDelete, "", `{"version":2}`}, {http.MethodPatch, "", `{"version":2,"title":"Changed"}`}, {http.MethodPut, "/status", `{"version":2,"status":"done"}`}, {http.MethodGet, "/attachments", ""}, {http.MethodGet, "/attachments/files/evidence.txt", ""}, {http.MethodGet, "/preview/evidence.txt", ""}} {
-		if call.method == http.MethodGet {
+	for _, call := range []struct{ method, suffix, body string }{{http.MethodGet, "", ""}, {http.MethodDelete, "", `{"version":2}`}, {http.MethodPatch, "", `{"version":2,"title":"Changed"}`}, {http.MethodPut, "/status", `{"version":2,"status":"done"}`}, {http.MethodGet, "/attachments", ""}, {http.MethodGet, "/attachments/files/evidence.txt", ""}, {http.MethodHead, "/preview/evidence.txt", ""}} {
+		if call.method == http.MethodGet || call.method == http.MethodHead {
 			counts := map[string]int{"task": 1}
 			if call.suffix != "" {
 				counts = map[string]int{"presence": 1}
@@ -2437,7 +2437,14 @@ func TestTaskHTTPSoftDeletionAndGoneResources(t *testing.T) {
 		} else {
 			prepareWrite(false, model.ErrTaskDeleted)
 		}
-		assertProjectError(t, projectRequest(handler, call.method, path+call.suffix, call.body), 410, "task_deleted")
+		if call.method == http.MethodHead {
+			response := projectRequest(handler, call.method, path+call.suffix, call.body)
+			if response.Code != http.StatusGone {
+				t.Fatalf("deleted preview HEAD: %d", response.Code)
+			}
+		} else {
+			assertProjectError(t, projectRequest(handler, call.method, path+call.suffix, call.body), 410, "task_deleted")
+		}
 	}
 	f.expectList([]store.TaskQuery{{Page: store.Page{Limit: 50}}}, []store.TaskPage{{Items: []model.Task{}}})
 	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(task.ProjectID), ""), 200)
@@ -2880,6 +2887,12 @@ func TestRootProtectedRouteRegistration(t *testing.T) {
 			root.ServeHTTP(response, req)
 			if req.Pattern != route.pattern {
 				t.Errorf("matched pattern = %q, want %q", req.Pattern, route.pattern)
+			}
+			if route.method == http.MethodGet && route.path == task+"/preview/{path...}" {
+				if response.Code != http.StatusFound || response.Header().Get("Location") == "" {
+					t.Errorf("preview redirect = %d %q", response.Code, response.Header().Get("Location"))
+				}
+				return
 			}
 			if response.Code != http.StatusUnauthorized {
 				t.Errorf("got HTTP %d: %s", response.Code, response.Body.String())

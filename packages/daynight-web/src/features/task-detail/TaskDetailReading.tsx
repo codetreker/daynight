@@ -5,7 +5,6 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { MarkdownContent } from './MarkdownContent';
 import { TaskDetailPanels } from './TaskDetailPanels';
 import { TaskAttachmentsPanel, type AttachmentNavigation, type AttachmentTreeReveal, type AttachmentUrls, type AttachmentRecordSlots } from './attachments/TaskAttachments';
-import type { AttachmentKeyboardOwner } from './attachments/AttachmentPreview';
 import { resolveAttachmentReference, resolveMarkdownAttachmentUrl } from './attachments/model';
 import { useAttachments, type AttachmentApi } from './attachments/useAttachments';
 
@@ -19,7 +18,6 @@ type TaskDetailReadingProps = {
   readonly sessionRecords?: (active: boolean, render: (records: AttachmentRecordSlots) => ReactNode, resetSelection: object) => ReactNode;
   readonly session?: ReactNode | ((active: boolean) => ReactNode);
   readonly overview: (description: ReactNode) => ReactNode;
-  readonly keyboardOwner?: AttachmentKeyboardOwner;
   readonly selection?: TaskDetailNavigation;
   readonly onSelectionChange?: (selection: TaskDetailNavigation) => void;
   readonly requireCompleteInventory?: boolean;
@@ -27,7 +25,7 @@ type TaskDetailReadingProps = {
   readonly urls?: AttachmentUrls;
 };
 
-export const TaskDetailReading = ({ projectId, taskId, description, overview, steps, discussion, session, sessionRecords, keyboardOwner, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false, available = true }: TaskDetailReadingProps) => {
+export const TaskDetailReading = ({ projectId, taskId, description, overview, steps, discussion, session, sessionRecords, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false, available = true }: TaskDetailReadingProps) => {
   const { messages } = useI18n();
   const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory, enabled: available });
   const [localSelection, setLocalSelection] = useState<TaskDetailNavigation>({ tab: 'overview', path: null });
@@ -70,7 +68,7 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, st
     ? <p className="task-detail-description">{messages.inspection.detail.noDescription}</p>
     : <div className="description-card">{renderMarkdown(description)}</div>)} attachments={(active) => {
       if (!available) return null;
-      const render = (records?: AttachmentRecordSlots) => <TaskAttachmentsPanel active={active} {...(records === undefined ? {} : { records })} projectId={projectId} taskId={taskId} attachments={attachments} reveal={reveal} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} {...(urls === undefined ? {} : { urls })} />;
+      const render = (records?: AttachmentRecordSlots) => <TaskAttachmentsPanel active={active} {...(records === undefined ? {} : { records })} projectId={projectId} taskId={taskId} attachments={attachments} reveal={reveal} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(urls === undefined ? {} : { urls })} />;
       return sessionRecords === undefined ? render() : sessionRecords(active, render, reveal);
     }} />;
 };

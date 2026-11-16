@@ -16,6 +16,10 @@ Prepare the bare preview hostname and wildcard DNS/TLS before deployment, and
 forward their original Host to the same server. The bare host serves explicit
 SSO navigation; canonical Task and Goal UUID subdomains serve their matching
 attachment preview GET/HEAD. Invalid preview hosts cannot reach the main API.
+Before switching traffic, verify bare and wildcard DNS, TLS/SNI, Host forwarding,
+SSO return and readiness of every replica. Do not mix old replicas that serve
+inline previews on the main origin. Roll back to an isolated build, or disable
+old main-site preview GET before restoring an older build.
 See the [authentication design](../../docs/design/daynight-auth.md#显式浏览器预览-sso).
 Proxy access logs must omit code/state queries, Cookie headers and credentials.
 The bundled stream proxy does not produce HTTP request access logs. Startup
@@ -37,12 +41,12 @@ Set the following values in `deployment/localhost/.env` before starting:
 
 | Variable | Required value |
 |---|---|
-| `DAYNIGHT_PUBLIC_ORIGIN` | Exact browser-visible origin, without a trailing slash, path, query or fragment |
-| `DAYNIGHT_PREVIEW_ORIGIN` | Exact same-site preview origin; independent hostname and HTTPS in production |
+| `DAYNIGHT_PUBLIC_ORIGIN` | Exact HTTPS browser-visible origin, without a trailing slash, path, query or fragment |
+| `DAYNIGHT_PREVIEW_ORIGIN` | Exact HTTPS same-site preview origin on an independent hostname |
 | `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway URL |
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth application ID |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Registered UniAuth application secret; keep this file private |
-| `DAYNIGHT_UNIAUTH_CALLBACK_URL` | Registered callback URL on the exact public origin, for example `http://127.0.0.1:8787/auth/callback` |
+| `DAYNIGHT_UNIAUTH_CALLBACK_URL` | Registered callback URL on the exact public origin, for example `https://daynight.example.com/auth/callback` |
 | `DAYNIGHT_REDIS_URL` | Server connection URL for monitoring; the template uses `redis://redis:6379/0` on the Compose network |
 | `DAYNIGHT_REDIS_MAXMEMORY` | Positive Redis memory budget, such as the template's `128mb` |
 
@@ -88,12 +92,15 @@ callback URL in UniAuth before restarting. The example application values are
 placeholders; supply credentials for the intended
 UniAuth deployment.
 
-Production public origins require HTTPS. The template explicitly enables
-`DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1` for the loopback HTTP deployment. This setting
-permits an HTTP main-site origin and its test Cookie policy.
-`DAYNIGHT_ALLOW_LOOPBACK_HTTP` controls a separate UniAuth SDK rule: set it to `1`
-only when the UniAuth gateway itself uses HTTP on a literal loopback address.
-It defaults to `0` in the template because the example gateway uses HTTPS.
+The template requires explicit same-site HTTPS public and preview origins. Provide
+DNS and certificates for the main hostname, bare preview hostname and wildcard
+Task subdomains, and terminate TLS in a proxy that forwards their original Host to
+the single loopback business gateway. Register the exact public callback in
+UniAuth. Configure client trust for the issuing CA where necessary. Numeric
+loopback preview origins are for controlled HTTP fixtures and cannot provide
+browser Task subdomains. `DAYNIGHT_ALLOW_LOOPBACK_HTTP` controls a separate UniAuth
+SDK rule: set it to `1` only when the UniAuth gateway itself uses HTTP on a literal
+loopback address; the template leaves it disabled.
 Neither setting disables authentication or project authorization.
 
 `DAYNIGHT_TASK_SYNC_OVERLAP` defaults to `10s` in the template and Compose
@@ -146,8 +153,7 @@ privileged startup process.
 If `storage.root` is changed, update the attachment volume mount and the fixed
 storage paths in the backup and restore commands below to match it before use.
 
-Open the configured public origin, `http://127.0.0.1:8787/` with the template,
-and sign in through UniAuth. The dashboard provides project creation, member and
+Open the configured public origin and sign in through UniAuth. The dashboard provides project creation, member and
 invitation management, personal access token management and task browsing.
 Selecting a project opens `/projects/<projectId>`, with statistics, expandable
 dependency graphs and task details. The shared task-title header offers a
@@ -196,7 +202,7 @@ Set `DAYNIGHT_BASE_URL` to the configured public origin and read the current
 user. Copy its `id` into `DAYNIGHT_USER_ID`, then create a project in Personal:
 
 ```bash
-DAYNIGHT_BASE_URL=http://127.0.0.1:8787
+DAYNIGHT_BASE_URL=https://daynight.example.com
 curl --fail-with-body --header "Authorization: Bearer $DAYNIGHT_TOKEN" \
   "$DAYNIGHT_BASE_URL/api/v1/me"
 DAYNIGHT_USER_ID=YOUR_USER_ID
@@ -446,17 +452,16 @@ PostgreSQL and Redis have no published host port. The stack uses fixed
 development-only database credentials (`daynight` / `daynight-local`, database `daynight`). The
 gateway forwards TCP to the server's strict `127.0.0.1:8787` listener inside
 their shared container network namespace, preserving the server's HTTP handling.
-TLS termination for an HTTPS public origin belongs to the deployment's external
-proxy.
+TLS termination for the configured public and preview origins belongs to the
+deployment's external proxy, which forwards original Host to that gateway.
 
 UniAuth login, Daynight browser sessions and personal access tokens use the
 [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md). Project authorization covers
-tasks, graphs, attachment downloads and previews. Current Web previews use the
-main origin: trusted HTML retains its iframe, relative-resource and keyboard
-behavior, and scripts execute with the signed-in user's same-origin authority.
-The separate Task preview Host is directly accessible with the preview Cookie;
-it has its own origin but does not yet replace those Web or main-site paths.
+tasks, graphs, attachment downloads and previews. Web previews use a separate
+Task Host and preview Cookie; each Task shares an origin across its own files,
+separate from the main site and other Tasks. Old main-site preview GET redirects
+to that Host while HEAD and downloads remain on the main site.
 
 The review CLI has its own
 [review configuration and startup](../../README.md#review-configuration-and-startup).

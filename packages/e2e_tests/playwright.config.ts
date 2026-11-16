@@ -21,7 +21,7 @@ export default defineConfig({
     locale: "en-US",
     viewport: { width: 1280, height: 900 },
     baseURL: topology.baseURL,
-    proxy: { server: topology.proxyURL, bypass: "127.0.0.1,localhost" },
+    proxy: { server: topology.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" },
     ignoreHTTPSErrors: true,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",

@@ -6,6 +6,7 @@ import { startCommand } from "../src/command.ts";
 import { verifyCompletionFlow } from "./completion-flow.ts";
 import { verifyControllerImages } from "./controller-images.ts";
 import { verifyTagFlow } from "./tag-flow.ts";
+import { verifyPreviewFlow } from "./preview-flow.ts";
 
 type Task = { id: string; title: string; description: string; status: string; version: number };
 type SearchItem = { id: string; title: string; match: { fields: string[]; descriptionSnippet: string | null } };
@@ -92,11 +93,12 @@ test("compiled CLI and production Web share a normal task lifecycle", async ({ p
   expect(task).toMatchObject({ id: taskId, status: "proposed", version: 1 });
 
   const referenceTitle = `Reference ${task.id}`;
-  const referenceCreation = await cli(["task", "create", "--project", projectId!, "--title", referenceTitle, "--status", "todo"]);
+  const referenceCreation = await cli(["task", "create", "--project", projectId!, "--title", referenceTitle, "--description", "[Open preview](index.html)", "--status", "todo"]);
   const referenceId = referenceCreation.stdout.match(/^ID: ([0-9a-f-]{36})$/m)?.[1];
   expect(referenceId).toBeDefined();
   const reference = JSON.parse((await cli(["task", "show", referenceId!, "--project", projectId!, "--json"])).stdout) as Task;
   expect(reference).toMatchObject({ id: referenceId, status: "todo", version: 1 });
+  await verifyPreviewFlow(page, projectId!, [task.id, referenceId!]);
   const results = JSON.parse((await cli(["task", "search", task.id, "--project", projectId!, "--json"])).stdout) as SearchItem[];
   expect(results.map(({ id, title, match }) => ({ id, title, match }))).toEqual([
     { id: task.id, title: name, match: { fields: ["id"], descriptionSnippet: null } },

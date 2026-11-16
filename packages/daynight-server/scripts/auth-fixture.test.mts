@@ -85,7 +85,12 @@ test("fixture PAT lifetime convenience emits the current explicit expiry contrac
     }
     if (url.hostname === "identity.example" && url.pathname === "/auth/authorize") return new Response(null, { status: 302, headers: { Location: "https://github.com/login/oauth/authorize?code_challenge_method=S256&code_challenge=fixture-challenge&state=fixture-state&redirect_uri=https%3A%2F%2Fidentity.example%2Fauth%2Fcallback" } });
     if (url.hostname === "identity.example" && url.pathname === "/auth/callback") return new Response(null, { status: 302, headers: { Location: `${origin}/api/v1/auth/callback` } });
-    if (url.origin === origin && url.pathname === "/api/v1/auth/callback") return new Response(null, { status: 303, headers: { Location: origin, "Set-Cookie": "daynight_session=fixture-session; Path=/; HttpOnly" } });
+    if (url.origin === origin && url.pathname === "/api/v1/auth/callback") return new Response(null, { status: 303, headers: { Location: "http://127.0.0.1:8788/auth/sso/start?login=fixture", "Set-Cookie": "daynight_session=fixture-session; Path=/; HttpOnly" } });
+    const host = new Headers(init?.headers).get("Host");
+    if (url.pathname === "/auth/sso/start" && host === "127.0.0.1:8788") return new Response(null, { status: 303, headers: { Location: `${origin}/api/v1/auth/preview/authorize?login=fixture&state=state` } });
+    if (url.pathname === "/api/v1/auth/preview/authorize") return new Response(null, { status: 303, headers: { Location: "http://127.0.0.1:8788/auth/sso/callback?code=code&state=state" } });
+    if (url.pathname === "/auth/sso/callback" && host === "127.0.0.1:8788") return new Response(null, { status: 303, headers: { Location: "http://127.0.0.1:8788/auth/sso/complete?login=fixture", "Set-Cookie": "daynight_preview_session=preview-session; Path=/; HttpOnly" } });
+    if (url.pathname === "/auth/sso/complete" && host === "127.0.0.1:8788") return new Response(null, { status: 303, headers: { Location: `${origin}/auth/complete?returnPath=%2Fprojects&callbackPath=%2Fapi%2Fv1%2Fauth%2Fcallback` } });
     assert.equal(url.href, `${origin}/api/v1/me/tokens`);
     assert.equal(init?.method, "POST");
     const body = JSON.parse(String(init.body)) as { name: string; expiresAt: string };

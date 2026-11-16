@@ -769,8 +769,8 @@ The gateway publishes host `127.0.0.1:8787` for the application and
 `127.0.0.1:8788` for metrics, forwarding each over a separate TCP stream to the
 server's loopback listeners in their shared network namespace; the database has no
 published host port. Startup initializes or upgrades the database with this
-module's embedded format snapshot and migrations. Open
-`http://127.0.0.1:8787/` for projects and task graphs. The
+module's embedded format snapshot and migrations. Open the configured HTTPS public
+origin through the external proxy for projects and task graphs. The
 [dev-ci deployment](../../deployment/dev-ci/README.md) reuses the production
 Dockerfile and gateway in a unique disposable project for tests.
 
@@ -2554,7 +2554,7 @@ For `T=/api/v1/projects/{projectId}/tasks/{taskId}`, the service provides:
 | `PUT T/attachments/files/{path...}` | Raw single-file creation (201) or overwrite (200) |
 | `GET T/attachments/files/{path...}` | Original bytes with download disposition |
 | `DELETE T/attachments/files/{path...}` | Delete one registered file (204), missing record 404 |
-| `GET T/preview/{path...}` | Inline same-origin content and relative resources |
+| `GET T/preview/{path...}` | Main-site redirect to Task Host; inline content and relative resources there |
 
 Run `daynight login` and approve its displayed device code in the Web workspace.
 With existing project/task IDs, upload a local document:
@@ -2589,24 +2589,24 @@ headers without reading the body. Mutable responses use no-store. Before a
 stream begins, failures use the existing JSON error envelope except for Task-host
 document failures; after commitment,
 the server logs one correlated error and aborts the transfer without a JSON
-suffix. The existing Web preview and main-site GET run trusted HTML with the
-application origin permissions. A separate Task-host URL uses the same path under
+suffix. Main-site preview GET redirects to the Task Host; authenticated HEAD
+remains on the main site, and downloads use attachment and nosniff. The Task-host URL uses the same path under
 `https://<taskId>.<preview-host>`; its Host ID must match the path. It serves raw
 bytes and relative resources with the preview Cookie and retains no-store, MIME,
 inline and HEAD semantics. Document responses carry `Origin-Agent-Cluster: ?1`.
 Missing or invalid preview credentials start SSO only for document/iframe GET;
 subresources and HEAD retain non-HTML errors. Document failures retain their HTTP
 status and offer same-URL retry, with a new-tab SSO entry for 401. The main HTML
-shell publishes `daynight-preview-origin` as metadata; current Web URL generation
-continues to use the main-site path. Relative CSS, scripts, images and data URLs
+shell publishes `daynight-preview-origin` as metadata; Web uses it to generate
+Task-host preview URLs. Relative CSS, scripts, images and data URLs
 resolve under the fixed preview path; ordinary query parameters do not change the
 file name. The
 [authentication architecture](../../docs/design/daynight-auth.md) requires a fresh
 session/PAT or fixed API OAuth family check at main-site HTTP admission, or a
 preview session Cookie for the Task host, and project membership in the pre-I/O
 snapshot. An admitted file operation may finish; membership is not rechecked
-after file I/O. These checks retain the current Web's trusted same-origin
-execution, the separate Task-host route and K1 filesystem/PostgreSQL non-atomicity.
+after file I/O. These checks retain Task-host isolation and K1
+filesystem/PostgreSQL non-atomicity.
 
 ## PostgreSQL storage boundaries
 

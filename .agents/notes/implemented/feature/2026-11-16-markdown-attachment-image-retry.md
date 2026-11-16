@@ -51,7 +51,6 @@ semantics. The original reference and existing classifier preserve that distinct
 Image failures have an explicit recovery action without transferring ownership
 from the image to its surrounding reader. Requests keep normal browser image
 loading and caching semantics, and a failed retry remains a visible local error.
-The image retry has no separate product API or authentication recovery action;
-its current Web URL still uses the main origin. The [Task preview Host decision](../architecture/2026-11-16-task-preview-host.md)
-owns the independent direct entry. The selected-image preview retains its existing
-independent error and retry UI.
+The [default preview decision](../architecture/2026-11-16-default-task-preview.md)
+adds a new-tab SSO action and Task-origin URLs without changing retry ownership.
+The selected-image preview retains its independent error and retry UI.

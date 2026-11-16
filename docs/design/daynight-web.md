@@ -6,7 +6,7 @@
 只读 PR 区域已实现。[需求](../spec/daynight-task-properties.md)拥有行为。
 
 已实现的[附件架构](daynight-task-attachments.md)扩展 task 详情，提供文件树、
-单文件上传/覆盖/删除、下载及同源预览。[附件需求](../spec/daynight-task-attachments.md)
+单文件上传/覆盖/删除、下载及 Task origin 预览。[附件需求](../spec/daynight-task-attachments.md)
 拥有文件行为，[Web 决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)
 记录状态、渲染和焦点机制。图、统计与 task 元数据保留读取约定；状态通过专用版本化 PUT 设置。任务的布尔 allowAgents 与可空枚举 requiredPlatform 已实现，通过普通版本化 PATCH 修改，详情确认开关、平台确认下拉框及共享请求归属见下文。
 
@@ -16,7 +16,7 @@
 当前地址组合公开推广页、公开指南和 `AuthenticatedApp`；后者复用 messages.auth 的英语/简体中文目录
 及同一语言偏好。[公开入口设计](daynight-landing.md)拥有分流、介绍、演示和元数据。后端使用升级后的公开 UniAuth
 SDK 提供 App-aware provider discovery；发现失败与用户会话失效分开呈现。新壳
-复用现有任务页签、渐进图和居中 `TaskDetailDialog`，保留可信同源 frame、相对资源及键盘机制。
+复用现有任务页签、渐进图和居中 `TaskDetailDialog`，保留 frame 与相对资源。
 [Web 鉴权决策](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md)
 记录组件、会话生命周期和验证边界。
 
@@ -386,9 +386,8 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 对话框打开后焦点进入关闭按钮，Tab 在对话框内循环，Esc、关闭按钮和遮罩点击关闭。外层键盘监听在状态或自动执行确认窗打开或事件已由附件子层消费时不处理该事件，保证同一次 Escape/Tab 只作用于当前交互层。
 `focus.ts` 的 `dialogFocusables` 统一调用 `tabbable` 6.5.0，使用生产默认的完整可见性检查，按实际可 Tab
-次序识别表单、链接、iframe 和 contenteditable。可信同源 frame 在 load 后登记
-键盘桥接：Esc 调用当前关闭回调，首末 Tab/Shift+Tab 回到对话框相邻可聚焦元素；监听
-随 frame 替换或卸载释放。关闭后优先恢复仍连接、可见且未被 inert 隔离的原入口；入口已随刷新消失或位于隐藏任务区时，
+次序识别表单、链接、iframe 和 contenteditable。跨源 frame 使用浏览器原生键盘行为，
+详情保留明确的关闭和退出控件。关闭后优先恢复仍连接、可见且未被 inert 隔离的原入口；入口已随刷新消失或位于隐藏任务区时，
 优先使用仍可见图浮层的关闭按钮，否则使用当前可见任务、项目页签或项目 H1。
 
 卸载时，`useLayoutEffect` 同步移除键盘监听、恢复背景 inert 与 body 滚动状态；独立的 `useEffect([])` cleanup 在 DOM 删除后，调用 ref 中最新的焦点恢复回调。刷新可能同时卸载对话框和相邻任务链，恢复必须等旧节点真正移除后再检查 `isConnected`，否则焦点会先落到即将删除的节点，随后丢失到 body。关系跳转继续复用对话框，不触发卸载恢复。具体失败机制与验证由[焦点恢复决策](../../.agents/notes/archived/bug-fix/2026-10-20-drawer-focus-restoration.md)记录。
@@ -864,7 +863,7 @@ DAYNIGHT_TEST_DATABASE_URL=... bash scripts/startup-shutdown.sh
 完整规模图与几何测试由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`。
 `web:build` 不调用 Go；Go 模块验证使用独立资源覆盖层。
 
-开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。源码构建固定使用 Node 24 与 pnpm 11.28.6；localhost 运行镜像还包含 Node 和图片验证依赖。根目录现有 CLI build/test/acceptance 命令的含义保持独立，web 命令显式选择 `@codetreker/daynight-web`。
+开发模式的 Vite 从自身环境读取与 Go 一致的 `DAYNIGHT_PREVIEW_ORIGIN` 并注入页面；缺失或不可用于 Task 子域的值会阻止启动。Vite 将 `/api` 及配置的认证回调代理到本机 Go，保留原始 Host；浏览器须通过 Go 配置的同站主站 origin 访问，预览域直接到达 Go。开发环境配置见 [Web Development](../../packages/daynight-web/README.md#development)。生产构建不注入开发值，生产服务经外部 HTTPS 代理访问本机 Go 监听器。源码构建固定使用 Node 24 与 pnpm 11.28.6；localhost 运行镜像还包含 Node 和图片验证依赖。根目录现有 CLI build/test/acceptance 命令的含义保持独立，web 命令显式选择 `@codetreker/daynight-web`。
 
 ### localhost 交付部署
 
@@ -1117,8 +1116,7 @@ flex 布局让文字收缩、任意长词换行，32px 按钮保持固定尺寸�
 错误提供重试和 requestId，避免渲染原始响应内容。标题和仓库地址使用文本节点；
 描述使用 CommonMark/GFM，原始 HTML 保持文本，URL 沿用已有安全处理。描述与附件
 Markdown 复用渲染器，分别使用任务根与文档目录；其他附件内容按
-[附件预览规则](daynight-task-attachments.md#web-文件树与预览)处理。可信同源 HTML
-仍只属于附件预览的既有执行模型。
+[附件预览规则](daynight-task-attachments.md#web-文件树与预览)处理。HTML 在 Task 独立 origin 执行。
 
 ## 观测与生命周期
 
