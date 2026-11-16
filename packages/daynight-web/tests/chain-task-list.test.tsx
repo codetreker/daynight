@@ -70,6 +70,21 @@ const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
 describe('Goal task lists', () => {
+  it('renders the localized graph action as a decorative icon', () => {
+    const view = render(list(indexOf()));
+    const check = (name: string, title: string) => {
+      const button = screen.getByRole('button', { name });
+      expect(button).toHaveAttribute('title', title);
+      expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(button).toHaveTextContent(/^$/);
+      expect(button.querySelectorAll('svg')).toHaveLength(1);
+      expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    };
+    check('Goal，查看依赖关系', '查看依赖关系');
+    view.setLocale('en');
+    check('Goal, View dependencies', 'View dependencies');
+  });
+
   it('keeps cancelled chain members and terminal status while projecting completion', () => {
     const items = [task('Goal', 'done'), task('Done', 'done', ['Goal']), task('Cancelled', 'cancelled', ['Goal'])];
     const view = render(list(indexOf(items)));
@@ -353,6 +368,21 @@ describe('shared scoped chain presentation', () => {
       workerMachines={machines} instanceId={id} expanded={expanded} onExpandedChange={setExpanded} open={false}
       onOpenTask={onOpenTask} onOpenChain={onOpenChain} />;
   };
+
+  it('renders a localized graph icon for scoped chains', () => {
+    const view = render(<ul><Instance id="scoped" /></ul>);
+    const check = (name: string, title: string) => {
+      const button = screen.getByRole('button', { name });
+      expect(button).toHaveAttribute('title', title);
+      expect(button).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(button).toHaveTextContent(/^$/);
+      expect(button.querySelectorAll('svg')).toHaveLength(1);
+      expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    };
+    check('Outside，查看依赖关系', '查看依赖关系');
+    view.setLocale('en');
+    check('Outside, View dependencies', 'View dependencies');
+  });
 
   it('keeps duplicate resource instances independent and opens the graph at a scoped witness', () => {
     onOpenChain.mockClear(); onOpenTask.mockClear();

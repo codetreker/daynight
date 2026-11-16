@@ -141,7 +141,9 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 				t.Fatal(err)
 			}
 			client := f.client(t, version, "alice")
+			assertNoDiscoveredOutputSchemas(t, client, "task_session_current", "task_session_list", "task_session_show", "task_session_read", "task_session_entry")
 			for _, name := range []string{"current", "list", "show", "read", "entry"} {
+				definition := sessionReadToolDefinition(name)
 				args := sessionReadArgs()
 				if name == "current" || name == "list" {
 					delete(args, "sessionId")
@@ -160,7 +162,7 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 				if err != nil || result.IsError {
 					t.Fatalf("%s: %+v %v", name, result, err)
 				}
-				validateDiscoveredResult(t, client, "task_session_"+name, result)
+				validateToolResult(t, definition, result)
 				if object(t, structured(t, result)["meta"])["writeOutcome"] != nil {
 					t.Fatal("read invented write outcome")
 				}
@@ -168,6 +170,7 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 			if calls != 5 {
 				t.Fatalf("calls=%d", calls)
 			}
+			readDefinition := sessionReadToolDefinition("read")
 			for _, patch := range []map[string]any{{"limit": 0}, {"limit": 201}, {"before": ""}, {"before": strings.Repeat("x", 4097)}, {"before": "🙂"}, {"responseOverhead": 0}, {"sessionId": "invalid"}, {"conversation": "true"}} {
 				args := sessionReadArgs()
 				for key, value := range patch {
@@ -177,7 +180,7 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 				if err != nil || !result.IsError || calls != 5 {
 					t.Fatalf("invalid reached service: %+v %v calls=%d", patch, err, calls)
 				}
-				validateDiscoveredResult(t, client, "task_session_read", result)
+				validateToolResult(t, readDefinition, result)
 			}
 		})
 	}
@@ -202,7 +205,7 @@ func TestSessionReadErrorsPreserveReferencesWithoutWriteReceipts(t *testing.T) {
 		if err != nil || !result.IsError {
 			t.Fatalf("%+v %v", result, err)
 		}
-		validateDiscoveredResult(t, client, "task_session_read", result)
+		validateToolResult(t, sessionReadToolDefinition("read"), result)
 		e := object(t, structured(t, result)["error"])
 		if e["code"] != code || e["writeOutcome"] != nil || object(t, e["refs"])["sessionId"] != testUserID {
 			t.Fatalf("read error lost facts: %+v", e)
@@ -243,7 +246,7 @@ func TestSessionReadPagesPreserveCoverageInBothProtocols(t *testing.T) {
 					if err != nil || result.IsError || calls != 1 {
 						t.Fatalf("read: %+v %v calls=%d", result, err, calls)
 					}
-					validateDiscoveredResult(t, client, "task_session_read", result)
+					validateToolResult(t, sessionReadToolDefinition("read"), result)
 					value := structured(t, result)
 					data, meta := object(t, value["data"]), object(t, value["meta"])
 					coverage := object(t, data["coverage"])
@@ -267,14 +270,16 @@ func TestSessionReadSchemasRejectMalformedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	found := false
 	for _, tool := range listed.Tools {
 		if tool.Name != "task_session_read" {
 			continue
 		}
+		found = true
 		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
 			t.Fatal("readOnlyHint missing")
 		}
-		schema, err := resolveSchema(tool.OutputSchema)
+		schema, err := resolveSchema(sessionReadToolDefinition("read").OutputSchema)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -291,6 +296,9 @@ func TestSessionReadSchemasRejectMalformedHistory(t *testing.T) {
 				t.Fatal("malformed timeline body accepted")
 			}
 		}
+	}
+	if !found {
+		t.Fatal("task_session_read missing from discovery")
 	}
 }
 
@@ -315,12 +323,12 @@ func TestSessionReadCurrentKeepsPartialInspectionAndNoRuntimeOutputAdmission(t *
 	if err != nil || result.IsError {
 		t.Fatalf("current: %+v %v", result, err)
 	}
-	validateDiscoveredResult(t, client, "task_session_current", result)
+	validateToolResult(t, sessionReadToolDefinition("current"), result)
 	meta := object(t, structured(t, result)["meta"])
 	if meta["partial"] != true || meta["observedAt"] != value.Session.ObservedAt.Format(time.RFC3339Nano) {
 		t.Fatalf("observation lost: %+v", meta)
 	}
-	// The published schema is strict; success validation belongs to contract
+	// The internal schema is strict; success validation belongs to contract
 	// tests and the producer, rather than a second runtime MCP admission pass.
 	result, err = client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_read", Arguments: sessionReadArgs()})
 	if err != nil || result.IsError || object(t, structured(t, result)["data"])["source"] != "schema-drift-probe" {

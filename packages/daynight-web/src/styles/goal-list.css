@@ -25,7 +25,7 @@
 .goal-list-session .session-status-action:active .session-status-label { color: var(--task-status); }
 .goal-list-session .session-status-progress .session-status-label { padding: 0; border: 0; border-radius: 0; background: transparent; line-height: 20px; }
 .goal-list-contents:not([hidden]) { border-top: 1px solid var(--line); background: #fcfcfe; }
-.goal-list-contents .goal-task-list { container-type: inline-size; padding: 0; }
+.goal-list-contents .goal-task-list { container-type: inline-size; padding-block-end: 0; }
 .goal-list-empty { margin: 0; padding: 16px 18px; font-size: 12px; color: var(--task-helper); }
 @media (max-width: 740px) {
   .goal-list-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 32px 32px; padding: 0 12px 8px 0; gap: 0 6px; }

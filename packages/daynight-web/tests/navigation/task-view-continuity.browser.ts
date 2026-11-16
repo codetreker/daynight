@@ -204,11 +204,55 @@ test('overview progress navigates to highlighted chain and standalone targets in
   await expect(page.getByRole('tab', { name: 'Task chains', exact: true })).toHaveAttribute('aria-selected', 'true');
   const chainTarget = page.locator(`#task-root-${root.id}`); await expect(chainTarget).toBeFocused(); await expect(chainTarget).toBeInViewport(); await expect(chainTarget).toHaveClass(/overview-progress-target/);
   await select(page, 'Overview');
+  await chain.click();
+  await expect(chainTarget).toBeFocused(); await expect(chainTarget).toBeInViewport(); await expect(chainTarget).toHaveClass(/overview-progress-target/);
+  await select(page, 'Overview');
   const independent = progress.getByRole('button', { name: /^Standalone tasks, / });
-  await independent.focus(); await page.keyboard.press('Enter');
+  await independent.focus(); await page.keyboard.press('Space');
   const panel = page.getByRole('tabpanel', { name: 'Standalone tasks', exact: true });
   await expect(panel).toBeFocused(); await expect(panel).toBeInViewport(); await expect(panel).toHaveClass(/overview-progress-target/);
   await expect(page.locator('.task-chain-dialog')).toHaveCount(0); expect(state.writes).toEqual([]);
+});
+
+test('overview progress rows fit their content at desktop and narrow widths', async ({ page }) => {
+  const short = row(10, 'Short chain'), shortChild = row(11, 'Short child', [short.id]);
+  const longEnglish = { ...row(20, 'A long English title that wraps naturally when the available width becomes narrow and remains readable'), status: 'done' as const, ready: false, completedAt: '2026-10-22T10:00:00Z' };
+  const englishChild = { ...row(21, 'English child', [longEnglish.id]), blockedBy: [], ready: true };
+  const longChinese = row(30, '这是一个较长的中文任务链标题需要在窄屏中自然换行并且保持完整可读而不能被裁切');
+  const chineseChild = row(31, '中文子任务', [longChinese.id]);
+  const complete = { ...row(40, 'Complete chain'), status: 'done' as const, ready: false, completedAt: '2026-10-22T10:00:00Z' };
+  const completeChild = { ...row(41, 'Complete child', [complete.id]), status: 'done' as const, ready: false, completedAt: '2026-10-22T10:00:00Z' };
+  const state = await install(page, [short, shortChild, longEnglish, englishChild, longChinese, chineseChild, complete, completeChild, row(50, 'Independent')]);
+  await page.goto(`/projects/${projectId}`);
+  for (const locale of ['en', 'zh-CN']) {
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    for (const width of [1280, 740, 390, 320]) {
+      await page.setViewportSize({ width, height: 800 });
+      const rows = page.locator('.overview-progress-row');
+      await expect(rows).toHaveCount(5);
+      const shortRow = rows.filter({ hasText: 'Short chain' });
+      if (width === 1280) expect((await shortRow.boundingBox())!.height).toBeCloseTo(60, 0);
+      await expect(rows.filter({ hasText: 'Short chain' }).locator('.overview-progress-percent')).toHaveText('0%');
+      await expect(rows.filter({ hasText: 'A long English title' }).locator('.overview-progress-percent')).toHaveText('50%');
+      await expect(rows.filter({ hasText: 'Complete chain' }).locator('.overview-progress-percent')).toHaveText('100%');
+      await expect(rows.locator('.overview-progress-scope')).toBeVisible();
+      expect(await rows.evaluateAll(elements => elements.every(element => {
+        const rowBox = element.getBoundingClientRect();
+        const children = [...element.children].filter(child => getComputedStyle(child).display !== 'none') as HTMLElement[];
+        const boxes = children.map(child => child.getBoundingClientRect());
+        return element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1 &&
+          children.every((child, i) => child.scrollWidth <= child.clientWidth + 1 && child.scrollHeight <= child.clientHeight + 1 &&
+            boxes[i]!.left >= rowBox.left - 1 && boxes[i]!.right <= rowBox.right + 1 && boxes[i]!.top >= rowBox.top - 1 && boxes[i]!.bottom <= rowBox.bottom + 1 &&
+            (i === 0 || boxes[i - 1]!.right <= boxes[i]!.left + 1));
+      }))).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      if (width === 320) {
+        expect((await rows.filter({ hasText: 'A long English title' }).boundingBox())!.height).toBeGreaterThan(60);
+        expect((await rows.filter({ hasText: '这是一个较长的中文' }).boundingBox())!.height).toBeGreaterThan(60);
+      }
+    }
+  }
+  expect(state.writes).toEqual([]);
 });
 
 test('merging chains replaces the representative without stealing an open detail focus', async ({ page }) => {

@@ -54,9 +54,12 @@ Markdown, reasoning and retained bindings. They project only six metadata
 fields; the preview name accepts the unified image limit of 1024 UTF-8 bytes.
 Explicit image failures and unresolved projections retain partial coverage.
 
-Successful MCP reads keep public strict output schemas and protocol tests, with
-ordinary runtime encoding. The dedicated history budget does not restore the
-shared output validation or generic admission removed by the
+Successful MCP reads use ordinary runtime encoding; protocol tests validate
+structured results against internal output definitions. The original public
+strict schemas supported client validation and type discovery. The
+[private result contracts decision](../simplification/2026-11-16-private-mcp-result-contracts.md)
+records why discovery now omits them. The dedicated history budget does not
+restore the shared output validation or generic admission removed by the
 [canonical resource reads decision](../simplification/2026-11-09-canonical-resource-pages.md).
 The [history specification](../../../../docs/spec/task-session-history.md) and
 [design](../../../../docs/design/task-session-history.md) own current contracts.
@@ -77,8 +80,8 @@ Server-side projection preserves the existing authorized archive reader and
 bounded public responses, at the cost of cold full-archive materialization.
 
 **Restore shared MCP output admission.** That would change unrelated read tools.
-The history use case owns its budget, while published schemas remain validated
-by protocol tests.
+The history use case owns its budget, while protocol tests validate result
+fixtures against internal definitions.
 
 ## Consequences
 

@@ -15,11 +15,12 @@ read it would make ordinary operation unsafe.
 Task rows carry a type and nullable parent ID. Existing rows acquire `task` and
 null through structural defaults; their business data is not converted. Full
 and summary resource projections carry both fields, while narrow receipts and
-references retain their own projections. Public creation selects the type and optional Parent; updates can change Parent
-but never type. The shared
-MCP output schemas describe the typed resource and Goal progress shape. MCP
-creation and queries expose Type and Parent through the existing Task tools;
-Parent updates preserve omitted, null and UUID inputs. Query cursors bind the
+references retain their own projections. Public creation selects the type and
+optional Parent; updates can change Parent but never type. The shared MCP
+internal output definitions describe the typed resource and Goal progress
+shape; the [private result contracts decision](../simplification/2026-11-16-private-mcp-result-contracts.md)
+records why discovery omits output schemas. MCP creation and queries expose Type
+and Parent through the existing Task tools; Parent updates preserve omitted, null and UUID inputs. Query cursors bind the
 type and Parent scope, and the list fence covers visible resources of both types.
 The adapter delegates type policy to the shared business service and retains
 the original version and write outcome.

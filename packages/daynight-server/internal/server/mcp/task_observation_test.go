@@ -110,7 +110,9 @@ func TestTaskObservationSchemasMatchActualProtocolResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")
+	assertNoDiscoveredOutputSchemas(t, client, "task_list", "task_graph")
 	for _, name := range []string{"task_list", "task_graph"} {
+		definition := arrayResultDefinition(t, taskQueryToolDefinitions, name)
 		for _, view := range []string{"summary", "full"} {
 			args := map[string]any{"projectId": testProjectID, "view": view}
 			if name == "task_graph" {
@@ -120,24 +122,26 @@ func TestTaskObservationSchemasMatchActualProtocolResults(t *testing.T) {
 			if err != nil || result.IsError {
 				t.Fatalf("%s: %+v %v", name, result, err)
 			}
-			validateDiscoveredResult(t, client, name, result)
+			validateToolResult(t, definition, result)
 			if name == "task_graph" {
 				args["dependsOnly"] = true
 				result, err = client.CallTool(t.Context(), &sdk.CallToolParams{Name: name, Arguments: args})
 				if err != nil || result.IsError {
 					t.Fatal(err)
 				}
-				validateDiscoveredResult(t, client, name, result)
+				validateToolResult(t, definition, result)
 			}
 		}
 	}
 	resource := newTaskResourceFixture(t)
+	assertNoDiscoveredOutputSchemas(t, resource.client, "task_show")
+	showDefinition := arrayResultDefinition(t, taskToolDefinitions, "task_show")
 	for _, view := range []string{"summary", "full"} {
 		expectTaskGet(t, resource, task, nil)
 		result, err := resource.client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_show", Arguments: map[string]any{"projectId": testProjectID, "taskId": task.ID, "view": view}})
 		if err != nil || result.IsError {
 			t.Fatalf("show: %+v %v", result, err)
 		}
-		validateDiscoveredResult(t, resource.client, "task_show", result)
+		validateToolResult(t, showDefinition, result)
 	}
 }

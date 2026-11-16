@@ -156,8 +156,16 @@ func TestMCPResponseWriteFailureLogsCompletionAndDelivery(t *testing.T) {
 }
 
 func TestMCPOutputEncodingFailurePreservesChangedCompletion(t *testing.T) {
+	for _, version := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) { testMCPOutputEncodingFailurePreservesChangedCompletion(t, version) })
+	}
+}
+
+func testMCPOutputEncodingFailurePreservesChangedCompletion(t *testing.T, version string) {
+	var calls atomic.Int32
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	err := e.RegisterTool(simpleTestTool("changed", testObjectSchema(), testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		calls.Add(1)
 		return ToolResult{Data: make(chan int), Outcome: "changed", Refs: map[string]any{"id": "original"}}, nil
 	})
 	if err != nil {
@@ -166,12 +174,15 @@ func TestMCPOutputEncodingFailurePreservesChangedCompletion(t *testing.T) {
 	server := httptest.NewServer(httpx.RequestLogging(slog.New(slog.NewTextHandler(io.Discard, nil)), e))
 	t.Cleanup(server.Close)
 	fixture := &entryFixture{entry: e, server: server}
-	c := fixture.client(t, "2025-11-25", "alice")
+	c := fixture.client(t, version, "alice")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	r, err := c.CallTool(ctx, &sdk.CallToolParams{Name: "changed", Arguments: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("business calls: %d", calls.Load())
 	}
 	if !r.IsError {
 		t.Fatal("expected output failure")
@@ -183,8 +194,16 @@ func TestMCPOutputEncodingFailurePreservesChangedCompletion(t *testing.T) {
 }
 
 func TestMCPOutputFailureWithUnencodableRefsPreservesCompletion(t *testing.T) {
+	for _, version := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) { testMCPOutputFailureWithUnencodableRefsPreservesCompletion(t, version) })
+	}
+}
+
+func testMCPOutputFailureWithUnencodableRefsPreservesCompletion(t *testing.T, version string) {
+	var calls atomic.Int32
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	err := e.RegisterTool(simpleTestTool("bad_refs", testObjectSchema(), testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		calls.Add(1)
 		return ToolResult{Data: make(chan int), Outcome: "changed", Refs: map[string]any{"id": make(chan int)}}, nil
 	})
 	if err != nil {
@@ -193,12 +212,15 @@ func TestMCPOutputFailureWithUnencodableRefsPreservesCompletion(t *testing.T) {
 	server := httptest.NewServer(httpx.RequestLogging(slog.New(slog.NewTextHandler(io.Discard, nil)), e))
 	t.Cleanup(server.Close)
 	fixture := &entryFixture{entry: e, server: server}
-	c := fixture.client(t, "2025-11-25", "alice")
+	c := fixture.client(t, version, "alice")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	r, err := c.CallTool(ctx, &sdk.CallToolParams{Name: "bad_refs", Arguments: map[string]any{}})
 	if err != nil {
 		t.Fatalf("expected structured error, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("business calls: %d", calls.Load())
 	}
 	if !r.IsError {
 		t.Fatal("expected output failure")
@@ -546,36 +568,51 @@ func TestMCPHTTPTypedToolUnicodeAndDecode(t *testing.T) {
 }
 
 func TestMCPReadResultsTrustProjectionAndPreserveEncodingErrors(t *testing.T) {
+	for _, version := range []string{"2026-07-28", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) { testMCPReadResultsTrustProjectionAndPreserveEncodingErrors(t, version) })
+	}
+}
+
+func testMCPReadResultsTrustProjectionAndPreserveEncodingErrors(t *testing.T, version string) {
 	f := newEntryFixture(t)
+	var calls atomic.Int32
 	output := map[string]any{"type": "object", "properties": map[string]any{"data": map[string]any{"type": "string"}}}
 	projection := func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		calls.Add(1)
 		return ToolResult{Data: map[string]any{"value": 3}, Outcome: "changed", WriteOutcome: "confirmed"}, nil
 	}
 	if err := f.entry.RegisterTool(simpleTestTool("write_projection", testObjectSchema(), output), BudgetControl, projection); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.entry.registerReadTool(simpleTestTool("read_projection", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		calls.Add(1)
 		return ToolResult{Data: map[string]any{"value": 3}}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.entry.registerReadTool(simpleTestTool("read_encoding", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		calls.Add(1)
 		return ToolResult{Data: make(chan int)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.entry.registerToolFor(simpleTestTool("transfer_projection", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+		calls.Add(1)
 		return ToolResult{Data: map[string]any{"value": 3}}, nil
 	}, false, true); err != nil {
 		t.Fatal(err)
 	}
-	client := f.client(t, "2026-07-28", "alice")
+	client := f.client(t, version, "alice")
 	for _, tc := range []struct {
 		name    string
 		failure bool
 		outcome string
 	}{{"read_projection", false, ""}, {"write_projection", true, "confirmed"}, {"read_encoding", true, ""}, {"transfer_projection", true, ""}} {
+		before := calls.Load()
 		result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: tc.name, Arguments: map[string]any{}})
+		if calls.Load()-before != 1 {
+			t.Fatalf("%s business calls: %d", tc.name, calls.Load()-before)
+		}
 		if err != nil || result.IsError != tc.failure {
 			t.Fatalf("%s: %#v %v", tc.name, result, err)
 		}
