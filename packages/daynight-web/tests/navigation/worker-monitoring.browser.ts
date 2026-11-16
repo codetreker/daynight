@@ -8,6 +8,22 @@ const longTitle = `Long task ${'monitoring-'.repeat(28)}`;
 const longPath = `../retained/${'工作目录-long-path-'.repeat(18)}task`;
 const longWorkerName = `Worker ${'long-name-'.repeat(12)}`;
 const association = { kind: 'task', projectName: 'Monitoring project', title: longTitle };
+const retainedOwners = Array.from({ length: 5 }, (_, index) => ({
+  scope: { kind: 'claim', projectId, taskId: workerId(202 + index), claimId: workerId(402 + index) },
+  association: { kind: 'task', projectName: 'Monitoring project', title: index === 0 ? longTitle : `Retained task ${index + 1}` },
+  path: index === 0 ? longPath : `.worktrees/daynight/${workerId(502 + index)}`,
+}));
+const retainedObservation = () => ({
+  reservations: [
+    { reservationId: workerId(700), scope, association: { ...association, title: 'Snapshot task' }, roles: ['active-task', 'resource-owner'], occupied: true, observedAt: WORKER_TIME },
+    ...retainedOwners.map((owner, index) => ({ reservationId: workerId(701 + index), scope: owner.scope, association: owner.association, roles: ['resource-owner'], occupied: true, observedAt: WORKER_TIME })),
+  ],
+  activities: [{ operationId: workerId(600), kind: 'execution', phase: 'executing', status: 'running', scope, association: { ...association, title: 'Snapshot task' }, startedAt: WORKER_TIME, lastProgressAt: WORKER_TIME, elapsedMs: 2000, deadlineAt: null, waitReason: null, nextAttemptAt: null }],
+  currentFailures: retainedOwners.map((owner, index) => ({ operationId: workerId(601 + index), component: 'resources', phase: 'resource-observation', scope: owner.scope, association: owner.association,
+    worktree: { kind: 'project-relative', path: owner.path }, error: { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false },
+    firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: 'manual', nextAttemptAt: null,
+  })),
+});
 const install = async (page: Page, retained = false, locale = 'zh-CN') => {
   const state = { fail: false, activity: true };
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
@@ -29,12 +45,13 @@ const install = async (page: Page, retained = false, locale = 'zh-CN') => {
     if (path === '/api/v1/me/workers') return send(workerPage([{ ...workerSummary(), machine: { ...workerSummary().machine, name: longWorkerName } }]));
     if (path === `/api/v1/me/workers/${target}`) return send(workerDetail());
     if (path === `/api/v1/me/workers/${target}/configuration`) return send(configurationResource(), 200, { 'Daynight-Worker-Configuration': '1' });
-    if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: ['cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
+    if (path === '/api/v1/me/workers/monitoring/query') return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, items: [{ workerId: target, state: 'available', ...common, summary: { capturedAt: WORKER_TIME, lifecycle: 'running', scheduler, capacity, detailCoverage: 'complete', admission: { observedAt: WORKER_TIME, coverage: 'complete', reasonCodes: [retained ? 'capacity-full' : 'cleanup-capacity-blocked'], permissionProjection: 'current' } } }] });
     if (path === `/api/v1/me/workers/${target}/monitoring`) return state.fail ? send(failure, 503) : send({ observedAt: WORKER_TIME, state: 'available', ...common, runId: workerId(5), sequence: '1', detailCoverage: 'complete', permissionProjection: 'current', data: {
       runId: workerId(5), sequence: '1', capturedAt: WORKER_TIME, lifecycle: 'running', scheduler: { ...scheduler, cycleId: null, lastCompletedAt: WORKER_TIME, lastOutcome: 'completed' }, capacity: { ...capacity, detailCoverage: 'complete' },
-      admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
+      admission: { observedAt: WORKER_TIME, coverage: 'complete', reasons: [{ code: retained ? 'capacity-full' : 'cleanup-capacity-blocked', scope: { kind: 'worker' }, association: null, observedAt: WORKER_TIME, nextAttemptAt: null }] }, reservations: [],
       activities: state.activity ? [{ operationId: workerId(6), kind: 'cleanup', phase: 'worktree-removal', status: 'waiting', scope, association, startedAt: WORKER_TIME, lastProgressAt: null, elapsedMs: 2000, deadlineAt: null, waitReason: 'retry-backoff', nextAttemptAt: WORKER_TIME }] : [],
       currentFailures: [{ operationId: workerId(6), component: retained ? 'resources' : 'cleanup', phase: retained ? 'resource-observation' : 'worktree-removal', scope, association, worktree: { kind: 'project-relative', path: longPath }, error: { type: 'operation', code: retained ? 'ownership-unconfirmed' : 'command-failed', cause: retained ? 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.' : 'A required command failed.', causeTruncated: false }, firstObservedAt: WORKER_TIME, lastObservedAt: WORKER_TIME, occurrencesInRun: 3, retryState: retained ? 'manual' : 'scheduled', nextAttemptAt: retained ? null : WORKER_TIME }], lastRecovery: null, detailCoverage: 'complete', delivery: { lastSucceededAt: WORKER_TIME, lastFailure: null },
+      ...(retained ? retainedObservation() : {}),
     } });
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'fixture' } }, 404);
   });
@@ -90,11 +107,20 @@ for (const locale of ['zh-CN', 'en']) for (const width of [1360, 390, 320]) test
   const retained = page.getByText(locale === 'zh-CN' ? '保留资源占用' : 'Retained resource occupancy');
   await expect(active.locator('xpath=following-sibling::dd[1]')).toHaveText('1');
   await expect(retained.locator('xpath=following-sibling::dd[1]')).toHaveText('5');
-  const issue = page.locator('.monitoring-issue'); await issue.locator('summary').click();
-  await expect(issue.getByText(scope.claimId, { exact: true })).toBeVisible();
-  await expect(issue.locator('.monitoring-recovery-command')).toHaveText(`daynight worker resources recover ${taskId} --project ${projectId} --claim-id ${scope.claimId}`);
-  await expect(issue.locator('.monitoring-worktree').filter({ hasText: longPath })).toBeVisible();
-  await expect(issue.getByRole('link', { name: longTitle })).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${taskId}`));
+  const responsibilities = page.locator('.monitoring-reservations > li');
+  await expect(responsibilities).toHaveCount(6);
+  await expect(responsibilities.first()).toContainText(locale === 'zh-CN' ? '活动任务' : 'Active task');
+  await expect(page.locator('.monitoring-activities > li')).toHaveCount(1);
+  const issues = page.locator('.monitoring-issue'); await expect(issues).toHaveCount(5);
+  for (const [index, owner] of retainedOwners.entries()) {
+    const issue = issues.nth(index); await issue.locator('summary').click();
+    await expect(issue.getByText(owner.scope.claimId, { exact: true })).toBeVisible();
+    await expect(issue.locator('.monitoring-recovery-command')).toHaveText(`daynight worker resources recover ${owner.scope.taskId} --project ${projectId} --claim-id ${owner.scope.claimId}`);
+    await expect(issue.locator('.monitoring-worktree')).toHaveText(owner.path);
+    await expect(issue.getByRole('link', { name: owner.association.title })).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${owner.scope.taskId}`));
+    await expect(responsibilities.nth(index + 1).getByRole('link', { name: owner.association.title })).toHaveAttribute('href', new RegExp(`/projects/${projectId}/tasks/${owner.scope.taskId}`));
+  }
+  const issue = issues.first();
   await page.screenshot({ path: testInfo.outputPath('retained-resources.png'), fullPage: true });
   await issue.screenshot({ path: testInfo.outputPath('retained-failure.png') });
   if (width <= 390) expect(await issue.locator('dl').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
