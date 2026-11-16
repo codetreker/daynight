@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, readdir, readFile, rm, open, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, open, stat } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
@@ -156,21 +156,34 @@ test.each(["EPERM", "EACCES", "EROFS"])("release can reconcile an original files
   } finally { await media.close(); f.store.close(); }
 });
 
-test("release can resume after metadata capacity returns without classifying an unsafe path as transient", async () => {
+test("release succeeds while retained metadata exceeds the former ceiling", async () => {
   const f = await fixture(); const media = f.store.media();
   const history = `${f.file}.history-sync`, retained = path.join(history, "retained.json");
   try {
     await media.prepare(f.spec);
     await mkdir(history, { mode: 0o700 }); const file = await open(retained, "wx");
-    try { await file.truncate(136 * 1048576); } finally { await file.close(); }
-    await expect(media.release({ uploadId: f.spec.uploadId })).rejects.toMatchObject({ name: "ImageReleaseStorageError" });
-    expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "receiving" });
-    await rm(retained);
-    if (process.platform !== "win32") {
-      await symlink(f.file, retained);
-      await expect(media.release({ uploadId: f.spec.uploadId })).rejects.toThrow("regular file");
-      await rm(retained);
-    }
+    try { await file.truncate(137 * 1048576); } finally { await file.close(); }
     expect(await media.release({ uploadId: f.spec.uploadId })).toMatchObject({ state: "released" });
+    expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "released" });
+    expect((await stat(retained)).size).toBe(137 * 1048576);
   } finally { await media.close(); f.store.close(); }
+});
+
+test("release treats an unsafe preparation path as a definitive refusal", async () => {
+  const f = await fixture(); const media = f.store.media(), db = new Database(f.file);
+  try {
+    await media.prepare(f.spec);
+    const filename = media.preparationPath(f.spec.uploadId);
+    const original = db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(f.spec.uploadId) as { value: string };
+    const changed = { ...JSON.parse(original.value), filename: "../outside.part" };
+    db.prepare("UPDATE image_preparations SET value=? WHERE upload_id=?").run(JSON.stringify(changed), f.spec.uploadId);
+    const error = await media.release({ uploadId: f.spec.uploadId }).then(() => null, (cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ message: "Invalid private image preparation path." });
+    expect(error).not.toMatchObject({ name: "ImageReleaseStorageError" });
+    expect(await readFile(filename)).toHaveLength(0);
+    expect(await media.status({ uploadId: f.spec.uploadId })).toMatchObject({ state: "receiving" });
+    db.prepare("UPDATE image_preparations SET value=? WHERE upload_id=?").run(original.value, f.spec.uploadId);
+    expect(await media.release({ uploadId: f.spec.uploadId })).toMatchObject({ state: "released" });
+  } finally { db.close(); await media.close(); f.store.close(); }
 });
