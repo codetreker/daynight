@@ -175,6 +175,10 @@ func (m *Manager) Discover(ctx context.Context, p model.Principal, id string) (c
 	if err = m.ready(); err != nil {
 		return core.InstallationCandidate{}, err
 	}
+	return m.discoverSnapshot(ctx, snap)
+}
+
+func (m *Manager) discoverSnapshot(ctx context.Context, snap managementSnapshot) (core.InstallationCandidate, error) {
 	owner, name, err := core.ProjectRepository(snap.project.RepoURL)
 	if err != nil {
 		return core.InstallationCandidate{}, err
