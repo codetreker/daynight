@@ -234,6 +234,9 @@ var tagColorSQL string
 //go:embed migrations/075_preview_sso.sql
 var previewSSOSQL string
 
+//go:embed migrations/076_github_apps.sql
+var githubAppsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -317,6 +320,7 @@ var schemaMigrations = []migration{
 	{version: 73, sql: projectGitHubSyncSQL},
 	{version: 74, sql: tagColorSQL},
 	{version: 75, sql: previewSSOSQL},
+	{version: 76, sql: githubAppsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -231,6 +231,10 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"bots",
 		"device_authorization_limits",
 		"device_authorizations",
+		"github_app_admin_invitations",
+		"github_app_admins",
+		"github_app_team_grants",
+		"github_apps",
 		"login_transactions",
 		"oauth_access_tokens",
 		"oauth_authorizations",
@@ -317,7 +321,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(names, []string{"bots_creation_order_seq", "project_grant_versions", "team_member_versions", "webhook_delivery_queue_order_seq"}) {
+	if !slices.Equal(names, []string{"bots_creation_order_seq", "github_app_admin_versions", "project_grant_versions", "team_member_versions", "webhook_delivery_queue_order_seq"}) {
 		t.Fatalf("shared Session fixture sequences changed: %v", names)
 	}
 	for _, name := range names {

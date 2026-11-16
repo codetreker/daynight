@@ -83,3 +83,33 @@ func TestEnvironmentValidation(t *testing.T) {
 		t.Fatalf("overrides: %v", err)
 	}
 }
+
+func TestParsePrivateKeyStrictContent(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	parsed, err := ParsePrivateKey([]byte(" \n" + encoded + "\n "))
+	if err != nil || parsed.N.Cmp(key.N) != 0 {
+		t.Fatalf("valid PEM: %v", err)
+	}
+	for _, input := range []string{
+		"secret-prefix\n" + encoded,
+		encoded + "secret-suffix",
+		encoded + encoded,
+		"-----BEGIN RSA PRIVATE KEY-----\ncorrupt\n" + encoded,
+	} {
+		if _, err = ParsePrivateKey([]byte(input)); err == nil || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("extra or invalid content accepted or exposed: %v", err)
+		}
+	}
+	// The deployment-file parser retains its existing acceptance of preamble text.
+	path := filepath.Join(t.TempDir(), "key.pem")
+	if err = os.WriteFile(path, []byte("preamble\n"+encoded), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = (Config{PrivateKeyFile: path}).PrivateKey(); err != nil {
+		t.Fatalf("legacy preamble: %v", err)
+	}
+}
