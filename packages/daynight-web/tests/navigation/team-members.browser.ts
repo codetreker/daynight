@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { expectCopyButtonSkin } from './copy-button-assertions';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncEpoch, taskSyncFixture, taskSyncQuery } from '../helpers/taskSync';
 import { stringifyWireJson } from '../helpers/wireJson';
@@ -344,6 +345,24 @@ const confirmInvitationAccess = async (page: Page, access: 'admin' | 'member' | 
   else if (access === 'unavailable') await expect(page.getByRole('alert').filter({ hasText: 'This Team is unavailable or you do not have access.' }).first()).toBeVisible();
   else await expect(page.getByRole('alert').filter({ hasText: 'Unable to read members.' }).first()).toBeVisible();
 };
+
+test('invitation copy retains its labelled control and selects the secret after denial', async ({ page }) => {
+  const api = await install(page); await start(page); api.invitationSuccess = true;
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.getByRole('button', { name: 'Invite member' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Create invitation link' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Invitation link created' });
+  const value = dialog.getByLabel('One-time invitation link');
+  const copy = dialog.getByRole('button', { name: 'Copy link' });
+  await expect(copy).toContainText('Copy link');
+  await expectCopyButtonSkin(page, copy, true);
+  await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('denied')) } }));
+  await copy.click();
+  await expect(value).toBeFocused();
+  expect(await value.evaluate((element: HTMLTextAreaElement) => element.value.slice(element.selectionStart, element.selectionEnd))).toBe(await value.inputValue());
+  await expect(dialog.getByRole('status')).toContainText('Automatic copying was blocked');
+  expect(api.invitationWrites).toBe(1);
+});
 
 for (const access of ['admin', 'member', 'unavailable'] as const) test(`a displayed invitation remains available across navigation and ${access}`, async ({ page }) => {
   const api = await install(page); await start(page); api.invitationSuccess = true;
