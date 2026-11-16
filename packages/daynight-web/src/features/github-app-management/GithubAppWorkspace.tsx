@@ -18,6 +18,8 @@ type AccessState = { revision: number; denied: Set<string> };
 type AppPage = { readonly items: readonly GitHubApp[]; readonly nextCursor: string | null; readonly pages: number };
 const denied = (error: unknown) => error instanceof ApiError && error.kind === 'server' && (error.status === 403 || error.status === 404);
 const conflict = (error: unknown) => error instanceof ApiError && error.kind === 'server' && error.status === 409;
+// These GitHub failures occur during credential proof, before the transaction.
+const proofRefused = (error: unknown) => error instanceof ApiError && error.kind === 'server' && error.status === 502 && (error.code === 'github_rate_limited' || error.code === 'github_unavailable');
 class ProjectVisibilityChanged extends Error {}
 const verifyProjects = async (items: GitHubImpactProjectPage['items'], signal: AbortSignal, admission: TaskCacheScope, mismatch: () => void) => {
   let next = 0, failed = false, failure: unknown;
@@ -96,7 +98,7 @@ const AppList = ({ active, admission, admissionBlocked, onIdentityMismatch, acce
     void op.run((signal, dispatched) => createGitHubApp({ id, name, githubAppId, privateKeyPem: key, webhookSecret: secret }, signal, auth(admission, onIdentityMismatch, dispatched)), value => {
       clearDraft(); setCreated(true); setOpen(false); setObserved(value); current.current = null;
       if (activeRef.current) navigate(`/github-apps/${value.id}`);
-    });
+    }, undefined, proofRefused);
   };
   const check = () => { if (!target.current || admissionBlocked) return; const controller = new AbortController(), signal = AbortSignal.any([controller.signal, admission.signal]); void (async () => { try { await admission.ready(signal); const value = await getGitHubApp(target.current!, signal, auth(admission, onIdentityMismatch)); await admission.ready(signal); if (!signal.aborted && !admission.isInvalidated) { setObserved(value); setChecked(true); } } catch (failure) { if (!signal.aborted && !admission.isInvalidated) { if (denied(failure)) { setObserved(null); setChecked(true); } else setError(failure); } } })(); };
   const unknown = op.result?.kind === 'unknown';
@@ -208,7 +210,7 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
     const input = { version: app.version, ...(name !== app.name ? { name } : {}), ...(key ? { privateKeyPem: key } : {}), ...(secret ? { webhookSecret: secret } : {}) };
     void op.run((signal, dispatched) => updateGitHubApp(id, input, signal, auth(admission, onIdentityMismatch, dispatched)), value => {
       onSaved(); if (revision !== epoch.current) return; current.current = value; setApp(value); setModal(null); setName(''); setKey(''); setSecret('');
-    }, failure => { if (revision !== epoch.current) return; if (denied(failure)) loseAccess(); else if (conflict(failure)) { setChanged(true); fresh.current = false; } });
+    }, failure => { if (revision !== epoch.current) return; if (denied(failure)) loseAccess(); else if (conflict(failure)) { setChanged(true); fresh.current = false; } }, proofRefused);
   };
   const remove = () => {
     if (!active || admissionBlocked || !app || !impact || impact.nextCursor !== null || !fresh.current || !impactFresh.current || op.guarded() || changed) return;

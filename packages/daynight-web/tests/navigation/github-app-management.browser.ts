@@ -9,14 +9,14 @@ const time = '2026-10-20T09:00:00Z';
 const team = { id: teamId, kind: 'personal', name: null };
 const profile = { id: actorId, personalTeam: team, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const metadata = (id = appId) => ({ id, githubAppId: '9007199254740993', name: 'Platform App', githubName: 'Platform', githubSlug: 'platform', version: '4', administrators: '2', authorizedTeams: '1', connectedProjects: '3', webhookUrl: `https://daynight.example/api/v1/github/apps/${id}/webhook`, createdAt: time, updatedAt: time });
-type State = { app: ReturnType<typeof metadata>; writes: { path: string; method: string; body: Record<string, unknown> }[]; mode: 'ok' | 'reject' | 'conflict' | 'unknown'; removed: boolean; denied: boolean; holdPatch: Promise<void> | null; holdAppRead: Promise<void> | null; holdListRead: Promise<void> | null; holdProjectRead: Promise<void> | null; holdRemove: Promise<void> | null; holdImpactRecheck: Promise<void> | null; impactReads: number; unknownRemoveCommitted: boolean; projectReads: number; projectPagination: boolean; projectRevoked: boolean; teamPagination: boolean; reads: number };
+type State = { app: ReturnType<typeof metadata>; writes: { path: string; method: string; body: Record<string, unknown> }[]; mode: 'ok' | 'reject' | 'conflict' | 'unknown' | 'github_unavailable' | 'github_rate_limited'; removed: boolean; denied: boolean; holdPatch: Promise<void> | null; holdAppRead: Promise<void> | null; holdListRead: Promise<void> | null; holdProjectRead: Promise<void> | null; holdRemove: Promise<void> | null; holdImpactRecheck: Promise<void> | null; impactReads: number; unknownRemoveCommitted: boolean; projectReads: number; projectPagination: boolean; projectRevoked: boolean; teamPagination: boolean; reads: number };
 
 const install = async (page: Page): Promise<State> => {
   const state: State = { app: metadata(), writes: [], mode: 'ok', removed: false, denied: false, holdPatch: null, holdAppRead: null, holdListRead: null, holdProjectRead: null, holdRemove: null, holdImpactRecheck: null, impactReads: 0, unknownRemoveCommitted: false, projectReads: 0, projectPagination: false, projectRevoked: false, teamPagination: false, reads: 0 };
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
-    const error = (code: string, status: number) => send({ error: { code, message: code, requestId: 'test' } }, status);
+    const error = (code: string, status: number) => send({ error: { code, message: code, requestId: 'test', ...(code === 'github_write_outcome_unknown' ? { details: { writeOutcome: 'unknown' } } : {}) } }, status);
     if (path === '/api/v1/me') return send(profile);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send({ ...team, version: 1n, createdAt: time, updatedAt: time, membership: { teamId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time } });
@@ -31,6 +31,7 @@ const install = async (page: Page): Promise<State> => {
     if (path === '/api/v1/github/apps' && method === 'POST') {
       const body = request.postDataJSON() as Record<string, unknown>; state.writes.push({ path, method, body });
       if (state.mode === 'reject') return error('github_app_already_registered', 409);
+      if (state.mode === 'github_unavailable' || state.mode === 'github_rate_limited') return error(state.mode, 502);
       if (state.mode === 'unknown') return error('github_write_outcome_unknown', 503);
       state.app = { ...metadata(String(body.id)), name: String(body.name), githubAppId: String(body.githubAppId) }; return send(state.app, 201);
     }
@@ -38,6 +39,7 @@ const install = async (page: Page): Promise<State> => {
     if (path === `/api/v1/github/apps/${state.app.id}` && method === 'PATCH') {
       const body = request.postDataJSON() as Record<string, unknown>; state.writes.push({ path, method, body });
       if (state.holdPatch) await state.holdPatch;
+      if (state.mode === 'github_unavailable' || state.mode === 'github_rate_limited') return error(state.mode, 502);
       if (state.mode === 'unknown') return error('github_write_outcome_unknown', 503);
       if (state.mode === 'conflict') return error('version_conflict', 409);
       state.app = { ...state.app, version: '5', ...(body.name === undefined ? {} : { name: String(body.name) }) }; return send(state.app);
@@ -264,4 +266,50 @@ test('project access revoked between the page and impact recheck never exposes i
   await expect(dialog.getByText('Visible project')).toHaveCount(0);
   await expect(dialog.getByText('https://github.com/example/visible')).toHaveCount(0);
   await expect(dialog.getByRole('alert')).toBeVisible();
+});
+
+for (const code of ['github_unavailable', 'github_rate_limited'] as const) {
+  test(`registration ${code} is a definite refusal with a retained draft and explicit retry`, async ({ page }) => {
+    const state = await install(page); state.mode = code; await page.goto('/github-apps');
+    await page.getByRole('button', { name: 'Register GitHub App' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('App ID').fill('42'); await dialog.getByLabel('Registration name').fill('Retry App');
+    await dialog.getByLabel('Private key').fill('retry-private-key'); await dialog.getByLabel('Webhook secret').fill('retry-secret');
+    await dialog.getByRole('button', { name: 'Verify and register' }).click();
+    await expect(dialog).toContainText('The operation failed.');
+    await expect(dialog.getByLabel('Private key')).toHaveValue('retry-private-key');
+    await expect(dialog.getByLabel('Webhook secret')).toHaveValue('retry-secret');
+    await expect(dialog.getByRole('button', { name: 'Verify and register' })).toBeEnabled();
+    await expect(dialog).not.toContainText('The result is unknown'); expect(state.writes).toHaveLength(1);
+    state.mode = 'ok'; await dialog.getByRole('button', { name: 'Verify and register' }).click();
+    await expect.poll(() => state.writes.length).toBe(2);
+    expect(state.writes[1]!.body).toEqual(state.writes[0]!.body);
+    await expect(page).toHaveURL(new RegExp(`/github-apps/${state.app.id}$`));
+  });
+
+  test(`credential replacement ${code} is a definite refusal with a retained draft and explicit retry`, async ({ page }) => {
+    const state = await install(page); state.mode = code; await page.goto(`/github-apps/${appId}`);
+    await page.getByRole('button', { name: 'Edit configuration' }).click(); const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Private key').fill('new-private-key'); await dialog.getByLabel('Webhook secret').fill('new-secret');
+    await dialog.getByRole('button', { name: 'Verify and save' }).click();
+    await expect(dialog).toContainText('The operation failed.');
+    await expect(dialog.getByLabel('Private key')).toHaveValue('new-private-key');
+    await expect(dialog.getByLabel('Webhook secret')).toHaveValue('new-secret');
+    await expect(dialog.getByRole('button', { name: 'Verify and save' })).toBeEnabled();
+    await expect(dialog).not.toContainText('The result is unknown'); expect(state.writes).toHaveLength(1);
+    state.mode = 'ok'; await dialog.getByRole('button', { name: 'Verify and save' }).click();
+    await expect(dialog).toHaveCount(0); expect(state.writes).toHaveLength(2);
+    expect(state.writes[1]!.body).toEqual(state.writes[0]!.body);
+    await expect(page.getByText('Configuration saved.')).toBeVisible();
+  });
+}
+
+test('unknown credential replacement does not offer replay', async ({ page }) => {
+  const state = await install(page); state.mode = 'unknown'; await page.goto(`/github-apps/${appId}`);
+  await page.getByRole('button', { name: 'Edit configuration' }).click(); const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Webhook secret').fill('uncertain-secret'); await dialog.getByRole('button', { name: 'Verify and save' }).click();
+  await expect(dialog).toContainText('The result is unknown');
+  await expect(dialog.getByRole('button', { name: 'Verify and save' })).toHaveCount(0);
+  await expect(dialog.getByLabel('Webhook secret')).toHaveValue('uncertain-secret');
+  expect(state.writes).toHaveLength(1);
 });
