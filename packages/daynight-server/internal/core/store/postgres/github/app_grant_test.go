@@ -12,6 +12,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestGrantLifecycleAndAtomicStop(t *testing.T) {
@@ -270,4 +271,187 @@ func TestGrantSharedStopSelectors(t *testing.T) {
 	if err = db.Pool.QueryRow(ctx, `SELECT impact_version FROM github_apps WHERE id=$1`, app).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("impact scope: %d %v", n, err)
 	}
+}
+
+func TestGrantDAOFailuresAndBoundaries(t *testing.T) {
+	db, actor := dbFixture(t)
+	ctx := t.Context()
+	app, teamID, grant := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO teams(id,name) VALUES($1,'team')`, []any{teamID}},
+		{`INSERT INTO team_members(team_id,user_id,role) VALUES($1,$2,'admin')`, []any{teamID, actor}},
+		{`INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,1,'app','remote','slug','k','s')`, []any{app}},
+		{`INSERT INTO github_app_admins(app_resource_id,user_id) VALUES($1,$2)`, []any{app, actor}},
+		{`INSERT INTO github_app_team_grants(id,team_id,app_resource_id) VALUES($1,$2,$3)`, []any{grant, teamID, app}},
+	} {
+		if _, err := db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("reads", func(t *testing.T) {
+		tx := begin(t, db, pgx.TxOptions{})
+		r := github.NewGrantReader(tx)
+		if _, err := r.Grants(ctx, app, actor, nil, 0); err == nil {
+			t.Fatal("invalid grant page limit accepted")
+		}
+		if _, err := r.TeamApps(ctx, teamID, actor, nil, 101); err == nil {
+			t.Fatal("invalid Team app page limit accepted")
+		}
+		if _, err := r.Grants(ctx, app, uuid.NewString(), nil, 25); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("non-admin grant list: %v", err)
+		}
+		value, err := r.Grant(ctx, app, actor, grant)
+		if err != nil || value.ID != grant {
+			t.Fatalf("exact grant: %+v %v", value, err)
+		}
+		if _, err = r.Grant(ctx, app, uuid.NewString(), grant); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("unauthorized grant: %v", err)
+		}
+		if _, err = r.Grant(ctx, app, actor, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing grant: %v", err)
+		}
+		loc, err := r.Locate(ctx, app, actor, grant)
+		if err != nil || loc.TeamID != teamID || loc.Revoked {
+			t.Fatalf("locate: %+v %v", loc, err)
+		}
+		if _, err = r.Locate(ctx, app, uuid.NewString(), grant); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("unauthorized locate: %v", err)
+		}
+		if _, err = r.Locate(ctx, app, actor, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing location: %v", err)
+		}
+		preview, err := r.Preview(ctx, app, actor, uuid.NewString())
+		if !errors.Is(err, model.ErrNotFound) || preview.Grant != nil {
+			t.Fatalf("missing Team preview: %+v %v", preview, err)
+		}
+	})
+	t.Run("current facts", func(t *testing.T) {
+		tx := begin(t, db, pgx.TxOptions{})
+		w := github.NewGrantWriter(tx, teamID, app)
+		g, err := w.LiveGrant(ctx)
+		if err != nil || g == nil || g.ID != grant {
+			t.Fatalf("live grant: %+v %v", g, err)
+		}
+		if _, err = w.Grant(ctx, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing locked grant: %v", err)
+		}
+		if _, err = github.NewGrantWriter(tx, uuid.NewString(), app).Facts(ctx, actor); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing Team: %v", err)
+		}
+		if _, err = github.NewGrantWriter(tx, teamID, uuid.NewString()).Facts(ctx, actor); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing App: %v", err)
+		}
+		if err = w.Revoke(ctx, uuid.NewString()); !errors.Is(err, model.ErrNotFound) {
+			t.Fatalf("missing grant revoke: %v", err)
+		}
+	})
+	t.Run("unique relationship", func(t *testing.T) {
+		tx := begin(t, db, pgx.TxOptions{})
+		w := github.NewGrantWriter(tx, teamID, app)
+		if _, err := w.Insert(ctx, uuid.NewString()); !errors.Is(err, store.ErrGitHubGrantExists) {
+			t.Fatalf("duplicate grant: %v", err)
+		}
+	})
+	t.Run("impact exhausted", func(t *testing.T) {
+		tx := begin(t, db, pgx.TxOptions{})
+		mustExec(t, tx, `UPDATE github_apps SET impact_version=$2 WHERE id=$1`, app, int64(math.MaxInt64))
+		w := github.NewGrantWriter(tx, teamID, app)
+		var fault *model.Fault
+		if err := w.AdvanceImpact(ctx); !errors.As(err, &fault) || fault.Code != "version_exhausted" {
+			t.Fatalf("impact exhausted: %v", err)
+		}
+	})
+	t.Run("live read cancellation", func(t *testing.T) {
+		tx := begin(t, db, pgx.TxOptions{})
+		w := github.NewGrantWriter(tx, teamID, app)
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if _, err := w.LiveGrant(cancelled); err == nil {
+			t.Fatal("cancelled grant read succeeded")
+		}
+	})
+	waitAndCancel := func(t *testing.T, holder pgx.Tx, targetTeam string, action func(context.Context, store.GitHubGrantWriteDAO) error) {
+		t.Helper()
+		tx := begin(t, db, pgx.TxOptions{})
+		var pid int
+		if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+			t.Fatal(err)
+		}
+		bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+		done := make(chan error, 1)
+		go func() { done <- action(bounded, github.NewGrantWriter(tx, targetTeam, app)) }()
+		received := false
+		defer func() {
+			cancel()
+			if !received {
+				<-done
+			}
+		}()
+		waitForLock(t, db, pid)
+		cancel()
+		err := <-done
+		received = true
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting query cancellation: %v", err)
+		}
+		if err = holder.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("insert waits for competing grant", func(t *testing.T) {
+		targetTeam, proposed := uuid.NewString(), uuid.NewString()
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO teams(id,name) VALUES($1,'other')`, targetTeam); err != nil {
+			t.Fatal(err)
+		}
+		holder := begin(t, db, pgx.TxOptions{})
+		mustExec(t, holder, `INSERT INTO github_app_team_grants(id,team_id,app_resource_id) VALUES($1,$2,$3)`, uuid.NewString(), targetTeam, app)
+		waitAndCancel(t, holder, targetTeam, func(ctx context.Context, w store.GitHubGrantWriteDAO) error {
+			_, err := w.Insert(ctx, proposed)
+			return err
+		})
+		var count int
+		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM github_app_team_grants WHERE team_id=$1`, targetTeam).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("cancelled insert persisted: %d %v", count, err)
+		}
+	})
+	t.Run("revoke waits for grant", func(t *testing.T) {
+		holder := begin(t, db, pgx.TxOptions{})
+		mustExec(t, holder, `SELECT id FROM github_app_team_grants WHERE id=$1 FOR UPDATE`, grant)
+		waitAndCancel(t, holder, teamID, func(ctx context.Context, w store.GitHubGrantWriteDAO) error { return w.Revoke(ctx, grant) })
+		var active bool
+		if err := db.Pool.QueryRow(ctx, `SELECT revoked_at IS NULL FROM github_app_team_grants WHERE id=$1`, grant).Scan(&active); err != nil || !active {
+			t.Fatalf("cancelled revoke changed grant: %v %v", active, err)
+		}
+	})
+	t.Run("impact waits for App", func(t *testing.T) {
+		holder := begin(t, db, pgx.TxOptions{})
+		mustExec(t, holder, `SELECT id FROM github_apps WHERE id=$1 FOR UPDATE`, app)
+		waitAndCancel(t, holder, teamID, func(ctx context.Context, w store.GitHubGrantWriteDAO) error { return w.AdvanceImpact(ctx) })
+		var version int64
+		if err := db.Pool.QueryRow(ctx, `SELECT impact_version FROM github_apps WHERE id=$1`, app).Scan(&version); err != nil || version != 1 {
+			t.Fatalf("cancelled impact changed version: %d %v", version, err)
+		}
+	})
+	t.Run("stop waits for connection", func(t *testing.T) {
+		project := uuid.NewString()
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO project_github(project_id,app_resource_id,team_grant_id,enabled,sync_enabled) VALUES($1,$2,$3,true,true)`, project, app, grant); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Pool.Exec(ctx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,1,1,$2,'x',now(),now())`, project, uuid.NewString()); err != nil {
+			t.Fatal(err)
+		}
+		holder := begin(t, db, pgx.TxOptions{})
+		mustExec(t, holder, `SELECT project_id FROM project_github WHERE project_id=$1 FOR UPDATE`, project)
+		waitAndCancel(t, holder, teamID, func(ctx context.Context, w store.GitHubGrantWriteDAO) error {
+			return w.StopGrantConnections(ctx, grant, core.DisconnectionDecision())
+		})
+		var intact bool
+		var count int
+		if err := db.Pool.QueryRow(ctx, `SELECT enabled AND sync_enabled AND team_grant_id=$2,(SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1) FROM project_github WHERE project_id=$1`, project, grant).Scan(&intact, &count); err != nil || !intact || count != 1 {
+			t.Fatalf("cancelled stop changed data: %v %d %v", intact, count, err)
+		}
+	})
 }
