@@ -24,7 +24,7 @@
 该准入查询不锁定 ownership、owner Team member 或 direct grant 来源行，也不在 Task 锁之后获取
 Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
 已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
-凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。当前 Web 的主站同源执行、普通 iframe、相对资源和键盘机制继续保留；独立 Task 预览使用自己的 origin 与凭据。单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
+凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。Web 使用 Task 独立 origin 与预览凭据，保留普通 iframe 和相对资源。单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
 
 ## 目标与操作单位
 
@@ -277,7 +277,7 @@ T = /api/v1/projects/{projectId}/tasks/{taskId}
 | `PUT T/attachments/files/{path...}` | 上传一个文件，相同完整路径覆盖 |
 | `GET T/attachments/files/{path...}` | 返回原始文件内容，用于 CLI 读取和下载 |
 | `DELETE T/attachments/files/{path...}` | 删除指定文件 |
-| `GET T/preview/{path...}` | 以浏览器 inline 方式提供文件及相对资源 |
+| `GET T/preview/{path...}` | 主站跳转至 Task Host，后者以 inline 方式提供文件及相对资源 |
 
 上传请求体直接携带文件字节，`Content-Type` 表达文件 MIME。上传端按文件类型选择
 合法 MIME，无法识别时使用 `application/octet-stream`；服务拒绝非法 header 值。
@@ -315,7 +315,7 @@ body { background: white; }
 JSON 路由；正常既有路由行为保持原义。
 所有入口均检查 project/task 归属。无效输入、缺失资源及内部失败保留原始错误链与 requestId；除独立预览的文档失败页外，使用既有 HTTP 错误信封和日志规则。
 
-主站原始读取使用下载响应头，主站及 Task Host 预览使用 inline 响应头，并以实际打开文件的大小发送内容。
+主站原始读取使用 attachment 和 nosniff，Task Host 预览使用 inline 响应头，并以实际打开文件的大小发送内容。主站预览 GET 跳转至 Task Host，HEAD 留在主站鉴权并检查文件。
 列表与可覆盖的文件使用 `Cache-Control: no-store`，刷新后读取当前内容。
 `path_conflict` 映射 409；存储记录存在而磁盘内容缺失仍为 500，不能被 not_found
 错误链误判。流式中止只记录附件操作错误，现有日志包装器直接重抛 ErrAbortHandler，
@@ -338,7 +338,7 @@ PathGuard 在 ServeMux 规范化之前检查原始路径，Host 中的 UUID 必�
 文档失败页保留状态码，按 Accept-Language 选择中英文，转义动态内容并提供同 URL
 重试及 401 新标签 SSO 入口。文档及 SSO 错误页允许主站和配置的 preview 子域作为
 frame 祖先，以便 Task 内容嵌套的 iframe 在登录失败时仍能显示恢复操作。主站 shell 根据配置注入 `daynight-preview-origin` meta，
-以最终字节计算 Content-Length；现有 Web URL 和主站 GET 仍使用主站入口。
+以最终字节计算 Content-Length；Web 同步读取 meta 构造 Task origin，所有主 mux 的旧预览 GET 跳转到对应 Task Host。
 
 [独立预览 Host 决策](../../.agents/notes/implemented/architecture/2026-11-16-task-preview-host.md)
 记录分发和恢复的取舍；[鉴权架构](daynight-auth.md#显式浏览器预览-sso)拥有 SSO 合同。
@@ -464,7 +464,7 @@ reader，使用暂停代次及请求身份拒绝迟到结果，结束本地 busy
 预览及表单草稿继续由原资源持有。恢复时完整清单不自动重读；中断的不完整读取在后台重新遍历，只有所有页成功后才替换已发布清单，失败时保留原清单并显示错误。真实资源变化与撤权仍释放
 原状态。暂停中可更换本地选择，已加载的原生预览保持挂载以便选回；尚未建立文档的 frame、未加载的图片和 Markdown 图片不建立新的源。HTML 文档已建立但子资源仍未完成时，保留该文档和其中输入，不能以 iframe 的 `load` 事件作为唯一保留条件。下载、新标签及 Markdown 远程链接撤销 `href`
 和下载属性并保留可访问名称与禁用语义，本地 fragment 链接仍可使用。已加载的可信
-HTML 继续遵循普通同源 iframe 的执行模型，不提供独立的脚本或子资源网络隔离。
+HTML 继续在 Task origin 的普通 iframe 中执行，不与主站或其他 Task 共享 origin。
 
 覆盖成功增加预览 revision；删除成功仅在目标为当前选择时清空预览，删除其他路径
 保留当前预览内容及组件身份，刷新清单不会额外增加其 revision。手动刷新发现所选文件的 `updatedAt` 改变时重新请求正文；
@@ -477,7 +477,7 @@ HTML 继续遵循普通同源 iframe 的执行模型，不提供独立的脚本�
 | 图片 | 原生 img 的加载、错误和重试状态 |
 | PDF | HEAD 检查后交给浏览器原生 iframe |
 | 文本、JSON、源码 | 原始文本节点与 pre，保留换行 |
-| HTML | HEAD 检查后在普通同源 iframe 中加载执行 |
+| HTML | 主站 HEAD 检查后在 Task origin 的普通 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
 `MarkdownContent` 负责 CommonMark/GFM、Mermaid 图表及样式，URL 转换与链接激活由
@@ -495,7 +495,7 @@ Task/Goal 描述和 Markdown 附件共享同一个附件图片 renderer。调用
 root/document 基准；渲染入口保留 URL 转换前的原始引用，并沿用
 `resolveAttachmentReference()` 识别相对附件图片，不能通过转换后的 URL 前缀推断来源。
 每张附件图片持有自身
-加载、错误和重试身份，失败时显示当前语言错误与普通重试按钮；重试只重新挂载
+加载、错误和重试身份，失败时显示当前语言错误、普通重试按钮和新标签 SSO 入口；重试只重新挂载
 该图片的请求，继续使用原 URL，保留 query/fragment，不改变正文、清单或上层
 预览身份。原生 URL 图片继续使用原生行为。暂停沿用附件控制器的远程准入状态，
 阻止未加载或新图片建立源和执行重试，保留已加载图片；来源或请求代次切换后，
@@ -504,39 +504,23 @@ root/document 基准；渲染入口保留 URL 转换前的原始引用，并沿�
 [附件图片重试决策](../../.agents/notes/implemented/feature/2026-11-16-markdown-attachment-image-retry.md)
 保存请求所有权和原始引用分类的取舍。
 
-HTML 入口是固定同源 URL，例如：
+HTML 入口使用 Task origin，例如：
 
 ```text
-/api/v1/projects/{projectId}/tasks/{taskId}/preview/mockup/index.html
+https://<taskId>.preview.daynight.cc/api/v1/projects/{projectId}/tasks/{taskId}/preview/mockup/index.html
 ```
 
 HTML/PDF 的 HEAD 可用性检查只判断响应状态和 requestId，不尝试读取不存在的 JSON
 body。成功后 frame 正常 GET 文件和其资源；HEAD 仅证明入口可用，实际 HTML
 交互和 PDF 绘制仍需由真实 frame 验证。入口中的 `./assets/style.css`、
 `./assets/app.js` 和相对 fetch URL 按浏览器规则读取同目录结构，不改写文件内容；
-以 `/` 开头的地址仍指向主站根目录。HTML 附件属于可信项目代码，拥有主应用同源
-权限，普通 iframe 不使用 sandbox，也没有 Service Worker 或离线文件系统。当前 Web 尚未使用独立 Task 预览 origin；[鉴权架构](daynight-auth.md)在附件请求准入时验证凭据，并在文件 I/O 前检查项目成员。
+以 `/` 开头的地址指向 Task origin 根目录。普通 iframe 不使用 sandbox，Web 不提供
+Service Worker 或离线文件系统；同一 Task 文件共享 origin，与主站和其他 Task 隔离。[鉴权架构](daynight-auth.md)在附件请求准入时验证凭据，并在文件 I/O 前检查项目成员。
 
 居中详情对话框拥有 body portal、背景 inert、共享滚动锁和被动卸载后的焦点恢复；其普通尺寸、概览滚动与详情页签由[看板设计](daynight-web.md#居中任务详情)说明，附件页签的分屏和右侧滚动由本节拥有。全屏沿用同一附件控制器、面板、文件输入及 frame，不改变 path/timestamp 预览身份或发起新的内容请求；应用拥有的滚动位置按新布局合法范围恢复，frame 内部滚动继续归原生文档或阅读器。
 
-`AttachmentKeyboardOwner` 由共享详情 Surface 经 Reading 和附件面板传到预览，包含
-活动阅读容器的 `root` 与语义 `onEscape`。弹窗始终提供 owner，独立页仅全屏时
-提供。`TrustedFrame` 在 load 时记录当前同源 document；document 或 owner root 变化时
-释放旧监听，回调 ref 保持最新。document 的 keydown 监听对每个 Escape/Tab 事件
-临时注册专属 Window 冒泡处理器，排在子应用当前已有的 Window 消费者之后；处理器
-只处理同一事件，检查 `defaultPrevented` 后同步执行 Escape 或边界 Tab。子应用在
-Document 或 Window 消费的快捷键均不会触发外层操作。
-
-每个临时处理器使用 `AbortController` signal 释放；父窗口的零延迟清理定时器处理
-事件被停止传播后留下的处理器。清理只使用 signal 和父窗口定时器，不访问可能已因
-跨源导航而不可访问的 WindowProxy。document/owner 变化、停用及卸载同时移除
-Document 监听并释放全部待处理器；退出独立页全屏不重建 frame。`dialogFocusables`
-使用 `tabbable` 6.5.0 的生产默认可见性检查，边界 Tab/Shift+Tab 围绕当前 owner root
-与 frame 控件处理。
-PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的桥接结果作为 PDF
-键盘证明；保留原生 reader 与显式退出/返回控件，并记录真实浏览器验证的边界。
-[全屏阅读决策](../../.agents/notes/archived/feature/2026-10-25-task-detail-fullscreen.md)
-拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
+跨源 frame 不安装文档键盘桥；HTML 和 PDF 使用原生键盘行为，详情提供明确的
+关闭、退出和返回控件。frame 身份和已建立文档的暂停保留与键盘桥无关。
 
 ## 独立附件阅读页
 
@@ -570,10 +554,7 @@ PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的�
 由拟合正文的 iframe 内文档滚动。所有可收缩层保持零最小尺寸，外壳隐藏外溢，不
 以固定头高减法或 frame 最低高度产生嵌套滚动。
 
-`AttachmentPreview` 接收可选的语义键盘 owner。普通独立详情不提供 owner；全屏
-专注阅读提供当前 Surface 的 root/onEscape，即使 frame 已加载也会安装桥，退出
-立即释放。内部原生删除确认继续拥有当前层焦点和键盘交互；弹窗的焦点圈定、
-frame document/owner/卸载清理和关闭恢复按上述共享规则执行。
+独立页面和弹窗共用预览与其生命周期；原生删除确认继续拥有当前层焦点和键盘交互。
 
 Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 no-store index。
 附件原始路径守卫在 ServeMux 清理或重定向前验证路径，保留中间 `..` 掩盖命名空间
@@ -663,7 +644,7 @@ localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保�
 开发环境持久卷。实现取舍由[部署决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-persistence.md)
 拥有。
 
-主站上传、下载和预览继续经过既有 gateway；独立预览部署还须将 bare preview 和 wildcard Task Host 的 DNS、TLS/SNI 与原始 Host 路由到服务。代理须支持二进制请求与流式响应，并沿用既有生命周期策略。服务启动不探测外部 DNS/TLS；部署必须独立核验。
+主站上传、下载和 HEAD 继续经过既有 gateway；部署须将 bare preview 和 wildcard Task Host 的 DNS、TLS/SNI 与原始 Host 路由到服务。切流前验证这些入口和 SSO 回跳，并确保所有副本就绪，不混用仍在主站内联的旧实例。回滚保持隔离，或先关闭旧主站 preview GET。代理须支持二进制请求与流式响应；服务启动不探测外部 DNS/TLS，部署必须独立核验。
 
 数据库与附件目录构成一组备份材料。停止全部服务实例和其他直接数据库或文件写入方后，
 通过 `pg_dump` 备份 PG，并使用同一生产镜像的非 root `tar` 容器备份附件根目录；

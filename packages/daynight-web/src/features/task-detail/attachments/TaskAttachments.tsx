@@ -4,7 +4,7 @@ import { useI18n } from '../../../i18n/LocaleProvider';
 import type { Attachment } from '../../../api/types';
 import type { AttachmentPreviewState } from './AttachmentPreview';
 import { AttachmentActionMenu, AttachmentDeleteDialog, type AttachmentActionTarget } from './AttachmentActions';
-import { AttachmentPreview, type AttachmentKeyboardOwner } from './AttachmentPreview';
+import { AttachmentPreview } from './AttachmentPreview';
 import { attachmentTree, isAttachmentPath, type AttachmentNode } from './model';
 import { useAttachments, type AttachmentApi, type AttachmentController } from './useAttachments';
 import '../../../styles/attachments.css';
@@ -19,7 +19,6 @@ export type AttachmentUrls = {
 type TaskAttachmentsProps = {
   readonly projectId: string;
   readonly taskId: string;
-  readonly keyboardOwner?: AttachmentKeyboardOwner;
   readonly api?: AttachmentApi;
   readonly urls?: AttachmentUrls;
 };
@@ -90,7 +89,7 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy, 
   </ul>;
 };
 
-export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, urls, navigation, reveal, onInteract, keyboardOwner, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
+export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, urls, navigation, reveal, onInteract, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
   const { messages, format } = useI18n();
   const m = messages.inspection.attachments;
   const headingId = useId();
@@ -230,7 +229,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, records, 
               </header>}
               {previews.map(({ attachment, preview }) => {
                 const hidden = attachment.path !== selected?.path;
-                return <div key={`${attachment.path}/${attachment.updatedAt}`} hidden={hidden} style={hidden ? undefined : { display: 'contents' }}><AttachmentPreview attachment={attachment} preview={preview} paused={paused} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, attachment.path) : urls.preview(attachment.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} /></div>;
+                return <div key={`${attachment.path}/${attachment.updatedAt}`} hidden={hidden} style={hidden ? undefined : { display: 'contents' }}><AttachmentPreview attachment={attachment} preview={preview} paused={paused} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, attachment.path) : urls.preview(attachment.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} /></div>;
               })}
             </section>
           </div>

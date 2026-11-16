@@ -13,10 +13,10 @@ import { controllerMetadataBudget } from "./media/metadata-budget.js";
 
 /** Stopped settlement keeps its existing capacity allowance; new-writer admission belongs to recovery preparation. */
 export const withStoppedControllerStorage = <T>(options: {
-  journalPath: string; stateDirectory: string; ticket: ControllerLaunchTicket;
+  journalPath: string; ticket: ControllerLaunchTicket;
   assertOriginal(db: Database.Database): void;
 }, action: (db: Database.Database) => T): T => {
-  const { journalPath, stateDirectory, ticket } = options;
+  const { journalPath, ticket } = options;
   const permit = acquireControllerStoragePermit(journalPath, undefined, { fileMustExist: true });
   let db: Database.Database | undefined, value: T | undefined, sourceVersion: number | undefined, admittedVersion: number | undefined;
   let failed = false, failure: unknown, outcome: SqliteOutcome = "not-started", admitted = false;
@@ -28,7 +28,7 @@ export const withStoppedControllerStorage = <T>(options: {
     observeControllerStorage(observation, db);
     closeSqliteDatabase(db, { file: journalPath, format: controllerJournalFormat }, "not-started");
     db = undefined;
-    const write = controllerJournalWriteOptions(journalPath, permit, stateDirectory, ticket.executionId);
+    const write = controllerJournalWriteOptions(journalPath, permit);
     phase = "open";
     db = openSqliteDatabase({ ...write, allowCreate: false });
     phase = "admission";
@@ -37,18 +37,18 @@ export const withStoppedControllerStorage = <T>(options: {
       assertCurrentSqlite(db!, write.format);
       options.assertOriginal(db!); observeControllerStorage(observation, db!);
       assertJournalMigrationAllowed(db!, inspectSqlite(db!, write.format));
-      assertControllerStorageRole({ journalFile: journalPath, stateDirectory, mode: "stopped-maintenance", ticket }, controllerStorageExecutionRow(db!));
+      assertControllerStorageRole({ journalFile: journalPath, mode: "stopped-maintenance", ticket }, controllerStorageExecutionRow(db!));
     });
     outcome = "committed"; phase = "operation";
     if (controllerTimelineCleanupPending(db)) {
-      const preparation = maintainControllerTimeline({ db, request: { journalFile: journalPath, stateDirectory, mode: "stopped-maintenance", ticket }, storagePermit: permit });
+      const preparation = maintainControllerTimeline({ db, request: { journalFile: journalPath, mode: "stopped-maintenance", ticket }, storagePermit: permit });
       if (preparation.kind === "waiting") throw new ControllerStorageWaitingError(preparation.reason, preparation.cause);
     }
     db.transaction(() => {
       options.assertOriginal(db!);
       openTimelineStore(db!, { assertWrite: () => { throw new Error("Stopped storage admission is read-only."); } }).totals();
-      // Stopped acknowledgements retain their settlement allowance; this does
-      // not admit a replacement writer or reduce its outstanding reservation.
+      // Stopped acknowledgements retain their settlement allowance without
+      // admitting a replacement writer.
       controllerMetadataBudget(journalPath, db!).assert(0, true);
     }).deferred();
     admitted = true; observation.roleResult = "admitted";

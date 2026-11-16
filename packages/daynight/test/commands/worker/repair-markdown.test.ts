@@ -72,7 +72,7 @@ const fixture = async (withSourceTail = false) => {
       db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...JSON.parse(row.snapshot), lifecycle: "stopping", nativeStopped: false, stoppedAt: null, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` } }));
     } finally { db.close(); }
     const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-    try { await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory: paths.stateDirectory, jobLease: {} as ControllerJobLease }); }
+    try { await recordStoppedControllerGeneration(journalPath, ticket, { jobLease: {} as ControllerJobLease }); }
     finally { confirm.mockRestore(); }
   }
   const claim = { claimId: target.claimId, state: "completed", userId, workerId, machine: { id: randomUUID(), name: "fixture" }, platform: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux", agent: "codex", agentControlMode: "web", worktreeId: target.worktreeId, phase: "completing", herdr: null, nativeSessionId: nativeSessionId as string | null, claimedAt: new Date().toISOString() };
@@ -93,7 +93,7 @@ const fixture = async (withSourceTail = false) => {
 test("passes the exact original execution and verifies it again before archive upload", async () => {
   const f = await fixture();
   await runWorkerMarkdownRepair(f.target, f.context);
-  expect(mocks.repair).toHaveBeenCalledOnce(); expect(mocks.repair.mock.calls[0]![0]).toMatchObject({ journalPath: f.journalPath, ticket: f.ticket, stateDirectory: f.paths.stateDirectory, resolveImage: resolveStoppedMarkdownImage });
+  expect(mocks.repair).toHaveBeenCalledOnce(); expect(mocks.repair.mock.calls[0]![0]).toMatchObject({ journalPath: f.journalPath, ticket: f.ticket, resolveImage: resolveStoppedMarkdownImage });
   expect(mocks.upload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ journalPath: f.journalPath, ticket: f.ticket, serverToken: "fixture-token" }));
   expect(f.api.getTask.mock.calls.length).toBe(3); expect(f.output()).toMatchObject({ exitCode: 0 }); expect(JSON.parse(f.output()!.output)).toMatchObject({ ...f.target, repaired: ["entry"], archive: { state: "ready" }, cleanup: "owned-by-worker" });
 });

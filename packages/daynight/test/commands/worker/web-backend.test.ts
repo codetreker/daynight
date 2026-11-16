@@ -1739,7 +1739,7 @@ it("Task holds one Job lease through IPC stop, complete confirmation and journal
   const deadline = tree.mock.calls[0]![2];
   expect(tree).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
   expect(source.stopped).toHaveBeenCalledWith(source.snapshot.controllerProcess, source.snapshot.nativeProcesses, deadline, lease);
-  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, { stateDirectory: path.join(f.home, ".daynight"), deadline, jobLease: lease });
+  expect(vi.mocked(lifecycle.recordStoppedControllerGeneration)).toHaveBeenCalledWith(expect.anything(), source.ticket, { deadline, jobLease: lease });
   expect(leases.release).toHaveBeenCalledOnce();
 });
 

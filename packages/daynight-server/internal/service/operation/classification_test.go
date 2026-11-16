@@ -80,6 +80,18 @@ func TestKnownFaultRejectsUnsafeJoinedTransaction(t *testing.T) {
 	}
 }
 
+func TestKnownGitHubConnectionFaultsRequireReliableCompletion(t *testing.T) {
+	for _, code := range []string{"github_not_connected", "github_connection_unavailable"} {
+		fault := &model.Fault{Code: code, Message: "Connection unavailable"}
+		if got, ok := operation.KnownFault(&store.TransactionError{Phase: "operation", Outcome: store.TransactionNotCommitted, Cause: fault}); !ok || got != fault {
+			t.Fatalf("confirmed refusal %s was suppressed", code)
+		}
+		if _, ok := operation.KnownFault(&store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: fault}); ok {
+			t.Fatalf("unknown result exposed as %s", code)
+		}
+	}
+}
+
 func TestKnownFaultSuppressesJoinedDatabaseFailure(t *testing.T) {
 	fault := &model.Fault{Code: "invalid_search_expression", Message: "invalid search"}
 	database := &store.Error{Phase: "query", SQLState: "XX000", DatabaseFailure: true, Cause: errors.New("private database details")}

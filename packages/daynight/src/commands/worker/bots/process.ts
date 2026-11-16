@@ -72,11 +72,10 @@ export const createBotProcess = (options: {
   };
   const stopWithLease = async (launchId: string, controller: Parameters<typeof stopControllerProcesses>[0], native: Parameters<typeof stopControllerProcesses>[1], deadline: number) => jobLeases.enabled
     ? stopProcesses(controller, native, deadline, await jobLeases.get(launchId)) : stopProcesses(controller, native, deadline);
-  const stateDirectory = resolveConfigurationPaths(options.homeDirectory).stateDirectory;
   const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number, permit?: ControllerStoragePermit, signal?: AbortSignal) => {
     const jobLease = jobLeases.enabled ? await jobLeases.get(ticket.launchId) : undefined;
     return recordStopped(file, ticket, {
-      stateDirectory, ...(deadline === undefined ? {} : { deadline }), ...(permit === undefined ? {} : { permit }),
+      ...(deadline === undefined ? {} : { deadline }), ...(permit === undefined ? {} : { permit }),
       ...(signal === undefined ? {} : { signal }), ...(jobLease === undefined ? {} : { jobLease }),
     });
   };
@@ -113,7 +112,7 @@ export const createBotProcess = (options: {
       stoppedCommitted = true;
       options.executions.update(record, { snapshot: stopped });
       signal.throwIfAborted();
-      const prepared = prepareStorage({ journalFile, stateDirectory, mode: "stopped-maintenance", ticket }, permit);
+      const prepared = prepareStorage({ journalFile, mode: "stopped-maintenance", ticket }, permit);
       if (prepared.kind === "waiting") throw new ControllerStorageWaitingError(prepared.reason, prepared.cause);
       return stopped;
     } catch (cause) { failed = true; failure = cause; throw cause; }

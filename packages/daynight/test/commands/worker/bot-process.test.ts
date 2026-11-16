@@ -202,7 +202,7 @@ test.each(["reader_busy", "physical_capacity"] as const)("Bot recovery retains i
   expect(f.current().intent).toEqual(original);
   expect(f.executions.get(f.current())).toMatchObject({ recoveryCount: 0, snapshot: { lifecycle: "stopped", nativeStopped: true } });
   expect(f.grant).toHaveBeenCalledTimes(1); expect(f.launch).toHaveBeenCalledTimes(1);
-  expect(f.prepareStorage).toHaveBeenCalledWith({ journalFile: original.journalPath, stateDirectory: resolveConfigurationPaths(f.home).stateDirectory, mode: "stopped-maintenance", ticket: expect.objectContaining({ launchId: original.launchId }) }, expect.objectContaining({ journalFile: original.journalPath }));
+  expect(f.prepareStorage).toHaveBeenCalledWith({ journalFile: original.journalPath, mode: "stopped-maintenance", ticket: expect.objectContaining({ launchId: original.launchId }) }, expect.objectContaining({ journalFile: original.journalPath }));
   await f.restart().advance(f.current(), f.signal);
   expect(f.current().intent!.executionGeneration).toBe("2");
   expect(f.executions.get(f.current())!.recoveryCount).toBe(1);
@@ -825,7 +825,7 @@ test("Bot keeps the same Job lease after a failed stop response and releases it 
   expect(f.deps.confirmStopped).toHaveBeenCalledWith(f.saved().controllerProcess, f.saved().nativeProcesses, deadline, lease);
   expect(f.deps.recordStopped).not.toHaveBeenCalled(); expect(leases.release).not.toHaveBeenCalled();
   await manager.shutdown(f.current(), f.signal);
-  expect(f.deps.recordStopped).toHaveBeenCalledWith(f.current().intent!.journalPath, expect.anything(), { stateDirectory: resolveConfigurationPaths(f.home).stateDirectory, deadline: expect.any(Number), jobLease: lease });
+  expect(f.deps.recordStopped).toHaveBeenCalledWith(f.current().intent!.journalPath, expect.anything(), { deadline: expect.any(Number), jobLease: lease });
   expect(leases.release).toHaveBeenCalledOnce();
 });
 
@@ -857,7 +857,7 @@ test.each(["valid", "missing", "generation", "process"] as const)("Bot recovery 
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   try {
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
-    const stopped = await lifecycle.recordStoppedControllerGeneration(file, ticket, { stateDirectory: resolveConfigurationPaths(f.home).stateDirectory, deadline: Date.now() + 5000, jobLease: {} as never });
+    const stopped = await lifecycle.recordStoppedControllerGeneration(file, ticket, { deadline: Date.now() + 5000, jobLease: {} as never });
     f.executions.update(f.current(), { snapshot: stopped }); f.reopen();
     if (kind !== "valid") {
       const db = new Database(file), row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }, value = JSON.parse(row.snapshot);

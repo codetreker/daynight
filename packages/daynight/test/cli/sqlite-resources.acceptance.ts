@@ -91,7 +91,7 @@ const { openTimelineStore } = await load("commands/controller/content/timeline-s
 assert.equal(currentSqliteVersion(controllerJournalFormat), 12);
 const timelineFile = path.join(directory, "canonical-timeline.sqlite"), timelinePermit = acquireControllerStoragePermit(timelineFile);
 let reservation, timelineDb;
-const timelineFormat = controllerJournalFormatForMigration(db => reservation ??= createTimelineMaintenanceReservation(db, { journalFile: timelineFile, stateDirectory: directory, storagePermit: timelinePermit }));
+const timelineFormat = controllerJournalFormatForMigration(db => reservation ??= createTimelineMaintenanceReservation(db, { journalFile: timelineFile, storagePermit: timelinePermit }));
 const entry = { entryId: "00000000-0000-4000-8000-000000000001", entrySeq: "9007199254740993", revision: "9007199254740995", kind: "assistant_message", content: [{ type: "text", text: "Installed 正文 😀" }] };
 const replacement = { ...entry, revision: "9007199254740996", content: [{ type: "text", text: "Reopened 当前正文 🧩" }] };
 try {

@@ -7,7 +7,9 @@ export type Topology = { baseURL: string; authURL: string; proxyURL: string; cli
 const runDirectory = process.env.DAYNIGHT_E2E_RUN_DIRECTORY;
 if (runDirectory === undefined) throw new Error("Product E2E fixtures require the isolated runner.");
 export const topology = JSON.parse(readFileSync(path.join(runDirectory, "environment.json"), "utf8")) as Topology;
-export const cliEnvironment = { ...process.env, DN_CONFIG_DIR: topology.cliConfigDirectory };
+// Node's color-conflict warning would corrupt the image decoder's stderr protocol.
+const { FORCE_COLOR: _forcedColor, ...environment } = process.env;
+export const cliEnvironment = { ...environment, DN_CONFIG_DIR: topology.cliConfigDirectory };
 export const cli = async (args: string[]) => await runCommand(process.execPath, [topology.cliEntry, ...args], {
   cwd: topology.cliConfigDirectory, env: cliEnvironment, timeoutMs: 30_000,
 });

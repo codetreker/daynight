@@ -34,3 +34,5 @@
 .attachment-preview-actions,.task-detail-fullscreen .attachment-preview-actions,.task-detail-has-claim .attachment-preview-actions{gap:2px;margin:0;flex-wrap:nowrap}
 .task-detail-fullscreen .attachment-preview-actions .button,.task-detail-has-claim .attachment-preview-actions .button,.attachment-preview-actions .button{font-size:9px;padding:2px 3px}
 }
+
+.attachment-error-actions { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -85,6 +85,9 @@ func TestAttachmentHTTPFileLifecycleAndActualContent(t *testing.T) {
 		if mode == "preview" {
 			wanted = "inline"
 		}
+		if mode == "download" && response.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("download missing nosniff: %v", response.Header())
+		}
 		if err != nil || mediaType != wanted || parameters["filename"] != "设计 ?# %2F.bin" || response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), payload) || response.Header().Get("Content-Type") != "application/octet-stream" || response.Header().Get("Content-Length") != strconv.Itoa(len(payload)) || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("%s content headers/status/body: %d %+v %v", mode, response.Code, response.Header(), err)
 		}

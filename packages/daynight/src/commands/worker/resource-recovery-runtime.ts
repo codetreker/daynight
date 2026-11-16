@@ -129,7 +129,7 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
         await ordinaryFile(receiptPath);
         const receipt = parseSessionArchiveStatus(JSON.parse(await readFile(receiptPath, "utf8")));
         if (receipt.state !== "ready" || receipt.schemaVersion !== 3) throw new Error("Recovery requires the original current-format ready archive receipt.");
-        await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, stateDirectory: paths.stateDirectory, signal: operation.signal,
+        await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal: operation.signal,
           request: async (input, init) => {
             if (init?.method !== "GET") throw new Error("Recovery cannot publish or replace an archive; restore its original confirmed receipt.");
             return fetch(input, init);

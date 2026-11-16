@@ -233,7 +233,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl || ticket.executionId !== task.webExecution.executionId
         || ticket.executionGeneration !== task.webExecution.executionGeneration || ticket.controllerInstanceId !== task.webExecution.controllerInstanceId
         || ticket.claimId !== task.claimId || ticket.sessionId !== task.webExecution.sessionId) throw new Error("Archive does not identify the original execution.");
-      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, stateDirectory: paths.stateDirectory, signal });
+      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal });
     };
     const probeArchive: NonNullable<import("./backends/web.js").WebBackendOptions["probeArchive"]> = async (task, journalPath, signal) => {
       signal.throwIfAborted();

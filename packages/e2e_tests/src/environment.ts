@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { get as httpsGet } from 'node:https';
 import { createServer, type Server } from 'node:net';
 import path from 'node:path';
 import { runCommand, type CommandResult } from './command.ts';
@@ -58,7 +59,7 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
   const resources = resourceIdentity(runId);
   const [serverPort, authPort, proxyPort] = await reservePorts();
   if (serverPort === undefined || authPort === undefined || proxyPort === undefined) throw new Error('Three runtime ports are required.');
-  const baseURL = `http://127.0.0.1:${serverPort}`;
+  const baseURL = `https://app.daynight.localhost:${serverPort}`;
   const authURL = `http://127.0.0.1:${authPort}`;
   const proxyURL = `http://127.0.0.1:${proxyPort}`;
   const docker = async (args: readonly string[], signal: AbortSignal | undefined, timeoutMs = 60_000): Promise<CommandResult> =>
@@ -76,15 +77,26 @@ export const startEnvironment = async (options: EnvironmentOptions): Promise<Env
       options.signal?.throwIfAborted();
       await running(resources.applicationContainer);
       try {
-        const response = await fetch(`${origin}/readyz`, { signal: AbortSignal.timeout(1_000) });
-        if (response.status === 200) return;
+        const status = origin.startsWith('https:')
+          ? await new Promise<number | undefined>((resolve, reject) => {
+              const url = new URL(origin);
+              const request = httpsGet({ hostname: '127.0.0.1', port: url.port, path: '/readyz', servername: url.hostname, headers: { Host: url.host }, ca: certificate, signal: AbortSignal.timeout(1_000) }, (response) => {
+                response.resume();
+                resolve(response.statusCode);
+              });
+              request.once('error', reject);
+            })
+          : (await fetch(`${origin}/readyz`, { signal: AbortSignal.timeout(1_000) })).status;
+        if (status === 200) return;
       } catch (error) {
-        if (!(error instanceof TypeError || error instanceof DOMException && error.name === 'TimeoutError')) throw error;
+        if (!(error instanceof TypeError || error instanceof DOMException && error.name === 'TimeoutError' ||
+          error instanceof Error && 'code' in error && ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ABORT_ERR'].includes(String(error.code)))) throw error;
       }
       await pause(100, options.signal);
     }
     throw new Error(`Service did not become ready: ${origin}`);
   };
+  const certificate = await readFile(path.join(options.artifactsDirectory, 'daynight-ca.pem'));
   const owner = await stat(options.runDirectory);
   const metadata: RecoveryMetadata = { schemaVersion: 1, runId, directoryId: path.basename(options.runDirectory), ownerUid: owner.uid, ownerGid: owner.gid };
   await writeCleanupReceipt(options.runDirectory, { ...metadata, resourceIdentity: resources, state: 'pending', verified: false, resourcesAbsent: false, remaining: [], verificationErrors: [], cleanupErrors: [] });

@@ -28,7 +28,6 @@ import type { createWebControllerLauncher } from "./web-process.js";
 import { createWebStopObserver } from "./web-stop.js";
 import type { CleanupRequest } from "../execution-stop.js";
 import { createControllerJobLeases, type ControllerJobLeases } from "./controller-job-leases.js";
-import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { prepareControllerLaunchStorage } from "./controller-process.js";
@@ -84,10 +83,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
   };
   const stopWithLease = async (launchId: string, controller: ProcessProof, native: readonly ProcessProof[], deadline: number) => jobLeases.enabled
     ? stopControllerProcesses(controller, native, deadline, await jobLeases.get(launchId)) : stopControllerProcesses(controller, native, deadline);
-  const stateDirectory = resolveConfigurationPaths(options.homeDirectory).stateDirectory;
   const recordWithLease = async (file: string, ticket: ControllerLaunchTicket, deadline?: number, maintain = false): Promise<ControllerSnapshot> => {
     const jobLease = jobLeases.enabled ? await jobLeases.get(ticket.launchId) : undefined;
-    const stopOptions = { stateDirectory, ...(deadline === undefined ? {} : { deadline }), ...(jobLease === undefined ? {} : { jobLease }) };
+    const stopOptions = { ...(deadline === undefined ? {} : { deadline }), ...(jobLease === undefined ? {} : { jobLease }) };
     if (!maintain) return recordStoppedControllerGeneration(file, ticket, stopOptions);
     let permit: ReturnType<typeof acquireControllerStoragePermit>;
     try { permit = acquireControllerStoragePermit(file); }
@@ -98,7 +96,7 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
     let snapshot: ControllerSnapshot | undefined, failure: unknown, failed = false;
     try {
       snapshot = await recordStoppedControllerGeneration(file, ticket, { ...stopOptions, permit });
-      const prepared = prepareControllerStorage({ journalFile: file, stateDirectory, mode: "stopped-maintenance", ticket }, permit);
+      const prepared = prepareControllerStorage({ journalFile: file, mode: "stopped-maintenance", ticket }, permit);
       if (prepared.kind === "waiting") throw new ControllerStorageWaitingError(prepared.reason, prepared.cause);
     } catch (cause) { failed = true; failure = cause; }
     try { if (!failed || !controllerStorageConnectionIsOpen(failure)) permit.release(); }

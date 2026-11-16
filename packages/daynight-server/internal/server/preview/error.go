@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -26,11 +27,16 @@ const preserveRetryFragment = `const link=document.getElementById('retry-sso');i
 type errorContent struct {
 	Language, Title, Message, LoginLabel, RetryLabel, HomeLabel, ProjectsLabel, RequestLabel string
 	Home, Login, Retry, RequestID                                                            string
+	Continue, ContinueLabel                                                                  string
 	NeedsLogin                                                                               bool
 	RetryScript                                                                              template.JS
 }
 
 func (h *Routes) fail(w http.ResponseWriter, r *http.Request, phase string, err error, retry string) {
+	h.failWithContinuation(w, r, phase, err, retry, "")
+}
+
+func (h *Routes) failWithContinuation(w http.ResponseWriter, r *http.Request, phase string, err error, retry, continuation string) {
 	status, code := http.StatusInternalServerError, "internal_error"
 	var tooLong *httpx.URITooLongError
 	if errors.As(err, &tooLong) {
@@ -46,10 +52,14 @@ func (h *Routes) fail(w http.ResponseWriter, r *http.Request, phase string, err 
 			status, code = http.StatusForbidden, fault.Code
 		}
 	}
-	h.failure(w, r, phase, status, code, retry)
+	h.failureWithContinuation(w, r, phase, status, code, retry, continuation)
 }
 
 func (h *Routes) failure(w http.ResponseWriter, r *http.Request, phase string, status int, code, retry string) {
+	h.failureWithContinuation(w, r, phase, status, code, retry, "")
+}
+
+func (h *Routes) failureWithContinuation(w http.ResponseWriter, r *http.Request, phase string, status int, code, retry, continuation string) {
 	httpx.CloseUnreadBody(w, r)
 	h.logger.WarnContext(r.Context(), "preview SSO navigation failed", "component", "preview-sso", "phase", phase, "result", "failed", "error_code", code, "request_id", httpx.RequestID(r.Context()))
 	if r.Context().Err() != nil {
@@ -82,6 +92,14 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, phase string, s
 		if content.RetryScript != "" {
 			content.Message = "暂时无法完成预览登录，请重试以恢复原预览。"
 			content.RetryLabel = "重试预览登录"
+		}
+	}
+	if target, err := url.Parse(continuation); phase == "login_create" && err == nil && target.User == nil && target.Opaque == "" && target.Scheme+"://"+target.Host == h.main.String() && target.EscapedPath() == "/auth/complete" && target.Fragment == "" {
+		content.Continue, content.ContinueLabel = continuation, "Continue to your original destination"
+		content.Message = "Preview sign-in could not be started. You can continue your main-site sign-in, or start preview sign-in again."
+		if content.Language == "zh-CN" {
+			content.ContinueLabel = "继续前往原目标"
+			content.Message = "无法启动预览登录。你可以继续完成主站登录，或重新开始预览登录。"
 		}
 	}
 	if content.NeedsLogin {

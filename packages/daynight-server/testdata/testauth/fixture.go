@@ -331,8 +331,40 @@ func Login(t testing.TB, browser *http.Client, origin, persona string) {
 	if product.Scheme+"://"+product.Host != origin {
 		t.Fatal("gateway callback left its registered product origin")
 	}
-	response := request(t, browser, http.MethodGet, product.String(), "", http.StatusSeeOther)
-	response.Body.Close()
+	start := location(t, request(t, browser, http.MethodGet, product.String(), "", http.StatusSeeOther))
+	previewOrigin := PreviewOrigin(origin)
+	virtual := func(target *url.URL, expectedOrigin, expectedPath string) *http.Response {
+		t.Helper()
+		if target.Scheme+"://"+target.Host != expectedOrigin || target.Path != expectedPath {
+			t.Fatalf("unexpected SSO navigation: %s", target.Path)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+target.RequestURI(), nil)
+		if err != nil {
+			t.Fatal("construct SSO request failed")
+		}
+		// The numeric preview fixture has a distinct virtual port but shares the
+		// product listener. Cookie jars key numeric hosts independently of port.
+		req.Host = target.Host
+		response, err := browser.Do(req)
+		if err != nil {
+			t.Fatal("SSO request failed")
+		}
+		_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		closeErr := response.Body.Close()
+		if readErr != nil || closeErr != nil || response.StatusCode != http.StatusSeeOther {
+			t.Fatalf("SSO %s returned HTTP %d", target.Path, response.StatusCode)
+		}
+		return response
+	}
+	authorization := location(t, virtual(start, previewOrigin, "/auth/sso/start"))
+	previewCallback := location(t, virtual(authorization, origin, "/api/v1/auth/preview/authorize"))
+	completion := location(t, virtual(previewCallback, previewOrigin, "/auth/sso/callback"))
+	finish := location(t, virtual(completion, previewOrigin, "/auth/sso/complete"))
+	if finish.Scheme+"://"+finish.Host != origin || finish.Path != "/auth/complete" || finish.Query().Get("returnPath") != "/projects" {
+		t.Fatal("SSO did not restore the main login completion target")
+	}
 }
 
 func CreatePAT(t testing.TB, browser *http.Client, origin string) string {

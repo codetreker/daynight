@@ -77,3 +77,23 @@ test("retains progress through partial filesystem failure and never reopens a co
  await f.create({remove}).advance(f.current(),new AbortController().signal);
  expect(existsSync(f.intent.ticketPath)).toBe(true);expect(existsSync(f.intent.journalPath)).toBe(false);expect(f.stop).toHaveBeenCalledTimes(1);
 });
+
+test("retains execution deletion responsibility after a post-removal failure until the absent-target retry succeeds", async () => {
+ const f = fixture(), directory = path.dirname(f.intent.journalPath), failure = new Error("parent sync failed");
+ const { removeBotDeletionFile } = await import("../../../src/commands/worker/bots/delete-files.js");
+ let failed = false;
+ const remove: typeof removeBotDeletionFile = async (target, signal) => {
+  await removeBotDeletionFile(target, signal);
+  if (target.path === directory && !failed) { failed = true; throw failure; }
+ };
+ await expect(f.create({ remove }).advance(f.current(), new AbortController().signal)).rejects.toBe(failure);
+ expect(existsSync(directory)).toBe(false);
+ expect(f.current().cleanup).toMatchObject({ localCompleted: false, targets: expect.arrayContaining([expect.objectContaining({ path: directory, completed: false })]) });
+ expect(f.current().intent).toEqual(f.intent);
+ expect(f.executions.get(f.current())).not.toBeNull();
+ expect(f.api.completeDeletion.mock.calls[0]![1].result).toEqual({ state: "failed", code: "private_cleanup_failed" });
+ await f.create({ remove }).advance(f.current(), new AbortController().signal);
+ expect(f.current()).toMatchObject({ intent: null, cleanup: { localCompleted: true, targets: [] } });
+ expect(f.api.completeDeletion.mock.calls[1]![1].result).toEqual({ state: "completed", code: null });
+ expect(f.stop).toHaveBeenCalledOnce();
+});

@@ -58,7 +58,7 @@ Windows Job 终止是异步的。`stopControllerProcesses` 在原 Job lease 下�
 
 停止完成后，`prepareDeletion` 在 Worker SQLite 中保存停证、文件计划、清理进度和固定完成回执所需的身份，位置独立于执行私有目录。重试优先读取该责任，不要求已删除的 journal 再次生成 stopProof。`delete-files.ts` 根据原 intent、执行记录保存的历史 launch/别名归属和配置根捕获文件计划，不接收远端提供的任意删除路径。执行目录只能是 `controller/executions/<executionId>`，ticket 由各 `launchId` 重新推导；存在的正式 ticket 还须解析并核对账号、服务、独立执行、Session、Controller 和代际归属。当前与保留 launch 的 `<launchId>.json.<uuid>.tmp` 也进入计划，其中临时 UUID 必须规范，不能据此扩大到共享 launch 目录的其它文件。IPC 使用原端点规则处理长路径下的 Unix socket；Windows pipe 不当作磁盘目录递归删除。
 
-目录清理复用受限物理目录遍历和 inode 校验，拒绝符号链接、Git 元数据和替换后的目标。计划同时检查冻结 cwd、各正式 ticket 的 cwd 与 native home，拒绝把这些目录本身或包含它们的目录作为删除目标；检查包括原路径与物理解析路径。单个 ticket、临时文件与 socket 按原文件身份删除。每项成功后由 `completeDeletionTarget` 持久保存进度；再次处理同一 `deletionId` 时跳过已经完成的目标，不能因为旧路径被新文件占用而重复清理。journal 所在执行目录排在其它私有目标之后。文件或权限错误保留未完成目标和停证，不删除普通 cwd、native home、Task 或 worktree，也不调用 cleanup prompt、StopTest 或归档上传。
+目录清理复用受限物理目录遍历和 inode 校验，拒绝符号链接、Git 元数据和替换后的目标。计划同时检查冻结 cwd、各正式 ticket 的 cwd 与 native home，拒绝把这些目录本身或包含它们的目录作为删除目标；检查包括原路径与物理解析路径。单个 ticket、临时文件与 socket 按原文件身份删除。POSIX execution 目录删除后，核对并同步原捕获的父目录，成功后才允许 `completeDeletionTarget` 持久保存该项目进度；重试时原 execution 已不存在也须完成该同步。此耐久性屏障独立于已撤销的媒体账本，打开、同步或关闭失败均保留原删除责任。再次处理同一 `deletionId` 时跳过已经完成的目标，不能因为旧路径被新文件占用而重复清理。journal 所在执行目录排在其它私有目标之后。文件或权限错误保留未完成目标和停证，不删除普通 cwd、native home、Task 或 worktree，也不调用 cleanup prompt、StopTest 或归档上传。
 
 无持久 intent 时仍可由配置根和 Bot ID 精确定位 `bots/<botId>/state`，其认领与通知状态进入删除计划；其他执行文件没有可供跨重启定位的计划。当前进程仍持有的 preflight 清理句柄可以重试释放探针与别名；Worker 崩溃前未登记的孤立 preflight 别名目录不保证被发现。该边界不影响已持久登记的执行资料按原身份完成删除，也不把共享别名根扫描变成 Bot 清理权限。
 

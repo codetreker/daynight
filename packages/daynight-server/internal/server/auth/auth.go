@@ -26,9 +26,15 @@ type Authentication struct {
 	*RequestAuthentication
 	identity     identityOperations
 	callbackPath string
+	previewLogin func(http.ResponseWriter, *http.Request, string)
 }
 
 func (h *Authentication) CallbackPath() string { return h.callbackPath }
+
+// BindPreviewLogin links a successful main-site login to the preview SSO flow.
+func (h *Authentication) BindPreviewLogin(start func(http.ResponseWriter, *http.Request, string)) {
+	h.previewLogin = start
+}
 
 func NewAuthentication(identity identityOperations, settings authconfig.AuthSettings, logger *slog.Logger, observers ...ObserveUsage) (*Authentication, error) {
 	if len(observers) > 1 || len(observers) == 1 && observers[0] == nil {
@@ -162,7 +168,12 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 	http.SetCookie(w, h.cookie(h.SessionCookieName(), result.Secret, result.Session.ExpiresAt, int(identity.SessionLifetime.Seconds())))
 	logger.InfoContext(request.Context(), "login completed", "component", "auth", "phase", "callback", "user_id", result.User.ID, "credential_id", result.Session.ID, "request_id", httpx.RequestID(request.Context()))
 	destination := url.Values{"returnPath": {result.ReturnPath}, "callbackPath": {request.URL.EscapedPath()}}
-	http.Redirect(w, request, "/auth/complete?"+destination.Encode(), http.StatusSeeOther)
+	complete := "/auth/complete?" + destination.Encode()
+	if h.previewLogin != nil {
+		h.previewLogin(w, request, h.origin+complete)
+		return
+	}
+	http.Redirect(w, request, complete, http.StatusSeeOther)
 }
 
 func userResponse(user model.User) api.User {

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
@@ -82,21 +82,17 @@ test("native wire spools enforce bounds and retain their files until readers fin
 
 test("large wire allowances retain only the bytes actually written", async () => {
   const f = await fixture(); const journal = f.open();
-  let ledger: Database.Database | undefined;
   try {
-    // Two 128 MiB allowances must charge only their actual prefixes. The file
-    // budget remains shared with uploads; a maximum is not an eager allocation.
+    // A wire maximum is not an eager physical allocation.
     const a = journal.media().createSpool(128 * 1_048_576), b = journal.media().createSpool(128 * 1_048_576);
-    ledger = new Database(path.join(path.dirname(f.file), "controller/media/budget.sqlite"), { readonly: true });
-    const charged = () => (ledger!.prepare("SELECT reserved_bytes AS bytes FROM allocations WHERE execution_id=?").get(f.ticket.executionId) as { bytes: number }).bytes;
-    const initial = charged();
     a.write(new Uint8Array([1])); b.write(new Uint8Array([2])); a.seal(); b.seal();
-    expect(charged() - initial).toBe(2);
+    expect((await stat(a.path)).size + (await stat(b.path)).size).toBe(2);
     expect([...a.read()].map(bytes => [...bytes])).toEqual([[1]]);
     expect([...b.read()].map(bytes => [...bytes])).toEqual([[2]]);
     a.remove(); b.remove();
-    expect(charged()).toBe(initial);
-  } finally { ledger?.close(); await journal.stopMedia(); journal.close(); }
+    await expect(access(a.path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(b.path)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await journal.stopMedia(); journal.close(); }
 });
 
 test("an index writer owns a durable shared metadata reservation until it explicitly joins", async () => {

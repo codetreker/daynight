@@ -302,7 +302,7 @@ test.each([1, 2, 3, 4, 5] as const)("v%i read-only upgrade and stopped maintenan
   expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
   expect(readControllerOperation(f.journalPath, f.operation.operationId)).toEqual(f.operation);
   const permit = acquireControllerStoragePermit(f.journalPath);
-  try { expect(prepareControllerStorage({ journalFile: f.journalPath, stateDirectory: f.home, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false }); }
+  try { expect(prepareControllerStorage({ journalFile: f.journalPath, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false }); }
   finally { permit.release(); }
   const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: f.snapshot.nativeSessionId };
   const store = openControllerLifecycleStore(f.journalPath, next);
@@ -332,10 +332,10 @@ test.each((["stop", "snapshot", "operation", "writer"] as const).flatMap(entrypo
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   if (process.platform === "win32") {
     // Historical records have no retained Job lease or durable stop proof.
-    await expect(recordStoppedControllerGeneration(f.journalPath, f.ticket, { stateDirectory: f.home })).rejects.toThrow(/stop proof.*lease/);
+    await expect(recordStoppedControllerGeneration(f.journalPath, f.ticket, {  })).rejects.toThrow(/stop proof.*lease/);
     expect(confirm).not.toHaveBeenCalled();
     if (entrypoint === "stop") expect(readControllerSnapshot(f.journalPath)).toEqual(stopped);
-  } else expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket, { stateDirectory: f.home })).toEqual(stopped);
+  } else expect(await recordStoppedControllerGeneration(f.journalPath, f.ticket, {  })).toEqual(stopped);
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("unresolved projection gap");
   expect(bodies).toEqual([]);
   inspect(f.journalPath, db => {
@@ -370,6 +370,6 @@ test.each([5, 6, 7, 8, 9] as const)("empty healthy v%i history remains available
   }
   expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
   const permit = acquireControllerStoragePermit(f.journalPath);
-  try { expect(prepareControllerStorage({ journalFile: f.journalPath, stateDirectory: f.home, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false }); }
+  try { expect(prepareControllerStorage({ journalFile: f.journalPath, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false }); }
   finally { permit.release(); }
 });

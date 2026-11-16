@@ -1,5 +1,4 @@
 import Database from "better-sqlite3";
-import path from "node:path";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-ticket.js";
@@ -9,7 +8,7 @@ import { runSqliteImmediate } from "../../platform/sqlite-access.js";
 import { openSessionContent } from "./content/session-content.js";
 import { openControllerOutbox } from "./outbox-store.js";
 import { controllerMetadataBudget } from "./media/metadata-budget.js";
-import { controllerStorageMediaUsage, reserveControllerStoragePeak } from "./storage-capacity.js";
+import { controllerStorageMediaUsage, assertControllerStorageFreeSpace } from "./storage-capacity.js";
 import { createMarkdownImageProjector, type MarkdownProjectedOccurrence, type MarkdownProjectionState } from "./markdown/projection.js";
 import { parseSourceEvent } from "../../session/controller-protocol.js";
 import { parseTimelineEntry, parseSessionResource, type SessionResource, type TimelineEntry } from "../../session/protocol.js";
@@ -61,11 +60,11 @@ const comparableAnalysis = (state: MarkdownProjectionState, original: MarkdownPr
 
 /** Reanalyse durable inputs without admitting a native writer or replaying user input. */
 export async function repairStoppedMarkdownProjections(options: {
-  journalPath: string; ticket: ControllerLaunchTicket; stateDirectory?: string; signal?: AbortSignal;
+  journalPath: string; ticket: ControllerLaunchTicket; signal?: AbortSignal;
   resolveImage?: StoppedMarkdownImageResolver; projector?: ReturnType<typeof createMarkdownImageProjector>;
   beforeWrite?: () => Promise<void>;
 }): Promise<StoppedMarkdownRepairResult> {
-  const { journalPath, ticket } = options, stateDirectory = options.stateDirectory ?? path.dirname(journalPath);
+  const { journalPath, ticket } = options;
   const signal = options.signal ?? AbortSignal.timeout(300_000), projector = options.projector ?? createMarkdownImageProjector();
   const ticketHash = controllerPayloadHash(ticket);
   let snapshotText: string | undefined;
@@ -84,7 +83,7 @@ export async function repairStoppedMarkdownProjections(options: {
   };
   const local = <T>(action: (db: Database.Database) => T): T => {
     signal.throwIfAborted();
-    return withStoppedControllerStorage({ journalPath, ticket, stateDirectory, assertOriginal }, db => runSqliteImmediate(db, () => { assertOriginal(db); return action(db); }));
+    return withStoppedControllerStorage({ journalPath, ticket, assertOriginal }, db => runSqliteImmediate(db, () => { assertOriginal(db); return action(db); }));
   };
   const load = <T>(db: Database.Database, key: string): T | null => {
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string } | undefined;
@@ -101,7 +100,7 @@ export async function repairStoppedMarkdownProjections(options: {
       const budget = controllerMetadataBudget(journalPath, db); budget.assert(additional, true, growth);
       if (additional > 0) {
         const media = controllerStorageMediaUsage(journalPath, db);
-        reserveControllerStoragePeak(journalPath, stateDirectory, ticket.executionId, media.reservedBytes + budget.reservationCeiling(growth), Math.max(0, media.reservedBytes - media.actualBytes) + additional);
+        assertControllerStorageFreeSpace(journalPath, Math.max(0, media.reservedBytes - media.actualBytes) + additional);
       }
     },
   });
@@ -210,8 +209,8 @@ export async function repairStoppedMarkdownProjections(options: {
         if ([...oldRefs.resources].some(id => !newRefs.resources.has(id))) failure("retained_resource_lost");
         for (const value of resources) if (value.resource) {
           if (value.bytes) {
-            const media = controllerStorageMediaUsage(journalPath, db), budget = controllerMetadataBudget(journalPath, db);
-            reserveControllerStoragePeak(journalPath, stateDirectory, ticket.executionId, media.reservedBytes + budget.reservationCeiling() + value.bytes.byteLength, Math.max(0, media.reservedBytes - media.actualBytes) + value.bytes.byteLength * 2);
+            const media = controllerStorageMediaUsage(journalPath, db);
+            assertControllerStorageFreeSpace(journalPath, Math.max(0, media.reservedBytes - media.actualBytes) + value.bytes.byteLength * 2);
           }
           source.resourceFiles.saveResource({ resource: value.resource, data: null }, value.bytes);
         }

@@ -26,7 +26,7 @@
 | --- | --- |
 | [共享 projector](../../packages/daynight/src/commands/controller/providers/image-projector.ts) | 将完整 content/tool output 布局中的图片位置、稳定来源 tuple 和 capture 状态存入原 journal；为富图片条目设置 `imageProjectionError`，经位置 ACK 和实际完整历史确认后封存并 submit，未知时 query 原身份。 |
 | [原生状态](../../packages/daynight/src/commands/controller/media/native-state.ts) | 在既有 `image_runtime_state` 中保存 matcher、别名、分页及出现状态；单值不超过 1 MiB，消费普通元数据预算。 |
-| [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按实际暂存字节计公共磁盘账本，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
+| [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按实际暂存与未落盘字节检查公共空闲水位，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
 | [Codex RPC](../../packages/daynight/src/commands/controller/providers/codex-rpc.ts) | 有界解析原生流，将明确媒体字段交独立 token 暂存，保持 RPC 回执与原连接。 |
 | [Claude live helper](../../packages/daynight/src/commands/controller/providers/claude-live.ts) 与 [transcript helper](../../packages/daynight/src/commands/controller/providers/claude-transcript.ts) | 隔离 SDK 全量解析和受权历史索引，使用有界 IPC 与媒体 ACK；Controller 保存实际 native 子进程证明。 |
 | [Copilot bridge](../../packages/daynight/src/commands/controller/providers/copilot-bridge.ts) | 同一 runtime 的唯一 SDK 连接承载输入、控制、交互、订阅和分页；帧代理限制输入，私有媒体 lease 把字节逐块交给 Controller。 |
@@ -111,7 +111,7 @@ sourceKey 来自版本化的原生位置 tuple，包含 canonical item/operation
 
 Codex 使用私有流式 RPC/JSON 接收器，保留 request/notify/respond/reject/dispose 和现有错误分类；不修改另两个 Provider 的通用 NativeRpc 行为。不能仅增大原 16 MiB 整行阈值，因为 readline 在检查前已经聚合完整行。
 
-解析器跨 chunk 校验 UTF-8、JSON token/escape，仅对明确 schema 的媒体字符串建立候选暂存槽。字段顺序任意，type/id 晚于 bytes 时先暂存不可执行 wire bytes，完整帧、来源和身份通过后才能使用；不能正则替换 JSON。该暂存仅消费已连接原生进程主动发来的 bytes，不抓 URL 或读 path，仍计入公共 2200 MiB/execution、8 GiB 和空闲水位。
+解析器跨 chunk 校验 UTF-8、JSON token/escape，仅对明确 schema 的媒体字符串建立候选暂存槽。字段顺序任意，type/id 晚于 bytes 时先暂存不可执行 wire bytes，完整帧、来源和身份通过后才能使用；不能正则替换 JSON。该暂存仅消费已连接原生进程主动发来的 bytes，不抓 URL 或读 path，仍执行公共空闲水位检查，不计媒体累计额度。
 
 | 对象 | 上限与处理 |
 | --- | --- |

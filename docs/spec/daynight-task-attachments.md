@@ -15,7 +15,7 @@
 记录当前支持范围。各组件的实际验证结果归属对应源码、PR 与 CI。
 
 [鉴权需求](daynight-auth.md)要求附件请求继承项目成员权限，已在全部附件和预览
-入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。主站 HTTP 入口每次验证会话或 PAT，独立预览入口验证预览凭据；读取在文件 I/O 前通过快照确认成员及 task 归属和未删除状态。上传、覆盖和删除与 Task 软删除串行：先完成的附件变更由删除保留，删除先提交时附件变更不执行文件操作，对授权成员返回 `410 task_deleted`。当前 Web 使用的主站预览保留可信同源 HTML、普通 iframe、相对资源及键盘交互；独立 Task 预览入口使用预览凭据和独立 origin。单文件操作和 K1 边界继续有效。
+入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。主站 HTTP 入口每次验证会话或 PAT，独立预览入口验证预览凭据；读取在文件 I/O 前通过快照确认成员及 task 归属和未删除状态。上传、覆盖和删除与 Task 软删除串行：先完成的附件变更由删除保留，删除先提交时附件变更不执行文件操作，对授权成员返回 `410 task_deleted`。Web 预览使用 Task 独立 origin 和预览凭据，保留普通 iframe 与相对资源。单文件操作和 K1 边界继续有效。
 
 ## 目标与范围
 
@@ -30,7 +30,7 @@ Task 可以保存设计文档、架构文档、图片及 HTML mockup 等附件�
 | FA3 | PostgreSQL 保存 task 归属、相对路径、内容类型、大小和时间；附件操作不修改 task 的状态、依赖、version 或 updatedAt。 |
 | FA4 | 通过作用域明确的 HTTP 接口流式上传、读取和删除单个文件；写入结果和错误明确返回。 |
 | FA5 | 文件元数据支持完整遍历的游标分页，Web 和 CLI 根据路径构造目录树。 |
-| FA6 | Web 在同一服务 origin 管理附件，通过固定 task 预览路径显示内容并保持相对资源引用；HTML 按可信项目代码在 iframe 中执行。 |
+| FA6 | Web 在主站管理附件，通过 Task 专属预览 origin 显示内容并保持相对资源引用；HTML 在该 origin 的 iframe 中执行。 |
 | FA7 | CLI 提供 task attachment put/list/read/remove，复用现有服务配置和 project 选择。 |
 | FA8 | CLI read 输出原始字节；二进制传输、输出背压、取消、超时和错误传播有明确语义。 |
 | FA9 | 本地附件根目录有明确配置和持久化部署；测试使用独立目录、数据库及卷，清理仅影响本次资源。 |
@@ -199,12 +199,10 @@ Enter/空格操作，隐藏面板不参与键盘导航。页签切换保留已�
 独立加载与错误状态。project/task 或文件选择变化及卸载会取消过期
 请求，晚到结果不能覆盖当前身份的内容。没有附件与尚未选择文件是不同状态；
 删除当前文件后清空其预览；删除其他文件保持当前预览、已加载文档和阅读位置，
-覆盖后刷新当前内容。附件表单与同源 frame 中的
-Esc、Tab 操作
-遵守活动阅读容器的键盘所有权：先处理内部已消费事件，再退出详情全屏，普通弹窗
-随后关闭；同源 HTML 的已加载 document 随 owner 变化更新桥接，不能通过重载 frame
-切换模式。应用正文/目录滚动、文件输入、上传草稿及 pending 写入保持，原生 HTML/PDF
-保持 frame identity 与 URL。详情全屏的完整要求由 TI16 拥有。
+覆盖后刷新当前内容。附件表单和详情控件保持各自的键盘处理；跨源 frame 使用
+浏览器原生键盘行为。切换模式不重载 frame，应用正文/目录滚动、文件输入、上传
+草稿及 pending 写入保持，原生 HTML/PDF 保持 frame identity 与 URL。详情全屏的
+完整要求由 TI16 拥有。
 
 | 类型 | 展示方式 |
 |---|---|
@@ -228,9 +226,9 @@ root/document 基准判定；外部、协议相对、根相对等原生图片 UR
 可用性，失败明确展示并可重试，不读取 HEAD 的 JSON body。原生 frame 负责后续正常
 资源请求；HEAD 成功不能作为实际 frame 内容已绘制的验收证明。
 
-当前 Web 使用主站的 `/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}`，
-HTML 作为可信项目代码在主站同源环境执行，不提供上传脚本与主应用之间的隔离。
-该路径及主站普通登录仍保持原行为。
+Web 从公开配置生成 Task origin 预览地址；所有主站旧 preview GET 跳转到相应
+Task origin，HEAD 留在主站并执行认证文件检查。下载仍在主站，使用 attachment
+和 nosniff。Task 间及与主站的浏览器 origin 相互隔离，同一 Task 的附件同源。
 
 独立入口使用配置的 preview origin 下单层规范 Task 或 Goal UUID 子域，例如
 `https://<taskId>.preview.daynight.cc/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}`。
@@ -244,7 +242,8 @@ no-store、query 和相对目录；HEAD 不含正文，文档响应使用 `Origi
 的未认证 GET 返回 401 和可复制的 SSO 入口，不猜测文件类型。无权限、未找到、删除或
 存储失败不启动 SSO。文档错误保留 HTTP 状态，按浏览器语言显示错误、requestId 和
 同 URL 重试；401 另提供新标签 SSO 入口。Cookie 未带回时停止并允许手动恢复。
-主站页面公开 `daynight-preview-origin` meta，但当前 Web 不据此切换预览 URL。
+主站页面公开 `daynight-preview-origin` meta，Web 同步读取它生成预览 URL。所选图片
+和 Markdown 附件图片失败时提供新标签 SSO 入口与普通 Retry，原阅读状态保持。
 
 ## 独立页面完整阅读
 
@@ -284,11 +283,9 @@ ID 沿用规范 UUID 解析，附件路径按段编码并仅解码一次，遵�
 Markdown、文本/JSON/源码、图片、HTML、PDF 与不支持格式继续使用既有展示规则。
 Markdown 保留 CommonMark/GFM、转义原始 HTML、文档目录相对资源及同一 Mermaid
 图表行为；独立入口的图块错误、源码、异步切换和窄屏局部滚动与内嵌预览一致。
-可信同源 HTML 保持脚本交互、相对 CSS/JS/图片和 fetch。第一方文案、HTML lang 与页面标题跟随
-同一语言状态，附件内容按原文显示。独立详情普通模式使用浏览器键盘行为；全屏
-阅读时启用活动容器的 Escape/边界 Tab 桥，退出后释放，即使 frame 在进入前已加载
-也不得重载。内部删除等确认窗仍承担自己的原生模态交互。PDF 内部 reader 无法暴露
-可控 document 时，保留原生阅读及始终可达的退出/返回入口，真实浏览器结果独立记录。
+Task origin 的 HTML 保持脚本交互、相对 CSS/JS/图片和 fetch。第一方文案、HTML lang 与页面标题跟随
+同一语言状态，附件内容按原文显示。frame 使用浏览器原生键盘行为，详情保留明确
+退出和返回入口；内部删除等确认窗仍承担自己的原生模态交互。
 
 完整详情外壳按实际标题与页签高度为附件面板分配剩余空间，不使用固定标题高度扣减
 frame。两种展示在 320px 窄屏保持左目录、右预览，左侧独立滚动；文档、文本与图片

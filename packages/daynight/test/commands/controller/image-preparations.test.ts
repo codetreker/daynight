@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, rm, appendFile, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
@@ -10,10 +10,14 @@ import { validateImageFile } from "../../../src/commands/controller/media/image-
 import type { ImageDecoder } from "../../../src/commands/controller/media/image-decoder.js";
 import type { SessionCommand } from "../../../src/session/protocol.js";
 import type { ImageUploadSpec } from "../../../src/session/image-values.js";
-const faults = vi.hoisted(() => ({ partialWrite: false, freeBytes: null as bigint | null }));
+const faults = vi.hoisted(() => ({ partialWrite: false, freeBytes: null as bigint | null, oversizedMediaPath: null as string | null }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, writeSync: (...args: unknown[]) => {
+  return { ...fs, lstatSync: (...args: Parameters<typeof fs.lstatSync>) => {
+    const value = fs.lstatSync(...args);
+    if (value === undefined || args[0] !== faults.oversizedMediaPath) return value;
+    return new Proxy(value, { get: (target, key) => key === "size" ? typeof value.size === "bigint" ? 2_306_867_201n : 2_306_867_201 : Reflect.get(target, key) });
+  }, writeSync: (...args: unknown[]) => {
     if (faults.partialWrite) {
       faults.partialWrite = false;
       fs.writeSync(args[0] as number, args[1] as Uint8Array, 0, 3, args[4] as number);
@@ -26,7 +30,7 @@ vi.mock("node:fs", async original => {
   } };
 });
 const roots: string[] = [];
-afterEach(async () => { faults.partialWrite = false; faults.freeBytes = null; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { faults.partialWrite = false; faults.freeBytes = null; faults.oversizedMediaPath = null; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (imageDecoder: ImageDecoder = validateImageFile) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-preparation-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "i-")); roots.push(home);
@@ -45,6 +49,39 @@ const registerSource = (f: Awaited<ReturnType<typeof fixture>>) => {
   const request = { captureId: randomUUID(), attemptId: randomUUID(), occurrence, nativeSource: null, locator: { kind: "local" as const, path: path.join(f.home, "image.png"), contextId: randomUUID() } };
   f.store.registerImageCaptureRequest(request); return request;
 };
+
+test.each(["absent", "overcommitted", "unreadable"] as const)("media admission, sealing and restart ignore an %s retired ledger above the old execution ceiling", async ledgerState => {
+  const f = await fixture(), ledgerFile = path.join(f.home, "controller", "media", "budget.sqlite");
+  await mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  if (ledgerState === "overcommitted") {
+    const db = new Database(ledgerFile);
+    try {
+      db.exec("CREATE TABLE allocations(execution_id TEXT PRIMARY KEY,reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0))");
+      db.prepare("INSERT INTO allocations VALUES(?,?)").run(f.ticket.executionId, 2_306_867_201);
+      db.prepare("INSERT INTO allocations VALUES(?,?)").run(randomUUID(), 8_589_934_593);
+    } finally { db.close(); }
+  } else if (ledgerState === "unreadable") await mkdir(ledgerFile);
+  const originalLedger = ledgerState === "overcommitted" ? await readFile(ledgerFile) : null;
+  const media = f.store.media(), retained = path.join(`${f.file}.media-staging`, "retained.bin");
+  await writeFile(retained, "retained source", { mode: 0o600 });
+  // The filesystem boundary supplies the old cumulative size without allocating GiB.
+  faults.oversizedMediaPath = retained;
+  try {
+    await media.prepare(f.spec);
+    expect(await media.write({ uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") })).toMatchObject({ acceptedOffset: f.spec.byteLength });
+    expect(await media.complete(f.spec)).toMatchObject({ state: "validated" });
+    const spool = media.createSpool(f.bytes.length);
+    try { spool.write(f.bytes); spool.seal(); expect(await readFile(spool.path)).toEqual(f.bytes); } finally { spool.remove(); }
+    await media.close(); f.store.close();
+    const reopened = openControllerLifecycleStore(f.file, f.ticket, f.options), recovered = reopened.media();
+    try { expect(await recovered.readPrepared({ preparationId: f.spec.uploadId, offset: "0", limit: 524288 })).toMatchObject({ data: f.bytes.toString("base64"), eof: true }); }
+    finally { await recovered.close(); reopened.close(); }
+    expect(await readFile(retained, "utf8")).toBe("retained source");
+    if (originalLedger) expect(await readFile(ledgerFile)).toEqual(originalLedger);
+    else if (ledgerState === "absent") await expect(stat(ledgerFile)).rejects.toMatchObject({ code: "ENOENT" });
+    else expect((await stat(ledgerFile)).isDirectory()).toBe(true);
+  } finally { faults.oversizedMediaPath = null; await f.store.stopMedia(); f.store.close(); }
+});
 
 test("native staging, reserved Markdown staging and upload completion share one decoder without losing images", async () => {
   let entered!: () => void, finish!: () => void, active = 0, peak = 0;

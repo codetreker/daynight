@@ -60,6 +60,6 @@ Resume lease 申请只有成功返回后才能用于启动新的原生执行。�
 
 ## 验证边界
 
-真实 SQLite 来源 fixture 覆盖五库新建、已有空版本 0 文件、任意版本 0 schema 和坏 JSON 重置、已知非零迁移及未知非零来源拒绝。重置验证包括外键、trigger、view、虚拟表及其外部内容表，检查原 schema、数据和版本在失败后一起保留。独立进程验证并发 writer 与中断重开；检查实际记录、索引和版本，不能只检查异常文本。从真实旧 journal 进入业务入口并拒绝后，用新连接检查目标版本、映射数据与业务回滚；当前格式 WAL 读取、旧锁和 owner/lease 保留、关闭/回滚双失败，以及 Controller 停止与 IPC 错误边界分别验证。Controller v1–9 真实来源还须验证原子导入、来源关系保留、旧 reader 下不退休、空闲连接下的后置 checkpoint、旧索引耐久清空、清 pending 结果未知与返额失败后的真实阶段和可重入性。
+真实 SQLite 来源 fixture 覆盖五库新建、已有空版本 0 文件、任意版本 0 schema 和坏 JSON 重置、已知非零迁移及未知非零来源拒绝。重置验证包括外键、trigger、view、虚拟表及其外部内容表，检查原 schema、数据和版本在失败后一起保留。独立进程验证并发 writer 与中断重开；检查实际记录、索引和版本，不能只检查异常文本。从真实旧 journal 进入业务入口并拒绝后，用新连接检查目标版本、映射数据与业务回滚；当前格式 WAL 读取、旧锁和 owner/lease 保留、关闭/回滚双失败，以及 Controller 停止与 IPC 错误边界分别验证。Controller v1–9 真实来源还须验证原子导入、来源关系保留、旧 reader 下不退休、空闲连接下的后置 checkpoint、旧索引耐久清空、清 pending 结果未知与普通准入失败后的真实阶段和可重入性。
 
 [升级设计](../design/cli-sqlite-migrations.md)拥有组件、事务和连接生命周期；[Review 需求](daynight-review.md)、[Worker 需求](daynight-worker.md)和[Controller 需求](controller-test-sessions.md)继续拥有各领域的业务行为。

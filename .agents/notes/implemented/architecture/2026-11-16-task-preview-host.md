@@ -34,9 +34,9 @@ atomically replaces the old record with a fresh short-lived record for the same
 target. Unverifiable or expired records
 do not expose the target and fall back to the main entry. No retry is automatic.
 
-The main HTML shell publishes the configured preview origin as metadata. Existing
-Web URLs and the main-site preview GET remain unchanged and continue to execute
-trusted HTML on the main origin.
+The main HTML shell publishes the configured preview origin as metadata. The
+[default preview decision](2026-11-16-default-task-preview.md) adopts it for Web
+URLs and redirects main-site preview GET to the Task Host.
 
 ## Alternatives
 
@@ -59,6 +59,6 @@ than redirecting indefinitely. Concurrent SSO and account changes retain the
 accepted possibility of different valid sessions across origins.
 
 Deployment must provide bare and wildcard DNS, TLS/SNI and Host forwarding;
-startup validates configuration but does not prove external reachability. Existing
-main-site inline previews remain same-origin until their consumers and old entry
-are switched, so this direct entry alone does not establish complete isolation.
+startup validates configuration but does not prove external reachability. The
+default entry switch requires coordinated replica rollout and preserves isolation
+during rollback as described in the default preview decision.

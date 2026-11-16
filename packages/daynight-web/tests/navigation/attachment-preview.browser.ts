@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { expect, test, type Page } from '@playwright/test';
 import { hasPaintedPdfMarker, readPdfPixels } from '../helpers/pdf-pixels';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
@@ -45,6 +46,7 @@ async function install(page: Page, linked = false, claimed = false, description?
       return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     }
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
+    if (path === `/api/v1/projects/${projectId}`) return send(graph.project);
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) { state.accessReads++; if (state.holdAccess) await state.holdAccess; return send(directAccessFixture(projectId)); }
@@ -90,6 +92,52 @@ async function checkDuringForeground(page: Page, state: Awaited<ReturnType<typeo
     await check();
   } finally { state.holdAccess = null; gate.resolve(); }
 }
+
+test('modified click on a Task attachment link opens its preview in a new tab', async ({ page }) => {
+  const server = createServer((request, response) => {
+    if (request.headers.host !== `${taskId}.preview.localhost:${port}` || request.url !== `${root}/preview/interactive.html`) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { 'Content-Type': 'text/html' }).end('<title>Task preview</title><p>Preview contents</p>');
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const port = (server.address() as { port: number }).port;
+  try {
+    await install(page, false, false, '[Open preview](interactive.html)');
+    const path = `/projects/${projectId}/tasks/${taskId}`;
+    await page.route(url => url.hostname === '127.0.0.1' && url.pathname === path, async route => {
+      const response = await route.fetch();
+      const body = (await response.text()).replace('http://preview.localhost:8787', `http://preview.localhost:${port}`);
+      await route.fulfill({ response, body });
+    });
+    await page.goto(path);
+    const link = page.getByRole('link', { name: 'Open preview', exact: true });
+    const target = `http://${taskId}.preview.localhost:${port}${root}/preview/interactive.html`;
+    await expect(link).toHaveAttribute('href', target);
+    const before = page.url();
+    const [popup] = await Promise.all([page.context().waitForEvent('page'), link.click({ modifiers: ['Control'] })]);
+    await expect(popup).toHaveURL(target);
+    await expect(popup.getByText('Preview contents')).toBeVisible();
+    expect(page.url()).toBe(before);
+    await popup.close();
+  } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+});
+
+test('a linked attachment image opens preview sign-in without following the outer link', async ({ page }) => {
+  await install(page, false, false, '[![Linked image](linked.svg)](other.md)');
+  await page.route('**/preview/linked.svg', route => route.abort('failed'));
+  await page.context().route('**/auth/sso/start', route => route.fulfill({ contentType: 'text/html', body: '<title>Preview sign-in</title>' }));
+  await page.goto(`/projects/${projectId}/tasks/${taskId}`);
+  const alert = page.getByRole('alert', { name: 'Linked image' });
+  await expect(alert).toBeVisible();
+  const before = page.url();
+  const [popup] = await Promise.all([page.context().waitForEvent('page'), alert.getByRole('link', { name: 'Sign in to preview' }).click()]);
+  await expect(popup).toHaveURL('http://preview.localhost:8787/auth/sso/start');
+  await expect(popup).toHaveTitle('Preview sign-in');
+  expect(page.url()).toBe(before);
+  await popup.close();
+});
 
 test('Markdown image retry preserves attachment drafts, selected document and retained HTML frame', async ({ page }) => {
   const state = await install(page, false, false, '# Task image\n\n![Task attachment](retry.svg)');
@@ -341,7 +389,7 @@ for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 
   });
 }
 
-test('native HTML preview preserves frame ownership and returns focus after Escape', async ({ page }) => {
+test('native HTML preview preserves frame ownership and returns focus after closing', async ({ page }) => {
   const state = await install(page);
   const { trigger, dialog, attachments } = await openDialog(page);
   await attachments.getByRole('button', { name: /^interactive\.html/ }).click();
@@ -382,12 +430,12 @@ test('native HTML preview preserves frame ownership and returns focus after Esca
   await expect(dialog).toHaveClass(/task-detail-fullscreen/);
   await expect(counter).toHaveText('1');
   expect(await frameHandle!.evaluate(element => element === document.querySelector('.task-attachments iframe'))).toBe(true);
-  await counter.press('Escape');
+  await dialog.locator('.task-detail-fullscreen-toggle').click();
   await expect(dialog).not.toHaveClass(/task-detail-fullscreen/);
   await expect(counter).toHaveText('1');
   expect(await frameHandle!.evaluate(element => element === document.querySelector('.task-attachments iframe'))).toBe(true);
   expect(state.resources.filter(path => path.endsWith('/interactive.html')).length).toBe(reads);
-  await counter.press('Escape');
+  await dialog.getByRole('button', { name: 'Close task details', exact: true }).click();
   await expect(dialog).toHaveCount(0); await expect(trigger).toBeFocused();
   await frameHandle!.dispose(); await inputHandle!.dispose();
   expect(state.writes).toEqual([]);
@@ -414,12 +462,15 @@ test('preserves an interactive HTML document before its pending subresource fini
     await imageStarted.promise;
     await input.fill('unsaved');
     expect(await input.evaluate(element => element.ownerDocument.readyState)).not.toBe('complete');
-    const originalDocument = await input.evaluateHandle(element => element.ownerDocument);
+    const originalFrame = await frame.elementHandle();
+    const originalInput = await input.elementHandle();
     await checkDuringForeground(page, state, async () => {
-      expect(await frame.evaluate((element: HTMLIFrameElement, original) => element.contentDocument === original, originalDocument)).toBe(true);
+      expect(await originalFrame!.evaluate(element => element === document.querySelector('.task-attachments iframe'))).toBe(true);
+      expect(await originalInput!.evaluate(element => element === document.querySelector('input'))).toBe(true);
       await expect(input).toHaveValue('unsaved');
     });
-    await originalDocument.dispose();
+    await originalInput!.dispose();
+    await originalFrame!.dispose();
   } finally { imageGate.resolve(); }
 });
 
@@ -471,7 +522,7 @@ for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 
     await expect(attachments.locator('strong')).toHaveText('real');
     const image = attachments.getByRole('img', { name: 'Fixture vector' });
     await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(200);
-    await expect(attachments.getByRole('link', { name: 'Vector file' })).toHaveAttribute('href', `${root}/preview/icon.svg`);
+    await expect(attachments.getByRole('link', { name: 'Vector file' })).toHaveAttribute('href', `http://${taskId}.preview.localhost:8787${root}/preview/icon.svg`);
     await expect(attachments.getByRole('link', { name: 'Download', exact: true })).toBeInViewport({ ratio: 1 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const panes = await attachments.locator('.attachment-sidebar,.attachment-preview-pane').evaluateAll(elements => elements.map(element => {
@@ -514,7 +565,7 @@ test('multi-page PDF accepts native wheel and keyboard scrolling to its final pa
   await expect.poll(() => count([179, 204, 77]), { timeout: 10_000 }).toBeGreaterThan(1000);
 });
 
-test('standalone loaded HTML retains its frame and draft through fullscreen owner installation and release', async ({ page }) => {
+test('standalone loaded HTML retains its frame and draft through fullscreen changes', async ({ page }) => {
   const state = await install(page);
   await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/interactive.html`);
   const surface = page.locator('.task-detail-page');
@@ -530,9 +581,8 @@ test('standalone loaded HTML retains its frame and draft through fullscreen owne
   const reads = state.resources.filter(path => path.endsWith('/interactive.html')).length;
   await surface.locator('.task-detail-fullscreen-toggle').click();
   await expect(surface).toHaveClass(/task-detail-fullscreen/);
-  await counter.press('Escape');
+  await surface.locator('.task-detail-fullscreen-toggle').click();
   await expect(surface).not.toHaveClass(/task-detail-fullscreen/);
-  await counter.press('Escape');
   await expect(surface).toBeVisible(); await expect(counter).toHaveText('1');
   expect(await frameHandle!.evaluate(element => element === document.querySelector('.task-attachments iframe'))).toBe(true);
   expect(await inputHandle!.evaluate(element => element === document.querySelector('.task-attachments input[type=file]'))).toBe(true);

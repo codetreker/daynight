@@ -47,7 +47,7 @@ execution/operation/native facts. The [local mapping decision](2026-11-16-contro
 describes how unrepresentable items are handled. Upgrade-only preserves stopping evidence. Proven stopped maintenance
 holds the permit through the reader barrier, durable removal of obsolete index
 references, recognized body retirement, in-place VACUUM, post-checkpoint physical
-verification, pending-clear readback and actual reservation settlement. A new
+verification, pending-clear readback and ordinary admission checks. A new
 writer commits no generation until maintenance and normal admission succeed.
 
 Active history sync and stopped archive work materialize timeline, resource
@@ -91,7 +91,7 @@ adding another lifetime protocol.
 
 **Treat logical conversion as physical reclamation.** Existing free pages, WAL
 and retained source files still consume disk. Only reader-safe retirement,
-post-VACUUM checkpoint, actual file measurement and reservation settlement can
+post-VACUUM checkpoint, actual file measurement and ordinary admission checks can
 restore ordinary admission.
 
 ## Consequences
@@ -103,11 +103,13 @@ Resources, pins, leases and native recovery files retain their original paths an
 retention responsibilities.
 
 Physical metadata pressure remains possible with long readers, unacknowledged
-outbox or other retained data. The 128 MiB ordinary limit, 8 MiB settlement reserve,
-shared media limits and free-space policy remain in force; normal execution does
-not VACUUM. Format import can be committed and readable while cleanup remains
-pending and a new writer waits. Cleanup, commit uncertainty and failed settlement
-retain the actual phase and sufficient charge for reentry.
+outbox or other retained data. The 128 MiB ordinary limit, 8 MiB settlement
+reserve, and free-space policy remain in force. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes the shared media limits and persistent reservations; normal execution
+does not VACUUM. Format import can be committed and readable while cleanup
+remains pending and a new writer waits. Cleanup errors, commit uncertainty and
+failed admission retain the actual phase and source materials for reentry.
 
 Large revision and capacity probes run separately from routine CI. Generated
 fixtures establish only their declared bytes, order, outbox/ACK and reader

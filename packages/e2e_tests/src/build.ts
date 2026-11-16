@@ -100,6 +100,7 @@ export const buildArtifacts = async (options: {
   await run("go", ["build", "-trimpath", "-o", path.join(directory, "uniauth"), "./cmd/uniauth"], checkout);
   await run("git", ["diff", "--exit-code", "--stat", "HEAD", "--"], checkout, 15_000);
   await run("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1", "-subj", "/CN=Product E2E local provider", "-addext", "subjectAltName=DNS:github.com,DNS:api.github.com", "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", path.join(directory, "provider-key.pem"), "-out", path.join(directory, "provider-ca.pem")], repository, 30_000);
+  await run("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1", "-subj", "/CN=Product E2E Daynight", "-addext", "subjectAltName=DNS:app.daynight.localhost,DNS:preview.daynight.localhost,DNS:*.preview.daynight.localhost", "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", path.join(directory, "daynight-key.pem"), "-out", path.join(directory, "daynight-ca.pem")], repository, 30_000);
   const after = await sourceFingerprint(repository, signal);
   if (before !== after) throw new Error("Product sources changed while the E2E artifacts were built.");
   return {

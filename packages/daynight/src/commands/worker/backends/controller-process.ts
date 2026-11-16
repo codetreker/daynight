@@ -7,7 +7,6 @@ import { requestController } from "../../controller/local-client.js";
 import { captureProcessProof, type ProcessProof } from "../../controller/process-proof.js";
 import { ControllerStartupError } from "../../controller/startup.js";
 import { reconcileSubmittedControllerLaunch } from "../../controller/launch-observation.js";
-import { resolveConfigurationPaths } from "../../../config/paths.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../controller/storage-lock.js";
 import { ControllerStorageWaitingError, prepareControllerStorage } from "../../controller/storage-preparation.js";
 import { SqliteAccessError } from "../../../platform/sqlite-error.js";
@@ -22,7 +21,7 @@ export const prepareControllerLaunchStorage = (homeDirectory: string, ticket: Co
   }
   let failure: unknown, failed = false, committed = false;
   try {
-    const prepared = prepareControllerStorage({ journalFile, stateDirectory: resolveConfigurationPaths(homeDirectory).stateDirectory, mode: "writer", ticket }, permit);
+    const prepared = prepareControllerStorage({ journalFile, mode: "writer", ticket }, permit);
     if (prepared.kind === "waiting") throw new ControllerStorageWaitingError(prepared.reason, prepared.cause);
     committed = true;
   } catch (cause) { failed = true; failure = cause; }

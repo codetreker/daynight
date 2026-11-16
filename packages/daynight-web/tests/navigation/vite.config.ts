@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import type { IncomingMessage } from 'node:http';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+import { fixturePreviewOrigin } from './product-shell-vite.config.ts';
 
 const rewriteHost = (request: IncomingMessage) => {
   const path = request.url?.split('?')[0];
@@ -14,7 +15,7 @@ const rewriteHost = (request: IncomingMessage) => {
 
 export default defineConfig({
   root: fileURLToPath(new URL('../..', import.meta.url)),
-  plugins: [react(), {
+  plugins: [react(), fixturePreviewOrigin(), {
     name: 'navigation-contract-host',
     configureServer(server) {
       server.middlewares.use((request, _response, next) => {

@@ -322,8 +322,8 @@ setup, required UniAuth settings, updates and paired database/file backups.
 The [CLI configuration guide](packages/daynight/README.md#configuration-setup)
 explains connecting to a different service.
 
-HTML attachments execute as trusted content on the application origin. Only
-upload HTML you trust with that authority.
+HTML attachments execute on a Task-specific preview origin, separated from the
+main application and other Tasks. Files within the same Task share an origin.
 
 ## Repository layout
 

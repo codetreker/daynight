@@ -175,6 +175,18 @@ type identityHTTPPlan struct {
 	sessions     atomic.Int32
 	aliceClaim   string
 	sessionDraft model.Session
+	previewLogin model.PreviewSSOLogin
+}
+
+type loginPreviewDAO struct {
+	store.PreviewSSODAO
+	plan *identityHTTPPlan
+}
+
+func (d loginPreviewDAO) CleanupPreviewSSO(_ context.Context, _ time.Time) error { return nil }
+func (d loginPreviewDAO) InsertPreviewSSO(_ context.Context, login model.PreviewSSOLogin) error {
+	d.plan.previewLogin = login
+	return nil
 }
 
 func newIdentityHTTPPlan(t *testing.T) (*httpTestStore, *identityHTTPPlan) {
@@ -510,6 +522,12 @@ func newIdentityIntegration(t *testing.T) *identityIntegration {
 func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identityIntegration {
 	t.Helper()
 	database, plan := newIdentityHTTPPlan(t)
+	database.WritePreviewSSOCall = func(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error) {
+		if err := fn(loginPreviewDAO{plan: plan}); err != nil {
+			return store.Completion{Outcome: store.TransactionNotCommitted}, err
+		}
+		return store.Completion{Outcome: store.TransactionCommitted}, nil
+	}
 	server := httptest.NewUnstartedServer(nil)
 	t.Cleanup(server.Close)
 	origin := "http://" + server.Listener.Addr().String()
@@ -648,7 +666,9 @@ func (integration *identityIntegration) completeFor(t *testing.T, browser *http.
 	integration.plan.consume(callback.Query().Get("state"), identityCookie(t, browser, integration.server.URL, identityHTTPBinding(callback.Query().Get("state"))), true)
 	integration.plan.complete(persona)
 	response, _ := identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusSeeOther)
-	if response.Header.Get("Location") != "/auth/complete?"+(url.Values{"callbackPath": {integration.callbackPath}, "returnPath": {"/projects?view=tasks"}}).Encode() {
+	wantTarget := integration.server.URL + "/auth/complete?" + (url.Values{"callbackPath": {integration.callbackPath}, "returnPath": {"/projects?view=tasks"}}).Encode()
+	wantStart := testauth.PreviewOrigin(integration.server.URL) + "/auth/sso/start?login=" + integration.plan.previewLogin.ID
+	if integration.plan.previewLogin.ReturnURL != wantTarget || response.Header.Get("Location") != wantStart {
 		t.Fatal("successful login did not retain its main-site return path")
 	}
 	for _, cookie := range response.Cookies() {
@@ -891,7 +911,7 @@ func TestPrivateProjectResourceHTTPAuthenticationAndScope(t *testing.T) {
 	resourceScopeCookie(t, outsider, server.URL, outsiderToken)
 	base := "/api/v1/projects/" + project.ID
 	file, preview := base+"/tasks/"+task.ID+"/attachments/files/private.html", base+"/tasks/"+task.ID+"/preview/private.html"
-	paths := []string{base, base + "/task-graph?taskId=" + task.ID, base + "/tasks", base + "/tasks/" + task.ID, base + "/tasks/" + task.ID + "/attachments", file, preview, base + "/members", base + "/invitations"}
+	paths := []string{base, base + "/task-graph?taskId=" + task.ID, base + "/tasks", base + "/tasks/" + task.ID, base + "/tasks/" + task.ID + "/attachments", file, base + "/members", base + "/invitations"}
 	for _, path := range paths {
 		resourceScopeAuthentication(t, tx, ownerActor, ownerToken)
 		plan := resourceScopeRead(t, tx, ownerActor, true, project, task, item, path)

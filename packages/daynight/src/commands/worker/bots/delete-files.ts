@@ -1,4 +1,3 @@
-import { releaseControllerMediaBudget } from "../../controller/media/budget-ledger.js";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, open, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
@@ -135,6 +134,30 @@ export const captureBotDeletionFiles = async (homeDirectory: string, record: Bot
   return targets;
 };
 
+// Deletion completion discards the captured execution identity, so its parent
+// directory entry must reach disk even when a previous attempt removed the source.
+const syncExecutionRemoval = async (target: BotDeletionTarget, signal: AbortSignal): Promise<void> => {
+  if (process.platform === "win32" || target.kind !== "directory" || path.basename(target.root) !== "executions"
+    || path.basename(path.dirname(target.root)) !== "controller" || canonicalId(path.basename(target.path)) !== path.basename(target.path)) return;
+  signal.throwIfAborted();
+  const handle = await open(target.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  let failed = false, failure: unknown;
+  try {
+    const parent = await physicalParent(target.root);
+    if (identity(await handle.stat({ bigint: true })) !== target.rootIdentity || parent === null || identity(parent) !== target.rootIdentity) throw new Error("Bot private root identity changed before execution deletion synchronization.");
+    if (await stat(target.path) !== null) throw new Error("Controller execution source reappeared before deletion synchronization.");
+    signal.throwIfAborted();
+    await handle.sync();
+    signal.throwIfAborted();
+  } catch (error) { failed = true; failure = error; }
+  try { await handle.close(); }
+  catch (close) {
+    if (failed) throw new AggregateError([failure, close], "Controller execution deletion synchronization and close failed.", { cause: failure });
+    throw close;
+  }
+  if (failed) throw failure;
+};
+
 /** A successful return permits persisting completed=true; completed paths are never revisited. */
 export const removeBotDeletionFile = async (target: BotDeletionTarget, signal: AbortSignal): Promise<void> => {
   if (target.completed) return;
@@ -153,15 +176,13 @@ export const removeBotDeletionFile = async (target: BotDeletionTarget, signal: A
     signal.throwIfAborted();
     return true;
   };
-  const releaseExecutionBudget = () => {
-    if (target.kind === "directory" && path.basename(target.root) === "executions" && path.basename(path.dirname(target.root)) === "controller" && canonicalId(path.basename(target.path)) === path.basename(target.path)) releaseControllerMediaBudget(path.dirname(path.dirname(target.root)), path.basename(target.path), target.path);
-  };
-  if (!await check()) { releaseExecutionBudget(); return; }
+  if (!await check()) { await syncExecutionRemoval(target, signal); return; }
   if (target.kind === "directory") {
     const operation = createOperation({ signal, limits: { totalMs: 300_000 } });
     try { await removeHerdrSourceDirectory(target.root, target.path, operation, { rootIdentity: target.rootIdentity, sourceIdentity: target.identity }); }
     finally { operation.dispose(); }
-    releaseExecutionBudget(); return;
+    await syncExecutionRemoval(target, signal);
+    return;
   }
   const handle = process.platform === "win32" ? null : await open(target.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
