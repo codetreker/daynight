@@ -670,6 +670,9 @@ jobs:
           retention-days: 30
 
   checks:
+    permissions:
+      contents: read
+      actions: read
     if: ${{ always() }}
     needs: [detect-changes, verify, verify-herdr-platform, verify-installed, verify-runtime, verify-server, verify-server-startup-shutdown, verify-api-integration, verify-web-quality, verify-e2e]
     runs-on: ubuntu-latest
@@ -696,18 +699,14 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Download Windows CLI shard 1
+      - name: Download latest Windows CLI shard evidence by artifact ID
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: daynight-cli-tests-results-windows-latest-shard-1
-          path: .tmp/windows-cli-shards/1
-      - name: Download Windows CLI shard 2
-        if: ${{ needs.detect-changes.outputs.cli == 'true' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: daynight-cli-tests-results-windows-latest-shard-2
-          path: .tmp/windows-cli-shards/2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node .github/scripts/windows-cli-shards.mts download .tmp/windows-cli-shards
+          python3 -m zipfile -e .tmp/windows-cli-shards/1.zip .tmp/windows-cli-shards/1
+          python3 -m zipfile -e .tmp/windows-cli-shards/2.zip .tmp/windows-cli-shards/2
       - name: Verify the complete Windows CLI execution
         if: ${{ needs.detect-changes.outputs.cli == 'true' }}
         run: node .github/scripts/windows-cli-shards.mts verify .tmp/windows-cli-shards

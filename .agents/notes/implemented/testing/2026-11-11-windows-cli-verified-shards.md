@@ -42,6 +42,20 @@ todo cases remain represented; incomplete or failed assertions are rejected.
 JSON success alone does not establish a successful command, so the recorded
 native step outcome and successful matrix result remain independent requirements.
 
+Reruns can retain several artifacts with the same shard name. Artifact IDs do
+not establish creation order, and a name-only download can select an earlier
+failed attempt after the native job succeeds. The gate enumerates the complete
+artifact inventory for its original workflow run, selects the unique latest
+creation time for each exact shard name, and downloads those explicit IDs.
+The pinned download action applies its ID-sorted latest filter before explicit
+ID selection, so the gate uses the REST artifact endpoint directly. It rereads
+the selected identity and ZIP digest, follows the signed storage redirect without
+forwarding the GitHub token, and verifies the archive SHA-256 before extraction.
+Missing, expired or ambiguous latest evidence fails; it never falls back to an
+older successful artifact. Source, tree, command outcome and complete-discovery
+verification still apply to the downloaded evidence. Earlier artifacts remain
+available for failure diagnosis.
+
 This partially replaces the Windows ordinary allocation in the
 [independent native validation decision](2026-11-07-independent-macos-cli-validation.md).
 The [development guide](../../../../docs/development.md#cli-development)
@@ -65,6 +79,11 @@ Two discovery lists therefore cannot establish what either runner executed.
 files. Built-in partitioning and a full-discovery comparison retain automatic
 selection without changing the assertions or mechanisms exercised.
 
+**Delete old artifacts or accept the largest artifact ID.** Deletion removes
+failure evidence and does not repair future reruns. IDs can be allocated out of
+creation order; the latest unique server creation timestamp selects the evidence
+without changing what the gate requires it to prove.
+
 ## Consequences
 
 Windows ordinary tests use one additional runner and repeat preparation work.
@@ -75,6 +94,7 @@ workload finishes within budget; local or container measurements do not replace
 that evidence or establish the historical timeout's cause.
 
 Runtime compatibility still waits for the entire ordinary matrix and consumes
-only the Ubuntu package. Installed acceptance remains independent. Per-shard
-artifact names prevent Windows uploads from colliding, while other native
-artifact identities and macOS termination diagnostics remain unchanged.
+only the Ubuntu package. Installed acceptance remains independent. Distinct
+artifact names separate the two Windows shards; explicit latest-artifact IDs
+select their rerun evidence. Other native artifact identities and macOS
+termination diagnostics remain unchanged.

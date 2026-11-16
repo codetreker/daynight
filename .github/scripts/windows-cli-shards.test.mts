@@ -1,10 +1,63 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyWindowsShards } from "./windows-cli-shards.mts";
+import { downloadWindowsShardArtifact, selectWindowsShardArtifacts, verifyWindowsShards } from "./windows-cli-shards.mts";
+
+test("explicit artifact download binds metadata and ZIP digest without forwarding authorization", async () => {
+  const zip = new TextEncoder().encode("controlled ZIP bytes");
+  const selected = { id: 3, name: "daynight-cli-tests-results-windows-latest-shard-1", created_at: "2026-11-16T13:22:00Z", expired: false,
+    digest: `sha256:${createHash("sha256").update(zip).digest("hex")}`, workflow_run: { id: 42 } };
+  const calls: string[] = [];
+  const request = async (url: string, init?: RequestInit) => {
+    calls.push(url);
+    assert.equal(init?.redirect, "manual");
+    if (url === "https://storage.example/archive.zip") {
+      assert.equal(new Headers(init?.headers).has("authorization"), false);
+      return new Response(zip);
+    }
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer private-token");
+    if (url.endsWith("/zip")) return new Response(null, { status: 302, headers: { location: "https://storage.example/archive.zip" } });
+    return Response.json(selected);
+  };
+  assert.deepEqual(await downloadWindowsShardArtifact(selected, "owner/repo", "42", "private-token", request), zip);
+  assert.deepEqual(calls, ["https://api.github.com/repos/owner/repo/actions/artifacts/3", "https://api.github.com/repos/owner/repo/actions/artifacts/3/zip", "https://storage.example/archive.zip"]);
+  for (const changed of [{ ...selected, id: 4 }, { ...selected, name: "other" }, { ...selected, workflow_run: { id: 41 } }, { ...selected, expired: true }, { ...selected, digest: `sha256:${"0".repeat(64)}` }, { ...selected, created_at: "2026-11-16T13:09:00Z" }]) {
+    await assert.rejects(downloadWindowsShardArtifact(selected, "owner/repo", "42", "private-token", async () => Response.json(changed)), /changed|run|expired/);
+  }
+  await assert.rejects(downloadWindowsShardArtifact(selected, "owner/repo", "42", "private-token", async (url, init) => url.startsWith("https://storage.") ? new Response("wrong bytes") : request(url, init)), /digest/);
+});
+
+const artifact = (id: number, shard: number, created_at: string) => ({ id, name: `daynight-cli-tests-results-windows-latest-shard-${shard}`, created_at, expired: false });
+test("rerun selection reads every page and uses creation time, not artifact ID or API order", async () => {
+  const old = artifact(14229340225, 1, "2026-11-16T13:09:00Z");
+  const latest = artifact(14228644433, 1, "2026-11-16T13:22:00Z");
+  const second = artifact(7, 2, "2026-11-16T13:10:00Z");
+  const pages = [[old, second], [latest]], calls: number[] = [];
+  assert.deepEqual(await selectWindowsShardArtifacts(async page => {
+    calls.push(page); return { total_count: 3, artifacts: pages[page - 1] };
+  }), [latest.id, second.id]);
+  assert.deepEqual(calls, [1, 2]);
+});
+
+test("artifact selection rejects equal newest timestamps, expired newest evidence and incomplete pagination", async () => {
+  const first = artifact(1, 1, "2026-11-16T13:22:00Z"), second = artifact(2, 2, "2026-11-16T13:22:00Z");
+  for (const extra of [{ ...first, id: 3 }, { ...first, id: 3, expired: true, created_at: "2026-11-16T13:23:00Z" }]) {
+    await assert.rejects(selectWindowsShardArtifacts(async () => ({ total_count: 3, artifacts: [first, second, extra] })), /ambiguous|expired/);
+  }
+  await assert.rejects(selectWindowsShardArtifacts(async page => ({ total_count: 3, artifacts: page === 1 ? [first, second] : [] })), /incomplete/);
+  await assert.rejects(selectWindowsShardArtifacts(async () => ({ total_count: 2, artifacts: [first, { ...second, name: `${second.name}-old` }] })), /Missing/);
+});
+
+test("artifact pagination rejects changed counts, duplicate identities and invalid creation times", async () => {
+  const first = artifact(1, 1, "2026-11-16T13:22:00Z");
+  await assert.rejects(selectWindowsShardArtifacts(async page => ({ total_count: page === 1 ? 2 : 3, artifacts: [first] })), /changed/);
+  await assert.rejects(selectWindowsShardArtifacts(async () => ({ total_count: 2, artifacts: [first] })), /Duplicate/);
+  await assert.rejects(selectWindowsShardArtifacts(async () => ({ total_count: 1, artifacts: [{ ...first, created_at: "invalid" }] })), /creation time/);
+});
 
 const identity = { sourceRevision: "a".repeat(40), sourceTree: "b".repeat(40), vitestVersion: "5.0.5" };
 const root = "D:/a/daynight/daynight/packages/daynight";
