@@ -292,13 +292,13 @@ it("retains the storage permit when a rejected business transaction cannot close
   const store = openControllerLifecycleStore(file, ticket, { onMigration: () => {} });
   store.close();
   const exec = Database.prototype.exec, close = Database.prototype.close;
-  let immediate = 0, unclosed: Database.Database | undefined;
+  let immediate = 0, businessDb: Database.Database | undefined, unclosed: Database.Database | undefined;
   const execSpy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (this.name === file && sql === "BEGIN IMMEDIATE") immediate++;
+    if (this.name === file && sql === "BEGIN IMMEDIATE" && ++immediate === 2) businessDb = this;
     return exec.call(this, sql);
   });
   const closeSpy = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
-    if (this.name === file && immediate >= 2 && !this.readonly) { unclosed = this; throw new Error("injected journal close failure"); }
+    if (this === businessDb) { unclosed = this; throw new Error("injected journal close failure"); }
     return close.call(this);
   });
   try {
