@@ -69,7 +69,7 @@ func TestMCPHTTPAccessAuthorityAndRefreshRejection(t *testing.T) {
 	refresh := secret.Random(oauthcore.RefreshPrefix)
 	pat := &entryRefreshPAT{token: refresh}
 	f.entry.oauth, f.entry.auth = auth, pat
-	err := f.entry.RegisterTool(&sdk.Tool{Name: "actor", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"}}, BudgetControl, func(_ context.Context, actor RequestActor, _ json.RawMessage) (ToolResult, error) {
+	err := f.entry.RegisterTool(&sdk.Tool{Name: "actor", InputSchema: map[string]any{"type": "object"}}, BudgetControl, func(_ context.Context, actor RequestActor, _ json.RawMessage) (ToolResult, error) {
 		return ToolResult{Data: map[string]any{"user": actor.Principal.UserID, "access": actor.Principal.CredentialID, "authority": actor.AuthorityRef.ID, "kind": actor.AuthorityRef.Kind}}, nil
 	})
 	if err != nil {
@@ -156,12 +156,8 @@ func newEntryFixture(t *testing.T) *entryFixture {
 	}
 	f := &entryFixture{entry: e, entered: make(chan struct{}, 10), canceled: make(chan struct{}, 10)}
 	input := map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"type": "string"}}, "required": []string{"mode"}, "additionalProperties": false}
-	output := map[string]any{"type": "object", "properties": map[string]any{
-		"data":  map[string]any{"type": "object", "properties": map[string]any{"user": map[string]any{"type": "string"}, "credential": map[string]any{"type": "string"}}, "required": []string{"user", "credential"}},
-		"meta":  map[string]any{"type": "object", "properties": map[string]any{"requestId": map[string]any{"type": "string"}, "outcome": map[string]any{"type": "string"}}, "required": []string{"requestId"}},
-		"error": map[string]any{"type": "object", "properties": map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "requestId": map[string]any{"type": "string"}, "writeOutcome": map[string]any{"type": "string"}, "phase": map[string]any{"type": "string"}, "refs": map[string]any{"type": "object"}}, "required": []string{"code", "message", "requestId"}},
-	}, "oneOf": []any{map[string]any{"required": []string{"data", "meta"}, "not": map[string]any{"required": []string{"error"}}}, map[string]any{"required": []string{"error"}, "not": map[string]any{"required": []string{"data"}}}}}
-	err = e.RegisterTool(&sdk.Tool{Name: "test_only", Description: "Test tool", InputSchema: input, OutputSchema: output}, BudgetControl, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+
+	err = e.RegisterTool(&sdk.Tool{Name: "test_only", Description: "Test tool", InputSchema: input}, BudgetControl, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
 		f.calls.Add(1)
 		var args struct {
 			Mode string `json:"mode"`
@@ -175,7 +171,7 @@ func newEntryFixture(t *testing.T) *entryFixture {
 		case "unknown":
 			return ToolResult{Refs: map[string]any{"id": "original"}}, &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, Cause: errors.New("private detail")}
 		case "bad_output":
-			return ToolResult{Data: map[string]any{"user": 7}, WriteOutcome: "confirmed", Refs: map[string]any{"id": "original"}}, nil
+			return ToolResult{Data: map[string]any{"user": make(chan int)}, WriteOutcome: "confirmed", Refs: map[string]any{"id": "original"}}, nil
 		case "wait":
 			f.entered <- struct{}{}
 			<-ctx.Done()

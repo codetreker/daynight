@@ -140,8 +140,8 @@ func TestAttachmentToolRegistrationFailures(t *testing.T) {
 	t.Cleanup(func() { attachmentToolsJSON = original })
 	for _, tc := range []struct{ name, definition string }{
 		{"invalid JSON", `[`},
-		{"unknown tool", `[{"name":"unexpected","inputSchema":{"type":"object"},"outputSchema":{"type":"object"}}]`},
-		{"invalid schema", `[{"name":"task_attachment_list","inputSchema":{"type":"string"},"outputSchema":{"type":"object"}}]`},
+		{"unknown tool", `[{"name":"unexpected","inputSchema":{"type":"object"}}]`},
+		{"invalid schema", `[{"name":"task_attachment_list","inputSchema":{"type":"string"}}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			attachmentToolsJSON = []byte(tc.definition)
@@ -217,8 +217,11 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 	mcpAttachmentPage(t, database, principal, projectID, parentID, "", 2, store.AttachmentPage{Items: []model.Attachment{a, b}, HasMore: true})
 	first := obj(call(alice, "task_attachment_list", args, false)["data"])
 	items := first["items"].([]any)
-	if len(items) != 2 || obj(items[0])["path"] != "a" || obj(items[1])["path"] != "b" {
+	if len(items) != 2 || obj(items[0])["path"] != "a" || obj(items[1])["path"] != "b" || obj(items[0])["contentType"] != "text/plain" || obj(items[0])["sizeBytes"] != "6" || obj(items[0])["createdAt"] != "2026-01-01T00:00:00Z" || obj(items[0])["updatedAt"] != "2026-01-01T00:00:00Z" {
 		t.Fatalf("page: %+v", first)
+	}
+	if cursor, ok := first["nextCursor"].(string); !ok || cursor == "" {
+		t.Fatalf("missing continuation: %+v", first)
 	}
 	args["cursor"] = first["nextCursor"]
 	mcpAttachmentPage(t, database, principal, projectID, parentID, "b", 2, store.AttachmentPage{Items: []model.Attachment{c}})
@@ -241,8 +244,10 @@ func TestMCPAttachmentProductionLifecycle(t *testing.T) {
 		mcpAttachmentCheck(t, []string{pid, tid, path}, []string{projectID, parentID, "b"})
 		return nil
 	}}, true)
-	if obj(call(alice, "task_attachment_remove", remove, false)["data"])["removed"] != true {
-		t.Fatal("missing remove receipt")
+	receipt := call(alice, "task_attachment_remove", remove, false)
+	removed := obj(receipt["data"])
+	if removed["removed"] != true || removed["projectId"] != projectID || removed["taskId"] != parentID || removed["path"] != "b" {
+		t.Fatalf("missing remove receipt: %+v", receipt)
 	}
 	address, err := attachmentcore.NewAddress(projectID, parentID, "b")
 	if err != nil {

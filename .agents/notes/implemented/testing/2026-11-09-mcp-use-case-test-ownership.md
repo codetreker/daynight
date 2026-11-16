@@ -19,11 +19,10 @@ the direct-operation boundary used by these tests.
 ## Decision
 
 MCP tests execute the actual authenticated Entry, HTTP parser, SDK, discovery
-metadata, response envelopes and resource permits. Result fixtures are checked
-against the original internal output definitions; discovery checks verify the
-absence of `outputSchema` and the remaining tool metadata separately. The
-[private result contracts decision](../simplification/2026-11-16-private-mcp-result-contracts.md)
-records that discovery choice. Inputs and writes retain
+metadata, response envelopes and resource permits. Result fixtures directly
+assert structured results; discovery checks verify the absence of `outputSchema`
+and the remaining tool metadata separately. The [output schema removal decision](../simplification/2026-11-16-remove-mcp-output-schemas.md)
+records that validation choice. Inputs and writes retain
 their encoded boundaries; successful reads use ordinary canonical output without
 read-schema or byte admission. Consumer-owned operation contracts
 accept the existing production services directly. Tests configure operation
