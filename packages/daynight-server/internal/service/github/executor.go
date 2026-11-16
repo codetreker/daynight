@@ -54,7 +54,10 @@ var errCheckpoint = errors.New("github sync checkpoint failed")
 var errAccessStop = errors.New("github access check stopped work")
 
 type run struct {
-	e          *Executor
+	remote     Remote
+	appID      int64
+	snapshot   store.SnapshotReader
+	write      func(context.Context, func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error)
 	project    string
 	lease      store.GitHubLease
 	connection githubpr.Connection
@@ -74,7 +77,7 @@ func (e *Executor) ExecuteWithClaimContext(ctx, claimCtx context.Context, projec
 	if project == "" {
 		return errors.New("github project ID is required")
 	}
-	r := &run{e: e, project: project, lease: store.GitHubLease{Token: uuid.NewString()}}
+	r := e.newRun(project)
 	r.log = e.log.With("component", "github_sync", "project_id", project, "sync_id", r.lease.Token)
 	claimed, err := r.claim(claimCtx)
 	if err != nil || !claimed {
@@ -102,11 +105,20 @@ func (e *Executor) ExecuteWithClaimContext(ctx, claimCtx context.Context, projec
 	}
 	return err
 }
-func (r *run) tx(ctx context.Context, fn func(context.Context, store.GitHubWriteDAO) error) (store.Completion, error) {
+func (e *Executor) newRun(project string) *run {
+	return &run{remote: e.remote, appID: e.appID, snapshot: e.db, project: project,
+		lease: store.GitHubLease{Token: uuid.NewString()},
+		write: func(ctx context.Context, fn func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error) {
+			return e.db.WriteProject(ctx, project, func(s store.ProjectWriteScope) error { return fn(ctx, s.GitHubDAO()) })
+		},
+	}
+}
+
+func (r *run) tx(ctx context.Context, fn func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error) {
 	c, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 	defer cancel()
 	started := time.Now()
-	completion, err := r.e.db.WriteProject(c, r.project, func(s store.ProjectWriteScope) error { return fn(c, s.GitHubDAO()) })
+	completion, err := r.write(c, fn)
 	r.log.DebugContext(ctx, "github project transaction", "phase", "publish", "result_code", string(completion.Outcome), "duration_ms", time.Since(started).Milliseconds())
 	return completion, err
 }
@@ -124,7 +136,7 @@ func committed(c store.Completion, err error) error {
 }
 func (r *run) claim(ctx context.Context) (bool, error) {
 	var selected bool
-	completion, err := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	completion, err := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		conn, e := d.Connection(c)
 		if e != nil {
 			return e
@@ -137,7 +149,7 @@ func (r *run) claim(ctx context.Context) (bool, error) {
 		if e != nil {
 			return e
 		}
-		kind := core.WorkKind(conn, r.e.appID, now, pendingDue)
+		kind := core.WorkKind(conn, r.appID, now, pendingDue)
 		if kind == "" {
 			return nil
 		}
@@ -153,7 +165,7 @@ func (r *run) claim(ctx context.Context) (bool, error) {
 		c, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 		defer cancel()
 		var valid bool
-		readErr := r.e.db.ReadSnapshot(c, func(s store.SnapshotScope) error {
+		readErr := r.snapshot.ReadSnapshot(c, func(s store.SnapshotScope) error {
 			conn, e := s.GitHubDAO().Connection(c, r.project)
 			if e != nil {
 				return e
@@ -176,7 +188,7 @@ func (r *run) claim(ctx context.Context) (bool, error) {
 	return selected, nil
 }
 func (r *run) renew(ctx context.Context) error {
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		if _, e := d.Connection(c); e != nil {
 			return e
 		}
@@ -196,7 +208,7 @@ func (r *run) renew(ctx context.Context) error {
 	return committed(c, e)
 }
 func (r *run) runtime(ctx context.Context, change func(*store.GitHubRuntimeWrite, githubpr.Connection, time.Time)) error {
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		conn, e := d.Connection(c)
 		if e != nil {
 			return e
@@ -220,7 +232,7 @@ func (r *run) runtime(ctx context.Context, change func(*store.GitHubRuntimeWrite
 }
 func (r *run) execute(ctx context.Context) error {
 	ctx = r.checkpointContext(ctx)
-	if *r.connection.AppID != r.e.appID {
+	if *r.connection.AppID != r.appID {
 		return r.runtime(ctx, func(w *store.GitHubRuntimeWrite, c githubpr.Connection, now time.Time) {
 			core.AccessUnavailable(w, c, now, "app_changed", true)
 			w.ReleaseClaim = true

@@ -222,7 +222,8 @@ func TestAppChangeStopsWithoutRemoteReads(t *testing.T) {
 	f := newPollFixture(t)
 	f.lease = store.GitHubLease{Generation: 7, Token: "original"}
 	f.until = f.now.Add(time.Minute)
-	r := run{e: &Executor{db: f.db, remote: executorRemote{}, appID: 99, log: slog.New(slog.NewTextHandler(io.Discard, nil))}, project: testProject, lease: f.lease, connection: f.connection, kind: "access", log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	r := (&Executor{db: f.db, remote: executorRemote{}, appID: 99}).newRun(testProject)
+	r.lease, r.connection, r.kind, r.log = f.lease, f.connection, "access", slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := r.execute(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +307,7 @@ func TestRepositoryIdentityRefusalAndCancellation(t *testing.T) {
 			r := executorRemote{verify: func(context.Context, int64, string, string) (githubpr.RepositoryObservation, error) {
 				return githubpr.RepositoryObservation{}, &remote.Error{Code: "not_found", Status: 404}
 			}, resolve: tc.resolve}
-			run := run{e: &Executor{remote: r}, connection: githubpr.Connection{AppID: &app, InstallationID: &installation, RepositoryID: &repo, RepositoryFullName: &name}}
+			run := run{remote: r, connection: githubpr.Connection{AppID: &app, InstallationID: &installation, RepositoryID: &repo, RepositoryFullName: &name}}
 			_, err := run.repository(context.Background())
 			if err == nil || tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("error %v", err)
@@ -386,7 +387,8 @@ func TestAccessDatabaseFailuresPropagateWithoutCompletion(t *testing.T) {
 			f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 				return old(ctx, id, func(scope store.ProjectWriteScope) error { return work(accessFaultScope{scope, tc.fault, failure}) })
 			}
-			r := run{e: &Executor{db: f.db, remote: f.remote(), appID: 10}, project: testProject, lease: f.lease, connection: f.connection, kind: "access", log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			r := (&Executor{db: f.db, remote: f.remote(), appID: 10}).newRun(testProject)
+			r.lease, r.connection, r.kind, r.log = f.lease, f.connection, "access", slog.New(slog.NewTextHandler(io.Discard, nil))
 			var err error
 			switch tc.operation {
 			case "renew":
