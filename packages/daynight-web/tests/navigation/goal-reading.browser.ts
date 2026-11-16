@@ -2301,7 +2301,7 @@ test('Goal empty and filtered states retain their padding and restore members', 
   await expect(empty.locator('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
   const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').nth(1);
   await filter.locator('summary').click();
-  await filter.getByLabel('No tags').check();
+  await filter.getByLabel('Untagged only').check();
   await expect(card.locator('.goal-list-empty')).toHaveText('No tasks match the filters');
   for (const target of [card, empty]) {
     await expect(target.locator('.goal-list-empty')).toHaveCSS('padding', '16px 18px');
@@ -2310,7 +2310,7 @@ test('Goal empty and filtered states retain their padding and restore members', 
       return Math.abs(element.querySelector('.goal-list-empty')!.getBoundingClientRect().bottom - bounds.bottom + 1) < 0.1;
     })).toBe(true);
   }
-  await filter.getByLabel('No tags').uncheck();
+  await filter.getByLabel('Untagged only').uncheck();
   await expect(card.locator('.goal-task-list > li')).toHaveCount(3);
   await expect(card.locator('.goal-list-empty')).toHaveCount(0);
 });

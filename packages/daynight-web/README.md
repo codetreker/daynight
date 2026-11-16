@@ -1045,6 +1045,23 @@ Cards contain child rows without their own filter controls. Search results place
 the shared project tag filter directly after Status; child filtering belongs to
 the ordinary Goal view.
 
+Tag filters apply immediately. Each panel puts tag-directory search and checkbox
+choices before a separate Untagged only condition and native All selected / Any
+selected radios. Matching stays selected but disabled with fewer than two tags
+or with Untagged only. Clear filters removes tag conditions while preserving the
+directory query and matching mode; the search field has its own clear action.
+The trigger shows an active-condition badge, and removable colored chips remain
+visible when closed. Only the main filter offers the existing management entry.
+
+Panels share one control style and use a 352px desktop width capped by 16px
+visible-viewport margins. Long names wrap, the option list scrolls, and short
+viewports retain access to panel actions. Coarse-pointer targets are at least
+44 by 44px and search text is 16px. Opening focuses search; Escape returns focus
+to the trigger, while outside pointer dismissal preserves the external target's
+focus. Directory paging, retained-page errors and background revalidation keep
+query, selection and focused controls. The [picker design](../../docs/design/daynight-web.md#标签筛选选择器)
+owns positioning and state boundaries.
+
 Visible and selected Tags share their project color across the catalog, lists,
 search, details, pickers and filters. Names remain visible; loading, missing
 colors and read errors have distinct feedback. Background reads retain the last

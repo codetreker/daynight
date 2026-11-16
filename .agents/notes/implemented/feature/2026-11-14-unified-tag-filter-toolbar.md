@@ -25,10 +25,12 @@ access changes use the existing tag controller's isolation. Filtering changes
 rows, while Goal identity, progress, composition, pause and Session summaries,
 and dependency graph membership continue to use their complete scopes.
 
-Panels use a readable 285px width capped by viewport space. Positioning observes
-actual trigger and panel bounds when opened and when scrolling or resizing the window or neighboring filters,
-so a control near the toolbar's right edge does not move its panel offscreen.
-The [Web design](../../../../docs/design/daynight-web.md) owns current mechanisms.
+The original 285px panel retained a readable width while avoiding expansion of
+the wrapping toolbar. The [tag picker decision](2026-11-16-tag-filter-picker.md)
+replaces that presentation with a 352px panel bounded by the visible viewport,
+including independent choice-list and short-panel scrolling. Toolbar ownership
+and direct-child matching remain unchanged. The [Web design](../../../../docs/design/daynight-web.md)
+owns current mechanisms.
 
 This replaces the per-Goal child-condition ownership recorded in the
 [Web tag filtering decision](2026-11-13-web-tag-filter.md). Its tag matching,

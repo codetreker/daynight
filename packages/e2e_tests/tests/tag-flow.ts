@@ -55,7 +55,7 @@ export const verifyTagFlow = async (page: Page, projectId: string, serverToken: 
   await emptyCard.locator(".goal-list-toggle").click();
   await expect(emptyCard.locator(".tag-filter")).toHaveCount(0);
   await filter.locator("summary").click();
-  await expect(filter.getByText("No tags yet.", { exact: true })).toBeVisible();
+  await expect(filter.getByText("No project tags yet.", { exact: true })).toBeVisible();
   await expect(filter.getByText("Could not load tags.", { exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(filter).not.toHaveAttribute("open", "");
@@ -162,7 +162,7 @@ export const verifyTagFlow = async (page: Page, projectId: string, serverToken: 
   await filter.getByRole("checkbox", { name: "Backend" }).check();
   await expect(child).toBeVisible();
   await expect(control).toHaveCount(0);
-  await filter.getByRole("button", { name: "Clear", exact: true }).click();
+  await filter.getByRole("button", { name: "Clear filters", exact: true }).click();
   await expect(control).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(filter).not.toHaveAttribute("open", "");

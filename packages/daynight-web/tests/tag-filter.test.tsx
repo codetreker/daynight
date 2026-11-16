@@ -7,6 +7,8 @@ import { LocaleProvider } from '../src/i18n/LocaleProvider';
 
 const data = vi.hoisted(() => ({
   catalogActive: vi.fn(),
+  catalogError: null as unknown, catalogLoading: false, catalogHasPage: true, catalogCursor: null as string | null,
+  refresh: vi.fn(), first: vi.fn(), next: vi.fn(),
   listeners: new Set<(event: { projectId: string; directAccessUncertain?: boolean; accessRevoked?: boolean; accessRestored?: boolean }) => void>(),
   scope: { userId: 'user', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), markProjectReadable: vi.fn(), isProjectSuspended: vi.fn().mockReturnValue(false), ready: vi.fn().mockResolvedValue(undefined), subscribe: vi.fn(), subscribeTagColors: vi.fn(() => () => {}) },
   page: { items: [{ id: 'a', name: 'bug' }, { id: 'b', name: 'backend' }], catalogEpoch: 'one', nextCursor: null as string | null },
@@ -18,7 +20,7 @@ vi.mock('../src/features/task-tags/useProjectTags', async () => {
   return { useProjectTags: (_project: string, active: boolean) => {
     data.catalogActive(active);
     const [query, setQuery] = useState('');
-    return { page: { ...data.page, items: data.page.items.filter(tag => tag.name.includes(query)) }, cursor: null, query, loading: false, refreshing: false, error: null, setQuery, refresh: vi.fn(), first: vi.fn(), next: vi.fn() };
+    return { page: data.catalogHasPage ? { ...data.page, items: data.page.items.filter(tag => tag.name.includes(query)) } : null, cursor: data.catalogCursor, query, loading: data.catalogLoading, refreshing: false, error: data.catalogError, setQuery, refresh: data.refresh, first: data.first, next: data.next };
   } };
 });
 const Harness = ({ child = false, onManage }: { child?: boolean; onManage?: () => void }) => {
@@ -28,6 +30,8 @@ const Harness = ({ child = false, onManage }: { child?: boolean; onManage?: () =
 const setup = (child = false) => render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness child={child} /></LocaleProvider>);
 beforeEach(() => {
   data.listeners.clear(); data.catalogActive.mockClear(); data.scope.isProjectSuspended.mockReturnValue(false); data.scope.ready.mockReset().mockResolvedValue(undefined);
+  data.catalogError = null; data.catalogLoading = false; data.catalogHasPage = true; data.catalogCursor = null;
+  data.refresh.mockClear(); data.first.mockClear(); data.next.mockClear();
   data.scope.subscribe.mockImplementation(listener => { data.listeners.add(listener); return () => data.listeners.delete(listener); });
   data.page = { items: [{ id: 'a', name: 'bug' }, { id: 'b', name: 'backend' }], catalogEpoch: 'one', nextCursor: null };
   vi.mocked(resolveProjectTags).mockReset().mockImplementation(async (_project, ids) => ids.map(id => ({ id, name: id === 'a' ? 'bug' : 'backend' })));
@@ -48,43 +52,126 @@ it('keeps the picker open and query while choosing tags, switches modes and clea
   const picker = screen.getByText('Tag filter', { selector: 'summary' }).closest('details')!;
   fireEvent.click(within(picker).getByLabelText('bug'));
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
-  fireEvent.change(within(picker).getByLabelText('Tag filter: AND / OR'), { target: { value: 'any' } });
-  fireEvent.change(within(picker).getByLabelText('Tag filter: Search tags'), { target: { value: 'back' } });
   fireEvent.click(within(picker).getByLabelText('backend'));
+  fireEvent.click(within(picker).getByRole('radio', { name: 'Any selected' }));
+  fireEvent.change(within(picker).getByLabelText('Tag filter: Find tags'), { target: { value: 'back' } });
   expect(picker).toHaveAttribute('open');
-  expect(within(picker).getByLabelText('Tag filter: Search tags')).toHaveValue('back');
+  expect(within(picker).getByLabelText('Tag filter: Find tags')).toHaveValue('back');
   expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["a","b"]');
-  fireEvent.click(within(picker).getByLabelText('No tags'));
+  fireEvent.click(within(picker).getByLabelText('Untagged only'));
   expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":[]');
   expect(screen.getByTestId('value')).toHaveTextContent('"untagged":true');
   fireEvent.click(within(picker).getByLabelText('backend'));
   expect(screen.getByTestId('value')).toHaveTextContent('"untagged":false');
-  fireEvent.click(within(picker).getByRole('button', { name: 'Clear' }));
+  fireEvent.click(within(picker).getByRole('button', { name: 'Clear filters' }));
   expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":[]');
   expect(screen.getByTestId('value')).toHaveTextContent('"tagMatch":"any"');
 });
 
-it('preserves the panel for prevented, composing and open native popup Escape events', () => {
+it('preserves the panel for prevented and composing Escape events and restores focus on dismissal', () => {
   setup();
   const summary = screen.getByText('Tag filter', { selector: 'summary' });
   fireEvent.click(summary);
   const picker = summary.closest('details')!;
-  const select = within(picker).getByLabelText('Tag filter: AND / OR');
+  const search = within(picker).getByRole('searchbox');
+  expect(search).toHaveFocus();
   const composing = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true });
-  fireEvent(select, composing);
+  fireEvent(search, composing);
   expect(picker).toHaveAttribute('open');
   const prevented = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-  prevented.preventDefault(); fireEvent(select, prevented);
+  prevented.preventDefault(); fireEvent(search, prevented);
   expect(picker).toHaveAttribute('open');
-  const matches = vi.spyOn(select, 'matches').mockReturnValue(true);
-  const popup = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-  fireEvent(select, popup);
-  expect(popup.defaultPrevented).toBe(false);
-  expect(picker).toHaveAttribute('open');
-  matches.mockRestore();
-  fireEvent.keyDown(select, { key: 'Escape' });
+  fireEvent.keyDown(search, { key: 'Escape' });
   expect(picker).not.toHaveAttribute('open');
   expect(summary).toHaveFocus();
+});
+
+it('enables matching only for multiple selected tags and retains its value when disabled', () => {
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  const any = screen.getByRole('radio', { name: 'Any selected' });
+  expect(any).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Clear filters' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'bug' }));
+  expect(any).toBeDisabled();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'backend' }));
+  expect(any).toBeEnabled(); fireEvent.click(any);
+  fireEvent.click(screen.getByRole('checkbox', { name: 'bug' }));
+  expect(any).toBeDisabled(); expect(any).toBeChecked();
+  expect(screen.getByRole('group', { name: 'Match' })).toHaveAccessibleDescription('Choose at least two tags to change matching.');
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Untagged only' }));
+  expect(any).toBeDisabled(); expect(any).toBeChecked();
+  expect(screen.getByRole('group', { name: 'Match' })).toHaveAccessibleDescription('Matching does not apply to untagged items.');
+});
+
+it('clears only the tag search and restores its focus without changing selected conditions', () => {
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'bug' }));
+  const search = screen.getByRole('searchbox');
+  fireEvent.change(search, { target: { value: 'absent' } });
+  expect(screen.getByText('No matching tags.')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear tag search' }));
+  expect(search).toHaveValue(''); expect(search).toHaveFocus();
+  expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["a"]');
+  expect(screen.getByRole('checkbox', { name: 'bug' })).toBeChecked();
+  fireEvent.change(search, { target: { value: 'absent' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+  expect(search).toHaveValue('');
+  expect(screen.getByRole('checkbox', { name: 'bug' })).toBeChecked();
+});
+
+it('dismisses outside the filter while retaining its query and conditions for reopening', () => {
+  setup(); const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  fireEvent.click(summary); fireEvent.click(screen.getByRole('checkbox', { name: 'bug' }));
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'back' } });
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'Server invalid' }));
+  expect(summary.closest('details')).not.toHaveAttribute('open');
+  expect(summary).not.toHaveFocus();
+  fireEvent.click(summary);
+  expect(screen.getByRole('searchbox')).toHaveValue('back');
+  expect(screen.getByRole('searchbox')).toHaveFocus();
+  expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["a"]');
+});
+
+it('retains cached choices and the active search when catalog revalidation fails', () => {
+  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'bug' }));
+  const search = screen.getByRole('searchbox');
+  fireEvent.change(search, { target: { value: 'back' } }); search.focus();
+  data.catalogError = new ApiError('network');
+  view.rerender(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness /></LocaleProvider>);
+  expect(screen.getByRole('searchbox')).toBe(search); expect(search).toHaveFocus(); expect(search).toHaveValue('back');
+  expect(screen.getByRole('checkbox', { name: 'backend' })).toBeVisible();
+  expect(screen.getByText('Could not load tags.')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(data.refresh).toHaveBeenCalledOnce(); expect(search).toHaveValue('back');
+  expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["a"]');
+});
+
+it('presents initial loading and read failures without claiming an empty catalog', () => {
+  data.catalogHasPage = false; data.catalogLoading = true;
+  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  expect(screen.getByText('Loading tags…')).toBeVisible();
+  expect(screen.getByRole('checkbox', { name: 'Untagged only' })).toBeEnabled();
+  data.catalogLoading = false; data.catalogError = new ApiError('network');
+  view.rerender(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness /></LocaleProvider>);
+  expect(screen.getByText('Could not load tags.')).toBeVisible();
+  expect(screen.queryByText('No project tags yet.')).not.toBeInTheDocument();
+});
+
+it('keeps selection while using catalog pagination actions', () => {
+  data.page.nextCursor = 'next';
+  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'bug' }));
+  expect(screen.getByRole('button', { name: 'First page' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+  expect(data.next).toHaveBeenCalledOnce();
+  data.catalogCursor = 'next'; data.page = { ...data.page, items: [{ id: 'b', name: 'backend' }], nextCursor: null };
+  view.rerender(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness /></LocaleProvider>);
+  expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'First page' }));
+  expect(data.first).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Remove bug' })).toBeVisible();
+  expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["a"]');
 });
 
 it('retains the selected name and condition when a later catalog epoch reports deletion', async () => {

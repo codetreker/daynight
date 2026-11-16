@@ -18,7 +18,15 @@ const time = '2026-10-22T10:00:00Z';
 const taskRow = (link: Locator) => link.locator('..').locator('..').locator('..');
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
+  const state = {
+    tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[],
+    tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags),
+    hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {},
+    holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, catalogError: false,
+    catalogPageSize: null as number | null, catalogEpoch: id(999), catalogReads: [] as { query: string; cursor: string | null }[],
+    writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time,
+    colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]),
+  };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -34,17 +42,24 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Reader', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     const catalogPath = `/api/v1/projects/${projectId}/tags`;
     if (path === catalogPath && request.method() === 'GET') {
+      const query = url.searchParams.get('query')?.toLowerCase() ?? '', cursor = url.searchParams.get('cursor');
+      state.catalogReads.push({ query, cursor });
       if (state.holdCatalog) { state.holdCatalog = false; state.heldCatalog = true; await new Promise<void>(resolve => { state.releaseCatalog = resolve; }); state.heldCatalog = false; }
-      const query = url.searchParams.get('query')?.toLowerCase() ?? '';
-      return send({ items: state.tags.filter(tag => tag.name.toLowerCase().includes(query)).map(tag => ({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: id(999), nextCursor: null });
+      if (state.catalogError) return send({ error: { code: 'internal_error', message: 'Catalog unavailable', requestId: 'fixture' } }, 500);
+      const matching = state.tags.filter(tag => tag.name.toLowerCase().includes(query));
+      const offset = cursor === null ? 0 : state.catalogPageSize!;
+      const items = state.catalogPageSize === null ? matching : matching.slice(offset, offset + state.catalogPageSize);
+      const nextCursor = state.catalogPageSize !== null && offset + items.length < matching.length ? 'catalog-page-2' : null;
+      return send({ items: items.map(tag => ({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: state.catalogEpoch, nextCursor });
     }
     if (path === `${catalogPath}/colors/resolve` && request.method() === 'POST') {
       const body = request.postDataJSON() as { tagIds: string[]; catalogEpoch?: string };
-      if (body.catalogEpoch && body.catalogEpoch !== id(999)) return send({ error: { code: 'catalog_changed', message: 'Changed', requestId: 'fixture' } }, 409);
-      return send({ catalogEpoch: id(999), items: body.tagIds.map(tagId => state.tags.some(tag => tag.id === tagId) ? { id: tagId, state: 'found', version: 1, color: state.colors.get(tagId) ?? '#9AA3B2' } : { id: tagId, state: 'missing' }) });
+      if (body.catalogEpoch && body.catalogEpoch !== state.catalogEpoch) return send({ error: { code: 'catalog_changed', message: 'Changed', requestId: 'fixture' } }, 409);
+      return send({ catalogEpoch: state.catalogEpoch, items: body.tagIds.map(tagId => state.tags.some(tag => tag.id === tagId) ? { id: tagId, state: 'found', version: 1, color: state.colors.get(tagId) ?? '#9AA3B2' } : { id: tagId, state: 'missing' }) });
     }
     if (path === `${catalogPath}/resolve` && request.method() === 'POST') {
       const body = request.postDataJSON() as { tagIds: string[] };
+      if (body.tagIds.some(tagId => !state.tags.some(tag => tag.id === tagId))) return send({ error: { code: 'tag_not_found', message: 'Tag unavailable', requestId: 'fixture' } }, 404);
       return send({ items: state.tags.filter(tag => body.tagIds.includes(tag.id)) });
     }
     if (path === catalogPath && request.method() === 'POST') {
@@ -124,6 +139,15 @@ async function assertSummary(summary: Locator, names: readonly string[], viewpor
   expect(await summary.page().evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewportWidth);
   return boxes;
 }
+
+const openProjectTagFilter = async (page: Page) => {
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  await filter.locator('summary').click();
+  return filter;
+};
 
 for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) for (const kind of ['task', 'goal'] as const) test(`detail tag summary wraps independently at ${width}px in ${locale} for ${kind}`, async ({ page }) => {
   const state = await install(page, locale), target = kind === 'task' ? standalone : goal;
@@ -364,7 +388,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`long Goal and child tags do
 });
 
 
-for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
+for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
   const state = await install(page, locale);
   const childLongName = `${longName}X`;
   state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, tags: [{ id: id(93), name: childLongName }] } : item);
@@ -404,7 +428,7 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await expect(main).toHaveAttribute('open', '');
   await expect.poll(async () => {
     const bounds = await main.locator('.tag-filter-panel').boundingBox();
-    return bounds !== null && bounds.width >= Math.min(285, width - 32) && bounds.x >= 0 && bounds.x + bounds.width <= width + 1;
+    return bounds !== null && bounds.width === Math.min(352, width - 32) && bounds.x >= 16 && bounds.x + bounds.width <= width - 15;
   }).toBe(true);
   await page.keyboard.press('Escape'); await expect(mainTrigger).toBeFocused();
   const card = page.locator(`[data-goal-id="${goal.id}"]`);
@@ -414,17 +438,13 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await trigger.focus(); await page.keyboard.press('Enter');
   await expect(filter).toHaveAttribute('open', '');
   const search = filter.locator('input[type="search"]');
-  await search.focus(); await search.fill('Unbroken');
+  await expect(search).toBeFocused(); await search.fill('Unbroken');
   await expect(filter.getByText(childLongName, { exact: true })).toBeVisible();
   const option = filter.getByLabel(childLongName); await option.check();
-  await checkSelect(filter);
-  const match = filter.locator('select');
-  const arrow = filter.locator('.native-select__arrow');
-  const arrowBox = (await arrow.boundingBox())!;
-  await page.mouse.click(arrowBox.x + arrowBox.width / 2, arrowBox.y + arrowBox.height / 2);
-  await expect.poll(() => match.evaluate(element => element.matches(':open'))).toBe(true);
-  await page.keyboard.press('Escape');
-  await expect.poll(() => match.evaluate(element => element.matches(':open'))).toBe(false);
+  await expect(filter.getByRole('radio', { name: locale === 'zh-CN' ? '全部满足' : 'All selected' })).toBeChecked();
+  await expect(filter.getByRole('radio', { name: locale === 'zh-CN' ? '满足任一' : 'Any selected' })).toBeDisabled();
+  await expect(filter.locator('select')).toHaveCount(0);
+  await expect(trigger.locator('.tag-filter-count')).toHaveText('1');
   await expect(filter).toHaveAttribute('open', '');
   await expect(search).toHaveValue('Unbroken'); await expect(option).toBeChecked();
   await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
@@ -438,8 +458,6 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await expect(filter).toHaveAttribute('open', '');
   await expect(option).toBeChecked();
   await page.locator('#project-task-tab-standalone').click(); await page.locator('#project-task-tab-goals').click();
-  await expect(filter).toHaveAttribute('open', '');
-  await trigger.focus(); await page.keyboard.press('Escape');
   await expect(filter).not.toHaveAttribute('open', '');
   await card.locator('.goal-list-toggle').click();
   await expect(option).toBeChecked();
@@ -447,10 +465,13 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await trigger.focus(); await page.keyboard.press('Enter');
   await expect(filter).toHaveAttribute('open', '');
   await search.focus(); await search.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 4));
+  const searchNode = await search.elementHandle();
+  const optionNode = await option.elementHandle();
   const bounds = await filter.locator('.tag-filter-panel').boundingBox();
   expect(bounds).not.toBeNull(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width + 1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   state.holdCatalog = true;
+  const catalogResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tags`);
   try {
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await expect.poll(() => state.heldCatalog).toBe(true);
@@ -459,7 +480,12 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
     await expect(option).toBeChecked();
     await expect(card.locator(`#chain-task-goal-${goal.id}-${child.id}`)).toBeVisible();
     state.releaseCatalog();
+    await (await catalogResponse).finished();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    await expect.poll(() => state.heldCatalog).toBe(false);
     await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
+    expect(await search.evaluate((element, before) => element === before, searchNode)).toBe(true);
+    expect(await option.evaluate((element, before) => element === before, optionNode)).toBe(true);
     await page.keyboard.press('Escape'); await expect(trigger).toBeFocused(); await expect(filter).not.toHaveAttribute('open', '');
   } finally { state.releaseCatalog(); }
   const input = page.locator('.task-search-form input[type="text"]');
@@ -475,6 +501,132 @@ for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await expect(filter).toHaveAttribute('open', '');
   await expect(filter.locator('input[type="search"]')).toHaveValue('Unbroken');
   await expect(filter.getByLabel(childLongName)).toBeChecked();
+});
+
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filter picker separates search and filter actions at ${width}px in ${locale}`, async ({ page }, testInfo) => {
+  const state = await install(page, locale), zh = locale === 'zh-CN';
+  await page.setViewportSize({ width, height: 800 });
+  const filter = await openProjectTagFilter(page), wrapper = filter.locator('..');
+  const search = filter.getByRole('searchbox');
+  const clear = filter.getByRole('button', { name: zh ? '清空筛选' : 'Clear filters', exact: true });
+  const all = filter.getByRole('radio', { name: zh ? '全部满足' : 'All selected' });
+  const any = filter.getByRole('radio', { name: zh ? '满足任一' : 'Any selected' });
+  const untagged = filter.getByRole('checkbox', { name: zh ? '仅无标签' : 'Untagged only' });
+  await expect(search).toBeFocused(); await expect(clear).toBeDisabled(); await expect(any).toBeDisabled();
+  await filter.getByRole('checkbox', { name: longName, exact: true }).check();
+  await expect(any).toBeDisabled();
+  await filter.getByRole('checkbox', { name: 'Another label', exact: true }).check();
+  await expect(filter.locator('.tag-filter-count')).toHaveText('2');
+  await expect(any).toBeEnabled(); await all.focus(); await page.keyboard.press('ArrowRight');
+  await expect(any).toBeChecked(); await expect(any).toBeFocused();
+  await expect(page.locator(`#standalone-task-${standalone.id}`)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('tag-filter-picker.png'), fullPage: true });
+  await search.fill('tag AND todo');
+  await expect(filter.getByRole('status')).toContainText(zh ? '没有找到匹配的标签' : 'No matching tags');
+  await expect(wrapper.locator('.tag-filter-selected .task-tag')).toHaveCount(2);
+  await filter.getByRole('button', { name: zh ? '清空查找词' : 'Clear tag search', exact: true }).click();
+  await expect(search).toHaveValue(''); await expect(search).toBeFocused(); await expect(any).toBeChecked();
+  await expect(filter.getByRole('checkbox', { name: longName, exact: true })).toBeChecked();
+  await search.fill('Another'); await clear.click();
+  await expect(search).toHaveValue('Another'); await expect(any).toBeChecked(); await expect(any).toBeDisabled();
+  await expect(clear).toBeDisabled(); await expect(wrapper.locator('.tag-filter-selected')).toHaveCount(0);
+  await filter.getByRole('button', { name: zh ? '清空查找词' : 'Clear tag search', exact: true }).click();
+  await untagged.check(); await expect(filter.locator('.tag-filter-count')).toHaveText('1');
+  await filter.getByRole('checkbox', { name: 'Another label', exact: true }).check();
+  await expect(untagged).not.toBeChecked();
+  const status = page.locator('.project-tasks .task-list-filters:visible .task-status-filter select');
+  await status.click(); await expect(filter).not.toHaveAttribute('open', ''); await expect(status).toBeFocused();
+  await page.keyboard.press('Escape');
+  expect(state.writes).toEqual([]);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`tag filter catalog preserves selected pages and retry state in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale), zh = locale === 'zh-CN';
+  state.catalogPageSize = 3; state.holdCatalog = true;
+  const filter = await openProjectTagFilter(page), wrapper = filter.locator('..'), search = filter.getByRole('searchbox');
+  try {
+    await expect.poll(() => state.heldCatalog).toBe(true);
+    await expect(filter.getByRole('status')).toContainText(zh ? '正在读取标签' : 'Loading tags');
+    await expect(search).toBeFocused();
+  } finally { state.releaseCatalog(); }
+  await filter.getByRole('checkbox', { name: longName, exact: true }).check();
+  await filter.getByRole('checkbox', { name: 'Another label', exact: true }).check();
+  await filter.getByRole('button', { name: zh ? '下一页' : 'Next page', exact: true }).click();
+  await expect(filter.getByRole('checkbox', { name: 'Child label', exact: true })).toBeVisible();
+  await expect(wrapper.locator('.tag-filter-selected .task-tag')).toHaveCount(2);
+  await expect(filter.getByRole('checkbox', { name: longName, exact: true })).toHaveCount(0);
+  const before = state.catalogReads.length;
+  state.holdCatalog = true;
+  await search.focus();
+  try {
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(() => state.heldCatalog).toBe(true);
+    await expect(search).toBeFocused(); await expect(filter.getByRole('checkbox', { name: 'Child label', exact: true })).toBeVisible();
+    state.releaseCatalog();
+    await expect.poll(() => state.catalogReads.length).toBeGreaterThanOrEqual(before + 2);
+    await expect(filter.getByRole('checkbox', { name: 'Child label', exact: true })).toBeVisible();
+    expect(state.catalogReads.at(-1)?.cursor).toBe('catalog-page-2');
+  } finally { state.releaseCatalog(); }
+  await search.fill('Child'); await expect(filter.getByRole('checkbox', { name: 'Child label', exact: true })).toBeVisible();
+  await expect.poll(() => state.catalogReads.at(-1)?.query).toBe('child');
+  expect(state.catalogReads.at(-1)?.cursor).toBeNull();
+  state.catalogError = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(filter.getByRole('alert')).toContainText(zh ? '无法读取标签' : 'Could not load tags');
+  await expect(filter.getByRole('checkbox', { name: 'Child label', exact: true })).toBeVisible();
+  await expect(wrapper.locator('.tag-filter-selected .task-tag')).toHaveCount(2);
+  state.catalogError = false;
+  await filter.getByRole('button', { name: zh ? '重试' : 'Retry', exact: true }).click();
+  await expect(filter.getByRole('alert')).toHaveCount(0); await expect(search).toHaveValue('Child');
+  state.catalogEpoch = id(998); state.tags = state.tags.filter(tag => tag.id !== id(91));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(wrapper.getByRole('alert').filter({ hasText: zh ? '选中的标签已不可用' : 'A selected tag is unavailable' })).toBeVisible();
+  await expect(wrapper.locator('.tag-filter-selected .task-tag').filter({ hasText: longName })).toContainText(zh ? '已不可用' : 'unavailable');
+  await wrapper.getByRole('button', { name: `${zh ? '移除' : 'Remove'} ${longName}`, exact: true }).click();
+  await expect(wrapper.locator('.tag-filter-selected .task-tag')).toHaveCount(1);
+  await expect(wrapper.getByRole('alert').filter({ hasText: zh ? '选中的标签已不可用' : 'A selected tag is unavailable' })).toHaveCount(0);
+  await filter.getByRole('button', { name: zh ? '清空筛选' : 'Clear filters', exact: true }).click();
+  state.tags = []; state.catalogEpoch = id(997);
+  await filter.getByRole('button', { name: zh ? '清空查找词' : 'Clear tag search', exact: true }).click();
+  await expect(filter.getByRole('status')).toContainText(zh ? '项目中还没有标签' : 'No project tags yet');
+  await expect(filter.getByRole('checkbox', { name: zh ? '仅无标签' : 'Untagged only' })).toBeEnabled();
+  await expect(filter.getByRole('button', { name: zh ? '管理标签' : 'Manage tags', exact: true })).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
+test.describe('coarse tag filter controls', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 320, height: 800 } });
+  for (const locale of ['en', 'zh-CN'] as const) test(`remain reachable within a reduced visible viewport in ${locale}`, async ({ page }, testInfo) => {
+    const state = await install(page, locale), zh = locale === 'zh-CN';
+    const filter = await openProjectTagFilter(page), panel = filter.locator('.tag-filter-panel'), search = filter.getByRole('searchbox');
+    await filter.getByRole('checkbox', { name: longName, exact: true }).check();
+    await filter.getByRole('checkbox', { name: 'Another label', exact: true }).check();
+    const controls = panel.locator('button:visible, label:visible');
+    for (const control of await controls.all()) {
+      const box = (await control.boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+    await expect(search).toHaveCSS('font-size', '16px');
+    const bounds = (await panel.boundingBox())!;
+    expect(bounds.x).toBe(16); expect(bounds.width).toBe(288);
+    await page.screenshot({ path: testInfo.outputPath('tag-filter-touch.png'), fullPage: true });
+    await page.evaluate(() => {
+      const viewport = window.visualViewport!;
+      Object.defineProperty(viewport, 'height', { configurable: true, get: () => 320 });
+      Object.defineProperty(viewport, 'offsetTop', { configurable: true, get: () => 100 });
+      viewport.dispatchEvent(new Event('resize'));
+    });
+    await expect.poll(async () => {
+      const box = (await panel.boundingBox())!;
+      return { top: box.y, bottom: box.y + box.height, fits: box.y >= 116 && box.y + box.height <= 404 };
+    }).toMatchObject({ fits: true });
+    const manage = filter.getByRole('button', { name: zh ? '管理标签' : 'Manage tags', exact: true });
+    await manage.scrollIntoViewIfNeeded();
+    const action = (await manage.boundingBox())!;
+    expect(action.y).toBeGreaterThanOrEqual(116); expect(action.y + action.height).toBeLessThanOrEqual(404);
+    await page.keyboard.press('Escape'); await expect(filter.locator('summary')).toBeFocused();
+    expect(state.writes).toEqual([]);
+  });
 });
 
 for (const width of [1100, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`edit Task and Goal tags with keyboard and retain independently created tags at ${width}px in ${locale}`, async ({ page }) => {
