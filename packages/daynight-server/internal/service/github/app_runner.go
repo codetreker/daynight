@@ -12,6 +12,13 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
+const runnerWorkers = 4
+const runnerCandidates = 32
+
+type projectExecutor interface {
+	ExecuteWithClaimContext(context.Context, context.Context, string) error
+}
+
 // AppRunner discovers due Projects and runs at most four independent executors.
 // Construction does not start background work.
 type AppRunner struct {

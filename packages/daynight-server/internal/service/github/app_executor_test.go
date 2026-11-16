@@ -29,6 +29,16 @@ type appExecutionDAO struct {
 
 func (d appExecutionDAO) Identity() store.GitHubAppWorkIdentity { return d.identity }
 
+type noClaimDAO struct {
+	store.GitHubAppWorkDAO
+	t *testing.T
+}
+
+func (d noClaimDAO) Claim(context.Context, store.GitHubClaim) (bool, error) {
+	d.t.Fatal("claimed work that is not due")
+	return false, nil
+}
+
 type appClientFunc func(context.Context, string, int64) (*remote.Client, func(), error)
 
 func (f appClientFunc) Acquire(ctx context.Context, id string, version int64) (*remote.Client, func(), error) {
@@ -46,8 +56,8 @@ func appFixtureStore(t *testing.T, f *pollFixture) appExecutionStore {
 		if expected != nil && *expected != executionIdentity {
 			t.Fatalf("original authorization changed: %+v", expected)
 		}
-		return f.db.WriteProject(ctx, project, func(s store.ProjectWriteScope) error {
-			return fn(appExecutionDAO{GitHubWorkDAO: s.GitHubDAO(), identity: executionIdentity})
+		return f.db.WriteWork(ctx, project, func(dao store.GitHubWorkDAO) error {
+			return fn(appExecutionDAO{GitHubWorkDAO: dao, identity: executionIdentity})
 		})
 	}}
 }
@@ -117,6 +127,32 @@ func TestAppExecutorIdleAndProviderFailure(t *testing.T) {
 	}))
 	if err := e.Execute(context.Background(), testProject); !errors.Is(err, cause) {
 		t.Fatalf("provider failure: %v", err)
+	}
+}
+
+func TestAppExecutorEnabledWithoutDueWorkDoesNotClaim(t *testing.T) {
+	f := newPollFixture(t)
+	next := f.now.Add(time.Minute)
+	f.connection.NextPollAt = &next
+	db := appFixtureStore(t, f)
+	write := db.write
+	db.write = func(ctx context.Context, project string, expected *store.GitHubAppWorkIdentity, fn func(store.GitHubAppWorkDAO) error) (store.Completion, error) {
+		if expected != nil {
+			t.Fatal("started a work transaction without a claim")
+		}
+		return write(ctx, project, expected, func(dao store.GitHubAppWorkDAO) error {
+			return fn(noClaimDAO{GitHubAppWorkDAO: dao, t: t})
+		})
+	}
+	e := appExecutor(t, db, appClientFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
+		t.Fatal("borrowed a client without due work")
+		return nil, nil, nil
+	}))
+	if err := e.Execute(context.Background(), testProject); err != nil {
+		t.Fatal(err)
+	}
+	if f.transactions != 1 || f.lease.Token != "" || len(f.runtimes) != 0 || len(f.publications) != 0 {
+		t.Fatalf("unexpected work: transactions=%d lease=%+v runtimes=%d publications=%d", f.transactions, f.lease, len(f.runtimes), len(f.publications))
 	}
 }
 

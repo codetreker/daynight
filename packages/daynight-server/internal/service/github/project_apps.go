@@ -94,7 +94,7 @@ func (m *ProjectAppManager) Discover(ctx context.Context, p model.Principal, id 
 		return core.InstallationCandidate{}, err
 	}
 	defer release()
-	proof := &Manager{remote: client}
+	proof := &repositoryProof{remote: client}
 	// The shared discovery mechanism follows a retained numeric repository ID,
 	// including renamed repositories and replacement App installations.
 	out, err := proof.discoverSnapshot(ctx, managementSnapshot{project: f.Project, connection: f.Connection})
@@ -136,7 +136,7 @@ func (m *ProjectAppManager) Connect(ctx context.Context, p model.Principal, id s
 		return core.ProjectAppStatus{}, err
 	}
 	defer release()
-	proof := &Manager{remote: client}
+	proof := &repositoryProof{remote: client}
 	var candidate core.InstallationCandidate
 	if f.Connection.RepositoryID != nil {
 		candidate, err = proof.proofBound(ctx, in.InstallationID, *f.Connection.RepositoryID)

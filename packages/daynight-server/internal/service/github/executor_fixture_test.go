@@ -14,13 +14,13 @@ import (
 // Captured writes are proposals, not evidence of persistence.
 type executorStore struct {
 	t        *testing.T
-	write    func(context.Context, string, func(store.ProjectWriteScope) error) (store.Completion, error)
+	write    func(context.Context, string, func(store.GitHubWorkDAO) error) (store.Completion, error)
 	snapshot func(context.Context, func(store.SnapshotScope) error) error
 }
 
-func (s *executorStore) WriteProject(ctx context.Context, id string, f func(store.ProjectWriteScope) error) (store.Completion, error) {
+func (s *executorStore) WriteWork(ctx context.Context, id string, f func(store.GitHubWorkDAO) error) (store.Completion, error) {
 	if s.write == nil {
-		s.t.Fatal("unexpected WriteProject")
+		s.t.Fatal("unexpected WriteWork")
 	}
 	return s.write(ctx, id, f)
 }
@@ -31,13 +31,6 @@ func (s *executorStore) ReadSnapshot(ctx context.Context, f func(store.SnapshotS
 	}
 	return s.snapshot(ctx, f)
 }
-
-type executorWriteScope struct {
-	store.ProjectWriteScope
-	dao store.GitHubWriteDAO
-}
-
-func (s executorWriteScope) GitHubDAO() store.GitHubWriteDAO { return s.dao }
 
 type executorSnapshotScope struct {
 	store.SnapshotScope
@@ -65,7 +58,7 @@ func (d executorReadDAO) PullRequest(ctx context.Context, id string, n int64) (g
 }
 
 type executorWriteDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	connection func(context.Context) (githubpr.Connection, error)
 	clock      func(context.Context) (time.Time, error)
 	due        func(context.Context, time.Time) (bool, error)

@@ -28,7 +28,6 @@ type pollFixture struct {
 	renews         int
 	transactions   int
 	unknownPublish bool
-	unknownClaim   bool
 	unknownRenewAt int
 	unknownThis    bool
 	lost           bool
@@ -48,7 +47,7 @@ func newPollFixture(t *testing.T) *pollFixture {
 	name, login := "owner/repo", "owner"
 	f := &pollFixture{t: t, now: now, workKind: "poll", connection: githubpr.Connection{ProjectID: testProject, Enabled: true, SyncEnabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, RepositoryFullName: &name, InstallationAccountLogin: &login, Generation: 7, Revision: 8, AccessState: "available", PollIntervalMinutes: 5, NextPollAt: &now}}
 	f.db = &executorStore{t: t}
-	f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
+	f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
 		if id != testProject {
 			t.Fatalf("project = %q", id)
 		}
@@ -72,7 +71,6 @@ func newPollFixture(t *testing.T) *pollFixture {
 				t.Fatalf("invalid claim: %+v", c)
 			}
 			f.lease, f.until = store.GitHubLease{Generation: c.Generation, Token: c.Token}, c.Until
-			f.unknownThis = f.unknownClaim
 			return true, nil
 		}
 		checkLease := func(l store.GitHubLease) {
@@ -163,7 +161,7 @@ func newPollFixture(t *testing.T) *pollFixture {
 			f.runtimes = append(f.runtimes, w)
 			return !f.lost, nil
 		}
-		err := work(executorWriteScope{dao: d})
+		err := work(d)
 		if f.unknownThis {
 			return store.Completion{Outcome: store.TransactionUnknown}, errors.New("commit response lost")
 		}
@@ -179,13 +177,24 @@ func observation(n int64, state string, now time.Time) githubpr.Observation {
 	return githubpr.Observation{Number: n, GitHubID: 1000 + n, URL: fmt.Sprintf("https://github.com/owner/repo/pull/%d", n), Title: fmt.Sprintf("PR %d", n), State: state, BaseRepositoryID: 30, BaseRef: "main", HeadSHA: "sha", CreatedAt: now, UpdatedAt: now}
 }
 
-func (f *pollFixture) run(r executorRemote) error {
+// A claimed run is supplied directly so these tests exercise the production
+// poll, hint and access algorithms independently of App admission.
+func (f *pollFixture) preparedRun(remote Remote) *run {
 	f.t.Helper()
-	exec, err := NewExecutor(f.db, r, 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		f.t.Fatal(err)
+	if f.lease.Token == "" {
+		f.lease = store.GitHubLease{Generation: f.connection.Generation, Token: "claimed-token"}
+		f.until = f.now.Add(5 * time.Minute)
 	}
-	return exec.Execute(context.Background(), testProject)
+	return &run{remote: remote, appID: 10, snapshot: f.db, project: testProject,
+		lease: f.lease, connection: f.connection, kind: f.workKind,
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		write: func(ctx context.Context, fn func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error) {
+			return f.db.WriteWork(ctx, testProject, func(dao store.GitHubWorkDAO) error { return fn(ctx, dao) })
+		},
+	}
+}
+func (f *pollFixture) run(r executorRemote) error {
+	return f.preparedRun(r).execute(context.Background())
 }
 
 func (f *pollFixture) remote() executorRemote {
@@ -461,48 +470,6 @@ func TestExecutorRateLimitUsesLaterRetry(t *testing.T) {
 	}
 }
 
-func TestExecutorUnknownClaimRequiresExactReadback(t *testing.T) {
-	for _, mode := range []string{"different-token", "sync-disabled", "matches"} {
-		t.Run(mode, func(t *testing.T) {
-			f := newPollFixture(t)
-			f.unknownClaim = true
-			f.db.snapshot = func(ctx context.Context, work func(store.SnapshotScope) error) error {
-				observed := f.connection
-				token := f.lease.Token
-				if mode == "different-token" {
-					token = "different-token"
-				}
-				if mode == "sync-disabled" {
-					observed.SyncEnabled = false
-				}
-				observed.ClaimToken, observed.ClaimUntil = &token, &f.until
-				dao := executorReadDAO{connection: func(_ context.Context, id string) (githubpr.Connection, error) {
-					if id != testProject {
-						t.Fatalf("snapshot project %q", id)
-					}
-					return observed, nil
-				}}
-				return work(executorSnapshotScope{dao: dao, clock: func(context.Context) (time.Time, error) { return f.now, nil }})
-			}
-			r := f.remote()
-			r.list = func(ctx context.Context, _ int64, _, _ string, _ func([]githubpr.Observation) error) error {
-				return remote.CheckpointRequest(ctx)
-			}
-			err := f.run(r)
-			if mode == "matches" {
-				if err != nil {
-					t.Fatal(err)
-				}
-				if len(f.runtimes) != 2 || f.runtimes[1].LastFullSuccessAt == nil {
-					t.Fatalf("completion %+v", f.runtimes)
-				}
-			} else if !errors.Is(err, errUnknown) || len(f.runtimes) != 0 || f.renews != 0 {
-				t.Fatalf("unmatched claim continued: error %v runtimes %d renews %d", err, len(f.runtimes), f.renews)
-			}
-		})
-	}
-}
-
 func TestExecutorUnknownRenewalStops(t *testing.T) {
 	f := newPollFixture(t)
 	f.unknownRenewAt = 1
@@ -545,18 +512,6 @@ func TestExecutorContinuesAfterRecoverableHintFailure(t *testing.T) {
 		if w.PollErrorCode == nil || *w.PollErrorCode != pollError || w.LastFullSuccessAt != nil {
 			t.Fatalf("poll channel changed: %+v", w)
 		}
-	}
-}
-
-func TestExecutorNoDueWorkDoesNotClaim(t *testing.T) {
-	f := newPollFixture(t)
-	f.workKind = "none"
-	f.connection.NextPollAt = nil
-	if err := f.run(executorRemote{}); err != nil {
-		t.Fatal(err)
-	}
-	if f.lease.Token != "" || f.transactions != 1 || len(f.runtimes) != 0 {
-		t.Fatalf("unexpected claim or work: %+v", f)
 	}
 }
 

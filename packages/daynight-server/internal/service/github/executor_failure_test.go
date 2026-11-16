@@ -3,8 +3,6 @@ package github
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -14,15 +12,8 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
-type failureScope struct {
-	store.ProjectWriteScope
-	dao store.GitHubWriteDAO
-}
-
-func (s failureScope) GitHubDAO() store.GitHubWriteDAO { return s.dao }
-
 type failureDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	method    string
 	remaining *int
 	cause     error
@@ -42,68 +33,68 @@ func (d failureDAO) Connection(ctx context.Context) (githubpr.Connection, error)
 	if err := d.fail("connection"); err != nil {
 		return githubpr.Connection{}, err
 	}
-	return d.GitHubWriteDAO.Connection(ctx)
+	return d.GitHubWorkDAO.Connection(ctx)
 }
 func (d failureDAO) ObservedAt(ctx context.Context) (time.Time, error) {
 	if err := d.fail("clock"); err != nil {
 		return time.Time{}, err
 	}
-	return d.GitHubWriteDAO.ObservedAt(ctx)
+	return d.GitHubWorkDAO.ObservedAt(ctx)
 }
 func (d failureDAO) SaveRuntime(ctx context.Context, l store.GitHubLease, w store.GitHubRuntimeWrite) (bool, error) {
 	if err := d.fail("runtime"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.SaveRuntime(ctx, l, w)
+	return d.GitHubWorkDAO.SaveRuntime(ctx, l, w)
 }
 func (d failureDAO) Renew(ctx context.Context, l store.GitHubLease, until time.Time) (bool, error) {
 	if err := d.fail("renew"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.Renew(ctx, l, until)
+	return d.GitHubWorkDAO.Renew(ctx, l, until)
 }
 func (d failureDAO) PublishRepository(ctx context.Context, l store.GitHubLease, o store.GitHubRepositoryObservation) (bool, error) {
 	if err := d.fail("repository"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.PublishRepository(ctx, l, o)
+	return d.GitHubWorkDAO.PublishRepository(ctx, l, o)
 }
 func (d failureDAO) Pending(ctx context.Context, l store.GitHubLease, now time.Time, limit int) ([]store.GitHubPendingPR, bool, error) {
 	if err := d.fail("pending"); err != nil {
 		return nil, false, err
 	}
-	return d.GitHubWriteDAO.Pending(ctx, l, now, limit)
+	return d.GitHubWorkDAO.Pending(ctx, l, now, limit)
 }
 func (d failureDAO) UnseenActive(ctx context.Context, l store.GitHubLease, poll string, after int64, limit int) ([]int64, bool, error) {
 	if err := d.fail("unseen"); err != nil {
 		return nil, false, err
 	}
-	return d.GitHubWriteDAO.UnseenActive(ctx, l, poll, after, limit)
+	return d.GitHubWorkDAO.UnseenActive(ctx, l, poll, after, limit)
 }
 func (d failureDAO) AckPending(ctx context.Context, l store.GitHubLease, number int64, request string) (bool, error) {
 	if err := d.fail("ack"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.AckPending(ctx, l, number, request)
+	return d.GitHubWorkDAO.AckPending(ctx, l, number, request)
 }
 func (d failureDAO) HasPending(ctx context.Context, l store.GitHubLease) (bool, bool, error) {
 	if err := d.fail("hasPending"); err != nil {
 		return false, false, err
 	}
-	return d.GitHubWriteDAO.HasPending(ctx, l)
+	return d.GitHubWorkDAO.HasPending(ctx, l)
 }
 func (d failureDAO) ReschedulePending(ctx context.Context, l store.GitHubLease, number int64, request string, next time.Time) (bool, error) {
 	if err := d.fail("reschedule"); err != nil {
 		return false, err
 	}
-	return d.GitHubWriteDAO.ReschedulePending(ctx, l, number, request, next)
+	return d.GitHubWorkDAO.ReschedulePending(ctx, l, number, request, next)
 }
 
 func injectFailure(f *pollFixture, method string, nth int, cause error) {
 	write := f.db.write
-	f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		return write(ctx, id, func(s store.ProjectWriteScope) error {
-			return work(failureScope{ProjectWriteScope: s, dao: failureDAO{GitHubWriteDAO: s.GitHubDAO(), method: method, remaining: &nth, cause: cause}})
+	f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+		return write(ctx, id, func(source store.GitHubWorkDAO) error {
+			return work(failureDAO{GitHubWorkDAO: source, method: method, remaining: &nth, cause: cause})
 		})
 	}
 }
@@ -179,11 +170,7 @@ func TestExecutorCancellationStopsWithoutCompletion(t *testing.T) {
 		cancel()
 		return remote.CheckpointRequest(ctx)
 	}
-	exec, err := NewExecutor(f.db, r, 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = exec.Execute(ctx, testProject); !errors.Is(err, context.Canceled) {
+	if err := f.preparedRun(r).execute(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v", err)
 	}
 	if len(f.runtimes) != 1 || len(f.publications) != 0 {
@@ -208,9 +195,9 @@ func TestExecutorClosedUnknownHintDoesNotCreateHistory(t *testing.T) {
 	// This ack belongs to an intentionally unpublished historical PR.
 	write := f.db.write
 	var acks int
-	f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		return write(ctx, id, func(s store.ProjectWriteScope) error {
-			return work(failureScope{ProjectWriteScope: s, dao: skipHistoricalDAO{GitHubWriteDAO: s.GitHubDAO(), acks: &acks}})
+	f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+		return write(ctx, id, func(source store.GitHubWorkDAO) error {
+			return work(skipHistoricalDAO{GitHubWorkDAO: source, acks: &acks})
 		})
 	}
 	r := f.remote()
@@ -229,7 +216,7 @@ func TestExecutorClosedUnknownHintDoesNotCreateHistory(t *testing.T) {
 }
 
 type skipHistoricalDAO struct {
-	store.GitHubWriteDAO
+	store.GitHubWorkDAO
 	acks *int
 }
 
@@ -330,7 +317,7 @@ func TestExecutorRateLimitedHintStopsRemainingRequests(t *testing.T) {
 	}
 }
 
-type validLeaseDAO struct{ store.GitHubWriteDAO }
+type validLeaseDAO struct{ store.GitHubWorkDAO }
 
 func (d validLeaseDAO) ValidLease(context.Context, store.GitHubLease) (bool, error) {
 	return true, nil
@@ -347,13 +334,13 @@ func TestExecutorReschedulesHintsWhenRepositoryUnavailable(t *testing.T) {
 			storeErr := errors.New("reschedule failed")
 			write := f.db.write
 			count := 1
-			f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-				return write(ctx, id, func(s store.ProjectWriteScope) error {
-					var dao store.GitHubWriteDAO = validLeaseDAO{GitHubWriteDAO: s.GitHubDAO()}
+			f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+				return write(ctx, id, func(source store.GitHubWorkDAO) error {
+					var dao store.GitHubWorkDAO = validLeaseDAO{GitHubWorkDAO: source}
 					if failReschedule {
-						dao = failureDAO{GitHubWriteDAO: dao, method: "reschedule", remaining: &count, cause: storeErr}
+						dao = failureDAO{GitHubWorkDAO: dao, method: "reschedule", remaining: &count, cause: storeErr}
 					}
-					return work(failureScope{ProjectWriteScope: s, dao: dao})
+					return work(dao)
 				})
 			}
 			r := f.remote()
