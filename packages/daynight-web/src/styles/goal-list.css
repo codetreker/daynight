@@ -1,7 +1,7 @@
 .goal-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .goal-list-card { container-type: inline-size; min-width: 0; overflow: hidden; border: 1px solid var(--row-border); border-radius: 8px; background: #fff; }
 .goal-list-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 62px; padding-right: 18px; }
-.goal-list-summary { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 60px; padding: 10px 7px 10px 15px; cursor: pointer; }
+.goal-list-summary { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; min-height: 60px; padding: 8px 7px 8px 15px; cursor: pointer; }
 .goal-list-toggle { display: grid; place-items: center; flex: none; width: 22px; min-height: 34px; margin-inline: -4px; border: 0; padding: 0; background: transparent; color: inherit; cursor: pointer; }
 .goal-list-toggle > .goal-disclosure { flex: none; width: 14px; height: 14px; color: var(--task-helper); }
 .goal-list-toggle:focus-visible { outline: 2px solid var(--task-focus); outline-offset: -2px; border-radius: 6px; }

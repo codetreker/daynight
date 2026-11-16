@@ -1985,6 +1985,8 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.keyboard.press('Tab');
   await expect(card.locator('.goal-list-title')).toBeFocused();
   await page.keyboard.press('Tab');
+  await expect(card.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' })).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(detail).toBeFocused();
   await expect(detail).toHaveCSS('outline-color', 'rgb(52, 64, 84)');
   await page.keyboard.press('Enter');
@@ -2265,6 +2267,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await toggle.focus();
   await page.keyboard.press('Tab');
   await expect(row.locator('.goal-list-title')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(row.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(status).toBeFocused();
   await expect(status).toHaveAttribute('aria-expanded', 'false');
