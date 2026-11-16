@@ -48,6 +48,12 @@
 .worker-detail-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; margin-bottom: 24px; }
 .worker-panel { border: 1px solid var(--line); background: #fff; border-radius: 10px; box-shadow: var(--shadow); min-width: 0; overflow: hidden; }
 .worker-panel-heading { font-size: 14px; font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 19px 22px; border-bottom: 1px solid #edf0f4; }
+.worker-panel-heading > h2 { margin: 0; font: inherit; }
+.worker-tool-path-shortcut { border: 0; background: transparent; padding: 4px 2px; color: #52649b; font-size: 12px; font-weight: 400; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.worker-tool-path-shortcut:hover { color: #344054; }
+.worker-tool-path-shortcut:focus-visible { outline: 3px solid #344054; outline-offset: 3px; border-radius: 2px; }
+.configuration-tool-paths > summary { scroll-margin-top: 16px; }
+
 .worker-info-list { margin: 0; padding: 7px 22px 12px; }
 .worker-info-row { display: flex; justify-content: space-between; gap: 20px; padding: 13px 0; border-bottom: 1px solid #f0f1f5; font-size: 12px; align-items: flex-start; }
 .worker-info-row:last-child { border: 0; }

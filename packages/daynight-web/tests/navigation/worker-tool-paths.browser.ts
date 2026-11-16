@@ -16,6 +16,55 @@ const clearFocus = (page: Page) => expect.poll(() => page.evaluate(() => {
   return rect.top >= 0 && rect.bottom <= bar.top;
 })).toBe(true);
 
+for (const width of [1440, 320]) for (const locale of ['zh-CN', 'en'] as const) {
+  test(`${width}px ${locale} software shortcut reveals loaded tool paths and retains drafts`, async ({ page }, info) => {
+    await page.setViewportSize({ width, height: 900 });
+    const state = await installTools(page, { locale });
+    await page.goto(`/workers/${targetWorker}`);
+    const shortcut = page.locator('.worker-tool-path-shortcut');
+    await expect(shortcut).toHaveText(locale === 'zh-CN' ? '工具路径' : 'Tool paths');
+    await shortcut.focus(); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
+    await expect(shortcut).toBeFocused(); await noOverflow(page);
+    const focusStyle = await shortcut.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, boxShadow: style.boxShadow };
+    });
+    expect(focusStyle.outlineStyle !== 'none' && parseFloat(focusStyle.outlineWidth) > 0 || focusStyle.boxShadow !== 'none').toBe(true);
+    const heading = shortcut.locator('..');
+    await info.attach('software-shortcut', { body: await heading.screenshot(), contentType: 'image/png' });
+    const gate = deferredRead(); state.configurationGate = gate;
+    await page.keyboard.press('Enter'); await gate.observed;
+    try {
+      await expect(page.locator('[data-worker-tab="configuration"]:visible')).toHaveAttribute('aria-selected', 'true');
+      await expect(configuration(page).getByRole('heading', { name: locale === 'zh-CN' ? '正在读取配置' : 'Loading configuration' })).toBeVisible();
+      await expect(field(page)).toHaveCount(0);
+    } finally { gate.release(); state.configurationGate = null; }
+    const details = configuration(page).locator('.configuration-tool-paths');
+    const summary = details.locator(':scope > summary');
+    await expect(details).toHaveAttribute('open', ''); await expect(summary).toBeFocused();
+    await expect(field(page)).toBeEnabled(); await noOverflow(page);
+    await expect.poll(() => summary.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= innerHeight;
+    })).toBe(true);
+    await info.attach('tool-paths-destination', { body: await page.screenshot(), contentType: 'image/png' });
+    await field(page).fill('/opt/unsaved/shortcut/codex');
+    const originalInput = await field(page).elementHandle();
+    await page.locator('[data-worker-tab="overview"]:visible').click();
+    await shortcut.click();
+    await expect(summary).toBeFocused(); await expect(field(page)).toHaveValue('/opt/unsaved/shortcut/codex');
+    expect(await field(page).evaluate((element, original) => element === original, originalInput)).toBe(true);
+    await page.keyboard.press('Enter'); await expect(details).not.toHaveAttribute('open');
+    const response = page.waitForResponse(value => new URL(value.url()).pathname === `/api/v1/me/workers/${targetWorker}/configuration` && value.request().method() === 'GET');
+    await page.locator('.configuration-toolbar button').click(); await response;
+    await expect(page.locator('.configuration-toolbar button')).toBeEnabled();
+    await expect(details).not.toHaveAttribute('open');
+    await expect(field(page)).toHaveValue('/opt/unsaved/shortcut/codex');
+    expect(state.writes).toHaveLength(0); await noOverflow(page);
+    await originalInput?.dispose();
+  });
+}
+
 test('tool paths start collapsed and retain automatic choices until explicitly edited', async ({ page }) => {
   const state = await installTools(page); await openToolConfiguration(page);
   const summary = toolsSummary(page);

@@ -9,7 +9,8 @@ import { useWorkerConfiguration } from './useWorkerConfiguration';
 import { configurationDraftsEqual } from './model';
 import { useWorkerConfigurationNavigation } from './WorkerConfigurationNavigation';
 
-export const WorkerEditingPanels = ({ id, workerId, platform, section, readEnabled, online, tasks, toolPaths, onContinueEditing, onRetentionChange }: {
+export const WorkerEditingPanels = ({ id, workerId, platform, section, readEnabled, online, tasks, toolPaths, onRevealToolPaths, onContinueEditing, onRetentionChange }: {
+  readonly onRevealToolPaths?: () => void;
   readonly id: string;
   readonly workerId: string;
   readonly platform?: ExecutionPlatform;
@@ -29,7 +30,7 @@ export const WorkerEditingPanels = ({ id, workerId, platform, section, readEnabl
   useLayoutEffect(() => { onRetentionChange?.(state.pending || state.uncertain || state.publicationPending || prompt.pending || prompt.confirmed || prompt.uncertain); }, [onRetentionChange, state.pending, state.uncertain, state.publicationPending, prompt.pending, prompt.confirmed, prompt.uncertain]);
   return <div ref={navigation.owner}>
     <section className="worker-section" id={`${id}-panel-configuration`} data-worker-panel="configuration" role="tabpanel" aria-labelledby={`${id}-tab-configuration`} hidden={section !== 'configuration'} inert={section !== 'configuration'} onFocusCapture={event => navigation.rememberFocus('configuration', event)}>
-      <WorkerConfigurationPanel workerId={workerId} {...(platform === undefined ? {} : { platform })} visible={section === 'configuration'} readEnabled={configurationRead} online={online} tasks={tasks} {...(toolPaths === undefined ? {} : { toolPaths })} state={{ ...state, setDraft: update => state.setDraft(old => { const next = typeof update === 'function' ? update(old) : update; if (!configurationDraftsEqual(old, next)) navigation.markEdited('configuration'); return next; }) }} confirming={navigation.confirming} />
+      <WorkerConfigurationPanel workerId={workerId} {...(platform === undefined ? {} : { platform })} visible={section === 'configuration'} readEnabled={configurationRead} online={online} tasks={tasks} {...(toolPaths === undefined ? {} : { toolPaths })} {...(section === 'configuration' && onRevealToolPaths !== undefined && !navigation.confirming ? { onRevealToolPaths } : {})} state={{ ...state, setDraft: update => state.setDraft(old => { const next = typeof update === 'function' ? update(old) : update; if (!configurationDraftsEqual(old, next)) navigation.markEdited('configuration'); return next; }) }} confirming={navigation.confirming} />
     </section>
     <section className="worker-section" id={`${id}-panel-prompt`} data-worker-panel="prompt" role="tabpanel" aria-labelledby={`${id}-tab-prompt`} hidden={section !== 'prompt'} inert={section !== 'prompt'} onFocusCapture={event => navigation.rememberFocus('prompt', event)}>
       <WorkerPromptEditor state={{ ...prompt, edit: text => { if (text !== prompt.draft) navigation.markEdited('prompt'); prompt.edit(text); } }} scope="worker" />

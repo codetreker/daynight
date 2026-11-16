@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useId, useLayoutEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { WorkerExecutableProbe, WorkerHerdrProbe, WorkerProbe, WorkerTaskSnapshot } from '../../api/workers';
 import type { WorkerAgent } from '../../api/types';
 import type { Tool, ToolPathTelemetry } from '../../api/worker-tool-paths';
@@ -93,6 +93,15 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
   useLayoutEffect(() => {
     if (section !== 'overview' && !historyError) setOpened({ workerId, opened: true });
   }, [workerId, section, historyError]);
+  const [toolPathsRequest, setToolPathsRequest] = useState<{ workerId: string; userId: string } | null>(null);
+  const finishToolPathsRequest = useCallback(() => setToolPathsRequest(null), []);
+  useLayoutEffect(() => {
+    if (!active || historyError || section !== 'configuration' || toolPathsRequest?.workerId !== workerId || toolPathsRequest.userId !== userId) setToolPathsRequest(null);
+  }, [active, historyError, section, workerId, userId, toolPathsRequest]);
+  const openToolPaths = () => {
+    setToolPathsRequest({ workerId, userId });
+    selectSection('configuration');
+  };
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const index = sections.indexOf(section);
     const next = event.key === 'Home' ? sections[0] : event.key === 'End' ? sections[2] : event.key === 'ArrowLeft' ? sections[(index + sections.length - 1) % sections.length]! : event.key === 'ArrowRight' ? sections[(index + 1) % sections.length]! : null;
@@ -134,7 +143,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
           <div className="worker-info-row"><dt>{m.cpu}</dt><dd>{worker.telemetry.cpu.state === 'error' ? <ProbeFailure probe={worker.telemetry.cpu} /> : <>{worker.telemetry.cpu.value.model}<br />{m.logicalProcessors({ count: format.number(worker.telemetry.cpu.value.logicalProcessors) })}</>}</dd></div>
           <div className="worker-info-row"><dt>{m.workingDirectory}</dt><dd>{worker.telemetry.workingDirectory}</dd></div>
         </dl></section>
-        <section className="worker-panel"><h2 className="worker-panel-heading">{m.software}</h2><dl className="worker-info-list">
+        <section className="worker-panel"><header className="worker-panel-heading"><h2>{m.software}</h2><button type="button" className="worker-tool-path-shortcut" onClick={openToolPaths}>{m.configuration.toolPaths.title}</button></header><dl className="worker-info-list">
           <div className="worker-info-row"><dt>Daynight CLI</dt><dd className="worker-software-version">{worker.telemetry.versions.daynight}</dd></div>
           {(['herdr', 'codex', 'copilot'] as const).map(tool => <ToolSoftwareRow key={tool} tool={tool} telemetry={worker.telemetry.toolPaths} online={state.stale ? null : online} probe={worker.telemetry.versions[tool]} />)}
         </dl></section>
@@ -150,7 +159,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
     </>}
     </section>
     {!configurationOpened && <><section id={`${id}-panel-configuration`} data-worker-panel="configuration" role="tabpanel" aria-labelledby={`${id}-tab-configuration`} hidden inert /><section id={`${id}-panel-prompt`} data-worker-panel="prompt" role="tabpanel" aria-labelledby={`${id}-tab-prompt`} hidden inert /></>}
-    {configurationOpened && <WorkerEditingPanels id={id} workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform, ...(worker.telemetry.toolPaths === undefined ? {} : { toolPaths: worker.telemetry.toolPaths }) } : {})} section={section} onContinueEditing={editor => selectSection(editor, true)} readEnabled={readEnabled} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} />}
+    {configurationOpened && <WorkerEditingPanels id={id} workerId={workerId} {...(worker !== undefined && recent ? { platform: worker.platform, ...(worker.telemetry.toolPaths === undefined ? {} : { toolPaths: worker.telemetry.toolPaths }) } : {})} section={section} {...(active && !historyError && toolPathsRequest?.workerId === workerId && toolPathsRequest.userId === userId ? { onRevealToolPaths: finishToolPathsRequest } : {})} onContinueEditing={editor => selectSection(editor, true)} readEnabled={readEnabled} online={worker === undefined || !recent || state.stale ? null : online} tasks={recent && worker !== undefined ? worker.tasks : []} {...(onRetentionChange === undefined ? {} : { onRetentionChange })} />}
     </div>
   </div>;
 };

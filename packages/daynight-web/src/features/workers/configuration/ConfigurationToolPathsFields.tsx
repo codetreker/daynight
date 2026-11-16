@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react';
 import type { WorkerConfigurationResource } from '../../../api/worker-configuration';
 import type { Tool, ToolPathChoice, ToolPathTelemetry } from '../../../api/worker-tool-paths';
 import { useI18n } from '../../../i18n/LocaleProvider';
@@ -7,7 +8,8 @@ import type { ConfigurationDraft, ParsedConfigurationDraft } from './model';
 const tools: readonly Tool[] = ['codex', 'copilot', 'herdr'];
 const names = { codex: 'Codex', copilot: 'Copilot', herdr: 'Herdr' };
 
-export const ConfigurationToolPathsFields = ({ resource, value, telemetry, online, disabled, changed, errors, onChange }: {
+export const ConfigurationToolPathsFields = ({ resource, value, telemetry, online, disabled, changed, errors, onRevealToolPaths, onChange }: {
+  readonly onRevealToolPaths?: () => void;
   readonly resource: WorkerConfigurationResource;
   readonly value: ConfigurationDraft['toolPaths'];
   readonly telemetry: ToolPathTelemetry | undefined;
@@ -18,8 +20,21 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
   readonly onChange: (tool: Tool, choice: ToolPathChoice) => void;
 }) => {
   const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const revealed = useRef<(() => void) | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (onRevealToolPaths === undefined) { revealed.current = undefined; return; }
+    const details = detailsRef.current;
+    if (details === null || revealed.current === onRevealToolPaths) return;
+    revealed.current = onRevealToolPaths;
+    details.open = true;
+    const summary = details.querySelector('summary')!;
+    summary.focus({ preventScroll: true });
+    summary.scrollIntoView({ block: 'start', behavior: 'instant' });
+    onRevealToolPaths();
+  }, [onRevealToolPaths]);
   const unavailable = resource.toolPathsSupported !== true ? m.unsupportedService : telemetry === undefined ? m.unsupportedWorker : null;
-  return <details className="panel config-panel configuration-tool-paths">
+  return <details ref={detailsRef} className="panel config-panel configuration-tool-paths">
     <summary>{m.title}</summary>
     <div className="panel-body">
       <p className="configuration-field-detail" id="config-tool-paths-detail">{m.detail}</p>
