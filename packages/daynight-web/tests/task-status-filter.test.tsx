@@ -74,6 +74,20 @@ it('closes on Escape after tabbing away without taking Escape from another overl
   expect(trigger).toHaveAttribute('aria-expanded', 'false'); expect(trigger).toHaveFocus();
 });
 
+it('lets a task dialog handle Escape while the filter remains open underneath', () => {
+  const onDialogEscape = vi.fn();
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness /><div role="dialog" aria-label="Task details" onKeyDown={event => { if (event.key === 'Escape') onDialogEscape(); }}><button type="button">Close task</button></div></LocaleProvider>);
+  const trigger = screen.getByRole('button', { name: 'Status: All statuses' });
+  fireEvent.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: 'Task details' });
+  const release = registerOverlay(dialog, null);
+  const close = within(dialog).getByRole('button', { name: 'Close task' });
+  close.focus(); fireEvent.keyDown(close, { key: 'Escape' });
+  expect(onDialogEscape).toHaveBeenCalledOnce();
+  expect(trigger).toHaveAttribute('aria-expanded', 'true'); expect(close).toHaveFocus();
+  release();
+});
+
 it('coordinates keyboard opening with the tag filter in both directions', async () => {
   const user = userEvent.setup();
   render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness /><TagPopover /></LocaleProvider>);
