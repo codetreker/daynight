@@ -8,11 +8,15 @@
 
 worker 使用的 `--launch-id` 路径继续服务原 Task 执行。独立入口与内部 ticket 参数互斥。Test Session 不属于新的 `agentControlMode`，不改动 `herdr`/`web` 的任务执行选择。工作目录由用户持有，结束测试不得删除它或自动删除用户文件。
 
+独立入口在注册新 Test Session 前冻结 Codex 与 Windows 直接原生 exe Copilot 的工具启动身份：Codex 按当前工作目录与捕获的 PATH 解析，Copilot 按随 CLI 安装的 Web runtime 解析，不读取 Worker 的工具目标或修改 Worker 状态。记录覆盖实际命令、解释器及相关文件摘要，启动前再次验证；解析失败、取消或文件身份变化不得继续启动或替换安装。解析失败不注册 Session、不申请或写入 Controller 凭据。非 Windows 或需要 runtime materialization 的 Copilot 保留原有读取权限证明路径，Claude 保持原有启动行为；这些分支不获得新的工具绑定保证。工具身份验证不等同于模型选择验证或图片资格准入。
+
 ## 继续原生上下文
 
 `daynight controller <provider> resume [test-session-id]` 继续本机已登记并确认停止的独立 Test Session。Codex、Claude、Copilot 共用此入口；不带 ID 时，交互终端列出当前真实工作目录、Provider 和服务匹配的会话供选择。非交互调用必须传入完整 Test Session ID。字面 prompt `resume` 可通过 `daynight controller <provider> -- resume` 发送。
 
 恢复新建受登录保护的 Test Session URL，旧页面保持归档；新页面从原生持久历史还原上下文。同一个 native session ID、原 native home 与工作目录必须保持，不能在失败后静默创建另一段原生对话。原 prompt、未确认操作、排队输入和待审批响应不自动重放。恢复不覆盖原生已经确认的模型或权限；无法核实的设置仍显示未知。
+
+原 ticket 已有工具绑定时，恢复读取并验证原 inline 或受 ticket hash 约束的 sidecar，将同一绑定写入新 ticket；原文件缺失、变化或绑定损坏必须拒绝，不能按当前 PATH 或新版本重新选择。旧 ticket 从未记录工具绑定时，在适用平台为新执行首次解析并冻结当前实际工具，原 ticket 和 sidecar 均不改写；该记录只证明本次启动，不追认旧执行的工具身份。恢复仍沿用原 args、native home 和原生会话，model 不设置新值，不进行额外模型探测。已有 materialized 绑定仍须满足其原可信目录校验，不以兼容旧票据为由丢弃它。
 
 选择来源限定 Daynight 本机记录，不接受任意裸 native ID，不扫描其他原生历史。当前账号必须有权读取原会话。异目录、异服务或账号、原生 ID 缺失、停止状态未知与仍有原生进程时必须拒绝；不会自动停止或接管其他执行。跨执行写锁防止同时恢复同一原生会话。只有本次启动未发生或其进程树已证实停止时释放锁；崩溃或停止不确定时保留占用证据，不能仅因 launcher PID 不存在就自动重试。
 

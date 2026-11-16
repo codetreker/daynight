@@ -22,6 +22,7 @@ import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
 import { prepareControllerStorage } from "./storage-preparation.js";
+import { selectIndependentToolLaunch } from "./independent-tool-selection.js";
 
 const withIndependentStorage = async <T>(journalFile: string, action: (permit: ControllerStoragePermit) => Promise<T>, deadline?: number): Promise<T> => {
   const permit = acquireControllerStoragePermit(journalFile, deadline);
@@ -151,6 +152,8 @@ export const runIndependentController = async (input: IndependentControllerInput
       resume = await (await import("./resume.js")).acquireResume({ provider: input.provider, ...(input.resume.sessionId ? { sessionId: input.resume.sessionId } : {}) }, context, { serverUrl: config.serverUrl, serverToken: config.serverToken });
       context.stdout(`Resuming native context from Test Session: ${resume.ticket.sessionId}\n`);
     }
+    const toolLaunch = await selectIndependentToolLaunch({ provider: input.provider, homeDirectory: home, cwd, environment: process.env, signal: cancellation.signal, ...(resume ? { resumeTicket: resume.ticket } : {}) });
+    cancellation.signal.throwIfAborted();
     const executionId = randomUUID(), launchId = randomUUID(), controllerId = randomUUID(), controllerInstanceId = randomUUID();
     directory = controllerExecutionDirectory(home, executionId); await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
     const registration = { protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, registrationId: randomUUID(), testExecutionId: executionId, controllerId, controllerInstanceId, provider: input.provider, initialInput: input.prompt === null ? "none" as const : "prompt" as const };
@@ -171,7 +174,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     const credentialFile = path.join(directory, "credential.json"); await writeControllerCredential(credentialFile, credential);
     const ipcEndpoint = await prepareControllerIpcEndpoint(home, launchId);
     const nativeHome = resume?.ticket.nativeHome ?? (input.provider === "codex" ? process.env.CODEX_HOME ?? path.join(home, ".codex") : input.provider === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude") : process.env.COPILOT_HOME ?? path.join(home, ".copilot"));
-    ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0 }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
+    ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0, ...(toolLaunch ? { toolLaunch } : {}) }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
     await writeLaunchTicket(home, ticket);
     await prepareIndependentWriter(path.join(directory, "journal.sqlite"), resolveConfigurationPaths(home).stateDirectory, ticket, cancellation.signal);
     // Reconnect grants are valid for the first hello and survive a lost first connection.

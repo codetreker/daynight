@@ -15,7 +15,8 @@ vi.mock("node:timers/promises", async importOriginal => {
   } };
 });
 const errors = vi.hoisted(() => ({ ControllerBootstrapReplacedError: class ControllerBootstrapReplacedError extends Error {} }));
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn(), prepareStorage: vi.fn() }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), confirm: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), bootstrap: vi.fn(), reconcile: vi.fn(), journalIo: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn(), acquireJob: vi.fn(), releaseJob: vi.fn(), prepareStorage: vi.fn(), selectTool: vi.fn() }));
+vi.mock("../../../src/commands/controller/independent-tool-selection.js", () => ({ selectIndependentToolLaunch: f.selectTool }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
@@ -45,7 +46,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   expect(requested.every(milliseconds => milliseconds === 250)).toBe(true);
 });
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); f.selectTool.mockReset().mockResolvedValue(undefined); });
 test("preserves native polling values, asynchronous settlement and cancellation", async () => {
   const value = { polling: "value" };
   let settled = false;
@@ -117,6 +118,49 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   });
   return { home, context, out, err, requests, child };
 };
+test.each([false, true])("tool selection failure precedes registration and credential writes (resume %s)", async resume => {
+  const v = await setup(null), failure = new Error("Original tool identity changed.");
+  if (resume) f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
+  f.selectTool.mockRejectedValueOnce(failure);
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, ...(resume ? { resume: { sessionId: id } } : {}) }, v.context)).rejects.toBe(failure);
+  expect(v.requests.map(request => request.url)).toEqual(["https://daynight.example/api/v1/test-session-capabilities"]);
+  expect(f.spawn).not.toHaveBeenCalled(); expect(f.prepareStorage).not.toHaveBeenCalled();
+  expect(await readdir(v.home)).toEqual([]);
+  expect(f.release).toHaveBeenCalledTimes(resume ? 1 : 0);
+});
+
+test("cancellation after selection never registers a Test Session", async () => {
+  const v = await setup(null);
+  f.selectTool.mockImplementationOnce(async () => { process.emit("SIGINT", "SIGINT"); return undefined; });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(v.requests.map(request => request.url)).toEqual(["https://daynight.example/api/v1/test-session-capabilities"]);
+  expect(f.spawn).not.toHaveBeenCalled(); expect(await readdir(v.home)).toEqual([]);
+});
+
+test.each([false, true])("writes the selected recipe into the new ticket without overriding settings (resume %s)", async resume => {
+  const v = await setup(null);
+  const { createOperation } = await import("../../../src/api/operation.js");
+  const { resolveToolLaunch } = await import("../../../src/platform/tool-executables.js");
+  const { readLaunchToolSelection } = await import("../../../src/commands/controller/launch-tool-selection.js");
+  const entry = path.join(v.home, "fixture.js"); await writeFile(entry, "console.log('fixture');\n");
+  const operation = createOperation();
+  const launch = await resolveToolLaunch({ tool: "codex", context: "web", choice: { kind: "path", path: entry }, cwd: v.home, environment: process.env }, operation).finally(() => operation.dispose());
+  const prior = { sessionId: id, nativeHome: v.home, configuration: { model: "old-model", args: ["--ask-for-approval", "on-request"], toolLaunch: launch } };
+  if (resume) f.resume.mockResolvedValue({ nativeSessionId: id, ticket: prior, release: f.release });
+  f.selectTool.mockImplementationOnce(async () => {
+    expect(v.requests).toHaveLength(1); expect(f.spawn).not.toHaveBeenCalled(); return launch;
+  });
+  await runIndependentController({ provider: "codex", model: resume ? null : "selected-model", args: resume ? [] : ["--sandbox", "read-only"], prompt: null, ...(resume ? { resume: { sessionId: id } } : {}) }, v.context);
+  const [name] = await readdir(path.join(v.home, ".daynight", "controller", "launches"));
+  const ticket = JSON.parse(await readFile(path.join(v.home, ".daynight", "controller", "launches", name!), "utf8"));
+  expect(ticket.configuration).toEqual({ agent: "codex", agentControlMode: "web", model: resume ? null : "selected-model", args: resume ? prior.configuration.args : ["--sandbox", "read-only"], recoveryLimit: 0, toolLaunch: launch });
+  expect(await readLaunchToolSelection(v.home, ticket)).toEqual(launch);
+  expect(f.selectTool).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", homeDirectory: v.home, cwd: v.home, environment: process.env, ...(resume ? { resumeTicket: prior } : {}) }));
+  expect(ticket.resumeNativeSessionId).toBe(resume ? id : null);
+  expect(f.request.mock.calls.some(([, action]) => action.kind === "submit_initial")).toBe(false);
+  expect(prior.configuration.model).toBe("old-model");
+});
+
 test("storage admission waits before the one original spawn and releases each permit", async () => {
   const v = await setup(null);
   const capacity = new Error("Physical storage is reserved by another execution.");

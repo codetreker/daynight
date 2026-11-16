@@ -3297,6 +3297,17 @@ options are rejected rather than ignored. Use the provider subcommand's help
 for its supported options. These commands do not implement a native TUI or change
 `worker.agentControlMode`.
 
+Before registering a session, standalone Codex resolves its tool from the current
+directory and captured PATH. Windows Copilot resolves the bundled Web runtime
+when it is a direct native executable. The new private launch ticket freezes the
+command, interpreter and artifact identities; the Provider verifies them again
+before spawning. Resolution failure creates no Test Session or Controller
+credential, and does not fall back to another installation. These selections do
+not read Worker tool targets or mutate Worker state. Copilot on other platforms
+or requiring runtime materialization retains its existing read-authority path;
+Claude retains its existing launch path. Tool identity alone grants neither model
+validation nor image qualification.
+
 The command prints the Test Session URL and remains in the foreground. Sign in
 to Daynight as the account that started it; the URL itself grants no access.
 The service's `/test-sessions` page lists that account's online Test Sessions.
@@ -3353,6 +3364,16 @@ Session URL with the same native conversation. It restores history without
 replaying the original prompt or unknown operations. The old URL stays archived.
 An active or uncertain native writer is refused; resume does not take control
 of another process.
+
+Resume verifies and retains an existing inline or ticket-bound sidecar tool
+selection. Missing or changed artifacts and invalid bindings are refused rather
+than replaced through current PATH discovery. For a legacy ticket with no tool
+binding, the supported standalone path resolves and freezes the actual selection
+only in the new ticket; the old ticket and sidecars remain unchanged. This proves
+the new launch, not the old executable. Native arguments and home remain those of
+the original session, and resume does not set a new model or run an extra model
+probe. Existing materialized selections still require their original trusted
+runtime directory verification.
 
 Standalone sessions do not create tasks, claims or worktrees, and do not provide
 a background daemon, automatic recovery scheduler or arbitrary native-session
