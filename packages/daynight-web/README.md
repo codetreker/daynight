@@ -782,6 +782,8 @@ The switch displays the last confirmed `syncEnabled` value. Enabling requires an
 
 Management uses the independent GitHub resource's exact version and shares the synchronous Project management guard. The separate switch request never submits an interval draft. A conflict or unknown write outcome retains the draft and original page ownership and holds the guard until an admitted read reconciles the state or the scope ends, without replaying the write. An existing binding can be disconnected even when the App is unavailable or unconfigured. The [runtime design](../../docs/design/github-connection-runtime.md) describes the server behavior.
 
+The independent-App consumption components and client are exercised in a controlled API browser fixture. They are not mounted in the public Team or Project settings: the existing GitHub settings remain active until the server and Project protocol switch together. The Team projection contains only authorized App identities. The Project component separates owner Team connection management from Project synchronization management, and binds discovery and connection to the observed ownership, App and grant versions. Its host retains the existing Project access and management guard contracts.
+
 ## Project deletion
 
 Project Settings offers owner Team administrators a deletion preview and exact
