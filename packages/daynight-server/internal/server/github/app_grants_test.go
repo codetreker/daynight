@@ -1,0 +1,296 @@
+package github
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
+	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
+	authconfig "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth/config"
+	service "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
+)
+
+const testGrantID = "44444444-4444-4444-8444-444444444444"
+const testTeamID = "55555555-5555-4555-8555-555555555555"
+
+func grantMux(t *testing.T, ops GrantOperations) http.Handler {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	auth, e := authhttp.NewRequestAuthentication(func(_ context.Context, k model.CredentialKind, v string) (model.Principal, error) {
+		if v != "valid" {
+			return model.Principal{}, authhttp.Failure()
+		}
+		return model.Principal{Kind: k, UserID: userID, CredentialID: projectID}, nil
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	if e != nil {
+		t.Fatal(e)
+	}
+	mux := http.NewServeMux()
+	RegisterGrantRoutes(mux, ops, auth, logger)
+	return mux
+}
+
+// The real adapter, manager and PostgreSQL scope must agree on hidden access,
+// precise versions and the ordering of revoked grant conflicts.
+func TestGrantAdapterRealStore(t *testing.T) {
+	ctx := context.Background()
+	db, err := postgres.Open(ctx, testutil.ScopedDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO teams (id,name) VALUES ($1,'Team')`, []any{testTeamID}},
+		{`INSERT INTO team_members(team_id,user_id,role) VALUES ($1,$2,'admin')`, []any{testTeamID, userID}},
+		{`INSERT INTO github_apps (id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES ($1,42,'App','App','app','key','secret')`, []any{appID}},
+		{`INSERT INTO github_app_admins(app_resource_id,user_id) VALUES ($1,$2)`, []any{appID, userID}},
+		{`INSERT INTO github_app_team_grants(id,app_resource_id,team_id,revoked_at) VALUES ($1,$2,$3,now())`, []any{testGrantID, appID, testTeamID}},
+	} {
+		if _, err = db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := grantMux(t, service.NewGrantManager(db, db))
+	base := appPath + "/" + appID
+	cases := []struct {
+		method, path, body string
+		status             int
+		code               string
+	}{
+		{"POST", base + "/team-grant-preview", `{"teamId":"` + testTeamID + `"}`, 200, `"targetTeam"`},
+		{"POST", base + "/team-grant-preview", `{"teamId":"66666666-6666-4666-8666-666666666666"}`, 404, `"not_found"`},
+		{"GET", base + "/team-grants/" + testGrantID, "", 404, `"not_found"`},
+		{"GET", base + "/team-grants/" + testGrantID + "/revocation-preview", "", 404, `"not_found"`},
+		{"POST", base + "/team-grants/" + testGrantID + "/revoke", `{"version":"1","impactVersion":"2","expectedUserId":"` + userID + `"}`, 409, `"impact_changed"`},
+		{"POST", base + "/team-grants/" + testGrantID + "/revoke", `{"version":"1","impactVersion":"1","expectedUserId":"` + userID + `"}`, 409, `"github_grant_changed"`},
+		{"GET", base + "/removal-preview", "", 200, `"hiddenProjects":"0"`},
+		{"GET", base + "/team-grants", "", 200, `"items":[]`},
+		{"GET", "/api/v1/teams/" + testTeamID + "/github/apps", "", 200, `"items":[]`},
+		{"GET", base + "/removal-preview/projects", "", 200, `"items":[]`},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest(tc.method, tc.path, tc.body))
+		if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.code) || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+	for _, tc := range []struct {
+		path, body string
+		status     int
+	}{
+		{base + "/team-grant-preview", `{"teamId":"invalid"}`, 400},
+		{base + "/team-grants", `{"id":"` + testGrantID + `","version":1,"teamId":"` + testTeamID + `","teamVersion":"1","expectedUserId":"` + userID + `"}`, 400},
+		{base + "/team-grants/" + testGrantID + "/revoke", `{"version":"1","impactVersion":"1","expectedUserId":"` + userID + `","extra":1}`, 400},
+		{base + "/team-grant-preview", strings.Repeat("x", appWriteBytes+1), 413},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest("POST", tc.path, tc.body))
+		if w.Code != tc.status {
+			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+	newGrant := "77777777-7777-4777-8777-777777777777"
+	for _, tc := range []struct {
+		path, body string
+		status     int
+		want       string
+	}{
+		{base + "/team-grants", `{"id":"` + newGrant + `","version":"1","teamId":"` + testTeamID + `","teamVersion":"1","expectedUserId":"` + userID + `"}`, 201, newGrant},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest("POST", tc.path, tc.body))
+		if w.Code != tc.status || !strings.Contains(w.Body.String(), tc.want) {
+			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+	for _, path := range []string{base + "/team-grants", base + "/team-grants/" + newGrant, base + "/team-grants/" + newGrant + "/revocation-preview", base + "/team-grants/" + newGrant + "/revocation-preview/projects", "/api/v1/teams/" + testTeamID + "/github/apps"} {
+		query := "?limit=1"
+		if strings.HasSuffix(path, newGrant) {
+			query = ""
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest("GET", path+query, ""))
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, appRequest("POST", base+"/team-grants/"+newGrant+"/revoke", `{"version":"1","impactVersion":"2","expectedUserId":"`+userID+`"}`))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"revoked":true`) {
+		t.Fatalf("revoke: %d %s", w.Code, w.Body)
+	}
+	for _, path := range []string{base + "/team-grants?limit=101", "/api/v1/teams/" + testTeamID + "/github/apps?limit=0", base + "/removal-preview?limit=bad", base + "/team-grants?cursor=x"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest("GET", path, ""))
+		if w.Code != 400 {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+		}
+	}
+	if _, err = db.Pool.Exec(ctx, `DELETE FROM github_app_admins WHERE app_resource_id=$1`, appID); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", base + "/team-grant-preview", `{"teamId":"` + testTeamID + `"}`},
+		{"POST", base + "/team-grants", `{"id":"` + testGrantID + `","version":"1","teamId":"` + testTeamID + `","teamVersion":"1","expectedUserId":"` + userID + `"}`},
+		{"POST", base + "/team-grants/" + testGrantID + "/revoke", `{"version":"1","impactVersion":"1","expectedUserId":"` + userID + `"}`},
+		{"GET", base + "/removal-preview", ""},
+	} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest(tc.method, tc.path, tc.body))
+		if w.Code != 404 || !strings.Contains(w.Body.String(), `"not_found"`) {
+			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+}
+
+// A storage failure must not be recast as a missing or changed grant.
+type failedGrantStore struct {
+	store.GitHubGrantStore
+	err error
+}
+
+func (f failedGrantStore) ReadGitHubGrants(context.Context, func(store.GitHubGrantReadDAO) error) error {
+	if f.err != nil {
+		return f.err
+	}
+	return &store.Error{Phase: "read", DatabaseFailure: true}
+}
+func TestGrantAdapterDatabaseFailure(t *testing.T) {
+	ctx := context.Background()
+	db, err := postgres.Open(ctx, testutil.ScopedDatabaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	h := grantMux(t, service.NewGrantManager(failedGrantStore{}, db))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, appRequest("GET", appPath+"/"+appID+"/team-grants/"+testGrantID, ""))
+	if w.Code != 500 || !strings.Contains(w.Body.String(), `"internal_error"`) {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	for _, tc := range []struct {
+		err  error
+		code int
+		body string
+	}{
+		{context.DeadlineExceeded, 504, `"timeout"`},
+		{&store.Error{Phase: "read", DatabaseFailure: true, Cause: context.DeadlineExceeded}, 500, `"internal_error"`},
+		{&store.TransactionError{Phase: "cleanup", CleanupFailed: true, Outcome: store.TransactionNotCommitted, Cause: context.DeadlineExceeded}, 500, `"internal_error"`},
+	} {
+		h := grantMux(t, service.NewGrantManager(failedGrantStore{err: tc.err}, db))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, appRequest("GET", appPath+"/"+appID+"/team-grants/"+testGrantID, ""))
+		if w.Code != tc.code || !strings.Contains(w.Body.String(), tc.body) {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+	}
+}
+
+// The Team is retired between locating the grant and taking its root lock.
+type retiringGrantStore struct {
+	*postgres.Store
+	retire func() error
+}
+
+func (s retiringGrantStore) WriteGitHubGrant(ctx context.Context, teamID, appID, actorID string, op func(store.GitHubGrantWriteDAO) error) (store.Completion, error) {
+	if err := s.retire(); err != nil {
+		return store.Completion{Outcome: store.TransactionNotCommitted}, err
+	}
+	return s.Store.WriteGitHubGrant(ctx, teamID, appID, actorID, op)
+}
+func TestGrantAdapterTeamRemovalAfterLocation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		revoke  bool
+		changed bool
+		want    int
+		code    string
+	}{
+		{"revoked and impact changed", true, true, 409, "impact_changed"},
+		{"revoked", true, false, 409, "github_grant_changed"},
+		{"live orphan", false, false, 500, "internal_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			db, err := postgres.Open(ctx, testutil.ScopedDatabaseURL(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(db.Close)
+			for _, q := range []struct {
+				sql  string
+				args []any
+			}{
+				{`INSERT INTO teams (id,name) VALUES ($1,'Team')`, []any{testTeamID}},
+				{`INSERT INTO github_apps (id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES ($1,42,'App','App','app','key','secret')`, []any{appID}},
+				{`INSERT INTO github_app_admins(app_resource_id,user_id) VALUES ($1,$2)`, []any{appID, userID}},
+				{`INSERT INTO github_app_team_grants(id,app_resource_id,team_id) VALUES ($1,$2,$3)`, []any{testGrantID, appID, testTeamID}},
+			} {
+				if _, err = db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := retiringGrantStore{Store: db, retire: func() error {
+				if tc.revoke {
+					if _, e := db.Pool.Exec(ctx, `UPDATE github_app_team_grants SET revoked_at=now() WHERE id=$1`, testGrantID); e != nil {
+						return e
+					}
+				}
+				if tc.changed {
+					if _, e := db.Pool.Exec(ctx, `UPDATE github_apps SET impact_version=impact_version+1 WHERE id=$1`, appID); e != nil {
+						return e
+					}
+				}
+				_, e := db.Pool.Exec(ctx, `DELETE FROM teams WHERE id=$1`, testTeamID)
+				return e
+			}}
+			h := grantMux(t, service.NewGrantManager(s, db))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, appRequest("POST", appPath+"/"+appID+"/team-grants/"+testGrantID+"/revoke", `{"version":"1","impactVersion":"1","expectedUserId":"`+userID+`"}`))
+			if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.code) {
+				t.Fatalf("%d %s", w.Code, w.Body)
+			}
+		})
+	}
+}
+
+func TestGrantOperationOutcomeAndCancellation(t *testing.T) {
+	h := &grantHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for _, tc := range []struct {
+		name   string
+		err    error
+		cancel bool
+		want   int
+		code   string
+	}{
+		{"local timeout", context.DeadlineExceeded, false, 504, "timeout"},
+		{"unknown commit", &service.ManagementError{Code: "github_write_outcome_unknown", Message: "unknown", Cause: context.DeadlineExceeded}, false, 503, "github_write_outcome_unknown"},
+		{"client cancelled", context.Canceled, true, 200, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/", nil)
+			if tc.cancel {
+				ctx, cancel := context.WithCancel(r.Context())
+				cancel()
+				r = r.WithContext(ctx)
+			}
+			w := httptest.NewRecorder()
+			h.bodyOperation(w, r, model.Principal{}, "grant_create", true, func(context.Context, *http.Request) (any, int, string, error) { return nil, 0, "", tc.err })
+			if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.code) || tc.cancel && w.Body.Len() != 0 {
+				t.Fatalf("%d %s", w.Code, w.Body)
+			}
+		})
+	}
+}
