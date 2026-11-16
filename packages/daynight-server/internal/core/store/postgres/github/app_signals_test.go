@@ -241,3 +241,40 @@ func TestAppWebhookOldUUIDDoesNotReviveAfterReregistration(t *testing.T) {
 		t.Fatalf("new App snapshot: %+v %v", snapshot, err)
 	}
 }
+
+func TestAppSignalDatabaseFailurePaths(t *testing.T) {
+	for _, tc := range []struct {
+		name, mutation string
+		access         bool
+	}{
+		{"PR connection query", `ALTER TABLE project_ownership RENAME TO unavailable_ownership`, false},
+		{"access connection query", `ALTER TABLE project_ownership RENAME TO unavailable_ownership`, true},
+		{"PR pending write", `ALTER TABLE project_github_pending_prs RENAME TO unavailable_pending`, false},
+		{"access hint write", `ALTER TABLE project_github RENAME COLUMN access_hint_id TO unavailable_hint`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAppSignalFixture(t)
+			ctx := t.Context()
+			if _, err := f.db.Pool.Exec(ctx, tc.mutation); err != nil {
+				t.Fatal(err)
+			}
+			var called bool
+			completion, err := f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(w store.GitHubAppSignalWriter) error {
+				called = true
+				if tc.access {
+					_, err := w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "access", ReceivedAt: time.Now().UTC()})
+					return err
+				}
+				_, err := w.SignalPullRequest(ctx, signalInput())
+				return err
+			})
+			if !called || err == nil || completion.Outcome != store.TransactionNotCommitted {
+				t.Fatalf("called=%t completion=%+v error=%v", called, completion, err)
+			}
+			var revision int64
+			if err := f.db.Pool.QueryRow(ctx, `SELECT revision FROM project_github WHERE project_id=$1`, f.project).Scan(&revision); err != nil || revision != 0 {
+				t.Fatalf("failed signal changed connection revision: %d %v", revision, err)
+			}
+		})
+	}
+}

@@ -254,3 +254,33 @@ func TestAppSignalScopeConcurrentGrantRevocation(t *testing.T) {
 		})
 	}
 }
+
+func TestAppSignalScopeDatabaseFailurePaths(t *testing.T) {
+	for _, tc := range []struct{ name, mutation string }{
+		{"App lock query", `ALTER TABLE github_apps RENAME TO unavailable_apps`},
+		{"grant lock query", `ALTER TABLE github_app_team_grants RENAME TO unavailable_grants`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAppSignalScopeFixture(t)
+			ctx := t.Context()
+			if _, err := f.db.Pool.Exec(ctx, tc.mutation); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			completion, err := f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(store.GitHubAppSignalWriter) error { called = true; return nil })
+			if called || err == nil || completion.Outcome != store.TransactionNotCommitted {
+				t.Fatalf("called=%t completion=%+v error=%v", called, completion, err)
+			}
+		})
+	}
+	t.Run("cancel before begin", func(t *testing.T) {
+		f := newAppSignalScopeFixture(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		called := false
+		completion, err := f.db.WriteGitHubAppSignals(ctx, f.app, 1, func(store.GitHubAppSignalWriter) error { called = true; return nil })
+		if called || !errors.Is(err, context.Canceled) || completion.Outcome != store.TransactionNotCommitted {
+			t.Fatalf("called=%t completion=%+v error=%v", called, completion, err)
+		}
+	})
+}
