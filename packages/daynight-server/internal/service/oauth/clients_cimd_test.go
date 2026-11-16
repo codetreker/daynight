@@ -28,7 +28,9 @@ func TestClientsResolvePublicCIMDThroughTLSAndCache(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var public struct { ClientID string `json:"client_id"` }
+			var public struct {
+				ClientID string `json:"client_id"`
+			}
 			if err := json.Unmarshal(raw, &public); err != nil {
 				t.Fatal(err)
 			}
@@ -71,7 +73,11 @@ func TestClientsResolvePublicCIMDThroughTLSAndCache(t *testing.T) {
 				if err != nil || got.ClientID != id || got.Provenance != "cimd" || got.SelectedExactRedirect != tc.redirect || got.MetadataDeadline != f.now.Add(time.Hour) || len(got.MetadataDigest) != 64 {
 					t.Fatalf("real CIMD resolution: %+v %v", got, err)
 				}
-				if i == 0 { first = got } else { f.equal(got, first) }
+				if i == 0 {
+					first = got
+				} else {
+					f.equal(got, first)
+				}
 			}
 			f.equal(parseCalls, 2)
 			f.equal(dials.Load(), int32(1))
@@ -89,16 +95,18 @@ func TestClientsCIMDRefusalsAreNotCached(t *testing.T) {
 		`"client_id":"https://other.example/client"`,
 	} {
 		t.Run(fields, func(t *testing.T) {
-			raw := `{"client_id":"`+id+`","redirect_uris":["http://localhost/cb"],`+fields+`}`
+			raw := `{"client_id":"` + id + `","redirect_uris":["http://localhost/cb"],` + fields + `}`
 			if strings.HasPrefix(fields, `"client_id"`) {
-				raw = `{"redirect_uris":["http://localhost/cb"],`+fields+`}`
+				raw = `{"redirect_uris":["http://localhost/cb"],` + fields + `}`
 			}
 			fetch, _, dials := metadataFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(raw)) }))
 			f := newOAuthFixture(t,
 				"writer client", "scope client", "read client", "callback returned", "writer returned",
 				"writer client", "scope client", "read client", "callback returned", "writer returned")
 			c, err := NewClients(f, core.PublicAdmission{}, nil)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			c.fetch = fetch
 			f.client.read = func(got string, lock bool) (store.OAuthClient, error) {
 				f.equal(got, id)
@@ -119,46 +127,74 @@ func TestClientsCIMDRefusalsAreNotCached(t *testing.T) {
 
 func TestClientsStrictSourcesAndLocalhost(t *testing.T) {
 	const id = "https://example.com/client"
-	const base = `{"client_id":"`+id+`","redirect_uris":["http://localhost/cb"]`
-	unknown := []byte(base+`,"grant_types":["authorization_code","unknown"]}`)
+	const base = `{"client_id":"` + id + `","redirect_uris":["http://localhost/cb"]`
+	unknown := []byte(base + `,"grant_types":["authorization_code","unknown"]}`)
 	f := newOAuthFixture(t)
 	if c, err := NewClients(f, core.PublicAdmission{}, map[string][]byte{id: unknown}); c != nil || err != core.ErrInvalidClientMetadata {
 		t.Fatalf("configured capabilities became permissive: %v", err)
 	}
-	c, err := NewClients(f, core.PublicAdmission{}, map[string][]byte{id: []byte(base+`}`)})
-	if err != nil { t.Fatal(err) }
+	c, err := NewClients(f, core.PublicAdmission{}, map[string][]byte{id: []byte(base + `}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := c.Resolve(f.ctx, id, "http://localhost:123/cb")
-	if err != nil || got.Provenance != "preregistered" || got.SelectedExactRedirect != "http://localhost:123/cb" { t.Fatalf("configured localhost: %+v %v", got, err) }
+	if err != nil || got.Provenance != "preregistered" || got.SelectedExactRedirect != "http://localhost:123/cb" {
+		t.Fatalf("configured localhost: %+v %v", got, err)
+	}
 	t.Run("register", func(t *testing.T) {
 		f := newOAuthFixture(t)
 		ops := rejectClientOperations(f)
-		ops.take = func(context.Context,string,string,string)(bool,error){ return true,nil }
+		ops.take = func(context.Context, string, string, string) (bool, error) { return true, nil }
 		ops.parseMetadata = core.ParseClientMetadata
 		c, err := newClients(f, nil, ops)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		_, err = c.Register(f.ctx, "source", []byte(`{"redirect_uris":["http://localhost/cb"],"grant_types":["authorization_code","unknown"]}`))
-		if err != core.ErrInvalidClientMetadata { t.Fatalf("DCR accepted unknown capabilities: %v", err) }
+		if err != core.ErrInvalidClientMetadata {
+			t.Fatalf("DCR accepted unknown capabilities: %v", err)
+		}
 	})
-	for _, valid := range []bool{false,true} {
-		t.Run(map[bool]string{false:"stored rejection",true:"stored localhost"}[valid],func(t *testing.T){
-			steps := []string{"writer client","scope client","read client"}
-			if valid { steps = append(steps,"pin client") }
-			steps = append(steps,"callback returned","writer returned")
-			f := newOAuthFixture(t,steps...)
-			c, err := NewClients(f,core.PublicAdmission{},nil)
-			if err != nil { t.Fatal(err) }
+	for _, valid := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stored rejection", true: "stored localhost"}[valid], func(t *testing.T) {
+			steps := []string{"writer client", "scope client", "read client"}
+			if valid {
+				steps = append(steps, "pin client")
+			}
+			steps = append(steps, "callback returned", "writer returned")
+			f := newOAuthFixture(t, steps...)
+			c, err := NewClients(f, core.PublicAdmission{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			raw := unknown
-			if valid { raw = []byte(base+`}`) }
-			record := store.OAuthClient{ID:id,Metadata:raw,ExpiresAt:f.now.Add(time.Hour)}
-			f.client.read = func(got string,lock bool)(store.OAuthClient,error){ f.equal(got,id); f.equal(lock,true); return record,nil }
-			f.client.pin = func(got string,now time.Time)(store.OAuthClient,error){ f.equal(got,id); f.equal(now,f.now); return record,nil }
-			c.now = func()time.Time{return f.now}
+			if valid {
+				raw = []byte(base + `}`)
+			}
+			record := store.OAuthClient{ID: id, Metadata: raw, ExpiresAt: f.now.Add(time.Hour)}
+			f.client.read = func(got string, lock bool) (store.OAuthClient, error) {
+				f.equal(got, id)
+				f.equal(lock, true)
+				return record, nil
+			}
+			f.client.pin = func(got string, now time.Time) (store.OAuthClient, error) {
+				f.equal(got, id)
+				f.equal(now, f.now)
+				return record, nil
+			}
+			c.now = func() time.Time { return f.now }
 			wantErr := error(core.ErrInvalidClient)
-			if valid { wantErr = nil }
-			f.plan("client",true,wantErr,store.TransactionCommitted,wantErr)
-			got,err := c.Resolve(f.ctx,id,"http://localhost:123/cb")
-			if err != wantErr { t.Fatal(err) }
-			if valid && (got.Provenance != "dcr" || got.SelectedExactRedirect != "http://localhost:123/cb") { t.Fatalf("stored localhost: %+v",got) }
+			if valid {
+				wantErr = nil
+			}
+			f.plan("client", true, wantErr, store.TransactionCommitted, wantErr)
+			got, err := c.Resolve(f.ctx, id, "http://localhost:123/cb")
+			if err != wantErr {
+				t.Fatal(err)
+			}
+			if valid && (got.Provenance != "dcr" || got.SelectedExactRedirect != "http://localhost:123/cb") {
+				t.Fatalf("stored localhost: %+v", got)
+			}
 		})
 	}
 }
