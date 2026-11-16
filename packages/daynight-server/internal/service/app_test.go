@@ -38,6 +38,48 @@ type configuredOAuthStore struct {
 	failure error
 }
 
+type configuredPreviewStore struct {
+	store.Transactions
+	calls   int
+	failure error
+}
+
+func (s *configuredPreviewStore) WritePreviewSSO(context.Context, func(store.PreviewSSODAO) error) (store.Completion, error) {
+	s.calls++
+	return store.Completion{Outcome: store.TransactionNotCommitted}, s.failure
+}
+
+func TestNewModulesConfiguresPreviewSSO(t *testing.T) {
+	c := appTestConfig(t)
+	database := &configuredPreviewStore{failure: errors.New("configured preview writer unavailable")}
+	app := NewModules(c, database, nil, nil, nil)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := app.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if app.PreviewSSOError != nil || app.Identity.PreviewSSO() == nil {
+		t.Fatalf("preview module was not assembled: %v", app.PreviewSSOError)
+	}
+	if _, err := app.Identity.PreviewSSO().Start(t.Context(), uuid.NewString()); !errors.Is(err, database.failure) || database.calls != 1 {
+		t.Fatalf("preview module did not retain the configured writer: calls=%d error=%v", database.calls, err)
+	}
+}
+
+func TestNewModulesRetainsPreviewSSOConfigurationFailure(t *testing.T) {
+	c := appTestConfig(t)
+	c.Server.PreviewOrigin = "invalid preview origin"
+	app := NewModules(c, compositionOnlyStore{}, nil, nil, nil)
+	if app.PreviewSSOError == nil || app.Identity.PreviewSSO() != nil {
+		t.Fatal("invalid preview configuration produced an available module")
+	}
+	if err := app.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (s *configuredOAuthStore) WriteCredentialFamily(context.Context, func(store.CredentialFamilyScope) error) (store.Completion, error) {
 	s.calls++
 	return store.Completion{Outcome: store.TransactionNotCommitted}, s.failure
@@ -120,7 +162,7 @@ func appTestConfig(t *testing.T) config.Config {
 	c := config.Config{
 		Database: databaseconfig.Config{URL: "postgres://app:app@database.invalid/app?sslmode=disable"},
 		Storage:  storageconfig.Config{Root: filepath.Join(root, "storage")},
-		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example"},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 10 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: "https://daynight.example", PreviewOrigin: "https://preview.daynight.example"},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: "https://auth.example", AppID: "app", AppSecret: "secret", CallbackURL: "https://daynight.example/api/v1/auth/callback"},
 	}

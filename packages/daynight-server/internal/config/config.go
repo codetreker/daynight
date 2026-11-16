@@ -73,6 +73,9 @@ func (c Config) Validate() error {
 	if _, _, err := authconfig.ValidateAuthSettings(authconfig.AuthSettings{PublicOrigin: c.Server.PublicOrigin, AllowHTTPTestOrigin: c.Server.AllowHTTPTestOrigin}, c.UniAuth.CallbackURL); err != nil {
 		return err
 	}
+	if err := c.Server.ValidatePreviewOrigin(); err != nil {
+		return err
+	}
 	if err := c.MCP.Origins.Validate(); err != nil {
 		return err
 	}

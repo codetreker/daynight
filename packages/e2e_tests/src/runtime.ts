@@ -168,6 +168,7 @@ const main = async (): Promise<void> => {
   await forward(configuration.serverPort, serverInternalPort);
   await writeServerConfig(daynightRoot, {
     listenAddress: `127.0.0.1:${serverInternalPort}`, publicOrigin: baseURL,
+    previewOrigin: `http://127.0.0.1:${configuration.serverPort === 65535 ? 65534 : configuration.serverPort + 1}`,
     databaseURL: configuration.databaseURL, storageRoot: path.join(runDirectory, 'private', 'storage'),
     authURL, appId: credentials.appId, appSecret: credentials.appSecret, callbackURL: `${baseURL}/auth/callback`,
   });

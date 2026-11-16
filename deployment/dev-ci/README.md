@@ -59,7 +59,7 @@ and callback in the real UniAuth fixture, which runs as a sidecar in the gateway
 network namespace. A second loopback-published port maps to the same port inside
 that namespace, so both the browser and the Go server reach one fixture URL.
 The runner records the fixture's generated application credentials in a private
-environment file, starts the authenticated server and waits for `/readyz`.
+environment file, starts the authenticated server and waits for `/readyz`. It also sets the required preview origin to a distinct numeric loopback port under explicit HTTP test mode. This preserves ordinary deployment flows; it does not publish a second preview listener or prove production Domain Cookies. Use separate same-site HTTPS DNS hosts for browser SSO scope validation.
 
 The gateway also publishes a separate ephemeral host-loopback port for metrics,
 forwarding TCP to the server's `127.0.0.1:8788` listener. Find it during a run

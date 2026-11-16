@@ -19,9 +19,7 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 Personal 初始化和存量归属迁移遵守下述原子性与数据完整性要求。登录用户可以通过 Team API
 创建、读取、分页、改名和删除普通 Team，并通过邀请加入普通 Team；当前 admin 可按完整外部身份直接添加成员，当前 owner Team admin 可预览和转移项目。Team 成员管理和转移客户端保持各自的功能边界。
 
-可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
-鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
-[附件架构决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)。
+现有附件入口继续使用主站会话、普通 iframe、相对资源和键盘交互。显式浏览器预览 SSO 提供独立预览凭据，但普通主站登录尚不自动采用它，原附件入口也尚未切换。主站普通登录不以预览域名网络可达或 SSO 成功为前提；服务启动仍要求有效的预览 origin 配置。
 
 | 编号 | 必需行为 |
 |---|---|
@@ -128,6 +126,18 @@ HTTPS 或字面量 localhost/numeric loopback HTTP 才能使用令牌。外部�
 含凭据文件在 POSIX 上使用 `0600`，其他能力写入同样遵守。YAML 错误不泄露标量或
 原始 parser cause。配置并发和持久化要求由[客户端 C6](daynight.md#c6-按需配置引导)与
 [客户端配置要求](daynight-project-task.md#pt2-服务配置)拥有。
+
+## 显式浏览器预览 SSO
+
+已登录主站的浏览器可以显式打开配置预览 origin 的 `/auth/sso/start`，经主站 session 授权、预览 callback 和 complete 完成一次标准导航 SSO，返回已校验原目标。无 login 参数时返回主站项目页。主站普通 callback 与既有附件入口保持各自原路径。
+
+两个不同随机凭据关联同一既有 session，预览凭据继承其用户、实际到期和注销。生产预览 Cookie 是 HttpOnly、Secure、SameSite=Lax、Path=/，Domain 仅覆盖配置的 preview hostname 与其子域。随机 state 的 host-only 绑定 Cookie 必须由回调浏览器带回，code/state 单次消费。complete 必须验证浏览器实际持有预览 Cookie；缺失、失效、重用、到期和错误绑定明确失败。
+
+原始目标保存在服务端，跳转仅携带短登录 ID、state 或 code，不能反复嵌套放大 URL。允许既定主站页面、含恰好两个合法参数的 `/auth/complete`、合法 Task 预览附件目标；拒绝外站和认证循环，保留原始 escaped path/query 与原登录目标内的 fragment。一般 SSO 目标遵守既有 24 KiB raw query / 48 KiB request target 边界，原登录内层 returnPath 仍受原 4096-byte 限制。
+
+失败页按 Accept-Language 提供中英文、可见错误、请求 ID、手动重新 SSO 和主站入口，不自动循环，不撤销已建立的主站会话。未登录时允许在新标签页登录后返回重试。所有响应 no-store、no-referrer，服务与代理日志排除 code/state 原值、Cookie 和秘密。并发 SSO 或账号切换造成两域 Cookie 不一致是已接受风险。
+
+裸预览 Host 仅提供 SSO，尚未服务的 Task namespace 及畸形 preview Host 必须拒绝，不落回主站 API。其他主站路由和 loopback 健康探针继续可用。真实浏览器须证明 Cookie 作用域、原目标恢复、未带回 Cookie 的停止与重试、主站会话保留及注销失效。
 
 ## CLI 设备授权
 
@@ -639,13 +649,14 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 
 ## 配置与运行边界
 
-下列五项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，
+下列六项服务端鉴权配置均必填，缺少或无效时启动失败；可通过 YAML 字段提供，
 对应环境变量显式设置时覆盖文件。App Secret 不下发到前端。
 数据库、存储根目录和既有生命周期配置继续遵守服务要求。
 
 | 配置 | 要求 |
 |---|---|
 | `server.public_origin` / `DAYNIGHT_PUBLIC_ORIGIN` | 主站的精确 canonical origin；无路径、凭据、query 或 fragment，host 小写，默认端口省略。 |
+| `server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` | 同站的精确预览 origin；生产为独立 HTTPS DNS hostname，Cookie 域不得覆盖主站。显式 HTTP 测试可用同站测试域名，或同一数字 loopback IP 的不同端口。 |
 | `uniauth.url` / `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway origin，交由 SDK 校验。 |
 | `uniauth.app_id` / `DAYNIGHT_UNIAUTH_APP_ID` | 后端 App ID。 |
 | `uniauth.app_secret` / `DAYNIGHT_UNIAUTH_APP_SECRET` | 后端 App Secret。 |
@@ -653,7 +664,7 @@ handler 工作；5 秒写入、5 秒对端等待与可能 15 秒 goroutine drain
 
 服务只注册配置的 callback 路径，包括 `/auth/callback` 这样的已登记路径，不额外
 挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，包含使用引导的
-`/login`、`/auth/complete`、`/setup`、`/teams` 根及全部后代路径，以及 `/api/v1/teams` API 命名空间；
+`/login`、`/auth/complete`、`/setup`、`/teams` 根及全部后代路径，以及 `/api/v1/teams`、`/api/v1/auth/preview` 和 `/auth/sso` 命名空间；
 配置和启动验证必须先于路由注册拒绝冲突。已有 callback
 占用该命名空间时须更换路径并同步 UniAuth 登记值。不接受编码别名、
 路由通配符或 dot-segment。返回位置在建立登录事务前拒绝登录入口、完成页和实际 callback

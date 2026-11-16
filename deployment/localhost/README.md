@@ -10,6 +10,15 @@ repositories. No host Go,
 Node.js or PostgreSQL installation is needed. A registered UniAuth application
 and its server-side credentials are required.
 
+## Preview SSO routing
+
+Prepare the bare preview hostname and wildcard DNS/TLS before deployment, and
+forward their original Host to the same server. The bare host serves explicit
+SSO navigation; Task subdomains remain reserved until attachment serving is
+enabled. See the [authentication design](../../docs/design/daynight-auth.md#显式浏览器预览-sso).
+Proxy access logs must omit code/state queries, Cookie headers and credentials.
+The bundled stream proxy does not produce HTTP request access logs. Startup
+validates configured origins without probing external DNS or certificates.
 ## Configure and start
 
 From the repository root, copy the local configuration template:
@@ -23,6 +32,7 @@ Set the following values in `deployment/localhost/.env` before starting:
 | Variable | Required value |
 |---|---|
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact browser-visible origin, without a trailing slash, path, query or fragment |
+| `DAYNIGHT_PREVIEW_ORIGIN` | Exact same-site preview origin; independent hostname and HTTPS in production |
 | `DAYNIGHT_UNIAUTH_URL` | UniAuth gateway URL |
 | `DAYNIGHT_UNIAUTH_APP_ID` | Registered UniAuth application ID |
 | `DAYNIGHT_UNIAUTH_APP_SECRET` | Registered UniAuth application secret; keep this file private |

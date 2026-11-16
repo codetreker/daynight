@@ -23,6 +23,7 @@ type Identity struct {
 	ops         identityOperations
 	client      *uniauth.Client
 	callbackURL string
+	preview     *PreviewSSO
 	now         func() time.Time
 }
 

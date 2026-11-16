@@ -628,6 +628,10 @@ func (s unexpectedAppTransactions) WriteIdentity(context.Context, func(store.Ide
 	var value0 store.Completion
 	return value0, failure
 }
+func (s unexpectedAppTransactions) WritePreviewSSO(context.Context, func(store.PreviewSSODAO) error) (store.Completion, error) {
+	failure := s.backend.unexpected("WritePreviewSSO")
+	return store.Completion{Outcome: store.TransactionNotCommitted}, failure
+}
 func (s unexpectedAppTransactions) WriteOAuthClients(context.Context, func(store.OAuthClientScope) error) (store.Completion, error) {
 	failure := s.backend.unexpected("WriteOAuthClients")
 	var value0 store.Completion
