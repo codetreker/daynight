@@ -48,7 +48,7 @@ describe("workspace sidebar", () => {
     const groups = nav.querySelectorAll(".sidebar-group");
     expect(groups).toHaveLength(3);
     expect(within(groups[0] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Projects", "Team settings"]);
-    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["In-progress tasks", "Shared with me", "My Workers", "Assistants"]);
+    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["My GitHub Apps", "In-progress tasks", "Shared with me", "My Workers", "Assistants"]);
     expect(within(groups[2] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Webhooks", "Test Sessions"]);
     expect(screen.getByRole("link", { name: "Webhooks" })).toHaveAttribute("href", "/webhooks?owner=personal");
     view.rerender(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" webhooksAvailable={false} />);
