@@ -1,4 +1,4 @@
-.tag-filter-wrap { min-width: 0; max-width: 100%; }
+.tag-filter-wrap { align-self: flex-start; min-width: 0; max-width: 100%; }
 .tag-filter { position: relative; }
 .tag-filter-panel { position: absolute; z-index: 20; top: calc(100% + 5px); left: 0; box-sizing: border-box; width: min(352px, calc(100vw - 32px)); padding: min(14px, var(--tag-filter-padding-y, 14px)) min(14px, var(--tag-filter-padding-x, 14px)); overflow-y: auto; overscroll-behavior: contain; border: 1px solid #d5dce5; border-radius: 10px; background: #fff; box-shadow: 0 12px 34px #1721321c, 0 2px 5px #17213208; color: #172132; font-size: 14px; line-height: 1.5; }
 .tag-filter-panel *, .tag-filter-panel *::before, .tag-filter-panel *::after { box-sizing: border-box; }
@@ -36,6 +36,7 @@
 .tag-filter-manage { padding-top: 8px; border-top: 1px solid #e8ebf0; }
 .tag-filter-feedback { margin: 0 0 8px; padding: 9px 10px; border-radius: 6px; background: #fff0ef; color: #a3322b; font-size: 12px; overflow-wrap: anywhere; }
 .tag-filter-selected { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.tag-filter-selected:empty { display: none; }
 .tag-filter-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; padding: 2px 6px; border: 1px solid #d5dce5; border-radius: 5px; background: #f0f1f6; color: #344054; overflow-wrap: anywhere; font-size: 12px; }
 .tag-filter-chip button { flex: none; min-width: 18px; min-height: 22px; padding: 0 2px; border: 0; background: transparent; color: inherit; font-size: 16px; }
 .tag-filter-error { color: #a3322b; font-size: 13px; overflow-wrap: anywhere; }
