@@ -84,6 +84,7 @@ export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener
     return () => { window.removeEventListener('resize', resize); viewport?.removeEventListener('resize', resize); viewport?.removeEventListener('scroll', resize); };
   }, []);
   const currentWorker = worker?.workerId === bot?.workerId ? worker : undefined;
+  const legacyRole = bot?.roleConfiguration?.revision === 'daynight-assistant/1' || bot?.roleConfiguration?.revision === 'daynight-assistant/2';
   return <dialog id={id} ref={dialog} className={`bot-details-panel${narrow ? ' bot-details-drawer' : ''}`} role={narrow ? 'dialog' : 'complementary'} aria-label={m.details} aria-modal={narrow ? true : undefined}
     onCancel={event => { event.preventDefault(); if (!modalBlocked) onClose(); }}
     onKeyDown={event => {
@@ -103,7 +104,7 @@ export function BotDetailsPanel({ assistantTasks, id, bot, worker, stale, opener
     <div className="bot-details-scroll">
       {bot === null ? <p role="status">{m.loading}</p> : <>
         {assistantTasks}
-        <div className="bot-details-profile"><span>{m.name}</span><strong>{bot.name}</strong></div>
+        <div className="bot-details-profile"><span>{m.name}</span><strong>{bot.name}</strong>{legacyRole ? <p>{m.legacyRoleNotice}</p> : null}</div>
         <section className="bot-details-section"><h3>{m.runInformation}</h3><dl>
           <div><dt>{m.botStartup}</dt><dd><span>{m[bot.startupResult.state]}</span>{bot.startupResult.code !== null ? <p>{m.reason(bot.startupResult.code)}</p> : null}</dd></div>
           <div><dt>{m.workerObservation}</dt><dd>{stale || !currentWorker ? m.workerUnknown : currentWorker.state === 'available' ? m.workerOnline : m.workerStates[currentWorker.state]}</dd></div>
