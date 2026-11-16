@@ -766,8 +766,8 @@ The gateway publishes host `127.0.0.1:8787` for the application and
 `127.0.0.1:8788` for metrics, forwarding each over a separate TCP stream to the
 server's loopback listeners in their shared network namespace; the database has no
 published host port. Startup initializes or upgrades the database with this
-module's embedded format snapshot and migrations. Open
-`http://127.0.0.1:8787/` for projects and task graphs. The
+module's embedded format snapshot and migrations. Open the configured HTTPS public
+origin through the external proxy for projects and task graphs. The
 [dev-ci deployment](../../deployment/dev-ci/README.md) reuses the production
 Dockerfile and gateway in a unique disposable project for tests.
 

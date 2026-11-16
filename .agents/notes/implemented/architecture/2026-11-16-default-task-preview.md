@@ -27,7 +27,10 @@ an absent preview Cookie through SSO; image failures offer explicit SSO in a new
 tab and ordinary retry without replacing the reader. The [Markdown image
 retry decision](../feature/2026-11-16-markdown-attachment-image-retry.md) owns
 per-image state. Cross-origin frames do not bridge keyboard events; their identity
-and established document lifecycle remain independent of that bridge.
+and established document lifecycle remain independent of that bridge. The ordinary
+Vite development server injects its explicitly configured preview origin; missing
+or unusable configuration fails at startup. Production builds leave metadata
+injection to the Go shell.
 
 ## Alternatives
 

@@ -860,12 +860,15 @@ records the trade-offs; [Web requirements](../docs/spec/daynight-web.md#日常�
 own the complete outcomes. With the Go API running on loopback, use:
 
 ```text
-pnpm web:dev
+DAYNIGHT_PREVIEW_ORIGIN=http://preview.daynight.localhost:8787 pnpm web:dev
 pnpm web:typecheck
 pnpm web:build
 pnpm web:test
 pnpm web:test:browser
 ```
+
+The [Web development setup](../packages/daynight-web/README.md#development) defines the
+matching Go origin, callback, DNS and Cookie requirements for Vite.
 
 The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes them into the Go embed directory. A production Go build

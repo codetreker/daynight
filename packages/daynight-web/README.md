@@ -1466,27 +1466,49 @@ request or Provider dependency.
 
 ## Development
 
-Use Node.js 24 LTS and pnpm 11.28.6. From the repository root:
+Use Node.js 24 LTS and pnpm 11.28.6. Configure the Go API to listen on
+`127.0.0.1:8787` with the same preview origin used by Vite. For an isolated HTTP
+development setup, use two distinct same-site DNS hosts, for example:
 
 ```bash
+# Configure Go with these values and register the callback with UniAuth.
+DAYNIGHT_PUBLIC_ORIGIN=http://app.daynight.localhost:5173
+DAYNIGHT_PREVIEW_ORIGIN=http://preview.daynight.localhost:8787
+DAYNIGHT_UNIAUTH_CALLBACK_URL=http://app.daynight.localhost:5173/auth/callback
+DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
+
+# Export the matching values for Vite, then start it from the repository root.
+export DAYNIGHT_PREVIEW_ORIGIN=http://preview.daynight.localhost:8787
+export DAYNIGHT_UNIAUTH_CALLBACK_URL=http://app.daynight.localhost:5173/auth/callback
 pnpm install --frozen-lockfile
 pnpm web:dev
 ```
 
-Run the Go API separately on `127.0.0.1:8787`, using its
-[configuration](../daynight-server/README.md). Native macOS development uses an
-ordinary writable storage directory and does not require an APFS image. Names
-that alias another file or directory on that filesystem are refused; Linux CI
-owns case-coexistence coverage. Vite proxies `/api` to that address
-and listens on loopback. For real login through Vite, set the same
-`DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite environment to the same public callback
-URL configured for Go, registered with UniAuth for the development browser origin.
-Go can receive this value through YAML or its environment; Vite does not read the
-server configuration file. Vite proxies exactly that callback
-path through the same Go API target. When unset, no callback proxy is added. The five required
-backend authentication settings and explicit HTTP test policy follow the
-[deployment guide](../../deployment/localhost/README.md); changing the browser
-origin does not relax callback or Cookie-write Origin checks.
+Open `http://app.daynight.localhost:5173`, not the numeric address printed by
+Vite. The browser-visible host and port must match Go's `DAYNIGHT_PUBLIC_ORIGIN`;
+if Vite selects another port, reconfigure Go and the registered callback. Ensure
+that the main, bare preview and Task subdomains resolve to the intended loopback
+listener and that the browser accepts their Cookies. Vite binds to loopback and
+proxies `/api` and the configured callback path to Go without replacing Host;
+preview hosts reach Go directly. A proxy or TLS terminator used in another
+configuration must preserve Host and support the bare and wildcard preview hosts.
+
+Vite reads `DAYNIGHT_PREVIEW_ORIGIN` from its own environment, not Go's YAML.
+Missing, invalid or numeric-IP preview origins stop the development server with a
+diagnostic; no same-origin fallback is used. HTTP origins are limited to local
+`.localhost` or `.test` names. Vite injects this public value only into the
+running development shell. Production builds get their metadata from Go. The
+package's standalone `vite preview` serves static build output without Go's
+runtime metadata and cannot independently provide Task/Goal attachment reading;
+use the development server or the embedded Go service for that flow.
+
+For Go's other authentication settings, storage requirements and explicit HTTP
+test policy, see its [configuration](../daynight-server/README.md) and the
+[deployment guide](../../deployment/localhost/README.md). Native macOS development
+uses an ordinary writable storage directory and does not require an APFS image.
+Names that alias another file or directory on that filesystem are refused; Linux
+CI owns case-coexistence coverage. Changing the browser origin does not relax
+callback or Cookie-write Origin checks.
 
 An identity-scoped Team projects provider supplies both the sidebar directory and
 Team project cards from one request owner. Shared with me mounts its own provider

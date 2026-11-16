@@ -863,7 +863,7 @@ DAYNIGHT_TEST_DATABASE_URL=... bash scripts/startup-shutdown.sh
 完整规模图与几何测试由 `web:test:stress` 的独立配置选择，常规发现不包含 `.stress.ts`。
 `web:build` 不调用 Go；Go 模块验证使用独立资源覆盖层。
 
-开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。源码构建固定使用 Node 24 与 pnpm 11.28.6；localhost 运行镜像还包含 Node 和图片验证依赖。根目录现有 CLI build/test/acceptance 命令的含义保持独立，web 命令显式选择 `@codetreker/daynight-web`。
+开发模式的 Vite 从自身环境读取与 Go 一致的 `DAYNIGHT_PREVIEW_ORIGIN` 并注入页面；缺失或不可用于 Task 子域的值会阻止启动。Vite 将 `/api` 及配置的认证回调代理到本机 Go，保留原始 Host；浏览器须通过 Go 配置的同站主站 origin 访问，预览域直接到达 Go。开发环境配置见 [Web Development](../../packages/daynight-web/README.md#development)。生产构建不注入开发值，生产服务经外部 HTTPS 代理访问本机 Go 监听器。源码构建固定使用 Node 24 与 pnpm 11.28.6；localhost 运行镜像还包含 Node 和图片验证依赖。根目录现有 CLI build/test/acceptance 命令的含义保持独立，web 命令显式选择 `@codetreker/daynight-web`。
 
 ### localhost 交付部署
 
