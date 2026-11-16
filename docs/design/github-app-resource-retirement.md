@@ -1,6 +1,6 @@
 # 独立 App 的项目与 Team 清退
 
-`service/project.AppProjects` 提供完整项目转移和删除协调器，`service/team.AppTeams` 提供空 Team 删除协调器。它们复用既有业务规则，并通过专用事务 scope 将 Project、Team、App、授权、连接、Webhook 资格和 Session 清退绑定同一事务。当前生产调用者仍使用原公共构造器；采用新组件时须整体切换，不能将旧 `MarkDeleted` 的隐式全局 App 失效回调混入新流程。
+`service/project.AppProjects` 提供完整项目转移和删除协调器，`service/team.AppTeams` 提供空 Team 删除协调器。它们复用既有业务规则，并通过专用事务 scope 将 Project、Team、App、授权、连接、Webhook 资格和 Session 清退绑定同一事务。生产装配通过这些协调器执行转移和删除；专用 `MarkDeleted` 只标记 Project，连接清退由同一事务中的协调器负责。
 
 ## 项目转移
 

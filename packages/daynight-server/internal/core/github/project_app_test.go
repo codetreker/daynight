@@ -125,6 +125,19 @@ func TestProjectAppRulesPreserveIntentAndStableRepository(t *testing.T) {
 	}
 }
 
+func TestConnectedProjectAppStatusLimitsGrantIdentity(t *testing.T) {
+	d, p, in, proof := appRuleFixture()
+	admin, err := ManageProjectApp(t.Context(), d, p, "connect", in, 0, false, d.f.Project.RepoURL, proof)
+	if err != nil || admin.GrantID == nil || *admin.GrantID != in.GrantID {
+		t.Fatalf("owner Team administrator: %+v, %v", admin, err)
+	}
+	d.f.Access.TeamRole = nil
+	viewer, err := ProjectAppStatusFrom(t.Context(), d, d.f)
+	if err != nil || viewer.CanManageConnection || viewer.GrantID != nil || viewer.App == nil || viewer.App.ID != in.AppResourceID {
+		t.Fatalf("Project reader: %+v, %v", viewer, err)
+	}
+}
+
 func TestProjectAppRuleRejections(t *testing.T) {
 	cause := errors.New("store failure")
 	for _, tc := range []struct {

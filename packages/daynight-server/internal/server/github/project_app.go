@@ -29,8 +29,7 @@ type projectAppHandler struct {
 	logger     *slog.Logger
 }
 
-// RegisterProjectAppRoutes provides the App-aware adapter for the explicit
-// runtime cutover. It is not mounted by the current production assembly.
+// RegisterProjectAppRoutes installs the App-aware project connection adapter.
 func RegisterProjectAppRoutes(mux *http.ServeMux, ops ProjectAppOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &projectAppHandler{operations: ops, logger: logger}
 	base := "/api/v1/projects/{projectId}/github"

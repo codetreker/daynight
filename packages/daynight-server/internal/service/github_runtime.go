@@ -9,8 +9,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	githubservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
-	githubconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/github/config"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
 type githubRunner interface {
@@ -21,54 +19,58 @@ type githubRunner interface {
 }
 
 type githubRuntime struct {
-	runner  githubRunner
-	client  *remote.Client
-	logger  *slog.Logger
-	mu      sync.Mutex
-	started bool
-	cancel  context.CancelFunc
-	done    chan struct{}
-	failure error
+	runner   githubRunner
+	provider interface{ Close(context.Context) error }
+	logger   *slog.Logger
+	mu       sync.Mutex
+	started  bool
+	cancel   context.CancelFunc
+	done     chan struct{}
+	failure  error
 }
 
-func (a *App) assembleGitHub(db store.Transactions, c githubconfig.Config, logger *slog.Logger) error {
-	if !c.Enabled {
-		a.GitHubManager = githubservice.NewManager(db, nil, 0, logger)
-		return nil
-	}
-	reader, ok := db.(store.GitHubWorkReader)
+type githubAppStore interface {
+	store.GitHubAppStore
+	store.GitHubAppConfigStore
+	store.GitHubGrantStore
+	store.GitHubAppImpactStore
+	store.GitHubProjectAppStore
+	store.GitHubAppCredentialReader
+	store.GitHubAppWebhookStore
+	store.GitHubAppWorkReader
+	store.GitHubAppWorkWriter
+	store.SnapshotReader
+}
+
+func (a *App) assembleGitHub(db store.Transactions, logger *slog.Logger) error {
+	backend, ok := db.(githubAppStore)
 	if !ok {
-		return errors.New("github work reader unavailable")
+		return errors.New("github App store unavailable")
 	}
-	signals, ok := db.(store.GitHubSignalTransaction)
-	if !ok {
-		return errors.New("github signal transaction unavailable")
-	}
-	receiver, err := githubservice.NewWebhookReceiver(signals, c.AppID, logger)
+	receiver, err := githubservice.NewAppWebhookReceiver(backend, logger)
 	if err != nil {
 		return err
 	}
-	key, err := c.PrivateKey()
+	provider, err := githubservice.NewClientProvider(backend)
 	if err != nil {
 		return err
 	}
-	client, err := remote.NewClient(c.AppID, key)
+	executor, err := githubservice.NewAppExecutor(backend, provider, logger)
 	if err != nil {
+		_ = provider.Close(context.Background())
 		return err
 	}
-	executor, err := githubservice.NewExecutor(db, client, c.AppID, logger)
+	runner, err := githubservice.NewAppRunner(backend, executor, logger)
 	if err != nil {
-		client.CloseIdleConnections()
+		_ = provider.Close(context.Background())
 		return err
 	}
-	runner, err := githubservice.NewRunner(reader, executor, c.AppID, logger)
-	if err != nil {
-		client.CloseIdleConnections()
-		return err
-	}
-	a.GitHubManager = githubservice.NewManager(db, client, c.AppID, logger)
+	a.GitHubApps = githubservice.NewAppManager(backend)
+	a.GitHubConfig = githubservice.NewConfigManager(backend)
+	a.GitHubGrants = githubservice.NewGrantManager(backend, backend)
+	a.GitHubProject = githubservice.NewProjectAppManager(backend, provider)
 	a.GitHubWebhook = receiver
-	g := &githubRuntime{runner: runner, client: client, logger: logger}
+	g := &githubRuntime{runner: runner, provider: provider, logger: logger}
 	a.githubRuntime = g
 	ready := a.Ready
 	a.Ready = func(ctx context.Context) error {

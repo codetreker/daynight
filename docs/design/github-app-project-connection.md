@@ -8,4 +8,4 @@
 
 首次连接保留默认关闭的同步意愿，普通重连保留已保存意愿。显式断开关闭意愿并清除活动 App、grant、凭据和 installation 身份、领取、提示与日程，保留稳定仓库和 PR。开启同步要求当前活 App、当前 owner Team 的精确授权、有效绑定和可用访问状态。原权限和版本先于同值判断。
 
-状态投影增加 `canManageConnection` 和可空的最小 App 身份；连接管理响应携带 grantId，不返回秘密、管理员或其他 Team 的授权。App-aware HTTP adapter 提供完整项目 GitHub 子资源协议，尚未挂载生产 mux；现有全局 App 的公开装配保持原有行为。生产采用须同时切换运行时、生命周期与客户端，见[连接运行时](github-connection-runtime.md)。
+状态投影增加 `canManageConnection` 和可空的最小 App 身份；连接管理响应携带 grantId，不返回秘密、管理员或其他 Team 的授权。App-aware HTTP adapter 提供项目 GitHub 子资源协议，并由生产 mux 和项目设置使用；运行时与生命周期见[连接运行时](github-connection-runtime.md)。

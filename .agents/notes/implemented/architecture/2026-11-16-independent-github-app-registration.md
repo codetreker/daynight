@@ -8,7 +8,7 @@ A single deployment needs distinct GitHub Apps shared by authorized Teams withou
 
 ## Decision
 
-The independent App foundation proves the submitted RSA key with GitHub's authenticated App endpoint, then creates the App and its first administrator in one transaction. A partial unique index admits one live resource per external App ID, and the local UUID remains occupied as a tombstone. Public reads filter by current administrators and exclude secrets. The [registration design](../../../../docs/design/github-app-registration.md) describes the storage, budgets and unmounted adapter.
+The independent App foundation proves the submitted RSA key with GitHub's authenticated App endpoint, then creates the App and its first administrator in one transaction. A partial unique index admits one live resource per external App ID, and the local UUID remains occupied as a tombstone. Public reads filter by current administrators and exclude secrets. The [registration design](../../../../docs/design/github-app-registration.md) describes the storage, budgets and public adapter.
 
 ## Alternatives
 
@@ -18,4 +18,4 @@ The independent App foundation proves the submitted RSA key with GitHub's authen
 
 ## Consequences
 
-The schema supports the [administrator invitation component](2026-11-16-github-app-administrator-invitations.md) and later Team authorization operations while the existing connection runtime remains unchanged. The adapter is not mounted. A confirmed remote identity does not prove Webhook delivery, and an unknown commit cannot be inferred from equal public metadata or automatically replayed.
+The schema supports the [administrator invitation component](2026-11-16-github-app-administrator-invitations.md) and Team authorization operations. The registration adapter is mounted as part of the [App cutover](2026-11-17-github-app-cutover.md). A confirmed remote identity does not prove Webhook delivery, and an unknown commit cannot be inferred from equal public metadata or automatically replayed.

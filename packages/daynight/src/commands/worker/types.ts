@@ -35,7 +35,7 @@ export type CleanupSchedule = {
 };
 export type CleanupScheduleRecord = ResourceOwner & CleanupSchedule;
 export type ArchiveBackfillIdentity = ClaimIdentity & { serverOrigin: string; executionId: string; executionGeneration: string; launchId: string };
-export type ArchiveBackfillSchedule = { archiveRepairCode: ArchiveRepairCode; nextAttemptAt: number };
+export type ArchiveBackfillSchedule = { archiveRepairCode: ArchiveRepairCode | null; nextAttemptAt: number; legacyError?: string };
 export type ArchiveBackfillScheduleRecord = ArchiveBackfillIdentity & ArchiveBackfillSchedule;
 export type WorktreeBinding = { repositoryPath: string; commonDirectory: string; worktreePath: string; branch: string };
 

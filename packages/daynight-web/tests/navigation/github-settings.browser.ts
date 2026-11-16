@@ -5,6 +5,10 @@ const projectId = '00000000-0000-4000-8000-000000000101';
 const actorId = '00000000-0000-4000-8000-000000000001';
 const teamId = '00000000-0000-4000-8000-000000000011';
 const time = '2026-10-20T09:00:00Z';
+const appId = '00000000-0000-4000-8000-000000000021';
+const grantId = '00000000-0000-4000-8000-000000000022';
+const app = { id: appId, githubAppId: '13', name: 'Example App', githubSlug: 'example-app' };
+const grant = { grantId, app: { ...app, version: '1' }, createdAt: time };
 const team = { id: teamId, kind: 'personal', name: null };
 const profile = { id: actorId, personalTeam: team, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const project = { id: projectId, name: 'Example project', repoUrl: 'https://github.com/example/project', ownership: { teamId, version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
@@ -26,12 +30,14 @@ const install = async (page: Page): Promise<State> => {
     const error = (code: string) => ({ error: { code, message: code, requestId: 'test' } });
     if (path === '/api/v1/me') { if (state.holdMe) await state.holdMe; return send(profile); }
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/teams/${teamId}/github/apps`) return send({ items: [grant], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send({ ...team, version: 1n, createdAt: time, updatedAt: time, membership: { teamId, userId: actorId, role: 'admin', version: 1n, createdAt: time, updatedAt: time } });
     if (path === '/api/v1/projects') return send({ items: [project], nextCursor: null });
     if (path === `/api/v1/projects/${projectId}`) return send(project);
     if (path === `/api/v1/projects/${projectId}/access`) { if (state.holdAccess) await state.holdAccess; return send(access()); }
     if (path === `/api/v1/me/projects/${projectId}/worker-prompt`) return send({ scope: 'project', scopeId: projectId, revision: '0', text: '', updatedAt: null });
-    if (path === `/api/v1/projects/${projectId}/github`) return state.failRead ? send(error('internal_error'), 500) : send(state.status);
+    const status = () => ({ ...state.status, canManageConnection: state.role === 'admin', app: state.status.connection === 'connected' || state.status.connection === 'unavailable' ? app : null, grantId: state.status.connection === 'connected' || state.status.connection === 'unavailable' ? grantId : null });
+    if (path === `/api/v1/projects/${projectId}/github`) return state.failRead ? send(error('internal_error'), 500) : send(status());
     if (path === `/api/v1/projects/${projectId}/pull-requests`) return send({ projectId, revision: state.status.revision, items: [], total: '0', counts: { active: '0', closed: '0', merged: '0', all: '0' }, nextCursor: null, previousCursor: null });
     if (path === `/api/v1/projects/${projectId}/github/installation`) return send(candidate);
     if (path.startsWith(`/api/v1/projects/${projectId}/github/`) && method !== 'GET') {
@@ -48,8 +54,8 @@ const install = async (page: Page): Promise<State> => {
         state.status = { ...state.status, version: String(BigInt(state.status.version) + 1n), revision: String(BigInt(state.status.revision) + 1n), syncEnabled: (JSON.parse(body) as {syncEnabled: boolean}).syncEnabled };
       } else if (path.endsWith('/connect')) {
         state.status = { ...state.status, version: String(BigInt(state.status.version) + 1n), revision: String(BigInt(state.status.revision) + 1n), connection: 'connected', installation: candidate.installation, repository: candidate.repository, initializing: false };
-      } else if (path.endsWith('/disconnect')) state.status = { ...state.status, version: String(BigInt(state.status.version) + 1n), revision: String(BigInt(state.status.revision) + 1n), connection: 'disconnected', syncEnabled: false, initializing: false };
-      return send(state.status);
+      } else if (path.endsWith('/disconnect')) state.status = { ...state.status, version: String(BigInt(state.status.version) + 1n), revision: String(BigInt(state.status.revision) + 1n), connection: 'disconnected', installation: null, syncEnabled: false, initializing: false };
+      return send(status());
     }
     return send(error('not_found'), 404);
   });
@@ -72,12 +78,14 @@ for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
   test(`native installation menu cancellation preserves confirmation at ${width}px in ${locale}`, async ({ page }, testInfo) => {
     const state = await install(page);
     const accountLogin = 'installation-' + 'platform-engineering-'.repeat(8);
-    await page.route('**/api/v1/projects/*/github/installation', route => route.fulfill({ json: { ...candidate, installation: { ...candidate.installation, accountLogin } }, headers: { 'Daynight-User-ID': actorId } }));
+    await page.route(url => url.pathname === `/api/v1/projects/${projectId}/github/installation`, route => route.fulfill({ json: { ...candidate, installation: { ...candidate.installation, accountLogin } }, headers: { 'Daynight-User-ID': actorId } }));
     await page.setViewportSize({ width, height: 900 }); await open(page);
     await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
     const opener = page.getByRole('button', { name: locale === 'en' ? 'Connect GitHub App' : '连接 GitHub App' });
     await opener.click();
-    const dialog = page.getByRole('dialog'), select = dialog.locator('#github-installation');
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel(locale === 'en' ? 'Authorized App' : '获授权 App').selectOption(grantId);
+    const select = dialog.locator('#github-installation');
     await expect(select).toHaveValue(candidate.installation.id); await expect(select.locator('option')).toHaveCount(1);
     await expect(select.locator('option')).toHaveText(accountLogin);
     const geometry = await select.evaluate(element => {
@@ -106,6 +114,7 @@ test('connects the verified installation from a different account and retains th
   const state = await install(page); await open(page);
   await page.getByRole('button', { name: 'Connect GitHub App' }).click();
   const dialog = page.getByRole('dialog', { name: 'Connect GitHub App' });
+  await dialog.getByLabel('Authorized App').selectOption(grantId);
   await expect(dialog.getByLabel('Available App installation')).toHaveValue(candidate.installation.id);
   await expect(dialog.getByLabel('Available App installation')).toContainText('different-account');
   await expect(dialog).toContainText('shared under this Project’s permissions');
@@ -113,8 +122,8 @@ test('connects the verified installation from a different account and retains th
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole('switch', { name: 'PR sync' })).not.toBeChecked();
   await expect(page.getByText('Sync off', { exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.trim())).toMatch(/Disconnect|GitHub PR sync/);
-  expect(state.writes).toEqual([{ path: `/api/v1/projects/${projectId}/github/connect`, method: 'POST', body: '{"version":"1","installationId":"9007199254740993"}', principal: null }]);
+  await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.trim())).toMatch(/Change connection|GitHub PR sync/);
+  expect(state.writes).toEqual([{ path: `/api/v1/projects/${projectId}/github/connect`, method: 'POST', body: JSON.stringify({ version: '1', ownershipVersion: '1', appResourceId: appId, appVersion: '1', grantId, installationId: '9007199254740993' }), principal: null }]);
   expect(state.requests.filter(value => value.endsWith('/github/installation'))).toHaveLength(1);
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   const disconnect = page.getByRole('dialog', { name: 'Disconnect GitHub?' });
@@ -122,7 +131,7 @@ test('connects the verified installation from a different account and retains th
   await expect(disconnect).toHaveCount(0);
   await expect(page.getByText('Saved data remains readable and will not be updated.')).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.activeElement?.textContent?.trim())).toMatch(/Reconnect|GitHub PR sync/);
-  expect(state.writes[1]?.body).toBe('{"version":"2"}');
+  expect(state.writes[1]?.body).toBe('{"version":"2","ownershipVersion":"1"}');
 });
 
 test('mobile background identity checks preserve focus and draft, and a pending save blocks connection management', async ({ page }) => {
@@ -159,7 +168,7 @@ test('rejects invalid intervals, preserves conflicts, and responds to permission
   await expect(field).toHaveValue('14'); await expect(page.getByText(/Currently saved: 9 minutes/).first()).toBeVisible();
   state.conflict = false; state.role = 'member';
   const other = await background(page);
-  await expect(page.getByText('You can view sync status. Project administrators manage the connection, sync switch and interval.')).toBeVisible();
+  await expect(page.getByText('Team administrators manage the connection; Project administrators manage sync and polling.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save interval' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Connect GitHub App' })).toHaveCount(0);
   await other.close();
@@ -183,8 +192,7 @@ test('distinguishes poll and webhook failures, unavailable access, disconnection
   await expect(page.getByRole('button', { name: 'Reconnect' })).toBeVisible();
   state.status = { ...baseStatus(), serviceAvailable: false };
   await page.reload();
-  await expect(page.getByText('GitHub App is not configured on this service.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Connect GitHub App' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Connect GitHub App' })).toBeVisible();
   await page.setViewportSize({ width: 320, height: 720 });
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('zh-CN');
   await expect(page.getByRole('heading', { name: 'GitHub PR 同步' })).toBeVisible();
@@ -227,15 +235,13 @@ for (const { name, connection, serviceAvailable } of [
     const state = await install(page);
     state.status = { ...baseStatus(), connection, serviceAvailable, installation: candidate.installation, repository: candidate.repository, version: '2', revision: '2' };
     await open(page);
-    if (!serviceAvailable) await expect(page.getByRole('button', { name: 'Reconnect' })).toHaveCount(0);
     await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Disconnect GitHub?' });
     await dialog.getByRole('button', { name: 'Disconnect', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByText('Saved data remains readable and will not be updated.')).toBeVisible();
-    expect(state.writes.map(({path, body}) => ({path, body}))).toEqual([{path: `/api/v1/projects/${projectId}/github/disconnect`, body: '{"version":"2"}'}]);
+    expect(state.writes.map(({path, body}) => ({path, body}))).toEqual([{path: `/api/v1/projects/${projectId}/github/disconnect`, body: '{"version":"2","ownershipVersion":"1"}'}]);
     expect(state.requests.filter(value => value.endsWith('/github/installation'))).toHaveLength(0);
-    if (!serviceAvailable) await expect(page.getByRole('button', { name: 'Reconnect' })).toHaveCount(0);
   });
 }
 
@@ -291,4 +297,21 @@ test('an unknown switch write retains the guard until reread and is not replayed
   await expect(page.getByLabel('Poll interval')).toHaveValue('12'); expect(state.writes).toHaveLength(1);
   state.failRead = false; await page.locator('.github-settings').getByRole('button', { name: 'Retry' }).first().click();
   await expect(page.getByRole('switch', { name: 'PR sync' })).toBeChecked(); expect(state.writes).toHaveLength(1);
+});
+
+test('mounts the Team authorization projection and keeps Personal Team navigation reachable', async ({ page }) => {
+  const state = await install(page);
+  for (const [width, locale] of [[1280, 'en'], [320, 'zh-CN']] as const) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto('/projects');
+    await page.getByRole('link', { name: 'GitHub Apps', exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/teams/${teamId}/github-apps$`));
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await expect(page.getByRole('heading', { name: locale === 'en' ? 'Available GitHub Apps' : '可用的 GitHub Apps' })).toBeVisible();
+    await expect(page.getByText('Example App', { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.reload();
+    await expect(page.getByText('Example App', { exact: true })).toBeVisible();
+  }
+  expect(state.writes).toHaveLength(0);
 });

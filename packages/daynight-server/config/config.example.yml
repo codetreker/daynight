@@ -37,12 +37,6 @@ mcp:
 oauth:
   preregistered_clients: {}
 
-github:
-  enabled: false
-  app_id: 0
-  private_key_file: ""
-  webhook_secret: "" # keep private
-
 webhook:
   enabled: false
 

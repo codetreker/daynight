@@ -98,33 +98,36 @@ func authorizeResourceRequest(handler http.Handler, request *http.Request) {
 
 // Each callback supplies independent facts; writes never determine later reads.
 type httpTestStore struct {
-	t                           *testing.T
-	ReadSnapshotCall            func(ctx context.Context, fn func(store.SnapshotScope) error) error
-	WriteIdentityCall           func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error)
-	WritePreviewSSOCall         func(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error)
-	WriteProjectCall            func(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error)
-	WriteProjectCreationCall    func(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error)
-	CreateTeamCall              func(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error)
-	WriteTeamCall               func(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error)
-	WriteWorkerCall             func(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error)
-	ReadPromptSnapshotCall      func(ctx context.Context, fn func(store.PromptSnapshot) error) error
-	WritePromptCall             func(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error)
-	WriteAssistantTaskCall      func(context.Context, func(store.AssistantTaskScope) error) (store.Completion, error)
-	WriteBotCall                func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error)
-	WriteSessionCall            func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error)
-	WriteThreadCall             func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error)
-	WriteAttachmentMutationCall func(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error)
-	PutAttachmentCall           func(ctx context.Context, item model.Attachment) (model.Attachment, bool, error)
-	DeleteAttachmentCall        func(ctx context.Context, project, task, path string) error
-	WritePrivateTransferCall    func(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error)
-	WriteOAuthClientsCall       func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error)
-	WriteAuthorizationsCall     func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error)
-	WriteCredentialFamilyCall   func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error)
-	WriteCredentialUsageCall    func(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error)
-	WriteGrantLifecycleCall     func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
-	ReadTaskSearchCall          func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
-	WriteWebhookCall            func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
-	ReadWebhookSnapshotCall     func(ctx context.Context, fn func(store.WebhookReadScope) error) error
+	t                              *testing.T
+	ReadSnapshotCall               func(ctx context.Context, fn func(store.SnapshotScope) error) error
+	WriteIdentityCall              func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error)
+	WritePreviewSSOCall            func(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error)
+	WriteProjectCall               func(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error)
+	WriteGitHubProjectTransferCall func(context.Context, string, func(store.GitHubProjectTransferScope) error) (store.Completion, error)
+	WriteGitHubProjectDeletionCall func(context.Context, string, func(store.GitHubProjectDeletionScope) error) (store.Completion, error)
+	WriteGitHubTeamDeletionCall    func(context.Context, string, func(store.GitHubTeamDeletionScope) error) (store.Completion, error)
+	WriteProjectCreationCall       func(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error)
+	CreateTeamCall                 func(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error)
+	WriteTeamCall                  func(ctx context.Context, id string, fn func(store.TeamWriteScope) error) (store.Completion, error)
+	WriteWorkerCall                func(ctx context.Context, fn func(store.WorkerScope) error) (store.Completion, error)
+	ReadPromptSnapshotCall         func(ctx context.Context, fn func(store.PromptSnapshot) error) error
+	WritePromptCall                func(ctx context.Context, fn func(store.PromptWriteScope) error) (store.Completion, error)
+	WriteAssistantTaskCall         func(context.Context, func(store.AssistantTaskScope) error) (store.Completion, error)
+	WriteBotCall                   func(ctx context.Context, fn func(store.BotScope) error) (store.Completion, error)
+	WriteSessionCall               func(ctx context.Context, fn func(store.SessionScope) error) (store.Completion, error)
+	WriteThreadCall                func(ctx context.Context, fn func(store.ThreadScope) error) (store.Completion, error)
+	WriteAttachmentMutationCall    func(ctx context.Context, fn func(store.AttachmentMutationScope) error) (store.Completion, error)
+	PutAttachmentCall              func(ctx context.Context, item model.Attachment) (model.Attachment, bool, error)
+	DeleteAttachmentCall           func(ctx context.Context, project, task, path string) error
+	WritePrivateTransferCall       func(ctx context.Context, fn func(store.PrivateTransferDAO) error) (store.Completion, error)
+	WriteOAuthClientsCall          func(ctx context.Context, fn func(store.OAuthClientScope) error) (store.Completion, error)
+	WriteAuthorizationsCall        func(ctx context.Context, fn func(store.AuthorizationScope) error) (store.Completion, error)
+	WriteCredentialFamilyCall      func(ctx context.Context, fn func(store.CredentialFamilyScope) error) (store.Completion, error)
+	WriteCredentialUsageCall       func(ctx context.Context, events []model.CredentialUsageEvent) (store.Completion, error)
+	WriteGrantLifecycleCall        func(ctx context.Context, fn func(store.GrantLifecycleDAO) error) (store.Completion, error)
+	ReadTaskSearchCall             func(ctx context.Context, fn func(store.TaskSearchSnapshot) error) error
+	WriteWebhookCall               func(ctx context.Context, owner webhook.Owner, id string, fn func(store.WebhookWriteScope) error) (store.Completion, error)
+	ReadWebhookSnapshotCall        func(ctx context.Context, fn func(store.WebhookReadScope) error) error
 }
 
 var _ store.Transactions = (*httpTestStore)(nil)
@@ -155,6 +158,27 @@ func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(sto
 		unexpectedHTTPCall(s.t, "WriteProject")
 	}
 	return s.WriteProjectCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteGitHubProjectTransfer(ctx context.Context, id string, fn func(store.GitHubProjectTransferScope) error) (store.Completion, error) {
+	if s.WriteGitHubProjectTransferCall == nil {
+		unexpectedHTTPCall(s.t, "WriteGitHubProjectTransfer")
+	}
+	return s.WriteGitHubProjectTransferCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteGitHubProjectDeletion(ctx context.Context, id string, fn func(store.GitHubProjectDeletionScope) error) (store.Completion, error) {
+	if s.WriteGitHubProjectDeletionCall == nil {
+		unexpectedHTTPCall(s.t, "WriteGitHubProjectDeletion")
+	}
+	return s.WriteGitHubProjectDeletionCall(ctx, id, fn)
+}
+
+func (s *httpTestStore) WriteGitHubTeamDeletion(ctx context.Context, id string, fn func(store.GitHubTeamDeletionScope) error) (store.Completion, error) {
+	if s.WriteGitHubTeamDeletionCall == nil {
+		unexpectedHTTPCall(s.t, "WriteGitHubTeamDeletion")
+	}
+	return s.WriteGitHubTeamDeletionCall(ctx, id, fn)
 }
 
 func (s *httpTestStore) WriteProjectCreation(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error) {

@@ -853,10 +853,6 @@ diagnostics and cause categories.
 | `DAYNIGHT_DATABASE_URL` | Explicit PostgreSQL connection string | Required |
 | `DAYNIGHT_REDIS_URL` | Monitoring-only `redis` or `rediss` URL; an empty value disables monitoring | Empty |
 | `DAYNIGHT_WEBHOOK_ENABLED` | Permit webhook configuration expansion and network claims (`0` or `1`) | `0` |
-| `DAYNIGHT_GITHUB_ENABLED` | Enable GitHub App configuration (`0` or `1`) | `0` |
-| `DAYNIGHT_GITHUB_APP_ID` | Positive GitHub App ID, required when enabled | Unconfigured |
-| `DAYNIGHT_GITHUB_PRIVATE_KEY_FILE` | RSA PEM private key path, required when enabled | Unconfigured |
-| `DAYNIGHT_GITHUB_WEBHOOK_SECRET` | Webhook secret, required when enabled | Unconfigured |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
 | `DAYNIGHT_PREVIEW_ORIGIN` | Exact same-site preview origin on a separate hostname; HTTPS in production | Required |
@@ -882,27 +878,26 @@ diagnostics and cause categories.
 | `DAYNIGHT_IMAGE_MANIFEST_PATH` | Path to the helper and engine SHA-256 manifest | Unconfigured |
 | `DAYNIGHT_IMAGE_TEMP_DIRECTORY` | Path to the private staging directory (mode 0700) | Unconfigured |
 
-GitHub App settings are validated locally on startup when enabled; invalid keys or
-missing credentials stop startup without exposing their contents. Relative key paths
-resolve from the configuration root. The [remote design](../../docs/design/github-app-remote.md)
-describes token handling and the read contract. When enabled, the server starts
-the bounded synchronization worker and exposes Project administrator connection
-and settings operations. Configure the GitHub App with Pull requests read access
-and install it on the target repository. Set the App's HTTPS webhook URL to
-`/api/v1/github/webhook`, configure the same webhook secret, and subscribe to
+GitHub Apps are registered as independent resources with their private key and
+webhook secret. Grant a Team use of an App and have its administrator connect
+the Project. Configure Pull requests read access, install the App on the target
+repository, and use the App's returned HTTPS webhook URL with its secret and
 pull request and installation lifecycle events. The reverse proxy must allow a
 26,214,400-byte request body. The receiver persists refresh hints before
-acknowledging relevant deliveries; polling repairs missed deliveries. See the
-[connection and scheduler design](../../docs/design/github-connection-runtime.md).
+acknowledging relevant deliveries; polling repairs missed deliveries. The
+[remote design](../../docs/design/github-app-remote.md) describes token handling.
 
-Each Project's PR synchronization defaults to off, independently of its GitHub
-connection. An administrator enables it after connecting; disabling it retains
-the connection and saved PRs. When upgrading across migration 073, stop and drain
-every old server replica before migrating, replace all replicas, and then start
-the new servers. Old binaries ignore the synchronization setting and must not run
-alongside the new version. Existing Projects also migrate with synchronization
-off and require an administrator to enable it again. The migration retains the
-binding, PRs and history while invalidating old work and pending hints.
+Each Project's PR synchronization defaults to off. Disabling it retains the
+connection and saved PRs. Before applying migration 077, stop and drain every
+old server replica; do not run old and new binaries together. The migration
+disconnects old bindings and clears claims, hints and schedules while preserving
+repository, PR history and synchronization intent. Register and authorize Apps
+again, then reconnect each Project to resume its saved intent. Migration and
+ledger commit atomically; restoring an old binary requires restoring a matching
+database backup. An upgrade crossing migration 073 first resets synchronization
+intent to off, so those Projects must explicitly enable it after reconnecting.
+Remove the old `github` configuration section and `DAYNIGHT_GITHUB_*` variables
+and dispose of their deployment secrets; the server no longer reads them.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII

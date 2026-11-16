@@ -8,7 +8,7 @@ import { reconcileDeletedHerdrResource } from "../../../src/commands/worker/reso
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
-import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
+import { controllerExecutionDirectory, writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
 import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
@@ -30,6 +30,7 @@ import { createWorkerCoordinator as createCoordinator } from "../../../src/comma
 import { createSharedWorkerHerdr } from "../../../src/commands/worker/herdr/shared.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
+import { createWebArchiveMaintenance } from "../../../src/commands/worker/web-archive-backfill.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
@@ -1781,8 +1782,7 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
   row = webStore.updateWebExecution(row, { sessionId: uuid(703), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
   const stopped = await stoppedWebExecution(f, webStore, row);
   webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 8);
-  let archiveReady = false;
-  const archive = vi.fn(async (task: WebTask) => { expect(task.webExecution?.sessionId).toBe(uuid(703)); if (!archiveReady) throw new Error("controlled archive receipt unavailable"); });
+  const archive = vi.fn(async (task: WebTask) => { expect(task.webExecution?.sessionId).toBe(uuid(703)); throw new Error("controlled archive receipt unavailable"); });
   // This integration owns cleanup and scheduling, with the original controller stop controlled at its backend boundary.
   const jobLeases = { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} };
   const backendOptions = { homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux" as const, buildPrompt: () => "managed", emit: () => {}, now: f.options.now, request: stopped.request, archive, jobLeases };
@@ -1791,12 +1791,9 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
   const coordinator = createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend: backend, monitoring, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick();
-    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1, stage: "archive" }));
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1, stage: "worktree-removal" }));
     expect(archive).toHaveBeenCalledOnce();
     expect(worktreePaths(f.project.localPath)).toContain(path.normalize(binding.worktreePath));
-    archiveReady = true; f.clock(10_000); await coordinator.tick();
-    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 2, stage: "worktree-removal" }));
-    expect(archive).toHaveBeenCalledTimes(2);
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error" }));
     expect(monitoring.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ claimId: owner.claimId }) })]));
     expect(webStore.getTask(owner)?.status).toBe("active");
@@ -1809,7 +1806,7 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
     await eventually(() => expect(webStore.getTask(owner)?.status).toBe("done"));
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
-    expect(archive).toHaveBeenCalledTimes(3);
+    expect(archive).toHaveBeenCalledTimes(2);
     expect(monitoring.capture("2").lastRecovery?.scope).toMatchObject({ claimId: owner.claimId });
     await coordinator.tick();
     await eventually(() => expect(createWorktreeManifestStore(path.join(f.project.localPath, ".git")).read(owner.worktreeId)).toBeNull());
@@ -1824,4 +1821,101 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
     expect(f.bind(successorOwner).worktreePath).not.toBe(binding.worktreePath);
     await expect(access(f.bind(successorOwner).worktreePath)).resolves.toBeUndefined();
   } finally { await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
+}, 30_000);
+
+it.each([
+  { code: "archive_incomplete", removalFails: false },
+  { code: "projection_gap", removalFails: true },
+  { code: "markdown_projection_failed", removalFails: false },
+] as const)("transfers a retained Web repair schedule to backfill across restart: $code, removal failure $removalFails", async ({ code, removalFails }) => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+  const f = await fixture();
+  let monitoring = createMonitoringObserver({ now: f.options.now });
+  let now = 1000;
+  vi.spyOn(Date, "now").mockImplementation(() => now);
+  await mkdir(f.project.localPath, { recursive: true });
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe", timeout: 10_000 });
+  git(f.project.localPath, "init", "--initial-branch=main");
+  git(f.project.localPath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
+  git(f.project.localPath, "remote", "add", "origin", f.project.repoUrl);
+  const bare = path.join(f.root, "origin.git");
+  git(f.root, "clone", "--bare", f.project.localPath, bare);
+  git(f.project.localPath, "config", `url.${bare}.insteadOf`, f.project.repoUrl);
+  const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"), prepareFormat });
+  const owner = { projectId: f.project.projectId, taskId: uuid(100), claimId: uuid(710), worktreeId: uuid(711) };
+  const operation = createOperation();
+  let binding: WorktreeBinding;
+  try { await manager.prepareRepository(f.project, operation); binding = await manager.prepareWorktree(f.project, owner, operation); } finally { operation.dispose(); }
+  const webFile = path.join(f.root, "web.sqlite");
+  let webStore = openWebExecutionStore(webFile);
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  let row = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: { ...configuration, args: [], agentControlMode: "web" } }, 1);
+  row = webStore.bindWorktree(row, binding, 2);
+  row = webStore.initializeWebExecution(row, 3);
+  row = webStore.updateWebExecution(row, { sessionId: uuid(712), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
+  const stopped = await stoppedWebExecution(f, webStore, row);
+  webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 8);
+  const execution = stopped.task.webExecution!;
+  const journal = path.join(controllerExecutionDirectory(f.root, execution.executionId), "journal.sqlite");
+  const pending = path.join(`${journal}.pending-content`, "entries", "original");
+  const journalBytes = Buffer.from([0, 1, 2, 255]), pendingBytes = Buffer.from([9, 8, 7, 0]);
+  await mkdir(path.dirname(pending), { recursive: true });
+  await writeFile(journal, journalBytes); await writeFile(pending, pendingBytes);
+  f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 2, nextAttemptAt: 900_000, stage: "archive", lastError: "original archive failure", archiveRepairCode: code });
+  f.reopenStore(); webStore.close(); webStore = openWebExecutionStore(webFile);
+  const failure = new Error("controlled archive failure"); let available = false;
+  const archive = vi.fn(async (task: WebTask, journalPath: string) => {
+    expect(task).toMatchObject({ ...owner, webExecution: { executionId: execution.executionId, executionGeneration: execution.executionGeneration, sessionId: uuid(712) } });
+    expect(journalPath).toBe(journal);
+    if (!available) throw failure;
+    expect(await readFile(journal)).toEqual(journalBytes);
+    expect(await readFile(pending)).toEqual(pendingBytes);
+  });
+  const signal = new AbortController();
+  const createMaintenance = () => createWebArchiveMaintenance({ homeDirectory: f.root, serverUrl: origin, signal: signal.signal, store: f.store, webStore, archive, probeArchive: async () => ({ kind: "attempt" }), emit: f.options.emit, monitoring });
+  let maintenance = createMaintenance();
+  const createBackend = () => createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: manager, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, request: stopped.request, archive, onArchiveFailure: maintenance.recordFailure, jobLeases: { enabled: false, retain: async () => undefined, get: async () => undefined, release: async () => {}, close: async () => {} } });
+  let backend = createBackend();
+  if (removalFails) vi.spyOn(manager, "removeWorktree").mockRejectedValueOnce(new Error("Removal denied"));
+  const [candidate] = f.candidates.splice(0); f.grants.clear();
+  const create = () => createWorkerCoordinator({ ...f.options, git: manager, webStore, webBackend: backend, archiveMaintenance: maintenance, monitoring, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+  let coordinator = create();
+  const identity = { ...owner, serverOrigin: origin, executionId: execution.executionId, executionGeneration: execution.executionGeneration, launchId: execution.launchId };
+  try {
+    await coordinator.tick();
+    if (removalFails) {
+      await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ stage: "worktree-removal" }));
+      expect(f.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: code, legacyError: "original archive failure" });
+      expect(worktreePaths(f.project.localPath)).toContain(path.normalize(binding.worktreePath));
+      now += 4000; f.clock(now); await coordinator.tick();
+    }
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    expect(f.store.getTask(owner)?.status).toBe("done");
+    expect(webStore.getTask(owner)?.status).toBe("done");
+    expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
+    expect(await readFile(journal)).toEqual(journalBytes); expect(await readFile(pending)).toEqual(pendingBytes);
+    expect(archive).toHaveBeenCalledTimes(removalFails ? 2 : 1);
+    expect(monitoring.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: expect.objectContaining({ claimId: owner.claimId }) })]));
+    expect(f.events.some(event => event.kind === "session-archive-ready")).toBe(false);
+    expect(f.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: code, legacyError: "original archive failure", nextAttemptAt: now + 900_000 });
+    await coordinator.shutdown(); await maintenance.close();
+    f.reopenStore(); webStore.close(); webStore = openWebExecutionStore(webFile);
+    monitoring = createMonitoringObserver({ now: f.options.now });
+    maintenance = createMaintenance(); backend = createBackend(); coordinator = create();
+    expect(f.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: code, legacyError: "original archive failure" });
+    f.candidates.push(candidate!); await coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    const successor = f.store.listTasks().find(entry => entry.taskId === owner.taskId && entry.claimId !== owner.claimId)!;
+    const successorPath = f.bind(f.resources.get(successor.claimId)!.owner).worktreePath;
+    await writeFile(path.join(successorPath, "successor-marker"), "untouched");
+    maintenance.request(() => false);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(archive).toHaveBeenCalledTimes(removalFails ? 2 : 1);
+    available = true; now += 900_000; f.clock(now); maintenance.request(() => false);
+    await eventually(() => expect(f.events.some(event => event.kind === "session-archive-ready")).toBe(true));
+    expect(archive).toHaveBeenCalledTimes(removalFails ? 3 : 2);
+    expect(await readFile(path.join(successorPath, "successor-marker"), "utf8")).toBe("untouched");
+    expect(monitoring.capture("2").currentFailures.some(item => item.component === "archive" && item.scope.kind === "claim" && item.scope.claimId === owner.claimId)).toBe(false);
+  } finally { signal.abort(); await maintenance.close(); await coordinator.shutdown(); await manager.dispose(); webStore.close(); }
 }, 30_000);

@@ -41,6 +41,7 @@ export type WebBackendOptions = {
   request?: typeof requestController;
   probeArchive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<ArchiveProbeResult>;
   archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
+  onArchiveFailure?: (task: LocalTask, error: unknown) => void;
   onUnattributed?: (identity: ClaimIdentity, operationKey: string, value: boolean) => void;
 };
 export class WebRecoveryBlockedError extends Error {
@@ -783,11 +784,26 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
           stage = "archive";
           phase(task, { kind: "cleanup", phase: stage }, false);
           fileSignal.throwIfAborted();
-          if (!options.archive) throw new Error("Session archive uploader is unavailable; the original worktree is retained.");
-          await options.archive(task, journal(task), fileSignal);
+          let archiveSucceeded = false;
+          try {
+            if (!options.archive) throw new Error("Session archive uploader is unavailable.");
+            await options.archive(task, journal(task), fileSignal);
+            archiveSucceeded = true;
+          } catch (error) {
+            fileSignal.throwIfAborted();
+            try {
+              if (options.onArchiveFailure) options.onArchiveFailure(task, error);
+              else options.emit({ kind: "session-archive-retry", task, component: "archive", phase: "archive-backfill", message: "Session archive failed; its source is retained for retry.", error });
+            } catch (diagnosticError) {
+              try { options.emit({ kind: "session-archive-retry", task, component: "archive", phase: "archive-backfill", message: "Session archive failure registration failed; its source is retained for retry.", error: new AggregateError([error, diagnosticError], "Archive and failure registration failed.", { cause: error }) }); } catch { /* Diagnostics cannot prevent cleanup. */ }
+            }
+          }
           fileSignal.throwIfAborted();
-          success(task, { kind: "cleanup", phase: "archive" });
-          phase(task, { kind: "cleanup", phase: "archive" }, true);
+          // Archive maintenance owns failure recovery; only an actual upload is successful.
+          if (archiveSucceeded) {
+            success(task, { kind: "cleanup", phase: "archive" });
+            phase(task, { kind: "cleanup", phase: "archive" }, true);
+          }
         }
         stage = "worktree-removal";
         phase(task, { kind: "cleanup", phase: stage }, false);

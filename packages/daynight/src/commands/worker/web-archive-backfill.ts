@@ -10,7 +10,8 @@ import type { createMonitoringObserver } from "./monitoring/observer.js";
 import type { openWorkerStore } from "./store.js";
 import type { openWebExecutionStore } from "./backends/web-store.js";
 import type { WebBackendOptions } from "./backends/web.js";
-import type { ArchiveBackfillIdentity } from "./types.js";
+import type { LocalTask } from "./backends/web-types.js";
+import type { ArchiveBackfillIdentity, CleanupScheduleRecord } from "./types.js";
 
 export const createWebArchiveMaintenance = (options: {
   homeDirectory: string; serverUrl: string; signal: AbortSignal;
@@ -25,13 +26,13 @@ export const createWebArchiveMaintenance = (options: {
   const archiveFailures = new Map<string, string>();
   const archiveObservations = new Map<string, string>();
   const archiveActivities = new Map<string, string>();
-  const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown, worktree?: FailureWorktree): void => {
+  const observeBackfill = (identity: ArchiveBackfillIdentity, nextAttemptAt: number, repairCode?: ArchiveRepairCode, error?: unknown, worktree?: FailureWorktree): unknown[] => {
     const scope = { kind: "claim" as const, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId };
     const next = new Date(nextAttemptAt).toISOString();
     try {
       const operationId = archiveFailures.get(identity.executionId) ?? randomUUID();
       if (!archiveFailures.has(identity.executionId) || error !== undefined) {
-        monitoring?.fail({ operationId, component: "archive", phase: "archive-backfill", scope, ...(worktree === undefined ? {} : { worktree }), error: repairCode === undefined ? error : new ArchiveRepairRequiredError(repairCode), retryState: "scheduled", nextAttemptAt: next });
+        monitoring?.fail({ operationId, component: "archive", phase: "archive-backfill", scope, ...(worktree === undefined ? {} : { worktree }), error: repairCode === undefined || error instanceof ArchiveRepairRequiredError ? error : new ArchiveRepairRequiredError(repairCode), retryState: "scheduled", nextAttemptAt: next });
         archiveFailures.set(identity.executionId, operationId);
       }
       if (repairCode !== undefined) {
@@ -49,7 +50,52 @@ export const createWebArchiveMaintenance = (options: {
         const activity = archiveActivities.get(identity.executionId);
         if (activity !== undefined) monitoring?.updateActivity(activity, { waitReason: "retry-backoff", nextAttemptAt: next });
       }
-    } catch { /* Monitoring cannot change archival. */ }
+    } catch (failure) { return [failure]; }
+    return [];
+  };
+  const identityFor = (task: LocalTask): ArchiveBackfillIdentity => {
+    const execution = task.webExecution;
+    if (execution === null) throw new Error("Archive failure has no original execution identity.");
+    return { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
+      executionId: execution.executionId, executionGeneration: execution.executionGeneration, launchId: execution.launchId };
+  };
+  const recordLegacyFailure = (task: LocalTask, schedule: CleanupScheduleRecord): void => {
+    if (task.projectId !== schedule.projectId || task.taskId !== schedule.taskId || task.claimId !== schedule.claimId || task.worktreeId !== schedule.worktreeId || task.serverOrigin !== serverUrl) throw new Error("Legacy archive failure identity changed.");
+    const identity = identityFor(task), code = schedule.archiveRepairCode;
+    if (code !== undefined && code !== null) archiveRepairs.set(identity.executionId, code);
+    archiveRetryAt.set(identity.executionId, schedule.nextAttemptAt);
+    const error = new Error(schedule.lastError ?? "Legacy archive failure; original error was not recorded.");
+    let reportedError: unknown = error;
+    try { store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: code ?? null, nextAttemptAt: schedule.nextAttemptAt, ...(schedule.lastError === null ? {} : { legacyError: schedule.lastError }) }); }
+    catch (failure) { reportedError = new AggregateError([error, failure], "Legacy archive failure registration could not be persisted.", { cause: error }); }
+    const diagnostics = observeBackfill(identity, schedule.nextAttemptAt, code ?? undefined, reportedError);
+    if (diagnostics.length > 0) reportedError = new AggregateError([reportedError, ...diagnostics], "Legacy archive failure diagnostics failed.", { cause: error });
+    emit({ kind: "session-archive-retry", message: "Legacy session archive failure remains pending; its source is retained for retry.", error: reportedError });
+  };
+  const recordFailure = (task: LocalTask, error: unknown): void => {
+    const execution = task.webExecution;
+    if (execution === null) throw new Error("Archive failure has no original execution identity.", { cause: error });
+    const identity = identityFor(task);
+    let retained: ReturnType<typeof store.getArchiveBackfillSchedule> = null;
+    let persistenceError: unknown;
+    try { retained = store.getArchiveBackfillSchedule(identity); }
+    catch (failure) { persistenceError = failure; }
+    if (retained?.archiveRepairCode != null && !archiveRepairs.has(execution.executionId)) archiveRepairs.set(execution.executionId, retained.archiveRepairCode);
+    if (error instanceof ArchiveRepairRequiredError) archiveRepairs.set(execution.executionId, error.code);
+    const repairCode = archiveRepairs.get(execution.executionId);
+    const nextAttemptAt = Date.now() + (repairCode === undefined ? 60_000 : ARCHIVE_REPAIR_PROBE_INTERVAL_MS);
+    archiveRetryAt.set(execution.executionId, nextAttemptAt);
+    let reportedError = persistenceError === undefined ? error : new AggregateError([error, persistenceError], "Archive backfill schedule could not be read; in-memory backoff remains active.", { cause: error });
+    try {
+      if (repairCode !== undefined || retained?.legacyError !== undefined || retained?.archiveRepairCode === null) store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: repairCode ?? null, nextAttemptAt });
+    }
+    catch (failure) { reportedError = new AggregateError([reportedError, failure], "Archive backfill schedule was not persisted; in-memory condition backoff remains active.", { cause: error }); }
+    let worktree: FailureWorktree | undefined;
+    const diagnostics: unknown[] = [];
+    try { if (task.resources?.worktree != null) worktree = encodeWorktree(task.repositoryPath, task.resources.worktree.worktreePath); } catch (failure) { diagnostics.push(failure); }
+    diagnostics.push(...observeBackfill(identity, nextAttemptAt, repairCode, reportedError, worktree));
+    if (diagnostics.length > 0) reportedError = new AggregateError([reportedError, ...diagnostics], "Archive failure diagnostics failed.", { cause: error });
+    emit({ kind: "session-archive-retry", message: repairCode === undefined ? `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` : `Completed session ${execution.sessionId} archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.`, error: reportedError });
   };
   let lastArchiveAttempt: string | null = null;
   const backfillArchives = async (signal: AbortSignal) => {
@@ -69,9 +115,9 @@ export const createWebArchiveMaintenance = (options: {
       try {
         const retained = store.getArchiveBackfillSchedule(identity);
         if (retained !== null) {
-          archiveRepairs.set(execution.executionId, retained.archiveRepairCode);
+          if (retained.archiveRepairCode !== null) archiveRepairs.set(execution.executionId, retained.archiveRepairCode);
           archiveRetryAt.set(execution.executionId, retained.nextAttemptAt);
-          observeBackfill(identity, retained.nextAttemptAt, retained.archiveRepairCode, undefined, worktree);
+          observeBackfill(identity, retained.nextAttemptAt, retained.archiveRepairCode ?? undefined, retained.legacyError === undefined ? undefined : new Error(retained.legacyError), worktree);
           if (retained.nextAttemptAt > Date.now()) continue;
         }
         const journalPath = path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite");
@@ -79,7 +125,8 @@ export const createWebArchiveMaintenance = (options: {
         if (admission.kind === "blocked") throw new ArchiveRepairRequiredError(admission.code);
         if (admission.kind === "complete") {
           // Receipt admission alone does not establish that the source was repaired.
-          store.deleteArchiveBackfillSchedule(identity);
+          if (retained?.legacyError !== undefined) store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: null, nextAttemptAt: retained.nextAttemptAt });
+          else store.deleteArchiveBackfillSchedule(identity);
           archiveRepairs.delete(execution.executionId);
         }
         await archive(task, journalPath, signal);
@@ -96,17 +143,7 @@ export const createWebArchiveMaintenance = (options: {
         emit({ kind: "session-archive-ready", message: `Completed session ${execution.sessionId} history is archived.` });
       } catch (error) {
         if (signal.aborted) throw error;
-        if (error instanceof ArchiveRepairRequiredError) archiveRepairs.set(execution.executionId, error.code);
-        const repairCode = archiveRepairs.get(execution.executionId);
-        const nextAttemptAt = Date.now() + (repairCode === undefined ? 60_000 : ARCHIVE_REPAIR_PROBE_INTERVAL_MS);
-        archiveRetryAt.set(execution.executionId, nextAttemptAt);
-        let reportedError = error;
-        if (repairCode !== undefined) {
-          try { store.saveArchiveBackfillSchedule(identity, { archiveRepairCode: repairCode, nextAttemptAt }); }
-          catch (persistenceError) { reportedError = new AggregateError([error, persistenceError], "Archive backfill schedule was not persisted; in-memory condition backoff remains active."); }
-        }
-        observeBackfill(identity, nextAttemptAt, repairCode, reportedError, worktree);
-        emit({ kind: "session-archive-retry", message: repairCode === undefined ? `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` : `Completed session ${execution.sessionId} archive requires repair (${repairCode}); originals retained; next condition probe ${new Date(nextAttemptAt).toISOString()}.`, error: reportedError });
+        recordFailure(task, error);
       }
       // Bound historical catch-up per reconciliation round.
       break;
@@ -121,6 +158,8 @@ export const createWebArchiveMaintenance = (options: {
   let shutdownFailed = false;
   let failureId: string | undefined;
   return {
+    recordFailure,
+    recordLegacyFailure,
     request(shouldYield: () => boolean): void {
       if (closed || signal.aborted || pending !== undefined) return;
       // Reserve the slot before invoking any backfill code, including synchronous re-entry.
