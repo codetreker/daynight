@@ -11,11 +11,12 @@ meeting both inner edges of the expanded content area.
 
 ## Decision
 
-The shared `goal-task-list` has `padding-inline-start: 0` at every viewport width,
-with no responsive leading-padding override. Goal, full-chain and scoped-chain
-members share this rule. TaskRow retains its own content padding, backgrounds,
-borders and controls; standalone and personal rows keep their existing layout.
-The parent heading, disclosure control and content divider express hierarchy.
+The shared `goal-task-list` has no horizontal padding at every viewport width.
+Goal, full-chain and scoped-chain members share this rule. TaskRow owns its
+backgrounds, borders and controls; standalone and personal rows keep their
+existing layout. The [member inner indent decision](2026-11-16-expanded-member-inner-indent.md)
+restores the hierarchy offset inside each member row while retaining edge
+alignment.
 
 This replaces the [expanded member inset decision](2026-11-16-expanded-member-inset.md),
 whose 16px/12px leading space was chosen to distinguish parent and member rows.
@@ -29,15 +30,16 @@ and its style ownership.
 
 ## Alternatives
 
-**Retain the leading inset.** Its hierarchy cue requires the neutral strip that
-the edge-alignment requirement removes, and reduces member width at narrow
-viewports. The existing heading, disclosure and divider remain available to
-identify the containing Goal or chain.
+**Retain the external leading inset.** Its hierarchy cue required the neutral
+strip that the edge-alignment requirement removes, and reduced member width at
+narrow viewports. At the time, the heading, disclosure and divider were expected
+to identify the containing Goal or chain without an additional indent.
 
 ## Consequences
 
-Member backgrounds and borders meet both inner edges of expanded content, with
-more width available for long titles and metadata. Hierarchy no longer has the
-additional cue of a leading inset. The shared rule keeps all three consumers
-consistent across viewport widths while preserving row content spacing, chain
-bottom space and Goal clipping, rounded outline and continuous seams.
+Member backgrounds and borders meet both inner edges of expanded content. The
+initial edge-aligned layout removed the additional hierarchy cue along with the
+neutral strip; the later inner-indent decision restores that cue within the
+colored row. The shared rule keeps all three consumers consistent across
+viewport widths while preserving chain bottom space and Goal clipping, rounded
+outline and continuous seams.
