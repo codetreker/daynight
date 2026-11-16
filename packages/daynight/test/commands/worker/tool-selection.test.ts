@@ -24,6 +24,28 @@ const create = (options: { probe?: Partial<ToolSelectionProbe>; readActiveSelect
 const entry = (manager: ToolSelectionManager) => manager.snapshot().entries.find(value => value.tool === "codex" && value.context === "web")!;
 afterEach(() => { operations.splice(0).forEach(value => value.dispose()); vi.useRealTimers(); });
 
+test("Herdr settings inspection is available without instance support but execution still requires admission", async () => {
+  const { manager, checked } = create(); manager.setTargets(targets("A"));
+  await manager.check("herdr", "herdr", op());
+  expect(manager.snapshot().entries.find(value => value.tool === "herdr")).toMatchObject({ state: "applied", actual: { version: "1.2.3" } });
+  await manager.check("herdr", "herdr", op()); expect(checked).toHaveLength(1);
+  await expect(manager.selectForNewExecution("herdr", "herdr", op())).rejects.toMatchObject({ code: "incompatible_runtime" });
+  await manager.close(op());
+});
+
+test("execution joining a Herdr settings check still performs instance admission", async () => {
+  const entered = deferred(), release = deferred();
+  const admitHerdr = vi.fn(async () => ({ state: "pending" as const, reason: "active_instance" as const }));
+  const { manager } = create({ admitHerdr, probe: { check: async () => { entered.resolve(); await release.promise; return { version: "1.2.3" }; } } });
+  const inspection = manager.check("herdr", "herdr", op()); await entered.promise;
+  const execution = manager.selectForNewExecution("herdr", "herdr", op());
+  const rejected = expect(execution).rejects.toThrow("pending: active_instance");
+  release.resolve(); await inspection; await rejected;
+  expect(admitHerdr).toHaveBeenCalledOnce();
+  expect(manager.snapshot().entries.find(value => value.tool === "herdr")).toMatchObject({ state: "pending", reason: "active_instance" });
+  await manager.close(op());
+});
+
 test("target publication does not probe and unchanged choices retain verified results at a new revision", async () => {
   const { manager, checked } = create(); manager.setTargets(targets("A"));
   expect(entry(manager)).toMatchObject({ state: "not_checked", actual: null }); expect(checked).toEqual([]);

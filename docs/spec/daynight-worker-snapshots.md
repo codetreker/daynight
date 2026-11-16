@@ -60,7 +60,7 @@ CPU model 是非空白文本，logicalProcessors 是 `1..9007199254740991` 的�
 
 `Daynight-Worker-Tool-Paths: 1` 请求与响应回显控制此扩展。报告的可选 toolPaths 保存为 telemetry.toolPaths；缺字段表示本次报告未提供工具路径信息，与 not_checked 不同，不能沿用旧报告或猜测自动路径。旧读者的详情响应省略该字段，versions 继续原有严格形状。列表不复制完整遥测。
 
-对象为 `{schemaVersion:1,observedAt,entries}`。entries 最多五个唯一 tool/context：codex/web、codex/herdr、copilot/web、copilot/herdr、herdr/herdr；Herdr/web 拒绝。Bot 使用 web 上下文。每个可用上下文都保留条目，未检查时使用 not_checked。
+对象为 `{schemaVersion:1,observedAt,entries}`。entries 最多五个唯一 tool/context：codex/web、codex/herdr、copilot/web、copilot/herdr、herdr/herdr；Herdr/web 拒绝。Bot 使用 web 上下文。每个可用上下文都保留条目，尚未开始检查时使用 not_checked。有效目标的有界检查按[配置合同](daynight-worker-configuration.md#工具路径三态)执行；检查事实与当前模式的配置生效集合分开，未使用工具的错误保持真实，不能改写成 not_checked。Herdr 工具检查版本与 versions 中运行实例的握手版本分别表示各自对象。
 
 每项完整包含以下字段，所有对象均拒绝未知字段：
 

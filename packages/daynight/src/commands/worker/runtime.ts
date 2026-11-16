@@ -899,6 +899,10 @@ export const runWorker = async (options: {
     observeMonitoring(m => m.setLifecycle("running"));
     while (!signal.aborted) {
       const revision = reconcileWake.snapshot();
+      void toolRuntime.checkConfiguredTools(signal).then(changed => {
+        if (!changed || signal.aborted) return;
+        reconcileWake.request(); return refreshToolProofs();
+      }).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Configured tool inspection could not be published.", error }); });
       void Promise.resolve().then(() => toolRuntime.prepareWebCandidates(signal, copilotRequired())).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
       const configuredMode = manager.current().desired?.value.agentControlMode ?? manager.current().effective.agentControlMode;
       if (configuredMode === "herdr") void toolRuntime.prepareHerdrCandidate(signal).then(changed => {

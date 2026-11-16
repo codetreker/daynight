@@ -42,15 +42,17 @@ const applicationStates = (resource: WorkerConfigurationResource): readonly Work
 
 const ConfigurationSummary = ({ resource, online, toolPaths }: { readonly resource: WorkerConfigurationResource; readonly online: boolean | null; readonly toolPaths: ToolPathTelemetry | undefined }) => {
   const { messages: { workers: { configuration: m } } } = useI18n();
-  const states = applicationStates(resource), failed = states.includes('error');
+  const states = applicationStates(resource);
   const tools = toolPathSummaryStates(resource, toolPaths, online);
-  const toolsApplied = resource.toolPathsSupported !== true || tools.length > 0 && tools.every(state => state === 'applied');
+  const failed = states.includes('error') || resource.toolPathsSupported === true && tools.includes('error');
+  const toolsApplied = resource.toolPathsSupported !== true || tools.every(state => state === 'applied');
+  const toolSummary = (['error', 'unconfirmed', 'pending', 'checking', 'not_checked'] as const).find(state => tools.includes(state)) ?? 'applied';
   const status = failed ? states.includes('applied') ? m.partialFailure : m.state.error : states.length > 0 && states.every(state => state === 'applied') && toolsApplied && online === true ? m.allApplied : m.applying;
   return <aside className="configuration-aside"><section className="worker-panel summary-panel"><h2 className="worker-panel-heading">{m.summary}</h2><dl className="configuration-summary">
     <div><dt>{m.targetVersion}</dt><dd>{resource.desired?.revision}</dd></div>
     <div><dt>{m.updatedAt}</dt><dd>{resource.desired !== null && <WorkerTimestamp value={resource.desired.updatedAt} />}</dd></div>
     <div><dt>{m.application}</dt><dd aria-live="polite"><span className={`status-chip ${failed ? 'error' : status === m.allApplied ? 'applied' : 'pending'}`}>{status}</span></dd></div>
-    {resource.toolPathsSupported === true && <div><dt>{m.toolPaths.title}</dt><dd>{online !== true ? m.toolPaths.state[online === false ? 'offline' : 'unconfirmed'] : tools.includes('error') ? m.partialFailure : toolsApplied ? m.toolPaths.state.applied : m.toolPaths.state.not_checked}</dd></div>}
+    {resource.toolPathsSupported === true && <div><dt>{m.toolPaths.title}</dt><dd>{online !== true ? m.toolPaths.state[online === false ? 'offline' : 'unconfirmed'] : m.toolPaths.state[toolSummary]}</dd></div>}
     <div><dt>{m.reportedAt}</dt><dd>{resource.observation === null ? m.awaitingReport : <WorkerTimestamp value={resource.observation.reportedAt} />}</dd></div>
     <div><dt>{m.workerConnection}</dt><dd>{online === null ? m.noRecentReport : online ? m.online : m.offline}</dd></div>
   </dl></section><details className="local-settings"><summary>{m.localSettings}</summary><p>{m.localSettingsDetail}</p><ul>{m.localSettingsItems.map(item => <li key={item}>{item}</li>)}</ul></details></aside>;

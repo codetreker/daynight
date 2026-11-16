@@ -40,6 +40,10 @@ toolPaths 的三个键均必填。每项 null 表示尚未采纳；`{kind:"auto"
 
 path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控制字符的绝对路径；保留原始空格、大小写和词法路径，不 trim、不展开环境变量或 `~`、不拆参数、不交给 shell。服务和浏览器只校验远端路径语法，不访问文件；真实存在性、入口种类、解释器与协议由 Worker 验证。不能用服务所在操作系统的路径规则拒绝另一平台的合法路径。
 
+已接入有效目标后，Worker 对 codex/web、codex/herdr、copilot/web、copilot/herdr、herdr/herdr 的已采纳自动或显式选择安排有界检查，目标变化重新检查。稳定目标的检查须收敛到已验证的实际路径与版本或明确错误；未开始使用 not_checked，执行中使用 checking，失败等待重试时保留错误。相同目标的成功结果复用，心跳不重复启动检查进程。检查不启动未使用 Provider 的模型发现、登录或任务，也不为读取 Herdr 版本启动长期服务；实际实例准入及旧执行的归属规则独立保留。
+
+配置生效必需工具集合由当前目标模式、默认 Agent 和全部已选项目经 nativeOverrides 解析后的 Agent 决定。web 只需要使用中的 codex/web、copilot/web；herdr 需要 herdr/herdr 及使用中的 Agent/herdr。Claude 没有工具槽，由 native 观测确认。工具详情保留全部真实状态；配置生效及“工具启动路径”摘要仅核对必需集合，未使用工具的失败、未检查和旧模式执行不能成为依赖。空集合由其余配置观测确认，不添加虚构等待项。目标版本、choice、在线状态与实际选择的一致性仍是成功前提，普通字段、项目准备与移除的判定保持原规则。
+
 ## 首次导入与编辑
 
 完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode。toolPathsBootstrap 是完整三项非 null choice 或整体 null，只填现有目标中对应的 null 项。候选来自同一捕获的本机配置：明确 web 保持 web，未指定模式才为 herdr；省略的本地工具项成为 auto。模式和多个工具的采纳合并为一次最终值持久化，只推进一次 revision；完整首次导入不额外升版，任何编码或容量失败回滚全部采纳。

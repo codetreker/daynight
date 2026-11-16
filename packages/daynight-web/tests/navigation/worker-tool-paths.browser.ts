@@ -3,7 +3,7 @@ import { WORKER_TIME, workerDetail } from '../helpers/workers';
 import { deferredRead, installTools, observedConfiguration, openToolConfiguration, pathChoice, reportedDetail, targetWorker, toolActual, toolObservation, toolPaths, toolReport } from './worker-tool-paths-fixture';
 
 const configuration = (page: Page) => page.locator('[data-worker-panel="configuration"]:visible');
-const toolsSummary = (page: Page) => configuration(page).locator('summary').filter({ hasText: /^工具路径/ });
+const toolsSummary = (page: Page) => configuration(page).locator('summary').filter({ hasText: /^工具启动路径/ });
 const field = (page: Page, tool = 'codex') => page.locator(`#config-toolPaths-${tool}`);
 const facts = (page: Page, tool = 'codex', context = 'web') => configuration(page).locator(`.worker-tool-path-details[data-tool="${tool}"] .worker-tool-context[data-context="${context}"]`);
 const save = (page: Page) => page.locator('.config-save-bar').getByRole('button', { name: '保存配置', exact: true });
@@ -15,6 +15,67 @@ const clearFocus = (page: Page) => expect.poll(() => page.evaluate(() => {
   const rect = active.getBoundingClientRect();
   return rect.top >= 0 && rect.bottom <= bar.top;
 })).toBe(true);
+
+for (const width of [1440, 390, 320]) test(`${width}px Web application excludes other modes while retaining their errors and drafts`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const herdrPath = pathChoice('/missing/herdr');
+  const state = await installTools(page, { resource: observedConfiguration('1', { ...observedConfiguration().desired!.value, toolPaths: { ...toolPaths, herdr: herdrPath } }) });
+  state.detail = reportedDetail(toolReport([
+    toolObservation('codex', 'web'),
+    toolObservation('codex', 'herdr', { state: 'checking', actual: null }),
+    toolObservation('copilot', 'web', { state: 'error', actual: null, error: { code: 'not_found', occurredAt: WORKER_TIME } }),
+    toolObservation('herdr', 'herdr', { target: herdrPath, state: 'error', actual: null, error: { code: 'not_found', occurredAt: WORKER_TIME } }),
+  ]));
+  await openToolConfiguration(page); await expandTools(page);
+  const summary = page.locator('.configuration-summary');
+  await expect(summary.getByText('已生效', { exact: true })).toBeVisible();
+  await expect(summary.locator('div').filter({ has: page.locator('dt', { hasText: '工具启动路径' }) })).toContainText('已应用');
+  await expect(facts(page, 'herdr', 'herdr')).toContainText('工具文件不存在');
+  await expect(field(page, 'herdr')).toBeEnabled();
+  await field(page).fill('/draft/codex'); await field(page).focus();
+  const gate = deferredRead(); state.configurationGate = gate;
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); delete (document as { visibilityState?: DocumentVisibilityState }).visibilityState; document.dispatchEvent(new Event('visibilitychange')); });
+  await gate.observed;
+  try { await expect(field(page)).toBeFocused(); await expect(field(page)).toHaveValue('/draft/codex'); await noOverflow(page); }
+  finally { gate.release(); state.configurationGate = null; }
+  await expect(field(page)).toBeFocused(); await expect(field(page)).toHaveValue('/draft/codex');
+  await cancel(page).click();
+  state.resource = observedConfiguration('2', { ...state.resource.desired!.value, agentControlMode: 'herdr' });
+  state.detail = reportedDetail(toolReport([
+    toolObservation('codex', 'web', { targetRevision: '1', activeSelectionCount: 1, activeSelections: [{ actual: toolActual('codex', 'web'), executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] }),
+    toolObservation('codex', 'herdr', { targetRevision: '2' }),
+    toolObservation('herdr', 'herdr', { targetRevision: '2', target: herdrPath, state: 'error', actual: null, error: { code: 'not_found', occurredAt: WORKER_TIME } }),
+  ]));
+  await page.reload(); await page.locator('[data-worker-tab="configuration"]:visible').click(); await expandTools(page);
+  await expect(summary.getByText('已生效', { exact: true })).toHaveCount(0);
+  await expect(summary.getByText('部分生效', { exact: true })).toBeVisible();
+  await expect(summary.getByText('应用失败', { exact: true })).toBeVisible(); await noOverflow(page);
+});
+
+for (const status of ['not_checked', 'checking', 'applied'] as const) test(`Web remains applied when unrelated Herdr is ${status}`, async ({ page }) => {
+  const state = await installTools(page);
+  state.detail = reportedDetail(toolReport([toolObservation('codex', 'web'), toolObservation('herdr', 'herdr', { state: status, actual: status === 'applied' ? toolActual('herdr', 'herdr', { version: '99.0.0' }) : null })]));
+  await openToolConfiguration(page);
+  await expect(page.locator('.configuration-summary').getByText('已生效', { exact: true })).toBeVisible();
+});
+
+test('project provider overrides require their own tool checks while Claude uses native observations', async ({ page }) => {
+  const value = observedConfiguration().desired!.value;
+  const state = await installTools(page, { resource: observedConfiguration('1', { ...value, native: { ...value.native, agent: 'claude' }, projects: [
+    { projectId: '00000000-0000-4000-8000-000000000101', nativeOverrides: { agent: 'copilot' } },
+    { projectId: '00000000-0000-4000-8000-000000000102', nativeOverrides: {} },
+  ] }) });
+  state.detail = reportedDetail(toolReport([toolObservation('copilot', 'web', { state: 'checking', actual: null })]));
+  await openToolConfiguration(page);
+  const summary = page.locator('.configuration-summary');
+  await expect(summary.getByText('正在检查', { exact: true })).toBeVisible();
+  await expect(summary.getByText('已生效', { exact: true })).toHaveCount(0);
+  state.detail = reportedDetail(toolReport([toolObservation('copilot', 'web')]));
+  await page.reload(); await page.locator('[data-worker-tab="configuration"]:visible').click(); await expect(summary.getByText('已生效', { exact: true })).toBeVisible();
+  state.resource = observedConfiguration('2', { ...value, native: { ...value.native, agent: 'claude' }, projects: [] });
+  state.detail = reportedDetail(toolReport([]));
+  await page.reload(); await page.locator('[data-worker-tab="configuration"]:visible').click(); await expect(summary.getByText('已生效', { exact: true })).toBeVisible();
+});
 
 test('tool paths start collapsed and retain automatic choices until explicitly edited', async ({ page }) => {
   const state = await installTools(page); await openToolConfiguration(page);

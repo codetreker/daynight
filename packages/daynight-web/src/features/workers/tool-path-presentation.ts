@@ -1,4 +1,5 @@
 import type { WorkerConfigurationResource } from '../../api/worker-configuration';
+import { resolvedProjectNative } from './configuration/model';
 import { sameToolPathChoice, type Tool, type ToolContext, type ToolPathObservation, type ToolPathTelemetry } from '../../api/worker-tool-paths';
 
 export type ToolPathApplicationState = 'not_checked' | 'checking' | 'pending' | 'applied' | 'error' | 'offline' | 'unconfirmed';
@@ -14,17 +15,15 @@ export const toolPathApplicationState = (entry: ToolPathObservation | undefined,
 };
 
 export const toolPathSummaryStates = (resource: WorkerConfigurationResource, telemetry: ToolPathTelemetry | undefined, online: boolean | null): readonly ToolPathApplicationState[] => {
-  if (resource.toolPathsSupported !== true || telemetry === undefined || resource.desired === null) return ['not_checked'];
+  if (resource.toolPathsSupported !== true || resource.desired === null) return ['not_checked'];
   const { desired } = resource;
   const mode = desired.value.agentControlMode;
-  const contexts: readonly ToolContext[] = mode === 'herdr' ? ['web', 'herdr'] : ['web'];
-  return (['codex', 'copilot', 'herdr'] as const).flatMap(tool => (tool === 'herdr' ? ['herdr' as const] : contexts).map(context => {
-    const entry = telemetry.entries.find(item => item.tool === tool && item.context === context);
-    const state = toolPathApplicationState(entry, desired, online);
-    // An unused automatic tool can fail discovery without making other tools unusable.
-    const required = desired.value.toolPaths?.[tool]?.kind === 'path' || tool === desired.value.native.agent && context === mode || tool === 'herdr' && mode === 'herdr';
-    return state === 'error' && !required ? 'not_checked' : state;
-  }));
+  if (mode == null) return ['unconfirmed'];
+  const agents = new Set([desired.value.native.agent, ...desired.value.projects.map(project => resolvedProjectNative(desired.value.native, project.nativeOverrides).agent)]);
+  // Configuration depends on the target mode and its selected providers, while
+  // detail views retain checks and running selections from every context.
+  const required = (['codex', 'copilot', 'herdr'] as const).filter(tool => tool === 'herdr' ? mode === 'herdr' : agents.has(tool));
+  return required.map(tool => toolPathApplicationState(telemetry?.entries.find(item => item.tool === tool && item.context === mode), desired, online));
 };
 
 export const toolPathContexts = (tool: Tool, primary: ToolContext = 'web'): readonly ToolContext[] => tool === 'herdr' ? ['herdr'] : [primary, primary === 'web' ? 'herdr' : 'web'];
