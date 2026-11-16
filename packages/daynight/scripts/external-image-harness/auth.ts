@@ -12,7 +12,7 @@ export type RunCommand = (command: string, args: readonly string[], options: {
   onOutput?: (channel: "stdout" | "stderr", text: string) => void;
 }) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 
-/** Use the existing isolated OAuth provider with its explicit CA, never -k. */
+/** Use the isolated OAuth provider and Daynight endpoints with their explicit CAs. */
 export async function authenticate(options: {
   environment: Environment; directory: string; artifacts: string; repository: string;
   run: RunCommand; signal: AbortSignal;
@@ -20,11 +20,20 @@ export async function authenticate(options: {
   const { environment, directory, run } = options;
   const cookie = path.join(directory, "auth-cookies.txt");
   await writeFile(cookie, "", { mode: 0o600 });
+  const certificates = await Promise.all(["provider-ca.pem", "daynight-ca.pem"].map(name => readFile(path.join(options.artifacts, name))));
+  const caBundle = path.join(directory, "auth-ca.pem");
+  await writeFile(caBundle, Buffer.concat([certificates[0]!, Buffer.from("\n"), certificates[1]!]), { mode: 0o600 });
+  const appURL = new URL(environment.baseURL);
+  assert.equal(appURL.protocol, "https:");
+  assert.equal(appURL.hostname, "app.daynight.localhost");
+  assert(appURL.port, "The isolated Daynight endpoint must use its assigned port.");
   let sequence = 0;
   const request = async (url: string, body?: unknown, csrf?: string): Promise<{ status: number; text: string }> => {
     const output = path.join(directory, `auth-response-${++sequence}`);
     const args = ["--silent", "--show-error", "--max-time", "30", "--max-redirs", "8", "--location",
-      "--cookie", cookie, "--cookie-jar", cookie, "--cacert", path.join(options.artifacts, "provider-ca.pem"),
+      "--cookie", cookie, "--cookie-jar", cookie, "--cacert", caBundle,
+      "--resolve", `${appURL.hostname}:${appURL.port}:127.0.0.1`,
+      "--resolve", `preview.daynight.localhost:${appURL.port}:127.0.0.1`,
       "--proxy", environment.proxyURL, "--noproxy", "127.0.0.1,localhost", "--output", output, "--write-out", "%{http_code}"];
     if (body !== undefined) {
       const input = path.join(directory, `auth-request-${sequence}`);
