@@ -41,14 +41,14 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   let imageProfile: CopilotImageProfile | null = null;
   let routeObservation: CopilotRouteObservation | null = null, profileSdkVersion: unknown, profileNativeVersion: unknown;
   let routeEpoch = 0;
-  let routeRefreshRequested = false;
+  let routeRefreshRequested = false, recoveringImages = false;
   const invalidateRoute = () => { routeEpoch++; routeObservation = null; imageProfile = null; };
   let activity: ProviderState["activity"] = "initializing", currentTurnId: string | null = null, interactionId: string | null = null;
   let buffered: SessionEvent[] | undefined = [], bufferedBytes = 0, refill = false, heartbeat: NodeJS.Timeout | undefined, polling = false;
   const imageInputs = new CopilotImageInputs(options, nativeId), images = new CopilotImages(options, nativeId, imageInputs);
   const cancelWaiters = new Set<{ resolve(): void; reject(error: Error): void }>();
   const state = () => options.onState({ nativeSessionId: verified ? nativeId : null, activity: stopped ? "stopped" : closed || disconnected ? "unknown" : interactions.waiting ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value } : {}),
-    ...(controls ? { images: controls.imageCapabilities(imageInputs.profileAllowed && !closed && !disconnected && !controlsBusy ? imageProfile : null, verified ? nativeId : null) } : {}),
+    ...(controls ? { images: controls.imageCapabilities(imageInputs.profileAllowed && !closed && !disconnected && !controlsBusy && !recoveringImages ? imageProfile : null, verified ? nativeId : null) } : {}),
     capabilities: verified && !closed && !disconnected ? { send: true, steer: true, cancel: true, respond: true } : { send: false, steer: false, cancel: false, respond: false } });
   const projection = new CopilotProjection(nativeId, options.onTimeline, images);
   const interactions = new CopilotInteractions({ sessionId: nativeId, onTimeline: options.onTimeline, onChange: state,
@@ -149,9 +149,12 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     } catch { invalidateRoute(); }
   };
   function recoverImageProfile(): void {
-    if (!routeRefreshRequested || !verified || !controls || !options.imageRuntime || closed || disconnected || controlsBusy || dispatching) return;
-    routeRefreshRequested = false; controlsBusy = true; state();
-    void controls.refresh(false).then(refreshImageProfile).finally(() => { controlsBusy = false; state(); recoverImageProfile(); });
+    if (!routeRefreshRequested || !verified || !controls || !options.imageRuntime || closed || disconnected || controlsBusy || recoveringImages || dispatching) return;
+    routeRefreshRequested = false; recoveringImages = true; const epoch = routeEpoch; state();
+    void controls.refresh(false).then(async () => {
+      if (epoch !== routeEpoch || closed || disconnected || dispatching) return;
+      await refreshImageProfile();
+    }).finally(() => { recoveringImages = false; state(); recoverImageProfile(); });
   }
   let permissionHistoryPrepared = false;
   const preparePermissionHistory = async (): Promise<void> => {
@@ -313,7 +316,8 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   }
   const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, displayPrompt?: string): Promise<ProviderReceipt> => {
       const { text, images: inputImages } = validateNativeInput(inputValue);
-      if (closed || disconnected || dispatching || controlsBusy || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed or cannot accept input.");
+      if (closed || disconnected || dispatching || controlsBusy || inputImages.length > 0 && recoveringImages || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed or cannot accept input.");
+      if (!inputImages.length && recoveringImages) { invalidateRoute(); routeRefreshRequested = true; }
       const steering = currentTurnId !== null;
       dispatching = true;
       try {
@@ -360,9 +364,9 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   };
   return {
     nativeSessionId: nativeId, send,
-    async refreshControls() { if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; state(); try { await controls!.refresh(); if (options.imageRuntime) await refreshImageProfile(); return { disposition: "handled" }; } finally { controlsBusy = false; state(); recoverImageProfile(); } },
+    async refreshControls() { if (closed || disconnected || dispatching || controlsBusy || recoveringImages) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; state(); try { await controls!.refresh(); if (options.imageRuntime) await refreshImageProfile(); return { disposition: "handled" }; } finally { controlsBusy = false; state(); recoverImageProfile(); } },
     async setSetting(id, value, operationId, revision) {
-      if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable.");
+      if (closed || disconnected || dispatching || controlsBusy || recoveringImages) throw new NativeRpcError(-32602, "Native controls are unavailable.");
       controlsBusy = true; controls!.invalidateImages(); state();
       invalidateRoute();
       const modelSetting = id === "model" || id === "effort";
@@ -388,7 +392,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       } finally { controlsBusy = false; state(); recoverImageProfile(); }
     },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
-      if (closed || disconnected || dispatching || controlsBusy || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
+      if (closed || disconnected || dispatching || controlsBusy || recoveringImages || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
       controlsBusy = true; controls!.invalidateImages(); state();
       invalidateRoute();
       let result: Awaited<ReturnType<CopilotControls["invoke"]>>;

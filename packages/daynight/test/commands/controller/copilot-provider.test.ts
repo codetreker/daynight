@@ -804,6 +804,46 @@ test("a native model event disables images until its replacement observation com
   } finally { await provider.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
+test.each([
+  ["session.model_change", false], ["session.model_change", true],
+  ["session.mode_changed", false], ["session.mode_changed", true],
+] as const)("text dispatch remains available during %s image recovery with qualification %s", async (type, qualified) => {
+  const f = await imageFixture(); sdk.provenGeometry = qualified;
+  const provider = await openCopilotProvider(f.options);
+  const prior = await sdk.observeRoute.mock.results.at(-1)!.value;
+  let release!: (value: unknown) => void, releaseFresh!: (value: unknown) => void;
+  try {
+    sdk.observeRoute.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { releaseFresh = resolve; }));
+    fixture.emit(event(type, { previousModel: "vision-model", newModel: "vision-model" }));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(fixture.states.at(-1)).toMatchObject({ capabilities: { send: true }, images: { send: "unknown" } });
+    await expect(provider.send(textNativeInput("Text while the image observer is pending"), randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+    expect(fixture.native.send).toHaveBeenCalledOnce(); expect(sdk.imageSend).not.toHaveBeenCalled();
+    release(qualified ? prior : null);
+    await vi.waitFor(() => expect(releaseFresh).toBeTypeOf("function"));
+    expect(fixture.states.at(-1)?.images?.send).toBe("unknown");
+    releaseFresh(prior);
+    await vi.waitFor(() => expect(fixture.states.at(-1)?.images?.send).toBe(qualified ? "supported" : "unknown"));
+  } finally { release?.(null); releaseFresh?.(null); await provider.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("text invalidates background recovery while its model read is still pending", async () => {
+  const f = await imageFixture(), provider = await openCopilotProvider(f.options);
+  let release!: (value: { modelId: string }) => void;
+  try {
+    sdk.observeRoute.mockClear();
+    f.model.getCurrent.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    fixture.emit(event("session.model_change", { newModel: "vision-model" }));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await expect(provider.send(textNativeInput("Text while model readback is pending"), randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+    expect(fixture.native.send).toHaveBeenCalledOnce(); expect(sdk.observeRoute).not.toHaveBeenCalled();
+    release({ modelId: "vision-model" });
+    await vi.waitFor(() => expect(fixture.states.at(-1)?.images?.send).toBe("supported"));
+    expect(sdk.observeRoute).toHaveBeenCalledOnce();
+  } finally { release?.({ modelId: "vision-model" }); await provider.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
 test("a confirmed model setting rebuilds its route profile before restoring image capability", async () => {
   const f = await imageFixture();
   Object.assign(f.model, { switchTo: vi.fn(async () => ({ modelId: "vision-model" })) });
