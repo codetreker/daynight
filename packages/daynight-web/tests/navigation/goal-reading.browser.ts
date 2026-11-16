@@ -2020,6 +2020,90 @@ test('Goal and task-chain headers remain compact with an assigned owner on deskt
   expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(goalHeight);
 });
 
+for (const { viewport, contentWidth } of [
+  { viewport: 320 }, { viewport: 390 }, { viewport: 1440 },
+  { viewport: 739 }, { viewport: 740 }, { viewport: 741 },
+  { viewport: 1440, contentWidth: 599 }, { viewport: 1440, contentWidth: 600 }, { viewport: 1440, contentWidth: 601 },
+]) test(`Goal prefix aligns with the task chain at viewport ${viewport}, card ${contentWidth ?? 'natural'}`, async ({ page }) => {
+  await page.setViewportSize({ width: viewport, height: 800 });
+  const fixture = await install(page, 'en', 'Owner');
+  fixture.setGoalStatusFixture('todo', false);
+  fixture.assignChainRoot();
+  await page.goto(`/projects/${projectId}`);
+  await page.addStyleTag({ content: `.goal-disclosure { transition: none !important; }${contentWidth === undefined ? '' : ` [data-goal-id="${goalId}"], [data-chain-id="${outsideId}"] { width: ${contentWidth + 2}px !important; }`}` });
+  await page.getByRole('tab', { name: 'Task list', exact: true }).click();
+  await page.getByRole('tab', { name: /^Task chains/ }).click();
+  const chain = page.locator(`[data-chain-id="${outsideId}"]`);
+  const chainToggle = chain.locator('.goal-toggle');
+  const arrow = (card: Locator) => card.evaluate(element => {
+    const svg = element.querySelector<SVGSVGElement>('.goal-disclosure')!;
+    const path = svg.querySelector<SVGGraphicsElement>('path')!;
+    const bounds = path.getBBox(), matrix = path.getScreenCTM()!;
+    const xs = [bounds.x, bounds.x + bounds.width].flatMap(x => [bounds.y, bounds.y + bounds.height].map(y => new DOMPoint(x, y).matrixTransform(matrix).x));
+    const origin = element.getBoundingClientRect().left + element.clientLeft;
+    const box = svg.getBoundingClientRect();
+    return { width: element.clientWidth, left: box.left - origin, pathLeft: Math.min(...xs) - origin, svgWidth: box.width, svgHeight: box.height };
+  });
+  const chainCollapsed = await arrow(chain);
+  await chainToggle.click();
+  await expect(chainToggle).toHaveAttribute('aria-expanded', 'true');
+  const chainExpanded = await arrow(chain);
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  const compare = async (reference: Awaited<ReturnType<typeof arrow>>) => {
+    const actual = await arrow(card);
+    expect(actual.width).toBe(reference.width);
+    if (contentWidth !== undefined) expect(actual.width).toBe(contentWidth);
+    expect(Math.abs(actual.left - reference.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(actual.pathLeft - reference.pathLeft)).toBeLessThanOrEqual(1);
+    expect(actual.left).toBeCloseTo(actual.width <= 600 ? 11 : 15, 1);
+    expect(actual.svgWidth).toBeCloseTo(14, 1);
+    expect(actual.svgHeight).toBeCloseTo(14, 1);
+  };
+  await compare(chainCollapsed);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await compare(chainExpanded);
+  await toggle.scrollIntoViewIfNeeded();
+  await page.keyboard.press('Tab');
+  await toggle.focus();
+  const geometry = await card.evaluate(element => {
+    const box = (selector: string) => element.querySelector(selector)!.getBoundingClientRect();
+    const cardBox = element.getBoundingClientRect(), button = box('.goal-list-toggle'), disclosure = box('.goal-disclosure');
+    const icon = box('.goal-list-icon'), main = box('.goal-list-main'), progress = box('.goal-list-progress');
+    const control = element.querySelector<HTMLElement>('.goal-list-toggle')!;
+    const style = getComputedStyle(control);
+    const hit = (x: number) => { const target = document.elementFromPoint(x, button.top + button.height / 2); return target === control || control.contains(target); };
+    return { origin: cardBox.left + element.clientLeft, buttonLeft: button.left, buttonWidth: button.width, buttonHeight: button.height,
+      iconWidth: icon.width, iconHeight: icon.height, iconGap: icon.left - disclosure.right, buttonGap: icon.left - button.right, titleGap: main.left - icon.right, mainWidth: main.width,
+      titleLeft: main.left, progressLeft: progress.left, progressTop: progress.top, mainBottom: main.bottom,
+      inside: button.left >= cardBox.left + element.clientLeft && button.right <= icon.left && icon.right <= main.left,
+      hits: [hit(button.left + 1), hit(button.right - 1)], outline: style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0 };
+  });
+  expect(geometry.buttonWidth).toBeCloseTo(22, 1);
+  expect(geometry.buttonHeight).toBeGreaterThanOrEqual(34);
+  expect(geometry.iconWidth).toBeCloseTo(20, 1);
+  expect(geometry.iconHeight).toBeCloseTo(20, 1);
+  expect(geometry.iconGap).toBeCloseTo(8, 1);
+  expect(geometry.buttonGap).toBeCloseTo(4, 1);
+  expect(geometry.titleGap).toBeCloseTo(8, 1);
+  expect(geometry.mainWidth).toBeGreaterThanOrEqual(40);
+  expect(geometry.titleLeft - geometry.origin).toBeCloseTo(chainCollapsed.width <= 600 ? 61 : 65, 1);
+  expect(geometry.inside).toBe(true);
+  expect(geometry.hits).toEqual([true, true]);
+  expect(geometry.outline).toBe(true);
+  if (viewport <= 740 || chainCollapsed.width <= 600) {
+    expect(geometry.progressTop).toBeGreaterThanOrEqual(geometry.mainBottom - 1);
+    expect(Math.abs(geometry.progressLeft - geometry.titleLeft)).toBeLessThanOrEqual(1);
+  }
+  const icon = card.locator('svg.goal-list-icon');
+  await expect(icon).toHaveAttribute('aria-hidden', 'true');
+  await expect(icon.locator('circle')).toHaveCount(3);
+  await expect(icon.locator('circle').nth(0)).toHaveAttribute('r', '6');
+  await expect(icon.locator('circle').nth(1)).toHaveAttribute('r', '3');
+});
+
 for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal header parts toggle independently of reading actions at ${width}px in ${locale}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page, locale, 'Owner');

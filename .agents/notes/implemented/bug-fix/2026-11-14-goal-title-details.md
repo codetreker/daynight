@@ -24,6 +24,8 @@ The [Goal row disclosure decision](2026-11-13-goal-row-disclosure.md) retains th
 reason for a broad expansion target. The [Goal specification](../../../../docs/spec/daynight-goals.md)
 owns the visible behavior and the [Web design](../../../../docs/design/daynight-web.md)
 describes the control structure.
+The [Goal prefix spacing decision](2026-11-16-goal-list-prefix-spacing.md)
+retains these separate actions while compacting their visual prefix.
 
 ## Alternatives
 
