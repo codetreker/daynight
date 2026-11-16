@@ -84,7 +84,10 @@ The [GitHub PR storage design](../../docs/design/github-pr-storage.md) describes
 the independent Project resource, persisted observations and transaction scopes.
 The [single-Project executor](../../docs/design/github-sync-executor.md) performs synchronization;
 the [connection and scheduler design](../../docs/design/github-connection-runtime.md)
-describes management, scheduling and resource lifecycle.
+describes management, scheduling and resource lifecycle. Independent App
+[registration](../../docs/design/github-app-registration.md) and
+[administrator invitations](../../docs/design/github-app-administration.md)
+define complete management components whose HTTP adapters remain unmounted.
 
 The [requirements](../../docs/spec/daynight-server.md) own observable behavior and
 the [design](../../docs/design/daynight-server.md) owns architecture and concurrency.

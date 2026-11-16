@@ -18,4 +18,4 @@ The independent App foundation proves the submitted RSA key with GitHub's authen
 
 ## Consequences
 
-The schema is ready for later administrator and Team authorization operations while the existing connection runtime remains unchanged. The adapter is not mounted. A confirmed remote identity does not prove Webhook delivery, and an unknown commit cannot be inferred from equal public metadata or automatically replayed.
+The schema supports the [administrator invitation component](2026-11-16-github-app-administrator-invitations.md) and later Team authorization operations while the existing connection runtime remains unchanged. The adapter is not mounted. A confirmed remote identity does not prove Webhook delivery, and an unknown commit cannot be inferred from equal public metadata or automatically replayed.
