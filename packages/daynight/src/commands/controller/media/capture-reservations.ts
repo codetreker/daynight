@@ -15,7 +15,7 @@ export type CaptureSourceLease = {
 /** The original capture attempt owns its source, stage and writer cleanup. */
 export const captureSourceReservations = (options: {
   db: Database.Database; transactions: Transactions; root: string;
-  checkOpen(): void; assertAttempt(captureId: string, attemptId: string): void;
+  checkOpen(): void; assertDirectories(): void; assertAttempt(captureId: string, attemptId: string): void;
   checkPreparationMetadata(): void; assertMetadata(): void; sync(): void;
   acquireBlock(): { close(): void } | null;
   joinStage(captureId: string, attemptId: string): Promise<void>;
@@ -43,6 +43,7 @@ export const captureSourceReservations = (options: {
     const work = (async () => {
       if (running) { running.controller.abort(new Error("Image source reservation was released.")); await running.work?.catch(() => {}); }
       await options.joinStage(captureId, attemptId);
+      options.assertDirectories();
       const value = load(captureId, attemptId);
       if (!value) return;
       if (value.released) { closeBlock(); return; }
@@ -86,7 +87,7 @@ export const captureSourceReservations = (options: {
             options.checkOpen();
             if (state.started || state.releasing || state.controller.signal.aborted) throw new Error("Image source writer cannot be restarted.");
             state.started = true;
-            const work = Promise.resolve().then(() => { state.controller.signal.throwIfAborted(); return writer(outputPath, state.controller.signal); });
+            const work = Promise.resolve().then(() => { state.controller.signal.throwIfAborted(); options.checkOpen(); return writer(outputPath, state.controller.signal); });
             state.work = work;
             try { return await work; } finally { state.work = null; }
           },

@@ -26,8 +26,7 @@ export type CaptureReadPolicyLease = { verify(): void; close(): void };
 export type CaptureReadPolicy = (request: ImageCaptureRequest) => CaptureReadPolicyLease;
 export type NativeInputLease = { readonly input: NativeInput; verify(): void; retain(): void; close(): void };
 const syncDirectory = (directory: string) => { if (process.platform !== "win32") { const fd = openSync(directory, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } } };
-const checkedDirectory = (directory: string) => {
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
+const assertPrivateDirectory = (directory: string) => {
   let part = path.parse(directory).root;
   for (const component of directory.slice(part.length).split(path.sep).filter(Boolean)) { part = path.join(part, component); if (lstatSync(part).isSymbolicLink()) throw new Error("Media directory contains an untrusted symbolic link."); }
   const stat = lstatSync(directory);
@@ -39,7 +38,12 @@ const snapshotTarget = (ticket: ControllerLaunchTicket, snapshot: ControllerSnap
 /** Local validation never publishes a service-owned available resource receipt. */
 export const openControllerMediaStore = (file: string, ticket: ControllerLaunchTicket, db: Database.Database, content: ResourceFiles, transactions: Transactions, snapshot: () => ControllerSnapshot, decoder: ImageDecoder = bundledImageDecoder()) => {
   const root = `${file}.media-staging`, nativeRoot = path.join(root, "native"), wireRoot = path.join(root, "wire");
-  checkedDirectory(root); checkedDirectory(nativeRoot); checkedDirectory(wireRoot); syncDirectory(path.dirname(root));
+  const directories = [root, nativeRoot, wireRoot];
+  for (const directory of directories) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 }); assertPrivateDirectory(directory);
+  }
+  const assertDirectories = (): void => { for (const directory of directories) assertPrivateDirectory(directory); };
+  syncDirectory(path.dirname(root));
   const ownerFile = path.join(root, "owner.json"), owner = { schemaVersion: 1, serverOrigin: ticket.serverOrigin, executionId: ticket.executionId, sessionId: ticket.sessionId, ...sessionBinding(ticket) };
   if (existsSync(ownerFile)) {
     const named = lstatSync(ownerFile);
@@ -56,7 +60,10 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
   const reads = new Map<string, number>();
   const inputLeases = new Set<string>();
   const wireSpools = new Set<NativeMediaSpool>();
-  const checkOpen = () => { if (closed) throw new Error("Controller media store is closed."); };
+  const checkOpen = () => {
+    if (closed) throw new Error("Controller media store is closed.");
+    assertDirectories();
+  };
   const mediaBlocks = new Set<object>();
   const tryAcquireMediaBlock = (): ControllerMediaBlockLease | null => {
     checkOpen();
@@ -80,6 +87,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
   };
   const preparationPath = (uploadId: string): string => privatePreparationPath(get(uploadId));
   const openPrivateImage = (filename: string, writable = false): number => {
+    assertDirectories();
     const stat = lstatSync(filename);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Image source is not a private regular file.");
     const fd = openSync(filename, (writable ? constants.O_RDWR : constants.O_RDONLY) | constants.O_NOFOLLOW);
@@ -95,7 +103,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     const rows = db.prepare("SELECT value FROM image_preparations").all() as { value: string }[];
     if (rows.length >= 10000 || rows.reduce((sum, row) => sum + Buffer.byteLength(row.value), 0) + 16384 > 128 * 1024 * 1024) throw new Error("Image preparation metadata budget exceeded.");
   });
-  const sourceReservations = captureSourceReservations({ db, transactions, root, checkOpen, checkPreparationMetadata, acquireBlock: tryAcquireMediaBlock,
+  const sourceReservations = captureSourceReservations({ db, transactions, root, checkOpen, assertDirectories, checkPreparationMetadata, acquireBlock: tryAcquireMediaBlock,
     assertAttempt: (captureId, attemptId) => { captureSource.assertImageCaptureAttempt(captureId, attemptId); },
     assertMetadata: () => { metadataBudget.assert(16384, true); }, sync: () => syncDirectory(root),
     joinStage: async (captureId, attemptId) => { await captureInFlight.get(`${captureId}:${attemptId}`)?.promise.catch(() => {}); },
@@ -177,6 +185,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         controller.signal.throwIfAborted(); checkOpen(); assertTarget(p.spec);
         p.decoding = true; put(p);
         const validated = await decoder({ version: 1, policy: "image-validation-v1", inputPath: path.join(root, p.filename), expectedByteLength: p.spec.byteLength, expectedSha256: p.spec.sha256 }, controller.signal);
+        checkOpen();
         if (validated.mediaType !== p.spec.mediaType || validated.byteLength !== p.spec.byteLength || validated.sha256 !== p.spec.sha256) throw new Error("Image validation differs from the declared original.");
         controller.signal.throwIfAborted(); assertTarget(p.spec);
         // Windows FlushFileBuffers requires a handle opened for writing, even
@@ -206,6 +215,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
       }
       const running = inFlight.get(uploadId);
       if (running) { running.controller.abort(new Error("Image preparation was released.")); await running.promise; p = get(uploadId); }
+      assertDirectories();
       const used = transactions.read(() => db.prepare("SELECT i.canonical FROM input_intents i JOIN operations o ON i.operation_id=o.id WHERE json_extract(o.value,'$.state') NOT IN ('rejected','expired','failed')").all() as { canonical: string }[]).some(row => { const command = JSON.parse(row.canonical) as { payload?: { content?: { uploadId?: string }[] } }; return command.payload?.content?.some(part => part.uploadId === uploadId); });
       if (used) throw new Error("Image preparation upload_in_use.");
       if ((reads.get(uploadId) ?? 0) > 0) throw new ImageReleaseStorageError(new Error("An original preparation read is still active."));
@@ -267,13 +277,14 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         } finally { closeSync(source); }
         syncDirectory(root);
         const validated = await decoder({ version: 1, policy: "image-validation-v1", inputPath: targetPath, expectedByteLength: input.byteLength, expectedSha256: input.sha256 }, controller.signal);
+        checkOpen();
         if (input.declaredMediaType != null && validated.mediaType !== input.declaredMediaType) throw Object.assign(new Error("Image capture format differs from the declared source type."), { code: "invalid_image" });
         if (controller.signal.aborted) throw controller.signal.reason;
         const fd = openSync(targetPath, constants.O_RDWR | constants.O_NOFOLLOW); try { chmodSync(targetPath, 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
         transactions.write(() => { captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId, input.imageId); metadataBudget.assert(16384, true); db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(captureKey, input.imageId, filename, JSON.stringify(validated)); });
         retained = true; return validated;
       } finally {
-        try { if (!retained && existsSync(targetPath)) { unlinkSync(targetPath); syncDirectory(root); } }
+        try { if (!retained) { assertDirectories(); if (existsSync(targetPath)) { unlinkSync(targetPath); syncDirectory(root); } } }
         finally { releaseDecoder?.(); captureInFlight.delete(captureKey); }
       }
     })();
@@ -370,6 +381,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     const pendingPins: { resourceId: string; reference: string; filename: string }[] = [];
     const nativeHandles: { filename: string; fd: number; sha256: string; byteLength: string }[] = [];
     const verify = () => {
+      assertDirectories();
       for (const handle of nativeHandles) {
         const stat = fstatSync(handle.fd), named = lstatSync(handle.filename);
         if (!stat.isFile() || !named.isFile() || named.isSymbolicLink() || stat.dev !== named.dev || stat.ino !== named.ino || String(stat.size) !== handle.byteLength || process.platform !== "win32" && (stat.mode & 0o222) !== 0) throw new Error("Native image lease identity or immutability changed.");
@@ -417,6 +429,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         close() {
           if (released) return; released = true; inputLeases.delete(operationId); for (const handle of nativeHandles) closeSync(handle.fd); for (const lease of acquired) lease.close();
           if (!retained) {
+            assertDirectories();
             for (const pin of pendingPins) { content.unpinResource(pin.resourceId, pin.reference); if (existsSync(pin.filename)) unlinkSync(pin.filename); }
             syncDirectory(nativeRoot); releaseImported();
             transactions.write(() => { for (const pin of pendingPins) db.prepare("UPDATE image_pins SET released=1 WHERE pin_id=?").run(pin.reference); });
@@ -450,7 +463,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
       } finally { closeSync(fd); }
     },
     reserveCaptureSource: sourceReservations.reserve, releaseCaptureSource: sourceReservations.release, tryAcquireMediaBlock,
-    nativeIndexDirectory: (): string => { checkOpen(); metadataBudget.assert(16384); const directory = `${file}.native-index`; checkedDirectory(directory); return directory; },
+    nativeIndexDirectory: (): string => { checkOpen(); metadataBudget.assert(16384); const directory = `${file}.native-index`; mkdirSync(directory, { recursive: true, mode: 0o700 }); assertPrivateDirectory(directory); return directory; },
     reserveNativeIndex: (additional: number): void => { checkOpen(); metadataBudget.assert(additional); },
     captureStatus: (captureId: string, attemptId: string): ValidatedImage | null => {
       checkOpen(); imageId(attemptId); captureSource.assertImageCaptureAttempt(captureId, attemptId);

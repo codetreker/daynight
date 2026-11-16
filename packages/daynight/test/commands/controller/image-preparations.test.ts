@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, rm, appendFile, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, appendFile, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
@@ -438,4 +438,33 @@ test.skipIf(process.platform === "win32")("capture staging and sealed reads reje
     await expect(media.readCapture({ ...input, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).rejects.toThrow(/private regular file/);
     expect(await readFile(inputPath)).toEqual(f.bytes);
   } finally { await media.close(); f.store.close(); }
+});
+
+// Windows refuses to rename a directory containing an open spool writer; POSIX
+// exercises those replacements while Windows covers the other live boundaries.
+for (const directory of ["root", "native", "wire"] as const) for (const operation of ["prepare", "source", "spool", "spool-write"] as const) test.skipIf(process.platform === "win32" && operation === "spool-write" && directory !== "native")(`live ${directory} replacement refuses ${operation} before touching an external directory`, async () => {
+  const f = await fixture(), media = f.store.media(), request = registerSource(f);
+  const root = `${f.file}.media-staging`, linked = directory === "root" ? root : path.join(root, directory);
+  const retained = `${linked}.retained`, outside = path.join(f.home, "outside");
+  const spool = operation === "spool-write" ? media.createSpool(f.bytes.length) : undefined;
+  let moved = false, replaced = false;
+  try {
+    await mkdir(outside, { mode: 0o700 }); await rename(linked, retained); moved = true;
+    await symlink(outside, linked, process.platform === "win32" ? "junction" : "dir"); replaced = true;
+    if (operation === "prepare") await expect(media.prepare(f.spec)).rejects.toThrow(/directory|symbolic/i);
+    else if (operation === "source") expect(() => media.reserveCaptureSource(request.captureId, request.attemptId)).toThrow(/directory|symbolic/i);
+    else if (operation === "spool") expect(() => media.createSpool(f.bytes.length)).toThrow(/directory|symbolic/i);
+    else expect(() => spool!.write(f.bytes)).toThrow(/directory|symbolic/i);
+    expect(await readdir(outside)).toEqual([]);
+    const db = new Database(f.file, { readonly: true });
+    try {
+      expect(db.prepare("SELECT upload_id FROM image_preparations WHERE upload_id=?").get(f.spec.uploadId)).toBeUndefined();
+      expect(db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture-source:${request.captureId}:${request.attemptId}`)).toBeUndefined();
+    } finally { db.close(); }
+  } finally {
+    if (replaced) await rm(linked, { recursive: true });
+    if (moved) await rename(retained, linked);
+    if (spool) { spool.write(f.bytes); spool.seal(); expect(Buffer.concat([...spool.read()])).toEqual(f.bytes); spool.remove(); }
+    await media.close(); f.store.close();
+  }
 });
