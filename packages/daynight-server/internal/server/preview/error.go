@@ -21,7 +21,7 @@ var errorTemplate string
 
 var errorPage = template.Must(template.New("preview-sso-error").Parse(errorTemplate))
 
-const preserveRetryFragment = `if(location.hash){document.getElementById('retry-sso').hash=location.hash}`
+const preserveRetryFragment = `const link=document.getElementById('retry-sso');if(location.hash)link.hash=location.hash;link.addEventListener('click',function(e){if(e.defaultPrevented||e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)return;const target=new URL(link.href);if(target.origin===location.origin&&target.pathname===location.pathname&&target.search===location.search){e.preventDefault();location.reload()}});`
 
 type errorContent struct {
 	Language, Title, Message, LoginLabel, RetryLabel, HomeLabel, ProjectsLabel, RequestLabel string
