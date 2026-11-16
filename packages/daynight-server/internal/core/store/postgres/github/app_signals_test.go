@@ -222,3 +222,22 @@ func TestAppSignalRechecksAfterConnectionWait(t *testing.T) {
 		})
 	}
 }
+
+func TestAppWebhookOldUUIDDoesNotReviveAfterReregistration(t *testing.T) {
+	f := newAppSignalFixture(t)
+	ctx := t.Context()
+	if _, err := f.db.Pool.Exec(ctx, `UPDATE github_apps SET deleted_at=now(),private_key_pem=NULL,webhook_secret=NULL WHERE id=$1`, f.app); err != nil {
+		t.Fatal(err)
+	}
+	newID := uuid.NewString()
+	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,10,'new','remote','slug','new key','new secret')`, newID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.ReadGitHubAppWebhook(ctx, f.app); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("old App UUID became live: %v", err)
+	}
+	snapshot, err := f.db.ReadGitHubAppWebhook(ctx, newID)
+	if err != nil || snapshot.GitHubAppID != 10 || string(snapshot.Secret) != "new secret" {
+		t.Fatalf("new App snapshot: %+v %v", snapshot, err)
+	}
+}
