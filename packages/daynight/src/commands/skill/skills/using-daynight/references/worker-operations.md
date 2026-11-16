@@ -142,6 +142,41 @@ ownership records. Before an authorized `worker retry` or `worker release`, stop
 the corresponding runner and follow that command's help and original-claim
 conditions; neither is a tool-path reset.
 
+### Retained resource recovery
+
+A retained Git marker does not identify the Worker or prove that its original
+execution stopped. Current monitoring preserves its occupied slot and reports
+the claim and Project-relative worktree. Do not delete its database, raise the
+concurrency limit or use `worker retry` to hide the reservation.
+
+For an original completed Web execution whose full journals remain available,
+stop the corresponding `worker run`, then preview recovery under its original
+Worker lock:
+
+```bash
+daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id>
+daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id> --confirm
+```
+
+The second command rechecks the exact service, authenticated owner, Worker,
+terminal claim, worktree binding, original native stop and ready archive receipt
+before removing the worktree without force and retiring its manifest. It preserves
+the branch and execution journals. Optional `--worktree-id` adds an exact identity
+check; omission reads the original journal and still verifies the unique Git
+binding. Modified, untracked or ignored files, index flags that hide changes and
+commits with no observed remote
+reference block removal; preserve those files and commits before making a new
+decision. Unknown removal results require inspecting the original worktree and
+manifest before another attempt.
+
+Missing journals, a successor claim or another Worker never authorize adoption.
+Restore the original Worker and Controller journals from backup; a completed Task,
+missing process or Git marker cannot replace them. Unfinished Web executions use
+normal Worker reconciliation after their original evidence is restored. Herdr
+recording recovery retains `worker resources list`, `retry` and `dispose` with
+their original Session and stop-evidence requirements. Successful observation
+clears repaired monitoring failures; recovery does not create a new execution.
+
 ## Pause and complete an assigned claim
 
 A worker-managed Task may expose `paused`; authorized changes use ordinary Task

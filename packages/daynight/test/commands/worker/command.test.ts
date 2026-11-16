@@ -33,6 +33,18 @@ const dependencies = () => ({
 });
 
 describe("worker command", () => {
+  it("previews resource recovery and requires explicit confirmation for removal", async () => {
+    const { cli } = context(); cli.homeDirectory = () => path.resolve("worker-home");
+    const deps = dependencies();
+    const args = ["resources", "recover", taskId, "--project", projectId, "--claim-id", claimId];
+    await runWorkerCommand(args, cli, deps);
+    expect(deps.resources).toHaveBeenLastCalledWith(expect.objectContaining({ request: { kind: "recover", taskId, projectId, claimId, confirmed: false } }));
+    await runWorkerCommand([...args, "--confirm"], cli, deps);
+    expect(deps.resources).toHaveBeenLastCalledWith(expect.objectContaining({ request: { kind: "recover", taskId, projectId, claimId, confirmed: true } }));
+    deps.resources.mockClear();
+    await expect(runWorkerCommand([...args, "--worktree-id", "wrong"], cli, deps)).rejects.toThrow();
+    expect(deps.resources).not.toHaveBeenCalled();
+  });
   it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
     ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();

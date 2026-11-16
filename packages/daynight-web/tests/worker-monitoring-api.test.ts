@@ -31,6 +31,27 @@ const mutate = (path: readonly string[], value: unknown): unknown => {
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker monitoring response contracts', () => {
+  it('preserves optional complete capacity breakdown independently of visible responsibilities', () => {
+    const value = detail();
+    Object.assign(value.data.capacity, { breakdown: { active: 0, retained: 1 } });
+    value.data.reservations = [];
+    value.permissionProjection = 'restricted'; value.detailCoverage = 'partial'; value.data.detailCoverage = 'partial';
+    expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+    const summary = query(); Object.assign(summary.items[0]!.summary.capacity, { breakdown: { active: 0, retained: 1 } });
+    expect(parseWorkerMonitoringQuery(summary, [id])).toEqual(summary);
+    for (const breakdown of [null, {}, { active: 1 }, { active: -1, retained: 2 }, { active: 0.5, retained: 0.5 }, { active: 1, retained: 1 }, { active: 0, retained: 1, extra: 0 }]) {
+      expect(() => parseWorkerMonitoringDetail(mutate(['data', 'capacity', 'breakdown'], breakdown))).toThrow();
+    }
+    expect(parseWorkerMonitoringDetail(detail())).toEqual(detail());
+  });
+
+  it('accepts the fixed ownership diagnostic and rejects copied error details', () => {
+    const error = { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false };
+    const value = mutate(['data', 'currentFailures', '0', 'error'], error);
+    expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+    expect(() => parseWorkerMonitoringDetail(mutate(['data', 'currentFailures', '0', 'error'], { ...error, cause: 'private path' }))).toThrow();
+  });
+
   it('accepts only canonical claim worktree locations and preserves absence', () => {
     expect(parseWorkerMonitoringDetail(detail())).toEqual(detail());
     for (const worktree of [
@@ -61,7 +82,7 @@ describe('Worker monitoring response contracts', () => {
     expect(parseWorkerMonitoringQuery(missing, [id])).toEqual(missing);
   });
   it('accepts restricted and budgeted associations, preserving permitted capacity', () => {
-    const value = detail(); value.permissionProjection = 'restricted'; value.detailCoverage = 'partial'; value.data.detailCoverage = 'partial';
+    const value = detail(); value.permissionProjection = 'restricted'; value.detailCoverage = 'partial'; value.data.detailCoverage = 'partial'; value.data.detailCoverage = 'partial';
     value.data.activities[0]!.association = { kind: 'labels-omitted' } as typeof association;
     expect(parseWorkerMonitoringDetail(value)).toEqual(value);
     const project = { kind: 'project', projectId };

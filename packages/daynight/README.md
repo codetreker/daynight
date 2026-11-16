@@ -147,6 +147,7 @@ daynight worker repo list [--json]
 daynight worker repo add [--project <project-id>]
 daynight worker repo remove [--project <project-id>]
 daynight worker resources list       # Inspect retained Herdr recordings and stop evidence
+daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id> [--worktree-id <worktree-id>] [--confirm]
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
 daynight review                     # Show review help
@@ -3368,6 +3369,27 @@ instruction to stop the runner. Retry and release synchronously handle
 one specified claim without a background request queue. Resource disposal
 persists its explicit decision so an interrupted deletion can resume against
 the original identity.
+
+### Completed Web resources
+
+`worker resources recover <task-id> --project <project-id> --claim-id <claim-id>`
+previews recovery when the original completed Web execution journal remains but
+its worktree still occupies capacity. It verifies the original service, Worker,
+authenticated owner, terminal claim, unique physical Git binding, native stop and
+ready archive receipt. A second invocation with `--confirm` repeats those checks
+and removes the clean worktree without force, preserving its branch and journals.
+Optional `--worktree-id` adds an exact identity check; omission reads the original
+journal. Modified, untracked or ignored files, index flags that hide changes,
+commits without an observed remote
+reference, missing evidence and successor claims all refuse removal. Preserve
+files and commits before making another decision. An unknown deletion result
+requires inspecting the original checkout and manifest before retrying.
+
+A Git marker or completed Task alone cannot prove ownership, stop or archival.
+Restore the original Worker and Controller journals from backup if they are
+missing. Unfinished Web journals already participate in normal reconciliation;
+this command never launches an Agent or replaces a claim. Normal monitoring clears
+the reservation after verified resource removal.
 
 ### Retained Herdr recordings
 

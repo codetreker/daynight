@@ -19,6 +19,7 @@ const causes = {
   'configuration-missing': 'Required configuration is missing.', 'configuration-invalid': 'The configuration is invalid.', 'command-failed': 'A required command failed.',
   'io-error': 'A required I/O operation failed.', 'invalid-output': 'A required operation produced invalid output.', 'recovery-limit': 'The recovery limit was reached.',
   'native-identity-missing': 'The original native execution identity is missing.', 'worktree-validation-failed': 'The worktree failed ownership validation.',
+  'ownership-unconfirmed': 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.',
   'branch-mismatch': 'The worktree branch does not match the recorded owner.', 'recovery-blocked': 'Recovery is blocked and needs attention.',
   'outcome-unknown': 'The operation outcome is unknown.', unknown: 'The operation failed; inspect local Worker diagnostics for details.',
 } as const;
@@ -33,7 +34,7 @@ export type MonitoringScope = { kind: 'worker' } | { kind: 'project'; projectId:
 export type MonitoringAssociation = null | { kind: 'project'; projectName: string } | { kind: 'task'; projectName: string; title: string } | { kind: 'labels-omitted' };
 export type Coverage = 'unknown' | 'complete' | 'partial';
 export type DetailCoverage = 'complete' | 'partial';
-export type MonitoringCapacity = { observedAt: string; quality: 'current' | 'stale'; limit: number; occupied: number; available: number };
+export type MonitoringCapacity = { observedAt: string; quality: 'current' | 'stale'; limit: number; occupied: number; available: number; breakdown?: { active: number; retained: number } };
 export type MonitoringSummaryAdmission = { observedAt: string; coverage: Coverage; reasonCodes: readonly MonitoringReasonCode[]; permissionProjection: 'current' | 'restricted' };
 export type MonitoringSummary = { capturedAt: string; lifecycle: 'starting' | 'running' | 'stopping' | 'stopped'; scheduler: { phase: SchedulerPhase; coverage: Coverage; lastSuccessfulAt: string | null; nextPollAt: string | null }; capacity: MonitoringCapacity | null; detailCoverage: DetailCoverage; admission: MonitoringSummaryAdmission };
 type Scoped = { scope: MonitoringScope; association: MonitoringAssociation };
@@ -82,10 +83,16 @@ const association = (value: unknown, owner: MonitoringScope): MonitoringAssociat
 };
 const scoped = (data: Record<string, unknown>): Scoped => { const s = scope(data.scope); return { scope: s, association: association(data.association, s) }; };
 const capacity = (value: unknown, withCoverage: boolean): MonitoringCapacity & { detailCoverage?: DetailCoverage } => {
-  const d = fields(value, ['observedAt', 'quality', 'limit', 'occupied', 'available', ...(withCoverage ? ['detailCoverage'] : [])]);
+  const d = fields(value, ['observedAt', 'quality', 'limit', 'occupied', 'available', ...(withCoverage ? ['detailCoverage'] : []), ...(Object.hasOwn(record(value), 'breakdown') ? ['breakdown'] : [])]);
   const limit = monitoringCount(d.limit), occupied = monitoringCount(d.occupied), available = monitoringCount(d.available);
   if (limit < 1 || limit > 64 || available !== Math.max(0, limit - occupied)) return malformed();
-  return { observedAt: timestamp(d.observedAt), quality: choice(d.quality, ['current', 'stale'] as const), limit, occupied, available, ...(withCoverage ? { detailCoverage: detail(d.detailCoverage) } : {}) };
+  let breakdown: MonitoringCapacity['breakdown'];
+  if (Object.hasOwn(d, 'breakdown')) {
+    const b = fields(d.breakdown, ['active', 'retained']);
+    breakdown = { active: monitoringCount(b.active), retained: monitoringCount(b.retained) };
+    if (breakdown.active > occupied || breakdown.retained !== occupied - breakdown.active) return malformed();
+  }
+  return { observedAt: timestamp(d.observedAt), quality: choice(d.quality, ['current', 'stale'] as const), limit, occupied, available, ...(breakdown === undefined ? {} : { breakdown }), ...(withCoverage ? { detailCoverage: detail(d.detailCoverage) } : {}) };
 };
 const cause = (value: unknown): MonitoringCause => {
   const d = fields(value, ['type', 'code', 'cause', 'causeTruncated']);

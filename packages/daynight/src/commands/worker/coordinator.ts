@@ -40,7 +40,7 @@ import type { WorkerRemote } from "./remote.js";
 import type { ClaimToolReservation, WorkerStore } from "./store.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import type { createMonitoringObserver } from "./monitoring/observer.js";
-import { MonitoringArchiveBusyEvidence, MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
+import { MonitoringArchiveBusyEvidence, MonitoringOwnershipUnconfirmedEvidence, MonitoringRecoveryEvidence } from "./monitoring/diagnostics.js";
 import { encodeWorktree } from "./monitoring/worktree.js";
 import { createSelectedWorktrees } from "./monitoring/selected-worktrees.js";
 import type { FailureWorktree } from "./monitoring/types.js";
@@ -186,6 +186,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const projectMonitoringFailures = new Map<string, string>();
   const resourceMonitoringFailures = new Map<string, string>();
   const quarantinedMonitoringFailures = new Map<string, { owner: ResourceOwner; operationId: string }>();
+  const unprovenMonitoringFailures = new Map<string, { owner: ResourceOwner; operationId: string }>();
   const candidateMonitoringFailures = new Map<string, string>();
   const inventoryMonitoringFailures = new Map<string, string>();
   const nameMonitoringFailures = new Map<string, string>();
@@ -470,6 +471,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const unavailableProjects = new Set<string>();
     const currentWarnings = new Map<string, Map<string, string>>();
     const unmapped = new Set<string>();
+    const observedBindings = new Map<string, { projectRoot: string; worktreePath: string }>();
     const recordOwner = (owner: ResourceOwner): void => {
       if (options.store.getProject(owner) === null) {
         unmapped.add(key(owner));
@@ -580,6 +582,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         // durable backend or joined-operation evidence establishes settlement.
         const present = new Set([...scan.validated.map(item => key(item.owner)), ...scan.quarantined.map(item => key(item.owner))]);
         for (const { owner, binding } of manifests) {
+          observedBindings.set(key(owner), { projectRoot: project.localPath, worktreePath: binding.worktreePath });
           if (present.has(key(owner)) || settled.some(item => key(item.owner) === key(owner) && item.owner.worktreeId === owner.worktreeId && item.binding.worktreePath === binding.worktreePath)) continue;
           recordOwner(owner); unresolved.add(key(owner));
         }
@@ -598,10 +601,29 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       scannedProjects.add(project.projectId);
       for (const worktree of worktrees) {
         recordOwner(worktree.owner);
+        observedBindings.set(key(worktree.owner), { projectRoot: project.localPath, worktreePath: worktree.binding.worktreePath });
         if (!proven.has(key(worktree.owner))) {
           if (!coveredProjects.has(worktree.owner.projectId)) unresolved.add(key(worktree.owner));
           else warn("unproven-ownership", worktree.owner, `Preserved unproven Git ownership for ${key(worktree.owner)}; a static marker does not identify this worker.`);
         }
+      }
+    }
+    for (const [identity, owner] of owners) {
+      if (proven.has(identity)) continue;
+      const previous = unprovenMonitoringFailures.get(identity);
+      if (previous !== undefined && previous.owner.worktreeId !== owner.worktreeId) observe(m => m.recover(previous.operationId));
+      const failure = previous?.owner.worktreeId === owner.worktreeId ? previous : { owner, operationId: randomUUID() };
+      unprovenMonitoringFailures.set(identity, failure);
+      const binding = observedBindings.get(identity);
+      observe(m => m.fail({ operationId: failure.operationId, component: "resources", phase: "resource-observation",
+        scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId },
+        ...(binding === undefined ? {} : { worktree: encodeWorktree(binding.projectRoot, binding.worktreePath) }),
+        error: new MonitoringOwnershipUnconfirmedEvidence(), retryState: "manual" }));
+    }
+    for (const [identity, failure] of unprovenMonitoringFailures) {
+      if (scannedProjects.has(failure.owner.projectId) && coveredProjects.has(failure.owner.projectId)
+        && (!owners.has(identity) || proven.has(identity))) {
+        observe(m => m.recover(failure.operationId)); unprovenMonitoringFailures.delete(identity);
       }
     }
     for (const [projectId, warnings] of currentWarnings) {

@@ -116,6 +116,7 @@ type Observation = {
     limit: number;
     occupied: number;
     available: number;
+    breakdown?: { active: number; retained: number };
     detailCoverage: DetailCoverage;
   } | null;
   admission: { observedAt: string; coverage: Coverage; reasons: readonly AdmissionReason[] };
@@ -136,7 +137,7 @@ Failure 的 component 使用 `runtime`、`scheduler`、`configuration`、`invent
 
 operationId/cycleId/runId/claim ID 为 UUID；reservationId 为按下文方式生成的规范小写 UUID，运行内同一责任稳定。roles 非空且去重。Scope.project 能表示没有 Task 的项目准备/配置失败，不能使用 worker scope 暴露项目原因。
 
-capacity 为 null 表示从未获得容量观测；有旧观测则保留其 observedAt 和 stale。limit 沿用配置 1–64，occupied 保留真实总数，available=max(0,limit−occupied)，不从截断后的 reservations 反推。完整搜索成功耗尽才可报告 no-ready-tasks；未知/失败/覆盖不足不能报告该原因。
+capacity 为 null 表示从未获得容量观测；有旧观测则保留其 observedAt 和 stale。limit 沿用配置 1–64，occupied 保留真实总数，available=max(0,limit−occupied)，不从截断后的 reservations 反推。可选 `breakdown` 是相同全量占用身份的互斥分解：`active` 统计 occupied 且含 active-task 的身份，`retained` 统计其余 occupied 身份，两者之和必须等于 occupied。活动任务占用不证明原生进程正在运行，保留资源占用也不单独证明故障。旧 Worker 未报告时保留缺席，不补零。分解属于 Worker 总体容量，权限过滤、详情裁减和名称预算均不得重新计算或删除它。完整搜索成功耗尽才可报告 no-ready-tasks；未知/失败/覆盖不足不能报告该原因。
 
 lastProgressAt 为 null 表示未观测到真实进展；deadlineAt 为 null 表示原操作没有可用 deadline。elapsedMs 来自 Worker 单调时钟。nextAttemptAt 只用于真实已知退避/安排；Failure.retryState=scheduled 时必须有该时间，其他状态为 null。firstObservedAt/次数只声明本次运行实际观测，不推测跨重启历史。lastRecovery 仅保留一份最新恢复摘要。
 
@@ -173,6 +174,7 @@ PUT 完整 JSON 及规范化正文各最多 256 KiB。activities/reservations/cu
 | `invalid-output` | `A required operation produced invalid output.` | 已知解析或校验边界明确报告输出无效。 |
 | `recovery-limit` | `The recovery limit was reached.` | 已有恢复状态明确为 `recovery_limit`。 |
 | `native-identity-missing` | `The original native execution identity is missing.` | 已有恢复状态明确为 `native_identity_missing`。 |
+| `ownership-unconfirmed` | `Retained resource ownership is unconfirmed; automatic cleanup is unsafe.` | 已观测遗留资源，但完整原执行归属尚未证实，不能安全自动清理。 |
 | `worktree-validation-failed` | `The worktree failed ownership validation.` | 现有 worktree 前置条件明确报告 `validation_failed`。 |
 | `branch-mismatch` | `The worktree branch does not match the recorded owner.` | 现有 worktree 前置条件明确报告 `branch_mismatch`。 |
 | `recovery-blocked` | `Recovery is blocked and needs attention.` | 既有恢复状态明确为 blocked。 |
@@ -192,7 +194,9 @@ Worker 在拥有事实的操作边界，从受控枚举、协议结果或已确�
 
 任何其他表项仅由明确的对应操作事实构造；若捕获点没有可靠证据，则不选择它。
 
-恢复仅在实际观测该失败对应操作恢复成功时记录。`lastRecovery.explanation` 精确为 `The operation recovered.`，`explanationTruncated=false`；保留其真实 component、operationId、scope 和 observedAt。失败消失、心跳或监控上报成功本身不证明其他操作恢复。可用详情来自 component、phase、固定分类、关联、实际观测时间、次数、retryState 和 nextAttemptAt；需要原始故障详情时查看本机诊断。这样有意牺牲远端自由文本细节，以避免将未知敏感内容当作安全信息。
+恢复仅在实际观测该失败对应操作恢复成功时记录。`lastRecovery.explanation` 精确为 `The operation recovered.`，`explanationTruncated=false`；保留其真实 component、operationId、scope 和 observedAt。失败消失、心跳或监控上报成功本身不证明其他操作恢复。归属未确认的遗留资源在持续观测和重启后仍作为 claim scope 当前异常上报，关联原 task/claim 与可用工作区路径；不能因任务已完成而消退。仅在完整归属核验成功或证实安全回收时退休对应故障。Web 明示原 claim、容量分解与恢复指引；在原机器停止 Worker 后可用 `daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id>` 核验原执行记录；默认仅预检，通过后须另以 `--confirm` 显式确认回收。缺失记录须从已核验的备份恢复，不能从 Git 标记合成。恢复入口的证据要求由 Worker 恢复合同拥有。证据不足须保留资源，命令和监控均不得伪造停止或归档证明。
+
+可用详情来自 component、phase、固定分类、关联、实际观测时间、次数、retryState 和 nextAttemptAt；需要原始故障详情时查看本机诊断。这样有意牺牲远端自由文本细节，以避免将未知敏感内容当作安全信息。
 
 ## 其他文本、关联与权限
 
@@ -204,6 +208,8 @@ Worker 在拥有事实的操作边界，从受控枚举、协议结果或已确�
 - UUID 和数值限制防止可信 Worker 意外搬运原文，不能防止有上报权限的恶意 Worker 将信息编码进 UUID、计数或时间。服务端不能从输入证明自报运行事实或语义 scope 的真实性；监控不作为执行所有权证明。当前权限过滤与账号隔离仍是独立的访问边界。
 
 PUT 对未知 type/code、错误配对、非固定文本、true 截断标记、非法 ID 或可判定的 scope 违例返回 400；不得静默修正。Redis 已存值读取时若违反合同，返回 monitoring_unavailable，而不是 absent 或原样返回。日志保留内部错误链但不记录原始状态或凭据。
+
+`capacity.breakdown` 与 `ownership-unconfirmed` 也遵循下述先 Server、再严格 Web 读者、最后 Worker 生产者的部署顺序。新服务端接受不含 breakdown 的旧观测和旧摘要；回滚前排空新增字段和分类的生产并等待相应帧自然到期。
 
 worktree 是独立的 typed 字段，不放宽 StructuredCause 的路径禁令。部署时先更新所有 Server 使其接受、保存、重验并过滤字段，再更新严格 CLI/Web 读者，最后启用 Worker 生产者。回滚到拒绝该字段的读者或 Server 前停止生产并等待相关帧按 3600 秒 TTL 自然过期或安全替换为不含字段的观测；不删键、续期或重放未知写入。
 
@@ -238,7 +244,7 @@ receipt 的 receivedAt/expiresAt 由 Redis TIME/3600 秒生成，重复返回原
 
 data 是权限投影后的 Observation。读取 DTO 的每个 scoped 明细增加 association，类型为 null、`{kind:"project",projectName:string}`、`{kind:"task",projectName:string,title:string}` 或 `{kind:"labels-omitted"}`；最后一种只用于已授权标签因响应预算省略。PUT 不接受 association。
 
-permissionProjection 为 current/restricted。不可访问/已删除的 scoped 明细、ID、原因、关联标签和数量分解一同过滤；restricted 不包含被隐藏数量。Worker 总容量和无身份的阻塞事实保留，不能显示私有任务行。清理 scope 不要求旧 claim 仍活跃；当前任务权限决定标签，监控关联不是执行所有权证明。
+permissionProjection 为 current/restricted。不可访问/已删除的 scoped 明细、ID、原因和关联标签一同过滤；restricted 不包含被隐藏数量。Worker 总容量、可选 active/retained 容量分解和无身份的阻塞事实保留，不能显示私有任务行。清理 scope 不要求旧 claim 仍活跃；当前任务权限决定标签，监控关联不是执行所有权证明。
 
 Redis 键缺席时 HTTP 200 state=absent，revision/runId/sequence/receivedAt/expiresAt/data 全为 null，detailCoverage=complete、permissionProjection=current。未知、外账号或已超出现有 Worker 可见窗口返回 404。依赖/解析/存储故障不是 absent。完整编码含外壳和换行最多 512 KiB。
 
@@ -248,7 +254,7 @@ Redis 键缺席时 HTTP 200 state=absent，revision/runId/sequence/receivedAt/ex
 
 响应 `{observedAt,items:[{workerId,state,revision,receivedAt,expiresAt,summary}]}`，保持请求顺序，最大编码 256 KiB。state 为 available/absent；absent 的 revision/receivedAt/expiresAt/summary 为 null。
 
-summary 包含 `{capturedAt,lifecycle,scheduler:{phase,coverage,lastSuccessfulAt,nextPollAt},capacity:{observedAt,quality,limit,occupied,available}|null,detailCoverage,admission}`。`admission` 必需，包含原准入观测的 `observedAt`、`coverage`、当前权限过滤后的 `reasonCodes` 和 `permissionProjection`（`current` 或 `restricted`）。原因按下列固定索引排序并去重，最多 13 个。过滤任何原因时为 restricted，不返回隐藏数量；没有 scope、项目/任务/claim ID、名称、路径、错误原文或私有数量。空原因、unknown、partial 或 restricted 不表示无就绪任务；只有原覆盖完整且确实报告 `no-ready-tasks` 才能呈现该原因。无身份的 `cleanup-capacity-blocked` 必须来自独立上报的全局事实。
+summary 包含 `{capturedAt,lifecycle,scheduler:{phase,coverage,lastSuccessfulAt,nextPollAt},capacity:{observedAt,quality,limit,occupied,available,breakdown?}|null,detailCoverage,admission}`。`admission` 必需，包含原准入观测的 `observedAt`、`coverage`、当前权限过滤后的 `reasonCodes` 和 `permissionProjection`（`current` 或 `restricted`）。原因按下列固定索引排序并去重，最多 13 个。过滤任何原因时为 restricted，不返回隐藏数量；没有 scope、项目/任务/claim ID、名称、路径、错误原文或私有数量。空原因、unknown、partial 或 restricted 不表示无就绪任务；只有原覆盖完整且确实报告 `no-ready-tasks` 才能呈现该原因。无身份的 `cleanup-capacity-blocked` 必须来自独立上报的全局事实。
 
 查询先整批确认 Worker，再仅对已准入 ID 读取 `GETRANGE 0 2047`，不读正文、不扫描键空间；随后在一个当前权限快照中再次确认全部 Worker 并批量核对项目和任务。逐条过滤后才去重，权限或 Redis 故障整批明确失败，不变成空原因或 absent。
 

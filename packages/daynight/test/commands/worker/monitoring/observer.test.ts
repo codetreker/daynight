@@ -30,6 +30,27 @@ it("reports confirmed archive contention without exposing the original failure",
 });
 
 describe("worker monitoring observer", () => {
+  it("partitions occupied identities before reservation detail truncation and deduplicates roles", () => {
+    const observer = createMonitoringObserver({ runId });
+    observer.setCapacity({ limit: 6, occupied: 130, reservations: [
+      { identity: identity(0), roles: ["active-task"], occupied: true },
+      { identity: identity(0), roles: ["resource-owner"], occupied: true },
+      ...Array.from({ length: 129 }, (_, i) => ({ identity: identity(i + 1), roles: ["resource-owner"] as const, occupied: true })),
+      { identity: identity(200), roles: ["cleanup"], occupied: false },
+    ] });
+    const frame = observer.capture("1");
+    expect(frame.capacity).toMatchObject({ occupied: 130, breakdown: { active: 1, retained: 129 }, detailCoverage: "partial" });
+    expect(frame.reservations).toHaveLength(128);
+    frame.capacity!.breakdown!.retained = 0;
+    expect(observer.capture("2").capacity?.breakdown).toEqual({ active: 1, retained: 129 });
+  });
+
+  it("does not invent a capacity breakdown from incomplete identities", () => {
+    const observer = createMonitoringObserver({ runId });
+    observer.setCapacity({ limit: 6, occupied: 6, reservations: [{ identity: identity(0), roles: ["active-task"] }] });
+    expect(observer.capture("1").capacity).not.toHaveProperty("breakdown");
+  });
+
   it("keeps worker and project native failures independent and suppresses stale idle evidence", () => {
     const observer = createMonitoringObserver({ runId, now: () => 1_000 }), observedAt = new Date(1_000).toISOString(), nextAttemptAt = new Date(6_000).toISOString();
     const worker = { kind: "worker" } as const, project = { kind: "project", projectId: identity(1).projectId } as const;

@@ -1220,6 +1220,10 @@ export const runWorkerControl = async (options: {
 export const runWorkerResources = async (options: {
   homeDirectory: string; request: WorkerResourceCommandRequest; output: (message: string) => void; signal?: AbortSignal;
 }): Promise<void> => {
+  if (options.request.kind === "recover") {
+    await (await import("./resource-recovery-runtime.js")).runCompletedWebResourceRecovery({ ...options, request: options.request });
+    return;
+  }
   const paths = resolveWorkerPaths(options.homeDirectory), platform = currentWorkerPlatform();
   if (platform !== "macos") throw new Error("Herdr recording resource management requires macOS stop evidence.");
   const lock = await tryAcquireWorkerInstanceLock(paths);

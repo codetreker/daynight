@@ -724,7 +724,7 @@ func TestActualMaximumSummaryFitsHeader(t *testing.T) {
 	o := map[string]any{
 		"runId": uuid.NewString(), "sequence": "9223372036854775807", "capturedAt": at, "lifecycle": "starting",
 		"scheduler":    map[string]any{"phase": "resource-observation", "coverage": "complete", "cycleId": nil, "lastCompletedAt": nil, "lastSuccessfulAt": at, "lastOutcome": nil, "nextPollAt": at},
-		"capacity":     map[string]any{"observedAt": at, "quality": "current", "limit": 64, "occupied": int64(9007199254740991), "available": 0, "detailCoverage": "complete"},
+		"capacity":     map[string]any{"observedAt": at, "quality": "current", "limit": 64, "occupied": int64(9007199254740991), "available": 0, "detailCoverage": "complete", "breakdown": map[string]any{"active": int64(4503599627370495), "retained": int64(4503599627370496)}},
 		"admission":    map[string]any{"observedAt": at, "coverage": "complete", "reasons": reasons},
 		"reservations": []any{}, "activities": []any{}, "currentFailures": []any{}, "lastRecovery": nil,
 		"detailCoverage": "complete", "delivery": map[string]any{"lastSucceededAt": nil, "lastFailure": nil},

@@ -1946,6 +1946,29 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
   });
 
+  it("retains ownership failures through failed scans and clears only confirmed absence", async () => {
+    const f = await fixture(); f.candidates.splice(0);
+    const owner = { projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    const monitor = createMonitoringObserver(), coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
+    try {
+      await coordinator.tick();
+      const failure = monitor.capture("1").currentFailures.find(item => item.error.code === "ownership-unconfirmed")!;
+      expect(failure.scope).toEqual({ kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId });
+      const scan = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+      vi.mocked(f.git.listWorktrees).mockRejectedValueOnce(new Error("Repository unavailable"));
+      f.worktrees.clear();
+      await coordinator.tick();
+      expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
+      expect(monitor.capture("2").capacity).toMatchObject({ quality: "stale", occupied: 1 });
+      vi.mocked(f.git.listWorktrees).mockImplementation(scan);
+      await coordinator.tick();
+      expect(monitor.capture("3").currentFailures).toEqual([]);
+      expect(monitor.capture("3").capacity).toMatchObject({ occupied: 0, breakdown: { active: 0, retained: 0 } });
+      expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    } finally { await coordinator.shutdown(); }
+  });
+
   it("tracks warning histories independently when another project cannot be inspected", async () => {
     const f = await fixture(); f.candidates.splice(0);
     const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
@@ -4173,6 +4196,52 @@ describe("worker monitoring of coordinator jobs", () => {
 
 
 describe("real Git resource isolation", () => {
+  it("reports five marker-only reservations beside one active claim across polls and restart", async () => {
+    const f = await fixture(6);
+    await mkdir(f.project.localPath);
+    const run = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10000, stdio: "pipe" });
+    run(["init", "--initial-branch=main"]);
+    run(["-c", "user.name=Fixture", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "seed"]);
+    run(["remote", "add", "origin", f.project.repoUrl]);
+    const active = { projectId: f.project.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    const retained = [910, 920, 930, 940, 950].map(id => ({ projectId: f.project.projectId, taskId: uuid(id), claimId: uuid(id + 1), worktreeId: uuid(id + 2) }));
+    const git = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "git-temp"), prepareFormat }), op = createOperation();
+    let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
+    try {
+      await git.prepareRepository(f.project, op);
+      for (const owner of [active, ...retained]) {
+        run(["branch", `daynight/${owner.taskId}`]);
+        await git.prepareWorktree(f.project, owner, op);
+      }
+      f.store.activateTask(f.store.registerPending({ ...active, agent: "codex" }));
+      f.grant(task(active.projectId, active.taskId), { claimId: active.claimId, worktreeId: active.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
+      for (let restart = 0; restart < 2; restart++) {
+        const monitor = createMonitoringObserver({ now: f.options.now });
+        coordinator = createWorkerCoordinator({ ...f.options, git, monitoring: monitor });
+        await coordinator.tick();
+        await coordinator.tick();
+        const first = monitor.capture("1");
+        expect(first.capacity).toMatchObject({ occupied: 6, available: 0 });
+        expect(first.reservations.filter(item => item.occupied)).toHaveLength(6);
+        expect(f.remote.claim).not.toHaveBeenCalled();
+        // The legacy scheduler preserved all six slots but emitted only local warnings.
+        expect(first.currentFailures.filter(item => item.error.code === "ownership-unconfirmed")).toHaveLength(5);
+        expect(first.capacity).toMatchObject({ breakdown: { active: 1, retained: 5 } });
+        for (const owner of retained) {
+          expect(f.store.getTask(owner)).toBeNull();
+          expect(first.currentFailures).toContainEqual(expect.objectContaining({
+            scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId },
+            worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` }, retryState: "manual",
+          }));
+          await access(path.join(f.project.localPath, ".worktrees", "daynight", owner.worktreeId));
+        }
+        await coordinator.tick();
+        expect(monitor.capture("2").currentFailures.filter(item => item.error.code === "ownership-unconfirmed").map(item => item.operationId)).toEqual(first.currentFailures.filter(item => item.error.code === "ownership-unconfirmed").map(item => item.operationId));
+        await coordinator.shutdown(); coordinator = undefined;
+      }
+    } finally { await coordinator?.shutdown(); op.dispose(); await git.dispose(); }
+  }, 60000);
+
   it.each(["matching", "conflicting", "wrong-cwd", "pending-only", "pending-only-wrong-cwd", "capacity-full"])("reconciles closed-workspace pending-stop evidence: %s", async proof => {
     const f = await fixture(proof === "capacity-full" ? 1 : 2);
     await mkdir(f.project.localPath);
