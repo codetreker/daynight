@@ -61,6 +61,8 @@ Daynight-Worker-Tool-Paths: 1 同样独立协商。HTTP 在业务调用前拒绝
 
 ## Web 字段与保存
 
+“工具启动路径 / Tool launch paths”的检查详情与配置生效集合分开。`toolPathSummaryStates` 从目标模式、全局 Agent 及已选项目继承解析后的 Agent 计算唯一必需集合；右侧工具摘要与 `ConfigurationSummary` 消费相同结果。Web 不纳入 Herdr，上报的其它上下文错误保留在详情；Herdr 模式纳入 herdr/herdr 与所需原生 Agent。没有工具槽的 Agent 由原 native 观测确认。当前目标 revision、choice、actual.selection 与在线报告共同判定成功；目标模式未采纳保持未确认，其余字段及项目准备/移除的规则不变。
+
 `ConfigurationControlModeField` 与 `ConfigurationNativeFields` 的全局 Agent、项目 Agent、Model 模式和 Args 模式共用 [NativeSelect](native-select.md) 的 `form`/`fill` 变体，表单高度为 38px。公共组件拥有箭头、文字留白、焦点和禁用外观，配置样式仅安排表单网格与外部布局。选项、继承与自定义联动、重置、反馈和异步保存由配置编辑器拥有。
 
 托管模式仍只有 `herdr` 和 `web` 两个选项。`ConfigurationControlModeField` 的 ref 指向真实 `HTMLSelectElement`，自身 `useLayoutEffect` 在 nullable 草稿未采纳时设置 `selectedIndex=-1`；公共层不增加第三项或选择默认模式。能力不支持时继续禁用，label、可用性说明、反馈的 `aria-describedby` 和项目 Model/Args 的 `aria-controls` 继续关联真实字段。后台复核保留字段节点、焦点和草稿，不从观测值替换编辑输入。

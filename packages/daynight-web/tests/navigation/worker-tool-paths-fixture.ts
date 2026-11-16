@@ -21,6 +21,10 @@ export const toolReport = (entries = [toolObservation('codex', 'web'), toolObser
 export const observedConfiguration = (revision = '1', value: WorkerConfigurationValue = { ...configurationValue(), agentControlMode: 'web', toolPaths }): WorkerConfigurationResource => {
   const items = (['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode'] as const)
     .map(kind => ({ key: { kind }, appliedValue: value[kind], targetRevision: revision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null }) as WorkerConfigurationOutcome);
+  for (const project of value.projects) {
+    items.push({ key: { kind: 'projectPreparation', projectId: project.projectId }, appliedValue: true, targetRevision: revision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null });
+    items.push({ key: { kind: 'projectNative', projectId: project.projectId }, appliedValue: { ...value.native, ...project.nativeOverrides }, targetRevision: revision, state: 'applied', error: null, lastFailure: null, nextAttemptAt: null });
+  }
   return { ...configurationResource(revision, value), observationRevision: '1', observation: { baseRevision: '0', desiredRevision: revision, reportedAt: WORKER_TIME, items } };
 };
 export const pathChoice = (path: string): Extract<ToolPathChoice, { kind: 'path' }> => ({ kind: 'path', path });

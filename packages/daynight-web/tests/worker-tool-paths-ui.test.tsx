@@ -1,11 +1,11 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
+import type { WorkerConfigurationOutcome, WorkerConfigurationResource, WorkerConfigurationValue } from '../src/api/worker-configuration';
 import { WorkerEditingPanels } from '../src/features/workers/configuration/WorkerEditingPanels';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { configurationResponse } from './helpers/worker-configuration';
-import { toolPathConfiguration, toolPathTelemetry } from './helpers/worker-tool-paths';
-import { WORKER_USER, workerId, workerResponse } from './helpers/workers';
+import { toolPathConfiguration, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
+import { WORKER_TIME, WORKER_USER, workerId, workerResponse } from './helpers/workers';
 
 const flush = () => act(async () => { for (let n = 0; n < 60; n++) { await Promise.resolve(); await new Promise<void>(resolve => setImmediate(resolve)); } });
 const setup = (initial = toolPathConfiguration()) => {
@@ -27,9 +27,9 @@ const setup = (initial = toolPathConfiguration()) => {
   }));
   return writes;
 };
-const mount = (supported = true) => renderWithLocale(<WorkerEditingPanels id="worker-tool-path-test" workerId={workerId(1)} section="configuration" onContinueEditing={() => {}} readEnabled online tasks={[]} platform="macos" {...(supported ? { toolPaths: toolPathTelemetry() } : {})} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
+const mount = (supported = true, telemetry = toolPathTelemetry()) => renderWithLocale(<WorkerEditingPanels id="worker-tool-path-test" workerId={workerId(1)} section="configuration" onContinueEditing={() => {}} readEnabled online tasks={[]} platform="macos" {...(supported ? { toolPaths: telemetry } : {})} />, { locale: 'en', taskCache: { viewerId: WORKER_USER } });
 const expand = () => {
-  const summary = screen.getByText('Tool paths', { selector: 'summary' });
+  const summary = screen.getByText('Tool launch paths', { selector: 'summary' });
   fireEvent.click(summary);
   const details = summary.closest('details')!;
   details.open = true;
@@ -37,10 +37,26 @@ const expand = () => {
 };
 
 describe('Worker tool path configuration fields', () => {
+  it.each([
+    ['applied', 'Applied'], ['checking', 'Checking'], ['not_checked', 'Not checked'], ['pending', 'Awaiting application'], ['error', 'Application failed'],
+  ] as const)('summarizes required tool %s independently from unused failures', async (state, label) => {
+    const resource = toolPathConfiguration();
+    const items = (['maxConcurrent', 'pollIntervalMs', 'recoveryLimit', 'preferPlatformSpecificTasks', 'native', 'agentControlMode'] as const).map(kind => ({ key: { kind }, targetRevision: '1', appliedValue: resource.desired!.value[kind], state: 'applied', error: null, lastFailure: null, nextAttemptAt: null }) as WorkerConfigurationOutcome);
+    setup({ ...resource, observationRevision: '1', observation: { baseRevision: '0', desiredRevision: '1', reportedAt: WORKER_TIME, items } });
+    mount(true, toolPathTelemetry([
+      toolPathObservation('codex', 'web', { state, error: state === 'error' ? { code: 'not_found', occurredAt: WORKER_TIME } : null }),
+      toolPathObservation('herdr', 'herdr', { state: 'error', error: { code: 'not_found', occurredAt: WORKER_TIME } }),
+    ]));
+    await flush();
+    const summary = within(document.querySelector<HTMLElement>('.configuration-summary')!);
+    expect(summary.getByText('Tool launch paths', { selector: 'dt' }).parentElement).toHaveTextContent(label);
+    if (state === 'applied') expect(summary.getByText('Applied', { selector: '.status-chip' })).toBeInTheDocument();
+    else expect(summary.queryByText('Applied', { selector: '.status-chip' })).not.toBeInTheDocument();
+  });
   it('starts collapsed, preserves unadopted tools and saves an explicit path through the existing form', async () => {
     const writes = setup(toolPathConfiguration('1', { codex: null, copilot: null, herdr: null }));
     mount(); await flush();
-    expect(screen.getByText('Tool paths', { selector: 'summary' }).closest('details')).not.toHaveAttribute('open');
+    expect(screen.getByText('Tool launch paths', { selector: 'summary' }).closest('details')).not.toHaveAttribute('open');
     const fields = expand();
     expect(fields.getByRole('textbox', { name: 'Codex' })).toHaveAttribute('placeholder', 'Waiting for Worker import');
     fireEvent.change(fields.getByRole('textbox', { name: 'Codex' }), { target: { value: '/opt/My Tools/工具/codex' } });

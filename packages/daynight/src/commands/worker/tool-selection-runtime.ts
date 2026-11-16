@@ -2,6 +2,7 @@ import path from "node:path";
 import { createOperation, type Operation } from "../../api/operation.js";
 import type { WorkerCloudNative } from "../../api/worker-configuration.js";
 import type { AgentControlMode } from "../../api/types.js";
+import { sameToolPathChoice } from "../../api/worker-tool-paths.js";
 import { ToolSelectionError, verifyToolLaunch, type ResolvedToolLaunch, type ToolPaths } from "../../platform/tool-executables.js";
 import { createCopilotToolMaterializer } from "./copilot-tool-materializer.js";
 import { createWorkerToolInspector } from "./native-selection.js";
@@ -23,11 +24,22 @@ export const createWorkerToolSelectionRuntime = (options: {
   let targetSignature = "", nextPreparationAt = 0, preparing: Promise<boolean> | undefined;
   let lastCopilotRequired: boolean | undefined;
   let nextHerdrPreparationAt = 0, preparingHerdr: Promise<boolean> | undefined;
+  const checks = new Map<string, { nextAt: number; controller?: AbortController; pending?: Promise<void> }>();
+  let adoptedTargets: ToolSelectionTargets | null = null, closed = false;
   const setTargets = (targets: ToolSelectionTargets | null): void => {
-    if (targets === null) { manager.suspendTargets(); targetSignature = ""; nextPreparationAt = 0; nextHerdrPreparationAt = 0; return; }
+    const previous = adoptedTargets;
+    adoptedTargets = targets;
+    if (targets === null) manager.suspendTargets();
+    else manager.setTargets(targets);
+    for (const [key, check] of checks) {
+      const tool = key.split("/")[0] as keyof ToolPaths;
+      if (targets === null || previous === null || !sameToolPathChoice(previous.choices[tool], targets.choices[tool])) {
+        check.nextAt = 0; check.controller?.abort();
+      }
+    }
+    if (targets === null) { targetSignature = ""; nextPreparationAt = 0; nextHerdrPreparationAt = 0; return; }
     const signature = JSON.stringify(targets.choices);
     if (signature !== targetSignature) { targetSignature = signature; nextPreparationAt = 0; nextHerdrPreparationAt = 0; }
-    manager.setTargets(targets);
   };
   setTargets({ source: "local", revision: null, choices: options.localToolPaths });
   const withOperation = async <T>(signal: AbortSignal, action: (operation: Operation) => Promise<T>): Promise<T> => {
@@ -44,6 +56,33 @@ export const createWorkerToolSelectionRuntime = (options: {
   const selectToolLaunch = (agent: "codex" | "copilot", signal: AbortSignal): Promise<ResolvedToolLaunch> => withOperation(signal, operation => manager.selectForNewExecution(agent, "web", operation));
   return {
     manager, inspector, toolRuntimeRoot, selectToolLaunch, setTargets,
+    checkConfiguredTools: async (signal: AbortSignal): Promise<boolean> => {
+      if (closed || adoptedTargets === null || signal.aborted) return false;
+      const pending: Promise<void>[] = [];
+      for (const entry of manager.snapshot().entries) {
+        // Runtime admission can remain pending on a healthy old instance. A
+        // settings check must not replace that admission or its cleanup fact.
+        if (entry.state === "applied" || entry.state === "checking" || entry.state === "pending" && entry.candidate !== null && (entry.reason === "active_instance" || entry.reason === "cleanup_unconfirmed")) continue;
+        const key = `${entry.tool}/${entry.context}`;
+        let check = checks.get(key);
+        if (!check) { check = { nextAt: 0 }; checks.set(key, check); }
+        if (check.pending || Date.now() < check.nextAt) continue;
+        const owner = check, controller = new AbortController();
+        const cancel = () => controller.abort(signal.reason);
+        signal.addEventListener("abort", cancel, { once: true });
+        owner.controller = controller;
+        owner.nextAt = Date.now() + 60_000;
+        const job = withOperation(controller.signal, operation => manager.check(entry.tool, entry.context, operation)).catch(() => {
+          // The manager retains the concrete failure while retry is deferred.
+        }).finally(() => {
+          signal.removeEventListener("abort", cancel);
+          if (owner.pending === job) { delete owner.pending; delete owner.controller; }
+        });
+        owner.pending = job; pending.push(job);
+      }
+      await Promise.all(pending);
+      return pending.length > 0;
+    },
     hostInspector: { ...inspector, check: async (launch: ResolvedToolLaunch, operation: Operation) => {
       operation.check(); const observation = manager.observationFor(launch);
       if (observation === undefined) throw new Error("The selected tool has no current inspection proof.");
@@ -111,6 +150,8 @@ export const createWorkerToolSelectionRuntime = (options: {
       return { ...configuration, toolLaunch, toolObservation };
     },
     close: async (): Promise<void> => {
+      closed = true;
+      for (const check of checks.values()) check.controller?.abort();
       const operation = createOperation({ limits: { totalMs: 30_000 } });
       try {
         const results = await Promise.allSettled([manager.close(operation), materializer.close(operation), ...(options.closeHerdr ? [options.closeHerdr(operation)] : [])]);

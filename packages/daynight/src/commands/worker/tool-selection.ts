@@ -31,7 +31,7 @@ type Options = {
 type Slot = {
   tool: Tool; context: ToolContext; epoch: number; state: ToolPathObservation["state"]; reason: ToolPathObservation["reason"];
   actual: ToolPathActual | null; candidate: ToolPathActual | null; launch: ResolvedToolLaunch | undefined; token: unknown;
-  error: ToolPathObservation["error"]; pending: { epoch: number; promise: Promise<void> } | undefined;
+  error: ToolPathObservation["error"]; pending: { epoch: number; inspectionOnly: boolean; promise: Promise<void> } | undefined;
   probeRecipe: ResolvedToolLaunch | undefined; tail: Promise<void> | undefined;
 };
 const contexts = [["codex", "web"], ["codex", "herdr"], ["copilot", "web"], ["copilot", "herdr"], ["herdr", "herdr"]] as const;
@@ -90,10 +90,13 @@ export class ToolSelectionManager {
     const slot = this.slot(launch.tool, launch.context);
     return this.usable(slot) && slot.actual?.selectionKey === launch.selectionKey ? { version: slot.actual.version, checkedAt: slot.actual.checkedAt } : undefined;
   }
-  async prepare(tool: Tool, context: ToolContext, operation: Operation): Promise<void> {
+  /** Inspect configured tools without starting a Herdr instance or changing existing execution owners. */
+  check(tool: Tool, context: ToolContext, operation: Operation): Promise<void> { return this.prepareSelection(tool, context, operation, true); }
+  prepare(tool: Tool, context: ToolContext, operation: Operation): Promise<void> { return this.prepareSelection(tool, context, operation, false); }
+  private async prepareSelection(tool: Tool, context: ToolContext, operation: Operation, inspectionOnly: boolean): Promise<void> {
     const slot = this.slot(tool, context); this.checkOpen(slot, operation);
     if (this.suspended) throw new Error("Worker tool configuration is unavailable.");
-    if (context === "herdr" && this.options.admitHerdr === undefined) {
+    if (!inspectionOnly && context === "herdr" && this.options.admitHerdr === undefined) {
       if (this.targets.choices[tool].kind === "auto") return;
       const error = new ToolSelectionError(tool, context, "launch", "incompatible_runtime"); this.fail(slot, error); throw error;
     }
@@ -106,17 +109,25 @@ export class ToolSelectionManager {
       }
       // A file recipe can remain valid after its shared daemon exits. Re-enter
       // instance admission before publishing Herdr readiness for new execution.
-      if (slot.epoch === verifiedEpoch && this.usable(slot) && tool !== "herdr") return;
+      if (slot.epoch === verifiedEpoch && this.usable(slot) && (tool !== "herdr" || inspectionOnly)) return;
     }
-    if (slot.pending?.epoch === slot.epoch) return withinOperation(slot.pending.promise, operation);
-    const epoch = slot.epoch, choice = clone(this.targets.choices[tool]); slot.state = "checking"; slot.reason = null; slot.error = null;
-    const previous = slot.tail;
+    if (slot.pending?.epoch === slot.epoch) {
+      const pending = slot.pending;
+      await withinOperation(pending.promise, operation);
+      if (tool === "herdr" && !inspectionOnly && pending.inspectionOnly) await this.prepare(tool, context, operation);
+      return;
+    }
+    const epoch = slot.epoch, choice = clone(this.targets.choices[tool]);
+    // Contexts can resolve the same canonical command. Serialize their entire
+    // reconciliation and inspection so one cannot retire the other's receipt.
+    const previous = [...this.slots.values()].filter(value => value.tool === tool).flatMap(value => value.tail ? [value.tail] : []);
     const running = (async () => {
       try {
         // A superseded inspection may still own a process. Join it before
         // reconciling its recipe, even when the new target has a different key.
-        if (previous) await withinOperation(previous, operation);
+        if (previous.length) await withinOperation(Promise.all(previous), operation);
         this.checkOpen(slot, operation); if (slot.epoch !== epoch) return;
+        slot.state = "checking"; slot.reason = null; slot.error = null;
         const priorRecipe = slot.probeRecipe;
         let receipt: unknown;
         if (priorRecipe && this.options.probe.reconcile) receipt = await withinOperation(this.options.probe.reconcile(priorRecipe, operation), operation);
@@ -139,7 +150,7 @@ export class ToolSelectionManager {
         this.options.probe.assertAvailable?.(launch);
         if (!Object.is(token, this.options.probe.cacheToken?.(launch))) throw new ToolSelectionError(tool, context, "probe", "cleanup_unknown");
         if (this.closed || slot.epoch !== epoch) return;
-        if (tool === "herdr" && this.options.admitHerdr !== undefined) {
+        if (!inspectionOnly && tool === "herdr" && this.options.admitHerdr !== undefined) {
           slot.candidate = actual(launch, result.version, checkedAt);
           const admission = await this.options.admitHerdr(launch, operation); this.checkOpen(slot, operation);
           if (slot.epoch !== epoch) return;
@@ -155,7 +166,7 @@ export class ToolSelectionManager {
         throw failure;
       }
     })();
-    slot.pending = { epoch, promise: running }; slot.tail = running.then(() => {}, () => {}); this.inFlight.add(running);
+    slot.pending = { epoch, inspectionOnly, promise: running }; slot.tail = running.then(() => {}, () => {}); this.inFlight.add(running);
     try { await running; } finally { this.inFlight.delete(running); if (slot.pending?.promise === running) slot.pending = undefined; }
   }
   async selectForNewExecution(tool: Tool, context: ToolContext, operation: Operation): Promise<ResolvedToolLaunch> {

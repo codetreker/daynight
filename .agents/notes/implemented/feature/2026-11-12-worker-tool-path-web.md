@@ -44,6 +44,11 @@ checking, waiting and failure retain distinct labels and readable contrast.
 Local helper text and focus outlines meet the same contrast requirements without
 changing unrelated configuration styles.
 
+The [mode application decision](../bug-fix/2026-11-16-worker-tool-checks-and-mode-summary.md)
+separates the configuration summary's required tools from this complete software
+inventory and adds bounded checks for adopted choices. The configuration section
+is named Tool launch paths in English and 工具启动路径 in Chinese.
+
 This consumes the [negotiated configuration decision](../architecture/2026-11-11-worker-tool-path-configuration.md).
 The [Web specification](../../../../docs/spec/daynight-web.md#云端运行配置) owns
 the interaction requirements; the [Web design](../../../../docs/design/daynight-web.md#worker-云端配置编辑)
@@ -66,8 +71,9 @@ granting a stale full-projection write.
 installation or mode. Displaying that pair would invent a successful selection
 and hide older running instances.
 
-**Show every unchecked context in the summary.** Unused slots can remain
-unchecked indefinitely, making normal operation look like an unfinished check.
+**Show every unchecked context in the summary.** At the original decision,
+unused slots could remain unchecked indefinitely, making normal operation look
+like an unfinished check.
 Filtering only demonstrably empty slots avoids hiding uncertain inventory or
 diagnostic information, which remains available in the expanded details.
 

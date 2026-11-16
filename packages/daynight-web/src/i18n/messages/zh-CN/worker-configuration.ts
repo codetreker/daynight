@@ -2,8 +2,8 @@ import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
   toolPaths: {
-    title: '工具路径', detail: '填写此 Worker 机器上的绝对文件路径；恢复自动发现请使用对应按钮。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
-    unsupportedService: '升级服务后可配置工具路径。', unsupportedWorker: 'Worker 尚未上报工具路径能力，请升级或等待支持版本上报。',
+    title: '工具启动路径', detail: '自动选择工具，也可指定启动文件的完整路径。', auto: '自动', awaitingImport: '等待 Worker 导入', reset: '恢复自动',
+    unsupportedService: '升级服务后可配置工具启动路径。', unsupportedWorker: 'Worker 尚未上报工具启动路径能力，请升级或等待支持版本上报。',
     invalidPath: '请输入此 Worker 平台的绝对文件路径，最多 4096 UTF-8 字节，且不含控制字符。', unsaved: '未保存',
     target: '已保存目标', reportedTarget: '上报目标', actual: '新执行使用', previousActual: '此前实际选择', reportedActual: '上报的实际选择',
     candidate: '待应用选择', active: '运行中的选择', noActual: '尚无已验证的实际选择', otherContext: '其他执行模式', details: '查看实际路径',

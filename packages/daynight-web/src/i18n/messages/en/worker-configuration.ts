@@ -2,8 +2,8 @@ import type { WorkerConfigurationMessages } from '../worker-configuration';
 
 export const workerConfiguration: WorkerConfigurationMessages = {
   toolPaths: {
-    title: 'Tool paths', detail: 'Use an absolute file path on this Worker. Restore automatic discovery explicitly.', auto: 'Automatic', awaitingImport: 'Waiting for Worker import', reset: 'Restore automatic',
-    unsupportedService: 'Upgrade the service to configure tool paths.', unsupportedWorker: 'This Worker has not reported tool path support. Upgrade it or wait for a supported report.',
+    title: 'Tool launch paths', detail: 'Select tools automatically or specify the full path to a launch file.', auto: 'Automatic', awaitingImport: 'Waiting for Worker import', reset: 'Restore automatic',
+    unsupportedService: 'Upgrade the service to configure tool launch paths.', unsupportedWorker: 'This Worker has not reported tool launch path support. Upgrade it or wait for a supported report.',
     invalidPath: 'Enter an absolute file path for this Worker, up to 4096 UTF-8 bytes and without control characters.', unsaved: 'Unsaved',
     target: 'Saved target', reportedTarget: 'Reported target', actual: 'For new executions', previousActual: 'Previous actual selection', reportedActual: 'Reported actual selection',
     candidate: 'Candidate selection', active: 'Running selections', noActual: 'No verified actual selection', otherContext: 'Other execution mode', details: 'View actual paths',
