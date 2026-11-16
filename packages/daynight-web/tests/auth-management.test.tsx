@@ -145,6 +145,9 @@ describe('account credentials', () => {
     await screen.findByRole('dialog', { name: '访问令牌已创建' });
     expect(auth.createToken).toHaveBeenCalledWith({ name: '😀'.repeat(100), expiresAt: new Date('2099-10-22T12:00').toISOString() }, expect.any(AbortSignal));
     expect(screen.getByLabelText('一次性访问令牌')).toHaveValue('pat-secret-once');
+    const copyButton = within(screen.getByRole('dialog')).getByRole('button', { name: '复制' });
+    expect(copyButton).toHaveClass('copy-button--labelled'); expect(copyButton).toHaveTextContent('复制');
+    expect(copyButton.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     await dialogClick('复制'); await screen.findByText('已复制。'); expect(copy).toHaveBeenCalledWith('pat-secret-once');
     fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.getByRole('alert')).toHaveTextContent('关闭后无法恢复');
     await dialogClick('返回保存'); expect(screen.queryByRole('alert')).toBeNull();

@@ -254,7 +254,7 @@ PR 列表    │ 负责人：全部  状态：全部状态       2 / 2 条任务
 - `goal-list-card` 统一拥有 8px 外圆角、状态边框及内容裁剪，标题行不另设圆角；展开内容保留顶部单条分隔线和中性背景。共享 `goal-task-list` 横向 padding 为 0，使 Goal、完整链和范围链成员整行背景及边框贴齐展开内容区的左右内边缘。列表声明成员内容的逻辑前侧附加偏移，TaskRow 样式只将其加到该列表内成员行的响应式基础前侧 padding：视口大于 600px 增加 16px，600px 及以下增加 12px。缩进由行的状态和悬停背景覆盖，独立及个人普通行仍使用基础 padding。列表默认保留 5px 底部 padding，Goal 专属规则只将底部 padding 置零，使末行贴合卡片内底边；空态仍使用自身 padding。横向布局的取舍见[成员行内缩进决策](../../.agents/notes/implemented/bug-fix/2026-11-16-expanded-member-inner-indent.md)。展开按钮使用内侧焦点轮廓，完成时间提示通过原生 popover 进入 top layer，不受卡片裁剪。取舍见 [Goal 卡片接缝决策](../../.agents/notes/implemented/bug-fix/2026-11-14-goal-card-seams.md)。
 - 项目独立 Task 行、任务链展开成员和 Goal 展开成员从同期 summaries 取得必填完整 title；图卡片、链／Goal 汇总和其他原预览消费者继续使用 titlePreview 与 titleTruncated。已确认写入以原 epoch 和精确 Task version 更新即时视图投影，不推进持久同步水位；迟到同步不能使新标题回退。[任务同步设计](daynight-task-sync.md)拥有完整字段、比较及生命周期规则。
 - 项目独立 Task、任务链及 Goal 成员通过 `ProjectTaskRow` 的 `projectTaskRowModel` 组合完整标题、摘要、标签、暂停、Worker 机器与已准入的 Session 投影，传入 `features/task-row/TaskRow` 的只读 `TaskRowModel`。模型不依赖项目图 DTO 或任何单一列表 API；个人列表也通过自己的适配器使用该行，只有个人入口附加实际 Parent Goal。行不读取列表、过滤、分页或聚合，完整链代表继续由特殊详情入口呈现。Session 状态与可打开性来自现有完整观测及其时效和身份准入，不从空 map 或历史 Worker 猜测当前执行。完整链成员也提供自身标签。共享行与各列表 owner 分别保持每个显示实例的 DOM 关联、导航及焦点恢复。颜色读取反馈位于行主体外，重试控件消失且焦点落回 body 时，仍可见的同一 Task 标题接回焦点；其他有效焦点不受影响。
-- 共享行的标题是真实 Task 链接，普通点击交给已有阅读 owner，修饰键和新标签使用浏览器链接；行空白打开相同 Task。完整 ID 可选择，复制和 Session 与标题为同级独立控件，选择或拖选不触发行打开。`CopyButton` 由详情和列表共同使用，处理 pending、成功／失败、身份改变后的迟到结果及列表反馈；详情继续使用自己的通知宿主。标题 13px、ID 11px，窄屏按内容换行。
+- 共享行的标题是真实 Task 链接，普通点击交给已有阅读 owner，修饰键和新标签使用浏览器链接；行空白打开相同 Task。完整 ID 可选择，复制和 Session 与标题为同级独立控件，选择或拖选不触发行打开。`ValueCopyButton` 由详情和列表共同使用，处理 pending、成功／失败、身份改变后的迟到结果及列表反馈；详情继续使用自己的通知宿主。标题 13px、ID 11px，窄屏按内容换行。
 - `GoalItem` 按完整快照顺序映射 `scope.taskIds`，再以 `compareTaskMembers` 稳定排序并以 Task ID 为 key 单层渲染共享普通 Task 行。排序不拼接独立任务与链分类，确保相同优先级保留完整快照次序；实例 ID 为 `goal-${goal.id}`，成员接收自身 Tag、Worker 机器与 Task、Session 回调，Task 阅读回调携带实际来源 Goal。真实成员总数供标题数量和空态使用，完成进度仍排除取消成员。Goal 详情继续使用 `projectTaskScope` 的分类统计。成员行和实际列表容器各自拥有样式上下文，使窄容器换行与 Session 标注定位不依赖链容器。
 - `GoalItem` 从同一范围的 Task ID 派生状态为 `in_progress` 的数量和 ID 集合；共享 `ActiveWorkerIndicator` 用该集合查询已有 Worker 投影，只在直接孩子存在 active claim 时呈现。它不聚合子链指示，后者可能包含范围外普通成员。标题、数量和元信息可自然换行，提示文字属于展开按钮的可访问内容，装饰点隐藏。状态、claim 和 Parent 的快照变化更新摘要，无额外请求或轮询；无变化核验沿用稳定行和阅读状态。取舍见[Goal 执行摘要决策](../../.agents/notes/implemented/feature/2026-11-13-goal-execution-summary.md)。
 - Goal 类别使用共享图宿主及工作区已有 Pause/Clock 和 Session summary provider。Goal 容器以 `goal-members-${goal.id}` 和完整直接成员集合登记 `useSessionChainVisibility`，使标题可见时无论收起或子任务筛选均可观察；不可见或卸载时释放登记，不同 Goal 的观察独立。`useChainSessionSummary` 聚合同一集合，`SessionStatus` 在 Goal 自身状态旁提供汇总角标及展开入口，与展开按钮同级；状态文字和底色继续属于 Goal，固定状态区域支持全部 Goal 状态。Session 复用项目同步的内存 store，不增加每 Goal 或每任务的读取。共享普通 Task 行记录实际聚焦的 Session 控件；该控件因局部 Session 更新脱离 DOM、焦点落到 body 且 Task 主体仍可见时，以 `preventScroll` 恢复主体焦点。其他有效焦点不受影响，整行卸载由列表 owner 恢复。历史前进重开成员详情而没有运行期入口时，关闭操作用该 Task ID 与当前 Parent 找回仍可见的成员入口；入口失效则回同 Goal 控件，再回列表或页签，不持久化 DOM。详情和决策见 [Goal 需求](../spec/daynight-goals.md)及 [Goal Session 汇总决策](../../.agents/notes/implemented/feature/2026-11-14-goal-session-summary.md)。
@@ -331,7 +331,7 @@ frame 接收活动 root/onEscape 所有者，已加载 document 随 owner 变化
 详情外壳不显示跨页签的关系来源说明。关系区域通过现有后续标题、部分结果提示及读取错误和刷新入口表达可用信息；来源机制由本文的详情读取规则说明，取舍见[来源说明移除决策](../../.agents/notes/implemented/simplification/2026-11-06-task-detail-source-footer.md)。
 
 概览是详情中任务内容的滚动所有者。阅读主栏展示共享 CommonMark/GFM 视图渲染的描述，265px 辅栏
-在直接前置之前展示关联 PR，并展示当前阻塞项、直接后续、时间和完整 ID。关联 PR 页码使用公共紧凑原生选择控件，保留数值页码转换与真实控件引用；分页操作控件消失或禁用时恢复到页码选择或标题。ID 与已加载标题旁的复制按钮共享 `TaskCopyButton`，统一使用两个错位叠放方框及双语可访问名称、悬停说明。组件直接调用 `navigator.clipboard.writeText` 写入各自完整原值，pending 时禁用，结果通过限时气泡展示；失败保留可选择原文与重试入口，不显示虚假的复制成功。标题实例绑定 project/task 与标题值，ID 实例绑定完整 ID；实例卸载使迟到结果失效。850px 及以下辅栏为 225px，
+在直接前置之前展示关联 PR，并展示当前阻塞项、直接后续、时间和完整 ID。关联 PR 页码使用公共紧凑原生选择控件，保留数值页码转换与真实控件引用；分页操作控件消失或禁用时恢复到页码选择或标题。ID 与已加载标题旁的复制按钮共享 `TaskCopyButton`，统一使用两个错位叠放方框及双语可访问名称、悬停说明。其共享 `ValueCopyButton` 适配器调用 `navigator.clipboard.writeText` 写入各自完整原值，pending 时禁用，结果通过限时气泡展示；失败保留可选择原文与重试入口，不显示虚假的复制成功。标题实例绑定 project/task 与标题值，ID 实例绑定完整 ID；实例卸载使迟到结果失效。850px 及以下辅栏为 225px，
 600px 及以下堆叠为单栏；长文本换行，表格和代码在局部横向滚动。附件页签占满正文
 宽度，在所有支持宽度保持左列表、右预览；父级正文、面板及右侧外壳隐藏溢出，每侧
 分别拥有滚动。Markdown/文本/图片由预览正文纵向滚动，HTML/PDF 由拟合正文的
@@ -681,6 +681,10 @@ generation、清理提示与等待状态，旧调用的成功、失败和结束�
 命名空间，配置及启动验证先于路由注册，避免 callback 冲突导致 ServeMux panic。
 已有冲突配置须更换 callback 并同步 UniAuth 登记值；页面无需增加 API 或数据库字段。
 
+## 复制控件的职责
+
+`src/ui/copy-button/` 的展示控件自导入 CSS，统一拥有原生 `type="button"`、装饰性双方框图标与状态样式；调用者提供本地化名称、事件、原生属性与外部布局，并可保留文字呈现。尺寸、默认透明、悬停、焦点和禁用态遵守[复制控件原则](../ui-design.md#share-copy-button-presentation)，不叠加通用 `.button` 皮肤。`ValueCopyButton` 承接 Task 行及 Task／Goal 详情共同的 pending、值及卸载隔离；详情通知仍由各自宿主持有。Team、Setup、Webhook、秘密对话框和 Worker 路径继续分别拥有准入、剪贴板写入、失败恢复及异步生命周期，不因共享呈现合并业务状态。取舍见[复制控件决策](../../.agents/notes/implemented/architecture/2026-11-16-shared-copy-button.md)。
+
 ## 模块职责与调用方向
 
 ```text
@@ -692,7 +696,8 @@ packages/daynight-web/
   src/features/projects/           ProjectsPage、ProjectPage、ProjectTaskTabs、StandaloneList、StandaloneTaskRow、偏好 hooks、统计卡
   src/features/task-cache/         五个 store、身份 scope、原子摘要合并、人员内容及完整本地图投影
   src/features/task-graph/          model.ts、layout.ts、dashes.ts、ChainList、ScopedTaskChainRow、TaskMemberRow、TaskGraph、TaskNode
-  src/features/task-row/            普通 Task 行模型、共享呈现及复制能力
+  src/ui/copy-button/              共享复制按钮呈现、样式和值复制适配器
+  src/features/task-row/            普通 Task 行模型及共享呈现
   src/features/task-detail/         TaskDetailDialog、TaskDetailSession、详情请求 hook、PR 展示及 focus helper
   src/features/task-detail/attachments/  路径树、附件 hook、操作和内容预览
   src/features/task-thread/         持久讨论的页面controller、传输和消息呈现

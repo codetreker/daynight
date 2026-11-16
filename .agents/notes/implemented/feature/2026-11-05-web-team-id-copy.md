@@ -10,7 +10,7 @@ and members need the same read-only action as administrators.
 
 ## Decision
 
-The Team ID field provides an icon button matching the Task copy glyph. It copies
+The Team ID field provides the shared copy presentation. It copies
 the displayed ID without a management write and reports success or a retryable
 failure beside the field. The operation has a synchronous pending guard and is
 invalidated with its Team, identity admission, or mounted context. The selectable
@@ -25,6 +25,6 @@ control preserves that boundary without changing the existing Task copy lifecycl
 ## Consequences
 
 Any viewer of a loaded Team can copy its ID, including read-only members. Denied
-or unavailable clipboard access leaves manual selection and retry available. The
-small duplicated glyph keeps the two consumers independent; a broader shared
-clipboard abstraction would require aligning their different feedback hosts.
+or unavailable clipboard access leaves manual selection and retry available. The [shared copy presentation decision](../architecture/2026-11-16-shared-copy-button.md)
+replaces the duplicated glyph while keeping the distinct admission, lifecycle and
+feedback owners. A single clipboard workflow would require aligning those hosts.

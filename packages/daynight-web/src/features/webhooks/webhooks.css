@@ -16,7 +16,7 @@
 .webhooks { min-width: 0; }
 .webhooks *,
 .webhook-dialog * { box-sizing:border-box }
-.webhooks button,
+.webhooks button:not(.copy-button),
 .webhook-dialog button,
 .webhooks input,
 .webhook-dialog input,
@@ -26,7 +26,7 @@
 .webhook-dialog button { cursor:pointer }
 .webhooks button:disabled,
 .webhook-dialog button:disabled { cursor:default }
-.webhooks button:focus-visible,
+.webhooks button:not(.copy-button):focus-visible,
 .webhook-dialog button:focus-visible,
 .webhooks input:focus-visible,
 .webhook-dialog input:focus-visible,

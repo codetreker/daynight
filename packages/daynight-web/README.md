@@ -1423,6 +1423,16 @@ are outside this runtime's persistence guarantee.
 Production claims require real service receipts. Web typecheck, test and build
 include all translated components under the existing coverage gate.
 
+## Shared copy presentation
+
+`src/ui/copy-button/` owns the native copy button, overlapping-squares icon and
+internal state styles for both icon-only and text actions. Its CSS is imported
+by the component. Consumers provide localized labels, actions and external
+layout, while retaining clipboard writes, admission, pending and feedback
+lifecycles. `ValueCopyButton` serves Task rows and Task/Goal details; other
+features retain their own asynchronous flows. See the [UI principles](../../docs/ui-design.md#share-copy-button-presentation)
+for geometry, focus and disabled presentation.
+
 ## Shared native selection
 
 Import `NativeSelect` from `src/ui/native-select/NativeSelect.tsx` using a relative
@@ -2142,8 +2152,8 @@ addresses initialize the tab and attachment selection from their navigation stat
 The complete task ID appears only in its metadata row, beside the same overlapping
 squares copy icon used immediately after the loaded title. Both buttons retain
 localized accessible names, hover titles and native keyboard activation. The shared
-`TaskCopyButton` writes the exact complete title or ID with
-`navigator.clipboard.writeText`, disables its button while pending and exposes
+`TaskCopyButton` delegates the exact complete title or ID to `ValueCopyButton`,
+which calls `navigator.clipboard.writeText`, disables its button while pending and exposes
 success or a recoverable failure through timed bubbles. The original text remains
 selectable after a failure. The title button is scoped to project/task and title
 value, and the ID button to its complete ID; unmount invalidates late results.
@@ -2292,7 +2302,7 @@ order, with `description` and `overview` selecting Description. Its child tasks
 and scoped chains remain in the project Goal list. Description uses the Goal's
 Markdown and attachment owner and shows the existing empty state when empty.
 Its information aside starts General information with the complete, selectable
-Goal ID and a localized copy button. Copy uses the shared Task clipboard button
+Goal ID and a localized copy button. Copy uses the shared value-copy adapter
 and a notification host owned by the Goal frame: pending disables repeated
 submission, success confirms the copy, and rejection or unavailable clipboard
 access shows a Goal-specific error while preserving manual selection and retry.

@@ -1,4 +1,5 @@
 import { expectTextContrast, roleColors } from './color-roles';
+import { expectCopyButtonSkin } from './copy-button-assertions';
 import type { TaskDetail } from '../../src/api/types';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
@@ -507,6 +508,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 390, 3
       return [title, id, button].every(box => box.width > 0 && box.left >= bounds.left - 1 && box.right <= bounds.right + 1)
         && element.querySelector('button button, a button, button a, a a') === null && document.documentElement.scrollWidth <= innerWidth;
     })).toBe(true);
+    await expectCopyButtonSkin(page, copy);
     await copy.focus(); await page.keyboard.press('Enter');
     await expect(row.getByRole('status')).toBeVisible();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(taskId);
@@ -522,6 +524,9 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 390, 3
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
     await link.click();
     await expect(page.locator('.task-detail-dialog')).toBeVisible();
+    const dialog = page.locator('.task-detail-dialog');
+    await expectCopyButtonSkin(page, dialog.getByRole('button', { name: locale === 'en' ? 'Copy task title' : '复制任务标题' }));
+    await expectCopyButtonSkin(page, dialog.getByRole('button', { name: locale === 'en' ? 'Copy task ID' : '复制任务 ID' }));
     await page.keyboard.press('Escape'); await expect(link).toBeFocused();
   });
 }

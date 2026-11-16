@@ -1,5 +1,30 @@
 import { expect, test, type Locator } from '@playwright/test';
 import { id, install } from './webhook-select-fixture';
+import { expectCopyButtonSkin } from './copy-button-assertions';
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 390, 320]) {
+  test(`secret copy preserves reveal and shared control at ${width}px in ${locale}`, async ({ page }) => {
+    const state = await install(page, locale);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/webhooks?owner=personal');
+    await page.getByRole('button', { name: 'Long receiver endpoint 0 for search and layout', exact: true }).click();
+    const button = page.locator('.secret-actions').getByRole('button', { name: locale === 'en' ? 'Copy' : '复制', exact: true });
+    const secret = page.locator('#webhook-secret');
+    await expectCopyButtonSkin(page, button);
+    const copied: string[] = [];
+    await page.exposeFunction('recordSecretCopy', (value: string) => copied.push(value));
+    await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (value: string) => (window as unknown as { recordSecretCopy: (value: string) => Promise<void> }).recordSecretCopy(value) } }));
+    await button.click();
+    const value = `whsec_${Buffer.alloc(32, 7).toString('base64')}`;
+    await expect(secret).toHaveText(value);
+    expect(copied).toEqual([]);
+    await button.focus(); await page.keyboard.press('Space');
+    await expect.poll(() => copied).toEqual([value]);
+    await expect(page.getByRole('status')).toContainText(locale === 'en' ? 'Copied' : '已复制');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(state.unexpected).toEqual([]);
+  });
+}
 
 async function checkGeometry(control: Locator, height: number) {
   const geometry = await control.evaluate(element => {

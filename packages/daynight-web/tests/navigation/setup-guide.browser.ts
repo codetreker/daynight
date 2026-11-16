@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { expectCopyButtonSkin } from './copy-button-assertions';
 
 const origin = `https://${'a'.repeat(55)}.${'b'.repeat(55)}.example.test:4443`;
 
@@ -45,6 +46,7 @@ test('production setup guide remains public and usable across clients, languages
       await client.selectOption(value);
       for (const width of [1440, 390, 320]) {
         await page.setViewportSize({ width, height: 900 });
+        if (value === 'codex') await expectCopyButtonSkin(page, page.locator('#mcp .setup-command').first().getByRole('button'));
         const geometry = await page.evaluate(() => ({
           width: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
           controls: [...document.querySelectorAll('.setup-guide a, .setup-guide button, .setup-guide select')].map(element => element.getBoundingClientRect()).filter(rect => rect.width > 0 && rect.height > 0).map(rect => ({ left: rect.left, right: rect.right })),
