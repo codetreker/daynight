@@ -1063,13 +1063,16 @@ project filters resets the task lists to page one. Full-chain progress, readines
 dependencies, statistics and graph use the complete index. Child filtering also
 preserves Goal composition, in-progress and pause counts, and Session summaries.
 Overview positioning adjusts project filters that hide its target. Tag panels
-retain a readable width within the viewport as toolbars wrap on narrow screens.
-An outside pointer action closes an open panel without intercepting the target;
+follow the visible viewport, including its offset, while toolbars wrap, the
+viewport changes or the anchor moves offscreen. The list and, when needed, the
+whole panel scroll so the final action remains reachable. Opening an interactive
+panel focuses its search input; Tab alone does not close it. An outside pointer
+action closes an open panel without intercepting the target;
 Escape closes it and restores focus to its available trigger. An open native
 select, an active overlay, prevented events and IME composition retain their
 own Escape handling. Opening another visible tag panel closes the first while
 keeping each filter's conditions and query. Background checks preserve an open
-panel and its focus.
+panel, text selection and focus without repeating opening focus.
 The [assignment design](../../docs/design/daynight-task-assignment.md) owns people,
 mutation and presentation mechanisms; the
 [Web design](../../docs/design/daynight-web.md) owns tag filtering and lifecycle.

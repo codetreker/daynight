@@ -152,6 +152,71 @@ it('handles outside Escape only while open, respecting prevented and composition
   expect(unmountedEscape.defaultPrevented).toBe(false);
 });
 
+it('gives Escape to a different dialog and to an external native popup', () => {
+  setup();
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!;
+  fireEvent.click(summary);
+  const dialog = document.createElement('div'); dialog.setAttribute('role', 'dialog');
+  const dialogButton = document.createElement('button'); dialog.appendChild(dialogButton); document.body.appendChild(dialog);
+  const select = document.createElement('select'); document.body.appendChild(select);
+  const popup = vi.spyOn(select, 'matches').mockReturnValue(true);
+  try {
+    for (const target of [dialogButton, select]) {
+      target.focus();
+      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      fireEvent(target, event);
+      expect(event.defaultPrevented).toBe(false); expect(picker).toHaveAttribute('open'); expect(target).toHaveFocus();
+    }
+  } finally { popup.mockRestore(); dialog.remove(); select.remove(); }
+});
+
+it('focuses search only on an interactive opening and ignores hidden pointer events', () => {
+  const content = (hidden: boolean) => <LocaleProvider initial={{ locale: 'en', issue: null }}><div hidden={hidden}><Harness /></div><button type="button">Outside</button></LocaleProvider>;
+  const view = render(content(false));
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!;
+  const outside = screen.getByRole('button', { name: 'Outside' });
+  fireEvent.click(summary);
+  const search = within(picker).getByLabelText('Tag filter: Search tags');
+  expect(search).toHaveFocus();
+  outside.focus(); view.rerender(content(false));
+  expect(outside).toHaveFocus(); expect(picker).toHaveAttribute('open');
+  view.rerender(content(true)); fireEvent.pointerDown(outside);
+  expect(picker).toHaveAttribute('open'); expect(outside).toHaveFocus();
+  view.rerender(content(false));
+  expect(outside).toHaveFocus();
+  fireEvent.pointerDown(outside); expect(picker).not.toHaveAttribute('open');
+});
+
+it('releases viewport listeners and size observers when closed or unmounted', () => {
+  const previousViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+  const previousObserver = globalThis.ResizeObserver;
+  const viewport = new EventTarget();
+  Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+  const add = vi.spyOn(viewport, 'addEventListener'), remove = vi.spyOn(viewport, 'removeEventListener');
+  const disconnect = vi.fn();
+  globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() { disconnect(); } };
+  try {
+    const view = setup();
+    const summary = screen.getByText('Tag filter', { selector: 'summary' });
+    fireEvent.click(summary);
+    const resize = add.mock.calls.find(call => call[0] === 'resize')?.[1];
+    const scroll = add.mock.calls.find(call => call[0] === 'scroll')?.[1];
+    expect(resize).toBeDefined(); expect(scroll).toBeDefined();
+    fireEvent.click(summary);
+    expect(remove).toHaveBeenCalledWith('resize', resize); expect(remove).toHaveBeenCalledWith('scroll', scroll);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    fireEvent.click(summary); view.unmount();
+    expect(disconnect).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledTimes(4);
+  } finally {
+    add.mockRestore(); remove.mockRestore(); globalThis.ResizeObserver = previousObserver;
+    if (previousViewport) Object.defineProperty(window, 'visualViewport', previousViewport);
+    else Reflect.deleteProperty(window, 'visualViewport');
+  }
+});
+
 it('opens only one of two filters while retaining their independent conditions and queries', () => {
   const Pair = () => {
     const main = useTagFilter('project'); const child = useTagFilter('project');

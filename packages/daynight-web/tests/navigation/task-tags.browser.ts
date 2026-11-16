@@ -439,6 +439,7 @@ for (const scenario of ['empty', 'no matches', 'loading', 'failure', 'untagged']
     await page.locator('#project-section-tab-tasks').click();
     const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
     const trigger = filter.locator('summary'); await trigger.click();
+    const outside = page.locator('#project-task-tab-standalone');
     if (scenario === 'empty') await expect(filter.getByText('No tags yet.')).toBeVisible();
     if (scenario === 'no matches') {
       await filter.locator('input[type="search"]').fill('not found');
@@ -447,7 +448,7 @@ for (const scenario of ['empty', 'no matches', 'loading', 'failure', 'untagged']
     if (scenario === 'loading') await expect(filter.getByText('Loading tags…')).toBeVisible();
     if (scenario === 'failure') {
       await expect(filter.getByText('Could not load tags.')).toBeVisible();
-      await page.locator('#project-task-tab-goals').click(); await expect(filter).not.toHaveAttribute('open', '');
+      await outside.click(); await expect(filter).not.toHaveAttribute('open', '');
       await trigger.click(); await expect(filter.getByText('Could not load tags.')).toBeVisible();
       state.failCatalog = false; await filter.getByRole('button', { name: 'Retry' }).click();
       await expect(filter.getByLabel('Goal label')).toBeVisible(); await expect(filter).toHaveAttribute('open', '');
@@ -456,7 +457,7 @@ for (const scenario of ['empty', 'no matches', 'loading', 'failure', 'untagged']
       await filter.getByLabel('No tags').check();
       await expect(filter.locator('select')).toBeDisabled(); await expect(filter).toHaveAttribute('open', '');
     }
-    await page.locator('#project-task-tab-goals').click();
+    await outside.click();
     await expect(filter).not.toHaveAttribute('open', '');
     if (scenario === 'loading') state.releaseCatalog();
     await trigger.click(); await expect(filter).toHaveAttribute('open', '');
@@ -472,8 +473,8 @@ test('Escape dismisses the native select popup before the filter', async ({ page
   await page.locator('#project-section-tab-tasks').click();
   const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
   const trigger = filter.locator('summary'), select = filter.locator('select');
-  await trigger.click(); await select.focus(); await expect(select).toBeFocused();
-  await page.keyboard.press('Space');
+  await trigger.click(); await expect(filter.getByLabel('Goal label')).toBeVisible();
+  await select.click(); await expect(select).toBeFocused();
   await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(true);
   await page.keyboard.press('Escape');
   await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(false);
@@ -481,6 +482,79 @@ test('Escape dismisses the native select popup before the filter', async ({ page
   await page.keyboard.press('Escape');
   await expect(filter).not.toHaveAttribute('open', ''); await expect(trigger).toBeFocused();
   expect(state.writes).toEqual([]);
+});
+
+test('an external native select owns its first Escape while the filter stays open', async ({ page }) => {
+  const state = await install(page, 'en');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const toolbar = page.locator('.project-tasks .task-list-filters:visible');
+  const filter = toolbar.locator('.tag-filter').first(), trigger = filter.locator('summary');
+  await trigger.click(); await expect(filter.getByLabel('Goal label')).toBeVisible();
+  const select = toolbar.locator('.task-status-filter select');
+  await select.focus(); await expect(select).toBeFocused();
+  await page.keyboard.press('Space');
+  await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(false);
+  await expect(filter).toHaveAttribute('open', ''); await expect(select).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(filter).not.toHaveAttribute('open', ''); await expect(trigger).toBeFocused();
+  expect(state.writes).toEqual([]);
+});
+
+test('capture-phase outside dismissal preserves the target action even when propagation stops', async ({ page }) => {
+  const state = await install(page, 'en');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  await filter.locator('summary').click();
+  await page.evaluate(() => {
+    const element = document.createElement('button'); element.textContent = 'Outside test action';
+    Object.assign(element.style, { position: 'fixed', top: '0', left: '0', zIndex: '1000' });
+    element.addEventListener('pointerdown', event => event.stopPropagation());
+    element.addEventListener('click', () => element.setAttribute('data-activated', 'true'));
+    document.body.appendChild(element);
+  });
+  const target = page.getByRole('button', { name: 'Outside test action' });
+  await target.click();
+  await expect(filter).not.toHaveAttribute('open', '');
+  await expect(target).toHaveAttribute('data-activated', 'true');
+  expect(state.writes).toEqual([]);
+});
+
+test('switching from task search preserves focus and an open tag filter without refocusing its search', async ({ page }) => {
+  const state = await install(page, 'en');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const taskSearch = page.locator('.task-search-form input[type="text"]');
+  await taskSearch.fill('goal'); await taskSearch.press('Enter');
+  const searchFilter = page.locator('.task-search-filters .tag-filter');
+  await searchFilter.locator('summary').click();
+  const tagSearch = searchFilter.locator('input[type="search"]');
+  await expect(tagSearch).toBeFocused(); await tagSearch.fill('Goal');
+  await searchFilter.getByLabel('Goal label').check();
+  await tagSearch.focus();
+  for (let count = 0; count < 12 && !await taskSearch.evaluate(element => element === document.activeElement); count++) await page.keyboard.press('Shift+Tab');
+  await expect(taskSearch).toBeFocused(); await expect(searchFilter).toHaveAttribute('open', '');
+  await taskSearch.press('ControlOrMeta+A'); await taskSearch.press('Backspace');
+  await expect(taskSearch).toHaveValue(''); await expect(taskSearch).toBeFocused();
+  const listFilter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  await expect(listFilter).toHaveAttribute('open', '');
+  const listSearch = listFilter.locator('input[type="search"]');
+  await expect(listSearch).toHaveValue('Goal'); await expect(listFilter.getByLabel('Goal label')).toBeChecked();
+  await expect(taskSearch).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(listFilter).not.toHaveAttribute('open', '');
+  await listFilter.locator('summary').click();
+  await expect(listSearch).toBeFocused(); await expect(listSearch).toHaveValue('Goal');
+  await expect(listFilter.getByLabel('Goal label')).toBeChecked();
+  for (let count = 0; count < 16 && !await taskSearch.evaluate(element => element === document.activeElement); count++) await page.keyboard.press('Shift+Tab');
+  await expect(taskSearch).toBeFocused(); await expect(listFilter).toHaveAttribute('open', '');
+  await taskSearch.fill('another'); await taskSearch.press('Enter');
+  await expect(searchFilter).toHaveAttribute('open', ''); await expect(taskSearch).toBeFocused();
+  await expect(tagSearch).toHaveValue('Goal'); await expect(searchFilter.getByLabel('Goal label')).toBeChecked();
+  await expect(taskSearch).toBeFocused();
+  expect(state.writes.every(write => write === `POST /api/v1/projects/${projectId}/tasks/search`)).toBe(true);
 });
 
 test.describe('touch filter dismissal', () => {
@@ -491,13 +565,90 @@ test.describe('touch filter dismissal', () => {
     await page.locator('#project-section-tab-tasks').tap();
     const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
     await filter.locator('summary').tap(); await expect(filter).toHaveAttribute('open', '');
-    const goals = page.locator('#project-task-tab-goals'); await goals.tap();
-    await expect(filter).not.toHaveAttribute('open', ''); await expect(goals).toHaveAttribute('aria-selected', 'true');
+    const standaloneTab = page.locator('#project-task-tab-standalone'); await standaloneTab.tap();
+    await expect(filter).not.toHaveAttribute('open', ''); await expect(standaloneTab).toHaveAttribute('aria-selected', 'true');
     expect(state.writes).toEqual([]);
   });
 });
 
-for (const width of [1280, 768, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
+test('the filter remains usable in an offset, short visible viewport with an offscreen anchor', async ({ page }) => {
+  const state = await install(page, 'en');
+  state.tags = Array.from({ length: 30 }, (_, index) => ({ id: id(300 + index), name: `Label ${String(index).padStart(2, '0')}` }));
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  // This controlled visualViewport exercises the geometry path; it is not a physical keyboard.
+  await page.evaluate(() => {
+    const viewport = Object.assign(new EventTarget(), { offsetLeft: 0, offsetTop: 0, width: 390, height: 700, scale: 1 });
+    Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+  });
+  const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  const trigger = filter.locator('summary'), panel = filter.locator('.tag-filter-panel');
+  await trigger.click();
+  const search = filter.locator('input[type="search"]');
+  await expect(search).toBeFocused(); await search.fill('Label');
+  await filter.getByLabel('Label 00').check();
+  const options = filter.locator('.tag-filter-options');
+  await expect.poll(() => options.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+  await options.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(filter.getByLabel('Label 29')).toBeInViewport();
+  await search.focus(); await search.evaluate((element: HTMLInputElement) => {
+    element.setSelectionRange(1, 4);
+    (window as unknown as { originalSearch: HTMLInputElement }).originalSearch = element;
+  });
+
+  await page.evaluate(() => {
+    const viewport = window.visualViewport!;
+    Object.assign(viewport, { offsetLeft: 45, offsetTop: 90, width: 280, height: 220 });
+    viewport.dispatchEvent(new Event('resize'));
+  });
+  const insideVisibleViewport = async () => {
+    const box = await panel.boundingBox();
+    return box !== null && box.x >= 60 && box.x + box.width <= 310 && box.y >= 89 && box.y + box.height <= 311;
+  };
+  await expect.poll(insideVisibleViewport).toBe(true);
+  for (const offset of [-1000, 1000]) {
+    await filter.evaluate((element: HTMLElement, top) => { element.style.top = `${top}px`; }, offset);
+    await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
+    await expect.poll(insideVisibleViewport).toBe(true);
+    expect(await search.evaluate(element => element === (window as unknown as { originalSearch: HTMLInputElement }).originalSearch)).toBe(true);
+    await expect(search).toBeFocused(); await expect(search).toHaveValue('Label');
+    expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
+    await expect(filter.getByLabel('Label 00')).toBeChecked();
+  }
+  await panel.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const lastAction = filter.getByRole('button', { name: 'Manage tags' });
+  await expect.poll(async () => {
+    const box = await lastAction.boundingBox(), container = await panel.boundingBox();
+    return box !== null && container !== null && box.y >= container.y - 1 && box.y + box.height <= container.y + container.height + 1;
+  }).toBe(true);
+  await page.evaluate(() => {
+    const viewport = window.visualViewport!;
+    Object.assign(viewport, { width: 40 }); viewport.dispatchEvent(new Event('resize'));
+  });
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    return box !== null && box.x >= 44 && box.x + box.width <= 86;
+  }).toBe(true);
+  await page.evaluate(() => {
+    const viewport = window.visualViewport!;
+    Object.assign(viewport, { width: 280, height: 40 }); viewport.dispatchEvent(new Event('resize'));
+  });
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    return box !== null && box.y >= 89 && box.y + box.height <= 131;
+  }).toBe(true);
+  await panel.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(async () => {
+    const box = await lastAction.boundingBox(), container = await panel.boundingBox();
+    return box !== null && container !== null && box.y >= container.y - 1 && box.y + box.height <= container.y + container.height + 1;
+  }).toBe(true);
+  await lastAction.click();
+  await expect(page.locator('#project-section-tab-tags')).toHaveAttribute('aria-selected', 'true');
+  expect(state.writes).toEqual([]);
+});
+
+for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`tag filters retain keyboard focus and layout during checks at ${width}px in ${locale}`, async ({ page }) => {
   const state = await install(page, locale);
   const childLongName = `${longName}X`;
   state.tasks = state.tasks.map(item => item.id === child.id ? { ...item, tags: [{ id: id(93), name: childLongName }] } : item);
