@@ -1,9 +1,11 @@
 # One Finding Package
 
 Prepare one directory for each independently actionable improvement before
-[the production handoff](handoff.md). `task.md` owns the Chinese requirements,
-observed behavior, selected solution, detailed design, ordered implementation
-steps and acceptance criteria. The JSON manifest
+[the production handoff](handoff.md). Follow the product manual's
+[descriptions and references](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#descriptions-and-references)
+rules. `summary.md` supplies the Task description; `task.md` is an attachment
+owning the Chinese requirements, observed behavior, selected solution, detailed
+design, ordered implementation steps and acceptance criteria. The JSON manifest
 lists its files; it does not duplicate the task definition.
 
 ## Files and local validation
@@ -13,6 +15,7 @@ An example directory is:
 ```text
 one-finding/
   finding.json
+  summary.md
   task.md
   prototype.html
   evidence/
@@ -28,10 +31,10 @@ one-finding/
 {
   "format": "daynight-finding-v1",
   "title": "窄屏项目标题被操作区挤压，影响识别项目",
-  "description": "task.md",
+  "description": "summary.md",
   "prototype": "prototype.html",
   "evidence": ["evidence/before/evidence.json", "evidence/interaction.md"],
-  "supportingFiles": []
+  "supportingFiles": ["task.md"]
 }
 ```
 
@@ -74,12 +77,20 @@ sampling when it is a time series, and observed results. The helper checks the
 bytes of manual evidence, not its truth.
 
 Use inline Markdown links and images, angle brackets around paths with spaces or
-parentheses, or single-line reference definitions in `task.md`. Quoted titles and
-nested text labels are supported; code-span and fenced-code examples are ignored.
-Local attachment links must target inventory files from the package root because
-the content becomes an inline task description. Its source file's directory is
-irrelevant: if `description` is `docs/task.md` and the prototype is uploaded as
-`docs/prototype.html`, link to `docs/prototype.html`, not `prototype.html`.
+parentheses, or single-line reference definitions in the package's Markdown
+files. Quoted titles and nested text labels are supported; code-span and
+fenced-code examples are ignored.
+The validator checks local links in the description source and every inventoried
+Markdown attachment. Links must target files uploaded as attachments; the
+manifest and description source are not attachment targets. Description links
+target attachment files from the package root, regardless of the source file's
+directory: if `description` is
+`docs/summary.md`, link to the attached `docs/task.md` as `docs/task.md`.
+Links inside Markdown attachments resolve from the attachment's directory:
+`docs/task.md` can link to `prototype.html` for `docs/prototype.html`, or to
+`../prototype.html` for a prototype at the root. Document-relative `.` and `..`
+segments must remain inside the Task attachment root. Manifest file paths retain
+the stricter component rules above.
 Preserve package-relative paths when uploading. This follows the Web
 [inline-description resolver](../../../../packages/daynight-web/src/features/task-detail/TaskDetailReading.tsx)
 and [attachment path rules](../../../../packages/daynight-web/src/features/task-detail/attachments/model.ts).
@@ -89,9 +100,7 @@ percent signs can be encoded within an individual segment. HTTP(S) links and
 same-file anchors are allowed. This is a constrained package format, not a full
 Markdown parser. Nested images in link labels are rejected: use an independent
 image and link instead. Avoid HTML links, multiline reference definitions and
-executable embeds in task material. Markdown attachments have their own
-document-relative links; this helper validates the file used for the inline
-description.
+executable embeds in task material.
 
 An exit code of zero establishes file completeness, a byte inventory and the
 absence of the supplied strings in text files. It does not establish that the
@@ -101,9 +110,19 @@ Review those properties before upload. Revalidate after edits, then compare
 downloaded attachment bytes with this inventory. A hash made before a later edit
 cannot certify the new upload.
 
-## Task description template
+## Description source
 
-Adapt the detail to the finding under the [task content standard](../../development-workflow/references/task-content.md).
+For `summary.md`:
+
+```markdown
+修复窄屏项目标题被相邻操作区挤压的问题，保证项目可识别且操作可达。
+需求、复现证据、方案与验收见[任务定义](task.md)。
+```
+
+## Task attachment template
+
+Write `task.md` under the
+[task content standard](../../development-workflow/references/task-content.md).
 Resolve the investigation and design questions needed to select and implement the
 solution before delivery handoff. Preserve verification limitations accurately.
 This example is task material, so its prose is Chinese.

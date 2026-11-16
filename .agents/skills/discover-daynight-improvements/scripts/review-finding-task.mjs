@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { descriptionLinks, validateFinding } from "./validate-finding.mjs";
+import { markdownAttachmentLinks, validateFinding } from "./validate-finding.mjs";
 
 const usage = "Usage: node review-finding-task.mjs --cli <daynight executable> --config-dir <configuration root> --project <project UUID> --task <task UUID> [--expect-assignee <user UUID>] <package/finding.json>\nCompares one registered task with its local finding package using only `task show`, `task attachment list` and `task attachment read`. Prints a JSON report and exits nonzero when anything differs. It does not judge content sufficiency, responsibility or permission to enable automatic execution.";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -61,7 +61,7 @@ export async function reviewFindingTask(manifestPath, { run, project, task, expe
   const description = typeof remote.description === "string" ? remote.description : "";
   const descriptionStatus = description === localDescription ? "match"
     : description.trimEnd() === localDescription.trimEnd() ? "differs-trailing-whitespace" : "differs";
-  const unresolvedLinks = descriptionLinks(description).filter((link) => !remotePaths.has(link));
+  const unresolvedLinks = markdownAttachmentLinks(description).filter((link) => !remotePaths.has(link));
   const report = {
     task,
     project,

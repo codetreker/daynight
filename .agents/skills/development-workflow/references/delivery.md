@@ -10,7 +10,7 @@
 | Acceptance | Complete acceptance against the criteria, collect evidence, and upload it as task attachments. |
 
 These requirements apply to worker-managed tasks and supplement the [shared completion conditions](task-execution.md#completion-conditions).
-Task descriptions and source organization follow the [task content standard](task-content.md); inline content cannot replace attachments explicitly required by this table.
+Task material follows the [task content standard](task-content.md); its general content categories do not waive this table's required results.
 Goal confirmation points still require human confirmation; the assignment does not authorize executing other stages.
 
 ## PR delivery

@@ -31,6 +31,9 @@ exception retains the benefit without duplicating long material.
 ## Consequences
 
 Detailed materials need an attachment and an accurate reference; readers must
-read it to assess completeness. This is writing guidance rather than a new API
-validation or automatic content transformation. Existing Assistant roles retain
-their frozen instructions, while newly prepared roles use the updated revision.
+read it to assess completeness. The repository's
+[workflow material references](2026-11-16-workflow-material-references.md)
+apply this guidance while retaining its own content and stage requirements.
+This is writing guidance rather than a new API validation or automatic content
+transformation. Existing Assistant roles retain their frozen instructions, while
+newly prepared roles use the updated revision.
