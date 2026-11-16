@@ -22,3 +22,9 @@ type GitHubAppPage struct {
 	Items      []GitHubApp `json:"items"`
 	NextCursor *string     `json:"nextCursor"`
 }
+
+// GitHubAppRemoval is the limited receipt returned after App removal.
+type GitHubAppRemoval struct {
+	AppID   string `json:"appId"`
+	Removed bool   `json:"removed"`
+}

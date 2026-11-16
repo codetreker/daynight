@@ -38,13 +38,18 @@ type appHandler struct {
 
 // RegisterAppRoutes installs the independent App adapter. origin is the trusted
 // configured public origin, never an incoming Host header.
-func RegisterAppRoutes(mux *http.ServeMux, ops AppOperations, auth RouteAuthentication, origin string, logger *slog.Logger) {
+func RegisterAppRoutes(mux *http.ServeMux, ops AppOperations, auth RouteAuthentication, origin string, logger *slog.Logger, config ...AppConfigOperations) {
 	h := &appHandler{operations: ops, origin: origin, logger: logger}
 	mux.HandleFunc("GET /api/v1/github/apps", auth.Require(h.list))
 	mux.HandleFunc("POST /api/v1/github/apps", auth.Require(h.create))
 	mux.HandleFunc("GET /api/v1/github/apps/{id}", auth.Require(h.get))
 	mux.HandleFunc("/api/v1/github/apps", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/github/apps/{id}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+	allow := "GET, HEAD"
+	if len(config) > 0 {
+		registerAppConfigRoutes(mux, config[0], auth, origin, logger)
+		allow += ", PATCH"
+	}
+	mux.HandleFunc("/api/v1/github/apps/{id}", auth.Require(httpx.ResourceMethodNotAllowed(logger, allow)))
 }
 
 func (h *appHandler) response(v core.AppMetadata) api.GitHubApp {
