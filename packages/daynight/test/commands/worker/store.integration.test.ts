@@ -69,6 +69,7 @@ describe("minimal worker SQLite schema", () => {
     db.prepare("INSERT INTO archive_backfill_schedules VALUES(?,?,?,?,?,?,?,?,?)").run(history.serverOrigin, history.executionId, history.executionGeneration, history.launchId, claim.projectId, claim.taskId, claim.claimId, "archive_incomplete", 300);
     db.pragma("user_version=16"); db.close();
     const migrated = open(file), owner = { ...claim, worktreeId: uuid(4) };
+    migrated.registerProject(f.project);
     expect(migrated.getCleanupSchedule(claim)).toEqual({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained", archiveRepairCode: "projection_gap" });
     expect(migrated.getArchiveBackfillSchedule(history)).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: 300 });
     migrated.saveCleanupSchedule(owner, { ...migrated.getCleanupSchedule(owner)!, archiveRepairCode: "markdown_projection_failed" });
