@@ -29,6 +29,8 @@ Panels use a readable 285px width capped by viewport space. Positioning observes
 actual trigger and panel bounds when opened and when scrolling or resizing the window or neighboring filters,
 so a control near the toolbar's right edge does not move its panel offscreen.
 The [Web design](../../../../docs/design/daynight-web.md) owns current mechanisms.
+The [tag panel dismissal decision](../bug-fix/2026-11-16-tag-filter-dismissal.md)
+defines how the independently owned conditions share panel visibility.
 
 This replaces the per-Goal child-condition ownership recorded in the
 [Web tag filtering decision](2026-11-13-web-tag-filter.md). Its tag matching,
