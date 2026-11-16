@@ -37,7 +37,10 @@ const currentEvidence = (file: string, format: SqliteFormat): void => {
 
 /** Git itself repeats its dirty-worktree refusal; recovery never uses --force. */
 export const verifyRecoveryGitContent = async (binding: WorktreeBinding, operation: Operation): Promise<void> => {
-  const read = async (args: readonly string[]) => (await runRepositoryGit(binding.worktreePath, args, operation)).stdout.trim();
+  // The validated gitfile identifies this checkout's index. Explicit roots keep
+  // core.worktree from redirecting preservation reads to another directory.
+  const context = [`--git-dir=${path.join(binding.worktreePath, ".git")}`, `--work-tree=${binding.worktreePath}`];
+  const read = async (args: readonly string[]) => (await runRepositoryGit(binding.repositoryPath, [...context, ...args], operation)).stdout.trim();
   // Status and even non-force worktree removal trust these index hints. Refuse
   // hidden content instead of clearing the user's flags to manufacture a check.
   for (const flag of ["-v", "-f"]) {
@@ -53,7 +56,7 @@ export const verifyRecoveryGitContent = async (binding: WorktreeBinding, operati
 
 export const removeRecoveryGitWorktree = async (binding: WorktreeBinding, operation: Operation): Promise<void> => {
   await verifyRecoveryGitContent(binding, operation);
-  await runRepositoryGit(binding.repositoryPath, ["-c", "submodule.recurse=false", "worktree", "remove", "--", binding.worktreePath], operation);
+  await runRepositoryGit(binding.repositoryPath, [`--git-dir=${binding.commonDirectory}`, `--work-tree=${binding.repositoryPath}`, "-c", "submodule.recurse=false", "worktree", "remove", "--", binding.worktreePath], operation);
 };
 
 export const runCompletedWebResourceRecovery = async (options: { homeDirectory: string; request: ResourceRecoveryRequest; output: (message: string) => void; signal?: AbortSignal }): Promise<void> => {

@@ -82,4 +82,19 @@ describe("safe resource recovery Git boundary", { timeout: 45_000 }, () => {
       expect(await f.git(f.binding.worktreePath, ["ls-files", "-v", "tracked"])).toBe(before);
     } finally { f.operation.dispose(); }
   });
+  it("preserves original ignored files when worktree configuration redirects Git to a clean directory", async () => {
+    const f = await fixture();
+    try {
+      const redirected = path.join(f.root, "redirected");
+      await mkdir(redirected);
+      for (const file of ["tracked", ".gitignore"]) await writeFile(path.join(redirected, file), await readFile(path.join(f.binding.worktreePath, file)));
+      await writeFile(path.join(f.binding.worktreePath, "ignored"), "keep original ignored file\n");
+      await f.git(f.root, ["config", "extensions.worktreeConfig", "true"]);
+      await f.git(f.binding.worktreePath, ["config", "--worktree", "core.worktree", redirected]);
+      expect(await f.git(f.binding.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"])).toBe("");
+      await expect(trackGit(removeRecoveryGitWorktree(f.binding, f.operation))).rejects.toThrow(/files/);
+      expect(await readFile(path.join(f.binding.worktreePath, "ignored"), "utf8")).toBe("keep original ignored file\n");
+      expect(await readFile(path.join(redirected, "tracked"), "utf8")).toBe("original\n");
+    } finally { f.operation.dispose(); }
+  });
 });
