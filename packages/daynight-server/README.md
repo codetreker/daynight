@@ -965,12 +965,14 @@ Explicit preview SSO starts at `DAYNIGHT_PREVIEW_ORIGIN/auth/sso/start` for an
 already signed-in browser. The four GET navigation endpoints, state binding,
 preview Domain Cookie, completion check and retry behavior are described in the
 [authentication design](../../docs/design/daynight-auth.md#显式浏览器预览-sso).
-The ordinary login callback and existing attachment reads do not automatically
-enter this flow. The bare preview host serves only SSO; Task subdomains are
-reserved and currently return 404. Configure preview DNS/TLS and preserve the
-original Host before deploying, without adding a startup network probe. Container readiness uses numeric loopback listener URLs
+The ordinary login callback and existing Web attachment reads retain their main-site
+behavior. The bare preview host serves only SSO; a canonical Task or Goal UUID
+subdomain serves only its matching attachment preview GET/HEAD. Invalid preview
+hosts do not fall through to the main API. Configure both bare and wildcard preview
+DNS and TLS/SNI, and preserve the original Host before deploying; startup does not
+probe external DNS/TLS. Container readiness uses numeric loopback listener URLs
 with `Host: localhost` to select the main namespace independently of public
-ports, while the preview namespace remains SSO-only. Proxy
+ports. Proxy
 access logs must omit code/state query values, Cookie headers and credentials;
 the service correlates safe SSO stage/results by request ID. For local DNS names,
 configure a loopback resolver or browser host mapping. Explicit HTTP socket tests
@@ -2581,16 +2583,27 @@ error. Filesystem and PG changes remain non-atomic as the documented known issue
 
 Content-Length comes from the opened file, not cached metadata. HEAD returns
 headers without reading the body. Mutable responses use no-store. Before a
-stream begins, failures use the existing JSON error envelope; after commitment,
+stream begins, failures use the existing JSON error envelope except for Task-host
+document failures; after commitment,
 the server logs one correlated error and aborts the transfer without a JSON
-suffix. Trusted HTML preview runs with the application origin permissions.
-Relative CSS, scripts, images and data URLs resolve under the fixed preview
-path; ordinary query parameters do not change the file name. The
+suffix. The existing Web preview and main-site GET run trusted HTML with the
+application origin permissions. A separate Task-host URL uses the same path under
+`https://<taskId>.<preview-host>`; its Host ID must match the path. It serves raw
+bytes and relative resources with the preview Cookie and retains no-store, MIME,
+inline and HEAD semantics. Document responses carry `Origin-Agent-Cluster: ?1`.
+Missing or invalid preview credentials start SSO only for document/iframe GET;
+subresources and HEAD retain non-HTML errors. Document failures retain their HTTP
+status and offer same-URL retry, with a new-tab SSO entry for 401. The main HTML
+shell publishes `daynight-preview-origin` as metadata; current Web URL generation
+continues to use the main-site path. Relative CSS, scripts, images and data URLs
+resolve under the fixed preview path; ordinary query parameters do not change the
+file name. The
 [authentication architecture](../../docs/design/daynight-auth.md) requires a fresh
-session/PAT or fixed API OAuth family check at HTTP admission and project membership in the pre-I/O
+session/PAT or fixed API OAuth family check at main-site HTTP admission, or a
+preview session Cookie for the Task host, and project membership in the pre-I/O
 snapshot. An admitted file operation may finish; membership is not rechecked
-after file I/O. These checks retain trusted same-origin execution, existing
-preview routes and K1 filesystem/PostgreSQL non-atomicity.
+after file I/O. These checks retain the current Web's trusted same-origin
+execution, the separate Task-host route and K1 filesystem/PostgreSQL non-atomicity.
 
 ## PostgreSQL storage boundaries
 

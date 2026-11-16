@@ -18,8 +18,8 @@ import (
 	granthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/grants"
 	s2shttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/s2s"
 	oauthtoken "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/token"
-	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	previewhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/preview"
+	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
 	prompthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/prompt"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taghttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/tag"
@@ -92,7 +92,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	mux.Handle("/mcp", endpoint)
 	profile := app.OAuthProfile
 	authorization := oauthauthorization.NewAuthorizationHTTP(profile.Authorizations, auth)
-	web := webhttp.New(app.Web)
+	web := webhttp.New(app.Web, config.Server.PreviewOrigin)
 	authorization.SetStartErrorPage(web.BadRequestHandler(logger))
 	tokens := &oauthtoken.PublicTokens{Admission: profile.Admission, Resource: config.Server.PublicOrigin + "/mcp", APIResource: config.Server.PublicOrigin + "/api/v1", Codes: profile.Authorizations, Grants: profile.Grants, Logger: logger}
 	mux.Handle("/api/v1/oauth/s2s/token", s2shttp.New(app.APIIssuer, config.S2S.SharedKey, logger))
@@ -136,6 +136,8 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
 	taskhttp.TaskSyncRoutes(mux, app.TaskSync.Get, auth, logger, config.TaskSync.Overlap)
 	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
+	taskPreviewMux := http.NewServeMux()
+	attachmenthttp.RegisterPreviewRoutes(taskPreviewMux, app.Attachments, preview.Require, logger)
 	if app.Webhooks != nil {
 		webhookhttp.NewRoutes(app.Webhooks, auth, logger).RegisterRoutes(mux)
 	}
@@ -152,8 +154,8 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	main := cors.Wrap(attachmenthttp.PathGuard(mux, logger), mux, config.S2S.AllowedOrigin, logger, auth.CallbackPath(), "/api/v1/auth/preview/authorize")
-	return &sessionApplication{Handler: preview.Wrap(main), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
+	main := cors.Wrap(attachmenthttp.PathGuard(mux, logger), mux, config.S2S.AllowedOrigin, logger, auth.CallbackPath(), previewhttp.AuthorizePath, previewhttp.RetryPath)
+	return &sessionApplication{Handler: preview.Wrap(main, attachmenthttp.PathGuard(taskPreviewMux, logger)), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
 }
 
 type sessionApplication struct {

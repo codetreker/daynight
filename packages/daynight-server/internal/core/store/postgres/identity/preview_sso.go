@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"crypto/subtle"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -119,6 +120,55 @@ func (s *scope) CompletePreviewSSO(ctx context.Context, id string, preview []byt
 	}
 	login, err = scanPreviewLogin(s.tx.QueryRow(ctx, `DELETE FROM preview_sso_logins WHERE id=$1 AND expires_at>$2 AND EXISTS(SELECT 1 FROM sessions WHERE id=$3 AND preview_token_hash=$4 AND expires_at>$2) RETURNING `+previewLoginFields, id, elapsedTime(now, start), sessionID, preview))
 	return login, pg.AuthQueryError("complete preview SSO", err)
+}
+
+func (s *scope) TakePreviewSSORetry(ctx context.Context, id string, state []byte, principal model.Principal, now time.Time) (model.PreviewSSOLogin, error) {
+	start := time.Now()
+	if principal.Kind != model.SessionCredential || (id == "" && len(state) == 0) {
+		return model.PreviewSSOLogin{}, model.ErrNotFound
+	}
+	query := `SELECT ` + previewLoginFields + ` FROM preview_sso_logins WHERE id=$1 FOR UPDATE`
+	var key any = id
+	if id == "" {
+		query = `SELECT ` + previewLoginFields + ` FROM preview_sso_logins WHERE state_hash=$1 ORDER BY id LIMIT 2 FOR UPDATE`
+		key = state
+	}
+	rows, err := s.tx.Query(ctx, query, key)
+	if err != nil {
+		return model.PreviewSSOLogin{}, pg.AuthQueryError("lock preview retry", err)
+	}
+	var login model.PreviewSSOLogin
+	count := 0
+	for rows.Next() {
+		login, err = scanPreviewLogin(rows)
+		if err != nil {
+			break
+		}
+		count++
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	if err != nil {
+		return model.PreviewSSOLogin{}, pg.AuthQueryError("read preview retry", err)
+	}
+	if count != 1 || len(login.StateHash) == 0 ||
+		(len(state) != 0 && subtle.ConstantTimeCompare(login.StateHash, state) != 1) ||
+		(login.SessionID == "" && (id == "" || len(state) == 0 || len(login.CodeHash) != 0)) ||
+		(login.SessionID != "" && login.SessionID != principal.CredentialID) {
+		return model.PreviewSSOLogin{}, model.ErrNotFound
+	}
+	var expires time.Time
+	if err := s.tx.QueryRow(ctx, `SELECT expires_at FROM sessions WHERE id=$1 AND user_id=$2 FOR SHARE`, principal.CredentialID, principal.UserID).Scan(&expires); err != nil {
+		return model.PreviewSSOLogin{}, pg.AuthQueryError("lock preview retry session", err)
+	}
+	effectiveNow := elapsedTime(now, start)
+	if !login.ExpiresAt.After(effectiveNow) || !expires.After(effectiveNow) {
+		return model.PreviewSSOLogin{}, model.ErrNotFound
+	}
+	login, err = scanPreviewLogin(s.tx.QueryRow(ctx, `DELETE FROM preview_sso_logins WHERE id=$1 RETURNING `+previewLoginFields, login.ID))
+	return login, pg.AuthQueryError("consume preview retry", err)
 }
 
 func (s *scope) AuthenticatePreview(ctx context.Context, preview []byte, now time.Time) (model.Principal, time.Time, error) {

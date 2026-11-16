@@ -73,6 +73,7 @@ type previewDAO struct {
 	setAuthorization  func(context.Context, string, model.Principal, []byte, time.Time) error
 	redeem            func(context.Context, []byte, []byte, []byte, time.Time) (model.PreviewSSOLogin, model.Session, error)
 	complete          func(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
+	retry             func(context.Context, string, []byte, model.Principal, time.Time) (model.PreviewSSOLogin, error)
 	authenticate      func(context.Context, []byte, time.Time) (model.Principal, time.Time, error)
 }
 
@@ -94,6 +95,9 @@ func (d previewDAO) RedeemPreviewSSO(c context.Context, code, state, h []byte, n
 }
 func (d previewDAO) CompletePreviewSSO(c context.Context, id string, h []byte, n time.Time) (model.PreviewSSOLogin, error) {
 	return d.complete(c, id, h, n)
+}
+func (d previewDAO) TakePreviewSSORetry(c context.Context, id string, h []byte, p model.Principal, n time.Time) (model.PreviewSSOLogin, error) {
+	return d.retry(c, id, h, p, n)
 }
 func (d previewDAO) AuthenticatePreview(c context.Context, h []byte, n time.Time) (model.Principal, time.Time, error) {
 	return d.authenticate(c, h, n)

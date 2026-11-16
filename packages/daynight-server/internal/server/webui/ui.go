@@ -1,6 +1,9 @@
 package webui
 
 import (
+	"bytes"
+	"errors"
+	"html"
 	"io"
 	"io/fs"
 	"mime"
@@ -20,7 +23,8 @@ type ResourceReader interface {
 }
 
 type UI struct {
-	resources ResourceReader
+	resources   ResourceReader
+	previewMeta []byte
 }
 
 type ResponseError struct {
@@ -30,7 +34,9 @@ type ResponseError struct {
 func (e *ResponseError) Error() string { return "web response failed" }
 func (e *ResponseError) Unwrap() error { return e.Cause }
 
-func New(resources ResourceReader) *UI { return &UI{resources: resources} }
+func New(resources ResourceReader, previewOrigin string) *UI {
+	return &UI{resources: resources, previewMeta: []byte(`<meta name="daynight-preview-origin" content="` + html.EscapeString(previewOrigin) + `">`)}
+}
 
 func (u *UI) Page(w http.ResponseWriter, request *http.Request) error {
 	return u.serve(w, request, "dist/index.html", "text/html; charset=utf-8", "no-store", http.StatusOK)
@@ -66,6 +72,16 @@ func (u *UI) serve(w http.ResponseWriter, request *http.Request, name, contentTy
 	}
 	if err := request.Context().Err(); err != nil {
 		return err
+	}
+	if name == "dist/index.html" {
+		headEnd := bytes.Index(data, []byte("</head>"))
+		if headEnd < 0 {
+			return errors.New("web index missing head")
+		}
+		rendered := make([]byte, 0, len(data)+len(u.previewMeta))
+		rendered = append(rendered, data[:headEnd]...)
+		rendered = append(rendered, u.previewMeta...)
+		data = append(rendered, data[headEnd:]...)
 	}
 	if contentType == "" {
 		contentType = http.DetectContentType(data)

@@ -15,7 +15,7 @@
 记录当前支持范围。各组件的实际验证结果归属对应源码、PR 与 CI。
 
 [鉴权需求](daynight-auth.md)要求附件请求继承项目成员权限，已在全部附件和预览
-入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。HTTP 入口每次验证会话或 PAT；读取在文件 I/O 前通过快照确认成员及 task 归属和未删除状态。上传、覆盖和删除与 Task 软删除串行：先完成的附件变更由删除保留，删除先提交时附件变更不执行文件操作，对授权成员返回 `410 task_deleted`。本文的可信同源 HTML、普通 iframe、相对资源及键盘交互继续保留，单文件操作和 K1 边界继续有效。
+入口强制启用；[架构](../design/daynight-auth.md)拥有认证与授权机制。主站 HTTP 入口每次验证会话或 PAT，独立预览入口验证预览凭据；读取在文件 I/O 前通过快照确认成员及 task 归属和未删除状态。上传、覆盖和删除与 Task 软删除串行：先完成的附件变更由删除保留，删除先提交时附件变更不执行文件操作，对授权成员返回 `410 task_deleted`。当前 Web 使用的主站预览保留可信同源 HTML、普通 iframe、相对资源及键盘交互；独立 Task 预览入口使用预览凭据和独立 origin。单文件操作和 K1 边界继续有效。
 
 ## 目标与范围
 
@@ -36,7 +36,7 @@ Task 可以保存设计文档、架构文档、图片及 HTML mockup 等附件�
 | FA9 | 本地附件根目录有明确配置和持久化部署；测试使用独立目录、数据库及卷，清理仅影响本次资源。 |
 | FA10 | 同一附件路径的成功上传、删除与打开须串行，打开在同一串行状态取得元数据和稳定文件对象；文件与 PG 元数据仍不原子，失败可能留下部分结果，普通操作错误须明确暴露。 |
 | FA11 | 通过实际存储、真实 PG、安装 CLI 和生产浏览器验证范围内行为，保留现有验证门槛和证据归属。 |
-| FA12 | 交付范围不包含目录上传、整目录替换、历史版本、唯一对象 key、预览会话、独立预览 origin、Service Worker 或后台对账系统。 |
+| FA12 | 附件操作不包含目录上传、整目录替换、历史版本、唯一对象 key、独立预览会话、Service Worker 或后台对账系统。 |
 | FA13 | 附件业务层先按规范化 project UUID 隔离，再以规范化 task UUID 前两个字符分片，完整 task UUID 保持独立目录；公开 URL、API/CLI 参数和附件 path 对分片透明。 |
 | FA15 | MCP 提供有界分页的附件列表和删除工具，保留权限拒绝、已确认结果及可能的文件副作用。 |
 | FA16 | MCP 上传的分块写入、暂存和发布与 Task、Project 删除串行；删除先提交时不得写入上传分块、暂存对象或正式附件；删除后保留正式附件。临时分块沿用私有传输清理机制。已准入操作不因其凭据或成员权限随后撤销而被重新拒绝，但仍受删除屏障约束。 |
@@ -114,7 +114,7 @@ CLI 完整列表只在所有页面读取成功后输出；Web 可以保留已加
 
 参数错误返回 `400 invalid_input`，资源缺失返回 `404 not_found`，文件与目录占位
 冲突返回 `409 path_conflict`，存储或
-PG 操作错误返回 `500`，沿用现有 code/message/requestId 错误结构。流式响应已经
+PG 操作错误返回 `500`，通常沿用现有 code/message/requestId 错误结构；独立预览的 document/iframe 失败页保留状态并显示错误。流式响应已经
 开始后发生错误时终止传输并记录关联错误，不在文件末尾追加 JSON 错误或成功文字。
 失败或结果未确认的写入不得自动重试。
 
@@ -228,11 +228,23 @@ root/document 基准判定；外部、协议相对、根相对等原生图片 UR
 可用性，失败明确展示并可重试，不读取 HEAD 的 JSON body。原生 frame 负责后续正常
 资源请求；HEAD 成功不能作为实际 frame 内容已绘制的验收证明。
 
-预览入口为 `/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}`，
-不增加专用预览 token、预览会话、子域名、端口或 Service Worker。HTML 被视为
-可信项目代码，运行在主站同源环境；该方案不提供上传脚本与主应用之间的权限隔离。
-已接入的[鉴权需求](daynight-auth.md)在附件请求入口检查登录态和项目成员关系，
-继续保留这一可信代码执行约定。
+当前 Web 使用主站的 `/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}`，
+HTML 作为可信项目代码在主站同源环境执行，不提供上传脚本与主应用之间的隔离。
+该路径及主站普通登录仍保持原行为。
+
+独立入口使用配置的 preview origin 下单层规范 Task 或 Goal UUID 子域，例如
+`https://<taskId>.preview.daynight.cc/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}`。
+Host 和路径中的 Task ID 必须一致，只有 GET/HEAD；其他预览命名空间中的非法 Host
+不得落回主站。预览凭据关联原 session，[鉴权需求](daynight-auth.md)和现有附件
+Open 保持项目成员、归属与未删除状态检查。响应保留原始字节、MIME、inline、
+no-store、query 和相对目录；HEAD 不含正文，文档响应使用 `Origin-Agent-Cluster: ?1`。
+
+缺少或失效预览 Cookie 的 document/iframe GET 先保存原 URL，以短登录 ID 启动 SSO，
+成功后返回原 GET；图片、CSS、JS、fetch 和 HEAD 保持非 HTML 错误。缺少 Fetch Metadata
+的未认证 GET 返回 401 和可复制的 SSO 入口，不猜测文件类型。无权限、未找到、删除或
+存储失败不启动 SSO。文档错误保留 HTTP 状态，按浏览器语言显示错误、requestId 和
+同 URL 重试；401 另提供新标签 SSO 入口。Cookie 未带回时停止并允许手动恢复。
+主站页面公开 `daynight-preview-origin` meta，但当前 Web 不据此切换预览 URL。
 
 ## 独立页面完整阅读
 

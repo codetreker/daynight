@@ -93,5 +93,9 @@ type PreviewSSODAO interface {
 	SetPreviewAuthorization(context.Context, string, model.Principal, []byte, time.Time) error
 	RedeemPreviewSSO(context.Context, []byte, []byte, []byte, time.Time) (model.PreviewSSOLogin, model.Session, error)
 	CompletePreviewSSO(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
+	// TakePreviewSSORetry consumes an unexpired login. An unbound login requires
+	// both its ID and matching state; a bound login requires its original live
+	// main session and a matching state when one is supplied.
+	TakePreviewSSORetry(context.Context, string, []byte, model.Principal, time.Time) (model.PreviewSSOLogin, error)
 	AuthenticatePreview(context.Context, []byte, time.Time) (model.Principal, time.Time, error)
 }

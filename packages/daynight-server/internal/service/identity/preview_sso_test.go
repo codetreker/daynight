@@ -95,9 +95,13 @@ func (o *previewOps) Authenticate(ctx context.Context, dao store.PreviewSSODAO, 
 	o.hit("authenticate", ctx, dao, now, secret, "secret")
 	return model.Principal{UserID: "user", CredentialID: "session", Kind: model.SessionCredential}, o.now, o.failure
 }
+func (o *previewOps) Retry(ctx context.Context, dao store.PreviewSSODAO, id, state string, principal model.Principal, now time.Time) (string, error) {
+	o.hit("retry", ctx, dao, now, []any{id, state, principal}, []any{"id", "", model.Principal{UserID: "user", CredentialID: "session", Kind: model.SessionCredential}})
+	return "new-id", o.failure
+}
 
 func TestPreviewSSOTransactions(t *testing.T) {
-	for _, name := range []string{"create", "start", "authorize", "redeem", "complete", "authenticate"} {
+	for _, name := range []string{"create", "start", "authorize", "redeem", "complete", "authenticate", "retry"} {
 		for _, stage := range []string{"committed", "refused", "context", "unknown", "completion"} {
 			t.Run(name+"/"+stage, func(t *testing.T) {
 				ctx := t.Context()
@@ -152,6 +156,9 @@ func TestPreviewSSOTransactions(t *testing.T) {
 					got = []any{p, expiry}
 					zero = []any{model.Principal{}, time.Time{}}
 					want = []any{model.Principal{UserID: "user", CredentialID: "session", Kind: model.SessionCredential}, now}
+				case "retry":
+					got, err = s.Retry(ctx, "id", "", model.Principal{UserID: "user", CredentialID: "session", Kind: model.SessionCredential})
+					zero, want = "", "new-id"
 				}
 				if w.calls != 1 || op.calls != 1 {
 					t.Fatal("transaction or operation not invoked exactly once")

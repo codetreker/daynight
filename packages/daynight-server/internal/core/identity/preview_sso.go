@@ -232,3 +232,30 @@ func (s *PreviewSSO) Authenticate(ctx context.Context, dao store.PreviewSSODAO, 
 	p, expires, err := dao.AuthenticatePreview(ctx, secret.Hash(value), now)
 	return p, expires, authLookupError(err)
 }
+
+// Retry replaces a recoverable login with a fresh one without exposing its target.
+func (s *PreviewSSO) Retry(ctx context.Context, dao store.PreviewSSODAO, id, state string, principal model.Principal, now time.Time) (string, error) {
+	if (id == "" && state == "") || (id != "" && !canonicalUUID(id)) || (state != "" && !secret.Valid(state, "")) {
+		return "", model.Unauthenticated(nil)
+	}
+	if err := ValidateSession(principal); err != nil {
+		return "", err
+	}
+	var hash []byte
+	if state != "" {
+		hash = secret.Hash(state)
+	}
+	started := time.Now()
+	old, err := dao.TakePreviewSSORetry(ctx, id, hash, principal, now)
+	if err != nil {
+		return "", authLookupError(err)
+	}
+	if err := s.ValidateReturnURL(old.ReturnURL); err != nil {
+		return "", err
+	}
+	login := model.PreviewSSOLogin{ID: uuid.NewString(), ReturnURL: old.ReturnURL, ExpiresAt: now.Add(time.Since(started)).Add(LoginLifetime)}
+	if err := dao.InsertPreviewSSO(ctx, login); err != nil {
+		return "", err
+	}
+	return login.ID, nil
+}

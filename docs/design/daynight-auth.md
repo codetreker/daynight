@@ -378,12 +378,13 @@ Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览
 | main | `/api/v1/auth/preview/authorize?login=...&state=...` | 只认证现有主站 session Cookie，签发 code 并 303 到固定 preview callback。 |
 | bare preview | `/auth/sso/callback?code=...&state=...` | 常量时间核对浏览器 state Cookie，调用原子兑换，设置预览 Cookie，再 303 到 complete。 |
 | bare preview | `/auth/sso/complete?login=...` | 以浏览器实际带回的预览 Cookie 完成记录并 303 返回原始目标；失败停在可重试页。 |
+| main | `/api/v1/auth/preview/retry` | 用户主动重试可恢复的登录记录时，在事务内校验当前主站 session、原记录和必要的 state，消费旧记录并建立保存相同目标的新记录；无法验证或记录失效时返回错误。 |
 
 生产预览 Cookie 为 `__Secure-daynight_preview_session; Domain=<preview hostname>; Path=/; Secure; HttpOnly; SameSite=Lax`，到期时间取自来源 session。state Cookie 的名称由 state 摘要派生，值等于 state，仅属于 bare preview host，成功兑换后清理。主站 `__Host-daynight_session` 和原登录绑定 Cookie 保持原作用域。HTTP 测试模式使用非 Secure 测试名称。
 
 SSO 只有普通 GET 导航，没有 CORS 交换、Provider、同步接口或后台轮询。所有响应使用 no-store、no-referrer；错误页按 Accept-Language 提供中英文、请求 ID、手动重新 SSO 和主站入口。主站未登录时，可在新标签页登录并返回重试原授权页；Cookie 未写入时不会自动在两个域循环，主站已建立的 session 继续有效。返回目标仅由 Identity 保存和校验，跳转链传递短 ID、state 和 code，保留原始 escaped path/query 及原 `/auth/complete` 两参数。直接 URL 的 fragment 由浏览器按导航继承。
 
-Host 分发在主站 CORS/mux 之前保留整个 preview 命名空间：bare host 仅服务三个 SSO 路径，Task 子域和畸形 preview Host 均拒绝；其他 Host 保留主站处理；部署健康探针使用数值 loopback URL 和显式 `Host: localhost`，在内部端口与公开 origin 端口不同或重合时仍进入主站健康处理。此处尚未提供 Task 附件服务。请求日志仅记录请求 ID、阶段和结果分类，不输出 code/state 查询、Cookie、秘密或完整返回地址；代理访问日志也必须排除这些信息。
+Host 分发在主站 CORS/mux 之前保留整个 preview 命名空间：bare host 仅服务三个 SSO 路径，单层规范 UUID Task Host 仅服务对应附件预览；畸形 preview Host 拒绝，其他 Host 保留主站处理。独立入口校验 preview Cookie；未认证的 document/iframe GET 先创建保存原始目标的短期记录并启动 SSO，其他资源返回非 HTML 错误。详情见[附件设计](daynight-task-attachments.md#独立-task-预览-host)。部署健康探针使用数值 loopback URL 和显式 `Host: localhost`，在内部端口与公开 origin 端口不同或重合时仍进入主站健康处理。请求日志仅记录请求 ID、阶段和结果分类，不输出 code/state 查询、Cookie、秘密或完整返回地址；代理访问日志也必须排除这些信息。
 
 ### 主站 session 与 PAT
 
@@ -447,7 +448,7 @@ Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精
 主站默认 HTTPS，使用 __Host- 会话/绑定 Cookie；显式 HTTP 主站测试配置使用不带
 该前缀和 Secure 的测试名称，仍为 host-only、HttpOnly、Lax。SDK gateway 的
 literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
-同源预览使用同一 Cookie 和授权规则，没有第二种浏览器凭据。
+主站同源预览使用主站 Cookie；独立 Task Host 使用关联同一 session 的预览 Cookie，两者均执行项目授权。
 
 ### OAuth family 的固定 profile 与 API 授权
 
@@ -1154,4 +1155,4 @@ CLI 不增加认证预检往返，保持既有 request/operation/response/累计
 真实 Personal 归属、存量迁移、登录与项目 writer、双来源准入及 Thread 强 fence 共同成立。
 普通 Team 生命周期提供创建、本人列表/详情、改名和空集删除；admin 可通过直接成员 API 添加完整外部身份并读回实际关系。项目转移提供服务端预览和提交，CLI 与 Web 使用该预览及回执；Web 项目设置负责确认、缓存撤权和结果导航。Team 邀请的公开接收入口可登录、确认并加入；Team 设置的成员与邀请分区、Project 成员页管理各自邀请，Team 接收回执可进入真实 Team 上下文。当前 Project、access 与 participant
 公开真实 ownership 和完整权限来源，无占位来源或旧格式回退。
-可信同源 HTML 保持原权限模型，不引入预览安全系统。K1 和已准入传输语义保持。
+当前 Web 的可信同源 HTML 保持原权限模型；独立 Task Host 提供单独 origin 和预览凭据。K1 和已准入传输语义保持。

@@ -14,11 +14,13 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/google/uuid"
 )
 
 const (
 	StartPath     = "/auth/sso/start"
 	AuthorizePath = "/api/v1/auth/preview/authorize"
+	RetryPath     = "/api/v1/auth/preview/retry"
 	CallbackPath  = "/auth/sso/callback"
 	CompletePath  = "/auth/sso/complete"
 )
@@ -29,6 +31,8 @@ type Operations interface {
 	Authorize(context.Context, string, string, model.Principal) (identity.PreviewSSOAuthorization, error)
 	Redeem(context.Context, string, string, string) (identity.PreviewSSORedemption, error)
 	Complete(context.Context, string, string) (string, error)
+	Authenticate(context.Context, string) (model.Principal, time.Time, error)
+	Retry(context.Context, string, string, model.Principal) (string, error)
 }
 
 type Routes struct {
@@ -62,6 +66,7 @@ func New(ops Operations, authenticate func(*http.Request) (model.Principal, erro
 
 func (h *Routes) RegisterMain(mux *http.ServeMux) {
 	mux.HandleFunc(AuthorizePath, h.navigation("authorize", h.authorize))
+	mux.HandleFunc(RetryPath, h.navigation("retry", h.retry))
 }
 
 func (h *Routes) Handler() http.Handler {
@@ -92,7 +97,7 @@ func (h *Routes) navigation(phase string, next http.HandlerFunc) http.HandlerFun
 		if r.Context().Err() != nil {
 			return
 		}
-		if phase == "authorize" && r.URL.EscapedPath() != AuthorizePath {
+		if (phase == "authorize" && r.URL.EscapedPath() != AuthorizePath) || (phase == "retry" && r.URL.EscapedPath() != RetryPath) {
 			h.failure(w, r, phase, http.StatusBadRequest, "invalid_input", "")
 			return
 		}
@@ -122,7 +127,11 @@ func (h *Routes) start(w http.ResponseWriter, r *http.Request) {
 	}
 	started, err := h.ops.Start(r.Context(), id)
 	if err != nil {
-		h.fail(w, r, "start", err, "")
+		retry := ""
+		if !knownRecoveryRefusal(err) && retryPath(id, "") != "" {
+			retry = StartPath + "?" + (url.Values{"login": {id}}).Encode()
+		}
+		h.fail(w, r, "start", err, retry)
 		return
 	}
 	if r.Context().Err() != nil {
@@ -145,12 +154,16 @@ func (h *Routes) authorize(w http.ResponseWriter, r *http.Request) {
 	}
 	principal, err := h.authenticate(r)
 	if err != nil {
-		h.fail(w, r, "authorize", err, r.URL.RequestURI())
+		retry := ""
+		if retryPath(q.Get("login"), q.Get("state")) != "" {
+			retry = AuthorizePath + "?" + (url.Values{"login": {q.Get("login")}, "state": {q.Get("state")}}).Encode()
+		}
+		h.fail(w, r, "authorize", err, retry)
 		return
 	}
 	authorized, err := h.ops.Authorize(r.Context(), q.Get("login"), q.Get("state"), principal)
 	if err != nil {
-		h.fail(w, r, "authorize", err, "")
+		h.fail(w, r, "authorize_operation", err, retryPath(q.Get("login"), q.Get("state")))
 		return
 	}
 	h.redirect(w, r, "authorize", h.preview.String()+CallbackPath+"?"+url.Values{"code": {authorized.Code}, "state": {q.Get("state")}}.Encode())
@@ -164,12 +177,14 @@ func (h *Routes) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	binding, ok := requestCookie(r, h.bindingCookieName(q.Get("state")))
 	if !ok || !secret.Valid(q.Get("state"), "") || !secret.Valid(binding, "") || subtle.ConstantTimeCompare([]byte(binding), []byte(q.Get("state"))) != 1 {
-		h.fail(w, r, "callback", model.Unauthenticated(nil), "")
+		// Recovery still requires the source main-site session. Never redeem a
+		// code without the browser binding Cookie.
+		h.fail(w, r, "callback", model.Unauthenticated(nil), retryPath("", q.Get("state")))
 		return
 	}
 	result, err := h.ops.Redeem(r.Context(), q.Get("code"), q.Get("state"), binding)
 	if err != nil {
-		h.fail(w, r, "callback", err, "")
+		h.fail(w, r, "callback", err, retryPath("", q.Get("state")))
 		return
 	}
 	if r.Context().Err() != nil {
@@ -200,15 +215,77 @@ func (h *Routes) complete(w http.ResponseWriter, r *http.Request) {
 	}
 	value, ok := requestCookie(r, h.SessionCookieName())
 	if !ok {
-		h.fail(w, r, "complete", model.Unauthenticated(nil), "")
+		h.fail(w, r, "complete", model.Unauthenticated(nil), retryPath(q.Get("login"), ""))
 		return
 	}
 	target, err := h.ops.Complete(r.Context(), q.Get("login"), value)
 	if err != nil {
-		h.fail(w, r, "complete", err, "")
+		h.fail(w, r, "complete", err, retryPath(q.Get("login"), ""))
 		return
 	}
 	h.redirect(w, r, "complete", target)
+}
+
+func retryPath(login, state string) string {
+	q := url.Values{}
+	if login != "" {
+		id, err := uuid.Parse(login)
+		if err != nil || id == uuid.Nil || id.String() != login {
+			return ""
+		}
+		q.Set("login", login)
+	}
+	if state != "" {
+		if !secret.Valid(state, "") {
+			return ""
+		}
+		q.Set("state", state)
+	}
+	if len(q) == 0 {
+		return ""
+	}
+	return RetryPath + "?" + q.Encode()
+}
+
+// retry is an explicit browser navigation; it never exposes the saved target.
+func (h *Routes) retry(w http.ResponseWriter, r *http.Request) {
+	q, err := httpx.QueryValues(r, "login", "state")
+	if err != nil || len(q) == 0 {
+		if err == nil {
+			err = httpx.InvalidInput("a retry identifier is required")
+		}
+		h.fail(w, r, "retry_failed", err, "")
+		return
+	}
+	path := retryPath(q.Get("login"), q.Get("state"))
+	if path == "" {
+		h.fail(w, r, "retry_failed", httpx.InvalidInput("invalid retry identifier"), "")
+		return
+	}
+	principal, err := h.authenticate(r)
+	if err != nil {
+		h.fail(w, r, "retry", err, path)
+		return
+	}
+	id, err := h.ops.Retry(r.Context(), q.Get("login"), q.Get("state"), principal)
+	if err != nil {
+		if knownRecoveryRefusal(err) {
+			h.fail(w, r, "retry_failed", err, "")
+		} else {
+			h.fail(w, r, "retry", err, path)
+		}
+		return
+	}
+	h.redirect(w, r, "retry", h.preview.String()+StartPath+"?"+url.Values{"login": {id}}.Encode())
+}
+
+func knownRecoveryRefusal(err error) bool {
+	switch httpx.ErrorKind(err) {
+	case "unauthenticated", "invalid_input", "forbidden", "permission_denied":
+		return true
+	default:
+		return false
+	}
 }
 
 func requiredQuery(r *http.Request, names ...string) (url.Values, error) {
@@ -228,6 +305,7 @@ func (h *Routes) redirect(w http.ResponseWriter, r *http.Request, phase, target 
 	if r.Context().Err() != nil {
 		return
 	}
+	httpx.CloseUnreadBody(w, r)
 	w.Header().Set("Location", target)
 	w.WriteHeader(http.StatusSeeOther)
 	h.logger.InfoContext(r.Context(), "preview SSO navigation completed", "component", "preview-sso", "phase", phase, "result", "redirect", "request_id", httpx.RequestID(r.Context()))

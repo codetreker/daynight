@@ -133,11 +133,13 @@ HTTPS 或字面量 localhost/numeric loopback HTTP 才能使用令牌。外部�
 
 两个不同随机凭据关联同一既有 session，预览凭据继承其用户、实际到期和注销。生产预览 Cookie 是 HttpOnly、Secure、SameSite=Lax、Path=/，Domain 仅覆盖配置的 preview hostname 与其子域。随机 state 的 host-only 绑定 Cookie 必须由回调浏览器带回，code/state 单次消费。complete 必须验证浏览器实际持有预览 Cookie；缺失、失效、重用、到期和错误绑定明确失败。
 
+失败后用户可主动重试可验证的短期记录；服务校验当前主站 session 和记录绑定，原子替换旧记录并保留目标。无法验证来源或已过期时不泄露目标，明确提供返回主站及重新 SSO 的入口；不自动循环或重复兑换 code。
+
 原始目标保存在服务端，跳转仅携带短登录 ID、state 或 code，不能反复嵌套放大 URL。允许既定主站页面、含恰好两个合法参数的 `/auth/complete`、合法 Task 预览附件目标；拒绝外站和认证循环，保留原始 escaped path/query 与原登录目标内的 fragment。一般 SSO 目标遵守既有 24 KiB raw query / 48 KiB request target 边界，原登录内层 returnPath 仍受原 4096-byte 限制。
 
 失败页按 Accept-Language 提供中英文、可见错误、请求 ID、手动重新 SSO 和主站入口，不自动循环，不撤销已建立的主站会话。未登录时允许在新标签页登录后返回重试。所有响应 no-store、no-referrer，服务与代理日志排除 code/state 原值、Cookie 和秘密。并发 SSO 或账号切换造成两域 Cookie 不一致是已接受风险。
 
-裸预览 Host 仅提供 SSO，尚未服务的 Task namespace 及畸形 preview Host 必须拒绝，不落回主站 API。其他主站路由和 loopback 健康探针继续可用。真实浏览器须证明 Cookie 作用域、原目标恢复、未带回 Cookie 的停止与重试、主站会话保留及注销失效。
+裸预览 Host 仅提供 SSO；单层规范 Task/Goal UUID Host 只提供对应附件预览 GET/HEAD，畸形 preview Host 必须拒绝，不落回主站 API。未认证的 document/iframe GET 保存原目标并启动 SSO，子资源和 HEAD 返回非 HTML 错误；权限、资源或存储失败不启动 SSO。其他主站路由和 loopback 健康探针继续可用。真实浏览器须证明 Cookie 作用域、原目标恢复、未带回 Cookie 的停止与重试、主站会话保留及注销失效。
 
 ## CLI 设备授权
 
@@ -542,7 +544,7 @@ HTML 附件继续作为可信项目代码，拥有浏览者当前的主站权限
 普通 iframe、图片、PDF、相对 CSS/JS/模块和 fetch 复用主站 Cookie。HEAD 和后续
 GET 都执行鉴权。会话失效返回明确的 401，不将登录 HTML 当成文件；Web 使用已有
 错误反馈引导重新登录。下载继续使用 attachment 语义，文件目录和内容不改写。
-详情对话框通过现有同源文档桥处理 Esc、Tab 和焦点，不增加预览会话或消息协议。
+详情对话框通过现有同源文档桥处理 Esc、Tab 和焦点；独立 Task 预览入口不增加独立会话或跨源消息协议。
 
 继续一次一个文件、bucket/path 和原预算。文件系统与 PG 非原子性保留 K1，普通
 IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的文件操作。

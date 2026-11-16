@@ -42,6 +42,14 @@ func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachmen
 	handler.registerRoutes(mux, auth.Require)
 }
 
+// RegisterPreviewRoutes exposes only attachment reads on a Task preview host.
+func RegisterPreviewRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, require func(httpx.AuthenticatedHandler) http.HandlerFunc, logger *slog.Logger) {
+	handler := newAttachmentHandler(attachments, logger)
+	const route = "/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}"
+	mux.HandleFunc("GET "+route, require(handler.preview))
+	mux.HandleFunc(route, require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
+}
+
 func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *slog.Logger) *attachmentHandler {
 	return &attachmentHandler{
 		attachments: attachmentOperations{

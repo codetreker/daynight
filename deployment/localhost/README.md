@@ -14,13 +14,17 @@ and its server-side credentials are required.
 
 Prepare the bare preview hostname and wildcard DNS/TLS before deployment, and
 forward their original Host to the same server. The bare host serves explicit
-SSO navigation; Task subdomains remain reserved until attachment serving is
-enabled. See the [authentication design](../../docs/design/daynight-auth.md#显式浏览器预览-sso).
+SSO navigation; canonical Task and Goal UUID subdomains serve their matching
+attachment preview GET/HEAD. Invalid preview hosts cannot reach the main API.
+See the [authentication design](../../docs/design/daynight-auth.md#显式浏览器预览-sso).
 Proxy access logs must omit code/state queries, Cookie headers and credentials.
 The bundled stream proxy does not produce HTTP request access logs. Startup
 validates configured origins without probing external DNS or certificates.
 Readiness probes connect to numeric loopback URLs with `Host: localhost`, so
-internal and published ports can differ while preview remains SSO-only.
+internal and published ports can differ. The local browser must resolve both
+bare and Task hostnames to the gateway. A local HTTP test does not prove the
+production DNS or TLS configuration.
+
 ## Configure and start
 
 From the repository root, copy the local configuration template:
@@ -448,10 +452,11 @@ proxy.
 UniAuth login, Daynight browser sessions and personal access tokens use the
 [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md). Project authorization covers
-tasks, graphs, attachment downloads and previews. Trusted same-origin executable
-HTML previews retain their iframe, relative-resource and keyboard behavior;
-their scripts execute with the signed-in user's same-origin authority. There is
-no separate preview domain.
+tasks, graphs, attachment downloads and previews. Current Web previews use the
+main origin: trusted HTML retains its iframe, relative-resource and keyboard
+behavior, and scripts execute with the signed-in user's same-origin authority.
+The separate Task preview Host is directly accessible with the preview Cookie;
+it has its own origin but does not yet replace those Web or main-site paths.
 
 The review CLI has its own
 [review configuration and startup](../../README.md#review-configuration-and-startup).

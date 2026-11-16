@@ -15,14 +15,14 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 )
 
-const uiTestShell = "<html><body>server test shell</body></html>\n"
+const uiTestShell = "<html><head>" + testMeta + "</head><body>server test shell</body></html>\n"
 const uiTestScriptPath = "/assets/app-12345678.js"
 
 func uiTestHandler(t *testing.T, output io.Writer) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	mux := http.NewServeMux()
-	New(testUIResources()).RegisterRoutes(mux, logger)
+	New(testUIResources(), testPreviewOrigin).RegisterRoutes(mux, logger)
 	return httpx.RequestLogging(logger, mux)
 }
 
