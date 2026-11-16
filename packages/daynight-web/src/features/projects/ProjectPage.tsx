@@ -16,6 +16,7 @@ import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
 import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
 import { TaskOrganization } from "../task-detail/TaskOrganization";
+import { GoalCreate } from "../goal-detail/GoalCreate";
 import { projectTaskScope } from "../task-graph/scope";
 import { ProjectOverview } from "./ProjectOverview";
 import type { OverviewTaskTarget } from "./overview-progress";
@@ -88,6 +89,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
   const [tasksMounted, setTasksMounted] = useState(false);
   const [tagsMounted, setTagsMounted] = useState(false);
+  const [creatingGoal, setCreatingGoal] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
   const tagFilter = useTagFilter(projectId, section === "tasks");
@@ -674,8 +676,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {projectRead.project !== null && <p className="project-repository">{projectRead.project.repoUrl}</p>}
           </div>
         </div>
-        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><TaskOrganization projectId={projectId} snapshot={snapshot} onRefreshGraph={graph.refresh} /></div>
+        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><span className="project-creation-actions"><TaskOrganization projectId={projectId} snapshot={snapshot} onRefreshGraph={graph.refresh} /><button className="button primary" type="button" onClick={() => setCreatingGoal(true)}>{locale === "zh-CN" ? "新建 Goal" : "New Goal"}</button></span></div>
       </div>
+      {creatingGoal && <GoalCreate projectId={projectId} onClose={() => setCreatingGoal(false)} onRefreshGraph={graph.refresh} />}
       {projectRead.error !== null && <section className="snapshot-error" role="alert">
         <p>{locale === "zh-CN" ? "无法读取项目信息。" : "Could not read project information."}</p>
         <button className="button" type="button" onClick={projectRead.retry}>{projects.retry}</button>

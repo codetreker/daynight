@@ -147,6 +147,41 @@ const openStandalone = async (id: string) => {
 };
 
 describe('project task views', () => {
+  it('keeps one Goal creation entry and its draft across task views and refreshes', async () => {
+    let resolve!: (value: TaskGraph) => void;
+    const pending = new Promise<TaskGraph>((done) => { resolve = done; });
+    graphRequest.mockResolvedValueOnce(snapshot([])).mockReturnValueOnce(pending).mockRejectedValueOnce(new Error('Refresh failed'));
+    mount(); await findTab('chains');
+    const entry = titleActions().getByRole('button', { name: '新建 Goal' });
+    expect(titleActions().getByRole('button', { name: '新建 Task' }).compareDocumentPosition(entry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const view of ['standalone', 'goals', 'chains'] as const) {
+      fireEvent.click(tab(view));
+      expect(screen.getAllByRole('button', { name: '新建 Goal' })).toEqual([entry]);
+    }
+    entry.focus(); fireEvent.click(entry);
+    const dialog = screen.getByRole('dialog', { name: '新建 Goal' });
+    const name = within(dialog).getAllByRole('textbox', { name: '名称' })[0]!;
+    fireEvent.change(name, { target: { value: '保留草稿' } });
+    fireEvent.click(tab('goals'));
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    expect(name).toHaveValue('保留草稿');
+    await act(async () => { resolve(snapshot([])); });
+    await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await screen.findByRole('heading', { name: '刷新失败', hidden: true });
+    expect(name).toHaveValue('保留草稿');
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    await waitFor(() => expect(entry).toHaveFocus());
+    expect(screen.getAllByRole('button', { name: '新建 Goal' })).toEqual([entry]);
+  });
+
+  it('keeps the Goal creation entry when the first graph read fails', async () => {
+    graphRequest.mockRejectedValue(new Error('Graph unavailable'));
+    mount();
+    await screen.findByRole('heading', { name: '项目加载失败' });
+    expect(titleActions().getByRole('button', { name: '新建 Goal' })).toBeVisible();
+  });
+
   it('shows real Goal summaries separately from scoped tasks and keeps an empty Goal visible', async () => {
     const goal = canonicalTask(500), emptyGoal = canonicalTask(501), rootId = canonicalTask(1), outsideId = canonicalTask(2), singleId = canonicalTask(3);
     graphRequest.mockResolvedValue(snapshot([

@@ -18,7 +18,7 @@ const time = '2026-10-22T10:00:00Z';
 const taskRow = (link: Locator) => link.locator('..').locator('..').locator('..');
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, failCatalog: false, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
+  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), syncReads: 0, hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, failCatalog: false, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -55,6 +55,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
       return send({ ...tag, projectId, version: 1, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } }, 201);
     }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
+      state.syncReads++;
       if (state.hold) { state.hold = false; state.held = true; await new Promise<void>(resolve => { state.release = resolve; }); state.held = false; }
       return send(taskSyncFixture(graph(), { query: taskSyncQuery(url), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties, tagsForTask: task => state.tasks.find(item => item.id === task.id)!.tags }));
     }
@@ -87,6 +88,43 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
   });
   return state;
 }
+
+for (const width of [1100, 600, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal creation remains in the project toolbar at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale), zh = locale === 'zh-CN';
+  await page.setViewportSize({ width, height: 700 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const task = page.getByRole('button', { name: zh ? '新建 Task' : 'New Task', exact: true });
+  const entry = page.getByRole('button', { name: zh ? '新建 Goal' : 'New Goal', exact: true });
+  await expect(entry).toHaveCount(1);
+  await expect(task).toBeVisible(); await expect(entry).toBeVisible();
+  const taskBox = (await task.boundingBox())!, goalBox = (await entry.boundingBox())!;
+  expect(taskBox.y <= goalBox.y + 1).toBe(true);
+  if (Math.abs(taskBox.y - goalBox.y) < 1) expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(goalBox.x + 1);
+  const actionsWidth = await page.locator('.project-title-actions').evaluate(element => element.getBoundingClientRect().width);
+  if (actionsWidth >= taskBox.width + goalBox.width + 8) expect(Math.abs(taskBox.y - goalBox.y)).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  for (const view of ['standalone', 'chains', 'goals']) {
+    await page.locator(`#project-task-tab-${view}`).click();
+    await expect(entry).toHaveCount(1); await expect(entry).toBeVisible();
+  }
+  const search = page.locator('.task-search-form input');
+  await search.fill('no matching task'); await search.press('Enter');
+  await expect(page.locator('.task-search-results')).toBeVisible();
+  await expect(entry).toBeVisible();
+  await entry.focus(); await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: zh ? '新建 Goal' : 'New Goal' });
+  await dialog.getByRole('textbox', { name: zh ? '名称' : 'Name', exact: true }).first().fill('Created from search');
+  const syncReads = state.syncReads;
+  await dialog.getByRole('button', { name: zh ? '创建' : 'Create', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => state.syncReads).toBeGreaterThan(syncReads);
+  await expect(entry).toBeFocused();
+  await expect(search).toHaveValue('no matching task');
+  await expect(page.locator('.task-search-results')).toBeVisible();
+  expect(state.tasks.find(item => item.title === 'Created from search')?.type).toBe('goal');
+  expect(state.writes.filter(write => write === `POST /api/v1/projects/${projectId}/tasks`)).toHaveLength(1);
+});
 
 async function assertSummary(summary: Locator, names: readonly string[], viewportWidth: number) {
   const chips = summary.locator('.task-tag'), button = summary.locator(':scope > button');
