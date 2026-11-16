@@ -2558,6 +2558,52 @@ for (const width of [1440, 1280, 740, 600, 390, 320]) for (const locale of ['en'
   expect(fixture.edits()).toEqual([]);
 });
 
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`chain graph icon matches Goal and preserves interaction at ${width}px in ${locale}`, async ({ page }) => {
+  const fixture = await install(page, locale); fixture.completionGoal(true);
+  await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
+  await page.setViewportSize({ width, height: 800 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const reference = page.locator(`#project-goal-graph-${goalId}`);
+  const style = (element: Element) => {
+    const s = getComputedStyle(element), r = element.getBoundingClientRect();
+    return { width: r.width, height: r.height, color: s.color, background: s.backgroundColor, border: s.borderColor, radius: s.borderRadius, outline: s.outline, offset: s.outlineOffset };
+  };
+  const normal = await reference.evaluate(style);
+  await reference.hover(); const hover = await reference.evaluate(style);
+  await page.keyboard.press('Tab'); await reference.focus(); const focus = await reference.evaluate(style);
+  await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+  const action = locale === 'en' ? 'View dependencies' : '查看依赖关系';
+  for (const id of [otherTask2Id, outsideId]) {
+    const row = page.locator(`[data-chain-id="${id}"]`), toggle = row.locator('.goal-toggle'), button = row.locator('.goal-graph-button');
+    await expect(button).toHaveAccessibleName(`${longChainTitle}${locale === 'en' ? ', ' : '，'}${action}`);
+    await expect(button).toHaveAttribute('title', action);
+    await expect(button).toHaveText('');
+    await expect(button.locator('svg[aria-hidden="true"]')).toHaveCount(1);
+    expect(await button.evaluate(style)).toEqual(normal);
+    await button.hover(); expect(await button.evaluate(style)).toEqual(hover);
+    await toggle.focus();
+    for (let i = 0; i < 5 && !(await button.evaluate(element => element === document.activeElement)); i++) await page.keyboard.press('Tab');
+    await expect(button).toBeFocused(); expect(await button.evaluate(style)).toEqual(focus);
+    await expectHit(button);
+    for (const key of ['Enter', 'Space']) {
+      await page.keyboard.press(key);
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await page.keyboard.press('Escape');
+      await expect(button).toBeFocused();
+    }
+    await toggle.click(); await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await button.click(); await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(button).toBeFocused(); await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]);
+});
+
 for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal completion is readable in its list and detail at ${width}px in ${locale}`, async ({ page }) => {
   const fixture = await install(page, locale); fixture.completionGoal();
   await page.clock.install({ time: new Date('2026-10-22T10:00:00Z') });
