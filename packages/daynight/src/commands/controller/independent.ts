@@ -38,11 +38,11 @@ const withIndependentStorage = async <T>(journalFile: string, action: (permit: C
   return result!;
 };
 
-const prepareIndependentWriter = async (journalFile: string, stateDirectory: string, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+const prepareIndependentWriter = async (journalFile: string, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
   for (;;) {
     signal.throwIfAborted();
     try {
-      const prepared = await withIndependentStorage(journalFile, async permit => prepareControllerStorage({ journalFile, stateDirectory, mode: "writer", ticket }, permit));
+      const prepared = await withIndependentStorage(journalFile, async permit => prepareControllerStorage({ journalFile, mode: "writer", ticket }, permit));
       if (prepared.kind === "prepared") return;
     } catch (error) { if (!isControllerStorageLockHeld(error)) throw error; }
     await delay(250, undefined, { signal });
@@ -173,7 +173,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     const nativeHome = resume?.ticket.nativeHome ?? (input.provider === "codex" ? process.env.CODEX_HOME ?? path.join(home, ".codex") : input.provider === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude") : process.env.COPILOT_HOME ?? path.join(home, ".copilot"));
     ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0 }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
     await writeLaunchTicket(home, ticket);
-    await prepareIndependentWriter(path.join(directory, "journal.sqlite"), resolveConfigurationPaths(home).stateDirectory, ticket, cancellation.signal);
+    await prepareIndependentWriter(path.join(directory, "journal.sqlite"), ticket, cancellation.signal);
     // Reconnect grants are valid for the first hello and survive a lost first connection.
     credential = await grant("reconnect"); await writeControllerCredential(credentialFile, credential);
     context.stdout(`Provider: ${input.provider}; starting in ${cwd}\nPress Ctrl+C to stop this Test Session.\n`);
@@ -415,8 +415,7 @@ export const runIndependentController = async (input: IndependentControllerInput
           let committed = false;
           try {
             stopped = await withIndependentStorage(journal, async permit => {
-              const stateDirectory = resolveConfigurationPaths(home).stateDirectory;
-              const result = await recordStoppedControllerGeneration(journal, ticket!, { stateDirectory, permit, deadline, ...(jobLease === undefined ? {} : { jobLease }) });
+              const result = await recordStoppedControllerGeneration(journal, ticket!, { permit, deadline, ...(jobLease === undefined ? {} : { jobLease }) });
               committed = true;
               remaining();
               return result;
@@ -444,7 +443,7 @@ export const runIndependentController = async (input: IndependentControllerInput
         } catch { context.stderr("Native execution stopped. Server archival is unconfirmed; the original stop proof is retained privately.\n"); }
         if (archived) {
           try {
-            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken, stateDirectory: resolveConfigurationPaths(home).stateDirectory });
+            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken });
             context.stdout("Test Session stopped and archived. Read-only history is available on its page.\n");
           } catch (error) {
             if (sqliteFailure(error)) failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and history archival failed.");

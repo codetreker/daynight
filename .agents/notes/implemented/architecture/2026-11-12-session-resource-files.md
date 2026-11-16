@@ -45,7 +45,11 @@ constructor's original view.
 Deletion retains private hard links to the descriptor and blob until file and
 index updates are confirmed. If restoration fails, the retained links identify
 the original evidence and the owner refuses further writes. Retained blob links
-are charged to the physical budget, with links to the same inode counted once.
+participate in actual disk measurement, with links to the same inode counted
+once. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+removes their cumulative media charge while preserving deletion and free-space
+checks.
 
 ## Alternatives
 

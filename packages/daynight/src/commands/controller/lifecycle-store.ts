@@ -25,7 +25,7 @@ import { controllerJournalFormat } from "./journal-format.js";
 import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, upgradeControllerJournal } from "./storage-preparation.js";
-import { controllerStorageMediaUsage, reserveControllerStoragePeak } from "./storage-capacity.js";
+import { controllerStorageMediaUsage, assertControllerStorageFreeSpace } from "./storage-capacity.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
@@ -71,7 +71,7 @@ const closeJournal = (db: Database.Database, file: string, operation: () => void
 };
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
 /** The store owns a supplied connection; file also identifies its Session-bound resource files. */
-type ControllerLifecycleOptions = { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; mediaStateDirectory?: string; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ProcessProof };
+type ControllerLifecycleOptions = { maxOutboxBytes?: number; contentOwnedLocally?: boolean; onMigration?: SqliteMigrationReporter; database?: Database.Database; imageDecoder?: ImageDecoder; storagePermit?: ControllerStoragePermit; controllerProcess?: ProcessProof };
 const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: ControllerLifecycleOptions, permit: ControllerStoragePermit) => {
   assertControllerStoragePermit(permit, file);
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
@@ -107,15 +107,11 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   };
   const atomic = <T>(action: () => T): T => transaction(action, "immediate");
   const read = <T>(action: () => T): T => transaction(action, "deferred");
-  let reservedContentCeiling = 0;
   const reserveContent = (additionalBytes: number, contentGrowth: number): void => {
     metadataBudget.assert(additionalBytes, true, contentGrowth);
     if (db.memory) return;
-    const current = metadataBudget.reservationCeiling(), next = metadataBudget.reservationCeiling(contentGrowth);
-    if (next <= reservedContentCeiling && current === reservedContentCeiling) return;
     const media = controllerStorageMediaUsage(file, db);
-    reserveControllerStoragePeak(file, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, media.reservedBytes + next, Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes);
-    reservedContentCeiling = next;
+    assertControllerStorageFreeSpace(file, Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes);
   };
   const assertTimelineWrite = (additionalBytes: number, contentGrowth = 0): void => {
     assertUsable();
@@ -123,7 +119,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     if (writeDepth === 0 || !db.inTransaction) throw new Error("SQL timeline publication requires the original Controller write transaction.");
     if (additionalBytes > 0) reserveContent(additionalBytes, contentGrowth);
   };
-  db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, undefined, options.onMigration), file: options.database ?? file, allowCreate: true });
+  db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.onMigration), file: options.database ?? file, allowCreate: true });
   let initializationOutcome: SqliteOutcome = "not-started";
   try {
     runSqliteImmediate(db, () => {
@@ -203,7 +199,7 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   });
   let closed = false;
   let mediaInstance: ControllerMediaStore | undefined;
-  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, sessionContent.resourceFiles, { read, write: atomic }, getSnapshot, options.imageDecoder, options.mediaStateDirectory); };
+  const media = () => { assertUsable(); return mediaInstance ??= openControllerMediaStore(file, ticket, db, sessionContent.resourceFiles, { read, write: atomic }, getSnapshot, options.imageDecoder); };
   const projectTimeline = (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
     const source = db.prepare("SELECT origin FROM input_message_origins WHERE entry_id=?").get(entry.entryId) as { origin: "user" | "daynight" } | undefined;
     if (source) {
@@ -586,7 +582,7 @@ export const readProvenWindowsStoppedControllerGeneration = (file: string, ticke
 };
 
 /** Only an independent worker may commit complete process-tree stop after the writer exits. */
-export type ControllerStopOptions = { stateDirectory: string; permit?: ControllerStoragePermit; signal?: AbortSignal; deadline?: number; jobLease?: ControllerJobLease };
+export type ControllerStopOptions = { permit?: ControllerStoragePermit; signal?: AbortSignal; deadline?: number; jobLease?: ControllerJobLease };
 const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTicket, options: ControllerStopOptions, permit: ControllerStoragePermit): Promise<ControllerSnapshot> => {
   assertControllerStoragePermit(permit, file);
   const { deadline, jobLease: lease } = options;

@@ -37,21 +37,24 @@ removes that admission from conversion while preserving maintenance limits.
 
 Stopped maintenance retains ownership through reader barriers, recognized source
 retirement, in-place VACUUM, a post-VACUUM TRUNCATE checkpoint, actual file and
-content verification, pending-clear readback and reservation settlement. Before
-unlinking old bodies, the resource owner durably clears only the shared legacy
-index's body references and preserves its complete resource inventory. Publishing
-the index and retiring files are ordered recovery phases: a failed publication
-retains files, and reentry confirms the publication again before resuming deletes.
-A new SQL reader which captured the old index may reread one provably changed
-inventory; unchanged or still-referenced missing files continue to fail. The
-resource owner never caches legacy references for later inventory writes or
-rollback. A busy reader retains the files, pending flag and required reservation. Failures preserve
-the actual committed phase; the ledger replaces the execution's absolute charge
-from observed remaining work rather than accumulating refunds. The
-[component design](../../../../docs/design/session-sqlite-content.md) owns the
-interfaces, ordering, budgets and recovery behavior. The
-[storage ownership decision](2026-11-12-controller-storage-ownership.md) continues
-to own permits, role admission and process evidence.
+content verification, pending-clear readback and ordinary admission checks.
+Before unlinking old bodies, the resource owner durably clears only the shared
+legacy index's body references and preserves its complete resource inventory.
+Publishing the index and retiring files are ordered recovery phases: a failed
+publication retains files, and reentry confirms the publication again before
+resuming deletes. A new SQL reader which captured the old index may reread one
+provably changed inventory; unchanged or still-referenced missing files continue
+to fail. The resource owner never caches legacy references for later inventory
+writes or rollback. A busy reader retains the files and pending flag. Failures
+preserve the actual committed phase; reentry checks the additional disk space
+needed for remaining work. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+replaces the original absolute execution reservation and refund mechanism while
+retaining metadata and free-space admission. The [component
+design](../../../../docs/design/session-sqlite-content.md) owns the interfaces,
+ordering, budgets and recovery behavior. The [storage ownership
+decision](2026-11-12-controller-storage-ownership.md) continues to own permits,
+role admission and process evidence.
 
 VACUUM runs synchronously on the original connection while the original permit
 remains held. Its scope temporarily sets `SQLITE_TMPDIR`, `TMPDIR`, `TEMP` and
@@ -115,7 +118,7 @@ SQL component. Migration and maintenance remain separate outcomes: SQL history
 can be readable while cleanup is pending and ordinary writer admission waits.
 SQLite busy timeouts bound lock waiting, and deadlines are checked before and
 after synchronous phases. A JavaScript timer cannot interrupt native VACUUM;
-expiration after it returns preserves the completed phase and pending allocation.
+expiration after it returns preserves the completed phase and pending maintenance.
 
 This adds explicit physical peak accounting and maintenance sequencing without
 changing Session protocols, resource paths, input origins or native execution.

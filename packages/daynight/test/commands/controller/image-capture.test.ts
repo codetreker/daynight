@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { controllerStorageMediaUsage } from "../../../src/commands/controller/storage-capacity.js";
 import { unlinkSync } from "node:fs";
 import sharp from "sharp";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
@@ -385,13 +386,13 @@ test("a delayed old query cannot cancel the current attempt source writer", asyn
   } finally { finish.resolve(); await writer; await lease.release(); await f.journal.stopMedia(); f.journal.close(); }
 });
 
-test("source IO reserves both complete copies durably and never reopens an interrupted source", async () => {
+test("source IO accounts for both unwritten copies and never reopens an interrupted source", async () => {
   const f = await fixture();
   f.journal.registerImageCaptureRequest(f.request);
   const media = f.journal.media(), lease = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
   expect((await stat(lease.outputPath)).size).toBe(0);
-  const ledger = new Database(path.join(f.home, "controller/media/budget.sqlite"), { readonly: true });
-  const charge = () => (ledger.prepare("SELECT reserved_bytes AS bytes FROM allocations WHERE execution_id=?").get(f.ticket.executionId) as { bytes: number }).bytes;
+  const disk = new Database(f.file, { readonly: true });
+  const charge = () => controllerStorageMediaUsage(f.file, disk).reservedBytes;
   const reserved = charge();
   expect(reserved).toBeGreaterThanOrEqual(2 * 10 * 1024 * 1024);
   const uploadId = randomUUID();
@@ -408,7 +409,7 @@ test("source IO reserves both complete copies durably and never reopens an inter
     await journal.media().releaseCaptureSource(f.request.captureId, f.request.attemptId);
     await expect(stat(lease.outputPath)).rejects.toThrow();
     expect(charge()).toBeLessThan(reserved - 19 * 1024 * 1024);
-  } finally { ledger.close(); await journal.stopMedia(); journal.close(); }
+  } finally { disk.close(); await journal.stopMedia(); journal.close(); }
 });
 
 test("source release joins the writer before unlink and retains a validated stage", async () => {
@@ -522,8 +523,8 @@ test("prepared delivery stays inside the policy lease before a queued revocation
 test("committed adoption checks the exact service receipt and reserves the third-copy peak", async () => {
   const f = await fixture(), source = await f.source("blue"); f.journal.registerImageCaptureRequest(f.request);
   const media = f.journal.media(), reservation = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
-  const ledger = new Database(path.join(f.home, "controller/media/budget.sqlite"), { readonly: true });
-  const charge = () => (ledger.prepare("SELECT reserved_bytes AS bytes FROM allocations WHERE execution_id=?").get(f.ticket.executionId) as { bytes: number }).bytes;
+  const disk = new Database(f.file, { readonly: true });
+  const charge = () => controllerStorageMediaUsage(f.file, disk).reservedBytes;
   try {
     await reservation.runWriter(async filename => { await writeFile(filename, source.bytes); });
     const validated = await media.stageCapture({ ...source, inputPath: reservation.outputPath, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
@@ -544,7 +545,7 @@ test("committed adoption checks the exact service receipt and reserves the third
     expect(charge()).toBeGreaterThanOrEqual(before + source.bytes.length);
     expect(f.journal.readResource(resource.resourceId, "0", 524288)).toMatchObject({ data: source.bytes.toString("base64"), eof: true });
     await reservation.release();
-  } finally { ledger.close(); await f.journal.stopMedia(); f.journal.close(); }
+  } finally { disk.close(); await f.journal.stopMedia(); f.journal.close(); }
 });
 
 test("committed originals survive source removal and reopen without recopying or repairing missing saved bytes", async () => {

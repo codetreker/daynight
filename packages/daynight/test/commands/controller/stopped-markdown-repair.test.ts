@@ -59,7 +59,7 @@ const fixture = async (text = "Original 中文 **answer** 🐈", stop = true, re
       db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify({ ...snapshot, lifecycle: "stopping", nativeStopped: false, stoppedAt: null, controllerProcess: { pid: 2_000_000_000, parentPid: 1, processGroupId: null, startedAt: "original", commandHash: "a".repeat(64), jobObjectName: `Local\\Daynight-${ticket.launchId}` } }));
     } finally { db.close(); }
     const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-    try { await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory: home, jobLease: {} as ControllerJobLease }); } finally { confirm.mockRestore(); }
+    try { await recordStoppedControllerGeneration(journalPath, ticket, { jobLease: {} as ControllerJobLease }); } finally { confirm.mockRestore(); }
   }
   const inspect = () => {
     const db = new Database(journalPath, { readonly: true });

@@ -111,17 +111,20 @@ DNS, connection and peer targets participate in the guard. Configuration or
 network changes invalidate the attempt's generation. This does not claim that
 application checks independently verify the operator's deployment facts.
 
-Source writers reserve both the source and validation-copy peak through the
-existing media budget. `reserveCaptureSource` and relay block delivery share
-`tryAcquireMediaBlock`, keeping the Controller's total at two block slots.
-`readCapture` verifies and delivers each block synchronously while holding its
-policy lease. Cancellation waits for the writer and validation work before
-releasing their reservation; shutdown preserves unknown and retained ownership.
-After writer and stage completion and durable release, the in-memory shared slot
-is returned even when refreshing the storage budget fails. That error still
-reaches the caller. A repeated release reconciles an active slot whose durable
-record already says released; it must not return a slot while joining or release
-persistence remains unconfirmed.
+Source writers include both source and validation-copy unwritten bytes in
+free-space admission. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes their cumulative media charge without changing source leases.
+`reserveCaptureSource` and relay block delivery share `tryAcquireMediaBlock`,
+keeping the Controller's total at two block slots. `readCapture` verifies and
+delivers each block synchronously while holding its policy lease. Cancellation
+waits for the writer and validation work before releasing their reservation;
+shutdown preserves unknown and retained ownership. After writer and stage
+completion and durable release, the in-memory shared slot is returned even when
+refreshing the storage budget fails. That error still reaches the caller. A
+repeated release reconciles an active slot whose durable record already says
+released; it must not return a slot while joining or release persistence remains
+unconfirmed.
 
 Local cleanup has a durable obligation separate from the service receipt and
 source phase. Before reserving source storage, the coordinator records the

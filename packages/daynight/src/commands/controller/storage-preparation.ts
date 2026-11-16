@@ -17,7 +17,7 @@ import { isControllerStorageCapacityError } from "./storage-capacity.js";
 import { controllerJournalPhysicalBytes } from "./media/metadata-budget.js";
 
 export type { JournalMigrationContext } from "./journal-format.js";
-export type ControllerStorageRequest = { journalFile: string; stateDirectory: string; deadline?: number } & (
+export type ControllerStorageRequest = { journalFile: string; deadline?: number } & (
   | { mode: "stopped-maintenance"; ticket: ControllerLaunchTicket }
   | { mode: "writer"; ticket: ControllerLaunchTicket }
 );
@@ -124,12 +124,7 @@ const journalReporter = (observation: ControllerStorageObservation, reporter?: S
   return reportControllerStorageEvent({ ...event, phase: "journal-migration", storage: { ...event.storage, sqlitePhase: event.phase } }, observation, reporter);
 };
 
-export const controllerJournalStateDirectory = (file: string): string => {
-  const execution = path.dirname(file), executions = path.dirname(execution), controller = path.dirname(executions);
-  return path.basename(executions) === "executions" && path.basename(controller) === "controller" ? path.dirname(controller) : execution;
-};
-
-export const controllerJournalWriteOptions = (file: string, permit: ControllerStoragePermit, _stateDirectory: string, _executionId?: string, _deadline?: number, onMigration?: SqliteMigrationReporter) => {
+export const controllerJournalWriteOptions = (file: string, permit: ControllerStoragePermit, onMigration?: SqliteMigrationReporter) => {
   assertControllerStoragePermit(permit, file);
   const observation: ControllerStorageObservation = { role: "upgrade-only", roleResult: "pending" };
   return { file, onMigration: journalReporter(observation, onMigration), format: controllerJournalFormatForMigration(db => {
@@ -244,7 +239,6 @@ export const upgradeControllerJournal = (file: string, permit: ControllerStorage
 /** Own migration, stopped maintenance and normal admission before an ordinary writer can commit its generation. */
 export const prepareControllerStorage = (request: ControllerStorageRequest, storagePermit: ControllerStoragePermit, onMigration?: SqliteMigrationReporter): ControllerStoragePreparation => {
   assertControllerStoragePermit(storagePermit, request.journalFile);
-  if (!path.isAbsolute(request.stateDirectory)) throw new TypeError("Controller storage state directory must be absolute.");
   let db: Database.Database | undefined, reservation: TimelineMaintenanceReservation | undefined, snapshot: ControllerSnapshot | null = null;
   let outcome: SqliteOutcome = "not-started", failure: unknown, result: ControllerStoragePreparation | undefined;
   let phase: "open" | "admission" | "maintenance" = "open";
@@ -282,7 +276,7 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
     outcome = "committed";
     phase = "maintenance";
     storageTimeout(request.deadline);
-    reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit, executionId: request.ticket.executionId });
+    reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit });
     readSqliteDatabase({ file: request.journalFile, format: controllerJournalFormat, onMissing: () => { throw new Error("Controller journal disappeared before committed content readback."); } }, connection => openTimelineStore(connection, { assertWrite: () => { throw new Error("Controller preparation readback is read-only."); } }).totals());
     storageTimeout(request.deadline);
     result = maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });

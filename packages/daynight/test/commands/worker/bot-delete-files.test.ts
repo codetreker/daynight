@@ -1,6 +1,7 @@
-import { openMediaBudgetLedger } from "../../../src/commands/controller/media/budget-ledger.js";
 import Database from "better-sqlite3";
 import { createServer } from "node:net";
+import { constants } from "node:fs";
+import * as filesystem from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -11,10 +12,12 @@ import type { BotExecution } from "../../../src/commands/worker/bots/execution-s
 import { removeHerdrSourceDirectory } from "../../../src/commands/worker/resource-disposal.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
 
+vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>() }));
+
 const id = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const signal = () => new AbortController().signal;
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/t15/files");
   await mkdir(base, { recursive: true });
@@ -45,6 +48,78 @@ const fixture = async () => {
 };
 const metadata = async (target: string) => { const entry = await lstat(target, { bigint: true }); return `${entry.dev}:${entry.ino}`; };
 const captured = async (target: string, kind: BotDeletionTarget["kind"]): Promise<BotDeletionTarget> => ({ path: target, root: path.dirname(target), kind, identity: await metadata(target), rootIdentity: await metadata(path.dirname(target)), completed: false });
+const observeParentHandle = (target: BotDeletionTarget, configure: (handle: filesystem.FileHandle) => void) => {
+  const original = filesystem.open;
+  return vi.spyOn(filesystem, "open").mockImplementation(async (...args) => {
+    const handle = await original(...args);
+    if (args[0] === target.root) configure(handle);
+    return handle;
+  });
+};
+
+describe.skipIf(process.platform === "win32")("durable original execution removal", () => {
+  it("joins the original parent's real sync after removal before allowing completion", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory");
+    const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    let returned = false, synced = false;
+    const opened = observeParentHandle(target, handle => {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, "sync").mockImplementation(async () => {
+        await expect(lstat(target.path)).rejects.toMatchObject({ code: "ENOENT" });
+        const parent = await handle.stat({ bigint: true });
+        expect(`${parent.dev}:${parent.ino}`).toBe(target.rootIdentity);
+        await sync(); synced = true; entered.resolve(); await finish.promise;
+      });
+    });
+    const removing = removeBotDeletionFile(target, signal()).then(() => { returned = true; });
+    try {
+      await Promise.race([entered.promise, removing.then(() => { throw new Error("Deletion returned before synchronizing its parent."); })]);
+      expect(synced).toBe(true); expect(returned).toBe(false);
+      expect(opened).toHaveBeenCalledWith(target.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    } finally { finish.resolve(); await removing; }
+    expect(returned).toBe(true);
+  });
+
+  it("rejects a failed parent sync and resyncs the already absent original execution on retry", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), failure = Object.assign(new Error("parent sync failed"), { code: "EIO" });
+    let attempts = 0;
+    observeParentHandle(target, handle => {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, "sync").mockImplementation(async () => { if (++attempts === 1) throw failure; await sync(); });
+    });
+    await expect(removeBotDeletionFile(target, signal())).rejects.toBe(failure);
+    await expect(lstat(target.path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(target.completed).toBe(false);
+    await removeBotDeletionFile(target, signal());
+    expect(attempts).toBe(2);
+  });
+
+  it("rejects an opened parent with a different identity without syncing it", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), sync = vi.fn();
+    observeParentHandle(target, handle => {
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, "stat").mockImplementation(async () => {
+        const value = await stat({ bigint: true });
+        return { ...value, ino: value.ino + 1n };
+      });
+      vi.spyOn(handle, "sync").mockImplementation(sync);
+    });
+    await expect(removeBotDeletionFile(target, signal())).rejects.toThrow(/identity/i);
+    expect(sync).not.toHaveBeenCalled(); expect(target.completed).toBe(false);
+  });
+
+  it.each([false, true])("preserves close failure and any preceding sync failure (%s)", async failSync => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), closeFailure = new Error("parent close failed"), syncFailure = new Error("parent sync failed");
+    observeParentHandle(target, handle => {
+      const close = handle.close.bind(handle);
+      if (failSync) vi.spyOn(handle, "sync").mockRejectedValue(syncFailure);
+      vi.spyOn(handle, "close").mockImplementation(async () => { await close(); throw closeFailure; });
+    });
+    if (failSync) await expect(removeBotDeletionFile(target, signal())).rejects.toMatchObject({ errors: [syncFailure, closeFailure] });
+    else await expect(removeBotDeletionFile(target, signal())).rejects.toBe(closeFailure);
+    expect(target.completed).toBe(false);
+  });
+});
 
 describe("Bot private file deletion", () => {
   it("captures only owned execution, launch and aliases while leaving cwd, native home and task worktrees intact", async () => {
@@ -257,17 +332,20 @@ describe("Bot private file deletion", () => {
     await expect(removeBotDeletionFile(target, AbortSignal.abort())).rejects.toThrow();
     expect(await readFile(f.ticket, "utf8")).toBe(f.ticketContent);
   });
-  it("releases image budget only after the complete original execution sweep, retaining pins on failure", async () => {
+  it("deletes original execution files without releasing the retired media ledger", async () => {
     const f = await fixture(), state = path.join(f.home, "state"), executionId = f.execution.executionId;
-    const ledger = openMediaBudgetLedger(state, executionId); ledger.reserve(1024); ledger.close();
-    const reserved = () => { const db = new Database(path.join(state, "controller", "media", "budget.sqlite")); try { return (db.prepare("SELECT reserved_bytes FROM allocations WHERE execution_id=?").get(executionId) as { reserved_bytes: number } | undefined)?.reserved_bytes ?? null; } finally { db.close(); } };
+    const ledgerFile = path.join(state, "controller", "media", "budget.sqlite");
+    await mkdir(path.dirname(ledgerFile), { recursive: true });
+    const ledger = new Database(ledgerFile);
+    try { ledger.exec("CREATE TABLE allocations(execution_id TEXT PRIMARY KEY,reserved_bytes INTEGER NOT NULL)"); ledger.prepare("INSERT INTO allocations VALUES(?,?)").run(executionId, 9_000_000_000); } finally { ledger.close(); }
+    const reserved = () => { const db = new Database(ledgerFile, { readonly: true }); try { return (db.prepare("SELECT reserved_bytes FROM allocations WHERE execution_id=?").get(executionId) as { reserved_bytes: number } | undefined)?.reserved_bytes ?? null; } finally { db.close(); } };
     const target = await captured(f.directory, "directory"), privateImage = path.join(f.directory, "journal.sqlite.media-staging", "native", "pinned.bin");
     await mkdir(path.dirname(privateImage), { recursive: true }); await writeFile(privateImage, "native resume pin");
     const outside = path.join(f.home, "outside"); await writeFile(outside, "keep"); const unsafe = path.join(f.directory, "outside-link"); await symlink(outside, unsafe);
     await expect(removeBotDeletionFile(target, signal())).rejects.toThrow(/symbolic/);
-    expect(reserved()).toBe(1024); expect(await readFile(privateImage, "utf8")).toBe("native resume pin");
+    expect(reserved()).toBe(9_000_000_000); expect(await readFile(privateImage, "utf8")).toBe("native resume pin");
     await rm(unsafe); await removeBotDeletionFile(target, signal());
-    expect(reserved()).toBeNull(); await expect(lstat(f.directory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(reserved()).toBe(9_000_000_000); await expect(lstat(f.directory)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(outside, "utf8")).toBe("keep");
   });
 

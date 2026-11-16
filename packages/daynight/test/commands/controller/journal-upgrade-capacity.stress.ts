@@ -73,7 +73,7 @@ test("stop recording upgrades v10 without capacity admission before observing an
   const f = await fixture(), snapshot = { ...stoppedSnapshot(f.ticket), lifecycle: "stopping", nativeStopped: false, stoppedAt: null, controllerProcess: { pid: 123, parentPid: 12, processGroupId: process.platform === "win32" ? null : 123, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${f.ticket.launchId}` } : {}) } };
   createV10(f, snapshot as unknown as ReturnType<typeof stoppedSnapshot>, 1, null, true);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { stateDirectory: f.root, ...(process.platform === "win32" ? { jobLease: {} as ControllerJobLease } : {}) });
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { ...(process.platform === "win32" ? { jobLease: {} as ControllerJobLease } : {}) });
   expect(stopped).toMatchObject({ executionId: f.ticket.executionId, lifecycle: "stopped", nativeStopped: true });
   expect(readControllerSnapshot(f.file)).toEqual(stopped);
   const db = new Database(f.file, { readonly: true });

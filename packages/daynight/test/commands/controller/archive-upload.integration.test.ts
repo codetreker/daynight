@@ -34,7 +34,7 @@ afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); Object.defineP
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
 const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
-const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket, stateDirectory: string): Promise<void> => {
+const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket): Promise<void> => {
   if (process.platform !== "win32") return;
   const db = new Database(journalPath);
   try {
@@ -45,7 +45,7 @@ const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunch
   const jobLease = {} as ControllerJobLease;
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   try {
-    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory, jobLease });
+    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { jobLease });
     expect(confirm).toHaveBeenCalledExactlyOnceWith(stopped.controllerProcess, stopped.nativeProcesses, undefined, jobLease);
     expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
   } finally { confirm.mockRestore(); }
@@ -64,13 +64,13 @@ const fixture = async ({ finalizeStop = true, failedMarkdown = false }: { finali
     store.publishMarkdownProjection(failed.state, failed.entry);
   } else store.projectTimeline(entry);
   const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
-  if (finalizeStop) await completeFixtureStop(journalPath, ticket, home);
-  return { home, ticket, journalPath, entry, sourceThrough, completeStop: () => completeFixtureStop(journalPath, ticket, home) };
+  if (finalizeStop) await completeFixtureStop(journalPath, ticket);
+  return { home, ticket, journalPath, entry, sourceThrough, completeStop: () => completeFixtureStop(journalPath, ticket) };
 };
-const migrate = (db: Database.Database, stateDirectory: string): void => {
+const migrate = (db: Database.Database): void => {
   const permit = acquireControllerStoragePermit(db.name);
   try {
-    const { format } = controllerJournalWriteOptions(db.name, permit, stateDirectory);
+    const { format } = controllerJournalWriteOptions(db.name, permit);
     db.transaction(() => upgradeSqlite(db, format)).immediate();
   } finally { permit.release(); }
 };
@@ -379,7 +379,7 @@ test("legacy completed SQL history migrates atomically and is readable after wor
   db.exec("DROP TABLE outbox_totals; DROP TABLE timeline_entries; DROP TABLE timeline_totals; ALTER TABLE execution DROP COLUMN legacy_timeline_cleanup_pending; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
-  migrate(db, f.home);
+  migrate(db);
   const migrated = pending(f.journalPath, f.ticket.sessionId);
   expect(migrated.timeline.get(original.entryId)).toEqual(original);
   const outbox = db.prepare("SELECT value FROM outbox").all() as { value: string }[];
@@ -397,12 +397,12 @@ test("failed legacy migration retains SQL originals and safely resumes an alread
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   const originalExec=Database.prototype.exec;const fail=vi.spyOn(Database.prototype,"exec").mockImplementation(function(this:Database.Database,sql:string){if(this===db&&sql.includes("CREATE TABLE content_index"))throw new Error("Injected content schema failure");return originalExec.call(this,sql)});
   let migrationError: unknown;
-  try { migrate(db, f.home); } catch (error) { migrationError = error; }
+  try { migrate(db); } catch (error) { migrationError = error; }
   fail.mockRestore();
   expect(errorCauses(migrationError)).toEqual(expect.arrayContaining([expect.objectContaining({ message: "Injected content schema failure" })]));
   expect(db.pragma("user_version", { simple: true })).toBe(5);
   expect(db.prepare("SELECT count(*) AS n FROM projection").get()).toEqual({ n: 1 });
-  migrate(db, f.home);
+  migrate(db);
   expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); db.close();
 });
 test("an outbox rollback preserves the committed timeline in memory and after restart", async () => {

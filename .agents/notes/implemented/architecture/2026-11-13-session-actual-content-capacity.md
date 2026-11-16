@@ -58,5 +58,7 @@ Each publication reads current facts and measures canonical metadata, trading
 some short-transaction work for a single source of truth. Temporary files and
 control records do not consume logical content capacity but remain subject to
 real storage failures and their original cleanup barriers. Compatibility
-receipts do not promise that later writes will succeed. Controller-local media
-and physical limits remain independent of the service's content policy.
+receipts do not promise that later writes will succeed. Controller-local metadata
+and free-space admission remain independent of the service's content policy. The
+[Controller media ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+separately supersedes its cumulative media reservations.

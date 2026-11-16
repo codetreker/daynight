@@ -5,7 +5,6 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "./launch-tic
 import type { ControllerSnapshot } from "./lifecycle-store.js";
 import { controllerJournalFormat } from "./journal-format.js";
 import { runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
-import path from "node:path";
 import { withStoppedControllerStorage } from "./stopped-storage.js";
 import { assertCurrentSqlite, inspectSqlite } from "../../platform/sqlite-format.js";
 import { parseSourceEvent, RELAY_LIMITS, type SourceEvent } from "../../session/controller-protocol.js";
@@ -18,7 +17,7 @@ export type StoppedSourceTailReceipt = { sourceEpoch: string; batchId: string; l
 
 /** Deliver only the original stopped writer's durable tail; no native writer is opened. */
 export const replayStoppedControllerHistory = async (options: {
-  journalPath: string; ticket: ControllerLaunchTicket; stateDirectory?: string; signal?: AbortSignal;
+  journalPath: string; ticket: ControllerLaunchTicket; signal?: AbortSignal;
   send(batch: StoppedSourceTail, signal: AbortSignal): Promise<StoppedSourceTailReceipt>;
 }): Promise<void> => {
   const { ticket, journalPath } = options;
@@ -36,7 +35,7 @@ export const replayStoppedControllerHistory = async (options: {
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000);
   const stateKey = "stopped_source_tail";
   let originalThrough: string | undefined;
-  const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, stateDirectory: options.stateDirectory ?? path.dirname(journalPath), assertOriginal: assertStopped }, action);
+  const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, assertOriginal: assertStopped }, action);
   const settle = <T>(db: Database.Database, action: () => T): T => {
     try { return runSqliteImmediate(db, action); }
     catch (error) { throw withOutboxTransactionOutcome(error, sqliteTransactionOutcome(error)); }
