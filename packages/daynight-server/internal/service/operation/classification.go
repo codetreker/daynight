@@ -51,7 +51,7 @@ func KnownFault(err error) (*model.Fault, bool) {
 			return fault, true
 		case "claim_held", "claim_lost", "task_paused", "content_changed", "upgrade_required", "history_pending", "history_unavailable", "unsupported_mode", "execution_changed":
 			return fault, true
-		case "github_repository_mismatch":
+		case "github_repository_mismatch", "github_grant_changed", "impact_changed":
 			return fault, true
 		case "unsupported_native_selection", "unsupported_selection", "unknown_default", "stale_configuration", "capability_error", "cleanup_unknown", "io_error", "offline", "unsupported", "timeout", "cancelled", "busy", "limit_exceeded", "invalid_cursor", "invalid_path":
 			return fault, true

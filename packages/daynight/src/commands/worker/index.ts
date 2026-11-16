@@ -53,6 +53,10 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   };
   const option = (name: string): string => command.options.get(name) as string;
   const rawProject = command.options.get("--project") as string | undefined;
+  if (command.command.name === "repair-markdown") {
+    await (await import("./repair-markdown.js")).runWorkerMarkdownRepair({ taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), sessionId: uuid(option("--session-id"), "Session ID"), worktreeId: uuid(option("--worktree-id"), "Worktree ID") }, context);
+    return;
+  }
   if (command.path.at(-2) === "repo") {
     const request: WorkerRepositoryCommandRequest = command.command.name === "list"
       ? { kind: "list", json: command.options.has("--json") }

@@ -1525,7 +1525,7 @@ it("retains backfill blocker and probe deadline across runtime restart without c
 });
 
 
-it("routes a terminal Web archive failure into independent runtime backfill", async () => {
+it.each(["ordinary", "markdown_projection_failed"] as const)("routes a terminal Web archive failure into independent runtime backfill: %s", async kind => {
   const f = await fixture();
   let now = Date.parse(workerTelemetryTime);
   vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -1537,24 +1537,27 @@ it("routes a terminal Web archive failure into independent runtime backfill", as
     await eventually(() => expect(mocks.coordinator).toHaveBeenCalledOnce());
     await eventually(() => expect(mocks.webBackend).toHaveBeenCalledOnce());
     const backendOptions = mocks.webBackend.mock.calls[0]![0] as import("../../../src/commands/worker/backends/web.js").WebBackendOptions;
-    const error = new Error("terminal archive unavailable");
+    const error = kind === "ordinary" ? new Error("terminal archive unavailable") : new (await import("../../../src/commands/controller/archive-error.js")).ArchiveRepairRequiredError(kind);
     backendOptions.onArchiveFailure!(task as never, error);
     expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", error }));
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions & { archiveMaintenance: { request: (shouldYield: () => boolean) => void } };
     expect(options.monitoring!.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: expect.objectContaining({ claimId: task.claimId }) })]));
+    const identity = { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, executionId: task.webExecution.executionId, executionGeneration: task.webExecution.executionGeneration, launchId: task.webExecution.launchId };
+    if (kind === "markdown_projection_failed") expect(options.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: kind, nextAttemptAt: now + 900_000 });
     mocks.completed.mockReturnValue([task]);
     options.archiveMaintenance.request(() => false);
     await new Promise(resolve => setImmediate(resolve));
     expect(mocks.archive).not.toHaveBeenCalled();
-    now += 60_000;
+    now += kind === "ordinary" ? 60_000 : 900_000;
     options.archiveMaintenance.request(() => false);
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-ready" })));
     expect(mocks.archive).toHaveBeenCalledWith(expect.objectContaining({ ticket: expect.objectContaining({ claimId: task.claimId, executionId: task.webExecution.executionId, executionGeneration: "1", sessionId: task.webExecution.sessionId }) }));
     expect(options.monitoring!.capture("2").currentFailures.some(item => item.component === "archive" && item.phase === "archive-backfill")).toBe(false);
+    expect(options.store.getArchiveBackfillSchedule(identity)).toBeNull();
   } finally { f.signal.abort(); await running; }
 });
 
-it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
+it.each((["archive_incomplete", "projection_gap", "markdown_projection_failed"] as const).flatMap(code =>
   (["complete", "receipt", "blocked", "unconfirmed", "regressed", "clear-failed"] as const).map(outcome => ({ code, outcome })),
 ))("updates backfill scheduling only after confirmed completeness: $code/$outcome", async ({ code, outcome }) => {
   const f = await fixture();

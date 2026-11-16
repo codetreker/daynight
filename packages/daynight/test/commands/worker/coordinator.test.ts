@@ -4463,7 +4463,7 @@ describe("real Git resource isolation", () => {
 
 });
 
-it.each(["archive_incomplete", "projection_gap", null] as const)("cleans a persisted Web archive retry immediately after restart: %s", async code => {
+it.each(["archive_incomplete", "projection_gap", "markdown_projection_failed", null] as const)("cleans a persisted Web archive retry immediately after restart: %s", async code => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
   const f = await fixture(1), webStore = openWebExecutionStore(createMemoryDatabase());

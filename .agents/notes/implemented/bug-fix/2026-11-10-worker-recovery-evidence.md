@@ -49,6 +49,8 @@ admission does not grant resource ownership. Strict readers used by cleanup cann
 omit invalid records and infer absence.
 
 Typed archive completeness blockers use a 15-minute condition-probe schedule.
+The [Markdown repair diagnostic](2026-11-16-markdown-archive-repair-diagnostics.md)
+also classifies failed image analysis without inferring an empty image collection.
 Probes preserve original stopped-generation and receipt reconciliation. A confirmed
 complete source clears its persisted repair classification before full archival,
 restoring ordinary transient retry policy if upload fails. Receipt presence and

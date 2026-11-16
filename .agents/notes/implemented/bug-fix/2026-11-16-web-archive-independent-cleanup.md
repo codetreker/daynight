@@ -39,5 +39,5 @@ failure modes and recreates the same blockage without improving deletion safety.
 
 Archive failure remains visible and may require indefinite source retention;
 cleanup success does not imply archive success. Independent repair and retry do
-not recreate or touch a successor worktree. Safe deletion still depends on stop
+not recreate or touch a successor worktree. The [Markdown repair command](2026-11-16-markdown-archive-repair-diagnostics.md) requires the original worktree; once removed, missing worktree inputs can prevent repair. Safe deletion still depends on stop
 proof and Git ownership, and an independent file failure remains retryable.

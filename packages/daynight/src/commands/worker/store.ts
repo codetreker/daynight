@@ -74,7 +74,7 @@ const nonnegativeInteger = (value: number, name: string): number => {
 };
 const asCleanupState = (value: CleanupSchedule): CleanupSchedule => {
   const code = value.archiveRepairCode ?? null;
-  if (code !== null && code !== "archive_incomplete" && code !== "projection_gap") throw new TypeError("Invalid archive repair code.");
+  if (code !== null && code !== "archive_incomplete" && code !== "projection_gap" && code !== "markdown_projection_failed") throw new TypeError("Invalid archive repair code.");
   if (code !== null && value.stage !== "archive") throw new TypeError("Archive repair requires the archive cleanup stage.");
   return { deadline: nonnegativeInteger(value.deadline, "Cleanup deadline"), failures: nonnegativeInteger(value.failures, "Cleanup failures"), nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Cleanup next attempt"),
     ...(code === null ? {} : { archiveRepairCode: code }), stage: text(value.stage, "Cleanup stage"), lastError: value.lastError === null ? null : text(value.lastError, "Cleanup scheduling error") };
@@ -89,7 +89,7 @@ const asArchiveBackfillIdentity = (value: ArchiveBackfillIdentity): ArchiveBackf
   return { ...archiveBackfillKey(value), ...claimKey(value), executionGeneration: generation, launchId: id(value.launchId, "Archive launch ID") };
 };
 const asArchiveBackfillSchedule = (value: ArchiveBackfillSchedule): ArchiveBackfillSchedule => {
-  if (value.archiveRepairCode !== null && value.archiveRepairCode !== "archive_incomplete" && value.archiveRepairCode !== "projection_gap") throw new TypeError("Invalid archive repair code.");
+  if (value.archiveRepairCode !== null && value.archiveRepairCode !== "archive_incomplete" && value.archiveRepairCode !== "projection_gap" && value.archiveRepairCode !== "markdown_projection_failed") throw new TypeError("Invalid archive repair code.");
   return { archiveRepairCode: value.archiveRepairCode, nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Archive next attempt"), ...(value.legacyError == null ? {} : { legacyError: text(value.legacyError, "Legacy archive error") }) };
 };
 const asProject = (row: WorkerProject): WorkerProject => ({ ...projectKey(row), repoUrl: text(row.repoUrl, "Repository URL"), localPath: absolutePath(row.localPath, "Project local path") });

@@ -1706,6 +1706,7 @@ it("reconciles a failed Web removal after manual deletion in the same coordinato
 it.each([
   { code: "archive_incomplete", removalFails: false },
   { code: "projection_gap", removalFails: true },
+  { code: "markdown_projection_failed", removalFails: false },
 ] as const)("transfers a retained Web repair schedule to backfill across restart: $code, removal failure $removalFails", async ({ code, removalFails }) => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");

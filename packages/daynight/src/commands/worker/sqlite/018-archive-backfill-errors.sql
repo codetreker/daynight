@@ -7,7 +7,7 @@ CREATE TABLE archive_backfill_schedules (
   project_id TEXT NOT NULL,
   task_id TEXT NOT NULL,
   claim_id TEXT NOT NULL,
-  archive_repair_code TEXT CHECK(archive_repair_code IN ('archive_incomplete', 'projection_gap')),
+  archive_repair_code TEXT CHECK(archive_repair_code IN ('archive_incomplete', 'projection_gap', 'markdown_projection_failed')),
   next_attempt_at INTEGER NOT NULL CHECK(next_attempt_at >= 0),
   legacy_error TEXT,
   PRIMARY KEY(server_origin, execution_id)

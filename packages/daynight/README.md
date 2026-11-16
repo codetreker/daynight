@@ -2987,12 +2987,35 @@ unavailability does not prevent safe worktree removal and local settlement.
 The original Controller execution directory and archive sources remain available
 for independent backfill using the original execution identity. A known incomplete
 archive enters a durable repair-required state: every 15 minutes the Worker checks
-the stopped generation without loading pending timeline content or resource bytes.
+the stopped generation and SQL projection error markers without materializing the
+complete timeline or reading resource bytes.
 A receipt still requires remote validation; it does not itself clear the repair
 classification. Transient backfill failures use a bounded retry. Only successful
 archival recovers its alert; neither the repair wait nor an old archive cleanup
 schedule blocks worktree removal or a successor claim. Stopping, ownership and Git
 safety checks remain required, and cancellation stops subsequent file operations.
+
+For failed Markdown image analysis on a terminal Web execution whose original
+worktree is still retained, run
+`daynight worker repair-markdown TASK --project PROJECT --claim-id CLAIM --session-id SESSION --worktree-id WORKTREE`
+on its original Worker machine. The command verifies the current owner and
+unchanged execution, stopping evidence, launch ticket and worktree. If cleanup
+has removed that worktree, the command cannot use a successor checkout or recover
+missing worktree inputs. It can run
+beside the Worker using the stopped Controller storage permit. It neither
+restarts an Agent nor repeats input. Only preserved complete source blocks are
+reanalyzed; original failed projections, text and prior image references remain
+retained. Newly discovered local images require the original directory root,
+ordinary in-root traversal and validated bytes. External downloads, changed
+roots, missing sources and ambiguous blocks remain repair failures.
+
+The command reports per-entry repair failures with the original source retained.
+After restoring the reported source or context, rerun the same explicit target.
+Successful repair follows the existing archive upload and receipt verification;
+the Worker retains cleanup ownership. An existing archive intent or receipt is
+reconciled without rewriting its frozen source. Verify the original Session's
+content archive separately from its lifecycle. A successful retry cannot identify
+the original parse failure when its detailed cause was never saved.
 
 The Worker prepares each selected or retained repository by converting legacy
 ownership into durable manifests before admitting file operations. Conversion

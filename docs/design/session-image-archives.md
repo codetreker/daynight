@@ -260,6 +260,20 @@ timeline 和两种完整历史同步共用以下传输规则：
 
 服务推进原source checkpoint及有界原event/batch hash账本，不重放state或改变lifecycle、generation和operations。原stopped身份可将服务尚未知的native ID从null单调登记为原Controller已创建的ID，初始化null事实不会清除已知ID，不同的非null ID仍冲突；最终manifest沿同一停止授权保留该旧writer保证。成功返回严格`{sourceEpoch,batchId,lastAckedSourceSeq}`，ACK必须精确等于该批末尾；未知结果重发同batchId及原bytes。Controller先持久完整批次，再发送，只有核验并持久该精确ACK后才删除对应outbox前缀。原sourceFloor已越过本地ACK且缺少连续前缀时明确拒绝；不能猜测服务ACK或用最终历史文件掩盖源缺口。尾部协调后仍要求最终历史sourceThrough精确匹配；冲突ACK不能删尾，原活动身份不能借用此入口。
 
+### 已停止执行的 Markdown 图片投影修复
+
+`worker repair-markdown` 是原 Worker 上的显式终态修复入口。正常 Web 清理可能在归档失败后删除工作树；命令要求原工作树仍被保留，不访问或重建后继工作树，缺失来源时不能完成依赖该来源的修复。命令核验当前账号、服务、终态 Task、completed 原 claim、Session、Worker 配置、完整 launch ticket、工作树 manifest、Git 分支和实际路径。远端 Session、停止 journal 和本地执行绑定必须具有相同的非空 native Session 身份；claim 的可选 nativeSessionId 摘要缺失不构成冲突，非空时必须与这些证据一致。任务暂停或任一已知身份变化均拒绝；它不占用 Worker 调度锁，也不创建 Controller 或 Provider，不重放输入。停止写入使用原 Controller storage permit，沿用 Windows Job stop proof 等平台停止证明。
+
+`stopped-markdown-repair` 从 SQL timeline 找出非空 `imageProjectionError`，使用保留的 `markdown:projection` 输入重新分析。当前投影必须与原输入渲染结果一致；只有完整、非截断且块身份明确的失败部分可进入分析。每个条目的修复计划保留原 entry、原 projection、ticket hash、停止快照及解析结果。解析完成后先保存计划，使新 imageId 在中断后保持不变；失败不替换原 timeline。每次写入前重读业务授权，再在存储锁内核对快照、source/ACK 截止点、输入、条目和目录根身份。
+
+已有图片及 retained 引用保留。新发现的图片优先复用具有明确出现对应关系的已确认资源，核对块、正文摘要、上下文、目标、原范围及修订来源；相同目标地址不能代替出现身份，多份历史资源的歧义不能用首个匹配消除。没有对应原件时，只有显式修复授权允许读取原 cwd 根内的普通本地文件，核对原 dev/ino、逐段路径证明及源摘要，再经实际图片解码器验证。外部 URL、链接或 reparse 跳转、缺失根身份、丢失文件及变化源均拒绝，不制造 `image_unavailable` 来完成修复。该授权不恢复 Agent 的 Read grant；普通自动归档仍不发起新的来源读取。已保存图片继续要求原描述符、长度和 SHA-256 一致，不能靠重新抓源替换已知原件。
+
+所有新图片验证成功后，在原事务中保留 entryId、entrySeq 和正文，提高条目 revision，提交投影和修复计划，并追加连续的 `timeline_upsert` outbox 事件及 source 序号。资源文件先耐久保存；中断后沿计划中稳定的资源身份核验，不删除原失败输入。随后现有 source-tail、最终 history、资源上传、seal 与 manifest 回执链完成归档。新本地资源采用无 revision 描述符，须先出现在最终 history ledger，才能沿 `migrationOnly` 资源入口提交；服务在 seal 时核对实际已保存原件。
+
+存在 archive intent、receipt、待确认 stopped source-tail 或最终 history checkpoint 时，修复器拒绝改写源。命令识别这些全部协调状态并转入既有对账，包括尚未生成 archive intent 的 source-tail 请求失败或响应丢失；沿原批次与冻结字节继续，不删除标记或重建上传身份。每条修复失败报告固定原因码并保留原件；命令返回成功仅在归档回执已验证后成立，最终资源清理由原 Worker 负责。
+
+旧 projection 只保存通用 `source_unavailable`，可能来自分析超时、解析器启动失败、预算拒绝或无法建立可信块映射；这些记录不足以判定最初触发条件。新分析保留稳定原因码并区分启动与解析预算。重分析成功只证明当前输入可分析，不能反推历史根因。
+
 ### 显式 Test resume 历史导入（消费者接入合同）
 
 下述导入API及可信原生映射属于恢复消费者的接入要求，基础层提供统一资源、归档闭包和持久读取；基础能力交付不表示此导入路由已经开放。
@@ -384,7 +398,7 @@ Bot删除仍需全部worker停止/cleanup证明、服务文件清理成功后才
 
 故障验证覆盖 prepare、完整历史同步、最后文件块、文件 fsync、manifest、DB commit 和响应丢失；原身份协调且不启动 Provider。特别验证停止前未上报的最后条目、单条 entry 大于普通历史页、source gap、commit/failed 竞争、晚到 retained 以及未决消息关联。ready 必须具有三类文件和原件引用的耐久证据。
 
-原件 A 保存后将源替换为 B 或删除、关闭 Controller、重启服务，再从 Task、Test、Bot、全屏、历史选择器和附件入口预览/下载，必须仍得到 A 的原 SHA。从未采集的失败可构成 partial；known available 丢失、摘要错误、文本 gap、提交 unknown 或未解决的图片投影错误不得构成 partial。必须覆盖首次 Markdown 解析超时/节点预算失败且 retained=[]、无任何图片 part，以及 reasoning bindings=null 两种反例：完整文字与连续 source 序号仍不得 sealed/ready，也不能伪造 unavailable 出现；只有有界恢复得到完整绑定并结算真实出现后才重新判断完整性。另须验证原最终同步已 complete 后，暂时解析超时恢复成功且确认零图片、无 capture 结算的情形：在同一 stopped/source 截止点以新 syncId 完整同步清除错误后的投影，服务确认新 revision 后才允许 sealed/ready。覆盖恢复发现真实图片的已有停止后结算路径，以及原同步 receiving/未知、旧 ID 换文件、source 截止点变化、pin 过早释放、迟到旧轮次覆盖和新的来源 IO 均被拒绝。ready 后损坏只能报告读失败，不改写封存 manifest。
+原件 A 保存后将源替换为 B 或删除、关闭 Controller、重启服务，再从 Task、Test、Bot、全屏、历史选择器和附件入口预览/下载，必须仍得到 A 的原 SHA。从未采集的失败可构成 partial；known available 丢失、摘要错误、文本 gap、提交 unknown 或未解决的图片投影错误不得构成 partial。必须覆盖首次 Markdown 解析超时/节点预算失败且 retained=[]、无任何图片 part，以及 reasoning bindings=null 两种反例：完整文字与连续 source 序号仍不得 sealed/ready，也不能伪造 unavailable 出现；只有有界恢复得到完整绑定并结算真实出现后才重新判断完整性。另须验证原最终同步已 complete 后，暂时解析超时恢复成功且确认零图片、无 capture 结算的情形：在同一 stopped/source 截止点以新 syncId 完整同步清除错误后的投影，服务确认新 revision 后才允许 sealed/ready。覆盖恢复发现真实图片的已有停止后结算路径，以及原同步 receiving/未知、旧 ID 换文件、未获授权的 source 截止点变化、pin 过早释放和迟到旧轮次覆盖均被拒绝。普通自动归档不发起新的来源 IO；显式停止修复单独验证原根内新本地图片读取、缺件、路径越界、源变化、计划恢复及真实资源完整性。ready 后损坏只能报告读失败，不改写封存 manifest。
 
 显式 Test resume 覆盖源关系与 native 身份、目标实际容量检查、一次复制的稳定映射、连续 resume、源删除/撤权、复制失败及源损坏。导入完成的目标副本不随源删除；无可信键不按文字、摘要或数组下标猜配。
 
