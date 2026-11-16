@@ -49,7 +49,16 @@ type ValidatedClient struct {
 // ParseClientMetadata accepts only the supported grants and public method. An
 // omitted method is deliberately replaced with none by this server.
 func ParseClientMetadata(data []byte, expectedID string) (ClientMetadata, error) {
-	return parseClientMetadata(data, expectedID, MetadataLimit)
+	return parseClientMetadata(data, expectedID, MetadataLimit, false)
+}
+
+// ParseCIMDClientMetadata admits a public metadata document only when its
+// supported capability intersection includes code flow. It requires its URL identity.
+func ParseCIMDClientMetadata(data []byte, expectedID string) (ClientMetadata, error) {
+	if expectedID == "" {
+		return ClientMetadata{}, ErrInvalidClientMetadata
+	}
+	return parseClientMetadata(data, expectedID, MetadataLimit, true)
 }
 
 // ParseStoredClientMetadata reads a previously validated DCR document after
@@ -58,10 +67,10 @@ func ParseStoredClientMetadata(data []byte, expectedID string) (ClientMetadata, 
 	if expectedID == "" {
 		return ClientMetadata{}, ErrInvalidClientMetadata
 	}
-	return parseClientMetadata(data, expectedID, 2*MetadataLimit+1024)
+	return parseClientMetadata(data, expectedID, 2*MetadataLimit+1024, false)
 }
 
-func parseClientMetadata(data []byte, expectedID string, limit int) (ClientMetadata, error) {
+func parseClientMetadata(data []byte, expectedID string, limit int, cimd bool) (ClientMetadata, error) {
 	var m ClientMetadata
 	if len(data) == 0 || len(data) > limit || !jsonunicode.Valid(data) {
 		return m, ErrInvalidClientMetadata
@@ -127,17 +136,34 @@ func parseClientMetadata(data []byte, expectedID string, limit int) (ClientMetad
 	if raw, exists := fields["grant_types"]; exists && (len(m.GrantTypes) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))) {
 		return ClientMetadata{}, ErrInvalidClientMetadata
 	}
-	for _, g := range m.GrantTypes {
-		if g != "authorization_code" && g != "refresh_token" {
-			return ClientMetadata{}, ErrInvalidClientMetadata
-		}
-	}
 	if raw, exists := fields["response_types"]; exists && (len(m.ResponseTypes) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))) {
 		return ClientMetadata{}, ErrInvalidClientMetadata
 	}
-	for _, r := range m.ResponseTypes {
-		if r != "code" {
+	if cimd {
+		if _, exists := fields["grant_types"]; !exists {
+			m.GrantTypes = []string{"authorization_code"}
+		}
+		if _, exists := fields["response_types"]; !exists {
+			m.ResponseTypes = []string{"code"}
+		}
+		m.GrantTypes, err = intersectCapabilities(m.GrantTypes, []string{"authorization_code", "refresh_token"})
+		if err != nil || len(m.GrantTypes) == 0 || m.GrantTypes[0] != "authorization_code" {
 			return ClientMetadata{}, ErrInvalidClientMetadata
+		}
+		m.ResponseTypes, err = intersectCapabilities(m.ResponseTypes, []string{"code"})
+		if err != nil || len(m.ResponseTypes) == 0 {
+			return ClientMetadata{}, ErrInvalidClientMetadata
+		}
+	} else {
+		for _, g := range m.GrantTypes {
+			if g != "authorization_code" && g != "refresh_token" {
+				return ClientMetadata{}, ErrInvalidClientMetadata
+			}
+		}
+		for _, r := range m.ResponseTypes {
+			if r != "code" {
+				return ClientMetadata{}, ErrInvalidClientMetadata
+			}
 		}
 	}
 	if _, exists := fields["scope"]; exists && m.Scope != Scope {
@@ -151,6 +177,23 @@ func parseClientMetadata(data []byte, expectedID string, limit int) (ClientMetad
 		seen[uri] = true
 	}
 	return m, nil
+}
+
+func intersectCapabilities(values, supported []string) ([]string, error) {
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		if value == "" {
+			return nil, ErrInvalidClientMetadata
+		}
+		seen[value] = true
+	}
+	var result []string
+	for _, value := range supported {
+		if seen[value] {
+			result = append(result, value)
+		}
+	}
+	return result, nil
 }
 
 // ValidRedirect permits HTTPS and local HTTP callbacks, without credentials or fragments.
@@ -181,7 +224,8 @@ func ValidRedirect(raw string) bool {
 	return true
 }
 
-// MatchRedirect preserves exact bytes except the port of a literal loopback IP.
+// MatchRedirect preserves exact bytes except loopback IP ports and a requested
+// port for an HTTP localhost registration that omitted its port.
 func MatchRedirect(registered, requested string) bool {
 	if !ValidRedirect(registered) || !ValidRedirect(requested) {
 		return false
@@ -193,6 +237,9 @@ func MatchRedirect(registered, requested string) bool {
 	b, _ := url.Parse(requested)
 	if a.Scheme != "http" || b.Scheme != "http" {
 		return false
+	}
+	if a.Hostname() == "localhost" && b.Hostname() == "localhost" && a.Port() == "" {
+		return redirectSuffix(registered) == redirectSuffix(requested)
 	}
 	ip, err := netip.ParseAddr(a.Hostname())
 	if err != nil || !ip.Unmap().IsLoopback() || a.Hostname() != b.Hostname() {

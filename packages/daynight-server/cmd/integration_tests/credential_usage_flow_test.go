@@ -162,8 +162,8 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	usageWait(t, f, readPAT, nil, patStart, patEnd)
 	profileNormalFlow(t, f, browser, plain, pat)
 
-	const callback = "http://127.0.0.1:9012/callback"
-	_, data = usageRequest(t, f, plain, http.MethodPost, "/oauth/register", `{"client_name":"Usage integration","redirect_uris":["http://127.0.0.1:9012/callback"]}`, "application/json", "", http.StatusCreated)
+	const callback = "http://localhost:9012/callback"
+	_, data = usageRequest(t, f, plain, http.MethodPost, "/oauth/register", `{"client_name":"Usage integration","redirect_uris":["http://localhost/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"]}`, "application/json", "", http.StatusCreated)
 	registration := usageDecode[struct {
 		ClientID string `json:"client_id"`
 		Method   string `json:"token_endpoint_auth_method"`
@@ -251,6 +251,17 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	}](t, data)
 	if len(result.Result) == 0 || len(result.Error) != 0 {
 		t.Fatal("OAuth MCP tools/list did not succeed")
+	}
+	_, data = usageRequest(t, f, plain, http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"team_list","arguments":{}}}`, "application/json", tokens.AccessToken, http.StatusOK)
+	call := usageDecode[struct {
+		Result struct {
+			IsError bool              `json:"isError"`
+			Content []json.RawMessage `json:"content"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}](t, data)
+	if len(call.Error) != 0 || call.Result.IsError || len(call.Result.Content) == 0 {
+		t.Fatal("OAuth MCP read-only team_list did not succeed")
 	}
 	accessAt := usageWait(t, f, readGrant, nil, accessStart, accessEnd)
 	refresh := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tokens.RefreshToken}, "client_id": {registration.ClientID}, "resource": {f.origin + "/mcp"}}

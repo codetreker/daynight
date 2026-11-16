@@ -15,7 +15,12 @@ Client resolution accepts configured clients, dynamic public registrations,
 and HTTPS client metadata documents. It freezes the validated metadata digest,
 provenance, allowed redirects, selected exact redirect, and metadata deadline for
 an authorization request. HTTPS redirects match exactly; literal loopback HTTP
-redirects may differ only in port. Names remain self asserted.
+redirects may differ only in port. Portless exact HTTP localhost registrations
+also permit a selected port, while fixed localhost ports remain exact.
+CIMD alone intersects valid declared capabilities with code flow; registration
+and configured-client parsing stay strict. The
+[metadata compatibility decision](../bug-fix/2026-11-16-mcp-oauth-metadata-compatibility.md)
+owns these compatibility exceptions. Names remain self asserted.
 
 CIMD retrieval rejects unsafe DNS answers and connects to a validated address
 with the original TLS hostname, no proxy or redirect. Per-instance concurrency,
