@@ -1,3 +1,5 @@
+import { bindImageQualification, qualifiedImageLimits } from "../../../src/commands/controller/providers/image-qualification.js";
+import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { expect, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
@@ -59,7 +61,7 @@ test("Codex capabilities pass the real lifecycle codec and retain revisions afte
   const controls = new CodexControls({ request: async method => method === "model/list" ? { data: [{ model: "gpt-6-astra", inputModalities: ["text", "image"] }, { model: "text", inputModalities: ["text"] }], nextCursor: null } : method === "skills/list" ? { data: [] } : { requirements: null } }, () => "thread", () => null, f.root, f.root, () => {});
   const native = { model: "gpt-6-astra", modelProvider: "copilot_gateway" };
   const profile = codexImageProfile({ userAgent: "daynight/0.167.0 (Mac OS)", platformOs: "macos" }, native, "darwin");
-  const controlled: CodexImageProfile = { modelId: native.model, modelProvider: native.modelProvider, geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } };
+  const controlled: CodexImageProfile = { qualification: controlledImageQualification("codex", native.model), modelId: native.model, modelProvider: native.modelProvider, geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } };
   try {
     controls.seed(native); await controls.refresh();
     const unknown = f.journal.providerImageCapabilities(controls.imageCapabilities(profile));
@@ -108,5 +110,19 @@ test("Codex tool arguments, errors and image ownership survive the production ti
     expect(before.find(entry => entry.kind === "tool_call" && entry.callId === "image")).toMatchObject({ input: JSON.stringify({ prompt: "triangle" }, null, 2), status: "failed", output: [{ type: "image_unavailable" }, { text: "Render failed" }] });
     await f.reopen(); expect(f.stored()).toEqual(before);
     await publish(); expect(f.stored()).toEqual(before);
+  } finally { await f.cleanup(); }
+});
+
+test("qualification evidence changes persist a new provider revision without public fields", async () => {
+  const f = await lifecycle();
+  const first = controlledImageQualification("codex", "model"), replacement = controlledImageQualification("codex", "model", { evidenceId: "replacement" });
+  const caps = () => ({ expectedNativeSessionId: "native", modelId: "model", controlsRevision: "1", reasonCode: null, send: "supported" as const, steer: "supported" as const, ...qualifiedImageLimits(first) });
+  try {
+    const initial = f.journal.providerImageCapabilities(bindImageQualification(caps(), first));
+    const next = f.journal.providerImageCapabilities(bindImageQualification(caps(), replacement));
+    expect(next).toEqual({ ...initial, revision: String(BigInt(initial.revision) + 1n) });
+    expect(JSON.stringify(next)).not.toContain(replacement.fingerprint);
+    await f.reopen(); expect(f.journal.providerImageCapabilities(bindImageQualification(caps(), replacement))).toEqual(next);
+    expect(f.journal.providerImageCapabilities(caps()).revision).toBe(String(BigInt(next.revision) + 1n));
   } finally { await f.cleanup(); }
 });

@@ -1,10 +1,11 @@
+import { imageQualificationFingerprint } from "./image-qualification.js";
 import { parseImageCapabilities, parseValidatedImage, type ImageCapabilities, type ProviderImageCapabilities } from "../../../session/image-values.js";
 import { NativeRpcError } from "./native-rpc.js";
 import { validateNativeInput } from "./native-input.js";
 import type { NativeInput } from "./types.js";
 
 type Capabilities = Omit<ProviderImageCapabilities, "revision">;
-const authorizations = new WeakMap<NativeInput, { capabilities: ImageCapabilities; verify(): void }>();
+const authorizations = new WeakMap<NativeInput, { capabilities: ImageCapabilities; qualificationFingerprint: string | null; verify(): void }>();
 const denied = (): never => { throw new NativeRpcError(-32602, "Image authorization, qualification or effective input limits changed before dispatch."); };
 
 /** Geometry comes from the original full decode, never from another decoder run. */
@@ -23,11 +24,11 @@ export const assertNativeImageLimits = (input: NativeInput, caps: Capabilities, 
 };
 
 /** This process-local grant cannot be serialized into a durable input or replayed. */
-export const authorizeNativeImageInput = (input: NativeInput, authorization: ImageCapabilities, verify: () => void): NativeInput => {
+export const authorizeNativeImageInput = (input: NativeInput, authorization: ImageCapabilities, verify: () => void, qualificationFingerprint: string | null = null): NativeInput => {
   const capabilities = parseImageCapabilities(authorization);
   Object.freeze(capabilities.geometry); Object.freeze(capabilities.inputMediaTypes); Object.freeze(capabilities);
   const authorized = { content: input.content };
-  authorizations.set(authorized, { capabilities, verify });
+  authorizations.set(authorized, { capabilities, verify, qualificationFingerprint });
   return authorized;
 };
 
@@ -37,6 +38,7 @@ export const assertNativeImageAdmission = (input: NativeInput, current: Capabili
   const grant = authorizations.get(input);
   if (!grant) return denied();
   grant.verify();
+  if (grant.qualificationFingerprint !== imageQualificationFingerprint(current)) denied();
   const effective = grant.capabilities;
   if (effective.expectedNativeSessionId !== current.expectedNativeSessionId || effective.modelId !== current.modelId || effective.controlsRevision !== current.controlsRevision) denied();
   assertNativeImageLimits(input, effective, expectedTurnId);

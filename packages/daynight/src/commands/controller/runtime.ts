@@ -1,3 +1,4 @@
+import { imageQualificationFingerprint } from "./providers/image-qualification.js";
 import { formatOutboxDiagnostic, isOutboxFailure } from "./outbox-diagnostic.js";
 import { restoreCanonicalInputIntent } from "./media/input-intent.js";
 import { createControllerCaptureBridge } from "./media/capture.js";
@@ -277,8 +278,8 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
               lease!.verify();
             };
             verify();
-            input = authorizeNativeImageInput(lease.input, authorization, verify);
-            assertNativeImageAdmission(input, readState().providerImages!, command.payload.expectedTurnId);
+            input = authorizeNativeImageInput(lease.input, authorization, verify, imageQualificationFingerprint(nativeImages));
+            assertNativeImageAdmission(input, nativeImages ?? readState().providerImages!, command.payload.expectedTurnId);
           }
           const result = await dispatch(operation, () => { lease?.retain(); return executeCommand(command, input); }); relay.receipt(result);
         } catch (error) {

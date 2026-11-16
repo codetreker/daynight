@@ -1,7 +1,8 @@
+import { selectImageQualification, type QualifiedImages } from "./image-qualification.js";
 import { record, string } from "./native-rpc.js";
 import type { ImageGeometry } from "../../../session/image-values.js";
 
-export type CodexImageProfile = Readonly<{ modelProvider: string | null; modelId: string | null; geometry: ImageGeometry }>;
+export type CodexImageProfile = Readonly<{ modelProvider: string | null; modelId: string | null; geometry: ImageGeometry; qualification: QualifiedImages | null }>;
 export const unknownCodexGeometry: ImageGeometry = Object.freeze({ version: 1, known: false, maxWidth: 0, maxHeight: 0, maxPixels: 0, maxFrames: 0 });
 
 /** Protocol compatibility is necessary but does not establish image admission. */
@@ -15,5 +16,7 @@ export const codexImageProfile = (response: unknown, native: unknown, platform: 
   const selection = record(native);
   // This native version exposes input modalities, but no input geometry bounds.
   // OpenAI API limits do not establish limits for a custom model provider.
-  return { modelProvider: string(selection.modelProvider) || null, modelId: string(selection.model) || null, geometry: unknownCodexGeometry };
+  const modelId = string(selection.model) || null;
+  const qualification = selectImageQualification({ provider: "codex", nativeVersion: /^daynight\/([^ ]+) /.exec(string(record(response).userAgent))?.[1] ?? null, nativeExecutableSha256: null, sdkVersion: null, platform, arch: process.arch, backendIdentity: null, modelId });
+  return { modelProvider: string(selection.modelProvider) || null, modelId, geometry: qualification?.geometry ?? unknownCodexGeometry, qualification };
 };

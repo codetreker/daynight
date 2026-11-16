@@ -22,7 +22,11 @@ uses separate native encoders and evidence matchers, with one shared operation,
 occurrence and immutable-resource contract. The original decision established
 these boundaries before native implementation. The adapters now connect them
 through the existing Controller journal and media owner; production qualification
-still requires the exact backend, model and platform evidence.
+still requires the exact backend, model and platform evidence. The later
+[qualification-boundary decision](2026-11-16-image-qualification-boundaries.md)
+separates immutable application originals and complete native-interface delivery
+from permitted native processing, and distinguishes combination qualification
+from complete feature acceptance.
 
 Codex uses stable localImage files and request/client identity, Claude uses
 ordered base64 sources and profile-proven root execution evidence, and Copilot
@@ -89,9 +93,12 @@ follow full-file loading; item counts also do not bound bytes. Streaming or
 isolated readers therefore carry explicit frame, queue and process budgets.
 
 **Infer vision support from model names or missing negative flags.** Unknown
-backend, limits or cumulative context may reject otherwise small images. Exact
-profiles and conservative proven geometry envelopes trade availability for
-consistent, explainable rejection. Matching SDK and CLI versions to a published
+backend, limits or cumulative context may reject otherwise small images. The
+original conservative geometry-envelope requirement traded availability for
+consistent rejection while native processing limits were unproven. Its later
+qualification boundary preserves evidenced original-input limits without
+requiring a geometry envelope across every unobservable context branch.
+Matching SDK and CLI versions to a published
 model name also proves neither native acceptance nor the geometry of the actual
 backend and platform; public vision limits cannot substitute for qualification.
 

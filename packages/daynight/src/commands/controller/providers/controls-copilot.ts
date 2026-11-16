@@ -1,3 +1,4 @@
+import { bindImageQualification, qualifiedImageLimits } from "./image-qualification.js";
 import type { CopilotSession } from "@github/copilot-sdk";
 import { ProviderControls, controlDeadline, controlError, uniqueOptions, type SessionSetting } from "./controls.js";
 import { record, string, NativeRpcError } from "./native-rpc.js";
@@ -14,19 +15,24 @@ export class CopilotControls {
   private unconfirmed = false;
   private unsettled: { id: string; value: string } | null = null;
   constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null, private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); }
+  imageModelId(): string | null { return this.currentModel; }
   imageCapabilities(profile: CopilotImageProfile | null, sessionId: string | null): Omit<ProviderImageCapabilities, "revision"> {
     const matches = this.capabilityModels.filter(item => item.id === this.currentModel), model = matches.length === 1 ? matches[0] : undefined;
     const vision = record(record(model?.capabilities).supports).vision, limits = record(record(record(model?.capabilities).limits).vision);
     const mime = limits.supported_media_types;
     const valid = Array.isArray(mime) && mime.every(value => typeof value === "string" && value.length > 0) && new Set(mime).size === mime.length && Number.isSafeInteger(limits.max_prompt_images) && Number(limits.max_prompt_images) > 0 && Number.isSafeInteger(limits.max_prompt_image_size) && Number(limits.max_prompt_image_size) > 0;
-    const media = valid ? ["image/png", "image/jpeg", "image/webp"].filter(type => (mime as string[]).includes(type)) as InputMime[] : [];
+    const qualification = profile?.modelId === this.currentModel && profile.qualification?.identity.modelId === this.currentModel ? profile?.qualification ?? null : null;
+    const media = valid ? ["image/png", "image/jpeg", "image/webp"].filter(type => (mime as string[]).includes(type) && (!qualification || qualification.inputMediaTypes.includes(type as InputMime))) as InputMime[] : [];
     const stable = !this.closed && !this.unconfirmed && this.pending.size === 0 && this.store.value.settingsError === null;
-    const geometry = profile?.geometry ?? unknownCopilotGeometry;
+    const geometry = qualification ? qualifiedImageLimits(qualification).geometry : unknownCopilotGeometry;
     const send = !profile || !sessionId || !stable || !model || typeof vision !== "boolean" ? "unknown" : !vision ? "unsupported" : !valid ? "unknown" : !media.length ? "unsupported" : geometry.known ? "supported" : "unknown";
-    return { expectedNativeSessionId: sessionId, modelId: this.currentModel, controlsRevision: this.store.value.revision, send, steer: send === "unsupported" ? "unsupported" : "unknown",
-      reasonCode: !profile ? "profile_disabled" : send === "unsupported" ? "model_unsupported" : "capability_unknown",
-      inputMediaTypes: send === "supported" ? media : [], maxImageBytes: String(valid ? Math.min(Number(limits.max_prompt_image_size), IMAGE_LIMITS.imageBytes) : IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: valid ? Math.min(Number(limits.max_prompt_images), IMAGE_LIMITS.images) : IMAGE_LIMITS.images,
-      geometry };
+    const envelope = qualification ? qualifiedImageLimits(qualification) : null;
+    const sendSupport = send === "supported" && !qualification?.send ? "unsupported" : send;
+    const steerSupport = send === "supported" ? qualification?.steer ? "supported" : "unsupported" : send;
+    return bindImageQualification({ expectedNativeSessionId: sessionId, modelId: this.currentModel, controlsRevision: this.store.value.revision, send: sendSupport, steer: steerSupport,
+      reasonCode: sendSupport === "supported" || steerSupport === "supported" ? null : !profile || qualification && !qualification.send && !qualification.steer ? "profile_disabled" : send === "unsupported" ? "model_unsupported" : "capability_unknown",
+      inputMediaTypes: send === "supported" ? media.filter(mime => envelope!.inputMediaTypes.includes(mime)) : [], maxImageBytes: String(valid ? Math.min(Number(limits.max_prompt_image_size), Number(envelope?.maxImageBytes ?? IMAGE_LIMITS.imageBytes)) : IMAGE_LIMITS.imageBytes), maxMessageImageBytes: envelope?.maxMessageImageBytes ?? String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: valid ? Math.min(Number(limits.max_prompt_images), envelope?.maxImagesPerMessage ?? IMAGE_LIMITS.images) : IMAGE_LIMITS.images,
+      geometry }, qualification);
   }
   invalidateImages(): void { this.unconfirmed = true; }
   private permissions(): SessionSetting { return { id: "tool_approval", category: "permission", label: "Tool approvals", value: this.toolApproval, mutable: typeof this.native.rpc.permissions.setApproveAll === "function", scope: "session", description: "Native tool approval policy. Existing grants, path and network permissions are independent.", options: [{ value: "ask", label: "Ask for approval" }, { value: "allow", label: "Allow tools" }] }; }

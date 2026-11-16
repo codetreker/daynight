@@ -80,6 +80,11 @@ func (s *Execution) authorizeImages(ctx context.Context, tx *operationTx, r *rec
 	if action != "supported" {
 		return fault("component_unsupported", "Native image input is not enabled for this provider profile.")
 	}
+	// Capability qualification is stable across source events; admission still
+	// requires the complete, sealable checkpoint of the current source prefix.
+	if err := requireImageHistoryLedger(ctx, tx, r, false); err != nil {
+		return err
+	}
 	d, e := resourceDAO(tx)
 	if e != nil {
 		return e
