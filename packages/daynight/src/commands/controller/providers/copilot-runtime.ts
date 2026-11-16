@@ -59,5 +59,5 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     void attempt.then(settled, settled);
     return attempt;
   };
-  return { get child() { return owned.child; }, ready, close, get authority() { return owned.authority; }, bridgeMetrics: () => bridge?.metrics() ?? { peakRss: 0, peakHeap: 0 } };
+  return { get nativeExecutableSha256() { return closing ? null : owned.nativeExecutableSha256; }, get child() { return owned.child; }, ready, close, get authority() { return owned.authority; }, bridgeMetrics: () => bridge?.metrics() ?? { peakRss: 0, peakHeap: 0 } };
 };

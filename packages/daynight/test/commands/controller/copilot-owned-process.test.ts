@@ -27,6 +27,7 @@ test("the shared Copilot owner starts the frozen Node and literal recipe despite
   const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: { ...process.env, PATH: "" }, onSpawn() {} }, () => {});
   try {
     await expect(runtime.ready).resolves.toMatchObject({ port: 12345 });
+    expect(runtime.nativeExecutableSha256).toBeNull();
     expect(JSON.parse(await readFile(f.receipt, "utf8"))).toEqual({ node: await realpath(f.node), args: ["--headless", "--no-auto-update"] });
   } finally { await runtime.close(); }
 });

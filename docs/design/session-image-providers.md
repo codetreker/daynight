@@ -8,9 +8,9 @@
 
 以下固定资料解释设计选择，不是运行中的版本声明或最低支持版本。发布 profile 必须绑定实际 executable、SDK、backend、精确模型、平台、send/steer、原始输入限制和适用条件，并关联原生 payload/receipt/history 与视觉证据，不能仅按版本字符串或一次识图成功开放支持。资格是对明确组合的发布判断，不宣称证明全部不可观测内部算法；当前生产资格目录为空，未匹配组合继续关闭。[资格边界决策](../../.agents/notes/implemented/architecture/2026-11-16-image-qualification-boundaries.md)解释原件责任和局部发布的取舍。
 
-[资格目录与选择器](../../packages/daynight/src/commands/controller/providers/image-qualification.ts)以 `ImageRuntimeIdentity` 记录 provider、nativeVersion、nativeExecutableSha256、sdkVersion、platform、arch、backendIdentity 和 modelId。nativeExecutableSha256 绑定实际可执行文件字节摘要，版本字符串不能代替。backendIdentity 是可信 backend 身份的 SHA256 摘要，不保存地址或凭据，也不把 Provider 别名当身份；Codex app-server 的 sdkVersion=null 表示不使用 SDK，Copilot 的缺失 SDK 版本则是未知。`ImageQualification` 在同一精确身份上保存 evidenceId、evidenceSha256、独立 send/steer 开关、MIME、单图/整条字节、图数及原始输入 geometry。证据文档拥有适用条件及原生处理观察，不增加未经验证的默认支持。
+[资格目录与选择器](../../packages/daynight/src/commands/controller/providers/image-qualification.ts)以 `ImageRuntimeIdentity` 记录 provider、nativeVersion、nativeExecutableSha256、sdkVersion、platform、arch、backendIdentity 和 modelId。nativeExecutableSha256 绑定实际可执行文件字节摘要，版本字符串不能代替。backendIdentity 按对应 Provider 机制编码可观测身份并取 SHA256，公共值不保存地址或凭据，也不把 Provider 别名本身当作充分身份；其证据范围受下文观察机制限制；Codex app-server 的 sdkVersion=null 表示不使用 SDK，Copilot 的缺失 SDK 版本则是未知。`ImageQualification` 在同一精确身份上保存 evidenceId、evidenceSha256、独立 send/steer 开关、MIME、单图/整条字节、图数及原始输入 geometry。证据文档拥有适用条件及原生处理观察，不增加未经验证的默认支持。
 
-只有完整运行时身份唯一匹配合法目录项时，`selectImageQualification` 才返回冻结的 `QualifiedImages` 和该完整资格记录的 fingerprint；缺项、歧义或非法证据拒绝。当前两个 profile 工厂均未获得可信 nativeExecutableSha256 和 backendIdentity，不能从版本字符串、modelProvider 或 SDK 版本猜测填充；即使协议兼容也保持 unknown。数值能力对象以私有 WeakMap 绑定 fingerprint，不扩展公共 DTO。journal 将 `provider_images_qualification` 与 Provider 能力同事务持久化；证据变化即使不改变数值上限，也推进 providerRevision。原授权保留该绑定，native 最终派发比较当前资格，不能在同一数值能力下沿用另一份证据。
+只有完整运行时身份唯一匹配合法目录项时，`selectImageQualification` 才返回冻结的 `QualifiedImages` 和该完整资格记录的 fingerprint；缺项、歧义或非法证据拒绝。Codex 工厂尚未获得可信 nativeExecutableSha256 和 backendIdentity；Copilot 可使用下文限定的程序与原生声明路由观察，但观察本身不建立资格。不能从版本字符串、modelProvider 或 SDK 版本猜测身份，当前空目录使协议兼容的组合也保持 unknown。数值能力对象以私有 WeakMap 绑定 fingerprint，不扩展公共 DTO。journal 将 `provider_images_qualification` 与 Provider 能力同事务持久化；证据变化即使不改变数值上限，也推进 providerRevision。原授权保留该绑定，native 最终派发比较当前资格，不能在同一数值能力下沿用另一份证据。
 
 | 来源 | 影响设计的原生事实 |
 | --- | --- |
@@ -169,6 +169,18 @@ SDK user 工具事件的 `tool_use_result` 若为明确的 image `FileReadOutput
 native/resume pin 默认保留到原生 Session 删除。仅 profile 已证明 SDK 获得独立完整 bytes、持久历史不依赖 localPath 且无活跃读者时，才接受私有“不再依赖文件”释放证据；accepted/回合结束本身不够。unknown、消息和归档引用独立保留。
 
 ## Copilot
+
+### 原生声明的运行时身份
+
+[私有路由观察器](../../packages/daynight/src/commands/controller/providers/copilot-route-observation.ts)读取同一 SDK Session 的当前模型、默认 endpoint，再读取当前模型核对。它只在支持的 type、wireApi、transport 及安全 URL 结构内生成 `native_declared_route_v1` 摘要；地址不得包含 userinfo、query 或 fragment。摘要和 modelId 可以由 bridge 返回；apiKey、headers、sessionToken 及完整 endpoint 不得从 bridge worker 返回 Controller 父进程、进入摘要或诊断。专用观察失败返回空结果，普通 RPC 不透传 getEndpoint。
+
+程序身份复用 `verifyToolLaunch` 已验证的同一 Windows 直启原生 executable artifact，绑定实际所属进程。JS launcher、interpreter、materialized runtime 和未验证 fallback 保持未知；不能用 Node 或启动脚本的摘要冒充原生程序身份。进程关闭或退出后不再提供有效摘要。
+
+`CopilotRouteObservation` 的 sessionId、generation 和模型读回限制异步观察及最终图片派发；原生没有提供原子快照，因此前后模型相同也不能被描述成原子证明。设置、模型或模式变化、恢复及断连使旧观察失效，稳定读回后可重新观察。发送前在现有派发互斥范围内刷新，bridge 在异步图片编码和最终授权回调之后再次核对 generation。generation 不参与稳定资格摘要，无变化读回不制造新的资格身份。观察必须有界，晚到结果不得恢复已失效观察；图片观察失败不得永久占有普通文字发送门禁。
+
+这里的 backendIdentity 仅标识原生声明的可见路由配置，不证明最终 HTTP 目标、隐藏部署或模型权重，也不是实际出站请求观察。生产不为此安装 requestHandler：SDK 在回调前全量缓冲请求，默认转发的重定向行为也需要独立验证。当前资格目录仍为空；真实输入、精确回执、历史及产品证据由资格验收负责，不能由配置读回替代。[决策记录](../../.agents/notes/implemented/architecture/2026-11-16-copilot-image-runtime-observation.md)保留替代方案和成本。
+
+### 图片输入与目录限制
 
 ### 当前模型与 blob 输入
 

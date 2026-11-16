@@ -38,6 +38,13 @@ const server = createServer(socket => {
       }
       else if (method === "session.options.update" || method === "session.destroy" || method === "runtime.shutdown" || method === "session.permissions.handlePendingPermissionRequest") respond(id, {});
       else if (method === "session.model.getCurrent") respond(id, { modelId: "fixture-model" });
+      else if (method === "session.provider.getEndpoint") {
+        assert.equal(params.modelId, undefined);
+        if (process.env.DAYNIGHT_TEST_BRIDGE_MODE === "route-timeout") continue;
+        const secret = "endpoint-secret-canary";
+        if (process.env.DAYNIGHT_TEST_BRIDGE_MODE === "route-error") write({ id, error: { code: -32000, message: secret } });
+        else respond(id, { type: "openai", wireApi: "responses", transport: "http", baseUrl: process.env.DAYNIGHT_TEST_BRIDGE_MODE === "route-malformed" ? `https://fixture.invalid/?key=${secret}` : "https://fixture.invalid", apiKey: secret, headers: { Authorization: secret }, sessionToken: { token: secret, header: "fixture" } });
+      }
       else if (method === "session.getMetadata") respond(id, { session: { sessionId: params.sessionId, isRemote: false, context: { cwd: process.cwd() } } });
       else if (method === "models.list") respond(id, { models: Array.from({ length: 500 }, (_, index) => ({ id: `model-${index}`, name: `Model ${index}`, description: "catalog".repeat(800), capabilities: { supports: { vision: true } } })) });
       else if (method === "session.send") {

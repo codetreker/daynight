@@ -16,7 +16,7 @@ import { NativeRpcTimeoutError } from "../../../src/commands/controller/provider
 import type { NativeReadPolicy, ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 import type { LocalImageCheckpoint } from "../../../src/commands/controller/markdown/local-source-proof.js";
 import { bindCopilotRead, checkCopilotRead, type CopilotAuthorityNative } from "../../../src/commands/controller/providers/copilot-read-authority-check.js";
-const sdk = vi.hoisted(() => ({ provenGeometry: false, steerOnly: false, authority: null as any, construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
+const sdk = vi.hoisted(() => ({ provenGeometry: false, steerOnly: false, authority: null as any, beforeImageVerify: undefined as (() => void) | undefined, observeRoute: vi.fn(), construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
 vi.mock("../../../src/commands/controller/providers/copilot-image-profile.js", async original => {
   const actual = await original<typeof import("../../../src/commands/controller/providers/copilot-image-profile.js")>();
   return { ...actual, copilotImageProfile(sdkVersion: string, cliVersion: string, modelId: string) {
@@ -33,7 +33,7 @@ const processMock = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("../../../src/commands/controller/providers/copilot-bridge.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/providers/copilot-bridge.js")>(), startCopilotBridge(options: { port: number; token: string }) {
   const client = sdk.construct({ connection: sdk.connection(`127.0.0.1:${options.port}`, { connectionToken: options.token }) });
   return { ready: client.start().then(() => client), close: async () => {}, metrics: () => ({ peakRss: 0, peakHeap: 0 }) };
-}, sendCopilotBridgeImages: (native: unknown, input: unknown, verify: () => void) => { verify(); return sdk.imageSend(native, input); } }));
+}, observeCopilotBridgeRoute: (native: unknown) => sdk.observeRoute(native), sendCopilotBridgeImages: (native: unknown, input: unknown, verify: () => void) => { sdk.beforeImageVerify?.(); verify(); return sdk.imageSend(native, input); } }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), spawn: processMock.spawn }));
 import { openCopilotProvider } from "../../../src/commands/controller/providers/copilot.js";
 import { CopilotReadCorrelation, copilotReadMarker } from "../../../src/commands/controller/providers/copilot-read-authority-correlation.js";
@@ -59,7 +59,7 @@ function setup() {
   const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: "/controlled/copilot", env: { ...process.env, COPILOT_HOME: "/private/copilot-profile" }, onTimeline: e => entries.push(structuredClone(e)), onState: s => states.push(structuredClone(s)), onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onSpawn: p => { expect(p.pid).toBe(12345); spawned.push(p); } };
   return { child, client, native, entries, states, options, observed, spawned, emit: (e: unknown) => captured.onEvent(e), config: () => captured };
 }
-beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.steerOnly = false; sdk.authority = null; sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
+beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.steerOnly = false; sdk.authority = null; sdk.beforeImageVerify = undefined; sdk.observeRoute.mockImplementation(async (native: any) => ({ kind: "native_declared_route_v1", sessionId: native.sessionId, modelId: (await native.rpc.model.getCurrent()).modelId, backendIdentity: "b".repeat(64), generation: 1 })); sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
 
 async function sourceAuthorityFixture() {
@@ -772,6 +772,57 @@ test.each([true, false])("under a controlled proven geometry profile the common 
     expect(fixture.native.send).not.toHaveBeenCalled(); expect(f.observed).toHaveBeenCalledWith(expect.objectContaining({ provider: "copilot", operationId: f.operationId, nativeMessageId: "native-image-message", intentSha256: f.intent.sha256 }));
     await expect(provider.send(f.input, randomUUID(), receipt.turnId!)).rejects.toThrow("capability"); expect(sdk.imageSend).toHaveBeenCalledOnce();
   } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("an explicit control refresh recovers a failed route observation with the same qualification", async () => {
+  const f = await imageFixture(), fingerprints: (string | null)[] = [];
+  const onState = f.options.onState;
+  f.options.onState = value => { if (value.images?.send === "supported") fingerprints.push(imageQualificationFingerprint(value.images)); onState(value); };
+  const provider = await openCopilotProvider(f.options);
+  try {
+    expect(fixture.states.at(-1)?.images?.send).toBe("supported");
+    sdk.observeRoute.mockResolvedValueOnce(null);
+    await provider.refreshControls!();
+    expect(fixture.states.at(-1)?.images?.send).toBe("unknown");
+    await provider.refreshControls!();
+    expect(fixture.states.at(-1)?.images?.send).toBe("supported");
+    expect(fingerprints[0]).not.toBeNull(); expect(new Set(fingerprints).size).toBe(1);
+  } finally { await provider.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("a native model event disables images until its replacement observation completes", async () => {
+  const f = await imageFixture(), provider = await openCopilotProvider(f.options);
+  let release!: (value: unknown) => void;
+  const prior = sdk.observeRoute.mock.results.at(-1)!.value;
+  try {
+    sdk.observeRoute.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    fixture.emit(event("session.model_change", { previousModel: "vision-model", newModel: "vision-model" }));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(fixture.states.at(-1)?.images?.send).toBe("unknown");
+    release(await prior);
+    await vi.waitFor(() => expect(fixture.states.at(-1)?.images?.send).toBe("supported"));
+  } finally { await provider.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("a confirmed model setting rebuilds its route profile before restoring image capability", async () => {
+  const f = await imageFixture();
+  Object.assign(f.model, { switchTo: vi.fn(async () => ({ modelId: "vision-model" })) });
+  const provider = await openCopilotProvider(f.options);
+  try {
+    const before = sdk.observeRoute.mock.calls.length;
+    await provider.setSetting!("model", "vision-model", randomUUID(), fixture.states.at(-1)!.controls!.revision);
+    expect(sdk.observeRoute.mock.calls.length).toBe(before + 1);
+    expect(fixture.states.at(-1)?.images?.send).toBe("supported");
+  } finally { await provider.close(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+test("a model event at final image admission prevents native dispatch", async () => {
+  const f = await imageFixture(), provider = await openCopilotProvider(f.options);
+  try {
+    sdk.beforeImageVerify = () => fixture.emit(event("session.model_change", { newModel: "vision-model" }));
+    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("observation changed");
+    expect(sdk.imageSend).not.toHaveBeenCalled(); expect(fixture.native.send).not.toHaveBeenCalled();
+  } finally { await provider.close(); await rm(f.root, { recursive: true, force: true }); }
 });
 
 test("second image validation failure and changed model evidence both prevent the entire Copilot send", async () => {
