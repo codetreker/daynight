@@ -48,11 +48,17 @@ type SummaryScheduler struct {
 }
 
 type SummaryCapacity struct {
-	ObservedAt string `json:"observedAt"`
-	Quality    string `json:"quality"`
-	Limit      int64  `json:"limit"`
-	Occupied   int64  `json:"occupied"`
-	Available  int64  `json:"available"`
+	ObservedAt string             `json:"observedAt"`
+	Quality    string             `json:"quality"`
+	Limit      int64              `json:"limit"`
+	Occupied   int64              `json:"occupied"`
+	Available  int64              `json:"available"`
+	Breakdown  *CapacityBreakdown `json:"breakdown,omitempty"`
+}
+
+type CapacityBreakdown struct {
+	Active   int64 `json:"active"`
+	Retained int64 `json:"retained"`
 }
 
 type PublicAdmission struct {
@@ -77,7 +83,7 @@ func summarySchema(admission parser) parser {
 		"capturedAt":     timestamp,
 		"lifecycle":      enum("starting", "running", "stopping", "stopped"),
 		"scheduler":      object(map[string]parser{"phase": scheduler, "coverage": coverage, "lastSuccessfulAt": nullable(timestamp), "nextPollAt": nullable(timestamp)}),
-		"capacity":       nullable(object(map[string]parser{"observedAt": timestamp, "quality": enum("current", "stale"), "limit": number(1, 64), "occupied": number(0, safeInt), "available": number(0, safeInt)})),
+		"capacity":       nullable(capacityParser(false)),
 		"detailCoverage": detail,
 		"admission":      admission,
 	})
@@ -91,11 +97,7 @@ func summaryValue(raw json.RawMessage, admission parser) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
-	m := v.(map[string]any)
-	if c, ok := m["capacity"].(map[string]any); ok && c["available"].(int64) != max(int64(0), c["limit"].(int64)-c["occupied"].(int64)) {
-		return nil, bad()
-	}
-	return m, nil
+	return v.(map[string]any), nil
 }
 
 func reasonIndex(code string) (int, bool) {
@@ -204,6 +206,9 @@ func Summary(o Observation) (json.RawMessage, error) {
 	var c any
 	if v, ok := o["capacity"].(map[string]any); ok {
 		c = map[string]any{"observedAt": v["observedAt"], "quality": v["quality"], "limit": v["limit"], "occupied": v["occupied"], "available": v["available"]}
+		if b, present := v["breakdown"]; present {
+			c.(map[string]any)["breakdown"] = b
+		}
 	}
 	a := o["admission"].(map[string]any)
 	reasons := make([]any, 0, len(a["reasons"].([]any)))

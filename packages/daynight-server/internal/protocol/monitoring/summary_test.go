@@ -23,7 +23,7 @@ func summaryObservation(t *testing.T) Observation {
 	task := "eeeeeeee-eeee-4eee-beee-eeeeeeeeeeee"
 	claim := "dddddddd-dddd-4ddd-bddd-dddddddddddd"
 	o["capturedAt"] = at
-	o["capacity"] = map[string]any{"observedAt": at, "quality": "current", "limit": int64(64), "occupied": safeInt, "available": int64(0), "detailCoverage": "complete"}
+	o["capacity"] = map[string]any{"observedAt": at, "quality": "current", "limit": int64(64), "occupied": safeInt, "available": int64(0), "detailCoverage": "complete", "breakdown": map[string]any{"active": int64(1), "retained": safeInt - 1}}
 	scheduler := o["scheduler"].(map[string]any)
 	scheduler["lastSuccessfulAt"], scheduler["nextPollAt"] = at, at
 	a := o["admission"].(map[string]any)

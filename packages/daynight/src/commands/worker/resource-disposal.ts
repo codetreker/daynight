@@ -8,7 +8,7 @@ import { retainedWorktreePathInScope } from "./worktrees/paths.js";
 import type { WorkerStore } from "./store.js";
 import type { HerdrDisposalRequest, HerdrResourceTarget, HerdrRetainedResource } from "./herdr/resource-types.js";
 
-export type WorkerResourceCommandRequest = { kind: "list" } | ({ kind: "retry" } & HerdrResourceTarget) | ({ kind: "dispose" } & HerdrDisposalRequest);
+export type WorkerResourceCommandRequest = { kind: "list" } | ({ kind: "recover" } & import("./resource-recovery.js").ResourceRecoveryRequest) | ({ kind: "retry" } & HerdrResourceTarget) | ({ kind: "dispose" } & HerdrDisposalRequest);
 
 export const assertHerdrResourceBudget = (resources: readonly HerdrRetainedResource[], availableBytes: bigint): void => {
   const retained = resources.filter(value => !value.worktreeDeleted);

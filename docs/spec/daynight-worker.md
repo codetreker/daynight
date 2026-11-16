@@ -181,6 +181,10 @@ macOS 任务暂停不禁止有效 owner 获取、续约和释放人工 lease，�
 
 ### W-10：Agent 完成与资源清理
 
+仅有 Git 标记而没有独立原执行归属证据的遗留 worktree 继续占用名额，并在[当前监控](daynight-worker-monitoring.md)中按原 Project、Task、claim 持续报告归属未确认、相对 worktree 位置及恢复指导。轮询和重启必须重新发现异常；扫描或权限读取失败不能解除异常。活动任务占用与保留资源占用按完整原 claim 去重并分解，总和与实际准入一致；详情过滤或截断不能改变总数，旧 Worker 未报告分解时明确保持未知。
+
+`worker resources recover <task-id> --project <project-id> --claim-id <claim-id>` 在原机器、原 Worker 已停止且持有独占实例锁时核验指定遗留资源。默认只预检，`--confirm` 才请求回收。恢复要求保留的已完成 Web 执行 journal、同服务和当前登录 owner、原 Worker 与终态 claim、完整原 Git 绑定、原 Controller 与原生进程停止证明，以及原 ready 归档回执与服务端当前归档一致。现存目录必须干净，包含 ignored 文件在内的内容均不得丢失，HEAD 必须保留在原分支且有远端引用可达。实际删除不使用 `--force`；保留分支、原执行记录和归档。缺失证据、另一 Worker、后继 claim、归档未确认或文件未保全均拒绝并保留资源，不能合成停止证明。完全丢失原 journal 时须从备份恢复证据；任务已完成、静态标记及未注册 Session 均不能替代它。未完成执行仍由正常对账恢复，Herdr 使用其已有资源检查和处置路径。
+
 Web 与 Herdr 共用 claim 结束和工作区删除门槛。两种模式保留首个期限和资源身份，每次从权威来源观察剩余资源。Linux/Windows legacy Herdr 的 idle 仅决定何时开始停止；仍有原资源时须完成停止和关闭，同进程已开始的操作必须收尾。重启后当前完整观察确认原资源缺席时可以收敛，不要求恢复进程内历史停止回执，也不将缺席宣称为历史停止证明。Web 的清理回执和原生停止证明从原 Controller 来源读取。进程退出直接停止所拥有执行，不派发清理 prompt。
 
 - Agent 完成全部要求、验收和证据后，最后使用原 claimId 与观察版本通过 task set-status done 提交已有完成操作。必要 PR、授权合并和人工验收未完成时保持任务未完成；worker不重复解释或提交业务done。取消是非交付终态；已取消的任务不能认领或 withdraw 恢复。

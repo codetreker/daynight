@@ -17,7 +17,13 @@ flowchart LR
 
 `internal/server/worker` 负责方法、路径、查询拒绝、请求解析和响应编码；`internal/protocol/monitoring` 持有共享闭合结构、规范化与编码边界。`service/worker` 以认证 principal、当前账号和 Worker 可见窗口组织 PostgreSQL 读取、监控存储和投影；`core/worker` 校验执行关联并处理当前权限及响应预算。`core/store` 提供不暴露 Redis 驱动的 `MonitoringStore`；`core/store/redis` 拥有连接、帧和 Redis 命令。组件装配只为监控创建并关闭 Redis 客户端，正常业务和 readiness 不依赖它。
 
-执行观测中的 claim 关联需要与当前账号、Worker 和活跃 claim 匹配。清理和资源责任是经过 Worker 准入的自报事实：已完成、撤回或重领的旧 claim 不再能证明当前执行所有权。读取依据当前项目访问及任务存在、未删除状态投影名称和 ID；被隐藏的明细及其关联错误、工作区路径、原因和数量分解一并过滤。总体容量和单独上报的无身份清理阻塞事实保留。项目级失败使用项目 scope，可表达没有 Task 的失败。监控关联不授予任何业务权限。
+执行观测中的 claim 关联需要与当前账号、Worker 和活跃 claim 匹配。清理和资源责任是经过 Worker 准入的自报事实：已完成、撤回或重领的旧 claim 不再能证明当前执行所有权。读取依据当前项目访问及任务存在、未删除状态投影名称和 ID；被隐藏的明细及其关联错误、工作区路径和原因一并过滤。总体容量及其可选 active/retained 互斥分解和单独上报的无身份清理阻塞事实保留。项目级失败使用项目 scope，可表达没有 Task 的失败。监控关联不授予任何业务权限。
+
+## 遗留资源与容量分解
+
+生产者使用准入同一份完整身份集合计算 `occupied` 和可选 `breakdown`，先按 project/task/claim 去重，再将占用身份划分为活动任务与其他保留资源。共享 capacity codec 同时解析详情、存储摘要和公共摘要；拒绝负数、非安全整数、缺失分项或与 occupied 不一致的和。旧帧没有分解时保持缺席。权限投影只删除 scoped 明细，不从剩余列表重算容量；被截断的异常和资源责任仍以 partial/restricted 呈现，不能显示为完整无异常。
+
+`ownership-unconfirmed` 是受控归属判断的固定分类，不上传原始 Git 或执行日志。Failure 保留原 claim scope，复用当前权限投影与 project-relative worktree 表达；任务后继 claim 不改写旧异常身份。Web 容量卡展示活动任务占用和保留资源占用，详情展示原 claim、工作区位置及在原机器停止 Worker 后核验原证据的命令。命令仅使用可见 claim 身份，不从路径推断 worktree ID，不因任务已完成而提供盲目删除操作。后台轮询保留展开状态；权限撤销同时撤掉关联、路径和恢复命令。
 
 ## Redis 帧与比较写入
 

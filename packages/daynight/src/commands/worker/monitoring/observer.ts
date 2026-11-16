@@ -64,7 +64,7 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
     const reasonsTruncated = selectedReasons.length > 16;
     if (admissionCoverage !== "complete" || reasonsTruncated) selectedReasons = selectedReasons.filter(reason => reason.code !== "no-ready-tasks" && reason.code !== "no-projects-selected");
     const result: Observation = {
-      runId, sequence, capturedAt: time(), lifecycle, scheduler: { ...scheduler, coverage: preparationIncomplete() ? "partial" : scheduler.coverage }, capacity: capacity === null ? null : { ...capacity, detailCoverage: reservationPartial || reservationItems.length > 128 ? "partial" : "complete" },
+      runId, sequence, capturedAt: time(), lifecycle, scheduler: { ...scheduler, coverage: preparationIncomplete() ? "partial" : scheduler.coverage }, capacity: capacity === null ? null : { ...capacity, ...(capacity.breakdown === undefined ? {} : { breakdown: { ...capacity.breakdown } }), detailCoverage: reservationPartial || reservationItems.length > 128 ? "partial" : "complete" },
       admission: { ...admission, coverage: reasonsTruncated && admissionCoverage !== "unknown" ? "partial" : admissionCoverage, reasons: selectedReasons.slice(0, 16).map(item => ({ ...item, scope: copyScope(item.scope) })) },
       reservations: reservationItems.slice(0, 128), activities: activityItems.slice(0, 128), currentFailures: failureItems.slice(0, 32), lastRecovery: lastRecovery === null ? null : { ...lastRecovery, scope: copyScope(lastRecovery.scope) },
       detailCoverage: detailsPartial || unattributed.size > 0 || reservationPartial || reservationItems.length > 128 || activityItems.length > 128 || failureItems.length > 32 || failureItems.some(item => item.worktree?.kind === "unavailable" && item.worktree.reason === "limit-exceeded") ? "partial" : "complete", delivery: { ...delivery, lastFailure: delivery.lastFailure === null ? null : { ...delivery.lastFailure, error: { ...delivery.lastFailure.error } } },
@@ -115,7 +115,11 @@ export const createMonitoringObserver = (options: { runId?: string; now?: () => 
       }
       if (unique.size < input.occupied) partial = true;
       reservationPartial = partial;
-      capacity = { observedAt: at, quality: "current", limit: input.limit, occupied: input.occupied, available: Math.max(0, input.limit - input.occupied), detailCoverage: partial ? "partial" : "complete" }; dirty();
+      const occupiedReservations = reservations.filter(item => item.occupied);
+      const active = occupiedReservations.filter(item => item.roles.includes("active-task")).length;
+      const breakdown = !partial && occupiedReservations.length === input.occupied
+        ? { active, retained: input.occupied - active } : undefined;
+      capacity = { observedAt: at, quality: "current", limit: input.limit, occupied: input.occupied, available: Math.max(0, input.limit - input.occupied), ...(breakdown === undefined ? {} : { breakdown }), detailCoverage: partial ? "partial" : "complete" }; dirty();
     },
     staleCapacity(): void { if (capacity !== null) { capacity = { ...capacity, quality: "stale" }; dirty(); } },
     setAdmission(coverage: Coverage, reasons: readonly AdmissionReason[]): void {

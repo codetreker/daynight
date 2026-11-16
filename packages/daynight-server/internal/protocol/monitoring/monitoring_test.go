@@ -9,6 +9,37 @@ import (
 
 const valid = `{"runId":"eaaa5ee8-828b-4980-a089-2e8cc5be8420","sequence":"1","capturedAt":"2026-01-02T03:04:05+01:00","lifecycle":"running","scheduler":{"phase":"waiting-poll","coverage":"complete","cycleId":null,"lastCompletedAt":null,"lastSuccessfulAt":null,"lastOutcome":null,"nextPollAt":null},"capacity":{"observedAt":"2026-01-02T00:00:00Z","quality":"current","limit":2,"occupied":3,"available":0,"detailCoverage":"complete"},"admission":{"observedAt":"2026-01-02T00:00:00Z","coverage":"complete","reasons":[]},"reservations":[],"activities":[],"currentFailures":[],"lastRecovery":null,"detailCoverage":"complete","delivery":{"lastSucceededAt":null,"lastFailure":null}}`
 
+func TestCapacityBreakdownContract(t *testing.T) {
+	for _, breakdown := range []string{"", `,"breakdown":{"active":1,"retained":2}`} {
+		raw := strings.Replace(valid, `"occupied":3`, `"occupied":3`+breakdown, 1)
+		o, err := ParseObservation([]byte(raw))
+		if err != nil {
+			t.Fatalf("parse %s: %v", breakdown, err)
+		}
+		summary, err := Summary(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, err := ParseStoredSummary(summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		public, err := EncodePublicSummary(stored, []string{}, "current")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(public), `"breakdown"`) != (breakdown != "") {
+			t.Fatalf("presence changed: %s", public)
+		}
+	}
+	for _, breakdown := range []string{`null`, `{}`, `{"active":1}`, `{"active":1,"retained":1}`, `{"active":-1,"retained":4}`, `{"active":1.5,"retained":1.5}`, `{"active":1,"retained":2,"extra":0}`, `{"active":9007199254740991,"retained":9007199254740991}`} {
+		raw := strings.Replace(valid, `"occupied":3`, `"occupied":3,"breakdown":`+breakdown, 1)
+		if _, err := ParseObservation([]byte(raw)); err == nil {
+			t.Errorf("accepted %s", breakdown)
+		}
+	}
+}
+
 func TestParseObservationClosedAndCanonical(t *testing.T) {
 	o, err := ParseObservation([]byte(valid))
 	if err != nil {
