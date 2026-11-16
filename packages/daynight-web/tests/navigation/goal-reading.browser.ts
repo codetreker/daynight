@@ -2555,12 +2555,11 @@ for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows preserve their inset at ${width}px`, async ({ page }) => {
+for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows align with their content edges at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
   const fixture = await install(page); fixture.completionGoal(true);
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
-  const inset = width <= 600 ? 12 : 16;
   const verify = async (container: Locator, toggle: Locator, contentSelector: string, bottom: number) => {
     const headerBefore = await toggle.boundingBox();
     await toggle.click();
@@ -2582,7 +2581,7 @@ for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows prese
     });
     expect(geometry.rows.length).toBeGreaterThan(0);
     for (const row of geometry.rows) {
-      expect(row.left - geometry.left).toBeCloseTo(inset, 1);
+      expect(row.left).toBeCloseTo(geometry.left, 1);
       expect(row.right).toBeCloseTo(geometry.right, 1);
       expect(row.overflow).toBe(false);
     }
