@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -332,4 +333,84 @@ func TestAppWorkConstructorPreservesFailureMeaning(t *testing.T) {
 			t.Fatalf("cancellation: %v", err)
 		}
 	})
+}
+
+// cancelWorkLock leaves all queries on the real transaction and cancels only
+// after App authorization has completed, just before locking the connection.
+type cancelWorkLock struct {
+	pgx.Tx
+	cancel context.CancelFunc
+	armed  bool
+}
+
+func (tx *cancelWorkLock) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if tx.armed && strings.HasPrefix(sql, "SELECT project_id::text FROM project_github WHERE project_id=$1 FOR UPDATE") {
+		tx.armed = false
+		tx.cancel()
+	}
+	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+func TestAppWorkCancellationAtConnectionLock(t *testing.T) {
+	for _, operation := range []string{"lease", "due"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newAppWorkFixture(t)
+			tx := begin(t, f.db, pgx.TxOptions{})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			wrapped := &cancelWorkLock{Tx: tx, cancel: cancel}
+			w, err := github.NewAppWorkWriter(ctx, wrapped, f.project, &f.identity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapped.armed = true
+			var ok bool
+			if operation == "lease" {
+				ok, err = w.ValidLease(ctx, store.GitHubLease{Generation: 1, Token: uuid.NewString()})
+			} else {
+				ok, err = w.HasDuePending(ctx, time.Now())
+			}
+			if wrapped.armed || ok || !errors.Is(err, context.Canceled) {
+				t.Fatalf("connection lock cancellation: armed=%v result=%v error=%v", wrapped.armed, ok, err)
+			}
+			if err := tx.Rollback(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var unchanged bool
+			err = f.db.Pool.QueryRow(t.Context(), `SELECT revision=7 AND claim_token IS NULL AND (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1)=1 FROM project_github WHERE project_id=$1`, f.project).Scan(&unchanged)
+			if err != nil || !unchanged {
+				t.Fatalf("cancelled operation changed state: %v %v", unchanged, err)
+			}
+		})
+	}
+}
+
+func TestAppWorkLeaseAndDueFailuresPreserveState(t *testing.T) {
+	f := newAppWorkFixture(t)
+	tx := begin(t, f.db, pgx.TxOptions{})
+	ctx := t.Context()
+	w, lease, now := f.claimed(t, tx)
+
+	mustExec(t, tx, `SAVEPOINT invalid_lease`)
+	if ok, err := w.ValidLease(ctx, store.GitHubLease{Generation: lease.Generation, Token: "invalid-uuid"}); err == nil || ok {
+		t.Fatalf("invalid lease: %v %v", ok, err)
+	} else {
+		requireGitHubSQLState(t, err, "22P02")
+	}
+	mustExec(t, tx, `ROLLBACK TO SAVEPOINT invalid_lease`)
+	if ok, err := w.ValidLease(ctx, lease); err != nil || !ok {
+		t.Fatalf("lease changed after error: %v %v", ok, err)
+	}
+
+	mustExec(t, tx, `SAVEPOINT missing_pending`)
+	mustExec(t, tx, `ALTER TABLE project_github_pending_prs RENAME TO hidden_pending_for_due_failure`)
+	if due, err := w.HasDuePending(ctx, now); err == nil || due {
+		t.Fatalf("missing pending table: %v %v", due, err)
+	} else {
+		requireGitHubSQLState(t, err, "42P01")
+	}
+	mustExec(t, tx, `ROLLBACK TO SAVEPOINT missing_pending`)
+	if due, err := w.HasDuePending(ctx, now.Add(time.Second)); err != nil || !due {
+		t.Fatalf("pending changed after error: %v %v", due, err)
+	}
 }

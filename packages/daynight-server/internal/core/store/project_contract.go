@@ -42,7 +42,6 @@ type ProjectWriteScope interface {
 	TaskTagDAO() TaskTagWriteDAO
 	TaskDAO() TaskWriteDAO
 	SessionDAO() ProjectSessionDAO
-	GitHubDAO() GitHubWriteDAO
 }
 
 type ProjectWriteDAO interface {

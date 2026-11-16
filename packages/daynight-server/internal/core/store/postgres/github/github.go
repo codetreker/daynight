@@ -4,7 +4,6 @@ package github
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -21,9 +20,6 @@ type writer struct {
 }
 
 func NewReader(tx pgx.Tx) store.GitHubReadDAO { return &reader{tx: tx} }
-func NewWriter(tx pgx.Tx, projectID string) store.GitHubWriteDAO {
-	return &writer{tx: tx, projectID: projectID}
-}
 
 const connectionFields = `project_id::text, version, generation, revision, enabled, sync_enabled,
  app_id, installation_id, repository_id, installation_account_login, repository_full_name, repository_private,
@@ -128,33 +124,6 @@ func summaryTargets(p *githubpr.PullRequestSummary) []any {
 		&p.State, &p.Draft, &p.BaseRef, &p.HeadRepositoryID, &p.HeadRepositoryFullName, &p.HeadRef, &p.HeadSHA,
 		&p.GitHubCreatedAt, &p.GitHubUpdatedAt, &p.GitHubClosedAt, &p.GitHubMergedAt, &p.ObservedAt, &p.Revision, &p.SeenPollID}
 }
-func (r *reader) Bindings(ctx context.Context, q store.GitHubBindingsQuery) ([]githubpr.Connection, error) {
-	if q.Limit < 1 || q.Limit > 100 {
-		return nil, fmt.Errorf("github binding limit must be 1..100")
-	}
-	rows, err := r.tx.Query(ctx, `SELECT `+connectionFields+` FROM project_github g
- WHERE app_id=$1 AND installation_id=$2 AND ($3::bigint IS NULL OR repository_id=$3)
- AND ($4::uuid IS NULL OR project_id>$4) AND EXISTS
- (SELECT 1 FROM projects p WHERE p.id=g.project_id AND p.deleted_at IS NULL)
- ORDER BY project_id LIMIT $5`, q.AppID, q.InstallationID, q.RepositoryID, q.AfterProjectID, q.Limit)
-	if err != nil {
-		return nil, pg.QueryError("read github bindings", err)
-	}
-	defer rows.Close()
-	out := []githubpr.Connection{}
-	for rows.Next() {
-		c, err := scanConnection(rows)
-		if err != nil {
-			return nil, pg.QueryError("read github bindings", err)
-		}
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, pg.QueryError("read github bindings", err)
-	}
-	return out, nil
-}
-
 func (r *reader) PullRequest(ctx context.Context, id string, number int64) (githubpr.PullRequest, error) {
 	var p githubpr.PullRequest
 	targets := append(summaryTargets(&p.PullRequestSummary), &p.Description)

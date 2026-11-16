@@ -23,15 +23,26 @@ func requireGitHubSQLState(t *testing.T, err error, code string) {
 	}
 }
 
+func boundWork(t *testing.T, tx pgx.Tx, project string) store.GitHubAppWorkDAO {
+	t.Helper()
+	w, err := github.NewAppWorkWriter(t.Context(), tx, project, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
 func TestGitHubWorkRuntimeAndConditionalHints(t *testing.T) {
 	db, id := dbFixture(t)
 	ctx := t.Context()
 	tx := begin(t, db, pgx.TxOptions{})
 	hint, request, token := uuid.NewString(), uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
 	mustExec(t, tx, `INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,app_id,installation_id,repository_id,access_state,access_hint_id,access_delivery_id,last_webhook_received_at) VALUES($1,2,1,7,true,true,10,20,30,'available',$2,'delivery',$3)`, id, hint, now)
 	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES ($1,42,1,$2,'delivery',$3,$3)`, id, request, now)
-	w := github.NewWriter(tx, id)
+	bindSignalApp(t, tx, id)
+	w := boundWork(t, tx, id)
 	clock, err := w.ObservedAt(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +146,20 @@ func TestGitHubWorkRuntimeAndConditionalHints(t *testing.T) {
 	}
 }
 
-func TestGitHubBindingsAndSignalReceptionTime(t *testing.T) {
+func bindSignalApp(t *testing.T, tx pgx.Tx, projects ...string) string {
+	t.Helper()
+	app, team, grant := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	mustExec(t, tx, `INSERT INTO github_apps(id,github_app_id,name,github_name,github_slug,private_key_pem,webhook_secret) VALUES($1,10,'app','app','app','key','secret')`, app)
+	mustExec(t, tx, `INSERT INTO teams(id,name) VALUES($1,'team')`, team)
+	mustExec(t, tx, `INSERT INTO github_app_team_grants(id,app_resource_id,team_id) VALUES($1,$2,$3)`, grant, app, team)
+	for _, project := range projects {
+		mustExec(t, tx, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, project, team)
+		mustExec(t, tx, `UPDATE project_github SET app_resource_id=$2,team_grant_id=$3,credential_version=1 WHERE project_id=$1`, project, app, grant)
+	}
+	return app
+}
+
+func TestGitHubAppSignalReceptionTime(t *testing.T) {
 	db, id := dbFixture(t)
 	ctx := t.Context()
 	tx := begin(t, db, pgx.TxOptions{})
@@ -148,28 +172,13 @@ func TestGitHubBindingsAndSignalReceptionTime(t *testing.T) {
 		mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,true,true,10,20,30)`, project)
 	}
 	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,true,true,10,20,31)`, different)
+	app := bindSignalApp(t, tx, id, other, deleted, different)
 	r := github.NewReader(tx)
-	repo := int64(30)
-	found, err := r.Bindings(ctx, store.GitHubBindingsQuery{AppID: 10, InstallationID: 20, RepositoryID: &repo, Limit: 100})
-	if err != nil || len(found) != 2 || found[0].ProjectID >= found[1].ProjectID {
-		t.Fatalf("bindings: %+v %v", found, err)
-	}
-	page, err := r.Bindings(ctx, store.GitHubBindingsQuery{AppID: 10, InstallationID: 20, RepositoryID: &repo, AfterProjectID: &found[0].ProjectID, Limit: 1})
-	if err != nil || len(page) != 1 || page[0].ProjectID != found[1].ProjectID {
-		t.Fatalf("binding cursor: %+v %v", page, err)
-	}
-	all, err := r.Bindings(ctx, store.GitHubBindingsQuery{AppID: 10, InstallationID: 20, Limit: 100})
-	if err != nil || len(all) != 3 {
-		t.Fatalf("all repositories: %+v %v", all, err)
-	}
-	if _, err = r.Bindings(ctx, store.GitHubBindingsQuery{Limit: 101}); err == nil {
-		t.Fatal("accepted unbounded bindings")
-	}
 	latest := time.Now().UTC().Truncate(time.Microsecond)
 	older := latest.Add(-time.Minute)
-	sig := github.NewSignalWriter(tx)
+	sig := github.NewAppSignalWriter(tx, app, 10, 1)
 	first, second := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 42, RequestID: first, DeliveryID: "newer", ReceivedAt: latest, NextAttemptAt: latest}
+	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 42, RequestID: first, DeliveryID: "newer", ReceivedAt: latest, NextAttemptAt: latest}
 	if n, err := sig.SignalPullRequest(ctx, signal); err != nil || n != 2 {
 		t.Fatalf("signal: %d %v", n, err)
 	}
@@ -200,8 +209,10 @@ func TestGitHubWorkRefusalsAndCancellation(t *testing.T) {
 	db, id := dbFixture(t)
 	ctx := t.Context()
 	tx := begin(t, db, pgx.TxOptions{})
-	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,generation) VALUES ($1,true,true,10,1)`, id)
-	w := github.NewWriter(tx, id)
+	mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
+	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id,generation) VALUES ($1,true,true,10,20,30,1)`, id)
+	bindSignalApp(t, tx, id)
+	w := boundWork(t, tx, id)
 	token := uuid.NewString()
 	now, err := w.ObservedAt(ctx)
 	if err != nil {
@@ -213,13 +224,16 @@ func TestGitHubWorkRefusalsAndCancellation(t *testing.T) {
 		}
 	}
 	lease := store.GitHubLease{Generation: 1, Token: token}
+	if ok, err := w.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token, Kind: "poll", Until: now.Add(time.Minute)}); err != nil || !ok {
+		t.Fatalf("valid claim: %v %v", ok, err)
+	}
 	if _, _, err = w.Pending(ctx, lease, now, 101); err == nil {
 		t.Fatal("accepted unbounded pending")
 	}
 	if _, _, err = w.UnseenActive(ctx, lease, token, 0, 101); err == nil {
 		t.Fatal("accepted unbounded unseen")
 	}
-	if _, err = github.NewWorkReader(db.Pool).DueGitHubProjects(ctx, 10, now, 33); err == nil {
+	if _, err = github.NewAppWorkReader(db.Pool).DueGitHubAppProjects(ctx, now, 33); err == nil {
 		t.Fatal("accepted unbounded work scan")
 	}
 	cancelled, cancel := context.WithCancel(ctx)
@@ -235,11 +249,13 @@ func TestGitHubWorkRejectsStaleLeaseAndPropagatesDatabaseErrors(t *testing.T) {
 	tx := begin(t, db, pgx.TxOptions{})
 	token, request := uuid.NewString(), uuid.NewString()
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
 	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,repository_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,true,10,20,30,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
 	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,9,1,$2,'delivery',$3,$3)`, id, request, now)
 	insertPR(t, tx, id, 9, "open", "one", nil)
 	insertPR(t, tx, id, 10, "open", "two", nil)
-	w := github.NewWriter(tx, id)
+	bindSignalApp(t, tx, id)
+	w := boundWork(t, tx, id)
 	good := store.GitHubLease{Generation: 1, Token: token}
 	stale := store.GitHubLease{Generation: 1, Token: uuid.NewString()}
 	if got, valid, err := w.Pending(ctx, stale, now, 1); err != nil || valid || len(got) != 0 {
@@ -301,9 +317,10 @@ func TestGitHubSignalAndProjectInvalidationErrorsRollback(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
 	mustExec(t, tx, `INSERT INTO project_github(project_id,enabled,sync_enabled,app_id,installation_id,generation,claim_token,claim_kind,claim_until) VALUES($1,true,true,10,20,1,$2,'poll',$3)`, id, token, now.Add(time.Hour))
-	signal := github.NewSignalWriter(tx)
+	app := bindSignalApp(t, tx, id)
+	signal := github.NewAppSignalWriter(tx, app, 10, 1)
 	mustExec(t, tx, `SAVEPOINT bad_signal`)
-	if n, err := signal.SignalAccess(ctx, store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: "invalid-uuid", DeliveryID: "delivery", ReceivedAt: now}); err == nil || n != 0 {
+	if n, err := signal.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: "invalid-uuid", DeliveryID: "delivery", ReceivedAt: now}); err == nil || n != 0 {
 		t.Fatalf("invalid signal: %d %v", n, err)
 	} else {
 		requireGitHubSQLState(t, err, "22P02")
@@ -327,7 +344,7 @@ func TestGitHubSignalAndProjectInvalidationErrorsRollback(t *testing.T) {
 		t.Fatalf("failed invalidation persisted: %+v %v", c, err)
 	}
 	hint := uuid.NewString()
-	n, err := signal.SignalAccess(ctx, store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: hint, DeliveryID: "delivery", ReceivedAt: now})
+	n, err := signal.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: hint, DeliveryID: "delivery", ReceivedAt: now})
 	if err != nil || n != 1 {
 		t.Fatalf("access signal: %d %v", n, err)
 	}
@@ -350,12 +367,18 @@ func TestDuePendingAdmission(t *testing.T) {
 	tx := begin(t, db, pgx.TxOptions{})
 	other := uuid.NewString()
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	w := github.NewWriter(tx, id)
-	if due, err := w.HasDuePending(ctx, now); err != nil || due {
-		t.Fatalf("no connection: due=%v error=%v", due, err)
+	mustExec(t, tx, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
+	team := uuid.NewString()
+	mustExec(t, tx, `INSERT INTO teams(id,name) VALUES($1,'team')`, team)
+	mustExec(t, tx, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, id, team)
+	if _, err := github.NewAppWorkWriter(ctx, tx, id, nil); !errors.Is(err, store.ErrGitHubAppWorkUnavailable) {
+		t.Fatalf("no connection: %v", err)
 	}
 	mustExec(t, tx, `INSERT INTO project_github(project_id,generation,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,2,true,true,10,20,30),($2,2,true,true,10,20,30)`, id, other)
 	mustExec(t, tx, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES ($1,1,1,$3,'old',$4,$4),($1,2,2,$5,'future',$4,$6),($2,3,2,$7,'other',$4,$4)`, id, other, uuid.NewString(), now, uuid.NewString(), now.Add(time.Microsecond), uuid.NewString())
+	mustExec(t, tx, `DELETE FROM project_ownership WHERE project_id=$1`, id)
+	bindSignalApp(t, tx, id)
+	w := boundWork(t, tx, id)
 	if due, err := w.HasDuePending(ctx, now); err != nil || due {
 		t.Fatalf("old generation, future and other Project: due=%v error=%v", due, err)
 	}
@@ -370,11 +393,12 @@ func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
 	setup := begin(t, db, pgx.TxOptions{})
 	mustExec(t, setup, `INSERT INTO projects(id,name,repo_url) VALUES ($1,'project','https://example.test/repo')`, id)
 	mustExec(t, setup, `INSERT INTO project_github(project_id,generation,enabled,sync_enabled,app_id,installation_id,repository_id) VALUES($1,1,true,true,10,20,30)`, id)
+	app := bindSignalApp(t, setup, id)
 	if err := setup.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	admission := begin(t, db, pgx.TxOptions{})
-	w := github.NewWriter(admission, id)
+	w := boundWork(t, admission, id)
 	if due, err := w.HasDuePending(ctx, time.Now()); err != nil || due {
 		t.Fatalf("initial admission: due=%v error=%v", due, err)
 	}
@@ -386,7 +410,7 @@ func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
 	result := make(chan error, 1)
 	now := time.Now().UTC()
 	go func() {
-		_, err := github.NewSignalWriter(signal).SignalPullRequest(ctx, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: uuid.NewString(), DeliveryID: "signal", ReceivedAt: now, NextAttemptAt: now})
+		_, err := github.NewAppSignalWriter(signal, app, 10, 1).SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: uuid.NewString(), DeliveryID: "signal", ReceivedAt: now, NextAttemptAt: now})
 		result <- err
 	}()
 	waitForLock(t, db, pid)
@@ -405,7 +429,7 @@ func TestDuePendingAdmissionSerializesSignal(t *testing.T) {
 		t.Fatal(err)
 	}
 	check := begin(t, db, pgx.TxOptions{})
-	if due, err := github.NewWriter(check, id).HasDuePending(ctx, now); err != nil || !due {
+	if due, err := boundWork(t, check, id).HasDuePending(ctx, now); err != nil || !due {
 		t.Fatalf("committed signal: due=%v error=%v", due, err)
 	}
 }
