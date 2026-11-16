@@ -14,7 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOperation } from "../../../src/api/operation.js";
+import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Task } from "../../../src/api/types.js";
 import { cleanupOperation } from "../../../src/commands/cleanup-operation.js";
@@ -1354,8 +1354,17 @@ describe("durable Herdr facade with real SQLite", () => {
   });
   it("keeps a delivered initial input recorded when native identity confirmation times out", async () => {
     const f = fixture(); f.settings.nativeAfterInput = false; f.register(); const binding = await f.prepare();
-    const short = createOperation({ limits: { totalMs: 180 } }); operations.push(short);
-    await expect(f.facade.tasks.start(f.context, binding, { configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment" }, short)).rejects.toThrow();
+    const active = operation(), deadline = new OperationError("deadline");
+    let transportCompleted = false;
+    // Expire only after the real input and lifecycle journals have committed;
+    // startup fingerprinting and SQLite work must not consume the fault window.
+    const check = () => { active.check(); if (transportCompleted) throw deadline; };
+    const expiring: Operation = { ...active, check, remainingMs: () => { check(); return active.remainingMs(); } };
+    await expect(f.facade.tasks.start(f.context, binding, {
+      configuration: { agent: "codex", model: null, args: [] }, prompt: "Original managed assignment",
+      onPromptTransportCompleted: () => { transportCompleted = true; },
+    }, expiring)).rejects.toBe(deadline);
+    expect(transportCompleted).toBe(true);
     expect(f.inputs).toHaveLength(1); expect(f.read().initialAssignment).toBe("transport_completed");
     f.reopen();
     await expect(f.facade.tasks.submitInitialPrompt(f.context, binding, "Do not repeat", operation())).resolves.toMatchObject({ submission: "skipped" });
