@@ -15,3 +15,12 @@ type AppMetadata struct {
 type AppCredentials struct {
 	PrivateKeyPEM, WebhookSecret []byte
 }
+
+// CredentialSnapshot is an internal, current App identity and private key.
+// It contains secret material and must not be used as a public projection.
+type CredentialSnapshot struct {
+	AppResourceID     string
+	GitHubAppID       int64
+	CredentialVersion int64
+	PrivateKeyPEM     []byte
+}
