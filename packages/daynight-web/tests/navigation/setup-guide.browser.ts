@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { expectCopyButtonSkin, expectDisabledCopyHover } from './copy-button-assertions';
 
 const origin = `https://${'a'.repeat(55)}.${'b'.repeat(55)}.example.test:4443`;
 
@@ -36,6 +37,20 @@ test('production setup guide remains public and usable across clients, languages
   await expect(page.getByRole('status')).toContainText('Copied.');
   expect((await page.evaluate(() => navigator.clipboard.readText())).replaceAll('\r\n', '\n')).toBe(rendered);
   expect(await page.locator('#cli').boundingBox()).toEqual(cliBefore);
+  await page.evaluate(() => {
+    const state = window as unknown as { clipboard: Clipboard; finishCopy: () => void };
+    state.clipboard = navigator.clipboard;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => new Promise<void>(resolve => { state.finishCopy = resolve; }) } });
+  });
+  await command.getByRole('button').click();
+  const pendingButtons = page.locator('.setup-command .copy-button');
+  for (const button of await pendingButtons.all()) await expect(button).toBeDisabled();
+  await expectDisabledCopyHover(page, command.getByRole('button'));
+  await page.evaluate(() => {
+    const state = window as unknown as { clipboard: Clipboard; finishCopy: () => void };
+    state.finishCopy(); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: state.clipboard });
+  });
+  await expect(command.getByRole('button')).toBeEnabled();
   await page.locator('a[href="#mcp"]').click();
   await expect(page).toHaveURL(/#mcp$/);
   await page.evaluate(() => { window.dispatchEvent(new Event('blur')); document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); });
@@ -45,6 +60,7 @@ test('production setup guide remains public and usable across clients, languages
       await client.selectOption(value);
       for (const width of [1440, 390, 320]) {
         await page.setViewportSize({ width, height: 900 });
+        if (value === 'codex') await expectCopyButtonSkin(page, page.locator('#mcp .setup-command').first().getByRole('button'));
         const geometry = await page.evaluate(() => ({
           width: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
           controls: [...document.querySelectorAll('.setup-guide a, .setup-guide button, .setup-guide select')].map(element => element.getBoundingClientRect()).filter(rect => rect.width > 0 && rect.height > 0).map(rect => ({ left: rect.left, right: rect.right })),

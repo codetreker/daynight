@@ -18,7 +18,7 @@ cumulative output exposed the cost of retaining those body revisions.
 
 ## Decision
 
-The canonical journal sequence ends at `010-timeline-content.sql`. That single
+The canonical journal sequence includes `010-timeline-content.sql`. That single
 DDL creates current body rows and totals, records legacy cleanup pending, and
 drops the old content index. The existing format owner generates snapshots and
 validates the same numbered sequence; there is no staged SQL copy, runtime format
@@ -37,14 +37,14 @@ Pages query bounded rows, while inspection coverage synchronously traverses the
 whole snapshot without retaining a body map. Complete-entry chunks reconstruct
 the established canonical JSON and detect revision/hash/length changes. Sequence
 and revision stay positive signed int64 values and remain decimal strings on the
-wire. Current timeline JSON retains its exact 64 MiB/100000-entry limit; replaced
+wire. Ordinary timeline writes retain their 128 MiB/100000-entry limit; replaced
 revisions do not accumulate in logical totals.
 
 Migration and maintenance use the delivered
 [SQL components](2026-11-12-session-sqlite-content-components.md) and original
-[storage permit](2026-11-12-controller-storage-ownership.md). Historical imports
-preserve their committed source and all original execution/operation/native
-facts. Upgrade-only preserves stopping evidence. Proven stopped maintenance
+[storage permit](2026-11-12-controller-storage-ownership.md). Historical imports select committed sources and preserve original
+execution/operation/native facts. The [local mapping decision](2026-11-16-controller-local-format-mapping.md)
+describes how unrepresentable items are handled. Upgrade-only preserves stopping evidence. Proven stopped maintenance
 holds the permit through the reader barrier, durable removal of obsolete index
 references, recognized body retirement, in-place VACUUM, post-checkpoint physical
 verification, pending-clear readback and actual reservation settlement. A new

@@ -30,7 +30,7 @@ existing schema-snapshot and validation owner. There is one format path and one
 body authority.
 
 Conversion preserves the original execution, operation, provenance and stopping
-evidence. Only committed pointers determine current content. Source export and SQL import share the original permit. The original decision
+evidence. Only committed pointers select historical file sources. The [local mapping decision](2026-11-16-controller-local-format-mapping.md) limits conversion to necessary fields without auditing business integrity. Source export and SQL import share the original permit. The original decision
 used a local peak reservation to reclaim history beyond normal metadata admission;
 the [capacity-free conversion decision](2026-11-16-controller-capacity-free-upgrades.md)
 removes that admission from conversion while preserving maintenance limits.

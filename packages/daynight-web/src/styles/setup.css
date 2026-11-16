@@ -14,9 +14,7 @@
 .setup-command pre { margin: 0; flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .setup-command code, .setup-service code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
 .setup-command code { color: #42506b; line-height: 1.8; }
-.setup-copy { border: 0; background: transparent; color: #7b8599; padding: 2px; display: flex; flex: none; }
-.setup-copy:hover:not(:disabled) { color: var(--indigo); }
-.setup-copy:disabled { color: #a4abba; }
+.setup-copy { flex: none; }
 .setup-step-content .setup-guide-tip { margin-top: 11px; font-size: 11px; color: #808b9e; }
 .setup-guide-result { display: flex; gap: 9px; align-items: baseline; margin-top: 12px; }
 .setup-guide-result > span { white-space: nowrap; color: #556177; }

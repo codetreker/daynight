@@ -132,15 +132,21 @@ func TestStepReadDiscoveryAndVersionedTraversal(t *testing.T) {
 			}
 			first := object(t, items[0])
 			preview := first["titlePreview"].(string)
-			if len(preview) > 512 || !utf8.ValidString(preview) || first["titleTruncated"] != true {
+			if len(preview) > 512 || !utf8.ValidString(preview) || first["titleTruncated"] != true || first["id"] != "00000000" || first["status"] != "todo" {
 				t.Fatalf("preview: %+v", first)
 			}
-			cursor := data["nextCursor"].(string)
+			cursor, ok := data["nextCursor"].(string)
+			if !ok || cursor == "" {
+				t.Fatalf("missing continuation: %+v", data)
+			}
 			args["cursor"] = cursor
 			result = readCall(t, client, "task_step_list", args)
 			data = object(t, structured(t, result)["data"])
 			if result.IsError || len(data["items"].([]any)) != 1 || object(t, data["items"].([]any)[0])["id"] != "00000002" || data["nextCursor"] != nil {
 				t.Fatalf("last page: %+v", data)
+			}
+			if value, present := data["nextCursor"]; !present || value != nil {
+				t.Fatalf("last cursor must be explicit null: %+v", data)
 			}
 			ops.version++
 			result = readCall(t, client, "task_step_list", args)
@@ -259,7 +265,7 @@ func (*failingStepReads) GetSummary(context.Context, model.Principal, string, st
 
 func TestRegisterToolRejectsInvalidBudgetClass(t *testing.T) {
 	fixture := newEntryFixture(t)
-	err := fixture.entry.RegisterTool(simpleTestTool("bad_budget", testObjectSchema(), testObjectSchema()), BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := fixture.entry.RegisterTool(simpleTestTool("bad_budget", testObjectSchema()), BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		t.Fatal("invalid registration invoked handler")
 		return ToolResult{}, nil
 	})

@@ -19,7 +19,7 @@ import (
 func TestFailedContentAdmissionRetainsControlUntilDelivery(t *testing.T) {
 	e := materializationEntry(t, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) { return ToolResult{}, nil })
 	schema := map[string]any{"type": "object"}
-	if err := e.registerReadTool(&sdk.Tool{Name: "promote", InputSchema: schema, OutputSchema: schema}, func(json.RawMessage) BudgetClass { return BudgetControl }, func(ctx context.Context, a RequestActor, _ json.RawMessage) (ToolResult, error) {
+	if err := e.registerReadTool(&sdk.Tool{Name: "promote", InputSchema: schema}, func(json.RawMessage) BudgetClass { return BudgetControl }, func(ctx context.Context, a RequestActor, _ json.RawMessage) (ToolResult, error) {
 		return ToolResult{}, a.admitContent(ctx)
 	}); err != nil {
 		t.Fatal(err)

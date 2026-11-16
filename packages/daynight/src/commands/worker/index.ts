@@ -67,6 +67,7 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   if (command.path.at(-2) === "resources") {
     let request: WorkerResourceCommandRequest;
     if (command.command.name === "list") request = { kind: "list" };
+    else if (command.command.name === "recover") request = { kind: "recover", taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), ...(command.options.has("--worktree-id") ? { worktreeId: uuid(option("--worktree-id"), "Worktree ID") } : {}), confirmed: command.options.has("--confirm") };
     else {
       const target = { taskId: uuid(command.values[0]!, "Task ID"), projectId: uuid(option("--project"), "Project ID"), claimId: uuid(option("--claim-id"), "Claim ID"), sessionId: uuid(option("--session-id"), "Session ID"), worktreeId: uuid(option("--worktree-id"), "Worktree ID") };
       if (command.command.name === "retry") request = { ...target, kind: "retry" };

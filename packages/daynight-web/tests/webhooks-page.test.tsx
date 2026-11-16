@@ -129,6 +129,31 @@ const selectTeamEndpoint = async (view: Awaited<ReturnType<typeof mount>>, value
 };
 
 describe("Webhook configuration page", () => {
+  it("reveals before copying the secret, selects it on denial, and permits retry", async () => {
+    const oldClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    try {
+      const view = await mount();
+      const button = screen.getByRole("button", { name: "Copy" });
+      expect(button).toHaveClass("copy-button"); expect(button).not.toHaveClass("button");
+      expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+      fireEvent.click(button);
+      const secret = await screen.findByText(/^whsec_[A-Za-z]/);
+      expect(view.secretReads()).toBe(1); expect(writeText).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(button));
+      expect(screen.getByRole("status")).toHaveTextContent("Select the secret and copy it manually.");
+      expect(window.getSelection()?.toString()).toBe(secret.textContent);
+      await act(async () => fireEvent.click(button));
+      expect(screen.getByRole("status")).toHaveTextContent("Copied");
+      expect(writeText).toHaveBeenLastCalledWith(secret.textContent);
+      expect(view.writes).toHaveLength(0);
+    } finally {
+      if (oldClipboard === undefined) Reflect.deleteProperty(navigator, "clipboard");
+      else Object.defineProperty(navigator, "clipboard", oldClipboard);
+    }
+  });
+
   it.each(["en", "zh-CN"] as const)("distinguishes an empty subscription scope from available projects in %s", async locale => {
     const empty = { ...endpoint(), subscriptions: [] };
     const view = await mount({ initial: [empty] }); view.setLocale(locale);

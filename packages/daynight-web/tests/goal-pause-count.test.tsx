@@ -73,7 +73,7 @@ it('summarizes the complete direct scope through the workspace and follows snaps
   expect(card.querySelector('.goal-in-progress')!.nextElementSibling).toContainElement(count());
   fireEvent.click(toggle);
   expect(count()).toHaveTextContent('3 paused');
-  fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   await waitFor(() => expect(screen.getByRole('checkbox', { name: 'alpha' })).toBeVisible());
   fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
   expect(card.querySelectorAll('.task-row')).toHaveLength(1);

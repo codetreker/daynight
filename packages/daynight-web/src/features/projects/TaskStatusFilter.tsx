@@ -3,6 +3,7 @@ import type { TaskStatus } from '../../api/types';
 import { nearestOverlayOwner } from '../../app/overlay';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
+import { SelectTrigger } from '../../ui/selection-control/SelectTrigger';
 import { ALL_TASK_STATUSES } from './task-status-filter';
 import './task-status-filter.css';
 
@@ -102,9 +103,9 @@ export const TaskStatusFilter = ({ value, onChange }: { readonly value: readonly
     event.preventDefault(); event.stopPropagation(); setOpen(false); triggerRef.current?.focus();
   }}>
     <span>{m.statusFilter}</span>
-    <button ref={triggerRef} type="button" className="task-status-filter-trigger" aria-label={`${m.statusFilter}: ${summary}`} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => setOpen(previous => !previous)}>
-      <span>{summary}</span><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg>
-    </button>
+    <SelectTrigger ref={triggerRef} density="filter" touchMode="responsive" focusTone="task" aria-label={`${m.statusFilter}: ${summary}`} aria-expanded={open} aria-controls={open ? panelId : undefined} onClick={() => setOpen(previous => !previous)}>
+      {summary}
+    </SelectTrigger>
     {open && <div ref={panelRef} id={panelId} className="task-status-filter-panel" role="group" aria-label={m.statusFilter}>
       <label className="task-status-filter-all"><input ref={allRef} type="checkbox" checked={count === ALL_TASK_STATUSES.length} onChange={() => onChange(count === ALL_TASK_STATUSES.length ? [] : ALL_TASK_STATUSES)} />{m.allStatuses}</label>
       {ALL_TASK_STATUSES.map(status => <label key={status}><input type="checkbox" checked={value.includes(status)} onChange={event => onChange(ALL_TASK_STATUSES.filter(item => item === status ? event.currentTarget.checked : value.includes(item)))} /><i className={`task-status-filter-dot task-status-filter-dot-${status}`} aria-hidden="true" />{m.statusOptions[status]}</label>)}

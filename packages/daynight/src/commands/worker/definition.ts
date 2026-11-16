@@ -57,11 +57,15 @@ export const workerDefinition: CommandDefinition = {
     options: [help],
   }, {
     name: "resources",
-    description: "Inspect and explicitly dispose stopped Herdr recording resources",
+    description: "Inspect, recover or explicitly dispose original retained resources",
     options: [help],
     details: "Stop worker run first. These commands use the original worker lock and never start an Agent. Inspection reports original Session, claim, stop evidence, worktree, source and archive disposition as JSON.",
     commands: [{
       name: "list", description: "Inspect retained original execution resources", options: [help],
+    }, {
+      name: "recover", description: "Verify or recover a completed Web execution's retained worktree", arguments: task,
+      options: [claim, { ...project, required: true }, { names: ["--worktree-id"], description: "Verify this exact original worktree UUID; omission reads the original journal", value: { name: "worktree-id", kind: "text" } }, { names: ["--confirm"], description: "Remove the verified clean original worktree and retire its manifest" }, help],
+      details: "Stop worker run first. Without --confirm, verify original service, owner, Worker, terminal claim, Web journal, native stop, ready archive and preserved Git content without deletion. With --confirm, repeat verification and remove only the matching clean worktree without force; keep its branch and journals. Missing original evidence, successor claims, dirty/untracked/ignored files and commits without an observed remote reference refuse recovery. Restore original evidence from backup; a Git marker or done Task alone is insufficient.",
     }, {
       name: "retry", description: "Explicitly retry a stopped original archive after fixing its cause", arguments: task,
       options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],

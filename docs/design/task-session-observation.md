@@ -54,4 +54,4 @@ HTTP inspection、CLI API 方法和公共 session 命令注册壳是后续消费
 
 ## 验证边界
 
-核心测试构造受控 Task、Session 和能力事实，验证纯投影、游标及预算；service 测试 mock 直接调用的规则和 DAO，控制授权、快照完成、live 采样期间的身份变化与批次顺序。DAO 测试使用隔离 PostgreSQL 观察真实 SQL、映射和分页，不能以 service mock 替代。协议测试通过真实 HTTP/MCP 编码和 CLI 解析验证结果约定、显式 null、控制字符、旧查询兼容及 partial；MCP 结构化结果以内部定义验证，工具发现省略 `outputSchema`。运行证据随具体源码版本保存，文档不宣称测试替代真实 Provider 或多平台接收证据。
+核心测试构造受控 Task、Session 和能力事实，验证纯投影、游标及预算；service 测试 mock 直接调用的规则和 DAO，控制授权、快照完成、live 采样期间的身份变化与批次顺序。DAO 测试使用隔离 PostgreSQL 观察真实 SQL、映射和分页，不能以 service mock 替代。协议测试通过真实 HTTP/MCP 编码和 CLI 解析验证结果约定、显式 null、控制字符、旧查询兼容及 partial；MCP 测试直接断言结构化结果，工具发现省略 `outputSchema`。运行证据随具体源码版本保存，文档不宣称测试替代真实 Provider 或多平台接收证据。

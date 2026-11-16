@@ -421,6 +421,14 @@ Herdr 自动恢复计数及超限等待只在当前进程中维护，重启清�
 
 ## 结束、清理与退出
 
+### 遗留资源核验
+
+协调器扫描每个 Project 的 worktree 和持久清单，以原 Project、Task、claim 为监控身份；无独立执行证据的 owner 继续参与准入容量，并登记 `ownership-unconfirmed` 当前异常。异常附带扫描所得的真实相对 worktree 绑定，不从 Task ID 猜目录；同一资源的重复观察更新已有异常，完整扫描和权限观察证明资源消失或归属恢复后才解除。重启通过同一资源扫描重建异常。容量分解由生产者在全量去重后计算，再进行详情截断与服务端权限过滤，具体协议见[监控设计](daynight-worker-monitoring.md)。
+
+独立 `resource-recovery` 判定模块与运行时适配器为已完成的 Web 原执行提供显式遗留回收。运行时持有原 Worker 实例锁，读取原配置、主索引映射、Web journal、Controller ticket 与 journal；不创建替代 claim 或执行。预检与确认前复核原终态归属和完整 Git 绑定，停止观察复用 Web backend，归档核验复用原 ready receipt 的服务端 GET 校验，禁止在此入口上传或替换归档。Git 保全检查以显式 `--git-dir` 和 `--work-tree` 绑定已核验的原 gitfile 与工作目录，避免 worktree 专属 `core.worktree` 配置将检查重定向到其他目录；覆盖 tracked、untracked、ignored 文件、原分支及远端可达 HEAD，删除操作也显式绑定原 common Git 目录；确认删除前复核目录对象和绑定，以非强制 Git 删除保留并发变脏时的拒绝。只有删除读回确认后才能退休原清单，下一次正常扫描解除异常和占用。检查、删除及清单退休各有独立失败，错误不能宣称回收完成。该入口不恢复缺失证据，不重开终态任务或修改原执行 journal；取舍见[遗留资源诊断与恢复决策](../../.agents/notes/implemented/bug-fix/2026-11-16-worker-retained-resource-recovery.md)。
+
+### 正常结束
+
 正常对账发现原 claim 不在成功完整自有清单中时进入对应 backend 的终止收尾，无需再按 done/release/强制撤回分类。
 
 macOS Herdr 通过持久 journal 保存 stop_intent 和 close_requested，使用原出生身份与 audit token 停止独占运行，保存 stopped_confirmed、封段并确认 ledger。不能凭 pane 消失、PID 或命令行变化、内存 Map 为空判断停止。替代实例和未证明资源保持 unknown，不接管、不删除。journal 写失败只允许依据已有证据尽力停止，不能在重启后补写意图来追认同一 boot 中已消失 daemon 的完整停止。

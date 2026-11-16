@@ -30,9 +30,10 @@ The [Worker/Bot read decision](../simplification/2026-11-09-worker-bot-canonical
 and [ordinary resource-page decision](../simplification/2026-11-09-canonical-resource-pages.md)
 replace all stored-data read admission. Reads trust canonical data and preserve
 current authorization, request bounds, count continuation and natural errors.
-The shared MCP entry no longer validates or budgets successful read output;
-input checks, deadlines and resource permits remain. Write-output schema and
-capacity admission retain their independent responsibilities.
+The shared MCP entry does not budget ordinary successful read output; input
+checks, deadlines and resource permits remain. Applicable write and upload
+capacity admission is independent of output schemas, which the [removal decision](../simplification/2026-11-16-remove-mcp-output-schemas.md)
+eliminates from registration and runtime validation.
 
 The [Task sync design](../../../../docs/design/daynight-task-sync.md),
 [Steps design](../../../../docs/design/daynight-task-steps.md),

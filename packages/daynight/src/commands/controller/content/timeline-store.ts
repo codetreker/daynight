@@ -2,7 +2,6 @@ import type Database from "better-sqlite3";
 import { parseTimelineEntry, parseStoredTimelineEntry, type TimelineEntry } from "../../../session/protocol.js";
 import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
 import { controllerPayloadHash } from "../launch-ticket.js";
-import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
 
 const MAX_SEQUENCE = 9_223_372_036_854_775_807n;
 const MAX_ENTRIES = 100_000;
@@ -60,13 +59,6 @@ const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unk
     .run(entry.entryId, entrySequence, revision, entry.kind, encoded, contentHash, byteLength);
   const result = db.prepare("UPDATE timeline_totals SET entry_count=?,byte_length=? WHERE id=1").run(updated.entryCount, updated.byteLength);
   if (result.changes !== 1) throw new Error("SQL timeline totals were not updated.");
-};
-
-/** Migration publishes using its original permit and transaction, without ordinary write admission. */
-export const publishMigratedTimelineEntry = (db: Database.Database, permit: ControllerStoragePermit, entry: TimelineEntry): void => {
-  assertControllerStoragePermit(permit, permit.journalFile);
-  if (!db.memory && db.name !== permit.journalFile) throw new Error("Timeline import permit belongs to another database.");
-  publish(db, entry, parseStoredTimelineEntry);
 };
 
 /** The caller owns transactions and proves that writes belong to its original write boundary. */

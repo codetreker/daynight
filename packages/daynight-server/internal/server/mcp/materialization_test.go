@@ -73,10 +73,10 @@ func materializationEntry(t *testing.T, large ToolHandler) *Entry {
 		t.Fatal(err)
 	}
 	schema := map[string]any{"type": "object"}
-	if err = e.RegisterTool(&sdk.Tool{Name: "summary_write", InputSchema: schema, OutputSchema: schema}, BudgetLarge, large); err != nil {
+	if err = e.RegisterTool(&sdk.Tool{Name: "summary_write", InputSchema: schema}, BudgetLarge, large); err != nil {
 		t.Fatal(err)
 	}
-	if err = e.RegisterTool(&sdk.Tool{Name: "control", InputSchema: schema, OutputSchema: schema}, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	if err = e.RegisterTool(&sdk.Tool{Name: "control", InputSchema: schema}, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		return ToolResult{Data: map[string]any{"ok": true}}, nil
 	}); err != nil {
 		t.Fatal(err)

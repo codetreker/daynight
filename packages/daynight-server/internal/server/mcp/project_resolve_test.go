@@ -97,7 +97,7 @@ func TestProjectResolveProtocol(t *testing.T) {
 			if err := json.Unmarshal(inputBytes, &schema); err != nil {
 				t.Fatal(err)
 			}
-			if schema["additionalProperties"] != false || !requiredExactly(schema["required"], "repoUrl") || len(object(t, schema["properties"])) != 1 {
+			if schema["additionalProperties"] != false || !reflect.DeepEqual(schema["required"], []any{"repoUrl"}) || len(object(t, schema["properties"])) != 1 {
 				t.Fatalf("input schema: %s", inputBytes)
 			}
 			call := func(args any) *sdk.CallToolResult {
@@ -123,7 +123,6 @@ func TestProjectResolveProtocol(t *testing.T) {
 			if result.IsError || seen != address || !reflect.DeepEqual(data, want) || object(t, doc["meta"])["outcome"] != nil {
 				t.Fatalf("success: %+v", doc)
 			}
-			validateToolResult(t, arrayResultDefinition(t, projectToolsJSON, "project_resolve"), result)
 			result = call(map[string]any{"repoUrl": address + "é"})
 			if !result.IsError || object(t, structured(t, result)["error"])["code"] != "invalid_input" {
 				t.Fatalf("byte limit: %+v", result)

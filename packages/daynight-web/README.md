@@ -1423,11 +1423,24 @@ are outside this runtime's persistence guarantee.
 Production claims require real service receipts. Web typecheck, test and build
 include all translated components under the existing coverage gate.
 
+## Shared copy presentation
+
+`src/ui/copy-button/` owns the native copy button, overlapping-squares icon and
+internal state styles for both icon-only and text actions. Its CSS is imported
+by the component. Consumers provide localized labels, actions and external
+layout, while retaining clipboard writes, admission, pending and feedback
+lifecycles. `ValueCopyButton` serves Task rows and Task/Goal details; other
+features retain their own asynchronous flows. See the [UI principles](../../docs/ui-design.md#share-copy-button-presentation)
+for geometry, focus and disabled presentation.
+
 ## Shared native selection
 
 Import `NativeSelect` from `src/ui/native-select/NativeSelect.tsx` using a relative
 path. It is the only production owner of native select declarations and imports
-its own CSS, which exclusively owns internal control and arrow presentation. It
+its own CSS, which exclusively owns native internal control and arrow selectors.
+`src/ui/selection-control` owns common density/touch parameters, the decorative
+arrow and the stateless SelectTrigger for real button or summary hosts. Its CSS
+owns common tokens and custom trigger presentation. It
 supports native single-line, size-based list and multiple selection. The [component design](../../docs/design/native-select.md)
 owns its props, geometry, touch modes and popup-helper usage. The
 [UI principles](../../docs/ui-design.md#share-native-selection-presentation)
@@ -1438,7 +1451,13 @@ Pages provide their options, value, labels, constraints, event handlers and real
 width, and explicit focus, pending and touch presentation. Consumer
 `wrapperClassName` accepts statically resolvable string tokens or literal
 combinations. Their CSS may control external width, margins and flex/grid
-placement; internal skin, arrow and touch sizing belong to the common CSS.
+placement; internal skin, arrow and touch sizing belong to the common owners.
+SelectTrigger similarly exposes static `layoutClassName` and element-specific
+refs, events and ARIA while excluding arbitrary className/style. Task Assignee,
+Status and both Tag entries use filter/responsive/task presentation: 32px/11px
+above 800px with a fine pointer, and 44px/16px at smaller widths or coarse pointers.
+Search retains NativeSelect single selection with the same explicit presentation.
+Tag panel typography, positioning and menu state remain feature-owned.
 Keep business confirmation, cancellation, drafts, request timing and errors with
 the consuming feature. The component adds no selection state, placeholder,
 request or Provider dependency.
@@ -2146,8 +2165,8 @@ addresses initialize the tab and attachment selection from their navigation stat
 The complete task ID appears only in its metadata row, beside the same overlapping
 squares copy icon used immediately after the loaded title. Both buttons retain
 localized accessible names, hover titles and native keyboard activation. The shared
-`TaskCopyButton` writes the exact complete title or ID with
-`navigator.clipboard.writeText`, disables its button while pending and exposes
+`TaskCopyButton` delegates the exact complete title or ID to `ValueCopyButton`,
+which calls `navigator.clipboard.writeText`, disables its button while pending and exposes
 success or a recoverable failure through timed bubbles. The original text remains
 selectable after a failure. The title button is scoped to project/task and title
 value, and the ID button to its complete ID; unmount invalidates late results.
@@ -2296,7 +2315,7 @@ order, with `description` and `overview` selecting Description. Its child tasks
 and scoped chains remain in the project Goal list. Description uses the Goal's
 Markdown and attachment owner and shows the existing empty state when empty.
 Its information aside starts General information with the complete, selectable
-Goal ID and a localized copy button. Copy uses the shared Task clipboard button
+Goal ID and a localized copy button. Copy uses the shared value-copy adapter
 and a notification host owned by the Goal frame: pending disables repeated
 submission, success confirms the copy, and rejection or unavailable clipboard
 access shows a Goal-specific error while preserving manual selection and retry.

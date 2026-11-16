@@ -9,7 +9,7 @@ export type ExecutionPhase = "observation" | "worktree-preparation" | "agent-sta
 export type CleanupPhase = "observation" | "agent-stop" | "backend-close" | "archive" | "worktree-removal";
 export type ActivityPhase = { kind: "execution"; phase: ExecutionPhase } | { kind: "cleanup"; phase: CleanupPhase } | { kind: "maintenance"; phase: SchedulerPhase };
 export type StructuredCause = { type: "operation"; code: DiagnosticCode; cause: string; causeTruncated: false };
-export type DiagnosticCode = "cancelled" | "timeout" | "authentication-required" | "limit-exceeded" | "rate-limited" | "permission-denied" | "not-found-or-inaccessible" | "not-found" | "conflict" | "unavailable" | "invalid-response" | "resource-exhausted" | "configuration-missing" | "configuration-invalid" | "command-failed" | "io-error" | "invalid-output" | "recovery-limit" | "native-identity-missing" | "worktree-validation-failed" | "branch-mismatch" | "markdown-projection-repair" | "recovery-blocked" | "outcome-unknown" | "unknown";
+export type DiagnosticCode = "cancelled" | "timeout" | "authentication-required" | "limit-exceeded" | "rate-limited" | "permission-denied" | "not-found-or-inaccessible" | "not-found" | "conflict" | "unavailable" | "invalid-response" | "resource-exhausted" | "configuration-missing" | "configuration-invalid" | "command-failed" | "io-error" | "invalid-output" | "recovery-limit" | "native-identity-missing" | "ownership-unconfirmed" | "worktree-validation-failed" | "branch-mismatch" | "markdown-projection-repair" | "recovery-blocked" | "outcome-unknown" | "unknown";
 export type Activity = ActivityPhase & { operationId: string; status: "queued" | "running" | "waiting" | "paused"; scope: Scope; startedAt: string; lastProgressAt: string | null; elapsedMs: number; deadlineAt: string | null; waitReason: WaitReason | null; nextAttemptAt: string | null };
 export type ReservationRole = "active-task" | "resource-owner" | "unresolved" | "cleanup" | "pending-stop";
 export type Reservation = { reservationId: string; scope: Scope; roles: readonly ReservationRole[]; occupied: boolean; observedAt: string };
@@ -23,7 +23,7 @@ export type DeliveryFailure = { observedAt: string; phase: DeliveryPhase; error:
 export type Observation = {
   runId: string; sequence: string; capturedAt: string; lifecycle: "starting" | "running" | "stopping" | "stopped";
   scheduler: { phase: SchedulerPhase; coverage: Coverage; cycleId: string | null; lastCompletedAt: string | null; lastSuccessfulAt: string | null; lastOutcome: "completed" | "failed" | "cancelled" | null; nextPollAt: string | null };
-  capacity: { observedAt: string; quality: "current" | "stale"; limit: number; occupied: number; available: number; detailCoverage: DetailCoverage } | null;
+  capacity: { observedAt: string; quality: "current" | "stale"; limit: number; occupied: number; available: number; breakdown?: { active: number; retained: number }; detailCoverage: DetailCoverage } | null;
   admission: { observedAt: string; coverage: Coverage; reasons: readonly AdmissionReason[] };
   reservations: readonly Reservation[]; activities: readonly Activity[]; currentFailures: readonly Failure[]; lastRecovery: RecoverySummary | null; detailCoverage: DetailCoverage;
   delivery: { lastSucceededAt: string | null; lastFailure: DeliveryFailure | null };

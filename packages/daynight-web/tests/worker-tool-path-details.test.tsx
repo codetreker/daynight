@@ -36,6 +36,7 @@ describe('Worker tool path details', () => {
     const summary = screen.getByText('Entry path', { selector: 'summary' }); fireEvent.click(summary);
     const pathDetails = summary.closest('details')!; pathDetails.open = true;
     const button = within(pathDetails).getByRole('button', { name: 'Copy entry path' }); button.focus(); fireEvent.click(button);
+    expect(button).toHaveClass('copy-button--labelled'); expect(button.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     expect(await screen.findByText('Copied')).toBeInTheDocument(); expect(writeText).toHaveBeenCalledWith(path);
     view.rerender(<WorkerToolPathDetails {...props} telemetry={{ ...props.telemetry, entries: [{ ...entry }] }} />);
     expect(summary.closest('details')).toBe(pathDetails); expect(pathDetails.open).toBe(true); expect(button).toHaveFocus();

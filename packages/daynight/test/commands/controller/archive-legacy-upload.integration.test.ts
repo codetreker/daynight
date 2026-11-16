@@ -8,6 +8,7 @@ import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src
 import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { parseSessionArchive } from "../../../src/session/archive.js";
@@ -216,7 +217,7 @@ test.each([2, 6] as const)("v%i archive rechecks stopped evidence after the rece
   expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(version === 6 ? currentSqliteVersion(controllerJournalFormat) : version);
 });
 
-test("interrupted legacy export retains SQL originals and rejects a different source under the same migration", async () => {
+test("interrupted legacy export retains SQL originals and skips a conflicting candidate on retry", async () => {
   const f = await fixture(2), bodies: string[] = [];
   const second = { ...f.entry, entryId: randomUUID(), content: [{ type: "text", text: "second answer" }] };
   inspect(f.journalPath, db => db.prepare("INSERT INTO projection VALUES(?,?,1,?)").run(second.entryId, "second", JSON.stringify(second)));
@@ -234,12 +235,9 @@ test("interrupted legacy export retains SQL originals and rejects a different so
     db.prepare("UPDATE projection SET value=? WHERE id=?").run(JSON.stringify({ ...second, content: [{ type: "text", text: "changed after the interrupted export" }] }), second.entryId);
   });
   expect(await readdir(`${f.journalPath}.pending-content/timeline`)).toHaveLength(2);
-  const failure = await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) }).then(() => null, error => error as Error & { kind: string });
-  expect(failure).toMatchObject({ kind: "migration-failed" });
-  let cause: unknown = failure;
-  while (cause instanceof Error && cause.message !== "Legacy migration source changed before verification.") cause = cause.cause;
-  expect(cause).toBeInstanceOf(Error);
-  expect(bodies).toEqual([]);expect(inspect(f.journalPath,db=>db.pragma("user_version",{simple:true}))).toBe(2);
+  await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) });
+  expect(entries(bodies[0]!)).toEqual([{ ...f.entry, entrySeq: "1" }]);
+  expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(currentSqliteVersion(controllerJournalFormat));
 });
 
 test("upload retries preserve identical bytes after upgrading a stopped v2 journal", async () => {
@@ -354,4 +352,24 @@ test.each([2, 3, 4, 5] as const)("probing legacy v%i leaves schema and original 
   expect(await readFile(f.journalPath)).toEqual(before);
   expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(version);
   await expect(stat(`${f.journalPath}.pending-content`)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+
+test.each([5, 6, 7, 8, 9] as const)("empty healthy v%i history remains available to stopped maintenance", async version => {
+  const f = await fixture(5);
+  inspect(f.journalPath, db => {
+    db.exec("DELETE FROM projection");
+    const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
+    for (const step of steps.filter(step => step.version > 5 && step.version <= version)) db.exec(step.sql);
+    db.pragma(`user_version=${version}`);
+  });
+  if (version >= 6) {
+    const pending = `${f.journalPath}.pending-content`;
+    await mkdir(pending, { mode: 0o700 });
+    await writeFile(path.join(pending, "manifest.json"), JSON.stringify({ schemaVersion: 1, sessionId: f.ticket.sessionId }), { mode: 0o600 });
+  }
+  expect(readControllerSnapshot(f.journalPath)).toEqual(f.snapshot);
+  const permit = acquireControllerStoragePermit(f.journalPath);
+  try { expect(prepareControllerStorage({ journalFile: f.journalPath, stateDirectory: f.home, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false }); }
+  finally { permit.release(); }
 });

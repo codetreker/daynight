@@ -16,8 +16,8 @@ Goal detail provides Description, Attachments and Discussion, with Description
 selected by default. `GoalInformation` sits beside the Markdown description on
 desktop and follows it on narrow screens. General information begins with the
 complete, selectable Goal ID and a localized copy icon. The shared
-`TaskCopyButton`, keyed by Goal ID, owns clipboard pending, success, failure and
-late-result isolation; Goal-specific labels distinguish this identifier from a
+`TaskCopyButton`, keyed by Goal ID, delegates clipboard pending, success, failure
+and late-result isolation to the shared `ValueCopyButton`; Goal-specific labels distinguish this identifier from a
 Task ID. The Goal frame owns its `TaskDetailNotifications` host and heading focus
 fallback, preserving notification placement, dismissal and expiry without moving
 the aside. Nested Task and chain portals retain their own notification and

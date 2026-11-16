@@ -284,6 +284,7 @@ var diagnosticCauses = map[string]string{
 	"recovery-limit":             "The recovery limit was reached.",
 	"native-identity-missing":    "The original native execution identity is missing.",
 	"worktree-validation-failed": "The worktree failed ownership validation.",
+	"ownership-unconfirmed":      "Retained resource ownership is unconfirmed; automatic cleanup is unsafe.",
 	"branch-mismatch":            "The worktree branch does not match the recorded owner.",
 	"markdown-projection-repair": "Markdown image projection requires repair. Run daynight worker repair-markdown --help.",
 	"recovery-blocked":           "Recovery is blocked and needs attention.",
@@ -453,7 +454,37 @@ func recovery(raw json.RawMessage) (any, error) {
 
 var deliveryFailure = object(map[string]parser{"observedAt": timestamp, "phase": phaseDelivery, "error": structured, "requestId": nullable(id)})
 var schedulerObject = object(map[string]parser{"phase": scheduler, "coverage": coverage, "cycleId": nullable(id), "lastCompletedAt": nullable(timestamp), "lastSuccessfulAt": nullable(timestamp), "lastOutcome": nullable(enum("completed", "failed", "cancelled")), "nextPollAt": nullable(timestamp)})
-var capacity = object(map[string]parser{"observedAt": timestamp, "quality": enum("current", "stale"), "limit": number(1, 64), "occupied": number(0, safeInt), "available": number(0, safeInt), "detailCoverage": detail})
+
+func capacityParser(withCoverage bool) parser {
+	return func(raw json.RawMessage) (any, error) {
+		var input map[string]json.RawMessage
+		if json.Unmarshal(raw, &input) != nil {
+			return nil, bad()
+		}
+		fields := map[string]parser{"observedAt": timestamp, "quality": enum("current", "stale"), "limit": number(1, 64), "occupied": number(0, safeInt), "available": number(0, safeInt)}
+		if withCoverage {
+			fields["detailCoverage"] = detail
+		}
+		if _, present := input["breakdown"]; present {
+			fields["breakdown"] = object(map[string]parser{"active": number(0, safeInt), "retained": number(0, safeInt)})
+		}
+		value, err := object(fields)(raw)
+		if err != nil {
+			return nil, err
+		}
+		c := value.(map[string]any)
+		occupied := c["occupied"].(int64)
+		if c["available"].(int64) != max(int64(0), c["limit"].(int64)-occupied) {
+			return nil, bad()
+		}
+		if b, ok := c["breakdown"].(map[string]any); ok && b["active"].(int64)+b["retained"].(int64) != occupied {
+			return nil, bad()
+		}
+		return value, nil
+	}
+}
+
+var capacity = capacityParser(true)
 var observation = object(map[string]parser{"runId": id, "sequence": sequence, "capturedAt": timestamp, "lifecycle": enum("starting", "running", "stopping", "stopped"), "scheduler": schedulerObject, "capacity": nullable(capacity), "admission": object(map[string]parser{"observedAt": timestamp, "coverage": coverage, "reasons": list(admissionReason, 16, false)}), "reservations": list(reservation, 128, false), "activities": list(activity, 128, false), "currentFailures": list(failure, 32, false), "lastRecovery": nullable(recovery), "detailCoverage": detail, "delivery": object(map[string]parser{"lastSucceededAt": nullable(timestamp), "lastFailure": nullable(deliveryFailure)})})
 
 func ParseObservation(raw json.RawMessage) (Observation, error) {
@@ -468,13 +499,6 @@ func ParseObservation(raw json.RawMessage) (Observation, error) {
 		return nil, e
 	}
 	o := Observation(v.(map[string]any))
-	if c, ok := o["capacity"].(map[string]any); ok {
-		limit, occupied, available := c["limit"].(int64), c["occupied"].(int64), c["available"].(int64)
-		want := max(int64(0), limit-occupied)
-		if available != want {
-			return nil, bad()
-		}
-	}
 	admission := o["admission"].(map[string]any)
 	globalCleanup := false
 	for _, r := range admission["reasons"].([]any) {

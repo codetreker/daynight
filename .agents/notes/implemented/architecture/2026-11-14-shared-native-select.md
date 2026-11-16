@@ -24,8 +24,11 @@ owns the complete API, geometry and caller responsibilities.
 
 The component has no business state, network or Provider dependency.
 LanguageSelector and the public MCP setup client field use it without requiring
-an authenticated shell. Project and search status, PR status, and tag match filters
-use the shared filter variant while retaining their separate values and behavior.
+an authenticated shell. Search status and PR status use the shared filter variant while retaining their
+separate values and behavior. Ordinary project status uses a custom checkbox
+popover and tag matching uses native radios. Their custom toolbar triggers share
+presentation parameters through the [selection presentation decision](2026-11-16-shared-selection-presentation.md),
+which retains this record's native structure and behavior ownership.
 Bot creation and assistant task forms and record filters also use the shared
 presentation while retaining their business selection rules.
 Management consumers use the same component: Team and

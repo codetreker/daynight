@@ -23,7 +23,9 @@ const messages: Record<DiagnosticCode, string> = {
   "invalid-output": "A required operation produced invalid output.", "recovery-limit": "The recovery limit was reached.",
   "native-identity-missing": "The original native execution identity is missing.",
   "worktree-validation-failed": "The worktree failed ownership validation.", "branch-mismatch": "The worktree branch does not match the recorded owner.",
-  "markdown-projection-repair": "Markdown image projection requires repair. Run daynight worker repair-markdown --help.", "recovery-blocked": "Recovery is blocked and needs attention.", "outcome-unknown": "The operation outcome is unknown.",
+  "ownership-unconfirmed": "Retained resource ownership is unconfirmed; automatic cleanup is unsafe.",
+  "recovery-blocked": "Recovery is blocked and needs attention.", "outcome-unknown": "The operation outcome is unknown.",
+  "markdown-projection-repair": "Markdown image projection requires repair. Run daynight worker repair-markdown --help.",
   unknown: "The operation failed; inspect local Worker diagnostics for details.",
 };
 const configurationCodes: Readonly<Record<ReturnType<typeof classifyConfigurationFailure>["code"], DiagnosticCode>> = {
@@ -39,6 +41,11 @@ export class MonitoringRecoveryEvidence extends Error {
 // Construct only after an archive request confirms resource_busy and a short retry is scheduled.
 export class MonitoringArchiveBusyEvidence extends Error {
   constructor(cause: unknown) { super("Archive busy, short retry.", { cause }); }
+}
+
+// Construct only when resource enumeration found an owner without independent execution evidence.
+export class MonitoringOwnershipUnconfirmedEvidence extends Error {
+  constructor() { super("Retained resource ownership is unconfirmed."); }
 }
 
 /** Construct a fixed summary only from a fact established by the caller's operation boundary. */
@@ -71,6 +78,7 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
   }
   if (error instanceof ArchiveRepairRequiredError) return diagnostic(error.code === "markdown_projection_failed" ? "markdown-projection-repair" : "recovery-blocked");
   if (error instanceof MonitoringArchiveBusyEvidence) return diagnostic("rate-limited");
+  if (error instanceof MonitoringOwnershipUnconfirmedEvidence) return diagnostic("ownership-unconfirmed");
   if (error instanceof MonitoringRecoveryEvidence) {
     switch (error.reasonCode) {
       case "native_identity_missing": return diagnostic("native-identity-missing");

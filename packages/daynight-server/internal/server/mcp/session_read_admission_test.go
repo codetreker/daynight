@@ -229,7 +229,6 @@ func TestSessionReadAdmissionLeavesOtherReadsComplete(t *testing.T) {
 	f := newSessionReadFixture(t)
 	definition := sessionReadToolDefinition("current")
 	definition.Name = "ordinary_read"
-	definition.OutputSchema.(map[string]any)["properties"].(map[string]any)["data"] = readString()
 	if err := registerTypedReadTool(f.entry, definition, BudgetControl, func(context.Context, RequestActor, sessionReadInput) (ToolResult, error) {
 		return ToolResult{Data: strings.Repeat("x", sp.MaxHistoryResponseBytes+1000)}, nil
 	}); err != nil {

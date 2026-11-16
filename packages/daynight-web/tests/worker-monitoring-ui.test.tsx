@@ -30,6 +30,29 @@ it.each(['en', 'zh-CN'] as const)('shows actionable Markdown repair guidance in 
   expect(screen.getAllByText(/daynight worker repair-markdown --help/).length).toBeGreaterThan(0);
 });
 
+it('shows retained capacity, original claim and safe recovery guidance without deriving totals from visible details', () => {
+  const snapshot: WorkerMonitoringDetail = { ...detail, data: { ...detail.data,
+    capacity: { ...detail.data.capacity!, limit: 6, occupied: 6, breakdown: { active: 1, retained: 5 } },
+    currentFailures: [{ ...detail.data.currentFailures[0]!, component: 'resources', phase: 'resource-observation', retryState: 'manual', nextAttemptAt: null,
+      worktree: { kind: 'project-relative', path: '.worktrees/daynight/old' },
+      error: { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false } }],
+  } };
+  const view = renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale: 'zh-CN' });
+  expect(screen.getByText('活动任务占用').nextElementSibling).toHaveTextContent('1');
+  expect(screen.getByText('保留资源占用').nextElementSibling).toHaveTextContent('5');
+  const issue = screen.getByText('资源 · 资源观测', { selector: 'summary strong' }).closest('details')!;
+  fireEvent.click(issue.querySelector('summary')!);
+  expect(within(issue).getByText(scope.claimId)).toBeInTheDocument();
+  expect(within(issue).getByText(/任务已完成本身不足以证明可回收/)).toBeInTheDocument();
+  expect(within(issue).getByText(`daynight worker resources recover ${scope.taskId} --project ${scope.projectId} --claim-id ${scope.claimId}`)).toBeInTheDocument();
+  view.rerender(<WorkerMonitoring state={state({ ...snapshot, permissionProjection: 'restricted', detailCoverage: 'partial', data: { ...snapshot.data, reservations: [], activities: [], currentFailures: [] } })} readEnabled />);
+  expect(screen.getByText('保留资源占用').nextElementSibling).toHaveTextContent('5');
+  expect(screen.getByText('本次观测没有可见异常。')).toBeInTheDocument();
+  expect(screen.queryByText(scope.claimId)).toBeNull(); expect(screen.queryByText('恢复指引')).toBeNull();
+  view.rerender(<WorkerMonitoring state={state()} readEnabled />);
+  expect(screen.getByText('此 Worker 尚未报告容量分解。')).toBeInTheDocument();
+});
+
 it('renders real capacity and cleanup details and preserves an expanded failure during background reads', () => {
   const view = renderWithLocale(<WorkerMonitoring state={state()} readEnabled />, { locale: 'en' });
   expect(screen.getByText('2 / 2')).toBeInTheDocument(); expect(screen.getByText(/Cleanup occupies capacity/)).toBeInTheDocument();

@@ -12,7 +12,7 @@ import { TaskPausedBadge } from '../task-pause/TaskPause';
 import { TaskSessionStatus } from './TaskSessionStatus';
 import { TaskTagList } from '../task-tags/TaskTagList';
 import { TagColorFeedback } from '../task-tags/TagColor';
-import { CopyButton } from './CopyButton';
+import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
 import type { TaskRowModel } from './model';
 import '../../styles/graph.css';
 import '../../styles/task-status-rows.css';
@@ -101,7 +101,7 @@ export const TaskRow = memo(({ model, projectId, tagsActive = true, href, instan
       <div className="task-row-content">
         <div className="task-row-heading">
           <a className="task-row-title" href={href} id={instanceId} ref={setTitleRef} {...hint.triggerEvents} aria-haspopup="dialog" aria-describedby={descriptionIds} onClick={open}>{model.title}</a>
-          <span className="task-row-id-group"><span className="task-row-id" data-task-row-selectable>{model.id}</span><CopyButton key={model.id} value={model.id} label={detail.copyTaskId} feedback={(state) => state === 'copied' ? <span className="task-row-copy-feedback" role="status">{detail.copied}</span> : state === 'failed' ? <span className="task-row-copy-feedback task-row-copy-error" role="alert">{detail.copyFailed}</span> : null} /></span>
+          <span className="task-row-id-group"><span className="task-row-id" data-task-row-selectable>{model.id}</span><ValueCopyButton key={model.id} value={model.id} label={detail.copyTaskId} feedback={(state) => state === 'copied' ? <span className="task-row-copy-feedback" role="status">{detail.copied}</span> : state === 'failed' ? <span className="task-row-copy-feedback task-row-copy-error" role="alert">{detail.copyFailed}</span> : null} /></span>
         </div>
         <div className="task-row-meta">
           <time dateTime={model.createdAt}>{standalone.createdOn({ date: format.date(model.createdAt) })}</time>
