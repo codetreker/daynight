@@ -22,6 +22,8 @@ import (
 const appWriteBudget = 45 * time.Second
 const appWriteBytes = 131072
 
+var errAppWriteDeadline = errors.New("github app write deadline exceeded")
+
 type AppOperations interface {
 	CreateApp(context.Context, model.Principal, core.CreateAppInput) (core.AppMetadata, error)
 	GetApp(context.Context, model.Principal, string) (core.AppMetadata, error)
@@ -151,7 +153,7 @@ func appCreateInput(w http.ResponseWriter, r *http.Request) (core.CreateAppInput
 }
 
 func (h *appHandler) create(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	ctx, cancel := context.WithTimeout(r.Context(), appWriteBudget)
+	ctx, cancel := context.WithTimeoutCause(r.Context(), appWriteBudget, errAppWriteDeadline)
 	defer cancel()
 	h.createWithContext(w, r, p, ctx)
 }
@@ -168,6 +170,20 @@ func (h *appHandler) createWithContext(w http.ResponseWriter, r *http.Request, p
 	workRequest := r.WithContext(ctx)
 	input, err := appCreateInput(w, workRequest)
 	r.Body = workRequest.Body
+	// A terminal body refusal may itself cancel the transport context while
+	// the response socket remains writable. Preserve httpx's bounded rejection.
+	var bodyError *httpx.BodyReadError
+	if errors.As(err, &bodyError) && (bodyError.Status == http.StatusRequestEntityTooLarge || bodyError.Status == http.StatusRequestTimeout) {
+		httpx.WriteError(w, r, logger, "github", "create", err)
+		return
+	}
+	if bodyError != nil && errors.Is(err, context.DeadlineExceeded) && errors.Is(context.Cause(ctx), errAppWriteDeadline) {
+		// Closing the incomplete body may cancel the original transport context.
+		// Only this handler's own deadline permits a bounded timeout response.
+		timeout := &httpx.BodyReadError{Cause: err, Status: http.StatusRequestTimeout, Code: "request_timeout", Message: "request body read timed out"}
+		httpx.WriteError(w, r, logger, "github", "create", timeout)
+		return
+	}
 	if err == nil {
 		err = ctx.Err()
 	}

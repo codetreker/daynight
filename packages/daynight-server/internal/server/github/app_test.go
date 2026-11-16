@@ -1,16 +1,20 @@
 package github
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -487,5 +491,224 @@ func TestAppCreateCancelledBeforeBodyRead(t *testing.T) {
 	h.create(w, r, model.Principal{UserID: userID})
 	if body.reads != 0 || !r.Close || w.Header().Get("Connection") != "close" || w.Header().Get("Location") != "" || w.Body.Len() != 0 || !strings.Contains(logs.String(), "canceled") {
 		t.Fatalf("reads=%d close=%v headers=%v body=%s logs=%s", body.reads, r.Close, w.Header(), w.Body, logs.String())
+	}
+}
+
+type appObservedClose struct {
+	io.ReadCloser
+	ctx  context.Context
+	done chan<- error
+}
+
+func (b *appObservedClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.done <- b.ctx.Err()
+	return err
+}
+
+func TestAppCreateChunkedBodyLimitAfterTransportCancellation(t *testing.T) {
+	var calls atomic.Int32
+	h := appMux(t, appOps{t: t, create: func(context.Context, model.Principal, core.CreateAppInput) (core.AppMetadata, error) {
+		calls.Add(1)
+		return core.AppMetadata{}, nil
+	}}, io.Discard)
+	observed := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = &appObservedClose{ReadCloser: r.Body, ctx: r.Context(), done: observed}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err = conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	payload := strings.Repeat("a", appWriteBytes+1)
+	if _, err = fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer valid\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nX-Request-ID: app-body-limit\r\n\r\n%x\r\n%s\r\n", appPath, len(payload), payload); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-observed:
+		if !errors.Is(result, context.Canceled) {
+			t.Fatalf("body close did not cancel transport context: %v", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("body close did not finish")
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusRequestEntityTooLarge || !response.Close || calls.Load() != 0 || !strings.Contains(string(body), `"code":"payload_too_large"`) || !strings.Contains(string(body), `"requestId":"app-body-limit"`) || response.Header.Get("Location") != "" {
+		t.Fatalf("status=%s close=%v calls=%d headers=%v body=%s err=%v", response.Status, response.Close, calls.Load(), response.Header, body, err)
+	}
+	if _, err = reader.ReadByte(); err != io.EOF {
+		t.Fatalf("connection remained reusable: %v", err)
+	}
+}
+
+func TestAppCreateChunkedBodyInternalDeadline(t *testing.T) {
+	var calls atomic.Int32
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	auth, err := authhttp.NewRequestAuthentication(func(_ context.Context, kind model.CredentialKind, value string) (model.Principal, error) {
+		if value != "valid" {
+			return model.Principal{}, authhttp.Failure()
+		}
+		return model.Principal{Kind: kind, UserID: userID, CredentialID: projectID}, nil
+	}, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &appHandler{logger: logger, operations: appOps{t: t, create: func(context.Context, model.Principal, core.CreateAppInput) (core.AppMetadata, error) {
+		calls.Add(1)
+		return core.AppMetadata{}, nil
+	}}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/github/apps", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		ctx, cancel := context.WithTimeoutCause(r.Context(), 100*time.Millisecond, errAppWriteDeadline)
+		defer cancel()
+		h.createWithContext(w, r, p, ctx)
+	}))
+	observed := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = &appObservedClose{ReadCloser: r.Body, ctx: r.Context(), done: observed}
+		httpx.RequestLogging(logger, mux).ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err = conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer valid\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nX-Request-ID: app-body-timeout\r\n\r\n5\r\nhello\r\n", appPath); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-observed:
+		if !errors.Is(result, context.Canceled) {
+			t.Fatalf("body close context=%v", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("body did not close")
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusRequestTimeout || !response.Close || calls.Load() != 0 || !strings.Contains(string(body), `"code":"request_timeout"`) || !strings.Contains(string(body), `"requestId":"app-body-timeout"`) || response.Header.Get("Location") != "" {
+		t.Fatalf("status=%s close=%v calls=%d headers=%v body=%s err=%v", response.Status, response.Close, calls.Load(), response.Header, body, err)
+	}
+	if _, err = reader.ReadByte(); err != io.EOF {
+		t.Fatalf("connection remained reusable: %v", err)
+	}
+}
+
+type cancelAppBody struct{ cancel context.CancelFunc }
+
+func (b cancelAppBody) Read([]byte) (int, error) { b.cancel(); return 0, context.Canceled }
+func (cancelAppBody) Close() error               { return nil }
+
+func TestAppCreateClientCancellationDuringBody(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := appRequest(http.MethodPost, appPath, "").WithContext(ctx)
+	r.Body = cancelAppBody{cancel: cancel}
+	var logs bytes.Buffer
+	h := &appHandler{logger: slog.New(slog.NewTextHandler(&logs, nil)), operations: appOps{t: t}}
+	w := httptest.NewRecorder()
+	h.create(w, r, model.Principal{UserID: userID})
+	if w.Body.Len() != 0 || w.Header().Get("Location") != "" || !r.Close || !strings.Contains(logs.String(), "canceled") {
+		t.Fatalf("headers=%v body=%s logs=%s", w.Header(), w.Body, logs.String())
+	}
+}
+
+type appObservedRead struct {
+	io.ReadCloser
+	started chan struct{}
+	once    atomic.Bool
+}
+
+func (b *appObservedRead) Read(data []byte) (int, error) {
+	if b.once.CompareAndSwap(false, true) {
+		close(b.started)
+	}
+	return b.ReadCloser.Read(data)
+}
+
+type appObservedWriter struct {
+	http.ResponseWriter
+	writes int
+}
+
+func (w *appObservedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *appObservedWriter) WriteHeader(status int)      { w.writes++; w.ResponseWriter.WriteHeader(status) }
+func (w *appObservedWriter) Write(data []byte) (int, error) {
+	w.writes++
+	return w.ResponseWriter.Write(data)
+}
+
+func TestAppCreateChunkedBodyParentCancellation(t *testing.T) {
+	var calls atomic.Int32
+	h := appMux(t, appOps{t: t, create: func(context.Context, model.Principal, core.CreateAppInput) (core.AppMetadata, error) {
+		calls.Add(1)
+		return core.AppMetadata{}, nil
+	}}, io.Discard)
+	started := make(chan struct{})
+	cancelParent := make(chan context.CancelFunc, 1)
+	finished := make(chan int, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		body := &appObservedRead{ReadCloser: r.Body, started: started}
+		r = r.WithContext(ctx)
+		r.Body = body
+		writer := &appObservedWriter{ResponseWriter: w}
+		cancelParent <- cancel
+		h.ServeHTTP(writer, r)
+		finished <- writer.writes
+	}))
+	t.Cleanup(server.Close)
+	conn, err := net.DialTimeout("tcp", server.Listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err = conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer valid\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nhello", appPath); err != nil {
+		t.Fatal(err)
+	}
+	var cancel context.CancelFunc
+	select {
+	case cancel = <-cancelParent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start")
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("body did not start reading")
+	}
+	cancel()
+	select {
+	case writes := <-finished:
+		if writes != 0 || calls.Load() != 0 {
+			t.Fatalf("writes=%d calls=%d", writes, calls.Load())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not exit")
 	}
 }
