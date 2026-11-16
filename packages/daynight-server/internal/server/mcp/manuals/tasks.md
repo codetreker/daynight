@@ -81,6 +81,8 @@ Task show, graph and material reads are new observations outside the list fence.
 
 ## Create and organize Tasks and Goals
 
+For Task and Goal descriptions on creation or update, follow the [material writing guidance](daynight://manuals/materials.md).
+
 `task_create` defaults to `type: "task"`; supply `type: "goal"` to create a Goal. Goal status defaults to `todo` and may initially be `todo`, `in_progress`, `done` or `cancelled`. Its omitted `assignedTo` selects the current account; explicit null leaves it unassigned. A Goal has no parent, dependencies or execution platform. It owns its description, properties, Thread and attachments independently of its children.
 
 ```json

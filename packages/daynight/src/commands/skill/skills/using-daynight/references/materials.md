@@ -38,6 +38,16 @@ Goal pipeline or a separate child Task for every discussion.
 
 ## Descriptions and references
 
+Keep Task and Goal descriptions brief: summarize the work, expected outcome and necessary scope, with references to detailed material. Put full requirements, solutions, detailed designs, implementation instructions, research reports and acceptance evidence in the owning attachments. Do not copy their full content into the description.
+
+A simple task fully explained in a few sentences needs no attachment. This writing guidance sets no fixed word or character limit. Keep necessary definitions and acceptance complete across the brief description and its actual readable material.
+
+For example:
+
+```markdown
+Make login failure messages actionable for credential errors and network failures. See [Task details](task.md) for requirements and acceptance.
+```
+
 Descriptions are Markdown: Web renders CommonMark/GFM and displays raw HTML as
 text; CLI/API preserve the string without a format field. Task details omit
 attachment listings/bytes and Thread messages; read them separately.

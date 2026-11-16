@@ -23,6 +23,8 @@ daynight task ready --tag <tag-id> --limit 20 --json
 daynight task show <task-id> --json
 ```
 
+For Task and Goal descriptions, follow the [material writing guidance](materials.md#descriptions-and-references).
+
 Ordinary Task creation accepts only `--status proposed|todo`: default proposed is an unconfirmed
 suggestion; todo is confirmed work, including internal multi-step Tasks. Goal
 creation defaults to todo and accepts todo, in_progress, done and cancelled. Both
@@ -120,6 +122,7 @@ daynight task update <task-id> --assigned-to <user-uuid> --if-version <observed-
 daynight task update <task-id> --allow-agents true --required-platform linux --if-version <observed-version>
 ```
 
+Follow the [material writing guidance](materials.md#descriptions-and-references) when updating a description.
 Update needs at least one mutable field. Supplied description replaces the
 entire field: preserve required content; `--description=""` clears it, omission
 preserves it. `--required-platform windows|linux|macos` conflicts with

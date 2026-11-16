@@ -13,7 +13,8 @@
           "type": "string"
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Brief Task or Goal overview of the work, expected outcome and necessary scope, with material references. Put detailed material in attachments. A simple task fully explained in a few sentences needs no attachment."
         },
         "assignedTo": {
           "type": [
@@ -1393,7 +1394,8 @@
           "type": "string"
         },
         "description": {
-          "type": "string"
+          "type": "string",
+          "description": "Brief Task or Goal overview of the work, expected outcome and necessary scope, with material references. Put detailed material in attachments. A simple task fully explained in a few sentences needs no attachment."
         },
         "assignedTo": {
           "anyOf": [
