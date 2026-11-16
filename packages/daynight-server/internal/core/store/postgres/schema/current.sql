@@ -1,4 +1,4 @@
--- Schema snapshot version: 75
+-- Schema snapshot version: 76
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -262,6 +262,58 @@ CREATE TABLE "device_authorizations" (
     CONSTRAINT "device_authorizations_user_code_check" CHECK (("user_code" ~ '^[BCDFGHJKLMNPQRSTVWXZ]{10}$'::"text"))
 );
 
+CREATE TABLE "github_app_admin_invitations" (
+    "id" "uuid" NOT NULL,
+    "app_resource_id" "uuid" NOT NULL,
+    "token_hash" "bytea" NOT NULL,
+    "created_by" "uuid" NOT NULL,
+    "issuer_membership_version" bigint NOT NULL,
+    "created_at" timestamp with time zone NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    "revoked_at" timestamp with time zone,
+    "consumed_at" timestamp with time zone,
+    "consumed_by" "uuid"
+);
+
+CREATE SEQUENCE "github_app_admin_versions"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+CREATE TABLE "github_app_admins" (
+    "app_resource_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "version" bigint DEFAULT "nextval"('"github_app_admin_versions"'::"regclass") NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL
+);
+
+CREATE TABLE "github_app_team_grants" (
+    "id" "uuid" NOT NULL,
+    "app_resource_id" "uuid" NOT NULL,
+    "team_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "revoked_at" timestamp with time zone
+);
+
+CREATE TABLE "github_apps" (
+    "id" "uuid" NOT NULL,
+    "github_app_id" bigint NOT NULL,
+    "name" "text" NOT NULL,
+    "github_name" "text" NOT NULL,
+    "github_slug" "text" NOT NULL,
+    "version" bigint DEFAULT 1 NOT NULL,
+    "credential_version" bigint DEFAULT 1 NOT NULL,
+    "impact_version" bigint DEFAULT 1 NOT NULL,
+    "private_key_pem" "bytea",
+    "webhook_secret" "bytea",
+    "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
+    "deleted_at" timestamp with time zone
+);
+
 CREATE TABLE "login_transactions" (
     "id" "uuid" NOT NULL,
     "state_hash" "bytea" NOT NULL,
@@ -484,7 +536,9 @@ CREATE TABLE "project_github" (
     "created_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "statement_timestamp"() NOT NULL,
     "sync_enabled" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "project_github_sync_requires_connection" CHECK (((NOT "sync_enabled") OR "enabled"))
+    "app_resource_id" "uuid",
+    "team_grant_id" "uuid",
+    "credential_version" bigint
 );
 
 CREATE TABLE "project_github_pending_prs" (
@@ -1499,6 +1553,21 @@ ALTER TABLE ONLY "device_authorizations"
 ALTER TABLE ONLY "device_authorizations"
     ADD CONSTRAINT "device_authorizations_user_code_key" UNIQUE ("user_code");
 
+ALTER TABLE ONLY "github_app_admin_invitations"
+    ADD CONSTRAINT "github_app_admin_invitations_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "github_app_admin_invitations"
+    ADD CONSTRAINT "github_app_admin_invitations_token_hash_key" UNIQUE ("token_hash");
+
+ALTER TABLE ONLY "github_app_admins"
+    ADD CONSTRAINT "github_app_admins_pkey" PRIMARY KEY ("app_resource_id", "user_id");
+
+ALTER TABLE ONLY "github_app_team_grants"
+    ADD CONSTRAINT "github_app_team_grants_pkey" PRIMARY KEY ("id");
+
+ALTER TABLE ONLY "github_apps"
+    ADD CONSTRAINT "github_apps_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "login_transactions"
     ADD CONSTRAINT "login_transactions_pkey" PRIMARY KEY ("id");
 
@@ -1824,6 +1893,16 @@ CREATE INDEX "device_authorization_limits_expiry" ON "device_authorization_limit
 
 CREATE INDEX "device_authorizations_expiry" ON "device_authorizations" USING "btree" ("expires_at");
 
+CREATE INDEX "github_app_admin_invitations_app" ON "github_app_admin_invitations" USING "btree" ("app_resource_id", "created_at", "id");
+
+CREATE INDEX "github_app_admins_user" ON "github_app_admins" USING "btree" ("user_id", "app_resource_id");
+
+CREATE UNIQUE INDEX "github_app_team_grants_live" ON "github_app_team_grants" USING "btree" ("app_resource_id", "team_id") WHERE ("revoked_at" IS NULL);
+
+CREATE INDEX "github_app_team_grants_team" ON "github_app_team_grants" USING "btree" ("team_id", "app_resource_id") WHERE ("revoked_at" IS NULL);
+
+CREATE UNIQUE INDEX "github_apps_live_github_app_id" ON "github_apps" USING "btree" ("github_app_id") WHERE ("deleted_at" IS NULL);
+
 CREATE INDEX "login_transactions_expiry" ON "login_transactions" USING "btree" ("expires_at");
 
 CREATE INDEX "login_transactions_scope_expiry" ON "login_transactions" USING "btree" ("scope_hash", "expires_at");
@@ -1866,11 +1945,15 @@ CREATE INDEX "private_transfers_retention" ON "private_transfers" USING "btree" 
 
 CREATE INDEX "project_github_access_due" ON "project_github" USING "btree" ("next_access_check_at", "project_id") WHERE ("enabled" AND "sync_enabled");
 
+CREATE INDEX "project_github_app_resource" ON "project_github" USING "btree" ("app_resource_id", "project_id");
+
 CREATE INDEX "project_github_binding" ON "project_github" USING "btree" ("app_id", "installation_id", "repository_id");
 
 CREATE INDEX "project_github_pending_prs_due" ON "project_github_pending_prs" USING "btree" ("next_attempt_at", "project_id");
 
 CREATE INDEX "project_github_poll_due" ON "project_github" USING "btree" ("next_poll_at", "project_id") WHERE ("enabled" AND "sync_enabled");
+
+CREATE INDEX "project_github_team_grant" ON "project_github" USING "btree" ("team_grant_id", "project_id");
 
 CREATE INDEX "project_grants_user" ON "project_grants" USING "btree" ("user_id", "project_id");
 
@@ -2034,6 +2117,8 @@ INSERT INTO "private_transfer_ledger" ("singleton", "reserved_bytes", "outstandi
 INSERT INTO "webhook_policies" ("version", "max_automatic_attempts", "automatic_window_seconds", "automatic_offsets_seconds", "max_manual_operations", "payload_retention_seconds", "metadata_retention_seconds", "operation_retention_seconds", "operation_max_age_seconds", "operation_future_skew_seconds", "http_timeout_seconds", "lease_seconds", "minimum_failure_wait_seconds", "jitter_basis_points", "jitter_max_seconds", "key_overlap_default_seconds", "key_overlap_max_seconds") VALUES (1, 10, 259200, '{0,60,300,1800,7200,21600,43200,86400,172800,255600}', 3, 604800, 2592000, 2592000, 300, 60, 15, 45, 5, 1000, 1800, 86400, 604800);
 
 SELECT pg_catalog.setval('"bots_creation_order_seq"', 1, false);
+
+SELECT pg_catalog.setval('"github_app_admin_versions"', 1, false);
 
 SELECT pg_catalog.setval('"project_grant_versions"', 1, false);
 

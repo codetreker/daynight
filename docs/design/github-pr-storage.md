@@ -4,7 +4,7 @@ GitHub 连接和 PR 观测是 Project 的独立资源，不改变 Project 设置
 
 ## 身份与状态
 
-`project_github` 以 Project ID 为主键，保存连接配置及同步事实。缺失行表示虚拟未连接资源：`version=1`、`generation=0`、`revision=0`、`enabled=false`、`sync_enabled=false`、轮询间隔为 5 分钟、访问状态为 `unknown`，其余可空事实为空。读取不会创建行。`enabled` 表示连接，`sync_enabled` 表示独立的同步意愿；数据库约束同步开启时连接必须开启。首次实际管理写入在 live Project 写事务内创建版本 2；配置变更推进 version，连接、重连、断开和同步开关的实际变化推进 generation，对外可见状态或 PR 观测提交推进 revision。三者分别保护管理配置、运行代次和读取新鲜度，不能互相代替。
+`project_github` 以 Project ID 为主键，保存连接配置及同步事实。缺失行表示虚拟未连接资源：`version=1`、`generation=0`、`revision=0`、`enabled=false`、`sync_enabled=false`、轮询间隔为 5 分钟、访问状态为 `unknown`，其余可空事实为空。读取不会创建行。`enabled` 表示连接，`sync_enabled` 表示独立的同步意愿；现有 Core 的准入仍要求开启同步前已连接；存储不再以 CHECK 把同步意愿与连接绑定。首次实际管理写入在 live Project 写事务内创建版本 2；配置变更推进 version，连接、重连、断开和同步开关的实际变化推进 generation，对外可见状态或 PR 观测提交推进 revision。三者分别保护管理配置、运行代次和读取新鲜度，不能互相代替。
 
 App、installation 和仓库使用稳定数值身份；名称仅用于展示，仓库可见性未知时为 null。领取及其期限、种类可为空。管理写先在 Project 锁作用域内读取并锁定既有 GitHub 行，再根据该事实决定并执行明确字段与预期条件的写入；这样广播对同一行的更新不会被陈旧决定覆盖。缺失行由 Project 锁保护首次管理写入，而广播只匹配已启用的行。数据访问层不决定业务状态转换。提交结果沿用 `committed`、`not_committed` 和 `unknown`；未知结果不能当作回滚或自动重放。
 
@@ -25,3 +25,5 @@ Project 权限、连接状态、计数及列表或详情可在同一只读 Repea
 ## 迁移
 
 迁移 `073_project_github_sync.sql` 为已有行设置默认关闭，推进 version、generation 和 revision，清除调度、领取、access hint 与 pending PR；绑定、PR、历史事实和 `not_before` 保留。缺失行不补建。溢出或数据库错误使迁移失败。升级须先停止并 drain 全部旧服务副本，完成迁移和替换后再启动；旧代码不识别同步开关，不能与新版混跑。
+
+迁移 `076_github_apps.sql` 为独立 App、管理员、邀请和 Team 授权准备存储，并增加连接授权字段；它删除同步意愿依赖连接的 CHECK，但不修改既有连接、领取、同步意愿或 PR。现有公开连接与执行路径继续使用原有准入，独立 App 尚未接入生产路由或运行时。独立资源的存储与证明见 [独立 GitHub App 登记](github-app-registration.md)。
