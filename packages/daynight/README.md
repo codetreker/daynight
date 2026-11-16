@@ -3195,12 +3195,12 @@ update cache or another installation.
 
 The primary worker database retains its claim and native-session index. Web
 execution state lives separately in `~/.daynight/worker/web-executions.sqlite`
-with its own format version 2. The version 1 upgrade removes redundant cleanup
+with its own format version 4. The version 1 upgrade removes redundant cleanup
 input/results and stopped/closed/deleted flags, preserving cleanup intent,
 identity and deadline. Version 0 resets its schema and data through the common
 SQLite policy. Private launch tickets and Controller
 journals live under `~/.daynight/controller/`; journals retain their independent
-format version 11. Both Worker stores must open successfully before scheduling.
+format version 13. Both Worker stores must open successfully before scheduling.
 Web restart reconnects to a surviving Controller. Starting a new generation
 requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
@@ -3208,13 +3208,11 @@ Unknown initial inputs and operations are reconciled without replay.
 
 Controller writers, local migration, stopped recording and archive write phases
 share one execution storage permit. Current-format reads remain lock-free;
-old-format upgrades acquire the same owner and reserve their writes. Preparation
+old-format upgrades acquire the same owner. Preparation
 separates upgrade-only, stopped-maintenance and writer admission. The writer holds
 its permit until relay, media and journal handles close; archive and source-tail
 transport release local ownership before the network and verify the same stopped
-source after reacquiring it. Stopped settlement retains its existing 8 MiB reserve
-above the ordinary 128 MiB metadata limit, so an acknowledged tail can settle
-before recovery applies normal writer admission. Unknown process state and unconfirmed handle close
+source after reacquiring it. Stopped settlement and recovery do not apply cumulative metadata admission. Unknown process state and unconfirmed handle close
 retain their evidence. The journal stores one current SQL row per timeline entry;
 body, UTF-8 totals, Markdown/image state, original input origins and outbox commit
 in the original transaction. Replaced body revisions do not create candidate files.
@@ -3232,13 +3230,11 @@ original execution, native identity, operations and message origins.
 Upgrade-only reads retain stopping evidence and pending cleanup; they do not
 prove native termination. Proven stopped maintenance completes the reader
 checkpoint barrier, legacy body retirement, in-place VACUUM, post-checkpoint
-file verification and ordinary metadata admission before the next writer starts.
+file verification before the next writer starts.
 Controller operations do not use free-space watermarks or future disk-peak
-reservations; actual filesystem and SQLite failures remain visible. Busy readers
-or metadata capacity refusal keep the original history and report maintenance
-waiting. Current timeline JSON remains limited to
-64 MiB and 100000 entries; normal physical admission still applies
-independently. The [SQL content
+reservations; actual filesystem and SQLite failures remain visible. A busy reader keeps the original history and reports maintenance waiting.
+Current schema3 timeline JSON remains limited to 128 MiB and 100000 entries;
+older schema1/2 retain their 64 MiB boundary. The [SQL content
 design](../../docs/design/session-sqlite-content.md) defines these storage and
 recovery boundaries.
 

@@ -48,7 +48,7 @@ provably changed inventory; unchanged or still-referenced missing files continue
 to fail. The resource owner never caches legacy references for later inventory
 writes or rollback. A busy reader retains the files and pending flag. Failures
 preserve the actual committed phase; reentry resumes remaining work under the
-same permit and checks metadata at the original admission boundaries. The [media
+same permit. The [media
 ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
 replaces the original absolute execution reservation and refund mechanism. The later
 [free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)

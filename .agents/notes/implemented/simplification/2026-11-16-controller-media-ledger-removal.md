@@ -23,8 +23,8 @@ The ledger removal originally retained the independent metadata policy,
 512 MiB free-space watermark and remaining-work disk peak estimates. The later
 [free-space and peak admission removal](2026-11-16-controller-free-space-admission-removal.md)
 removes that watermark and those estimates, including media scans and unwritten
-byte accounting used only for prediction. Metadata admission remains in force;
-maintenance checks actual metadata after cleanup.
+byte accounting used only for prediction. The later [metadata admission removal](2026-11-16-controller-metadata-admission-removal.md)
+removes the remaining cumulative metadata policy.
 
 Execution, Session, claim, generation, attempt and native identities retain
 their existing owners. Storage permits, reader barriers, stopping evidence,
