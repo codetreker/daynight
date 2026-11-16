@@ -168,6 +168,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
     sessionStates = { [firstId]: indicator };
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, mixedLayoutGoal: () => {
+    const statuses = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const;
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    details = [goal, ...statuses.map((status, i) => detailFixture(projectId,
+      `00000000-0000-4000-8000-${String(900 + i).padStart(12, '0')}`,
+      { parentId: goalId, title: 'Long title 中文长标题 '.repeat(12).trim(), status, assignedTo: TEST_VIEWER_ID,
+        startedAt: status === 'in_progress' ? time : null, completedAt: status === 'done' ? time : null,
+        cancelledAt: status === 'cancelled' ? time : null, properties: status === 'in_progress' ? { worker } : {},
+        tags: [{ id: layoutChildId, name: 'Long tag '.repeat(6).trim() }, { id: layoutWorkerId, name: 'Second tag 标签' }] }))];
+    currentGraph = graphFixture(details);
   }, taggedAndEmptyGoals: () => {
     details = [goal, ...[first, second, single].map(item => ({ ...item, tags: [{ id: layoutChildId, name: 'Tagged' }] })),
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Empty goal', ready: false })];
@@ -2492,6 +2502,79 @@ test('Goal list retires an old epoch and rejects its late background result', as
   await expect(page.getByText('Goal reading', { exact: true })).toHaveCount(0);
 });
 
+
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`mixed Goal members remain readable at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale); fixture.mixedLayoutGoal();
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await card.locator('.goal-list-toggle').click();
+  const rows = card.locator('.goal-task-list > li .task-row');
+  await expect(rows).toHaveCount(5);
+  for (const status of ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const) {
+    const row = card.locator(`.goal-task-list > li .task-row[data-task-status="${status}"]`);
+    await page.mouse.move(0, 0);
+    await expect(row).toHaveCSS('background-color', roleColors[status][0]);
+    await row.hover();
+    await expect(row).toHaveCSS('background-color', roleColors[status][1]);
+    expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await expect(row.locator('.task-row-id')).toBeVisible();
+    await expect(row.locator('.task-tag')).toHaveCount(2);
+    await row.locator('.task-row-title').focus();
+    await expect(row.locator('.task-row-title')).toBeFocused();
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows preserve their inset at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page); fixture.completionGoal(true);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const inset = width <= 600 ? 12 : 16;
+  const verify = async (container: Locator, toggle: Locator, contentSelector: string, bottom: number) => {
+    const headerBefore = await toggle.boundingBox();
+    await toggle.click();
+    const headerAfter = await toggle.boundingBox();
+    expect(headerAfter!.x).toBeCloseTo(headerBefore!.x, 1);
+    const content = container.locator(contentSelector);
+    const list = content.locator(':scope > .goal-task-list');
+    await expect(list.locator(':scope > li .task-row').first()).toBeVisible();
+    const geometry = await list.evaluate(element => {
+      const content = element.parentElement!.getBoundingClientRect();
+      const listBox = element.getBoundingClientRect();
+      const rows = [...element.querySelectorAll<HTMLElement>(':scope > li .task-row')].map(row => {
+        const box = row.getBoundingClientRect();
+        return { left: box.left, right: box.right, overflow: row.scrollWidth > row.clientWidth + 1 };
+      });
+      return { left: content.left, right: content.right, listBottom: listBox.bottom,
+        lastBottom: element.lastElementChild!.getBoundingClientRect().bottom, rows,
+        pageOverflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    expect(geometry.rows.length).toBeGreaterThan(0);
+    for (const row of geometry.rows) {
+      expect(row.left - geometry.left).toBeCloseTo(inset, 1);
+      expect(row.right).toBeCloseTo(geometry.right, 1);
+      expect(row.overflow).toBe(false);
+    }
+    expect(geometry.listBottom - geometry.lastBottom).toBeCloseTo(bottom, 1);
+    expect(geometry.pageOverflow).toBe(false);
+  };
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const goalRow = page.locator(`[data-goal-id="${goalId}"]`);
+  await verify(goalRow, goalRow.locator('.goal-list-toggle'), '.goal-list-contents', 0);
+  await expect(goalRow.locator('.goal-task-list')).toHaveCount(1);
+  await expect(goalRow.locator('.goal-task-list > li')).toHaveCount(3);
+  await page.getByRole('tab', { name: 'Task chains' }).click();
+  for (const id of [otherTask2Id, outsideId]) {
+    const chain = page.locator(`[data-chain-id="${id}"]`);
+    await verify(chain, chain.locator('.goal-toggle'), '.goal-children', 5);
+  }
+  expect(fixture.statusWrites()).toEqual([]);
+  expect(fixture.edits()).toEqual([]);
+});
 
 test('completed and incomplete full and scoped chains have compact desktop headers', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
