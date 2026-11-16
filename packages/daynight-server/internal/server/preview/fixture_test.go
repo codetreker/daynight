@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/identity"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
@@ -14,11 +15,13 @@ import (
 )
 
 type operations struct {
-	create    func(context.Context, string) (model.PreviewSSOLogin, error)
-	start     func(context.Context, string) (identity.PreviewSSOStart, error)
-	authorize func(context.Context, string, string, model.Principal) (identity.PreviewSSOAuthorization, error)
-	redeem    func(context.Context, string, string, string) (identity.PreviewSSORedemption, error)
-	complete  func(context.Context, string, string) (string, error)
+	create       func(context.Context, string) (model.PreviewSSOLogin, error)
+	start        func(context.Context, string) (identity.PreviewSSOStart, error)
+	authorize    func(context.Context, string, string, model.Principal) (identity.PreviewSSOAuthorization, error)
+	redeem       func(context.Context, string, string, string) (identity.PreviewSSORedemption, error)
+	complete     func(context.Context, string, string) (string, error)
+	authenticate func(context.Context, string) (model.Principal, time.Time, error)
+	retry        func(context.Context, string, string, model.Principal) (string, error)
 }
 
 func (o *operations) Create(ctx context.Context, target string) (model.PreviewSSOLogin, error) {
@@ -35,6 +38,18 @@ func (o *operations) Redeem(ctx context.Context, code, state, binding string) (i
 }
 func (o *operations) Complete(ctx context.Context, id, value string) (string, error) {
 	return o.complete(ctx, id, value)
+}
+func (o *operations) Authenticate(ctx context.Context, value string) (model.Principal, time.Time, error) {
+	if o.authenticate == nil {
+		panic("unexpected preview authentication")
+	}
+	return o.authenticate(ctx, value)
+}
+func (o *operations) Retry(ctx context.Context, id, state string, principal model.Principal) (string, error) {
+	if o.retry == nil {
+		panic("unexpected preview retry")
+	}
+	return o.retry(ctx, id, state, principal)
 }
 
 func fixture(t *testing.T, ops *operations, secure bool) (*Routes, *bytes.Buffer, http.Handler) {

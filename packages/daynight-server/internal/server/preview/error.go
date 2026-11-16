@@ -2,7 +2,9 @@ package preview
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"html/template"
 	"io"
@@ -19,10 +21,13 @@ var errorTemplate string
 
 var errorPage = template.Must(template.New("preview-sso-error").Parse(errorTemplate))
 
+const preserveRetryFragment = `if(location.hash){document.getElementById('retry-sso').hash=location.hash}`
+
 type errorContent struct {
 	Language, Title, Message, LoginLabel, RetryLabel, HomeLabel, ProjectsLabel, RequestLabel string
 	Home, Login, Retry, RequestID                                                            string
 	NeedsLogin                                                                               bool
+	RetryScript                                                                              template.JS
 }
 
 func (h *Routes) fail(w http.ResponseWriter, r *http.Request, phase string, err error, retry string) {
@@ -51,25 +56,38 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, phase string, s
 		return
 	}
 	content := errorContent{
-		Language: "en", Title: "Preview sign-in incomplete", Message: "Preview sign-in could not be completed. Please try again.",
-		LoginLabel: "Sign in in a new tab", RetryLabel: "Retry preview sign-in", HomeLabel: "You can return to", ProjectsLabel: "projects", RequestLabel: "Request ID",
+		Language: "en", Title: "Preview sign-in incomplete", Message: "The original preview could not be recovered. Return to projects or start sign-in again, which returns to projects.",
+		LoginLabel: "Sign in in a new tab", RetryLabel: "Start sign-in (returns to projects)", HomeLabel: "You can return to", ProjectsLabel: "projects", RequestLabel: "Request ID",
 		Home: h.main.String() + "/projects", Login: h.main.String() + "/login", Retry: h.preview.String() + StartPath, RequestID: httpx.RequestID(r.Context()),
-		NeedsLogin: phase == "authorize" && status == http.StatusUnauthorized,
+		NeedsLogin: (phase == "authorize" || phase == "retry") && status == http.StatusUnauthorized,
+	}
+	if strings.HasPrefix(retry, RetryPath+"?") || ((phase == "authorize" || phase == "authorize_operation") && strings.HasPrefix(retry, AuthorizePath+"?")) {
+		content.Retry = h.main.String() + retry
+		content.Message = "Preview sign-in could not be completed. Retry to recover the original preview."
+		content.RetryLabel = "Retry preview sign-in"
+		content.RetryScript = template.JS(preserveRetryFragment)
+	}
+	if phase == "start" && strings.HasPrefix(retry, StartPath+"?") {
+		content.Retry = h.preview.String() + retry
+		content.Message = "Preview sign-in could not be completed. Retry to recover the original preview."
+		content.RetryLabel = "Retry preview sign-in"
+		content.RetryScript = template.JS(preserveRetryFragment)
 	}
 	matcher := language.NewMatcher([]language.Tag{language.English, language.SimplifiedChinese})
 	_, selected := language.MatchStrings(matcher, r.Header.Values("Accept-Language")...)
 	if selected == 1 {
-		content.Language, content.Title, content.Message = "zh-CN", "预览登录未完成", "暂时无法完成预览登录，请重试。"
-		content.LoginLabel, content.RetryLabel = "在新标签页登录", "重试预览登录"
+		content.Language, content.Title, content.Message = "zh-CN", "预览登录未完成", "无法恢复原预览。请返回项目页，或重新登录并返回项目页。"
+		content.LoginLabel, content.RetryLabel = "在新标签页登录", "重新登录（返回项目页）"
 		content.HomeLabel, content.ProjectsLabel, content.RequestLabel = "也可以返回", "项目页", "请求 ID"
+		if content.RetryScript != "" {
+			content.Message = "暂时无法完成预览登录，请重试以恢复原预览。"
+			content.RetryLabel = "重试预览登录"
+		}
 	}
 	if content.NeedsLogin {
 		content.Title, content.Message, content.RetryLabel = "Open attachment preview", "Sign in first, then return to this page and retry.", "Retry"
 		if content.Language == "zh-CN" {
 			content.Title, content.Message, content.RetryLabel = "打开附件预览", "请先登录，然后返回此页面重试。", "重试"
-		}
-		if retry != "" && strings.HasPrefix(retry, AuthorizePath+"?") {
-			content.Retry = h.main.String() + retry
 		}
 	}
 	var body bytes.Buffer
@@ -80,7 +98,8 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, phase string, s
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(body.Len()))
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+	hash := sha256.Sum256([]byte(preserveRetryFragment))
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'sha256-"+base64.StdEncoding.EncodeToString(hash[:])+"'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'self' "+h.main.String()+"; form-action 'none'")
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return

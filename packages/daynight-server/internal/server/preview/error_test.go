@@ -20,7 +20,7 @@ func TestMissingCookieAndStateMismatchStopWithoutRedirect(t *testing.T) {
 	state := secret.Random("")
 	for _, cookies := range [][]*http.Cookie{nil, {{Name: h.bindingCookieName(state), Value: secret.Random("")}}, {{Name: h.bindingCookieName(state), Value: state}, {Name: h.bindingCookieName(state), Value: state}}} {
 		w := request(handler, "GET", "http://preview.daynight.test"+CallbackPath+"?code=x&state="+state, cookies...)
-		if w.Code != 401 || w.Header().Get("Location") != "" || !strings.Contains(w.Body.String(), "Retry preview sign-in") {
+		if w.Code != 401 || w.Header().Get("Location") != "" || !strings.Contains(w.Body.String(), RetryPath+"?state="+state) {
 			t.Fatalf("callback missing/mismatch %d", w.Code)
 		}
 	}
@@ -39,14 +39,18 @@ func TestAuthorizeLoginRequiredPreservesRetry(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	h.RegisterMain(mux)
-	r := httptest.NewRequest("GET", "http://daynight.test"+AuthorizePath+"?login=id&state=state", nil)
+	id, state := "7003942b-a024-4088-b7d9-2bfe545fc80e", secret.Random("")
+	r := httptest.NewRequest("GET", "http://daynight.test"+AuthorizePath+"?login="+id+"&state="+state, nil)
 	r.Header.Set("Accept-Language", "zh-CN, en;q=0.5")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, r)
-	if w.Code != 401 || !strings.Contains(w.Body.String(), "请先登录") || !strings.Contains(w.Body.String(), "target=\"_blank\"") || !strings.Contains(w.Body.String(), "login=id&amp;state=state") || w.Header().Get("Location") != "" {
+	if w.Code != 401 || !strings.Contains(w.Body.String(), "请先登录") || !strings.Contains(w.Body.String(), "target=\"_blank\"") || !strings.Contains(w.Body.String(), "login="+id+"&amp;state="+state) || w.Header().Get("Location") != "" {
 		t.Fatalf("login page: %d %s", w.Code, w.Body.String())
 	}
-	if strings.Contains(logs.String(), "private-secret") || strings.Contains(logs.String(), "state=state") {
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'self' http://daynight.test") {
+		t.Fatalf("SSO failure cannot be displayed in a main-site iframe: %v", w.Header())
+	}
+	if strings.Contains(logs.String(), "private-secret") || strings.Contains(logs.String(), state) {
 		t.Fatal("error leaked credential material")
 	}
 }

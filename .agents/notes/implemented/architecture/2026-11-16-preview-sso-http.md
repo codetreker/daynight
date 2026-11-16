@@ -11,18 +11,21 @@ causing a redirect loop.
 
 ## Decision
 
-Four explicit GET navigation endpoints adopt the
+Four explicit GET navigation endpoints implement the normal exchange using the
 [identity operations](2026-11-16-preview-sso-identity.md). Preview start sets a
 state-bound host-only Cookie; the main site authorizes its session Cookie; the
 preview callback exchanges code/state for a Domain Cookie; completion requires
 the browser to present that credential before returning the saved URL. The
 [authentication design](../../../../docs/design/daynight-auth.md#显式浏览器预览-sso)
 owns the protocol and configuration contract.
+An explicit session-checked retry can replace a recoverable failed record; the
+[Task preview decision](2026-11-16-task-preview-host.md) owns that recovery.
 
 Host dispatch reserves the entire preview namespace before the main mux and
-CORS policy. Only the exact bare preview host serves SSO; Task hosts remain
-reserved. Ordinary login and existing attachment readers remain independently
-usable until their consumers explicitly adopt the new origin.
+CORS policy. The exact bare preview host serves SSO. The [Task preview Host
+decision](2026-11-16-task-preview-host.md) owns direct attachment reads on
+canonical Task subdomains. Ordinary login and existing Web attachment readers
+continue to use the main origin.
 
 Production uses separate same-site HTTPS hostnames. Explicit local HTTP fixtures
 may use same-site DNS names or the same numeric loopback address on different

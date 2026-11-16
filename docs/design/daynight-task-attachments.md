@@ -24,8 +24,7 @@
 该准入查询不锁定 ownership、owner Team member 或 direct grant 来源行，也不在 Task 锁之后获取
 Project 锁。权限检查先于暴露 Task 删除状态。准入后的 grant 或 Team 成员撤权无需等待文件 I/O；
 已准入操作可以完成，撤权后没有其他有效来源的新请求拒绝，文件写入后不因撤权重新拒绝元数据写入。
-凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。本文的可信同源执行、普通 iframe、
-相对资源、键盘机制和单 gateway 部署继续保留；单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
+凭据在 HTTP 准入时验证，不与后续文件/PG 操作组成原子事务。当前 Web 的主站同源执行、普通 iframe、相对资源和键盘机制继续保留；独立 Task 预览使用自己的 origin 与凭据。单文件操作和 K1 边界继续有效。MCP 分块上传的生命周期屏障见下方私有传输内容。
 
 ## 目标与操作单位
 
@@ -64,7 +63,7 @@ mockup/
 | 当前结构 | 集成方式 |
 |---|---|
 | [Task 模型](../../packages/daynight-server/internal/core/model/task.go)保存正文、状态、版本及依赖 | 新增独立附件模型与服务，不向 task PATCH 加入文件传输 |
-| [HTTP 组装](../../packages/daynight-server/internal/server/server.go)在同一 mux 注册 API 和内嵌页面 | 附件 API 与预览复用同一服务及 origin |
+| [HTTP 组装](../../packages/daynight-server/internal/server/server.go)按 Host 分发主站、预览 SSO 和 Task 预览 | 主站 API 和页面保持现有入口；Task Host 仅提供对应附件预览 |
 | [JSON 解码](../../packages/daynight-server/internal/server/httpx/http.go)读取并校验受 1 MiB 限制的 JSON | 二进制上传使用独立的流式处理，既有 JSON 限制保持原义 |
 | [附件迁移](../../packages/daynight-server/internal/core/store/postgres/migrations/004_task_attachments.sql)定义独立附件表 | 既有迁移机制维护该表，归属由服务校验 |
 | [CLI API 客户端](../../packages/daynight/src/api/client.ts)区分 JSON、字节与空响应 | 复用期限、取消、错误及元数据预算；原始文件流不经过 JSON 解码 |
@@ -314,14 +313,34 @@ body { background: white; }
 文件 URL 的 query 不作为文件路径，允许相对资源使用普通缓存参数。路径守卫只对
 附件请求检测原始命名空间意图，不能因后续 parent 段或冗余前缀将修改重定向到旧
 JSON 路由；正常既有路由行为保持原义。
-所有入口均检查 project/task 归属。无效输入、缺失资源及内部失败使用既有 HTTP 错误
-信封、requestId 和日志规则，保留原始错误链。
+所有入口均检查 project/task 归属。无效输入、缺失资源及内部失败保留原始错误链与 requestId；除独立预览的文档失败页外，使用既有 HTTP 错误信封和日志规则。
 
-原始读取使用下载响应头，预览使用 inline 响应头，并以实际打开文件的大小发送内容。
+主站原始读取使用下载响应头，主站及 Task Host 预览使用 inline 响应头，并以实际打开文件的大小发送内容。
 列表与可覆盖的文件使用 `Cache-Control: no-store`，刷新后读取当前内容。
 `path_conflict` 映射 409；存储记录存在而磁盘内容缺失仍为 500，不能被 not_found
 错误链误判。流式中止只记录附件操作错误，现有日志包装器直接重抛 ErrAbortHandler，
 保留真正 panic 的原有脱敏处理。
+
+### 独立 Task 预览 Host
+
+preview 分发在主 mux 和 CORS 之前保留整个预览命名空间。bare Host 仅提供 SSO；
+单层规范 UUID 子域的独立 mux 仅注册 `GET T/preview/{path...}`（含 HEAD），
+PathGuard 在 ServeMux 规范化之前检查原始路径，Host 中的 UUID 必须与路径中的 taskId
+一致。非法、嵌套、尾点或端口异常的 preview Host 拒绝，不能落回主站。Task 和 Goal
+均以自身 ID 命名，其内容通过同一个附件 Open 完成项目、成员、归属和删除检查。
+
+独立入口以 preview Cookie 调用 Identity 的 Authenticate，再复用附件内容流；成功保留
+原字节、MIME、inline 和 no-store，HEAD 无正文。document 响应带
+`Origin-Agent-Cluster: ?1`。缺失或失效 Cookie 的 document/iframe GET 根据原始 URL
+创建短期 SSO 记录并跳转到 bare Host；complete 验证 Cookie 后返回原 GET，原始 query
+不嵌套到 SSO 跳转，fragment 由浏览器继承。子资源、fetch 和 HEAD 返回非 HTML 错误；
+缺少 Fetch Metadata 时返回 401 及 SSO 入口。权限、缺失、删除或存储错误不触发 SSO。
+文档失败页保留状态码，按 Accept-Language 选择中英文，转义动态内容并提供同 URL
+重试及 401 新标签 SSO 入口。主站 shell 根据配置注入 `daynight-preview-origin` meta，
+以最终字节计算 Content-Length；现有 Web URL 和主站 GET 仍使用主站入口。
+
+[独立预览 Host 决策](../../.agents/notes/implemented/architecture/2026-11-16-task-preview-host.md)
+记录分发和恢复的取舍；[鉴权架构](daynight-auth.md#显式浏览器预览-sso)拥有 SSO 合同。
 
 ## 请求生命周期与诊断
 
@@ -495,9 +514,7 @@ body。成功后 frame 正常 GET 文件和其资源；HEAD 仅证明入口可�
 交互和 PDF 绘制仍需由真实 frame 验证。入口中的 `./assets/style.css`、
 `./assets/app.js` 和相对 fetch URL 按浏览器规则读取同目录结构，不改写文件内容；
 以 `/` 开头的地址仍指向主站根目录。HTML 附件属于可信项目代码，拥有主应用同源
-权限，普通 iframe 不使用 sandbox；不增加专用预览 session/token、独立 origin/
-端口、Service Worker 或离线文件系统。[鉴权架构](daynight-auth.md)在附件请求
-准入时验证登录态，并在文件 I/O 前检查项目成员，保留可信 HTML 的同源执行约定。
+权限，普通 iframe 不使用 sandbox，也没有 Service Worker 或离线文件系统。当前 Web 尚未使用独立 Task 预览 origin；[鉴权架构](daynight-auth.md)在附件请求准入时验证凭据，并在文件 I/O 前检查项目成员。
 
 居中详情对话框拥有 body portal、背景 inert、共享滚动锁和被动卸载后的焦点恢复；其普通尺寸、概览滚动与详情页签由[看板设计](daynight-web.md#居中任务详情)说明，附件页签的分屏和右侧滚动由本节拥有。全屏沿用同一附件控制器、面板、文件输入及 frame，不改变 path/timestamp 预览身份或发起新的内容请求；应用拥有的滚动位置按新布局合法范围恢复，frame 内部滚动继续归原生文档或阅读器。
 
@@ -645,8 +662,7 @@ localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保�
 开发环境持久卷。实现取舍由[部署决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-persistence.md)
 拥有。
 
-上传、下载和预览继续经过同一个 gateway；对应代理规则必须支持二进制请求与流式
-响应，并沿用既有生命周期策略。本设计不另设一套任意文件大小或时限参数。
+主站上传、下载和预览继续经过既有 gateway；独立预览部署还须将 bare preview 和 wildcard Task Host 的 DNS、TLS/SNI 与原始 Host 路由到服务。代理须支持二进制请求与流式响应，并沿用既有生命周期策略。服务启动不探测外部 DNS/TLS；部署必须独立核验。
 
 数据库与附件目录构成一组备份材料。停止全部服务实例和其他直接数据库或文件写入方后，
 通过 `pg_dump` 备份 PG，并使用同一生产镜像的非 root `tar` 容器备份附件根目录；

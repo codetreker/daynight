@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
@@ -107,6 +108,38 @@ func serverAPIPreviewSSONormalFlow(t *testing.T, f *fixture) {
 	completed := navigate(completeURL, []*http.Cookie{previewCookie}, http.StatusSeeOther)
 	if target := location(completed, f.origin, "/projects"); target != f.origin+"/projects" {
 		t.Fatal("SSO completion changed its original target")
+	}
+	project := createProject(t, f, "Task preview API")
+	task := createTask(t, f, project, "Preview content", nil)
+	content := []byte("<html><body>Real preview content</body></html>")
+	file := taskPath(task) + "/attachments/files/docs/index.html"
+	f.request(t, http.MethodPut, file, "text/html; charset=utf-8", content, http.StatusCreated)
+	previewPath := taskPath(task) + "/preview/docs/index.html?version=1"
+	preview, err := url.Parse(previewOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		request, err := http.NewRequestWithContext(f.context, method, f.origin+previewPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = task.ID + "." + preview.Host
+		request.AddCookie(previewCookie)
+		response, err := plain.Do(request)
+		if err != nil {
+			t.Fatalf("Task preview %s failed: %v", method, err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		if err := errors.Join(readErr, response.Body.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/html; charset=utf-8" || response.Header.Get("Cache-Control") != "no-store" || response.ContentLength != int64(len(content)) {
+			t.Fatalf("Task preview %s response: %d %v", method, response.StatusCode, response.Header)
+		}
+		if method == http.MethodGet && !bytes.Equal(body, content) || method == http.MethodHead && len(body) != 0 {
+			t.Fatalf("Task preview %s body differs", method)
+		}
 	}
 	database, err := pgxpool.New(f.context, f.databaseURL)
 	if err != nil {

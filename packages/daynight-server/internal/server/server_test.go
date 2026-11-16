@@ -641,7 +641,7 @@ func TestUIWiringAndUnknownRoutes(t *testing.T) {
 	var logs bytes.Buffer
 	handler := uiTestHandler(t, &logs)
 	root := projectRequest(handler, http.MethodGet, "/", "")
-	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || root.Body.String() != "<html><body>server test shell</body></html>\n" {
+	if root.Code != http.StatusOK || root.Header().Get("Content-Type") != "text/html; charset=utf-8" || root.Header().Get("Cache-Control") != "no-store" || root.Body.String() != "<html><head><meta name=\"daynight-preview-origin\" content=\"https://preview.daynight.example\"></head><body>server test shell</body></html>\n" {
 		t.Fatalf("root UI response: %d %+v", root.Code, root.Header())
 	}
 	var entries []map[string]any

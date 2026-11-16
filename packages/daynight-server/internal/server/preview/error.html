@@ -38,11 +38,12 @@
       <h1 id="page-title">{{.Title}}</h1>
       <div class="notice {{if .NeedsLogin}}warning{{end}}" role="alert">
         <p>{{.Message}}</p>
-        <a class="button" href="{{.Retry}}">{{.RetryLabel}}</a>
+        {{if .Retry}}<a class="button" id="retry-sso" href="{{.Retry}}">{{.RetryLabel}}</a>{{end}}
         <a class="button" href="{{.Login}}" target="_blank" rel="noopener noreferrer">{{.LoginLabel}}</a>
       </div>
       <p class="details">{{.HomeLabel}} <a href="{{.Home}}">{{.ProjectsLabel}}</a><br>{{.RequestLabel}}: {{.RequestID}}</p>
     </main>
   </div>
+  {{if .RetryScript}}<script>{{.RetryScript}}</script>{{end}}
 </body>
 </html>
