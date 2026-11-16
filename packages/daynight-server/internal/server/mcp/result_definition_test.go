@@ -98,7 +98,7 @@ func validateToolResult(t *testing.T, definition *sdk.Tool, result *sdk.CallTool
 	}
 }
 
-func assertDiscoveredOutputSchemas(t *testing.T, client *sdk.ClientSession, names ...string) {
+func assertNoDiscoveredOutputSchemas(t *testing.T, client *sdk.ClientSession, names ...string) {
 	t.Helper()
 	listed, err := client.ListTools(t.Context(), nil)
 	if err != nil {
@@ -112,11 +112,8 @@ func assertDiscoveredOutputSchemas(t *testing.T, client *sdk.ClientSession, name
 				break
 			}
 		}
-		if found == nil || found.OutputSchema == nil {
-			t.Fatalf("tool %s or its published output schema is missing", name)
-		}
-		if _, err := resolveSchema(found.OutputSchema); err != nil {
-			t.Fatalf("tool %s published output schema: %v", name, err)
+		if found == nil || found.OutputSchema != nil {
+			t.Fatalf("tool %s missing or its output schema is published", name)
 		}
 	}
 }

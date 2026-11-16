@@ -110,8 +110,8 @@ func TestStepReadDiscoveryAndVersionedTraversal(t *testing.T) {
 			found := map[string]bool{}
 			for _, tool := range listing.Tools {
 				if strings.HasPrefix(tool.Name, "task_step_") {
-					if tool.InputSchema == nil || tool.OutputSchema == nil {
-						t.Fatalf("missing schemas: %+v", tool)
+					if tool.InputSchema == nil || tool.OutputSchema != nil {
+						t.Fatalf("unexpected schemas: %+v", tool)
 					}
 					found[tool.Name] = true
 				}

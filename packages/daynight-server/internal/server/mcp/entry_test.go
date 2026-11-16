@@ -144,6 +144,7 @@ type entryFixture struct {
 	server   *httptest.Server
 	entered  chan struct{}
 	canceled chan struct{}
+	calls    atomic.Int32
 }
 
 func newEntryFixture(t *testing.T) *entryFixture {
@@ -161,6 +162,7 @@ func newEntryFixture(t *testing.T) *entryFixture {
 		"error": map[string]any{"type": "object", "properties": map[string]any{"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}, "requestId": map[string]any{"type": "string"}, "writeOutcome": map[string]any{"type": "string"}, "phase": map[string]any{"type": "string"}, "refs": map[string]any{"type": "object"}}, "required": []string{"code", "message", "requestId"}},
 	}, "oneOf": []any{map[string]any{"required": []string{"data", "meta"}, "not": map[string]any{"required": []string{"error"}}}, map[string]any{"required": []string{"error"}, "not": map[string]any{"required": []string{"data"}}}}}
 	err = e.RegisterTool(&sdk.Tool{Name: "test_only", Description: "Test tool", InputSchema: input, OutputSchema: output}, BudgetControl, func(ctx context.Context, actor RequestActor, raw json.RawMessage) (ToolResult, error) {
+		f.calls.Add(1)
 		var args struct {
 			Mode string `json:"mode"`
 		}
@@ -260,6 +262,13 @@ func TestMCPHTTPClientsAndFailureLayers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if len(result.Content) != 1 {
+				t.Fatalf("success content: %#v", result.Content)
+			}
+			content, ok := result.Content[0].(*sdk.TextContent)
+			if !ok || content.Text != "Completed." || f.calls.Load() != 1 {
+				t.Fatalf("success content or calls: %#v %d", result.Content, f.calls.Load())
+			}
 			out := structured(t, result)
 			data := object(t, out["data"])
 			meta := object(t, out["meta"])
@@ -282,12 +291,20 @@ func TestMCPHTTPClientsAndFailureLayers(t *testing.T) {
 			}
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
+					before := f.calls.Load()
 					r, err := callTest(t, c, tc.args)
 					if err != nil {
 						t.Fatal(err)
 					}
 					if !r.IsError {
 						t.Fatal("expected tool error")
+					}
+					wantCalls := int32(1)
+					if tc.name == "field" {
+						wantCalls = 0
+					}
+					if f.calls.Load()-before != wantCalls {
+						t.Fatalf("handler calls: got %d want %d", f.calls.Load()-before, wantCalls)
 					}
 					e := object(t, structured(t, r)["error"])
 					if e["code"] != tc.code || e["requestId"] != "test-request" || (tc.outcome != "" && e["writeOutcome"] != tc.outcome) || (tc.phase != "" && e["phase"] != tc.phase) {

@@ -141,7 +141,7 @@ func TestSessionReadToolsPreserveIdentityDefaultsAndDiscoveredSchemas(t *testing
 				t.Fatal(err)
 			}
 			client := f.client(t, version, "alice")
-			assertDiscoveredOutputSchemas(t, client, "task_session_current", "task_session_list", "task_session_show", "task_session_read", "task_session_entry")
+			assertNoDiscoveredOutputSchemas(t, client, "task_session_current", "task_session_list", "task_session_show", "task_session_read", "task_session_entry")
 			for _, name := range []string{"current", "list", "show", "read", "entry"} {
 				definition := sessionReadToolDefinition(name)
 				args := sessionReadArgs()
@@ -328,7 +328,7 @@ func TestSessionReadCurrentKeepsPartialInspectionAndNoRuntimeOutputAdmission(t *
 	if meta["partial"] != true || meta["observedAt"] != value.Session.ObservedAt.Format(time.RFC3339Nano) {
 		t.Fatalf("observation lost: %+v", meta)
 	}
-	// The published schema is strict; success validation belongs to contract
+	// The internal schema is strict; success validation belongs to contract
 	// tests and the producer, rather than a second runtime MCP admission pass.
 	result, err = client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_read", Arguments: sessionReadArgs()})
 	if err != nil || result.IsError || object(t, structured(t, result)["data"])["source"] != "schema-drift-probe" {

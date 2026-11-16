@@ -148,9 +148,9 @@ func TestMCPResponseWriterSupportsResponseController(t *testing.T) {
 	}
 }
 
-// Output discovery requires the schema's root type even when the schema would
+// Internal output validation requires the schema's root type even when the schema would
 // otherwise accept an error object under JSON Schema validation.
-func TestMCPDiscoveryRejectsOutputWithoutObjectType(t *testing.T) {
+func TestMCPRegistrationRejectsOutputWithoutObjectType(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	e := additionalEntry(t, logger)
 	handler := func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
@@ -184,15 +184,8 @@ func TestMCPDiscoveryRejectsOutputWithoutObjectType(t *testing.T) {
 	if len(list.Tools) != 1 || list.Tools[0].Name != "valid" {
 		t.Fatalf("unexpected discovery: %#v", list.Tools)
 	}
-	data, err := json.Marshal(list.Tools[0].OutputSchema)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var output struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &output); err != nil || output.Type != "object" {
-		t.Fatalf("output schema %s: %v", data, err)
+	if list.Tools[0].OutputSchema != nil {
+		t.Fatal("internal output schema was published")
 	}
 }
 
