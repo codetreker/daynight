@@ -8,11 +8,10 @@ import { openControllerLifecycleStore } from "../../../src/commands/controller/l
 import { parseImageRequest } from "../../../src/session/controller-protocol.js";
 import type { ImageUploadSpec } from "../../../src/session/image-values.js";
 
-const faults = vi.hoisted(() => ({ lowSpace: false, stagingFlush: false, unlink: null as string | null, directoryFlush: false }));
+const faults = vi.hoisted(() => ({ stagingFlush: false, unlink: null as string | null, directoryFlush: false }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs,
-    statfsSync: (...args: unknown[]) => faults.lowSpace ? { bavail: 0n, bsize: 4096n } : Reflect.apply(fs.statfsSync, fs, args),
     fsyncSync: (fd: number) => {
       if (faults.directoryFlush && fs.fstatSync(fd).isDirectory()) {
         faults.directoryFlush = false;
@@ -34,7 +33,7 @@ vi.mock("node:fs", async original => {
   };
 });
 const roots: string[] = [];
-afterEach(async () => { faults.lowSpace = false; faults.stagingFlush = false; faults.unlink = null; faults.directoryFlush = false; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { faults.stagingFlush = false; faults.unlink = null; faults.directoryFlush = false; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-prepare-reclaim-tests");
   await mkdir(base, { recursive: true });
@@ -50,13 +49,12 @@ const fixture = async () => {
 test("a rejected prepare can be released under its exact original identity and stays released after restart", async () => {
   const f = await fixture(); const media = f.store.media();
   try {
-    faults.lowSpace = true;
-    await expect(media.prepare(f.spec)).rejects.toThrow("budget");
+    faults.stagingFlush = true;
+    await expect(media.prepare(f.spec)).rejects.toMatchObject({ code: "ENOSPC" });
     expect(await readdir(`${f.file}.media-staging`)).toEqual(expect.arrayContaining(["owner.json", "native"]));
     const request = { uploadId: f.spec.uploadId, spec: f.spec };
     const receipt = await media.release(request);
     expect(receipt).toEqual({ uploadId: f.spec.uploadId, imageId: f.spec.imageId, target: f.spec.target, state: "released", acceptedOffset: "0", validated: null, error: null });
-    faults.lowSpace = false;
     expect(await media.prepare(f.spec)).toEqual(receipt);
     await media.close(); f.store.close();
     const store = openControllerLifecycleStore(f.file, f.ticket); const recovered = store.media();

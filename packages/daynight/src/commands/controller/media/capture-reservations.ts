@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { constants, closeSync, existsSync, fsyncSync, openSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { IMAGE_LIMITS, imageId } from "../../../session/image-values.js";
+import { imageId } from "../../../session/image-values.js";
 
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
 type Reservation = { captureId: string; attemptId: string; source: string; stage: string; released: boolean };
@@ -12,11 +12,11 @@ export type CaptureSourceLease = {
   release(): Promise<void>;
 };
 
-/** Source and staging peak allocations belong to the same execution media owner. */
+/** The original capture attempt owns its source, stage and writer cleanup. */
 export const captureSourceReservations = (options: {
   db: Database.Database; transactions: Transactions; root: string;
   checkOpen(): void; assertAttempt(captureId: string, attemptId: string): void;
-  checkBudgets(next: number): void; assertMetadata(): void; sync(): void;
+  checkPreparationMetadata(): void; assertMetadata(): void; sync(): void;
   acquireBlock(): { close(): void } | null;
   joinStage(captureId: string, attemptId: string): Promise<void>;
   stageRetained(captureId: string, attemptId: string): boolean;
@@ -49,8 +49,8 @@ export const captureSourceReservations = (options: {
       if (existsSync(path.join(root, value.source))) unlinkSync(path.join(root, value.source));
       if (!options.stageRetained(captureId, attemptId) && existsSync(path.join(root, value.stage))) unlinkSync(path.join(root, value.stage));
       options.sync(); value.released = true; save(value);
-      // Durable release returns the shared slot even if the remaining budget cannot be refreshed.
-      try { options.checkBudgets(0); } finally { closeBlock(); }
+      // Durable release returns the shared slot even if metadata admission fails.
+      try { options.checkPreparationMetadata(); } finally { closeBlock(); }
     })();
     if (!running) return work;
     const tracked = work.finally(() => { if (running.releasing === tracked) running.releasing = null; });
@@ -58,15 +58,6 @@ export const captureSourceReservations = (options: {
     return tracked;
   };
   return {
-    reservations: (): Map<string, number> => transactions.read(() => {
-      const values = db.prepare("SELECT key FROM image_runtime_state WHERE key LIKE 'capture-source:%'").all() as { key: string }[];
-      const out = new Map<string, number>();
-      for (const row of values) {
-        const parts = row.key.split(":"), value = load(parts[1]!, parts[2]!);
-        if (value && !value.released) { out.set(path.join(root, value.source), IMAGE_LIMITS.imageBytes); out.set(path.join(root, value.stage), IMAGE_LIMITS.imageBytes); }
-      }
-      return out;
-    }),
     stagePath: (captureId: string, attemptId: string, sourcePath: string): string | null => {
       const value = load(captureId, attemptId);
       if (!value) return null;
@@ -82,7 +73,7 @@ export const captureSourceReservations = (options: {
       const block = options.acquireBlock();
       if (!block) throw Object.assign(new Error("source_capacity: Controller media block capacity is unavailable."), { code: "source_capacity" });
       try {
-        options.checkBudgets(2 * IMAGE_LIMITS.imageBytes);
+        options.checkPreparationMetadata();
         const value: Reservation = { captureId, attemptId, source: `${randomUUID()}.part`, stage: `${randomUUID()}.part`, released: false };
         save(value);
         const outputPath = path.join(root, value.source);

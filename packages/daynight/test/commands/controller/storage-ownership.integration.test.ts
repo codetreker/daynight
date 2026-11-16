@@ -20,7 +20,7 @@ import type { ControllerJobLease } from "../../../src/commands/controller/window
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
-import { ControllerStorageFreeSpaceError } from "../../../src/commands/controller/storage-capacity.js";
+import { ControllerMetadataBudgetError } from "../../../src/commands/controller/media/metadata-budget.js";
 
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 
@@ -323,15 +323,28 @@ test("only typed capacity refusal becomes a waiting result and closes the local 
   const f = await fixture(); initialize(f);
   const permit = acquireControllerStoragePermit(f.file);
   try {
-    vi.spyOn(fs, "statfsSync").mockImplementation(() => ({ bavail: 0n, bsize: 4096n }) as never);
+    const history = `${f.file}.history-sync`;
+    await mkdir(history, { mode: 0o700 });
+    const retained = path.join(history, "retained.json");
+    await writeFile(retained, "", { mode: 0o600 }); await truncate(retained, CONTROLLER_METADATA_BYTES + 1048576);
     const result = prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit);
     expect(result).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
     if (result.kind === "waiting") {
       let cause: unknown = result.cause;
       while (cause instanceof Error && cause.cause !== undefined) cause = cause.cause;
-      expect(cause).toBeInstanceOf(ControllerStorageFreeSpaceError);
+      expect(cause).toBeInstanceOf(ControllerMetadataBudgetError);
       expect(controllerStorageConnectionIsOpen(result.cause)).toBe(false);
     }
+  } finally { permit.release(); }
+});
+
+test("writer preparation succeeds without probing projected free space", async () => {
+  const f = await fixture(); initialize(f);
+  const permit = acquireControllerStoragePermit(f.file);
+  const statfs = vi.spyOn(fs, "statfsSync").mockImplementation(() => ({ bavail: 0n, bsize: 4096n }) as never);
+  try {
+    expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared" });
+    expect(statfs).not.toHaveBeenCalled();
   } finally { permit.release(); }
 });
 
@@ -552,7 +565,7 @@ test("version zero writer reset rolls back when retained pending content has no 
 });
 
 
-test("automatic v9 reading uses its original peak reservation above normal metadata capacity and leaves stopped maintenance pending", async () => {
+test("automatic v9 reading imports above normal metadata capacity and leaves stopped maintenance pending", async () => {
   const f = await fixture(), db = new Database(f.file);
   const snapshot = { ...stoppedSnapshot(f.ticket), lifecycle: "stopping", nativeStopped: false, stoppedAt: null };
   const entry = { entryId: randomUUID(), entrySeq: "9007199254740993", revision: "3", kind: "reasoning", text: "original committed Ω body" };

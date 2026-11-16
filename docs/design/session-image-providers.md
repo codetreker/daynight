@@ -26,7 +26,7 @@
 | --- | --- |
 | [共享 projector](../../packages/daynight/src/commands/controller/providers/image-projector.ts) | 将完整 content/tool output 布局中的图片位置、稳定来源 tuple 和 capture 状态存入原 journal；为富图片条目设置 `imageProjectionError`，经位置 ACK 和实际完整历史确认后封存并 submit，未知时 query 原身份。 |
 | [原生状态](../../packages/daynight/src/commands/controller/media/native-state.ts) | 在既有 `image_runtime_state` 中保存 matcher、别名、分页及出现状态；单值不超过 1 MiB，消费普通元数据预算。 |
-| [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按实际暂存与未落盘字节检查公共空闲水位，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
+| [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按原身份与文件租约管理暂存，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
 | [Codex RPC](../../packages/daynight/src/commands/controller/providers/codex-rpc.ts) | 有界解析原生流，将明确媒体字段交独立 token 暂存，保持 RPC 回执与原连接。 |
 | [Claude live helper](../../packages/daynight/src/commands/controller/providers/claude-live.ts) 与 [transcript helper](../../packages/daynight/src/commands/controller/providers/claude-transcript.ts) | 隔离 SDK 全量解析和受权历史索引，使用有界 IPC 与媒体 ACK；Controller 保存实际 native 子进程证明。 |
 | [Copilot bridge](../../packages/daynight/src/commands/controller/providers/copilot-bridge.ts) | 同一 runtime 的唯一 SDK 连接承载输入、控制、交互、订阅和分页；帧代理限制输入，私有媒体 lease 把字节逐块交给 Controller。 |

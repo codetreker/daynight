@@ -53,8 +53,14 @@ export const retireLegacyTimelineReferences = (journal: string, sessionId: strin
 export const openResourceFiles = (journal: string, sessionId: string) => {
   const root = `${journal}.pending-content`;
   const resourceDirectory = join(root, "resources"), blobDirectory = join(root, "blobs");
-  mkdirSync(resourceDirectory, { recursive: true, mode: 0o700 });
-  mkdirSync(blobDirectory, { recursive: true, mode: 0o700 });
+  const assertDirectory = (directory: string): void => {
+    const stat = lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Pending resource directory must be a private directory.");
+  };
+  for (const directory of [root, resourceDirectory, blobDirectory]) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 }); assertDirectory(directory);
+  }
+  const assertDirectories = (): void => { for (const directory of [root, resourceDirectory, blobDirectory]) assertDirectory(directory); };
   syncDirectory(dirname(root));
   syncDirectory(root);
   const manifest = join(root, "manifest.json");
@@ -72,12 +78,17 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   const name = (id: string) => `${createHash("sha256").update(id).digest("hex")}.json`;
   const blobPath = (id: string) => join(blobDirectory, name(id).replace(/\.json$/, ".bin"));
   const openBlob = (resource: SessionResource): number => {
+    assertDirectories();
     const file = blobPath(resource.resourceId);
     if (!existsSync(file)) throw new Error("Pending archive source is incomplete: saved resource blob is missing.");
+    const named = lstatSync(file);
+    if (!named.isFile() || named.isSymbolicLink()) throw new Error("Corrupt pending resource content.");
     const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || String(stat.size) !== resource.byteLength) { closeSync(fd); throw new Error("Corrupt pending resource content."); }
-    return fd;
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || named.dev !== stat.dev || named.ino !== stat.ino || String(stat.size) !== resource.byteLength) throw new Error("Corrupt pending resource content.");
+      return fd;
+    } catch (cause) { closeSync(fd); throw cause; }
   };
   const verifyBlob = (resource: SessionResource): void => {
     const fd = openBlob(resource);
@@ -130,6 +141,7 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     }
   };
   const checkResourceBudget = (resource?: SessionResource): void => {
+    assertDirectories();
     retryCleanup();
     const known = new Set([...resources.keys()].map(id => name(id).replace(/\.json$/, ".bin")));
     let bytes = 0, orphans = 0;

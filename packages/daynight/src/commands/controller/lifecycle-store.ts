@@ -25,7 +25,6 @@ import { controllerJournalFormat } from "./journal-format.js";
 import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
 import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, upgradeControllerJournal } from "./storage-preparation.js";
-import { controllerStorageMediaUsage, assertControllerStorageFreeSpace } from "./storage-capacity.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
@@ -109,9 +108,6 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
   const read = <T>(action: () => T): T => transaction(action, "deferred");
   const reserveContent = (additionalBytes: number, contentGrowth: number): void => {
     metadataBudget.assert(additionalBytes, true, contentGrowth);
-    if (db.memory) return;
-    const media = controllerStorageMediaUsage(file, db);
-    assertControllerStorageFreeSpace(file, Math.max(0, media.reservedBytes - media.actualBytes) + additionalBytes);
   };
   const assertTimelineWrite = (additionalBytes: number, contentGrowth = 0): void => {
     assertUsable();

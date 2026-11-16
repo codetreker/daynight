@@ -21,10 +21,11 @@ existing parsers rather than maintaining a separate persistent codec; ordinary
 protocol input retains the strict policy. Real storage and transaction failures
 remain visible.
 
-Ordinary new writes and stopped maintenance retain metadata and free-space
-admission. The [media ledger
-removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
-separately removes cumulative media reservations from those paths. The [storage
+Ordinary new writes and stopped maintenance retain metadata admission. The
+[media ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+separately removes cumulative media reservations from those paths; the later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes their disk predictions. The [storage
 ownership](2026-11-12-controller-storage-ownership.md) and [SQL content
 components](2026-11-12-session-sqlite-content-components.md) decisions retain
 the permit and maintenance ordering; this decision replaces their

@@ -103,10 +103,12 @@ Resources, pins, leases and native recovery files retain their original paths an
 retention responsibilities.
 
 Physical metadata pressure remains possible with long readers, unacknowledged
-outbox or other retained data. The 128 MiB ordinary limit, 8 MiB settlement
-reserve, and free-space policy remain in force. The [media ledger
+outbox or other retained data. The 128 MiB ordinary limit and 8 MiB settlement
+reserve remain in force. The [media ledger
 removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
-supersedes the shared media limits and persistent reservations; normal execution
+supersedes the shared media limits and persistent reservations. The later
+[free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
+removes disk predictions while retaining metadata admission. Normal execution
 does not VACUUM. Format import can be committed and readable while cleanup
 remains pending and a new writer waits. Cleanup errors, commit uncertainty and
 failed admission retain the actual phase and source materials for reentry.

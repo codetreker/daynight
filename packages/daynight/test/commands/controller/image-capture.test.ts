@@ -3,7 +3,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { controllerStorageMediaUsage } from "../../../src/commands/controller/storage-capacity.js";
 import { unlinkSync } from "node:fs";
 import sharp from "sharp";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
@@ -18,17 +17,18 @@ import { ProviderImageProjector } from "../../../src/commands/controller/provide
 import type { NativeImageProjectionState } from "../../../src/commands/controller/media/native-publication-types.js";
 import type { DirectCaptureSubmission, ImageCaptureReceipt, ImageCaptureRequest, ImageOccurrence, ImagePart, ImageUnavailablePart, NativeImageSource } from "../../../src/session/image-values.js";
 import type { createControllerRelay } from "../../../src/commands/controller/relay.js";
-const disk = vi.hoisted(() => ({ freeBytes: null as bigint | null }));
+const disk = vi.hoisted(() => ({ freeBytes: null as bigint | null, statfs: vi.fn() }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs, statfsSync: (...args: Parameters<typeof fs.statfsSync>) => {
+    disk.statfs();
     const value = fs.statfsSync(...args);
     return disk.freeBytes === null ? value : { ...value, bavail: disk.freeBytes / BigInt(value.bsize) };
   } };
 });
 const policy = () => ({ verify() {}, close() {} });
 const roots: string[] = [];
-afterEach(async () => { disk.freeBytes = null; await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
+afterEach(async () => { disk.freeBytes = null; disk.statfs.mockClear(); await Promise.all(roots.splice(0).map(root => rm(root, { force: true, recursive: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-capture-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "c-")); roots.push(home);
@@ -386,30 +386,23 @@ test("a delayed old query cannot cancel the current attempt source writer", asyn
   } finally { finish.resolve(); await writer; await lease.release(); await f.journal.stopMedia(); f.journal.close(); }
 });
 
-test("source IO accounts for both unwritten copies and never reopens an interrupted source", async () => {
+test("source IO retains its original attempt and never reopens an interrupted source", async () => {
   const f = await fixture();
   f.journal.registerImageCaptureRequest(f.request);
   const media = f.journal.media(), lease = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
   expect((await stat(lease.outputPath)).size).toBe(0);
-  const disk = new Database(f.file, { readonly: true });
-  const charge = () => controllerStorageMediaUsage(f.file, disk).reservedBytes;
-  const reserved = charge();
-  expect(reserved).toBeGreaterThanOrEqual(2 * 10 * 1024 * 1024);
   const uploadId = randomUUID();
   await media.prepare({ uploadId, imageId: randomUUID(), target: { serverOrigin: f.ticket.serverOrigin, actorUserId: f.ticket.userId!, fence: { sessionId: f.ticket.sessionId, claimId: f.ticket.claimId!, executionGeneration: "1" }, expectedNativeSessionId: "native" }, name: "other.png", mediaType: "image/png", byteLength: "10485760", sha256: "a".repeat(64) });
-  expect(charge()).toBeGreaterThanOrEqual(reserved + 10 * 1024 * 1024);
   await media.release({ uploadId });
   await expect(lease.runWriter(async filename => { await writeFile(filename, Buffer.from("partial")); })).resolves.toBeUndefined();
   await f.journal.stopMedia(); f.journal.close();
   const journal = openControllerLifecycleStore(f.file, f.ticket, f.options);
   try {
     expect(() => journal.media().reserveCaptureSource(f.request.captureId, f.request.attemptId)).toThrow("query");
-    expect(charge()).toBeGreaterThanOrEqual(reserved);
     expect(await readFile(lease.outputPath, "utf8")).toBe("partial");
     await journal.media().releaseCaptureSource(f.request.captureId, f.request.attemptId);
     await expect(stat(lease.outputPath)).rejects.toThrow();
-    expect(charge()).toBeLessThan(reserved - 19 * 1024 * 1024);
-  } finally { disk.close(); await journal.stopMedia(); journal.close(); }
+  } finally { await journal.stopMedia(); journal.close(); }
 });
 
 test("source release joins the writer before unlink and retains a validated stage", async () => {
@@ -470,18 +463,18 @@ test("capture staging rejects bytes whose decoded format differs from the declar
 });
 
 
-test("source reservations retain the free-space margin for every unwritten copy", async () => {
+test("source reservations admit both live sources without predicting their future disk copies", async () => {
   const f = await fixture();
   f.journal.registerImageCaptureRequest(f.request);
   const secondRequest = { ...f.request, captureId: randomUUID(), attemptId: randomUUID(), occurrence: { ...f.request.occurrence, imageId: randomUUID(), sourceKey: "second-source" } };
   f.journal.registerImageOccurrence(secondRequest.occurrence, null); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence()); f.journal.registerImageCaptureRequest(secondRequest);
-  const media = f.journal.media(); disk.freeBytes = BigInt((512 + 30) * 1024 * 1024);
+  const media = f.journal.media(); disk.freeBytes = 0n;
   try {
     const first = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
-    expect(() => media.reserveCaptureSource(secondRequest.captureId, secondRequest.attemptId)).toThrow("free-space");
-    await first.release();
     const second = media.reserveCaptureSource(secondRequest.captureId, secondRequest.attemptId);
-    await second.release();
+    expect(media.tryAcquireMediaBlock()).toBeNull();
+    await first.release(); await second.release();
+    expect(disk.statfs).not.toHaveBeenCalled();
   } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
@@ -520,11 +513,9 @@ test("prepared delivery stays inside the policy lease before a queued revocation
   } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
-test("committed adoption checks the exact service receipt and reserves the third-copy peak", async () => {
+test("committed adoption checks the exact service receipt and retains the saved original", async () => {
   const f = await fixture(), source = await f.source("blue"); f.journal.registerImageCaptureRequest(f.request);
   const media = f.journal.media(), reservation = media.reserveCaptureSource(f.request.captureId, f.request.attemptId);
-  const disk = new Database(f.file, { readonly: true });
-  const charge = () => controllerStorageMediaUsage(f.file, disk).reservedBytes;
   try {
     await reservation.runWriter(async filename => { await writeFile(filename, source.bytes); });
     const validated = await media.stageCapture({ ...source, inputPath: reservation.outputPath, captureId: f.request.captureId, attemptId: f.request.attemptId, imageId: f.request.occurrence.imageId });
@@ -540,12 +531,10 @@ test("committed adoption checks the exact service receipt and reserves the third
     const transfer = media.tryAcquireMediaBlock()!;
     try { expect(() => media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource)).toThrow("source_capacity"); }
     finally { transfer.close(); }
-    const before = charge();
     media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource);
-    expect(charge()).toBeGreaterThanOrEqual(before + source.bytes.length);
     expect(f.journal.readResource(resource.resourceId, "0", 524288)).toMatchObject({ data: source.bytes.toString("base64"), eof: true });
     await reservation.release();
-  } finally { disk.close(); await f.journal.stopMedia(); f.journal.close(); }
+  } finally { await f.journal.stopMedia(); f.journal.close(); }
 });
 
 test("committed originals survive source removal and reopen without recopying or repairing missing saved bytes", async () => {
@@ -554,10 +543,7 @@ test("committed originals survive source removal and reopen without recopying or
   const resource = { resourceId: f.receipt().resourceId!, status: "available" as const, name: "saved.png", ...validated, error: null, revision: "1" };
   f.journal.observeImageCaptureReceipt(f.receipt({ state: "committed", revision: "2", resource }));
   await rm(source.inputPath);
-  disk.freeBytes = BigInt(512 * 1024 * 1024 + source.bytes.length - 1);
-  expect(() => media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource)).toThrow("free-space");
-  expect(() => f.journal.readResource(resource.resourceId, "0", 524288)).toThrow("unavailable");
-  disk.freeBytes = null;
+  disk.freeBytes = 0n;
   media.adoptCaptureResource(f.request.captureId, f.request.attemptId, resource);
   const blob = path.join(`${f.file}.pending-content/blobs`, createHash("sha256").update(resource.resourceId).digest("hex") + ".bin"), before = await stat(blob);
   await f.journal.stopMedia(); f.journal.close();
@@ -565,6 +551,7 @@ test("committed originals survive source removal and reopen without recopying or
   try {
     journal.media().adoptCaptureResource(f.request.captureId, f.request.attemptId, resource);
     expect((await stat(blob)).ino).toBe(before.ino);
+    expect(disk.statfs).not.toHaveBeenCalled();
     expect(journal.readResource(resource.resourceId, "0", 524288)).toMatchObject({ data: source.bytes.toString("base64") });
     await rm(blob);
     expect(() => journal.media().adoptCaptureResource(f.request.captureId, f.request.attemptId, resource)).toThrow("missing");

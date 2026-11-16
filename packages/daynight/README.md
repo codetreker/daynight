@@ -3230,9 +3230,11 @@ original execution, native identity, operations and message origins.
 Upgrade-only reads retain stopping evidence and pending cleanup; they do not
 prove native termination. Proven stopped maintenance completes the reader
 checkpoint barrier, legacy body retirement, in-place VACUUM, post-checkpoint
-file verification and ordinary metadata and free-space admission before the next
-writer starts. Busy readers or physical capacity refusal keep the original
-history and report maintenance waiting. Current timeline JSON remains limited to
+file verification and ordinary metadata admission before the next writer starts.
+Controller operations do not use free-space watermarks or future disk-peak
+reservations; actual filesystem and SQLite failures remain visible. Busy readers
+or metadata capacity refusal keep the original history and report maintenance
+waiting. Current timeline JSON remains limited to
 64 MiB and 100000 entries; normal physical admission still applies
 independently. The [SQL content
 design](../../docs/design/session-sqlite-content.md) defines these storage and

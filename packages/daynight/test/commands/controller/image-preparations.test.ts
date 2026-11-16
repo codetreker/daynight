@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, rm, appendFile, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, appendFile, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import sharp from "sharp";
@@ -10,7 +10,7 @@ import { validateImageFile } from "../../../src/commands/controller/media/image-
 import type { ImageDecoder } from "../../../src/commands/controller/media/image-decoder.js";
 import type { SessionCommand } from "../../../src/session/protocol.js";
 import type { ImageUploadSpec } from "../../../src/session/image-values.js";
-const faults = vi.hoisted(() => ({ partialWrite: false, freeBytes: null as bigint | null, oversizedMediaPath: null as string | null }));
+const faults = vi.hoisted(() => ({ partialWrite: false, freeBytes: null as bigint | null, statfs: vi.fn(), oversizedMediaPath: null as string | null }));
 vi.mock("node:fs", async original => {
   const fs = await original<typeof import("node:fs")>();
   return { ...fs, lstatSync: (...args: Parameters<typeof fs.lstatSync>) => {
@@ -25,12 +25,13 @@ vi.mock("node:fs", async original => {
     }
     return Reflect.apply(fs.writeSync, fs, args);
   }, statfsSync: (...args: Parameters<typeof fs.statfsSync>) => {
+    faults.statfs();
     const value = fs.statfsSync(...args);
     return faults.freeBytes === null ? value : { ...value, bavail: faults.freeBytes / BigInt(value.bsize) };
   } };
 });
 const roots: string[] = [];
-afterEach(async () => { faults.partialWrite = false; faults.freeBytes = null; faults.oversizedMediaPath = null; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { faults.partialWrite = false; faults.freeBytes = null; faults.statfs.mockClear(); faults.oversizedMediaPath = null; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async (imageDecoder: ImageDecoder = validateImageFile) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/image-preparation-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "i-")); roots.push(home);
@@ -179,7 +180,7 @@ test("queued capture checks the current attempt before copying or decoding its s
   } finally { finish(); await Promise.allSettled([active, ...(pending ? [pending] : [])]); await media.close(); f.store.close(); }
 });
 
-test("durable source release returns both shared slots after a free-space failure", async () => {
+test("durable source release returns both shared slots without a free-space probe", async () => {
   const f = await fixture(), media = f.store.media(), requests = [registerSource(f), registerSource(f)];
   const leases = requests.map(request => media.reserveCaptureSource(request.captureId, request.attemptId));
   const db = new Database(f.file, { readonly: true });
@@ -188,12 +189,11 @@ test("durable source release returns both shared slots after a free-space failur
   try {
     expect(media.tryAcquireMediaBlock()).toBeNull();
     faults.freeBytes = 0n;
-    for (const lease of leases) await expect(lease.release()).rejects.toThrow("free-space budget exceeded");
+    for (const lease of leases) await expect(lease.release()).resolves.toBeUndefined();
     for (const request of requests) {
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture-source:${request.captureId}:${request.attemptId}`) as { value: string };
       expect(JSON.parse(row.value)).toMatchObject({ released: true });
     }
-    faults.freeBytes = null;
     const uploadBlock = media.tryAcquireMediaBlock(), readBlock = media.tryAcquireMediaBlock();
     if (uploadBlock) blocks.push(uploadBlock); if (readBlock) blocks.push(readBlock);
     expect(uploadBlock).not.toBeNull(); expect(readBlock).not.toBeNull();
@@ -211,10 +211,11 @@ test("durable source release returns both shared slots after a free-space failur
     await capture.release();
     expect(await media.readCapture({ captureId: request.captureId, attemptId: request.attemptId, ...validated, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).toMatchObject({ data: f.bytes.toString("base64"), eof: true });
     await media.close(); await media.close();
+    expect(faults.statfs).not.toHaveBeenCalled();
   } finally { faults.freeBytes = null; blocks.forEach(block => block.close()); db.close(); await media.close(); f.store.close(); }
 });
 
-test.each(["writer", "stage"] as const)("source release keeps its shared slot until the %s joins despite a later budget failure", async phase => {
+test.each(["writer", "stage"] as const)("source release keeps its shared slot until the %s joins without disk forecasting", async phase => {
   let finish!: () => void, entered!: () => void, joined = false, aborted = false;
   const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { finish = resolve; });
   const f = await fixture(async request => { entered(); await gate; const result = await validateImageFile(request); joined = true; return result; });
@@ -238,7 +239,8 @@ test.each(["writer", "stage"] as const)("source release keeps its shared slot un
     expect(joined).toBe(false); expect(settled).toBe(false); expect(media.tryAcquireMediaBlock()).toBeNull();
     if (phase === "writer") expect(aborted).toBe(true);
     finish(); await work;
-    expect(await releasing).toEqual(expect.objectContaining({ message: "Controller media storage free-space budget exceeded." }));
+    expect(await releasing).toBeUndefined();
+    expect(faults.statfs).not.toHaveBeenCalled();
     expect(joined).toBe(true);
     await expect(stat(source.outputPath)).rejects.toMatchObject({ code: "ENOENT" });
     faults.freeBytes = null;
@@ -262,9 +264,10 @@ test("source release retains its shared slot until the released marker is durabl
     finally { available!.close(); }
   } finally { db.close(); transfer.close(); await media.close(); await media.close(); f.store.close(); }
 });
-test("preparation persists exact chunk receipts, fully decodes, and does not publish service availability", async () => {
+test("preparation persists exact chunk receipts and fully decodes with no free-space prediction", async () => {
   const f = await fixture(); const media = f.store.media();
   try {
+    faults.freeBytes = 0n;
     expect(await media.prepare(f.spec)).toMatchObject({ state: "receiving", acceptedOffset: "0", validated: null });
     const chunk = { uploadId: f.spec.uploadId, offset: "0", sha256: f.spec.sha256, data: f.bytes.toString("base64") };
     expect(await media.write(chunk)).toMatchObject({ acceptedOffset: f.spec.byteLength });
@@ -273,6 +276,9 @@ test("preparation persists exact chunk receipts, fully decodes, and does not pub
     const complete = await media.complete({ uploadId: f.spec.uploadId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
     expect(complete).toMatchObject({ state: "validated", validated: { width: 23, height: 19, frameCount: 1, sha256: f.spec.sha256 } });
     expect(complete).not.toHaveProperty("resource");
+    const spool = media.createSpool(f.bytes.length);
+    try { spool.write(f.bytes); spool.seal(); expect(await readFile(spool.path)).toEqual(f.bytes); } finally { spool.remove(); }
+    expect(faults.statfs).not.toHaveBeenCalled();
     expect(await media.readPrepared({ preparationId: f.spec.uploadId, offset: "0", limit: 524288 })).toMatchObject({ data: f.bytes.toString("base64"), eof: true });
     await expect(media.prepare({ ...f.spec, name: "changed.png" })).rejects.toThrow("conflict");
   } finally { await media.close(); f.store.close(); }
@@ -411,5 +417,25 @@ test("sealed capture reads over-limit stored geometry without relaxing new image
     const { parseValidatedImage } = await import("../../../src/session/image-values.js");
     expect(() => parseValidatedImage(stored)).toThrow();
     expect(() => media.assertCaptureSealed(request.captureId, request.attemptId, { ...stored, sha256: "b".repeat(64) })).toThrow();
+  } finally { await media.close(); f.store.close(); }
+});
+
+test.skipIf(process.platform === "win32")("capture staging and sealed reads reject linked files while preserving the original bytes", async () => {
+  const f = await fixture(), media = f.store.media(), request = registerSource(f);
+  const inputPath = path.join(f.home, "original.png"), linked = path.join(f.home, "linked.png");
+  await writeFile(inputPath, f.bytes, { mode: 0o400 }); await symlink(inputPath, linked);
+  const input = { captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 };
+  try {
+    await expect(media.stageCapture({ ...input, inputPath: linked })).rejects.toThrow(/private regular file/);
+    expect(media.captureStatus(request.captureId, request.attemptId)).toBeNull();
+    const validated = await media.stageCapture({ ...input, inputPath });
+    const db = new Database(f.file, { readonly: true });
+    let filename: string;
+    try { filename = (db.prepare("SELECT filename FROM image_captures WHERE capture_id=?").get(`${request.captureId}:${request.attemptId}`) as { filename: string }).filename; } finally { db.close(); }
+    const capturePath = path.join(`${f.file}.media-staging`, filename);
+    await rm(capturePath); await symlink(inputPath, capturePath);
+    expect(() => media.assertCaptureSealed(request.captureId, request.attemptId, validated)).toThrow(/private regular file/);
+    await expect(media.readCapture({ ...input, offset: "0", limit: 524288 }, () => ({ verify() {}, close() {} }))).rejects.toThrow(/private regular file/);
+    expect(await readFile(inputPath)).toEqual(f.bytes);
   } finally { await media.close(); f.store.close(); }
 });

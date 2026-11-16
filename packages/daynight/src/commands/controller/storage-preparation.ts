@@ -10,7 +10,7 @@ import { assertJournalMigrationAllowed, controllerJournalFormat, controllerJourn
 import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { validateWindowsStoredStopProof, type ControllerSnapshot } from "./lifecycle-store.js";
 import { assertNoOrphanTimelineSource } from "./content/migration.js";
-import { createTimelineMaintenanceReservation, maintainControllerTimeline, type TimelineMaintenanceReservation } from "./content/maintenance.js";
+import { maintainControllerTimeline } from "./content/maintenance.js";
 import { openTimelineStore } from "./content/timeline-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
 import { isControllerStorageCapacityError } from "./storage-capacity.js";
@@ -239,7 +239,7 @@ export const upgradeControllerJournal = (file: string, permit: ControllerStorage
 /** Own migration, stopped maintenance and normal admission before an ordinary writer can commit its generation. */
 export const prepareControllerStorage = (request: ControllerStorageRequest, storagePermit: ControllerStoragePermit, onMigration?: SqliteMigrationReporter): ControllerStoragePreparation => {
   assertControllerStoragePermit(storagePermit, request.journalFile);
-  let db: Database.Database | undefined, reservation: TimelineMaintenanceReservation | undefined, snapshot: ControllerSnapshot | null = null;
+  let db: Database.Database | undefined, snapshot: ControllerSnapshot | null = null;
   let outcome: SqliteOutcome = "not-started", failure: unknown, result: ControllerStoragePreparation | undefined;
   let phase: "open" | "admission" | "maintenance" = "open";
   const observation: ControllerStorageObservation = { role: request.mode, roleResult: "pending" };
@@ -276,10 +276,9 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
     outcome = "committed";
     phase = "maintenance";
     storageTimeout(request.deadline);
-    reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit });
     readSqliteDatabase({ file: request.journalFile, format: controllerJournalFormat, onMissing: () => { throw new Error("Controller journal disappeared before committed content readback."); } }, connection => openTimelineStore(connection, { assertWrite: () => { throw new Error("Controller preparation readback is read-only."); } }).totals());
     storageTimeout(request.deadline);
-    result = maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });
+    result = maintainControllerTimeline({ db, request, storagePermit, ...(onMigration === undefined ? {} : { onMigration }) });
     storageTimeout(request.deadline);
   } catch (cause) { failure = cause; outcome = phase === "admission" ? sqliteTransactionOutcome(cause) : cause instanceof SqliteAccessError ? cause.outcome : phase === "open" ? "not-started" : sqliteTransactionOutcome(cause); }
   if (db !== undefined && db.open) try { closeSqliteDatabase(db, { file: request.journalFile, format }, outcome); }
