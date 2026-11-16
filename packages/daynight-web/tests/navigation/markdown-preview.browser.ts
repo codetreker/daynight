@@ -211,7 +211,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Tas
 for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Task attachment image retry preserves reading at ${width}px in ${locale}`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 800 });
   const imagePath = `${root}/preview/images/failed%20image.svg`;
-  const imageUrl = `${imagePath}?variant=one%2Ftwo&size=2#drawing`;
+  const imageUrl = `http://${taskId}.preview.localhost:8787${imagePath}?variant=one%2Ftwo&size=2#drawing`;
   const source = `# Delivery\n\n${'Earlier reading paragraph.\n\n'.repeat(30)}## Image recovery anchor\n\n![${'Long attachment image name '.repeat(15)}](images/failed%20image.svg?variant=one%2Ftwo&size=2#drawing)\n\n![Loaded sibling](images/loaded.svg)\n\n![External image](https://external-image.invalid/failed.svg)\n\n![Native image](/native-image.svg)\n\n${'A paragraph retained around the failed image.\n\n'.repeat(60)}`;
   const state = await install(page, source, false, locale);
   const requests: string[] = [];
@@ -263,7 +263,7 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Tas
   const recovered = reader.locator(`img[src="${imageUrl}"]`);
   await expect.poll(() => recovered.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(200);
   expect(await readingPosition()).toEqual(position);
-  expect(requests.slice(before.length)).toEqual([`http://127.0.0.1:4203${imageUrl.split('#')[0]}`]);
+  expect(requests.slice(before.length)).toEqual([imageUrl.split('#')[0]]);
   expect(native).toEqual(nativeBefore);
   expect(await siblingHandle!.evaluate(element => element.isConnected)).toBe(true);
   expect(await readerHandle!.evaluate(element => element.isConnected)).toBe(true);
