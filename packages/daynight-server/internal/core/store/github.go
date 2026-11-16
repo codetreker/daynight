@@ -10,19 +10,9 @@ import (
 // GitHubReadDAO reads resource facts in the caller's snapshot.
 type GitHubReadDAO interface {
 	Connection(context.Context, string) (githubpr.Connection, error)
-	Bindings(context.Context, GitHubBindingsQuery) ([]githubpr.Connection, error)
 	PullRequest(context.Context, string, int64) (githubpr.PullRequest, error)
 	PullRequests(context.Context, GitHubPRQuery) (GitHubPRPage, error)
 	PullRequestCounts(context.Context, string) (GitHubPRCounts, error)
-}
-
-// GitHubBindingsQuery selects live Project connections by installation and,
-// when supplied, repository; AfterProjectID is an exclusive UUID cursor.
-type GitHubBindingsQuery struct {
-	AppID, InstallationID int64
-	RepositoryID          *int64
-	AfterProjectID        *string
-	Limit                 int
 }
 
 type GitHubPRQuery struct {
@@ -56,15 +46,6 @@ type GitHubConfigurationWrite struct {
 	AccessState                                    string
 	AccessReason                                   *string
 	AccessCheckedAt, NextAccessCheckAt, NextPollAt *time.Time
-}
-
-// GitHubWriteDAO is bound to the existing live Project write transaction.
-// Connection locks an existing row until completion; management decisions must
-// read through it before SaveConfiguration so broadcast changes cannot be lost.
-// The enclosing Project lock protects first creation of a virtual resource.
-type GitHubWriteDAO interface {
-	GitHubWorkDAO
-	SaveConfiguration(context.Context, GitHubConfigurationWrite) (bool, error)
 }
 
 // GitHubWorkDAO supplies synchronization operations without configuration writes.
@@ -137,29 +118,4 @@ type GitHubPendingPR struct {
 	Number, Generation        int64
 	RequestID, DeliveryID     string
 	ReceivedAt, NextAttemptAt time.Time
-}
-
-// GitHubWorkReader finds bounded candidates; candidates must be rechecked in
-// the live Project write scope before claiming.
-type GitHubWorkReader interface {
-	DueGitHubProjects(context.Context, int64, time.Time, int) ([]string, error)
-}
-
-type GitHubPRSignal struct {
-	AppID, InstallationID, RepositoryID, Number int64
-	RequestID, DeliveryID                       string
-	ReceivedAt, NextAttemptAt                   time.Time
-}
-
-type GitHubAccessSignal struct {
-	AppID, InstallationID int64
-	HintID, DeliveryID    string
-	ReceivedAt            time.Time
-}
-
-// GitHubSignalWriter is bound to a separate transaction and never locks a
-// Project row. Matching connection rows are locked before pending rows.
-type GitHubSignalWriter interface {
-	SignalPullRequest(context.Context, GitHubPRSignal) (int64, error)
-	SignalAccess(context.Context, GitHubAccessSignal) (int64, error)
 }

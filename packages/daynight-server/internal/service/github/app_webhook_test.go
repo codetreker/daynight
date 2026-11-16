@@ -1,10 +1,12 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,7 +14,30 @@ import (
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 )
+
+func TestAppWebhookLogsCorrelation(t *testing.T) {
+	var output bytes.Buffer
+	s := &appWebhookStore{outcome: store.TransactionCommitted}
+	r, err := NewAppWebhookReceiver(s, slog.New(slog.NewJSONHandler(&output, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := requestid.With(context.Background(), "request-1")
+	identity := AppWebhookIdentity{AppID: "app-1", CredentialVersion: 7}
+	err = r.ReceiveAppWebhook(ctx, identity, core.WebhookEvent{Kind: "access", DeliveryID: "delivery-1", InstallationID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(output.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["request_id"] != "request-1" || entry["delivery_id"] != "delivery-1" || entry["app_resource_id"] != "app-1" || entry["component"] != "github_webhook" || entry["phase"] != "receive" || entry["write_outcome"] != "committed" {
+		t.Fatalf("correlation log: %+v", entry)
+	}
+}
 
 type appWebhookStore struct {
 	snapshot store.GitHubAppWebhookSnapshot

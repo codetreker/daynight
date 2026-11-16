@@ -11,21 +11,15 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
-type retryScope struct{ store.ProjectWriteScope }
-
-func (s retryScope) GitHubDAO() store.GitHubWriteDAO {
-	return retryDAO{s.ProjectWriteScope.GitHubDAO()}
-}
-
-type retryDAO struct{ store.GitHubWriteDAO }
+type retryDAO struct{ store.GitHubWorkDAO }
 
 func (d retryDAO) ValidLease(_ context.Context, _ store.GitHubLease) (bool, error) { return true, nil }
 
 func TestWebhookAccessFailureReschedulesCapturedRequests(t *testing.T) {
 	f := newPollFixture(t)
 	originalWrite := f.db.write
-	f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
-		return originalWrite(ctx, id, func(scope store.ProjectWriteScope) error { return work(retryScope{scope}) })
+	f.db.write = func(ctx context.Context, id string, work func(store.GitHubWorkDAO) error) (store.Completion, error) {
+		return originalWrite(ctx, id, func(dao store.GitHubWorkDAO) error { return work(retryDAO{dao}) })
 	}
 	f.workKind = "webhook"
 	f.connection.NextPollAt = nil

@@ -46,16 +46,18 @@ func mustExec(t *testing.T, tx pgx.Tx, sql string, args ...any) {
 func ptr[T any](v T) *T { return &v }
 
 func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
-	db, id := dbFixture(t)
+	f := newProjectAppFixture(t)
+	db, id := f.db, f.project
 	tx := begin(t, db, pgx.TxOptions{})
 	ctx := t.Context()
-	reader, writer := github.NewReader(tx), github.NewWriter(tx, id)
+	mustExec(t, tx, `UPDATE github_apps SET github_app_id=123 WHERE id=$1`, f.app)
+	reader, writer := github.NewReader(tx), github.NewProjectAppWriter(tx, id)
 	virtual, err := reader.Connection(ctx, id)
 	if err != nil || !reflect.DeepEqual(virtual, githubpr.DefaultConnection(id)) {
 		t.Fatalf("virtual: %+v, %v", virtual, err)
 	}
-	if got, err := writer.Connection(ctx); err != nil || !reflect.DeepEqual(got, virtual) {
-		t.Fatalf("write-scope virtual resource: %+v, %v", got, err)
+	if facts, err := writer.Facts(ctx, f.p); err != nil || !reflect.DeepEqual(facts.Connection, virtual) {
+		t.Fatalf("write-scope virtual resource: %+v, %v", facts.Connection, err)
 	}
 	clock, err := writer.ObservedAt(ctx)
 	if err != nil || clock.Before(time.Now().Add(-time.Minute)) || clock.After(time.Now().Add(time.Minute)) {
@@ -68,13 +70,14 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	write := store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true, SyncEnabled: true,
 		AppID: ptr(int64(123)), InstallationID: ptr(int64(456)), RepositoryID: ptr(int64(789)), InstallationAccountLogin: ptr("owner"), RepositoryFullName: ptr("owner/repo"), RepositoryPrivate: ptr(true), PollIntervalMinutes: 17, AccessState: "available", AccessCheckedAt: &now, NextPollAt: &now}
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || !ok {
 		t.Fatalf("create: %v %v", ok, err)
 	}
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || ok {
 		t.Fatalf("stale create: %v %v", ok, err)
 	}
-	got, err := writer.Connection(ctx)
+	facts, err := writer.Facts(ctx, f.p)
+	got := facts.Connection
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +86,10 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 	}
 	mustExec(t, tx, `UPDATE project_github SET poll_error_code='retained', last_webhook_success_at=$2, not_before=$2 WHERE project_id=$1`, id, now)
 	write.ExpectedVersion, write.Version, write.PollIntervalMinutes = 2, 3, 20
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || !ok {
 		t.Fatalf("update: %v %v", ok, err)
 	}
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || ok {
 		t.Fatalf("stale update: %v %v", ok, err)
 	}
 	got, err = reader.Connection(ctx, id)
@@ -94,7 +97,7 @@ func TestConfigurationDefaultsAndConditionalWrites(t *testing.T) {
 		t.Fatalf("updated configuration: %+v, %v", got, err)
 	}
 	write.ExpectedVersion, write.Version, write.Generation = 3, 4, 2
-	if ok, err := writer.SaveConfiguration(ctx, write); err != nil || !ok {
+	if ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: write, AppResourceID: &f.app, GrantID: &f.grant, CredentialVersion: ptr(int64(1))}); err != nil || !ok {
 		t.Fatalf("new generation: %v %v", ok, err)
 	}
 	got, err = reader.Connection(ctx, id)
@@ -238,7 +241,8 @@ func TestPullRequestReadsPagingAndSnapshot(t *testing.T) {
 }
 
 func TestConfigurationCancellationDuringLockWait(t *testing.T) {
-	db, id := dbFixture(t)
+	f := newProjectAppFixture(t)
+	db, id := f.db, f.project
 	ctx := t.Context()
 	setup := begin(t, db, pgx.TxOptions{})
 	mustExec(t, setup, `INSERT INTO project_github(project_id,version) VALUES ($1,2)`, id)
@@ -256,7 +260,7 @@ func TestConfigurationCancellationDuringLockWait(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := github.NewWriter(waiter, id).Connection(operationCtx)
+		_, err := github.NewProjectAppWriter(waiter, id).Facts(operationCtx, f.p)
 		result <- err
 	}()
 	waitForLock(t, db, pid)
@@ -280,13 +284,14 @@ func TestConfigurationCancellationDuringLockWait(t *testing.T) {
 	clockTx := begin(t, db, pgx.TxOptions{})
 	cancelled, cancelClock := context.WithCancel(ctx)
 	cancelClock()
-	if _, err := github.NewWriter(clockTx, id).ObservedAt(cancelled); !errors.Is(err, context.Canceled) {
+	if _, err := github.NewProjectAppWriter(clockTx, id).ObservedAt(cancelled); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled database clock: %v", err)
 	}
 }
 
 func TestManagementReadSerializesBroadcast(t *testing.T) {
-	db, id := dbFixture(t)
+	f := newProjectAppFixture(t)
+	db, id := f.db, f.project
 	ctx := t.Context()
 	setup := begin(t, db, pgx.TxOptions{})
 	mustExec(t, setup, `INSERT INTO project_github(project_id,version,revision,enabled) VALUES ($1,2,4,true)`, id)
@@ -294,8 +299,9 @@ func TestManagementReadSerializesBroadcast(t *testing.T) {
 		t.Fatal(err)
 	}
 	management := begin(t, db, pgx.TxOptions{})
-	writer := github.NewWriter(management, id)
-	before, err := writer.Connection(ctx)
+	writer := github.NewProjectAppWriter(management, id)
+	facts, err := writer.Facts(ctx, f.p)
+	before := facts.Connection
 	if err != nil || before.Revision != 4 {
 		t.Fatalf("management read: %+v %v", before, err)
 	}
@@ -310,7 +316,7 @@ func TestManagementReadSerializesBroadcast(t *testing.T) {
 		result <- err
 	}()
 	waitForLock(t, db, pid)
-	ok, err := writer.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: before.Version, Version: 3, Revision: before.Revision + 1, Enabled: true, PollIntervalMinutes: 5, AccessState: "unknown"})
+	ok, err := writer.Save(ctx, store.GitHubProjectAppWrite{Configuration: store.GitHubConfigurationWrite{ExpectedVersion: before.Version, Version: 3, Revision: before.Revision + 1, Enabled: true, PollIntervalMinutes: 5, AccessState: "unknown"}})
 	if err != nil || !ok {
 		t.Fatalf("management write: %v %v", ok, err)
 	}

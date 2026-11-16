@@ -21,35 +21,56 @@ import (
 
 func b2Configure(t *testing.T, s *Store, project string, app, installation, repo int64) {
 	t.Helper()
-	ctx := t.Context()
-	c, err := s.WriteProject(ctx, project, func(sc store.ProjectWriteScope) error {
-		dao := sc.GitHubDAO()
-		if _, err := dao.Connection(ctx); err != nil {
-			return err
-		}
-		ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: 1, Version: 2, Generation: 1, Revision: 1, Enabled: true, SyncEnabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, PollIntervalMinutes: 5, AccessState: "available"})
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return errors.New("configuration refused")
-		}
-		return nil
-	})
-	if err != nil || c.Outcome != store.TransactionCommitted {
-		t.Fatalf("configure: %+v %v", c, err)
-	}
+	mustQueryExec(t, s, `INSERT INTO project_github(project_id,version,generation,revision,enabled,sync_enabled,app_id,installation_id,repository_id,poll_interval_minutes,access_state) VALUES($1,2,1,1,true,true,$2,$3,$4,5,'available')`, project, app, installation, repo)
+	configureWebhookApp(t, s, project)
 }
 
-func b2Write(t *testing.T, s *Store, project string, fn func(context.Context, store.GitHubWriteDAO) error) {
+func b2Write(t *testing.T, s *Store, project string, fn func(context.Context, store.GitHubAppWorkDAO) error) {
 	t.Helper()
 	ctx := t.Context()
-	completion, err := s.WriteProject(ctx, project, func(sc store.ProjectWriteScope) error { return fn(ctx, sc.GitHubDAO()) })
+	completion, err := s.WriteGitHubAppWork(ctx, project, nil, func(dao store.GitHubAppWorkDAO) error { return fn(ctx, dao) })
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		var pgErr *pgconn.PgError
 		errors.As(err, &pgErr)
-		t.Fatalf("project write: %+v %v postgres=%+v", completion, err, pgErr)
+		t.Fatalf("App work: %+v %v postgres=%+v", completion, err, pgErr)
 	}
+}
+
+func b2Principal(t *testing.T, s *Store, project string) model.Principal {
+	t.Helper()
+	var actor string
+	if err := s.Pool.QueryRow(t.Context(), `SELECT m.user_id::text FROM project_ownership o JOIN team_members m ON m.team_id=o.team_id WHERE o.project_id=$1 AND m.role='admin' LIMIT 1`, project).Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	return model.Principal{Kind: model.SessionCredential, UserID: actor, CredentialID: uuid.NewString()}
+}
+
+func b2Manage(ctx context.Context, s *Store, project string, p model.Principal, fn func(store.GitHubProjectAppWriteDAO, store.GitHubProjectAppFacts) error) (store.Completion, error) {
+	return s.WriteGitHubProjectApp(ctx, project, p.UserID, "", func(dao store.GitHubProjectAppWriteDAO) error {
+		facts, err := dao.Facts(ctx, p)
+		if err != nil {
+			return err
+		}
+		return fn(dao, facts)
+	})
+}
+
+func b2ManageWrite(t *testing.T, s *Store, project string, fn func(context.Context, store.GitHubProjectAppWriteDAO, store.GitHubProjectAppFacts) error) {
+	t.Helper()
+	ctx := t.Context()
+	p := b2Principal(t, s, project)
+	c, err := b2Manage(ctx, s, project, p, func(d store.GitHubProjectAppWriteDAO, f store.GitHubProjectAppFacts) error { return fn(ctx, d, f) })
+	if err != nil || c.Outcome != store.TransactionCommitted {
+		t.Fatalf("App management: %+v %v", c, err)
+	}
+}
+
+func b2Save(dao store.GitHubProjectAppWriteDAO, ctx context.Context, facts store.GitHubProjectAppFacts, config store.GitHubConfigurationWrite, disconnect bool) (bool, error) {
+	write := store.GitHubProjectAppWrite{Configuration: config, AppResourceID: facts.AppResourceID, GrantID: facts.GrantID, CredentialVersion: facts.CredentialVersion}
+	if disconnect {
+		write.AppResourceID, write.GrantID, write.CredentialVersion, write.ClearWork = nil, nil, nil, true
+	}
+	return dao.Save(ctx, write)
 }
 
 func b2Observation(number int64, seen *string) githubpr.PullRequest {
@@ -75,8 +96,8 @@ func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
 	release := make(chan struct{})
 	firstDone := make(chan error, 1)
 	go func() {
-		completion, err := s.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
-			ok, err := sc.GitHubDAO().Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token1, Kind: "poll", Until: time.Now().Add(5 * time.Minute)})
+		completion, err := s.WriteGitHubAppWork(ctx, project.ID, nil, func(dao store.GitHubAppWorkDAO) error {
+			ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token1, Kind: "poll", Until: time.Now().Add(5 * time.Minute)})
 			if err != nil || !ok {
 				return fmt.Errorf("first claim: %t %v", ok, err)
 			}
@@ -100,8 +121,8 @@ func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
 	}
 	secondDone := make(chan error, 1)
 	go func() {
-		completion, err := secondInstance.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
-			ok, err := sc.GitHubDAO().Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token2, Kind: "poll", Until: time.Now().Add(5 * time.Minute)})
+		completion, err := secondInstance.WriteGitHubAppWork(ctx, project.ID, nil, func(dao store.GitHubAppWorkDAO) error {
+			ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token2, Kind: "poll", Until: time.Now().Add(5 * time.Minute)})
 			if err != nil {
 				return err
 			}
@@ -115,7 +136,7 @@ func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
 		}
 		secondDone <- err
 	}()
-	waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE id =")
+	waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE")
 	close(release)
 	if err := receiveQueryResult(t, ctx, firstDone); err != nil {
 		t.Fatal(err)
@@ -128,7 +149,7 @@ func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
 		t.Fatalf("claim revision: %d %v", claimRevision, err)
 	}
 	lease1 := store.GitHubLease{Generation: 1, Token: token1}
-	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		now, err := dao.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -148,7 +169,7 @@ func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
 		return nil
 	})
 	mustQueryExec(t, s, `UPDATE project_github SET claim_until=clock_timestamp()-interval '1 second' WHERE project_id=$1`, project.ID)
-	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		now, err := dao.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -173,11 +194,11 @@ func TestGitHubCoordinationClaimPublicationAndTakeover(t *testing.T) {
 	}
 }
 
-func b2Signal(t *testing.T, s *Store, signal store.GitHubPRSignal) int64 {
+func b2Signal(t *testing.T, s *Store, signal store.GitHubAppPRSignal) int64 {
 	t.Helper()
 	var count int64
 	ctx := t.Context()
-	completion, err := s.WriteGitHubSignals(ctx, func(w store.GitHubSignalWriter) error {
+	completion, err := s.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
 		var err error
 		count, err = w.SignalPullRequest(ctx, signal)
 		return err
@@ -196,13 +217,13 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 	b2Configure(t, s, other.ID, 10, 20, 31)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	request1, request2 := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request1, DeliveryID: "delivery-1", ReceivedAt: now, NextAttemptAt: now}
+	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request1, DeliveryID: "delivery-1", ReceivedAt: now, NextAttemptAt: now}
 	if got := b2Signal(t, s, signal); got != 2 {
 		t.Fatalf("matched projects: %d", got)
 	}
 	token := uuid.NewString()
 	lease := store.GitHubLease{Generation: 1, Token: token}
-	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		clock, err := dao.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -221,7 +242,7 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 	if got := b2Signal(t, s, signal); got != 2 {
 		t.Fatalf("replacement matches: %d", got)
 	}
-	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		ok, err := dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(7, nil)})
 		if err != nil || !ok {
 			return fmt.Errorf("publish: %t %v", ok, err)
@@ -246,7 +267,7 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 	if err := s.Pool.QueryRow(t.Context(), `SELECT count(*) FROM project_github_pending_prs WHERE project_id=$1`, other.ID).Scan(&others); err != nil || others != 0 {
 		t.Fatalf("different repository: %d %v", others, err)
 	}
-	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		ok, err := dao.AckPending(ctx, lease, 7, request2)
 		if err != nil || !ok {
 			return fmt.Errorf("current ack: %t %v", ok, err)
@@ -260,7 +281,7 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 
 	sentinel := errors.New("abort broadcast")
 	signal.Number, signal.RequestID = 8, uuid.NewString()
-	completion, err := s.WriteGitHubSignals(t.Context(), func(w store.GitHubSignalWriter) error {
+	completion, err := s.WriteGitHubAppSignals(t.Context(), testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
 		if _, err := w.SignalPullRequest(t.Context(), signal); err != nil {
 			return err
 		}
@@ -274,8 +295,8 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 	}
 
 	hint := uuid.NewString()
-	completion, err = s.WriteGitHubSignals(t.Context(), func(w store.GitHubSignalWriter) error {
-		n, err := w.SignalAccess(t.Context(), store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: hint, DeliveryID: "access", ReceivedAt: now})
+	completion, err = s.WriteGitHubAppSignals(t.Context(), testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
+		n, err := w.SignalAccess(t.Context(), store.GitHubAppAccessSignal{InstallationID: 20, HintID: hint, DeliveryID: "access", ReceivedAt: now})
 		if err != nil || n != 3 {
 			return fmt.Errorf("access routing: %d %v", n, err)
 		}
@@ -284,7 +305,7 @@ func TestGitHubCoordinationSignalsAndConditionalAcknowledgement(t *testing.T) {
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("access signal: %+v %v", completion, err)
 	}
-	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, a.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		ok, err := dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(9, nil)})
 		if err != nil || ok {
 			return fmt.Errorf("invalidated claim: %t %v", ok, err)
@@ -298,7 +319,7 @@ func TestGitHubCoordinationDeletionSerializesWithPublication(t *testing.T) {
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC()
-	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
+	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
 	if got := b2Signal(t, s, signal); got != 1 {
 		t.Fatalf("signal count: %d", got)
 	}
@@ -310,8 +331,7 @@ func TestGitHubCoordinationDeletionSerializesWithPublication(t *testing.T) {
 	release := make(chan struct{})
 	published := make(chan error, 1)
 	go func() {
-		c, err := s.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
-			dao := sc.GitHubDAO()
+		c, err := s.WriteGitHubAppWork(ctx, project.ID, nil, func(dao store.GitHubAppWorkDAO) error {
 			clock, err := dao.ObservedAt(ctx)
 			if err != nil {
 				return err
@@ -390,12 +410,12 @@ func TestGitHubCoordinationPublicationAndAckRollbackAndUnknown(t *testing.T) {
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC()
 	request, token := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request, DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
+	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request, DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
 	if n := b2Signal(t, s, signal); n != 1 {
 		t.Fatalf("signal count: %d", n)
 	}
 	lease := store.GitHubLease{Generation: 1, Token: token}
-	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		clock, err := dao.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -406,8 +426,7 @@ func TestGitHubCoordinationPublicationAndAckRollbackAndUnknown(t *testing.T) {
 		}
 		return nil
 	})
-	publishAck := func(ctx context.Context, sc store.ProjectWriteScope) error {
-		dao := sc.GitHubDAO()
+	publishAck := func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		ok, err := dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(7, nil)})
 		if err != nil || !ok {
 			return fmt.Errorf("publish: %t %v", ok, err)
@@ -419,8 +438,8 @@ func TestGitHubCoordinationPublicationAndAckRollbackAndUnknown(t *testing.T) {
 		return nil
 	}
 	sentinel := errors.New("abort after publication and ack")
-	completion, err := s.WriteProject(t.Context(), project.ID, func(sc store.ProjectWriteScope) error {
-		if err := publishAck(t.Context(), sc); err != nil {
+	completion, err := s.WriteGitHubAppWork(t.Context(), project.ID, nil, func(dao store.GitHubAppWorkDAO) error {
+		if err := publishAck(t.Context(), dao); err != nil {
 			return err
 		}
 		return sentinel
@@ -451,7 +470,7 @@ func TestGitHubCoordinationPublicationAndAckRollbackAndUnknown(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	armed.Store(true)
-	completion, err = (&Store{Pool: pool}).WriteProject(t.Context(), project.ID, func(sc store.ProjectWriteScope) error { return publishAck(t.Context(), sc) })
+	completion, err = (&Store{Pool: pool}).WriteGitHubAppWork(t.Context(), project.ID, nil, func(dao store.GitHubAppWorkDAO) error { return publishAck(t.Context(), dao) })
 	var txErr *store.TransactionError
 	if !lost.Load() || completion.Outcome != store.TransactionUnknown || !errors.As(err, &txErr) || txErr.Phase != "commit" || !txErr.CommitAttempted || txErr.Outcome != store.TransactionUnknown {
 		t.Fatalf("lost confirmation: lost=%t completion=%+v transaction=%+v error=%v", lost.Load(), completion, txErr, err)
@@ -466,13 +485,13 @@ func TestGitHubCoordinationDisconnectInvalidatesLeaseAndPending(t *testing.T) {
 	project := queryProject(t, s, 1)
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC()
-	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
+	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now}
 	if n := b2Signal(t, s, signal); n != 1 {
 		t.Fatalf("signal count: %d", n)
 	}
 	token := uuid.NewString()
 	lease := store.GitHubLease{Generation: 1, Token: token}
-	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		clock, err := dao.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -487,24 +506,19 @@ func TestGitHubCoordinationDisconnectInvalidatesLeaseAndPending(t *testing.T) {
 		}
 		return nil
 	})
-	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
-		c, err := dao.Connection(ctx)
-		if err != nil {
-			return err
-		}
-		ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: false, AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState})
+	b2ManageWrite(t, s, project.ID, func(ctx context.Context, dao store.GitHubProjectAppWriteDAO, facts store.GitHubProjectAppFacts) error {
+		c := facts.Connection
+		ok, err := b2Save(dao, ctx, facts, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: false, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState}, true)
 		if err != nil || !ok {
 			return fmt.Errorf("disconnect: %t %v", ok, err)
 		}
 		return nil
 	})
-	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
-		ok, err := dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(8, &token)})
-		if err != nil || ok {
-			return fmt.Errorf("post-disconnect publication: %t %v", ok, err)
-		}
-		return nil
-	})
+	completion, err := s.WriteGitHubAppWork(t.Context(), project.ID, nil, func(store.GitHubAppWorkDAO) error { t.Fatal("disconnected work admitted"); return nil })
+	if !errors.Is(err, store.ErrGitHubAppWorkUnavailable) || completion.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("disconnected work: %+v %v", completion, err)
+	}
+
 	if n := b2Signal(t, s, signal); n != 0 {
 		t.Fatalf("disconnected signal: %d", n)
 	}
@@ -524,20 +538,17 @@ func TestGitHubCoordinationSignalWaitsForDisconnect(t *testing.T) {
 	locked := make(chan struct{})
 	release := make(chan struct{})
 	disconnected := make(chan error, 1)
+	p := b2Principal(t, s, project.ID)
 	go func() {
-		c, err := s.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
-			dao := sc.GitHubDAO()
-			current, err := dao.Connection(ctx)
-			if err != nil {
-				return err
-			}
+		c, err := b2Manage(ctx, s, project.ID, p, func(dao store.GitHubProjectAppWriteDAO, facts store.GitHubProjectAppFacts) error {
+			current := facts.Connection
 			close(locked)
 			select {
 			case <-release:
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-			ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: current.Version, Version: current.Version + 1, Generation: current.Generation + 1, Revision: current.Revision + 1, Enabled: false, AppID: current.AppID, InstallationID: current.InstallationID, RepositoryID: current.RepositoryID, PollIntervalMinutes: current.PollIntervalMinutes, AccessState: current.AccessState})
+			ok, err := b2Save(dao, ctx, facts, store.GitHubConfigurationWrite{ExpectedVersion: current.Version, Version: current.Version + 1, Generation: current.Generation + 1, Revision: current.Revision + 1, Enabled: false, RepositoryID: current.RepositoryID, PollIntervalMinutes: current.PollIntervalMinutes, AccessState: current.AccessState}, true)
 			if err != nil || !ok {
 				return fmt.Errorf("disconnect: %t %v", ok, err)
 			}
@@ -556,8 +567,8 @@ func TestGitHubCoordinationSignalWaitsForDisconnect(t *testing.T) {
 	observed := make(chan error, 1)
 	go func() {
 		now := time.Now().UTC()
-		c, err := s.WriteGitHubSignals(ctx, func(w store.GitHubSignalWriter) error {
-			n, err := w.SignalPullRequest(ctx, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now})
+		c, err := s.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
+			n, err := w.SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now, NextAttemptAt: now})
 			if err != nil || n != 0 {
 				return fmt.Errorf("signal after disconnect: %d %v", n, err)
 			}
@@ -568,7 +579,7 @@ func TestGitHubCoordinationSignalWaitsForDisconnect(t *testing.T) {
 		}
 		observed <- err
 	}()
-	waitForQueryLock(t, s, "WITH locked AS MATERIALIZED")
+	waitForQueryLock(t, s, "SELECT github_app_id,credential_version FROM github_apps WHERE id=$1")
 	close(release)
 	if err := receiveQueryResult(t, ctx, disconnected); err != nil {
 		t.Fatal(err)
@@ -589,34 +600,31 @@ func TestGitHubCoordinationDueProjects(t *testing.T) {
 		b2Configure(t, s, id, 10, 20, 30)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now.Add(-5 * time.Minute), NextAttemptAt: now.Add(-5 * time.Minute)}
+	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "delivery", ReceivedAt: now.Add(-5 * time.Minute), NextAttemptAt: now.Add(-5 * time.Minute)}
 	if n := b2Signal(t, s, signal); n != 4 {
 		t.Fatalf("signal count: %d", n)
 	}
 	mustQueryExec(t, s, `UPDATE project_github SET next_access_check_at=$2, next_poll_at=$3 WHERE project_id=$1`, a.ID, now.Add(-time.Minute), now.Add(-3*time.Minute))
 	mustQueryExec(t, s, `UPDATE project_github SET next_poll_at=$2 WHERE project_id=$1`, b.ID, now.Add(-2*time.Minute))
 	mustQueryExec(t, s, `UPDATE project_github SET claim_token=$2, claim_kind='poll', claim_until=$3 WHERE project_id=$1`, blocked.ID, uuid.NewString(), now.Add(time.Minute))
-	got, err := s.DueGitHubProjects(t.Context(), 10, now, 10)
+	got, err := s.DueGitHubAppProjects(t.Context(), now, 10)
 	if err != nil || !reflect.DeepEqual(got, []string{a.ID, b.ID, c.ID}) {
 		t.Fatalf("due priority and order: %v %v", got, err)
 	}
-	got, err = s.DueGitHubProjects(t.Context(), 10, now, 2)
+	got, err = s.DueGitHubAppProjects(t.Context(), now, 2)
 	if err != nil || !reflect.DeepEqual(got, []string{a.ID, b.ID}) {
 		t.Fatalf("due limit: %v %v", got, err)
 	}
-	got, err = s.DueGitHubProjects(t.Context(), 999, now, 10)
-	if err != nil || len(got) != 3 {
-		t.Fatalf("changed app candidates: %v %v", got, err)
+	mustQueryExec(t, s, `UPDATE project_github SET app_id=999 WHERE project_id=$1`, a.ID)
+	got, err = s.DueGitHubAppProjects(t.Context(), now, 10)
+	if err != nil || !reflect.DeepEqual(got, []string{b.ID, c.ID}) {
+		t.Fatalf("mismatched App candidates: %v %v", got, err)
 	}
-	mustQueryExec(t, s, `UPDATE project_github SET access_state='unavailable',access_reason='app_changed' WHERE project_id=$1`, a.ID)
+	mustQueryExec(t, s, `UPDATE project_github SET app_id=10,access_state='unavailable',access_reason='installation_missing' WHERE project_id=$1`, a.ID)
 	mustQueryExec(t, s, `UPDATE project_github SET access_state='unavailable',access_reason='installation_missing' WHERE project_id=$1`, b.ID)
-	got, err = s.DueGitHubProjects(t.Context(), 10, now, 10)
+	got, err = s.DueGitHubAppProjects(t.Context(), now, 10)
 	if err != nil || !reflect.DeepEqual(got, []string{c.ID}) {
 		t.Fatalf("terminal access states must not starve runnable projects: %v %v", got, err)
-	}
-	got, err = s.DueGitHubProjects(t.Context(), 999, now, 10)
-	if err != nil || len(got) != 2 {
-		t.Fatalf("changed app must recheck installation-missing bindings: %v %v", got, err)
 	}
 }
 
@@ -626,22 +634,22 @@ func TestGitHubAccessHintRetryAndNewSignalWake(t *testing.T) {
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	initialHint, nextHint := uuid.NewString(), uuid.NewString()
-	if n := b2Signal(t, s, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}); n != 1 {
+	if n := b2Signal(t, s, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}); n != 1 {
 		t.Fatalf("PR signal count: %d", n)
 	}
 	mustQueryExec(t, s, `UPDATE project_github SET access_hint_id=$2,next_access_check_at=$3,next_poll_at=$4 WHERE project_id=$1`, project.ID, initialHint, now.Add(time.Minute), now)
-	got, err := s.DueGitHubProjects(t.Context(), 10, now, 10)
+	got, err := s.DueGitHubAppProjects(t.Context(), now, 10)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("future access retry must block poll and PR: %v %v", got, err)
 	}
-	got, err = s.DueGitHubProjects(t.Context(), 10, now.Add(time.Minute), 10)
+	got, err = s.DueGitHubAppProjects(t.Context(), now.Add(time.Minute), 10)
 	if err != nil || !reflect.DeepEqual(got, []string{project.ID}) {
 		t.Fatalf("access retry due: %v %v", got, err)
 	}
 	limit := now.Add(30 * time.Second)
 	mustQueryExec(t, s, `UPDATE project_github SET not_before=$2 WHERE project_id=$1`, project.ID, limit)
-	completion, err := s.WriteGitHubSignals(t.Context(), func(w store.GitHubSignalWriter) error {
-		n, e := w.SignalAccess(t.Context(), store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: nextHint, DeliveryID: "new", ReceivedAt: now})
+	completion, err := s.WriteGitHubAppSignals(t.Context(), testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
+		n, e := w.SignalAccess(t.Context(), store.GitHubAppAccessSignal{InstallationID: 20, HintID: nextHint, DeliveryID: "new", ReceivedAt: now})
 		if e != nil || n != 1 {
 			return fmt.Errorf("access signal: %d %w", n, e)
 		}
@@ -658,11 +666,11 @@ func TestGitHubAccessHintRetryAndNewSignalWake(t *testing.T) {
 	if actualHint != nextHint || !actualNext.Equal(now) || !actualLimit.Equal(limit) {
 		t.Fatalf("new signal state: %s %v %v", actualHint, actualNext, actualLimit)
 	}
-	got, err = s.DueGitHubProjects(t.Context(), 10, now, 10)
+	got, err = s.DueGitHubAppProjects(t.Context(), now, 10)
 	if err != nil || len(got) != 0 {
 		t.Fatalf("rate limit bypassed: %v %v", got, err)
 	}
-	got, err = s.DueGitHubProjects(t.Context(), 10, limit, 10)
+	got, err = s.DueGitHubAppProjects(t.Context(), limit, 10)
 	if err != nil || !reflect.DeepEqual(got, []string{project.ID}) {
 		t.Fatalf("new signal not due after limit: %v %v", got, err)
 	}
@@ -674,8 +682,8 @@ func TestGitHubCoordinationRuntimeAndConditionalRetries(t *testing.T) {
 	b2Configure(t, s, project.ID, 10, 20, 30)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	hint, request, token := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	completion, err := s.WriteGitHubSignals(t.Context(), func(w store.GitHubSignalWriter) error {
-		n, err := w.SignalAccess(t.Context(), store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: hint, DeliveryID: "access", ReceivedAt: now})
+	completion, err := s.WriteGitHubAppSignals(t.Context(), testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
+		n, err := w.SignalAccess(t.Context(), store.GitHubAppAccessSignal{InstallationID: 20, HintID: hint, DeliveryID: "access", ReceivedAt: now})
 		if err != nil || n != 1 {
 			return fmt.Errorf("access signal: %d %v", n, err)
 		}
@@ -684,11 +692,11 @@ func TestGitHubCoordinationRuntimeAndConditionalRetries(t *testing.T) {
 	if err != nil || completion.Outcome != store.TransactionCommitted {
 		t.Fatalf("access signal: %+v %v", completion, err)
 	}
-	if n := b2Signal(t, s, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request, DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}); n != 1 {
+	if n := b2Signal(t, s, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: request, DeliveryID: "pr", ReceivedAt: now, NextAttemptAt: now}); n != 1 {
 		t.Fatalf("PR signal count: %d", n)
 	}
 	lease := store.GitHubLease{Generation: 1, Token: token}
-	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+	b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 		clock, err := dao.ObservedAt(ctx)
 		if err != nil {
 			return err
@@ -767,11 +775,11 @@ func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) 
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			token := uuid.NewString()
 			lease := store.GitHubLease{Generation: 1, Token: token}
-			initial := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "initial", ReceivedAt: now, NextAttemptAt: now}
+			initial := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 7, RequestID: uuid.NewString(), DeliveryID: "initial", ReceivedAt: now, NextAttemptAt: now}
 			if n := b2Signal(t, s, initial); n != 2 {
 				t.Fatalf("initial signal: %d", n)
 			}
-			b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+			b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 				ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 1, Token: token, Kind: "poll", Until: now.Add(5 * time.Minute)})
 				if err != nil || !ok {
 					return fmt.Errorf("initial claim: %t %v", ok, err)
@@ -785,20 +793,17 @@ func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) 
 			mustQueryExec(t, s, `UPDATE project_github SET not_before=$2 WHERE project_id=$1`, project.ID, now.Add(time.Hour))
 			locked, release := make(chan struct{}), make(chan struct{})
 			stopped := make(chan error, 1)
+			p := b2Principal(t, s, project.ID)
 			go func() {
-				completion, err := s.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
-					dao := sc.GitHubDAO()
-					c, err := dao.Connection(ctx)
-					if err != nil {
-						return err
-					}
+				completion, err := b2Manage(ctx, s, project.ID, p, func(dao store.GitHubProjectAppWriteDAO, facts store.GitHubProjectAppFacts) error {
+					c := facts.Connection
 					close(locked)
 					select {
 					case <-release:
 					case <-ctx.Done():
 						return ctx.Err()
 					}
-					ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: true, SyncEnabled: false, AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState})
+					ok, err := b2Save(dao, ctx, facts, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: true, SyncEnabled: false, AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState}, false)
 					if err != nil || !ok {
 						return fmt.Errorf("stop: %t %v", ok, err)
 					}
@@ -816,13 +821,13 @@ func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) 
 			}
 			signaled := make(chan error, 1)
 			go func() {
-				completion, err := second.WriteGitHubSignals(ctx, func(w store.GitHubSignalWriter) error {
+				completion, err := second.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error {
 					var n int64
 					var err error
 					if signalKind == "pull request" {
-						n, err = w.SignalPullRequest(ctx, store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 8, RequestID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second), NextAttemptAt: now})
+						n, err = w.SignalPullRequest(ctx, store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 8, RequestID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second), NextAttemptAt: now})
 					} else {
-						n, err = w.SignalAccess(ctx, store.GitHubAccessSignal{AppID: 10, InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second)})
+						n, err = w.SignalAccess(ctx, store.GitHubAppAccessSignal{InstallationID: 20, HintID: uuid.NewString(), DeliveryID: "later", ReceivedAt: now.Add(time.Second)})
 					}
 					if err != nil || n != 1 {
 						return fmt.Errorf("signal count: %d %v", n, err)
@@ -834,28 +839,19 @@ func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) 
 				}
 				signaled <- err
 			}()
-			waitForQueryLock(t, s, "WITH locked AS MATERIALIZED")
+			waitForQueryLock(t, s, "SELECT github_app_id,credential_version FROM github_apps WHERE id=$1")
 			worker := make(chan error, 1)
 			go func() {
-				completion, err := second.WriteProject(ctx, project.ID, func(sc store.ProjectWriteScope) error {
-					dao := sc.GitHubDAO()
-					if ok, err := dao.Renew(ctx, lease, now.Add(10*time.Minute)); err != nil || ok {
-						return fmt.Errorf("old renew: %t %v", ok, err)
-					}
-					if ok, err := dao.Publish(ctx, lease, []githubpr.PullRequest{b2Observation(8, nil)}); err != nil || ok {
-						return fmt.Errorf("old publish: %t %v", ok, err)
-					}
-					if ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 2, Token: uuid.NewString(), Kind: "poll", Until: now.Add(5 * time.Minute)}); err != nil || ok {
-						return fmt.Errorf("disabled claim: %t %v", ok, err)
-					}
-					return nil
+				completion, err := second.WriteGitHubAppWork(ctx, project.ID, nil, func(store.GitHubAppWorkDAO) error {
+					return errors.New("stopped work admitted")
 				})
-				if err == nil && completion.Outcome != store.TransactionCommitted {
-					err = fmt.Errorf("worker completion: %+v", completion)
+				if errors.Is(err, store.ErrGitHubAppWorkUnavailable) && completion.Outcome == store.TransactionNotCommitted {
+					err = nil
 				}
+
 				worker <- err
 			}()
-			waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE id =")
+			waitForQueryLock(t, s, "SELECT id::text FROM projects WHERE id=$1 AND deleted_at IS NULL FOR UPDATE")
 			close(release)
 			for _, ch := range []<-chan error{stopped, signaled, worker} {
 				if err := receiveQueryResult(t, ctx, ch); err != nil {
@@ -873,29 +869,23 @@ func TestGitHubCoordinationSyncStopFencesConcurrentWorkAndSignals(t *testing.T) 
 			// Simulate a due row with no rate-limit or live claim: the switch itself
 			// must still exclude it from scanning and admission.
 			mustQueryExec(t, s, `UPDATE project_github SET not_before=NULL,next_poll_at=$2 WHERE project_id=$1`, project.ID, now)
-			due, err := second.DueGitHubProjects(ctx, 10, now.Add(time.Second), 10)
+			due, err := second.DueGitHubAppProjects(ctx, now.Add(time.Second), 10)
 			if err != nil || slices.Contains(due, project.ID) {
 				t.Fatalf("disabled candidate: %v %v", due, err)
 			}
-			b2Write(t, second, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
-				ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 2, Token: uuid.NewString(), Kind: "poll", Until: now.Add(5 * time.Minute)})
-				if err != nil || ok {
-					return fmt.Errorf("disabled claim without rate limit: %t %v", ok, err)
-				}
-				return nil
-			})
-			b2Write(t, s, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
-				c, err := dao.Connection(ctx)
-				if err != nil {
-					return err
-				}
-				ok, err := dao.SaveConfiguration(ctx, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: true, SyncEnabled: true, AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState, NextPollAt: &now})
+			completion, err := second.WriteGitHubAppWork(ctx, project.ID, nil, func(store.GitHubAppWorkDAO) error { return errors.New("disabled work admitted") })
+			if !errors.Is(err, store.ErrGitHubAppWorkUnavailable) || completion.Outcome != store.TransactionNotCommitted {
+				t.Fatalf("disabled admission: %+v %v", completion, err)
+			}
+			b2ManageWrite(t, s, project.ID, func(ctx context.Context, dao store.GitHubProjectAppWriteDAO, facts store.GitHubProjectAppFacts) error {
+				c := facts.Connection
+				ok, err := b2Save(dao, ctx, facts, store.GitHubConfigurationWrite{ExpectedVersion: c.Version, Version: c.Version + 1, Generation: c.Generation + 1, Revision: c.Revision + 1, Enabled: true, SyncEnabled: true, AppID: c.AppID, InstallationID: c.InstallationID, RepositoryID: c.RepositoryID, PollIntervalMinutes: c.PollIntervalMinutes, AccessState: c.AccessState, NextPollAt: &now}, false)
 				if err != nil || !ok {
 					return fmt.Errorf("restart: %t %v", ok, err)
 				}
 				return nil
 			})
-			b2Write(t, second, project.ID, func(ctx context.Context, dao store.GitHubWriteDAO) error {
+			b2Write(t, second, project.ID, func(ctx context.Context, dao store.GitHubAppWorkDAO) error {
 				newToken := uuid.NewString()
 				ok, err := dao.Claim(ctx, store.GitHubClaim{AppID: 10, Generation: 3, Token: newToken, Kind: "poll", Until: now.Add(5 * time.Minute)})
 				if err != nil || !ok {

@@ -2,9 +2,19 @@ package postgres
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,52 +25,113 @@ import (
 	"github.com/google/uuid"
 )
 
-// controlledGitHub invokes the production request checkpoint at each simulated
-// network boundary. The signal hook runs during the fetch, outside any DB scope.
+// controlledGitHub supplies facts through the real remote client transport.
 type controlledGitHub struct {
 	page       []githubpr.Observation
 	pulls      map[int64]githubpr.Observation
 	duringPull func(context.Context, int64) error
+	beforeList func(context.Context) error
 }
 
-func (r *controlledGitHub) Installation(ctx context.Context, id int64) (remote.InstallationStatus, error) {
-	if err := remote.CheckpointRequest(ctx); err != nil {
-		return remote.InstallationStatus{}, err
+type fixedAppClient struct{ client *remote.Client }
+
+func (p fixedAppClient) Acquire(_ context.Context, id string, version int64) (*remote.Client, func(), error) {
+	if id != testWebhookAppID || version != 1 {
+		return nil, nil, fmt.Errorf("unexpected App identity")
 	}
-	return remote.InstallationStatus{ID: id}, nil
+	return p.client, func() {}, nil
 }
-func (r *controlledGitHub) VerifyAccess(ctx context.Context, _ int64, _, _ string) (githubpr.RepositoryObservation, error) {
-	if err := remote.CheckpointRequest(ctx); err != nil {
-		return githubpr.RepositoryObservation{}, err
+
+func observationJSON(v githubpr.Observation) map[string]any {
+	return map[string]any{
+		"id": v.GitHubID, "number": v.Number, "html_url": v.URL, "title": v.Title, "state": v.State, "draft": v.Draft, "user": nil,
+		"base":       map[string]any{"ref": v.BaseRef, "repo": map[string]any{"id": v.BaseRepositoryID}},
+		"head":       map[string]any{"ref": v.HeadRef, "sha": v.HeadSHA, "repo": nil},
+		"created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "closed_at": v.ClosedAt, "merged_at": v.MergedAt, "body": v.Description,
 	}
-	return githubpr.RepositoryObservation{ID: 30, FullName: "owner/repo", Private: true}, nil
 }
-func (r *controlledGitHub) ResolveRepository(ctx context.Context, _, _ int64) (githubpr.RepositoryObservation, error) {
-	if err := remote.CheckpointRequest(ctx); err != nil {
-		return githubpr.RepositoryObservation{}, err
-	}
-	return githubpr.RepositoryObservation{ID: 30, FullName: "owner/repo", Private: true}, nil
-}
-func (r *controlledGitHub) ListOpen(ctx context.Context, _ int64, _, _ string, visit func([]githubpr.Observation) error) error {
-	if err := remote.CheckpointRequest(ctx); err != nil {
-		return err
-	}
-	return visit(r.page)
-}
-func (r *controlledGitHub) PullRequest(ctx context.Context, _ int64, _, _ string, number int64) (githubpr.Observation, error) {
-	if err := remote.CheckpointRequest(ctx); err != nil {
-		return githubpr.Observation{}, err
-	}
-	if r.duringPull != nil {
-		if err := r.duringPull(ctx, number); err != nil {
-			return githubpr.Observation{}, err
+
+func controlledAppExecutor(t *testing.T, db *Store, upstream *controlledGitHub, logger *slog.Logger) *syncgithub.AppExecutor {
+	t.Helper()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/app/installations/20/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"token":"test","expires_at":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		case r.URL.Path == "/app/installations/20":
+			fmt.Fprint(w, `{"id":20,"suspended_at":null}`)
+		case r.URL.Path == "/installation/repositories":
+			fmt.Fprint(w, `{"repositories":[{"id":30,"full_name":"owner/repo","private":true}]}`)
+		case r.URL.Path == "/repos/owner/repo":
+			fmt.Fprint(w, `{"id":30,"full_name":"owner/repo","private":true}`)
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			if r.URL.Query().Get("per_page") == "1" {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			if upstream.beforeList != nil {
+				if err := upstream.beforeList(r.Context()); err != nil {
+					http.Error(w, "cancelled", http.StatusServiceUnavailable)
+					return
+				}
+			}
+			items := make([]map[string]any, 0, len(upstream.page))
+			for _, item := range upstream.page {
+				items = append(items, observationJSON(item))
+			}
+			_ = json.NewEncoder(w).Encode(items)
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/"):
+			number, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/pulls/"), 10, 64)
+			if err != nil {
+				http.Error(w, "invalid", http.StatusBadRequest)
+				return
+			}
+			if upstream.duringPull != nil {
+				if err := upstream.duringPull(r.Context(), number); err != nil {
+					http.Error(w, "hook failed", http.StatusServiceUnavailable)
+					return
+				}
+			}
+			item, ok := upstream.pulls[number]
+			if !ok {
+				http.Error(w, "missing", http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(observationJSON(item))
+		default:
+			http.Error(w, "unexpected", http.StatusNotFound)
 		}
+	}))
+	t.Cleanup(srv.Close)
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	original := http.DefaultTransport
+	transport := original.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if address != "api.github.com:443" {
+			return nil, fmt.Errorf("unexpected destination %q", address)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
 	}
-	item, ok := r.pulls[number]
-	if !ok {
-		return githubpr.Observation{}, fmt.Errorf("unexpected pull %d", number)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return item, nil
+	http.DefaultTransport = transport
+	client, err := remote.NewClient(10, key)
+	http.DefaultTransport = original
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.CloseIdleConnections(); transport.CloseIdleConnections() })
+	executor, err := syncgithub.NewAppExecutor(db, fixedAppClient{client}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return executor
 }
 
 func executorFact(number int64, state, sha, description string, at time.Time) githubpr.Observation {
@@ -78,10 +149,8 @@ func TestGitHubExecutorPersistsPollAndConcurrentHint(t *testing.T) {
 	first := executorFact(1, "open", "one", "旧正文", now)
 	second := executorFact(2, "open", "two", "second", now)
 	upstream := &controlledGitHub{page: []githubpr.Observation{first, second}, pulls: map[int64]githubpr.Observation{}}
-	executor, err := syncgithub.NewExecutor(db, upstream, 10, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	executor := controlledAppExecutor(t, db, upstream, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var err error
 	if err = executor.Execute(ctx, project.ID); err != nil {
 		t.Fatalf("first poll: %v", err)
 	}
@@ -139,7 +208,7 @@ func TestGitHubExecutorPersistsPollAndConcurrentHint(t *testing.T) {
 	nextSuccess = reopenedSuccess
 
 	request1, request2 := uuid.NewString(), uuid.NewString()
-	signal := store.GitHubPRSignal{AppID: 10, InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: request1, DeliveryID: "one", ReceivedAt: now, NextAttemptAt: now}
+	signal := store.GitHubAppPRSignal{InstallationID: 20, RepositoryID: 30, Number: 1, RequestID: request1, DeliveryID: "one", ReceivedAt: now, NextAttemptAt: now}
 	if got := b2Signal(t, db, signal); got != 1 {
 		t.Fatalf("first signal: %d", got)
 	}
@@ -151,7 +220,7 @@ func TestGitHubExecutorPersistsPollAndConcurrentHint(t *testing.T) {
 		}
 		upstream.duringPull = nil
 		signal.RequestID, signal.DeliveryID = request2, "two"
-		completion, err := db.WriteGitHubSignals(ctx, func(w store.GitHubSignalWriter) error { _, err := w.SignalPullRequest(ctx, signal); return err })
+		completion, err := db.WriteGitHubAppSignals(ctx, testWebhookAppID, 1, func(w store.GitHubAppSignalWriter) error { _, err := w.SignalPullRequest(ctx, signal); return err })
 		if err != nil || completion.Outcome != store.TransactionCommitted {
 			return fmt.Errorf("replace signal: %+v %w", completion, err)
 		}

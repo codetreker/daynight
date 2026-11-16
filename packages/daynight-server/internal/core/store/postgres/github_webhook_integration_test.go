@@ -87,7 +87,7 @@ func TestGitHubWebhookReceptionAndRecoveryWithStore(t *testing.T) {
 	}
 	// Reconstruct the receiver and executor after reception; persisted work remains due.
 	h = githubWebhookHandler(t, db)
-	due, err := db.DueGitHubProjects(t.Context(), 10, time.Now().Add(time.Second), 32)
+	due, err := db.DueGitHubAppProjects(t.Context(), time.Now().Add(time.Second), 32)
 	if err != nil || len(due) != 2 {
 		t.Fatalf("due after restart: %v %v", due, err)
 	}
@@ -96,10 +96,7 @@ func TestGitHubWebhookReceptionAndRecoveryWithStore(t *testing.T) {
 	remote := &controlledGitHub{pulls: map[int64]githubpr.Observation{7: fact}, page: []githubpr.Observation{fact}}
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	executor, err := servicegithub.NewExecutor(db, remote, 10, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
+	executor := controlledAppExecutor(t, db, remote, logger)
 	if err = executor.Execute(t.Context(), a.ID); err != nil {
 		t.Fatalf("hint: %v", err)
 	}

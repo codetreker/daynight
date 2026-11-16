@@ -15,6 +15,30 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
+type executorFunc func(context.Context, string) error
+
+func (f executorFunc) ExecuteWithClaimContext(ctx, _ context.Context, id string) error {
+	return f(ctx, id)
+}
+
+type claimExecutorFunc func(context.Context, context.Context, string) error
+
+func (f claimExecutorFunc) ExecuteWithClaimContext(work, claim context.Context, project string) error {
+	return f(work, claim, project)
+}
+
+func event[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case x := <-ch:
+		return x
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for runner")
+		var zero T
+		return zero
+	}
+}
+
 type appDueReaderFunc func(context.Context, time.Time, int) ([]string, error)
 
 func (f appDueReaderFunc) DueGitHubAppProjects(ctx context.Context, now time.Time, limit int) ([]string, error) {
