@@ -78,7 +78,7 @@ try {
     } else if (mode === "route-races") {
       const stale = await observeCopilotBridgeRoute(session), current = await observeCopilotBridgeRoute(session);
       assert(stale); assert(current); assert.notEqual(stale.generation, current.generation);
-      const filename = path.join(root, "route.png"), bytes = Buffer.alloc(1024, 7); writeFileSync(filename, bytes);
+      const filename = path.join(root, "route.png"), bytes = Buffer.alloc(1024, 7); writeFileSync(filename, bytes, { mode: 0o400 });
       const input = { prompt: "", mode: "immediate", attachments: [{ path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" }] };
       await assert.rejects(sendCopilotBridgeImages(session, input, () => {}, stale), /observation changed/);
       assert.equal(records().filter(record => record.method === "session.send").length, 0);
