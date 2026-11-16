@@ -13,7 +13,9 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/github"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -231,5 +233,96 @@ func TestAppConfigSerializesMembershipAndReadsNewVersion(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAppConfigDatabaseFailuresRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name, breakSQL, repairSQL string
+		operation                 func(context.Context, store.GitHubAppConfigWriter) error
+	}{
+		{"update projection", `ALTER TABLE github_app_admins RENAME TO broken_admins`, `ALTER TABLE broken_admins RENAME TO github_app_admins`, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+			_, err := w.Update(ctx, store.GitHubAppConfigUpdate{Name: "changed", GitHubName: "Remote", GitHubSlug: "remote", Version: 2, CredentialVersion: 1, Credentials: githubpr.AppCredentials{PrivateKeyPEM: []byte("key"), WebhookSecret: []byte("secret")}})
+			return err
+		}},
+		{"fence pending", `ALTER TABLE project_github_pending_prs RENAME TO broken_pending`, `ALTER TABLE broken_pending RENAME TO project_github_pending_prs`, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+			return w.FenceConnections(ctx, store.GitHubAppCredentialFence{CredentialVersion: 2, AccessState: "unknown", ScheduleSyncAccess: true})
+		}},
+		{"fence update", `ALTER TABLE project_github RENAME COLUMN access_state TO broken_access_state`, `ALTER TABLE project_github RENAME COLUMN broken_access_state TO access_state`, func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+			return w.FenceConnections(ctx, store.GitHubAppCredentialFence{CredentialVersion: 2, AccessState: "unknown", ScheduleSyncAccess: true})
+		}},
+		{"remove relations", `ALTER TABLE github_app_admins RENAME TO broken_admins`, `ALTER TABLE broken_admins RENAME TO github_app_admins`, func(ctx context.Context, w store.GitHubAppConfigWriter) error { return w.RemoveRelations(ctx) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, app, actor, _ := appAdminFixture(t)
+			ctx := t.Context()
+			project := uuid.NewString()
+			for _, q := range []struct {
+				sql  string
+				args []any
+			}{
+				{`INSERT INTO project_github(project_id,app_resource_id,generation,revision) VALUES($1,$2,3,4)`, []any{project, app}},
+				{`INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,1,3,$2,'delivery',now(),now())`, []any{project, uuid.NewString()}},
+				{`INSERT INTO github_app_admin_invitations(id,app_resource_id,token_hash,created_by,issuer_membership_version,created_at,expires_at) VALUES($1,$2,$3,$4,1,now(),now()+interval '1 day')`, []any{uuid.NewString(), app, []byte("hash"), actor}},
+			} {
+				if _, err := db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.Pool.Exec(ctx, tc.breakSQL); err != nil {
+				t.Fatal(err)
+			}
+			c, err := db.WriteGitHubAppConfig(ctx, app, func(w store.GitHubAppConfigWriter) error { return tc.operation(ctx, w) })
+			if err == nil || c.Outcome != store.TransactionNotCommitted {
+				t.Fatalf("failure completion: %+v %v", c, err)
+			}
+			if failed, _ := store.DatabaseErrorFacts(err); !failed {
+				t.Fatalf("missing database cause: %v", err)
+			}
+			if _, err := db.Pool.Exec(ctx, tc.repairSQL); err != nil {
+				t.Fatal(err)
+			}
+			var intact bool
+			err = db.Pool.QueryRow(ctx, `SELECT name='Automation' AND version=1 AND private_key_pem='key'::bytea AND (SELECT count(*) FROM github_app_admin_invitations WHERE app_resource_id=$1)=1 AND (SELECT count(*) FROM github_app_admins WHERE app_resource_id=$1)=1 AND (SELECT count(*) FROM project_github_pending_prs WHERE project_id=$2)=1 AND (SELECT generation=3 AND revision=4 FROM project_github WHERE project_id=$2) FROM github_apps WHERE id=$1`, app, project).Scan(&intact)
+			if err != nil || !intact {
+				t.Fatalf("rollback: %v %v", intact, err)
+			}
+		})
+	}
+}
+
+func TestAppConfigMissingAndCancelledWrites(t *testing.T) {
+	db, app, _, _ := appAdminFixture(t)
+	ctx := t.Context()
+	input := store.GitHubAppConfigUpdate{Name: "New", GitHubName: "Remote", GitHubSlug: "remote", Version: 2, CredentialVersion: 1, Credentials: githubpr.AppCredentials{PrivateKeyPEM: []byte("key"), WebhookSecret: []byte("secret")}}
+	tx := begin(t, db, pgx.TxOptions{})
+	absent := github.NewAppConfigWriter(tx, uuid.NewString())
+	if _, err := absent.Update(ctx, input); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing update: %v", err)
+	}
+	if err := absent.Tombstone(ctx, 1); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("missing tombstone: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []func(context.Context, store.GitHubAppConfigWriter) error{
+		func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+			_, err := w.Update(ctx, input)
+			return err
+		},
+		func(ctx context.Context, w store.GitHubAppConfigWriter) error { return w.Tombstone(ctx, 1) },
+		func(ctx context.Context, w store.GitHubAppConfigWriter) error {
+			return w.FenceConnections(ctx, store.GitHubAppCredentialFence{})
+		},
+	} {
+		c, err := db.WriteGitHubAppConfig(ctx, app, func(w store.GitHubAppConfigWriter) error {
+			canceled, stop := context.WithCancel(ctx)
+			stop()
+			return op(canceled, w)
+		})
+		if !errors.Is(err, context.Canceled) || c.Outcome != store.TransactionNotCommitted {
+			t.Fatalf("cancelled: %+v %v", c, err)
+		}
 	}
 }
