@@ -103,6 +103,15 @@ async function assertLayout(header: Locator) {
   return measured;
 }
 
+test('both browser fixture entries publish one preview origin', async ({ page }) => {
+  for (const path of ['/projects', '/tests/navigation/account-change-banner.html']) {
+    await page.goto(path);
+    const metadata = page.locator('meta[name="daynight-preview-origin"]');
+    await expect(metadata).toHaveCount(1);
+    await expect(metadata).toHaveAttribute('content', 'http://preview.localhost:8787');
+  }
+});
+
 for (const entry of ['task', 'test'] as const) for (const locale of ['zh-CN', 'en']) for (const provider of Object.keys(providers) as Provider[]) for (const state of Object.keys(states) as State[]) {
   test(`${entry} ${locale} ${provider} ${state} header follows container width`, async ({ page }, info) => {
     const { header, observations } = await open(page, locale, provider, state, entry);

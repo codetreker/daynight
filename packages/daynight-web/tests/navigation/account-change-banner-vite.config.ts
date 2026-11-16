@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { mergeConfig } from 'vite';
-import base from '../../vite.config.ts';
+import base from './product-shell-vite.config.ts';
 
 export default mergeConfig(base, {
   build: { rollupOptions: { input: {
