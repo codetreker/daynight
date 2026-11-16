@@ -18,6 +18,7 @@ const outsideId = '00000000-0000-4000-8000-000000000206';
 const otherTask2Id = '00000000-0000-4000-8000-000000000207';
 const layoutChildId = '00000000-0000-4000-8000-000000000208';
 const layoutWorkerId = '00000000-0000-4000-8000-000000000209';
+const layoutStandaloneId = '00000000-0000-4000-8000-000000000210';
 const personalId = '00000000-0000-4000-8000-000000000701';
 const time = '2026-10-22T10:00:00Z';
 const longChainTitle = 'Long completed chain title '.repeat(5).trim();
@@ -135,7 +136,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     if (path === `/api/v1/projects/${projectId}/tasks` && route.request().method() === 'POST') { creates.push(route.request().postDataJSON()); return route.abort('failed'); }
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (failNextSync) { failNextSync = false; return send({ error: { code: 'unavailable', message: 'Unavailable', requestId: 'sync-error' } }, 503); }
-      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties, tagsForTask: task => details.find(item => item.id === task.id)!.tags });
+      const response = taskSyncFixture(currentGraph, { query: taskSyncQuery(url), epoch, sessions: sessionStates, ...(sessionStates[layoutWorkerId] === undefined ? {} : { taskObservations: { [layoutWorkerId]: { taskVersion: details.find(item => item.id === layoutWorkerId)!.version, state: 'working' as const, observedAt: currentGraph.observedAt, freshUntil: '2055-01-01T00:01:00Z', needsAttention: false, canOpen: true } } }), versionForTask: task => details.find(item => item.id === task.id)!.version, propertiesForTask: task => details.find(item => item.id === task.id)!.properties, tagsForTask: task => details.find(item => item.id === task.id)!.tags });
       if (holdNextSync) {
         holdNextSync = false; await new Promise<void>(resolve => { releaseSync = resolve; }); releaseSync = null;
         try { await send(response); } finally { heldSyncFinished = true; }
@@ -277,6 +278,11 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       detailFixture(projectId, layoutWorkerId, { title: 'Active outside member', parentId: otherGoalId, status: 'in_progress', startedAt: time, dependsOn: [outsideId], properties: { worker } }),
     );
     currentGraph = layout ? { ...graphFixture(details), observedAt: '2055-01-01T00:00:00Z' } : graphFixture(details);
+  }, layoutMemberEvidence: () => {
+    details = [...details.map(item => item.type === 'task' ? { ...item, ...(item.id === layoutWorkerId ? { parentId: null, allowAgents: true } : {}), tags: [{ id: layoutChildId, name: 'Long tag 标签' }] } : item),
+      detailFixture(projectId, layoutStandaloneId, { title: 'Ordinary task' })];
+    sessionStates = { [layoutWorkerId]: 'working' };
+    currentGraph = { ...graphFixture(details), observedAt: '2055-01-01T00:00:00Z' };
   }, completeOtherGoal: () => { details = details.map(item => item.id === otherGoalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T09:59:40Z' } : item); currentGraph = graphFixture(details); }, emptyGoal: () => { details = [goal]; currentGraph = graphFixture(details); }, failNextSync: () => { failNextSync = true; }, holdNextSync: () => { holdNextSync = true; }, syncHeld: () => releaseSync !== null, heldSyncFinished: () => heldSyncFinished, releaseSync: () => releaseSync?.(), finishGoal: () => {
     details = details.map(item => item.id === goalId ? { ...item, status: 'done' as const, completedAt: '2026-10-22T10:00:01Z', updatedAt: '2026-10-22T10:00:01Z', version: item.version + 1n } : item);
     currentGraph = graphFixture(details);
@@ -2549,17 +2555,29 @@ for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) 
     expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
     await expect(row.locator('.task-row-id')).toBeVisible();
     await expect(row.locator('.task-tag')).toHaveCount(2);
+    const starts = await row.evaluate(element => {
+      const left = (selector: string) => element.querySelector(selector)!.getBoundingClientRect().left;
+      return [left('.task-row-title'), left('.task-row-meta'), left('.task-tag-list')];
+    });
+    expect(starts[1]).toBeCloseTo(starts[0]!, 1);
+    expect(starts[2]).toBeCloseTo(starts[0]!, 1);
     await row.locator('.task-row-title').focus();
     await expect(row.locator('.task-row-title')).toBeFocused();
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows align with their content edges at ${width}px`, async ({ page }) => {
+for (const width of [1280, 651, 650, 601, 600, 390, 320]) test(`expanded member rows align with their content edges at ${width}px`, async ({ page }) => {
   await page.setViewportSize({ width, height: 800 });
-  const fixture = await install(page); fixture.completionGoal(true);
+  const fixture = await install(page); fixture.completionGoal(true); fixture.layoutMemberEvidence();
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const ordinary = page.locator(`#standalone-task-${layoutStandaloneId}`).locator('..').locator('..').locator('..');
+  await expect(ordinary).toHaveClass(/task-row/);
+  const ordinaryPadding = await ordinary.evaluate(element => parseFloat(getComputedStyle(element).paddingInlineStart));
+  expect(ordinaryPadding).toBe(width > 650 ? 15 : 11);
+  const extraIndent = width > 600 ? 16 : 12;
   const verify = async (container: Locator, toggle: Locator, contentSelector: string, bottom: number) => {
     const headerBefore = await toggle.boundingBox();
     await toggle.click();
@@ -2573,7 +2591,12 @@ for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows align
       const listBox = element.getBoundingClientRect();
       const rows = [...element.querySelectorAll<HTMLElement>(':scope > li .task-row')].map(row => {
         const box = row.getBoundingClientRect();
-        return { left: box.left, right: box.right, overflow: row.scrollWidth > row.clientWidth + 1 };
+        const style = getComputedStyle(row);
+        const left = (selector: string) => row.querySelector(selector)!.getBoundingClientRect().left;
+        return { left: box.left, right: box.right, padding: parseFloat(style.paddingInlineStart),
+          rightPadding: parseFloat(style.paddingInlineEnd), border: parseFloat(style.borderInlineStartWidth),
+          title: left('.task-row-title'), meta: left('.task-row-meta'), tags: left('.task-tag-list'),
+          status: left('.task-row-status'), overflow: row.scrollWidth > row.clientWidth + 1 };
       });
       return { left: content.left, right: content.right, listBottom: listBox.bottom,
         lastBottom: element.lastElementChild!.getBoundingClientRect().bottom, rows,
@@ -2583,10 +2606,30 @@ for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows align
     for (const row of geometry.rows) {
       expect(row.left).toBeCloseTo(geometry.left, 1);
       expect(row.right).toBeCloseTo(geometry.right, 1);
+      expect(row.padding).toBe(ordinaryPadding + extraIndent);
+      expect(row.rightPadding).toBe(ordinaryPadding);
+      expect(row.title).toBeCloseTo(row.left + row.border + ordinaryPadding + extraIndent, 1);
+      expect(row.meta).toBeCloseTo(row.title, 1);
+      expect(row.tags).toBeCloseTo(row.title, 1);
+      if (width <= 650) expect(row.status).toBeCloseTo(row.title, 1);
       expect(row.overflow).toBe(false);
     }
     expect(geometry.listBottom - geometry.lastBottom).toBeCloseTo(bottom, 1);
     expect(geometry.pageOverflow).toBe(false);
+    const row = list.locator(':scope > li .task-row').first();
+    const title = row.locator('.task-row-title');
+    const titleText = await title.innerText();
+    await row.scrollIntoViewIfNeeded();
+    const box = (await row.boundingBox())!;
+    const point = { x: box.x + 4, y: box.y + box.height / 2 };
+    expect(await row.evaluate((element, p) => document.elementFromPoint(p.x, p.y) === element, point)).toBe(true);
+    await page.mouse.click(point.x, point.y);
+    const dialog = page.locator('.task-detail-dialog:not(.goal-detail-surface)');
+    await expect(dialog.locator('.task-detail-title')).toHaveText(titleText);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(title).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   };
   await page.getByRole('tab', { name: /^Goal/ }).click();
   const goalRow = page.locator(`[data-goal-id="${goalId}"]`);
@@ -2597,6 +2640,24 @@ for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows align
   for (const id of [otherTask2Id, outsideId]) {
     const chain = page.locator(`[data-chain-id="${id}"]`);
     await verify(chain, chain.locator('.goal-toggle'), '.goal-children', 5);
+  }
+  if (width === 320) {
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    const scoped = page.locator(`[data-chain-id="${outsideId}"]`);
+    const active = scoped.locator(`#chain-task-${outsideId}-${layoutWorkerId}`).locator('..').locator('..').locator('..');
+    await page.mouse.move(0, 0);
+    await expect(active).toHaveClass(/standalone-row-stuck/);
+    await expect(active).toHaveCSS('background-color', roleColors.attention[0]);
+    await active.hover();
+    await expect(active).toHaveCSS('background-color', roleColors.attention[1]);
+    await active.getByRole('button', { name: 'Copy task ID' }).click();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(layoutWorkerId);
+    await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+    const session = active.getByRole('button', { name: /Open Session/ });
+    await session.focus(); await page.keyboard.press('Enter');
+    await expect(page.locator('.task-detail-dialog [role=tab][aria-selected=true]')).toHaveText('Session');
+    await page.keyboard.press('Escape'); await expect(session).toBeFocused();
+    await expect(scoped.locator('.goal-toggle')).toHaveAttribute('aria-expanded', 'true');
   }
   expect(fixture.statusWrites()).toEqual([]);
   expect(fixture.edits()).toEqual([]);
