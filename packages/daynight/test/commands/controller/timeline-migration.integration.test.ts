@@ -55,11 +55,10 @@ const fixture = async (version: number, withExecution = true) => {
     db.prepare("INSERT INTO native_input_publication_images VALUES('original','image','resource',0)").run();
   }
   const permit = acquireControllerStoragePermit(file, undefined, { fileMustExist: true }); permits.push(permit);
-  const assertReservedWrite = vi.fn<(additional: number) => void>(), assertPendingWrite = vi.fn<(additional: number) => void>();
-  const context: JournalMigrationContext = { storagePermit: permit, assertReservedWrite, assertPendingWrite };
+  const context: JournalMigrationContext = { storagePermit: permit };
   const format = controllerJournalFormatForMigration(() => context);
   const migrate = () => runSqliteImmediate(db, () => { const source = inspectSqlite(db, format); assertJournalMigrationAllowed(db, source); return upgradeSqlite(db, format); });
-  return { root, file, db, sessionId, snapshot, entry, body, bodyFile, pending, permit, context, format, migrate, assertReservedWrite, assertPendingWrite };
+  return { root, file, db, sessionId, snapshot, entry, body, bodyFile, pending, permit, context, format, migrate };
 };
 
 test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical chain without changing original execution evidence", async version => {
@@ -80,6 +79,25 @@ test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("imports actual v%s through the canonical
     expect(f.db.prepare("SELECT * FROM input_message_origins ORDER BY entry_id").all()).toEqual([{ entry_id: "daynight-entry", operation_id: "daynight-operation", origin: "daynight" }, { entry_id: "user-entry", operation_id: "user-operation", origin: "user" }]);
     expect(f.db.prepare("SELECT * FROM native_input_publication_images").all()).toEqual([{ operation_id: "original", image_id: "image", resource_id: "resource", part_index: 0 }]);
   }
+});
+
+test.each([5, 7, 9].flatMap(version => ["text", "list"].map(kind => ({ version, kind }))))("v$version migrates oversized stored timeline $kind but rejects new inputs", async ({ version, kind }) => {
+  const f = await fixture(version);
+  const entry = { ...f.entry, kind: "assistant_message" as const, text: undefined, content: kind === "text" ? [{ type: "text" as const, text: "x".repeat(1_048_577) }] : Array.from({ length: 1001 }, () => ({ type: "text" as const, text: "x" })) };
+  const { text: _text, ...oversized } = entry;
+  const body = JSON.stringify(oversized), contentHash = controllerPayloadHash(oversized);
+  if (version === 5) f.db.prepare("UPDATE projection SET value=?,content_hash=? WHERE id=?").run(body, contentHash, oversized.entryId);
+  else {
+    await writeFile(f.bodyFile!, body, { mode: 0o600 });
+    if (version < 8) f.db.prepare("UPDATE content_index SET content_hash=? WHERE id=?").run(contentHash, oversized.entryId);
+    else f.db.prepare("UPDATE content_index SET content_hash=?,content_sha256=?,content_bytes=? WHERE id=?").run(contentHash, hash(body), Buffer.byteLength(body), oversized.entryId);
+  }
+  f.migrate();
+  const store = openTimelineStore(f.db, { assertWrite: () => {} });
+  expect(store.get(oversized.entryId)).toEqual(oversized);
+  const newEntry = { ...oversized, entryId: randomUUID(), entrySeq: "2" };
+  expect(() => f.db.transaction(() => store.save(newEntry)).immediate()).toThrow();
+  expect(store.get(newEntry.entryId)).toBeUndefined();
 });
 
 test("canonical discovery preserves shipped DDL through the direct-capture data migration", async () => {
@@ -150,14 +168,13 @@ test.each([0, 9])("v%s without an original execution rejects retained pending so
   expect(await readdir(path.join(f.pending, "entries"))).toHaveLength(1);
 });
 
-test.each([5, 7])("v%s exports within the supplied peak reservation despite old physical metadata above128MiB", async version => {
+test.each([5, 7])("v%s exports despite old physical metadata above 128 MiB", async version => {
   const f = await fixture(version), directory = path.join(f.pending, "entries");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const handle = await open(path.join(directory, `${randomUUID()}.json`), "wx", 0o600);
   try { await handle.truncate(129 * 1048576); } finally { await handle.close(); }
   expect(() => controllerMetadataBudget(f.file, f.db).assert()).toThrow("metadata budget");
   f.migrate();
-  expect(f.assertPendingWrite).toHaveBeenCalled();
   expect(openTimelineStore(f.db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);
 });
 
@@ -210,16 +227,6 @@ test("invalid UTF8 with a valid byte hash is rejected before adopting a body", a
   expect(f.migrate).toThrow();
   expect(f.db.pragma("user_version", { simple: true })).toBe(9);
   expect(await readFile(f.bodyFile!)).toEqual(invalid);
-});
-
-test("a capacity refusal during export retains original SQL and retries the same source", async () => {
-  const f = await fixture(5);
-  f.assertPendingWrite.mockImplementationOnce(() => { throw new Error("reserved peak exhausted"); });
-  expect(f.migrate).toThrow();
-  expect(f.db.pragma("user_version", { simple: true })).toBe(5);
-  expect(f.db.prepare("SELECT value FROM projection").get()).toEqual({ value: f.body });
-  f.migrate();
-  expect(openTimelineStore(f.db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);
 });
 
 test("v9 import keeps decimal sequence and revision beyond JavaScript safe integers", async () => {

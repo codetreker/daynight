@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
+import { parseSessionResource, parseStoredSessionResource } from "../../../src/session/protocol.js";
 
 const faults = vi.hoisted(() => ({ operation: "", target: "" }));
 vi.mock("node:fs", async original => {
@@ -27,6 +28,13 @@ const fixture = async () => {
 };
 const descriptor = (bytes: Buffer) => ({ resourceId: randomUUID(), status: "available" as const, name: "original.png", mediaType: "image/png", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null });
 const filename = (id: string) => `${createHash("sha256").update(id).digest("hex")}.json`;
+
+test("stored extended descriptors retain values above current input limits", () => {
+  const resource = { ...descriptor(Buffer.from("original")), name: "x".repeat(1025), byteLength: "10485761", revision: "1", width: 16385, height: 2049, frameCount: 257 };
+  expect(parseStoredSessionResource(resource)).toEqual(resource);
+  expect(() => parseSessionResource(resource)).toThrow();
+  expect(() => parseStoredSessionResource({ ...resource, byteLength: "01" })).toThrow();
+});
 
 test("opens independently without body directories and accounts for descriptor bytes", async () => {
   const { journal, sessionId } = await fixture(), files = openResourceFiles(journal, sessionId);

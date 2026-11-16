@@ -121,7 +121,7 @@ const reopenCoordinator = async (f: Awaited<ReturnType<typeof directFixture>>, m
   await f.close();
   if (migrate) {
     const db = new Database(f.file);
-    try { db.transaction(() => migrateDirectCaptureState(db, "SELECT 1", () => {}))(); } finally { db.close(); }
+    try { db.transaction(() => migrateDirectCaptureState(db, "SELECT 1"))(); } finally { db.close(); }
   }
   const journal = openControllerLifecycleStore(f.file, f.ticket, { imageDecoder: validateImageFile });
   const bridge = createControllerCaptureBridge({ journal, beforeCapture: async () => {}, provider: () => null, writable: () => true, capture: f.capture });

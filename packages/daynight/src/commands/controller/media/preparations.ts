@@ -10,7 +10,7 @@ import type Database from "better-sqlite3";
 import { constants, chmodSync, closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, linkSync, mkdirSync, openSync, readSync, statfsSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { IMAGE_LIMITS, canonicalImageJson, imageDecimal, imageId, parseImageCaptureReceipt, parseImageReadRequest, parseImageUploadSpec, parseValidatedImage, type ImageReadChunk, type ImageUploadSpec, type LocalImagePreparation, type PreparedImageChunk, type ImageCaptureRequest, type DisplayMime, type SessionInput, type ValidatedImage, parseNativeImageSource } from "../../../session/image-values.js";
+import { IMAGE_LIMITS, canonicalImageJson, imageDecimal, imageId, parseImageCaptureReceipt, parseImageReadRequest, parseImageUploadSpec, parseStoredValidatedImage, type ImageReadChunk, type ImageUploadSpec, type LocalImagePreparation, type PreparedImageChunk, type ImageCaptureRequest, type DisplayMime, type SessionInput, type ValidatedImage, parseNativeImageSource } from "../../../session/image-values.js";
 import { parseSessionResource, sessionBinding, type SessionResource } from "../../../session/protocol.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerSnapshot } from "../lifecycle-store.js";
@@ -354,7 +354,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
       return validated;
     });
     if (!row || !/^[a-f0-9-]{36}\.part$/.test(row.filename)) throw new Error("Image capture validated source is unavailable.");
-    const validated = parseValidatedImage(JSON.parse(row.validated));
+    const validated = parseStoredValidatedImage(JSON.parse(row.validated));
     const actual = { mediaType: resource.mediaType, byteLength: resource.byteLength, sha256: resource.sha256, width: resource.width, height: resource.height, frameCount: resource.frameCount };
     if (canonicalImageJson(validated) !== canonicalImageJson(actual)) throw new Error("Image capture committed resource differs from its validated identity.");
     const block = tryAcquireMediaBlock();
@@ -461,7 +461,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     assertCaptureSealed: (captureId: string, attemptId: string, expected: ValidatedImage): void => {
       checkOpen(); captureSource.assertImageCaptureAttempt(captureId, attemptId);
       const row = transactions.read(() => db.prepare("SELECT filename,validated FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`) as { filename: string; validated: string } | undefined);
-      if (!row || !/^[a-f0-9-]{36}\.part$/.test(row.filename) || canonicalImageJson(parseValidatedImage(JSON.parse(row.validated))) !== canonicalImageJson(expected)) throw new Error("Image capture has no original sealed bytes.");
+      if (!row || !/^[a-f0-9-]{36}\.part$/.test(row.filename) || canonicalImageJson(parseStoredValidatedImage(JSON.parse(row.validated))) !== canonicalImageJson(expected)) throw new Error("Image capture has no original sealed bytes.");
       const fd = openSync(path.join(root, row.filename), constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const stat = fstatSync(fd), digest = createHash("sha256"), bytes = Buffer.alloc(IMAGE_LIMITS.chunkBytes);

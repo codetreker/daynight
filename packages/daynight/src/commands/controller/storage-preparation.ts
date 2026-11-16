@@ -17,7 +17,6 @@ import { controllerJournalPhysicalBytes } from "./media/metadata-budget.js";
 
 export type { JournalMigrationContext } from "./journal-format.js";
 export type ControllerStorageRequest = { journalFile: string; stateDirectory: string; deadline?: number } & (
-  | { mode: "upgrade-only" }
   | { mode: "stopped-maintenance"; ticket: ControllerLaunchTicket }
   | { mode: "writer"; ticket: ControllerLaunchTicket }
 );
@@ -58,7 +57,7 @@ type StorageMetrics = Record<string, number | string | boolean>;
 export type ControllerStorageObservation = {
   db?: Database.Database;
   identity?: StorageMetrics;
-  role: ControllerStorageRequest["mode"];
+  role: ControllerStorageRequest["mode"] | "upgrade-only";
   roleResult: "pending" | "admitted" | "rejected" | "waiting";
 };
 const warn = (message: string, cause: unknown): void => { process.emitWarning(`${message} ${JSON.stringify(serializeSqliteError(cause))}`); };
@@ -123,7 +122,7 @@ export const reportControllerStorageEvent = (event: SqliteMigrationEvent, observ
   catch (cause) { warn("Controller storage reporting failed.", cause); }
 };
 const journalReporter = (observation: ControllerStorageObservation, reporter?: SqliteMigrationReporter, freshTicket?: ControllerLaunchTicket): SqliteMigrationReporter => event => {
-  if (event.kind === "completed" && observation.db?.open) observeControllerStorage(observation, observation.db, freshTicket);
+  if (observation.role !== "upgrade-only" && event.kind === "completed" && observation.db?.open) observeControllerStorage(observation, observation.db, freshTicket);
   return reportControllerStorageEvent({ ...event, phase: "journal-migration", storage: { ...event.storage, sqlitePhase: event.phase } }, observation, reporter);
 };
 
@@ -132,22 +131,14 @@ export const controllerJournalStateDirectory = (file: string): string => {
   return path.basename(executions) === "executions" && path.basename(controller) === "controller" ? path.dirname(controller) : execution;
 };
 
-export const createControllerJournalMigrationContext = (db: Database.Database, permit: ControllerStoragePermit, stateDirectory: string, executionId?: string, deadline?: number): JournalMigrationContext => createTimelineMaintenanceReservation(db, {
-  journalFile: permit.journalFile, stateDirectory, storagePermit: permit,
-  ...(executionId === undefined ? {} : { executionId }), ...(deadline === undefined ? {} : { deadline }),
-});
-
-export const controllerJournalWriteOptions = (file: string, permit: ControllerStoragePermit, stateDirectory: string, executionId?: string, deadline?: number, onMigration?: SqliteMigrationReporter) => {
+export const controllerJournalWriteOptions = (file: string, permit: ControllerStoragePermit, _stateDirectory: string, _executionId?: string, _deadline?: number, onMigration?: SqliteMigrationReporter) => {
   assertControllerStoragePermit(permit, file);
   const observation: ControllerStorageObservation = { role: "upgrade-only", roleResult: "pending" };
-  const contexts = new WeakMap<Database.Database, JournalMigrationContext>();
   return { file, onMigration: journalReporter(observation, onMigration), format: controllerJournalFormatForMigration(db => {
-    if (observation.db !== db) observeControllerStorage(observation, db);
-    let context = contexts.get(db);
-    if (context === undefined) { context = createControllerJournalMigrationContext(db, permit, stateDirectory, executionId, deadline); contexts.set(db, context); }
-    return context;
+    observation.db = db;
+    return { storagePermit: permit };
   }), assertMigrationAllowed: (db: Database.Database, source: Parameters<typeof assertJournalMigrationAllowed>[1]): void => {
-    observeControllerStorage(observation, db);
+    observation.db = db;
     try { assertJournalMigrationAllowed(db, source); observation.roleResult = "admitted"; }
     catch (cause) { observation.roleResult = "rejected"; throw cause; }
   } };
@@ -157,20 +148,17 @@ export const controllerJournalWriteOptions = (file: string, permit: ControllerSt
 export const controllerJournalReadOptions = (file: SqliteDatabaseSource, existingPermit?: ControllerStoragePermit, onMigration?: SqliteMigrationReporter) => {
   let heldPermit = existingPermit;
   const observation: ControllerStorageObservation = { role: "upgrade-only", roleResult: "pending" };
-  const contexts = new WeakMap<Database.Database, JournalMigrationContext>();
   if (existingPermit !== undefined && typeof file === "string") assertControllerStoragePermit(existingPermit, file);
   return {
     file,
     onMigration: journalReporter(observation, onMigration),
     format: controllerJournalFormatForMigration(db => {
-      if (observation.db !== db) observeControllerStorage(observation, db);
-      if (heldPermit === undefined) throw new Error("Controller journal migration requires its original storage permit and reserved-write context.");
-      let context = contexts.get(db);
-      if (context === undefined) { context = createControllerJournalMigrationContext(db, heldPermit, controllerJournalStateDirectory(heldPermit.journalFile)); contexts.set(db, context); }
-      return context;
+      observation.db = db;
+      if (heldPermit === undefined) throw new Error("Controller journal migration requires its original storage permit.");
+      return { storagePermit: heldPermit };
     }),
     assertMigrationAllowed: (db: Database.Database, source: Parameters<typeof assertJournalMigrationAllowed>[1]): void => {
-      observeControllerStorage(observation, db);
+      observation.db = db;
       try { assertJournalMigrationAllowed(db, source); observation.roleResult = "admitted"; }
       catch (cause) { observation.roleResult = "rejected"; throw cause; }
     },
@@ -201,7 +189,6 @@ const assertBinding = (snapshot: ControllerSnapshot, ticket: ControllerLaunchTic
 };
 export const assertControllerStorageRole = (request: ControllerStorageRequest, row: ControllerStorageExecutionRow | undefined): ControllerSnapshot | null => {
   const snapshot = originalSnapshot(row);
-  if (request.mode === "upgrade-only") { if (row !== undefined) assertOwnerStopped(row); return snapshot; }
   const ticket = parseLaunchTicket(request.ticket);
   if (row === undefined) {
     if (request.mode !== "writer" || ticket.executionGeneration !== "1") throw new Error("Controller storage requires the original first-generation ticket or stopped predecessor.");
@@ -227,6 +214,35 @@ export const controllerTimelineCleanupPending = (db: Database.Database): boolean
   return row?.pending === 1;
 };
 
+/** Upgrade under the original permit without admitting a writer or running maintenance. */
+export const upgradeControllerJournal = (file: string, permit: ControllerStoragePermit, options: { deadline?: number; onMigration?: SqliteMigrationReporter } = {}): { version: number; legacyTimelineCleanupPending: boolean } => {
+  assertControllerStoragePermit(permit, file);
+  const observation: ControllerStorageObservation = { role: "upgrade-only", roleResult: "pending" };
+  const format = controllerJournalFormatForMigration(db => { observation.db = db; return { storagePermit: permit }; });
+  let db: Database.Database | undefined, failure: unknown, outcome: SqliteOutcome = "not-started";
+  let result: { version: number; legacyTimelineCleanupPending: boolean } | undefined;
+  try {
+    db = openSqliteDatabase({ file, format, allowCreate: false, timeoutMs: storageTimeout(options.deadline), onMigration: journalReporter(observation, options.onMigration),
+      assertMigrationAllowed: (connection, source) => {
+        observation.db = connection;
+        try { assertJournalMigrationAllowed(connection, source); observation.roleResult = "admitted"; }
+        catch (cause) { observation.roleResult = "rejected"; throw cause; }
+      },
+    });
+    outcome = "committed";
+    storageTimeout(options.deadline);
+    result = { version: Number(db.pragma("user_version", { simple: true })), legacyTimelineCleanupPending: controllerTimelineCleanupPending(db) };
+    storageTimeout(options.deadline);
+  } catch (cause) { failure = cause; if (outcome !== "committed" || cause instanceof SqliteAccessError && cause.outcome === "unknown") outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); }
+  if (db !== undefined && db.open) try { closeSqliteDatabase(db, { file, format }, outcome); }
+  catch (close) { throw new SqliteAccessError("cleanup-failed", { database: format.name, file, phase: "journal-upgrade-close" }, { cause: failure === undefined ? close : new AggregateError([failure, close], "Controller journal upgrade and close failed."), outcome, connectionClosed: !db.open }); }
+  if (failure !== undefined) {
+    if (failure instanceof SqliteAccessError) throw failure;
+    throw new SqliteAccessError("migration-failed", { database: format.name, file, phase: "journal-upgrade" }, { cause: failure, outcome, connectionClosed: db === undefined || !db.open });
+  }
+  return result!;
+};
+
 /** Own migration, stopped maintenance and normal admission before an ordinary writer can commit its generation. */
 export const prepareControllerStorage = (request: ControllerStorageRequest, storagePermit: ControllerStoragePermit, onMigration?: SqliteMigrationReporter): ControllerStoragePreparation => {
   assertControllerStoragePermit(storagePermit, request.journalFile);
@@ -235,17 +251,16 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
   let outcome: SqliteOutcome = "not-started", failure: unknown, result: ControllerStoragePreparation | undefined;
   const observation: ControllerStorageObservation = { role: request.mode, roleResult: "pending" };
   const context = (connection: Database.Database): JournalMigrationContext => {
-    if (observation.db !== connection) observeControllerStorage(observation, connection, request.mode === "writer" ? request.ticket : undefined);
-    if (reservation === undefined) reservation = createTimelineMaintenanceReservation(connection, { ...request, storagePermit, ...(request.mode === "upgrade-only" ? {} : { executionId: request.ticket.executionId }) });
-    return reservation;
+    observation.db = connection;
+    return { storagePermit };
   };
   const format = controllerJournalFormatForMigration(context);
 
   try {
     db = openSqliteDatabase({ file: request.journalFile, format, allowCreate: request.mode === "writer", timeoutMs: storageTimeout(request.deadline), onMigration: journalReporter(observation, onMigration, request.mode === "writer" ? request.ticket : undefined),
       assertMigrationAllowed: (connection, source) => {
-        observeControllerStorage(observation, connection, request.mode === "writer" ? request.ticket : undefined);
-        try { assertJournalMigrationAllowed(connection, source); if (source.version !== 0) assertControllerStorageRole(request, controllerStorageExecutionRow(connection)); observation.roleResult = "admitted"; }
+        observation.db = connection;
+        try { assertJournalMigrationAllowed(connection, source); observation.roleResult = "admitted"; }
         catch (cause) { observation.roleResult = "rejected"; throw cause; }
       },
       onReady: connection => {
@@ -264,14 +279,10 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
     });
     outcome = "committed";
     storageTimeout(request.deadline);
-    reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit, ...(request.mode === "upgrade-only" ? {} : { executionId: request.ticket.executionId }) });
+    reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit, executionId: request.ticket.executionId });
     readSqliteDatabase({ file: request.journalFile, format: controllerJournalFormat, onMissing: () => { throw new Error("Controller journal disappeared before committed content readback."); } }, connection => openTimelineStore(connection, { assertWrite: () => { throw new Error("Controller preparation readback is read-only."); } }).totals());
     storageTimeout(request.deadline);
-    if (request.mode === "upgrade-only") {
-      const cleanupPending = controllerTimelineCleanupPending(db);
-      if (cleanupPending) reservation.refresh(); else reservation.settleNormalAdmission();
-      result = { kind: "prepared", snapshot, legacyTimelineCleanupPending: cleanupPending };
-    } else result = maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });
+    result = maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });
     storageTimeout(request.deadline);
   } catch (cause) { failure = cause; if (outcome !== "committed" || cause instanceof SqliteAccessError && cause.outcome === "unknown") outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); }
   if (db !== undefined && db.open) try { closeSqliteDatabase(db, { file: request.journalFile, format }, outcome); }
