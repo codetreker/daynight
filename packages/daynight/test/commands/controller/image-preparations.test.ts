@@ -360,3 +360,19 @@ test("ENOSPC retains the confirmed offset and restart removes only the uncommitt
     expect(await recovered.complete({ uploadId: f.spec.uploadId, byteLength: f.spec.byteLength, sha256: f.spec.sha256 })).toMatchObject({ state: "validated" });
   } finally { await recovered.close(); reopened.close(); }
 });
+
+test("sealed capture reads over-limit stored geometry without relaxing new image validation", async () => {
+  const f = await fixture(), media = f.store.media(), request = registerSource(f);
+  const { writeFile } = await import("node:fs/promises");
+  const inputPath = path.join(f.home, "original.png"); await writeFile(inputPath, f.bytes, { mode: 0o400 });
+  try {
+    const validated = await media.stageCapture({ captureId: request.captureId, attemptId: request.attemptId, imageId: request.occurrence.imageId, inputPath, byteLength: f.spec.byteLength, sha256: f.spec.sha256 });
+    const stored = { ...validated, width: 16385 };
+    const db = new Database(f.file);
+    try { db.prepare("UPDATE image_captures SET validated=? WHERE capture_id=?").run(JSON.stringify(stored), `${request.captureId}:${request.attemptId}`); } finally { db.close(); }
+    expect(() => media.assertCaptureSealed(request.captureId, request.attemptId, stored)).not.toThrow();
+    const { parseValidatedImage } = await import("../../../src/session/image-values.js");
+    expect(() => parseValidatedImage(stored)).toThrow();
+    expect(() => media.assertCaptureSealed(request.captureId, request.attemptId, { ...stored, sha256: "b".repeat(64) })).toThrow();
+  } finally { await media.close(); f.store.close(); }
+});

@@ -7,13 +7,14 @@ import { afterEach, expect, test, vi } from "vitest";
 import { captureCommittedPendingTimeline, migratePendingContent, migratePendingEntryPointers, preflightPendingTimeline } from "../../../src/commands/controller/pending-content.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
 import { controllerPayloadHash } from "../../../src/commands/controller/launch-ticket.js";
+import { acquireControllerStoragePermit, type ControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import type { TimelineEntry } from "../../../src/session/protocol.js";
 
 vi.mock("node:fs", async importOriginal => ({ ...await importOriginal<typeof import("node:fs")>() }));
 
-const roots: string[] = [], connections: Database.Database[] = [];
-afterEach(() => { vi.restoreAllMocks(); for (const db of connections.splice(0)) if (db.open) db.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const roots: string[] = [], connections: Database.Database[] = [], permits: ControllerStoragePermit[] = [];
+afterEach(() => { vi.restoreAllMocks(); for (const db of connections.splice(0)) if (db.open) db.close(); for (const permit of permits.splice(0)) permit.release(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
 const sql = (version: number): string => steps.find(step => step.version === version)!.sql;
@@ -38,18 +39,18 @@ const fixture = (version = 5) => {
     if (version < 8) db.prepare("INSERT INTO content_index VALUES(?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq);
     else db.prepare("INSERT INTO content_index VALUES(?,?,?,?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq, filename, digest(body), Buffer.byteLength(body));
   }
-  return { root, file, db, sessionId, pending, entry, body, bytes, resource };
+  const permit = acquireControllerStoragePermit(file, undefined, { fileMustExist: true }); permits.push(permit);
+  return { root, file, db, sessionId, pending, entry, body, bytes, resource, permit };
 };
-const exportToV8 = (f: ReturnType<typeof fixture>, assertWrite: (bytes: number) => void): void => {
-  migratePendingContent(f.db, f.sessionId, sql(6), assertWrite);
+const exportToV8 = (f: ReturnType<typeof fixture>): void => {
+  migratePendingContent(f.db, f.sessionId, sql(6), f.permit);
   f.db.exec(sql(7));
-  migratePendingEntryPointers(f.db, f.sessionId, sql(8), assertWrite);
+  migratePendingEntryPointers(f.db, f.sessionId, sql(8), f.permit);
 };
 
 test("legacy SQL export preserves precise entry pointers, original resources and durable backups without a runtime content facade", () => {
-  const f = fixture(), assertWrite = vi.fn<(bytes: number) => void>();
-  f.db.transaction(() => exportToV8(f, assertWrite)).immediate();
-  expect(assertWrite).toHaveBeenCalled();
+  const f = fixture();
+  f.db.transaction(() => exportToV8(f)).immediate();
   const imported: TimelineEntry[] = [];
   f.db.transaction(() => {
     expect(preflightPendingTimeline(f.db, f.sessionId)).toEqual({ entryCount: 1, byteLength: Buffer.byteLength(f.body), timelineBytes: Buffer.byteLength(f.body) + Buffer.byteLength('{"entries":[]}') });
@@ -65,24 +66,22 @@ test("legacy SQL export preserves precise entry pointers, original resources and
 
 test("rollback retains the original SQL and file exports, and a retry verifies the same source", () => {
   const f = fixture();
-  expect(() => f.db.transaction(() => { exportToV8(f, () => {}); throw new Error("interrupted migration"); }).immediate()).toThrow("interrupted migration");
+  expect(() => f.db.transaction(() => { exportToV8(f); throw new Error("interrupted migration"); }).immediate()).toThrow("interrupted migration");
   expect(f.db.prepare("SELECT value FROM projection").get()).toEqual({ value: f.body });
   expect(f.db.prepare("SELECT content FROM resources").get()).toEqual({ content: f.bytes });
   expect(f.db.prepare("SELECT name FROM sqlite_schema WHERE name='content_index'").get()).toBeUndefined();
   expect(readFileSync(path.join(f.pending, "timeline", `${digest(f.entry.entryId)}.json`), "utf8")).toBe(f.body);
-  f.db.transaction(() => exportToV8(f, () => {})).immediate();
+  f.db.transaction(() => exportToV8(f)).immediate();
   f.db.transaction(() => { expect(preflightPendingTimeline(f.db, f.sessionId).entryCount).toBe(1); }).deferred();
 });
 
-test("resource export obtains the same local peak permission before creating its backup or blob", () => {
-  const f = fixture(), expected = Buffer.byteLength(JSON.stringify({ descriptor: JSON.stringify(f.resource), content: f.bytes.toString("base64") })) + 16384;
-  const refusal = new Error("resource peak refused");
-  const assertWrite = vi.fn<(bytes: number) => void>(bytes => { if (bytes === expected) throw refusal; });
-  expect(() => f.db.transaction(() => migratePendingContent(f.db, f.sessionId, sql(6), assertWrite)).immediate()).toThrow(refusal);
-  expect(assertWrite).toHaveBeenCalledWith(expected);
+test("an actual file publication error preserves the original SQL source", () => {
+  const f = fixture(), failure = Object.assign(new Error("device write failed"), { code: "ENOSPC" });
+  vi.spyOn(fs, "fsyncSync").mockImplementationOnce(() => { throw failure; });
+  expect(() => f.db.transaction(() => migratePendingContent(f.db, f.sessionId, sql(6), f.permit)).immediate()).toThrow(failure);
+  expect(f.db.prepare("SELECT value FROM projection").get()).toEqual({ value: f.body });
   expect(f.db.prepare("SELECT content FROM resources").get()).toEqual({ content: f.bytes });
-  expect(existsSync(path.join(f.pending, "legacy-sql", `${f.resource.resourceId}.resource.json`))).toBe(false);
-  expect(readdirSync(path.join(f.pending, "blobs"))).toEqual([]);
+  expect(f.db.prepare("SELECT name FROM sqlite_schema WHERE name='content_index'").get()).toBeUndefined();
 });
 
 test("captured committed pointer metadata supports complete DDL index removal and rechecks the original file", () => {
@@ -110,7 +109,7 @@ test.skipIf(process.platform === "win32")("legacy mutable sources retain before/
   });
   vi.spyOn(fs, "closeSync").mockImplementation(fd => { close(fd); if (fd === originalFd) throw new Error("close result lost"); });
   let failure: unknown;
-  try { f.db.transaction(() => migratePendingEntryPointers(f.db, f.sessionId, sql(8), () => {})).immediate(); } catch (cause) { failure = cause; }
+  try { f.db.transaction(() => migratePendingEntryPointers(f.db, f.sessionId, sql(8), f.permit)).immediate(); } catch (cause) { failure = cause; }
   expect(failure).toBeInstanceOf(AggregateError);
   expect((failure as AggregateError).errors.map(error => error.message)).toEqual(["Pending archive entry changed while being read.", "close result lost"]);
   expect(existsSync(path.join(f.pending, "entries"))).toBe(false);

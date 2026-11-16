@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { canonicalImageJson, imageId, parseImageCaptureRequest, parseImageCaptureReceipt, parseDirectCaptureSubmission, type DirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt } from "../../../session/image-values.js";
+import { canonicalImageJson, imageId, parseStoredImageCaptureRequest, parseImageCaptureRequest, parseImageCaptureReceipt, parseDirectCaptureSubmission, type DirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt } from "../../../session/image-values.js";
 import { parseSessionResource } from "../../../session/protocol.js";
 import type { ControllerSnapshot } from "../lifecycle-store.js";
 import type { controllerMetadataBudget } from "./metadata-budget.js";
@@ -14,7 +14,7 @@ export const createImageCaptureSource = (db: Database.Database, transactions: Tr
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key(captureId)) as { value: string } | undefined;
     if (!row) throw new Error("Image capture has no registered original request.");
     const capture = JSON.parse(row.value) as Capture;
-    parseImageCaptureRequest(capture.request); imageId(capture.attemptId);
+    parseStoredImageCaptureRequest(capture.request); imageId(capture.attemptId);
     if (!capture.attempts.includes(capture.attemptId)) throw new Error("Image capture attempt identity is corrupt.");
     return capture;
   };

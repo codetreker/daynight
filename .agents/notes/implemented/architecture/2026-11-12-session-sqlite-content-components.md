@@ -30,11 +30,10 @@ existing schema-snapshot and validation owner. There is one format path and one
 body authority.
 
 Conversion preserves the original execution, operation, provenance and stopping
-evidence. Only committed pointers determine current content. Source export and
-SQL import share the original permit and a local peak reservation, allowing
-otherwise valid history whose obsolete candidates exceed normal metadata
-admission to be reclaimed. The existing per-execution, state-directory and free
-space limits continue to apply.
+evidence. Only committed pointers determine current content. Source export and SQL import share the original permit. The original decision
+used a local peak reservation to reclaim history beyond normal metadata admission;
+the [capacity-free conversion decision](2026-11-16-controller-capacity-free-upgrades.md)
+removes that admission from conversion while preserving maintenance limits.
 
 Stopped maintenance retains ownership through reader barriers, recognized source
 retirement, in-place VACUUM, a post-VACUUM TRUNCATE checkpoint, actual file and
