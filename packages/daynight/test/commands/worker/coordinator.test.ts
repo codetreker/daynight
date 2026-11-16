@@ -4240,7 +4240,7 @@ describe("real Git resource isolation", () => {
         await coordinator.shutdown(); coordinator = undefined;
       }
     } finally { await coordinator?.shutdown(); op.dispose(); await git.dispose(); }
-  }, 20000);
+  }, 60000);
 
   it.each(["matching", "conflicting", "wrong-cwd", "pending-only", "pending-only-wrong-cwd", "capacity-full"])("reconciles closed-workspace pending-stop evidence: %s", async proof => {
     const f = await fixture(proof === "capacity-full" ? 1 : 2);

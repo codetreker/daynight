@@ -27,6 +27,7 @@ const fixture = async () => {
     return (await trackGit(runRepositoryGit(cwd, ["-c", "user.name=Recovery fixture", "-c", "user.email=recovery@example.test", ...args], operation))).stdout.trim();
   };
   await git(root, ["init", "-b", "main"]);
+  await git(root, ["config", "core.autocrlf", "false"]);
   await writeFile(path.join(root, "tracked"), "original\n"); await writeFile(path.join(root, ".gitignore"), "ignored\n");
   await git(root, ["add", "."]); await git(root, ["commit", "-m", "fixture"]);
   await git(root, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
