@@ -15,6 +15,27 @@ function Harness() {
   const opener = useRef<HTMLButtonElement>(null), [open, setOpen] = useState(false);
   return <><button ref={opener} onClick={() => setOpen(true)}>Assistant</button>{open && <BotDetailsPanel id="details" bot={botDefinition()} worker={botWorkerDefaults()} stale={false} opener={opener} onClose={() => setOpen(false)} />}</>;
 }
+
+it.each([
+  { locale: 'en' as const, notice: 'Recreate this assistant to enable assistant task collaboration.' },
+  { locale: 'zh-CN' as const, notice: '重建后可获得助手任务协作能力' },
+])('shows collaboration guidance only for frozen legacy roles in $locale', ({ locale, notice }) => {
+  const props = { id: 'details', worker: botWorkerDefaults(), stale: false, opener: createRef<HTMLButtonElement>(), onClose: vi.fn() };
+  const bot = botDefinition();
+  const view = renderWithLocale(<BotDetailsPanel {...props} bot={bot} />, { locale });
+  expect(screen.queryByText(notice)).toBeNull();
+  for (const [revision, visible] of [
+    ['daynight-assistant/1', true], ['daynight-assistant/2', true],
+    ['daynight-assistant/3', false], ['daynight-assistant/4', false], ['custom-role/1', false], ['1', false],
+  ] as const) {
+    view.rerender(<BotDetailsPanel {...props} bot={{ ...bot, roleConfiguration: { instructions: 'Frozen role.', revision, digest: 'a'.repeat(64) } }} />);
+    if (visible) expect(screen.getByText(notice)).toBeVisible();
+    else expect(screen.queryByText(notice)).toBeNull();
+  }
+  view.rerender(<BotDetailsPanel {...props} bot={null} />);
+  expect(screen.queryByText(notice)).toBeNull();
+});
+
 it('keeps keyboard focus in the narrow drawer and closes only its own layer', () => {
   vi.stubGlobal('innerWidth',390);
   renderWithLocale(<Harness />,{locale:'en'});

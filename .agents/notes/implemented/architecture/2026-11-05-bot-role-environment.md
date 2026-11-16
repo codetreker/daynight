@@ -19,6 +19,13 @@ disagreement fails preparation and requires reconciliation of the original
 registration. The helper validates Unicode, byte size and digest and returns an
 immutable copy. It does not own registration or persistence.
 
+The current `daynight-assistant/3` template asks assistants to read assistant-task
+registration and records before answering related requests, coordinate with the
+holder, and record authorized interventions. Manual changes still require user
+decisions. Existing roles remain frozen: the website identifies known revisions
+1 and 2 and offers recreation guidance without mutating them. Null and unknown
+revisions do not establish that an assistant has an old role.
+
 CLI environment preparation binds DN_CONFIG_DIR to the target Worker's paths,
 uses ordinary CLI configuration and authentication, verifies server and current
 principal, and probes the effective CLI through bounded help commands. Existing
@@ -73,6 +80,10 @@ inside the owner without introducing another process lifecycle.
 ## Consequences
 
 The template can evolve for unprepared Bots without rewriting existing roles.
+Older assistants can follow the CLI manual and instructions carried by Daynight
+notifications, but may not check registration when directly asked by a user.
+Recreation makes that limitation actionable without silently changing an
+existing conversation's startup instructions.
 Checks fail before startup when configuration or authentication is observably
 wrong, while preserving real provider homes and account permissions. Each
 preparation incurs read-only identity and CLI probes. These observations cannot
