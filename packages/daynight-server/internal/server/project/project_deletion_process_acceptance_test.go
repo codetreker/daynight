@@ -29,6 +29,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/testdata/testsupport"
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	projectservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/project"
+	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/google/uuid"
 )
 
@@ -96,6 +97,7 @@ func TestProjectDeletionBuiltProcessRestart(t *testing.T) {
 			env = append(env, entry)
 		}
 	}
+	env = append(env, "DAYNIGHT_PREVIEW_ORIGIN="+testauth.PreviewOrigin(origin))
 	env = append(env, "DAYNIGHT_DATABASE_URL="+h.Database.Pool.Config().ConnString(), "DAYNIGHT_STORAGE_ROOT="+storageRoot, "DAYNIGHT_LISTEN_ADDR="+address, "DAYNIGHT_PUBLIC_ORIGIN="+origin, "DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1", "DAYNIGHT_ALLOW_LOOPBACK_HTTP=1", "DAYNIGHT_UNIAUTH_URL=http://127.0.0.1:1", "DAYNIGHT_UNIAUTH_APP_ID=test-app", "DAYNIGHT_UNIAUTH_APP_SECRET=test-secret", "DAYNIGHT_UNIAUTH_CALLBACK_URL="+origin+"/api/v1/auth/callback", "DAYNIGHT_MCP_RESERVED_FREE_BYTES=0", "DAYNIGHT_STARTUP_TIMEOUT=90s")
 	logFile, err := os.Create(filepath.Join(dir, "server.log"))
 	if err != nil {

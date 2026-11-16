@@ -525,6 +525,7 @@ func newIdentityIntegrationCallback(t *testing.T, callbackPath string) *identity
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 	config := configuredTestConfig()
 	config.Server.PublicOrigin, config.UniAuth.URL = origin, ready.Origin
+	config.Server.PreviewOrigin = testauth.PreviewOrigin(origin)
 	config.UniAuth.AppID, config.UniAuth.AppSecret, config.UniAuth.CallbackURL = ready.AppID, ready.AppSecret, callback
 	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	handler, err := newTestHandler(Dependencies{Store: database, Files: attachmentTestFiles(t)}, config, logger)
@@ -712,6 +713,7 @@ func resourceScopeServer(t *testing.T, tx store.Transactions, files filestorage.
 	origin := "http://" + server.Listener.Addr().String()
 	config := configuredTestConfig()
 	config.Server.PublicOrigin, config.UniAuth.CallbackURL = origin, origin+"/api/v1/auth/callback"
+	config.Server.PreviewOrigin = testauth.PreviewOrigin(origin)
 	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	handler, err := newTestHandler(Dependencies{Store: tx, Files: files}, config, logger)

@@ -1,3 +1,4 @@
+import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -92,7 +93,7 @@ const openDialog = async (fullscreen = false, filterTodo = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
   await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toBeVisible());
-  if (filterTodo) fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+  if (filterTodo) selectStatus('todo');
   fireEvent.click(document.getElementById(`task-chain-graph-${rootId}`)!);
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
@@ -232,9 +233,9 @@ describe('project dialog focus restoration', () => {
     fireEvent.click(graphClose);
     await waitFor(() => expect(document.getElementById(keepRemaining ? `task-root-${remainingId}` : 'project-chain-list')).toHaveFocus());
     expectModalReleased();
-    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
     if (!keepRemaining) {
-      fireEvent.change(await screen.findByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
+      selectStatus('all');
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }

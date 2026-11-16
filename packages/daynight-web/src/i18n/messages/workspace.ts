@@ -73,6 +73,8 @@ export type WorkspaceMessages = {
     readonly chains: string;
     readonly statusFilter: string;
     readonly allStatuses: string;
+    readonly noStatuses: string;
+    readonly selectedStatuses: (args: { readonly count: number }) => string;
     readonly statusOptions: Readonly<Record<"proposed" | "todo" | "in_progress" | "done" | "cancelled", string>>;
   };
   readonly search: {
@@ -140,6 +142,7 @@ export type WorkspaceMessages = {
     readonly section: PreferenceNotices;
     readonly tab: PreferenceNotices;
     readonly assignee: PreferenceNotices;
+    readonly status: PreferenceNotices;
     readonly scroll: PreferenceNotices;
   };
 };

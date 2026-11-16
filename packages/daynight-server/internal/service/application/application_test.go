@@ -70,6 +70,10 @@ func (m *strictIdentity) CallbackURL() string {
 	m.unexpected("CallbackURL")
 	return ""
 }
+func (m *strictIdentity) PreviewSSO() *identity.PreviewSSO {
+	m.unexpected("PreviewSSO")
+	return nil
+}
 func (m *strictIdentity) Authenticate(context.Context, model.CredentialKind, string) (model.Principal, error) {
 	return model.Principal{}, m.unexpected("Authenticate")
 }
@@ -249,9 +253,13 @@ func verifySharedEngine(t *testing.T, app *Application) {
 func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 	t.Run("production constructors", func(t *testing.T) {
 		database, files := borrowedDependencies(t)
-		app := New(database, files, nil, "https://daynight.test/callback", time.Second)
+		preview, err := identity.NewPreviewSSO(database, "https://daynight.test", "https://preview.daynight.test", "https://daynight.test/callback")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := New(database, files, nil, "https://daynight.test/callback", preview, time.Second)
 		actual, ok := app.Identity.(*identity.Identity)
-		if !ok || actual == nil || actual.CallbackURL() != "https://daynight.test/callback" {
+		if !ok || actual == nil || actual.CallbackURL() != "https://daynight.test/callback" || actual.PreviewSSO() != preview {
 			t.Fatalf("production Identity = %#v", app.Identity)
 		}
 		observations, ok := app.TaskObservations.(*task.Observations)
@@ -271,7 +279,11 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 			t.Fatal(err)
 		}
 		const callbackURL = "https://daynight.test/callback"
-		marker := identity.New(database, client, callbackURL)
+		preview, err := identity.NewPreviewSSO(database, "https://daynight.test", "https://preview.daynight.test", callbackURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marker := identity.NewWithPreviewSSO(database, client, callbackURL, preview)
 		observationMarker := task.NewObservations(database, nil)
 		capturer := &assemblyCapturer{t: t}
 		var projects *project.Projects
@@ -281,11 +293,11 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		var projectEngine *sessioncore.Engine
 		var observer task.SessionObserver
 		projectCalls, taskCalls, stepCalls, attachmentCalls, identityCalls, observationCalls := 0, 0, 0, 0, 0, 0
-		app := assemble(database, files, client, callbackURL, time.Second, constructors{
-			identity: func(writer store.IdentityWriter, actualClient *uniauth.Client, actualCallback string) *identity.Identity {
+		app := assemble(database, files, client, callbackURL, preview, time.Second, constructors{
+			identity: func(writer store.IdentityWriter, actualClient *uniauth.Client, actualCallback string, actualPreview *identity.PreviewSSO) *identity.Identity {
 				identityCalls++
-				if writer != database || actualClient != client || actualCallback != callbackURL {
-					t.Error("Identity received another writer, client or callback")
+				if writer != database || actualClient != client || actualCallback != callbackURL || actualPreview != preview {
+					t.Error("Identity received another writer, client, callback or preview module")
 				}
 				return marker
 			},
@@ -354,8 +366,8 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 			var stepCapture task.Capturer
 			var steps *task.TaskSteps
 			taskCalls, stepCalls := 0, 0
-			app := assemble(database, files, nil, "", time.Second, constructors{
-				identity:         identity.New,
+			app := assemble(database, files, nil, "", nil, time.Second, constructors{
+				identity:         identity.NewWithPreviewSSO,
 				taskObservations: task.NewObservations,
 				projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.Projects {
 					return project.NewProjects(actual, engine)

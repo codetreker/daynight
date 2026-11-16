@@ -15,6 +15,8 @@ headers use compact padding and may grow when content wraps. The [Goal
 specification](../../../../docs/spec/daynight-goals.md) owns the visible behavior.
 The [chain density decision](2026-11-14-chain-completion-density.md) preserves
 the corresponding chain summary's compact metadata box.
+The [Goal prefix spacing decision](2026-11-16-goal-list-prefix-spacing.md)
+owns the subsequent horizontal alignment without changing this vertical rule.
 
 ## Alternatives
 

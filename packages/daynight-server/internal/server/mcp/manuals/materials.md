@@ -16,10 +16,20 @@ The target project's workflow determines required files, discussion Tasks, confi
 
 ## Give information an effective owner
 
+Keep Task and Goal descriptions brief: summarize the work, expected outcome and necessary scope, with references to detailed material. Put full requirements, solutions, detailed designs, implementation instructions, research reports and acceptance evidence in the owning attachments. Do not copy their full content into the description.
+
+A simple task fully explained in a few sentences needs no attachment. This writing guidance sets no fixed word or character limit. Keep necessary definitions and acceptance complete across the brief description and its actual readable material.
+
+For example:
+
+```markdown
+Make login failure messages actionable for credential errors and network failures. See [Task details](task.md) for requirements and acceptance.
+```
+
 | Information | Owner |
 | --- | --- |
 | Problem, required outcome, scope, constraints, inputs, deliverables and acceptance | Description plus its actual readable referenced material |
-| Substantial specification/design/report, image or prototype | Task attachment when a separate file is appropriate or required |
+| Full requirements, solutions, detailed designs, implementation instructions, research reports and acceptance evidence; images and prototypes | Owning Task or Goal attachment |
 | Durable participant questions, proposals and replies | Immutable Task Thread |
 | Ordered durable work objective, completion conditions, result and material references | Step, according to project rules |
 | Command schedules, tools, debugging chronology, temporary todos, worktrees, runtime logs, claim and waiting context | Session or actual runtime platform |
@@ -71,4 +81,4 @@ Read real sources before claiming sufficiency. A promised upload, terminal prere
 
 Citations and execution dependencies serve different purposes: a reference identifies information, while an edge controls scheduling and chain membership. Neither implies the other; [Dependencies](daynight://manuals/dependencies.md) owns relationships. A cancelled prerequisite may satisfy scheduling while delivering no input.
 
-Write only real producer/consumer contracts: necessary fields/types, requiredness, format/revision, errors, units and null semantics. When no exchange exists, do not invent one. Formal results identify what exists, where to read it, actual observations and limitations. Status alone proves neither outputs nor acceptance. Results can be inline, attached or precisely referenced under the applicable project's requirements; execution chronology remains in Session.
+Write only real producer/consumer contracts: necessary fields/types, requiredness, format/revision, errors, units and null semantics. When no exchange exists, do not invent one. Formal results identify what exists, where to read it, actual observations and limitations. Status alone proves neither outputs nor acceptance. Keep detailed results and acceptance evidence in owning attachments; a brief description can summarize and reference them. Follow the applicable project's requirements; execution chronology remains in Session.

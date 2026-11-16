@@ -102,17 +102,22 @@ func TestWebhookRuntimeRetentionStartFailureDrainsStartedRunner(t *testing.T) {
 
 func TestOpenAppCleansUpAfterOAuthCompositionFailure(t *testing.T) {
 	c := appTestConfig(t)
-	// The public-origin validator accepts a Unicode host, but the OAuth profile
-	// requires the canonical URL string and rejects the escaped form.
-	c.Server.PublicOrigin = "https://例子.测试"
-	c.UniAuth.CallbackURL = c.Server.PublicOrigin + "/api/v1/auth/callback"
+	c.OAuth.PreregisteredClients = make(map[string][]byte)
 	if err := c.Validate(); err != nil {
 		t.Fatalf("fixture did not reach composition: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	backend := newAppBackend(t)
-	app, err := openApp(ctx, c, nil, appTestOpeners(t, c, backend))
+	openers := appTestOpeners(t, c, backend)
+	openDatabase := openers.database
+	openers.database = func(ctx context.Context, address string) (persistenceBackend, error) {
+		// Introduce the constructor failure after validation so the real startup
+		// cleanup must release resources already opened by this attempt.
+		c.OAuth.PreregisteredClients["invalid"] = []byte(`{}`)
+		return openDatabase(ctx, address)
+	}
+	app, err := openApp(ctx, c, nil, openers)
 	if app != nil {
 		_ = app.Close(ctx)
 		t.Fatal("OAuth composition unexpectedly succeeded")
@@ -121,8 +126,7 @@ func TestOpenAppCleansUpAfterOAuthCompositionFailure(t *testing.T) {
 		t.Fatalf("OAuth composition failure: app=%v err=%v", app, err)
 	}
 	// Failed composition must leave the storage root reusable by a new backend.
-	c.Server.PublicOrigin = "https://daynight.example"
-	c.UniAuth.CallbackURL = c.Server.PublicOrigin + "/api/v1/auth/callback"
+	delete(c.OAuth.PreregisteredClients, "invalid")
 	app, corrected, err := openTestApp(t, ctx, c, nil)
 	if err != nil {
 		t.Fatalf("retry after cleanup: %v", err)

@@ -60,7 +60,7 @@ Web 目录固定请求 `GET /api/v1/test-sessions?online=true`。服务在排序
 
 `controller <provider> resume [test-session-id]` 从私有 launch ticket 与 journal 建立来源绑定，核对 provider、native ID、native home、真实 cwd、server origin、owner 与停止证据。候选选择后再次核验服务端归档身份，并取得以 provider、规范 native home 和 native ID 为键的本机跨执行锁；加锁后重新检查同原生会话的全部已登记执行，防止选择期间状态变化。
 
-本机 native resume lease 库独立使用版本 1。申请在同一同步事务中检查格式、必要时重置或升级、查重并写入 lease；已有 `leases` 表的任何保留行都阻止重置或迁移，版本 0 没有该表时可重置。版本 0 重置丢弃原 schema 和数据，并执行基线与编号升级。释放先在事务内确认当前格式，再按原 native_key 与 nonce 删除，不进入自动升级或过期回收。格式和关闭失败保留错误与原归属。共同机制见 [SQLite 升级设计](cli-sqlite-migrations.md)。
+本机 native resume lease 库独立使用版本 1。申请先提交格式检查、必要的重置或升级，再在独立同步事务中重新检查当前格式、查重并写入 lease；已有 `leases` 表的任何保留行都阻止重置或迁移，版本 0 没有该表时可重置。版本 0 重置丢弃原 schema 和数据，并执行基线与编号升级。释放先在事务内确认当前格式，再按原 native_key 与 nonce 删除，不进入自动升级或过期回收。业务 COMMIT 正常返回后才确认取得租约；结果未知保留可能持久化的 nonce，成功后 inventory 失败按 exact nonce 释放。格式和关闭失败保留错误与原归属。共同机制见 [SQLite 升级设计](cli-sqlite-migrations.md)。
 
 恢复注册新的 Test Session 和 execution，使用新的凭据、journal 和操作身份，ticket 的 resumeNativeSessionId 指向原生历史且 initialInput 固定为 none。新 URL 从原生历史投影 timeline，旧 Session 的归档和回执保持不变。已有 Provider 原生恢复负责准确身份与历史加载，不重发旧操作。锁贯穿 launcher 的执行和清理；未启动或完整停止证明允许释放，未知结果保留租约。该流程不放宽服务端 archived grant 拒绝，也不承担外部原生 TUI 的抢占。
 

@@ -362,11 +362,28 @@ GET/HEAD `/api/v1/me` 继续使用原 read-committed 读取、完整 DTO 和 ETa
 
 ### 预览 SSO 身份模块
 
-Identity 模块提供独立的预览 SSO 操作，供 HTTP 接入使用；当前主站登录和附件路由仍使用原有流程。短期登录记录保存已校验的原始返回目标和 state、code 摘要。初始化 state、签发一次性 code、兑换、完成和过期清理均由模块处理。返回目标校验独立于 UniAuth 的 returnPath 校验，允许受约束的主站完成页和 Task 预览附件地址，同时保留原始编码与 query；原登录目标仍受原有 4096-byte 限制。
+Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览 SSO 操作，生产 HTTP 入口已接入显式浏览器导航；主站普通登录 callback 和原附件入口仍使用原有流程。短期登录记录保存已校验的原始返回目标和 state、code 摘要。初始化 state、签发一次性 code、兑换、完成和过期清理均由模块处理。返回目标校验独立于 UniAuth 的 returnPath 校验，允许受约束的主站完成页和 Task 预览附件地址，同时保留原始编码与 query；原登录目标仍受原有 4096-byte 限制。
 
 兑换在同一事务中消费 code、锁定并检查来源 session，并替换该 session 的 preview 凭据摘要；只有确认提交后才向调用者返回明文凭据。完成操作要求凭据属于记录中的原 session，取回目标并删除记录。预览认证通过独立摘要查找同一 session，沿用其用户、到期和注销语义。事务失败或提交结果未知不交付凭据，也不自动重放。再次 SSO 会替换该 session 的预览凭据，并发或账号切换可能使浏览器持有失效凭据。
 
 `service/identity.NewPreviewSSO` 接收事务 writer、主站 origin、预览 base origin 和主站 callback URL。`Create` 接收绝对返回 URL 并返回记录；`Start` 接收记录 ID 并返回 state 和期限；`Authorize` 接收 ID、state 和主站 session principal 并返回 code 和期限；`Redeem` 接收 code、state 和浏览器绑定值，返回记录 ID、预览凭据和原 session 期限；`Complete` 接收 ID 和预览凭据并返回原目标；`Authenticate` 接收预览凭据并返回 session principal 和期限。无效、过期、已消费或撤销的凭据按 `unauthenticated` 拒绝，目标校验失败为 `invalid_input`；存储、取消和事务完成错误保留原因。调用者只能在成功结果中使用秘密，不得重放未知结果的兑换。
+
+### 显式浏览器预览 SSO
+
+`server.preview_origin` / `DAYNIGHT_PREVIEW_ORIGIN` 是必填的精确预览 origin，生产使用与主站同站的独立 HTTPS hostname。配置按默认值、两层 YAML、显式环境变量加载，错误保留字段及来源。启动只校验配置，不探测外部 DNS/TLS。显式 HTTP 测试模式允许同站测试域名；既有 socket 夹具可使用同一数字 loopback IP 的不同端口，真实跨子域 Cookie 证明使用独立域名。
+
+| Host | GET 路径 | 行为 |
+| --- | --- | --- |
+| bare preview | `/auth/sso/start?login=...` | 初始化 state 并设置同值 host-only 绑定 Cookie，303 到固定主站 authorize；没有 login 时创建返回主站 `/projects` 的记录。 |
+| main | `/api/v1/auth/preview/authorize?login=...&state=...` | 只认证现有主站 session Cookie，签发 code 并 303 到固定 preview callback。 |
+| bare preview | `/auth/sso/callback?code=...&state=...` | 常量时间核对浏览器 state Cookie，调用原子兑换，设置预览 Cookie，再 303 到 complete。 |
+| bare preview | `/auth/sso/complete?login=...` | 以浏览器实际带回的预览 Cookie 完成记录并 303 返回原始目标；失败停在可重试页。 |
+
+生产预览 Cookie 为 `__Secure-daynight_preview_session; Domain=<preview hostname>; Path=/; Secure; HttpOnly; SameSite=Lax`，到期时间取自来源 session。state Cookie 的名称由 state 摘要派生，值等于 state，仅属于 bare preview host，成功兑换后清理。主站 `__Host-daynight_session` 和原登录绑定 Cookie 保持原作用域。HTTP 测试模式使用非 Secure 测试名称。
+
+SSO 只有普通 GET 导航，没有 CORS 交换、Provider、同步接口或后台轮询。所有响应使用 no-store、no-referrer；错误页按 Accept-Language 提供中英文、请求 ID、手动重新 SSO 和主站入口。主站未登录时，可在新标签页登录并返回重试原授权页；Cookie 未写入时不会自动在两个域循环，主站已建立的 session 继续有效。返回目标仅由 Identity 保存和校验，跳转链传递短 ID、state 和 code，保留原始 escaped path/query 及原 `/auth/complete` 两参数。直接 URL 的 fragment 由浏览器按导航继承。
+
+Host 分发在主站 CORS/mux 之前保留整个 preview 命名空间：bare host 仅服务三个 SSO 路径，Task 子域和畸形 preview Host 均拒绝；其他 Host 保留主站处理；部署健康探针使用数值 loopback URL 和显式 `Host: localhost`，在内部端口与公开 origin 端口不同或重合时仍进入主站健康处理。此处尚未提供 Task 附件服务。请求日志仅记录请求 ID、阶段和结果分类，不输出 code/state 查询、Cookie、秘密或完整返回地址；代理访问日志也必须排除这些信息。
 
 ### 主站 session 与 PAT
 

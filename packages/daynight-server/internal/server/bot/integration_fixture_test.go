@@ -36,6 +36,7 @@ import (
 type resourceTestHandler struct {
 	http.Handler
 	token     string
+	authority string
 	principal model.Principal
 }
 
@@ -50,7 +51,7 @@ func resourceTestServer(t *testing.T, database *postgres.Store, files filestorag
 	config := configpkg.Config{
 		Database: databaseconfig.Config{URL: "postgres://database"},
 		Storage:  storageconfig.Config{Root: "storage"},
-		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, AllowHTTPTestOrigin: true},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, PreviewOrigin: testauth.PreviewOrigin(origin), AllowHTTPTestOrigin: true},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
 	}
@@ -80,7 +81,7 @@ func resourceTestServer(t *testing.T, database *postgres.Store, files filestorag
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &resourceTestHandler{Handler: instance.Config.Handler, token: token, principal: principal}
+	return &resourceTestHandler{Handler: instance.Config.Handler, token: token, authority: instance.Listener.Addr().String(), principal: principal}
 }
 func projectRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))

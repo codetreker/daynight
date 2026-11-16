@@ -31,6 +31,7 @@ import (
 	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	taskservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -809,6 +810,7 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	session := h.Session
 	config := configuredTestConfig()
 	config.Server.PublicOrigin, config.Server.AllowHTTPTestOrigin = h.Origin, true
+	config.Server.PreviewOrigin = testauth.PreviewOrigin(h.Origin)
 	config.UniAuth.CallbackURL = h.Origin + "/api/v1/auth/callback"
 	config.OAuth.PreregisteredClients = map[string][]byte{"known": []byte(`{"client_id":"known","client_name":"Known","redirect_uris":["https://client.example/callback"]}`)}
 	handler, err := newTestHandler(Dependencies{Store: h.Store, Files: attachmentTestFiles(t)}, config, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -978,7 +980,7 @@ func TestOAuthPublicProfileProductionRoutes(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client := mcpPATClient(t, server.URL, token.AccessToken)
+	client := mcpPATClientWithOrigin(t, server.URL, token.AccessToken, config.Server.PublicOrigin)
 	if _, err := client.ListTools(ctx, nil); err != nil {
 		t.Fatalf("OAuth MCP: %v", err)
 	}
@@ -1138,6 +1140,7 @@ func TestOAuthAccessBusinessAdmission(t *testing.T) {
 	configureAccess(false)
 	config := configuredTestConfig()
 	config.Server.PublicOrigin = f.Origin
+	config.Server.PreviewOrigin = "https://preview.daynight.test"
 	config.UniAuth.CallbackURL = f.Origin + "/api/v1/auth/callback"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	production, err := newTestHandler(Dependencies{Store: f.Store, Files: attachmentTestFiles(t)}, config, logger)

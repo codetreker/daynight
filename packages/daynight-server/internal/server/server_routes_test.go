@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -40,6 +41,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	webhookservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/webhook"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/secret"
+	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
 	"github.com/google/uuid"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -1703,6 +1705,7 @@ func newMCPHTTPServer(t *testing.T, tx store.Transactions, files filestorage.Sto
 	origin := "http://" + server.Listener.Addr().String()
 	config := configuredTestConfig()
 	config.Server.PublicOrigin = origin
+	config.Server.PreviewOrigin = testauth.PreviewOrigin(origin)
 	config.UniAuth.CallbackURL = origin + "/api/v1/auth/callback"
 	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	output := io.Discard
@@ -1731,21 +1734,33 @@ func newMCPHTTPServer(t *testing.T, tx store.Transactions, files filestorage.Sto
 	return server, app
 }
 
-type mcpPATTransport struct{ token string }
+type mcpPATTransport struct{ token, authority string }
 
 func (t mcpPATTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	r := req.Clone(req.Context())
 	r.Header = req.Header.Clone()
 	r.Header.Set("Authorization", "Bearer "+t.token)
+	if t.authority != "" {
+		r.Host = t.authority
+	}
 	return http.DefaultTransport.RoundTrip(r)
 }
 
 func mcpPATClient(t *testing.T, address, token string) *sdk.ClientSession {
 	t.Helper()
+	return mcpPATClientWithOrigin(t, address, token, address)
+}
+
+func mcpPATClientWithOrigin(t *testing.T, address, token, origin string) *sdk.ClientSession {
+	t.Helper()
+	configured, err := url.Parse(origin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	client := sdk.NewClient(&sdk.Implementation{Name: "mcp-integration", Version: "1"}, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: address + "/mcp", HTTPClient: &http.Client{Transport: mcpPATTransport{token: token}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
+	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: address + "/mcp", HTTPClient: &http.Client{Transport: mcpPATTransport{token: token, authority: configured.Host}}, DisableStandaloneSSE: true, MaxRetries: -1}, &sdk.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
 	if err != nil {
 		t.Fatalf("connect MCP: %v", err)
 	}
@@ -1857,6 +1872,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	origin := production.URL
 	config := configuredTestConfig()
 	config.Server.PublicOrigin = origin
+	config.Server.PreviewOrigin = testauth.PreviewOrigin(origin)
 	config.UniAuth.CallbackURL = origin + "/api/v1/auth/callback"
 	config.Server.AllowHTTPTestOrigin, config.UniAuth.AllowLoopbackHTTP = true, true
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -1968,7 +1984,7 @@ func TestMCPProductionPATIsolationAndRevocation(t *testing.T) {
 	}
 	server := httptest.NewServer(httpx.RequestLogging(logger, instrumented))
 	t.Cleanup(server.Close)
-	sessions := []*sdk.ClientSession{mcpPATClient(t, server.URL, tokens[0]), mcpPATClient(t, server.URL, tokens[1])}
+	sessions := []*sdk.ClientSession{mcpPATClientWithOrigin(t, server.URL, tokens[0], config.Server.PublicOrigin), mcpPATClientWithOrigin(t, server.URL, tokens[1], config.Server.PublicOrigin)}
 	var wg sync.WaitGroup
 	failures := make(chan error, 2)
 	for i := range sessions {

@@ -40,6 +40,7 @@ func assertOrdinaryPage(t *testing.T, page map[string]any, field string) {
 
 func TestServerAPINormalFlows(t *testing.T) {
 	f := newFixture(t)
+	t.Run("explicit preview SSO", func(t *testing.T) { serverAPIPreviewSSONormalFlow(t, f) })
 	t.Run("public application authorization", func(t *testing.T) { serverAPIPublicApplicationNormalFlow(t, f) })
 	t.Run("application work materials", func(t *testing.T) { serverAPIApplicationMaterialNormalFlow(t, f) })
 	t.Run("application Webhook management", func(t *testing.T) { serverAPIApplicationWebhookNormalFlow(t, f) })

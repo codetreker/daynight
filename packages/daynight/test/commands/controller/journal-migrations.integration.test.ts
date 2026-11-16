@@ -352,25 +352,23 @@ test("an active old journal writer blocks DDL while current-format reads stay av
   } finally { writer.exec("ROLLBACK"); writer.close(); store.close(); }
 });
 
-test("startup admission failure rolls back the complete preceding migration", async () => {
-  const f = await fixture(); historical(f.file, 1, f.ticket);
-  const before = new Database(f.file, { readonly: true });
-  const state = () => ({
-    schema: before.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all(),
-    execution: before.prepare("SELECT * FROM execution").all(),
-    operations: before.prepare("SELECT * FROM operations").all(),
-    outbox: before.prepare("SELECT * FROM outbox").all(),
-  });
-  let original: ReturnType<typeof state>;
-  try { original = state(); } finally { before.close(); }
-  expect(() => openControllerLifecycleStore(f.file, { ...f.ticket, executionId: randomUUID() }, { onMigration: () => {} })).toThrow("Controller timeline maintenance must finish before writer initialization.");
+test.each(["ticket", "generation", "startup"] as const)("a v10 journal remains upgraded after %s admission rejects", async kind => {
+  const f = await fixture(), original = new Database(f.file);
+  for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 10)) original.exec(step.sql);
+  const snapshot = JSON.stringify({ executionId: f.ticket.executionId, ...sessionBinding(f.ticket), sessionId: f.ticket.sessionId, executionGeneration: "1", controllerInstanceId: f.ticket.controllerInstanceId, controllerProcess: null });
+  const event = '{"kind":"state","payload":{"original":true}}';
+  original.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot,last_sequence) VALUES(1,?,NULL,?,1)").run(controllerPayloadHash(f.ticket), snapshot);
+  original.prepare("INSERT INTO outbox(sequence,value) VALUES(1,?)").run(event);
+  original.pragma("user_version=10"); original.close();
+  const ticket = kind === "ticket" ? { ...f.ticket, executionId: randomUUID() } : kind === "generation" ? { ...f.ticket, executionGeneration: "3" } : f.ticket;
+  const message = kind === "ticket" ? "belongs to another execution" : kind === "generation" ? "requires a stopped original generation" : "Pending archive source is missing";
+  expect(() => openControllerLifecycleStore(f.file, ticket, { onMigration: () => {} })).toThrow(message);
   const db = new Database(f.file, { readonly: true });
   try {
-    expect(db.pragma("user_version", { simple: true })).toBe(1);
-    expect(db.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all()).toEqual(original.schema);
-    expect(db.prepare("SELECT * FROM execution").all()).toEqual(original.execution);
-    expect(db.prepare("SELECT * FROM operations").all()).toEqual(original.operations);
-    expect(db.prepare("SELECT * FROM outbox").all()).toEqual(original.outbox);
+    expect(db.pragma("user_version", { simple: true })).toBe(journalVersion);
+    expect(db.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get()).toEqual({ byte_length: Buffer.byteLength(event) });
+    expect(db.prepare("SELECT value FROM outbox WHERE sequence=1").get()).toEqual({ value: event });
+    expect(db.prepare("SELECT ticket_hash,owner_pid,snapshot FROM execution WHERE id=1").get()).toEqual({ ticket_hash: controllerPayloadHash(f.ticket), owner_pid: null, snapshot });
   } finally { db.close(); }
 });
 

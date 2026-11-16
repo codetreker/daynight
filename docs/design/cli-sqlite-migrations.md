@@ -57,23 +57,25 @@ Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。�
 
 已知非零迁移按各步骤的必要映射保留可表示的业务记录。Worker 9→10 在 SQL 中从可访问的 registration 映射 intent 控制器身份，并设置原有 execution recovery 字段；每行直接更新，不跨复合主键查找其他 owner。Web 版本 1→2 在 SQL 中只移除原定的 cleanup 操作回执和资源完成字段，当前 parser 读取迁移后的清理意图，不在运行时代码兼容旧字段。这两步使用嵌套 CASE 先排除含实际 NUL 字符的文本并保护 JSON 语法和所需局部容器，再执行 JSON 操作；无效或不适用的值以及没有实际变化的行不执行 UPDATE，保留原字符串并继续其他行。它们不校验完整业务记录或修复关联，真实 SQL 失败仍回滚迁移事务。Web 2→3 只新增 orchestration_blockers 表，不改写原执行 JSON；旧版本受版本守卫保护而拒绝新库。其他 Web 字段保留原有解析语义；未来收紧字段仍需新增版本转换。Journal 的非零升级保留不涉及映射的值、序列、ACK、原生身份和 BLOB，不把原类型断言当成已经增加全面运行时校验。
 
+Herdr lifecycle 的格式 3 转换由 `herdr/lifecycle-store-format.ts` 直接拥有，两张表各自执行局部 `nativeLaunch` 映射。迁移不依赖业务 store 的完整 parser 或关系检查；不可操作值保留原值，仅编辑目标字段的源文本，其他 token 和重复键不重新编码，未变化的 JSON 不写入。输入/输出不执行普通容量政策。存量行经现有严格 JSON decoder 和 lifecycle parser 读取时不设总字节门槛，新增写入仍在业务 store 执行原 8 MiB 检查。字段、列表和状态关系的运行期校验保持；映射优先级及坏值粒度由 [Herdr 生命周期设计](herdr-worker-lifecycle.md#身份与存储)拥有。
+
 ## 连接来源与所有权
 
-`SqliteDatabaseSource` 接受绝对文件路径或已经打开的原生 `Database.Database`。生产入口继续提供文件路径，按 `allowCreate` 打开文件并保留 WAL、FULL 同步、缺失判定和维护锁行为。显式提供连接时，访问层复用该连接并通过 SQLite 的 `memory` 属性选择真实 journal mode：内存连接使用 MEMORY，文件连接仍要求 WAL；两者都执行相同的格式检查、迁移、业务准入和同步 startup 事务。迁移事件及错误使用连接的 `name` 标识来源，内存连接显示为 `:memory:`。
+`SqliteDatabaseSource` 接受绝对文件路径或已经打开的原生 `Database.Database`。生产入口继续提供文件路径，按 `allowCreate` 打开文件并保留 WAL、FULL 同步、缺失判定和维护锁行为。显式提供连接时，访问层复用该连接并通过 SQLite 的 `memory` 属性选择真实 journal mode：内存连接使用 MEMORY，文件连接仍要求 WAL；两者都执行相同的格式检查和迁移；需要业务准入的调用者在连接返回后执行独立事务。迁移事件及错误使用连接的 `name` 标识来源，内存连接显示为 `:memory:`。
 
 可写 opener 接管提供的连接；返回的 store 负责关闭，初始化失败按实际事务和关闭结果报告。只读入口借用连接，调用方继续负责迁移互斥与最终关闭。借用读取暂时启用 `query_only`，在同一个 DEFERRED 事务中检查格式并查询，随后恢复原设置；需要升级时在该连接上完成转换后再读。这个入口不检查文件缺失或申请文件系统维护 permit，失败也不代替连接所有者关闭数据库。文件路径入口继续采用下面的独立只读连接与维护重开流程。
 
-Controller 的文件路径还标识原资源目录及历史迁移源，因此保留 `file` 参数，并通过 options 中的 `database` 接收显式连接。内存连接不对数据库文件执行 chmod；ticket/generation 校验、writer 认领和当前 SQL 正文核对仍处于原来的 startup 事务。Git、IPC 和正文文件各自保留真实资源生命周期。
+Controller 的文件路径还标识原资源目录及历史迁移源，因此保留 `file` 参数，并通过 options 中的 `database` 接收显式连接。内存连接不对数据库文件执行 chmod；ticket/generation 校验、writer 认领和当前 SQL 正文核对处于格式提交后的独立 startup 事务。Git、IPC 和正文文件各自保留真实资源生命周期。
 
 ## 事务与业务启动
 
-`inspectSqlite` 不修改数据库；`upgradeSqlite` 要求已有 immediate 写事务，并在事务内重新检查来源，不接受等待写锁之前缓存的迁移计划。版本 0 在业务准入后重置用户 schema，再执行基线与全部后续迁移、验证目标并推进 `user_version`。非零受支持版本只执行未完成步骤。
+`inspectSqlite` 不修改数据库；`upgradeSqlite` 要求已有 immediate 写事务，并在事务内重新检查来源，不接受等待写锁之前缓存的迁移计划。版本 0 在来源和原 writer 准入后重置用户 schema，再执行基线与全部后续迁移、验证目标并推进 `user_version`。非零受支持版本只执行未完成步骤。
 
-重置、迁移及包含迁移的 startup 使用明确的同步 BEGIN IMMEDIATE、action、COMMIT 边界。访问层记录连接原有的 `foreign_keys` 设置，仅在非空版本 0 重置前于事务外临时关闭并核实；空版本 0 初始化和非零迁移保持原设置。低层 `upgradeSqlite` 要求非空版本 0 的调用者已在 BEGIN 前关闭外键。事务内先完成业务准入，再删除用户 trigger 和 view，随后删除全部虚拟表，让模块清理自身 shadow 表；通过 `writable_schema=RESET` 重新加载 schema（仍禁用 schema 写入），再重新枚举并删除全部残留用户表，包括最初被识别为 shadow 的 FTS5 外部内容表。基线、升级和 onReady 完成后，每次实际发生的非空版本 0 重置都执行 `foreign_key_check`，通过后才能提交，与连接原有外键设置无关。DROP、基线、升级、数据、版本和 startup 一并提交或回滚，不删除或替换数据库文件。action 或提交失败时，若仍有活动事务则尝试回滚；回滚也失败时保留两个错误。已有活动事务和 Promise/thenable 结果明确拒绝。该边界不嵌套现有普通业务 transaction/savepoint；已归属运行期事务只断言当前版本，不在业务回调里迁移。
+重置与迁移使用明确的同步 BEGIN IMMEDIATE、action、COMMIT 边界。访问层记录连接原有的 `foreign_keys` 设置，仅在非空版本 0 重置前于事务外临时关闭并核实；空版本 0 初始化和非零迁移保持原设置。低层 `upgradeSqlite` 要求非空版本 0 的调用者已在 BEGIN 前关闭外键。事务内先完成来源与原 writer 准入，再删除用户 trigger 和 view，随后删除全部虚拟表，让模块清理自身 shadow 表；通过 `writable_schema=RESET` 重新加载 schema（仍禁用 schema 写入），再重新枚举并删除全部残留用户表，包括最初被识别为 shadow 的 FTS5 外部内容表。基线和升级完成后，每次实际发生的非空版本 0 重置都执行 `foreign_key_check`，通过后才能提交，与连接原有外键设置无关。DROP、基线、升级、映射数据和版本一并提交或回滚，不删除或替换数据库文件。action 或提交失败时，若仍有活动事务则尝试回滚；回滚也失败时保留两个错误。已有活动事务和 Promise/thenable 结果明确拒绝。该边界不嵌套现有普通业务 transaction/savepoint；已归属运行期事务只断言当前版本，不在业务回调里迁移。
 
-Controller 在新 writer generation 提交前，以同一 permit 完成编号升级、待退休正文维护和正常物理准入。升级本身的 DDL、导入与版本使用同一 immediate 事务；停止维护在事务外完成 reader barrier、退休与 VACUUM。runtime 随后将 ticket/generation 校验、writer 认领、预先采集的 Controller proof 与新 generation 一次提交，原生副作用在该提交之后。纯升级不认领 writer 或推进 generation。Controller 的迁移工厂以实际迁移连接建立局部 `JournalMigrationContext`，只通过原存储 permit 协调转换，不执行容量政策，当前格式读取不调用 context provider。Lease 的建库/迁移、查重和首个 INSERT 同样在一笔事务内。原有异步的文件、账号和进程证明准备留在事务外，最终事务重查稳定身份与格式。
+Controller 在新 writer generation 提交前，以同一 permit 完成编号升级、待退休正文维护和正常物理准入。升级本身的 DDL、导入与版本使用同一 immediate 事务；停止维护在事务外完成 reader barrier、退休与 VACUUM。runtime 随后将 ticket/generation 校验、writer 认领、预先采集的 Controller proof 与新 generation 一次提交，原生副作用在该提交之后。纯升级不认领 writer 或推进 generation。Controller 的迁移工厂以实际迁移连接建立局部 `JournalMigrationContext`，只通过原存储 permit 协调转换，不执行容量政策，当前格式读取不调用 context provider。Lease 的建库或迁移先提交，连接返回后在独立事务中重查当前格式、查重并 INSERT。业务拒绝或回滚不能撤销已提交的格式转换。原有异步的文件、账号和进程证明准备留在事务外，最终事务重查稳定身份与格式。
 
-可写连接先在一个短 DEFERRED 读取事务内完成整个来源初检，使 user_version 和所有非零来源结构读取属于同一快照。版本 0 只识别重置，不执行历史 schema 或 JSON 来源验证。该读取事务结束后，才配置 writer 所需的 journal mode 和 FULL 同步；文件连接使用 WAL，显式内存连接使用 MEMORY；随后取得 IMMEDIATE 写事务并重新检查版本、结构及所需外键模式，不把初检结果当成迁移依据。如果并发 writer 已使来源改变、所需外键模式与连接不符，先结束这笔尚未运行准入或 startup 的纯读取事务，在事务外重配后重入；至多一次交接，再次模式变化明确失败。只有模式匹配才运行准入和迁移。这样并发连接提交升级时，初检仍看到完整的旧格式，后续写事务则使用实际已提交格式。事务原子性覆盖结构、记录和版本，不承诺 journal mode 或数据库/WAL 文件逐字节回到打开前。SQLite 的单 writer 和事务语义见[官方事务说明](https://sqlite.org/lang_transaction.html)；同步 callback 的约束见 [better-sqlite3 API](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/docs/api.md)。
+可写连接先在一个短 DEFERRED 读取事务内完成整个来源初检，使 user_version 和所有非零来源结构读取属于同一快照。版本 0 只识别重置，不执行历史 schema 或 JSON 来源验证。该读取事务结束后，才配置 writer 所需的 journal mode 和 FULL 同步；文件连接使用 WAL，显式内存连接使用 MEMORY；随后取得 IMMEDIATE 写事务并重新检查版本、结构及所需外键模式，不把初检结果当成迁移依据。如果并发 writer 已使来源改变、所需外键模式与连接不符，先结束这笔尚未运行迁移准入的纯读取事务，在事务外重配后重入；至多一次交接，再次模式变化明确失败。只有模式匹配才运行准入和迁移。这样并发连接提交升级时，初检仍看到完整的旧格式，后续写事务则使用实际已提交格式。事务原子性覆盖结构、记录和版本，不承诺 journal mode 或数据库/WAL 文件逐字节回到打开前。SQLite 的单 writer 和事务语义见[官方事务说明](https://sqlite.org/lang_transaction.html)；同步 callback 的约束见 [better-sqlite3 API](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/docs/api.md)。
 
 ## 查询与维护连接
 
@@ -100,15 +102,15 @@ Review runtime 继续使用普通实例锁；旧格式 listing 的维护 permit 
 
 Journal 在任何 DDL 前执行 owner 准入：版本 0 没有 `execution` 表时可重置；若该表存在，必须读取 `id` 和 `owner_pid`，缺列或读取失败直接报错，活跃或不可确认 writer 阻止重置。非零版本继续按既有结构读取 owner。纯格式处理不执行 writer 认领或 generation 推进，也不产生停止证明；非零纯升级保留 owner_pid，版本 0 准入成功后的重置会丢弃旧 execution 数据，但不删除独立待归档文件。缺少 execution 身份记录时，后续启动拒绝采用非空待归档源，保留文件供处理；相同 Session ID 不能代替原 execution/ticket 身份证明。所有可写 journal opener 持有同一 execution 的存储 permit；writer 贯穿整个生命周期，停止记录、升级和归档本机阶段复用或显式取得它。只有明确 ESRCH 可接管原存储 owner，当前格式纯读取保持无锁，旧格式文件读取才取得 maintenance permit；借用旧格式连接须显式绑定原 permit。独立 stopped writer 在事务外验证进程树，最终事务比较当前格式、原 snapshot、ticket_hash 和 owner_pid 未变后写入 stopped。三角色准备、真实容量准入、同意图锁等待与资源收尾由 [Controller 存储设计](task-session-protocol.md#controller-与原生会话)拥有。Journal close 清除 owner_pid 也是持有原 permit 的写入口，失败时仍尝试关闭并保留真实事务结果和错误链。
 
-Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版本 0 没有该表时可重置；陈旧、过期或 PID 缺失都不提供回收权限。已取得租约的 release 在同一事务内断言当前格式，按 native_key+nonce 删除并验证恰好一行，不进入自动升级路径。其业务释放仍要求原有“从未启动”或完整停止证据；未返回申请的已知提交清理由下面的独立边界约束。
+Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版本 0 没有该表时可重置；陈旧、过期或 PID 缺失都不提供回收权限。已取得租约的 release 在同一事务内断言当前格式，按 native_key+nonce 删除并验证恰好一行，不进入自动升级路径。其业务释放仍要求原有“从未启动”或完整停止证据。
 
-首次建库或重置的事务也可能已经提交 onReady 中的本次 INSERT，却在完成 reporter 抛错后未将连接返回申请者。申请过程分别保留“已插入”和“已取得返回连接”的事实：只有提交明确成功、原连接关闭已确认且申请尚未返回、新原生执行尚不可能启动时，才用 fileMustExist 的新连接进入当前格式事务，核对本次 native_key 与 nonce 并删除这条租约。该行已不存在表示没有本次遗留；nonce 不同则拒绝删除。提交或关闭未知时不进入这条协调路径。原 reporter 错误仍是申请失败，协调或关闭再失败时聚合原始对象，不把清理成功报告成申请成功。
+格式 COMMIT、设置恢复与完成报告均在 lease INSERT 前完成。只有业务事务 COMMIT 正常返回后才记录已取得 lease；之后 inventory 失败按原 native_key 与 nonce 精确释放。业务 COMMIT 结果未知时保留可能已持久化的 nonce，不以格式事务已提交推断业务结果。
 
 ## 错误与诊断
 
 格式、迁移和文件错误不能被归为无状态或 IPC 不可达。Web 的 IPC try/catch 只包含请求，随后的本地 store 更新失败直接传播。独立 Controller 的退出路径保留 journalFailure，同时继续停止自己已归属的进程；停止证明不完整时不归档、不伪造 nativeStopped，也不释放 resume lease。
 
-连接适配层区分未开始、已提交、已回滚和未知事务结果。提交前失败按既有回滚、结果记录和私有连接关闭边界处理，保留原始错误；外键设置恢复只属于提交后的连接返回边界。COMMIT 成功后先记录已提交，再恢复并核实原 `foreign_keys` 设置，完成后才返回连接。恢复失败使用独立的 `restore-foreign-keys` 阶段，关闭连接后报告 `cleanup-failed` 和已提交结果，不重放已提交操作。提交成功后 close 失败同样仍报告已提交；操作和回滚/关闭双失败聚合原始对象，不自动重跑。实际原因修复后，再次打开按真实版本识别。当前五个目标 schema 及 onReady 不含外键；增加依赖外键动作的目标格式或 startup 必须重新审查此重置边界。
+连接适配层区分未开始、已提交、已回滚和未知事务结果。提交前失败按既有回滚、结果记录和私有连接关闭边界处理，保留原始错误；外键设置恢复只属于提交后的连接返回边界。COMMIT 成功后先记录已提交，再恢复并核实原 `foreign_keys` 设置，完成后才返回连接。恢复失败使用独立的 `restore-foreign-keys` 阶段，关闭连接后报告 `cleanup-failed` 和已提交结果，不重放已提交操作。提交成功后 close 失败同样仍报告已提交；操作和回滚/关闭双失败聚合原始对象，不自动重跑。实际原因修复后，再次打开按真实版本识别。当前五个目标 schema 不含外键；增加依赖外键动作的目标格式必须重新审查此重置边界。业务 SQLite 错误使用独立 operation-failed 阶段和业务事务结果；回滚或关闭失败保留错误链与连接关闭事实，未确认关闭时继续持有 permit。
 
 同步迁移事件复用 stderr 与现有 Worker JSONL。数据库名称、路径、阶段、源/目标版本、步骤、migrationId 和结果采用有限字段，版本 0 转换使用 `reset` 事件；原 cause 留在内存。文本及 JSONL 对访问错误使用安全表示，避免 JSON parser 的原 message 或 SQL 参数泄露业务内容。日志失败不改变数据库已知提交结果，也不覆盖已有迁移错误。
 
@@ -116,6 +118,8 @@ Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版�
 
 首次切换需退出完全没有格式检查的旧 Worker、Review、独立 launcher、Controller 和 resume 父进程，保留未知归属。新代码无法使旧二进制遵守格式 guard；不承诺与这些旧版本混跑或自动降级。
 
-来源 fixture 独立于当前 opener。业务单测在独立的真实内存 SQLite 中验证建库、迁移、约束、状态转换和事务回滚。文件集成测试验证各库新建、空版本 0、任意版本 0 schema 与坏 JSON 重置、非零旧格式行/JSON/BLOB 保留，以及 DDL 和版本回滚；重置覆盖外键、trigger、view、虚拟表及其 shadow 表。独立进程验证并发与中断后重新读取。两类测试都进入常规 `pnpm test`，不通过缩小发现范围替代迁移。当前格式 WAL 快照、旧锁保留、lease 阻塞、提交/关闭双失败、IPC catch 与本地停止各有行为断言。SQLite 转换不替换原库文件、不删除 WAL/SHM、不创建跨库分布式事务或后台迁移任务。
+来源 fixture 独立于当前 opener。业务单测在独立的真实内存 SQLite 中验证建库、迁移、约束、状态转换和事务回滚。文件集成测试验证各库新建、空版本 0、任意版本 0 schema 与坏 JSON 重置、非零旧格式行/JSON/BLOB 保留，以及 DDL 和版本回滚；真实旧 journal 经业务入口拒绝后由新连接验证已提交的格式与业务回滚。重置覆盖外键、trigger、view、虚拟表及其 shadow 表。独立进程验证并发与中断后重新读取。两类测试都进入常规 `pnpm test`，不通过缩小发现范围替代迁移。当前格式 WAL 快照、旧锁保留、lease 阻塞、提交/关闭双失败、IPC catch 与本地停止各有行为断言。SQLite 转换不替换原库文件、不删除 WAL/SHM、不创建跨库分布式事务或后台迁移任务。
 
-内存单测与文件集成的取舍见[测试存储决策](../../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)。版本 0 重置、独立版本、事务、所有权和 SQL 资源打包的决策依据及备选方案由[升级决策](../../.agents/notes/archived/architecture/2026-10-30-cli-sqlite-migrations.md)拥有。
+内存单测与文件集成的取舍见[测试存储决策](../../.agents/notes/implemented/testing/2026-11-06-cli-memory-sqlite-tests.md)。版本 0 重置、独立版本、事务、所有权和 SQL 资源打包的历史依据由[升级决策](../../.agents/notes/archived/architecture/2026-10-30-cli-sqlite-migrations.md)拥有。
+
+格式提交与业务启动分离的取舍见[独立提交决策](../../.agents/notes/implemented/bug-fix/2026-11-16-sqlite-format-before-business.md)。

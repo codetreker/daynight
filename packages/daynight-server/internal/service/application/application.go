@@ -37,6 +37,7 @@ import (
 // IdentityOperations is the identity output consumed by protocol adapters.
 type IdentityOperations interface {
 	CallbackURL() string
+	PreviewSSO() *identity.PreviewSSO
 	ValidateLogin(string, string) error
 	StartLogin(context.Context, string, string, string) (identitycore.LoginStart, error)
 	CompleteLogin(context.Context, url.Values, string) (identitycore.LoginCompletion, error)
@@ -115,7 +116,7 @@ type Application struct {
 }
 
 type constructors struct {
-	identity         func(store.IdentityWriter, *uniauth.Client, string) *identity.Identity
+	identity         func(store.IdentityWriter, *uniauth.Client, string, *identity.PreviewSSO) *identity.Identity
 	taskObservations func(store.SnapshotReader, task.SessionObserver) *task.Observations
 	projects         func(store.Transactions, *sessioncore.Engine) *project.Projects
 	tasks            func(store.Transactions, task.Capturer) *task.Tasks
@@ -123,9 +124,9 @@ type constructors struct {
 	attachments      func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
 }
 
-func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration, capture ...task.Capturer) *Application {
-	return assemble(database, files, client, callbackURL, overlap, constructors{
-		identity:         identity.New,
+func New(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, capture ...task.Capturer) *Application {
+	return assemble(database, files, client, callbackURL, preview, overlap, constructors{
+		identity:         identity.NewWithPreviewSSO,
 		taskObservations: task.NewObservations,
 		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.Projects {
 			return project.NewProjects(database, engine)
@@ -138,7 +139,7 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 	}, capture...)
 }
 
-func assemble(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, overlap time.Duration, construct constructors, capture ...task.Capturer) *Application {
+func assemble(database store.Transactions, files filestorage.Storage, client *uniauth.Client, callbackURL string, preview *identity.PreviewSSO, overlap time.Duration, construct constructors, capture ...task.Capturer) *Application {
 	var capturer task.Capturer = &webhook.Capturer{}
 	if len(capture) != 0 && capture[0] != nil {
 		capturer = capture[0]
@@ -149,7 +150,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 	sessions := session.New(database, engine)
 	inspection := session.NewInspection(database, engine)
 	return &Application{
-		Identity:         construct.identity(database, client, callbackURL),
+		Identity:         construct.identity(database, client, callbackURL, preview),
 		OAuth:            oauthAuthenticator,
 		OAuthGrants:      oauthcore.NewGrantLifecycle(database),
 		Memberships:      project.NewMemberships(database),

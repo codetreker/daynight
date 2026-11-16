@@ -44,7 +44,13 @@ const save = async (configuration: Configuration) => {
     DAYNIGHT_ALLOW_LOOPBACK_HTTP: 1,
     DAYNIGHT_UNIAUTH_URL: `http://127.0.0.1:${configuration.port}`,
   };
-  if (configuration.publicOrigin !== undefined) environment.DAYNIGHT_PUBLIC_ORIGIN = configuration.publicOrigin;
+  if (configuration.publicOrigin !== undefined) {
+    environment.DAYNIGHT_PUBLIC_ORIGIN = configuration.publicOrigin;
+    const preview = new URL(configuration.publicOrigin);
+    const port = Number(preview.port);
+    preview.port = String(port === 65535 ? 65534 : port + 1);
+    environment.DAYNIGHT_PREVIEW_ORIGIN = preview.origin;
+  }
   if (configuration.callbackURL !== undefined) environment.DAYNIGHT_UNIAUTH_CALLBACK_URL = configuration.callbackURL;
   if (configuration.appId !== undefined) environment.DAYNIGHT_UNIAUTH_APP_ID = configuration.appId;
   if (configuration.appSecret !== undefined) environment.DAYNIGHT_UNIAUTH_APP_SECRET = configuration.appSecret;

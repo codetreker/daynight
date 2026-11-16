@@ -42,7 +42,7 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
-      test: [CMD, wget, -q, -T, "3", -O, /dev/null, "http://127.0.0.1:80/readyz"]
+      test: [CMD, wget, -q, -T, "3", -O, /dev/null, --header, "Host: localhost", "http://127.0.0.1:80/readyz"]
       interval: 5s
       timeout: 5s
       retries: 24
@@ -64,6 +64,7 @@ services:
       DAYNIGHT_S2S_ALLOWED_ORIGIN:
       DAYNIGHT_S2S_SHARED_KEY:
       DAYNIGHT_PUBLIC_ORIGIN: ${DAYNIGHT_PUBLIC_ORIGIN:?Set DAYNIGHT_PUBLIC_ORIGIN in deployment/localhost/.env}
+      DAYNIGHT_PREVIEW_ORIGIN: ${DAYNIGHT_PREVIEW_ORIGIN:?Set DAYNIGHT_PREVIEW_ORIGIN in deployment/localhost/.env}
       DAYNIGHT_UNIAUTH_URL: ${DAYNIGHT_UNIAUTH_URL:?Set DAYNIGHT_UNIAUTH_URL in deployment/localhost/.env}
       DAYNIGHT_UNIAUTH_APP_ID: ${DAYNIGHT_UNIAUTH_APP_ID:?Set DAYNIGHT_UNIAUTH_APP_ID in deployment/localhost/.env}
       DAYNIGHT_UNIAUTH_APP_SECRET: ${DAYNIGHT_UNIAUTH_APP_SECRET:?Set DAYNIGHT_UNIAUTH_APP_SECRET in deployment/localhost/.env}
@@ -82,7 +83,7 @@ services:
         condition: service_started
         restart: true
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:8787/readyz', {signal: AbortSignal.timeout(3000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: [CMD, node, -e, "require('node:http').get('http://127.0.0.1:8787/readyz', {headers: {Host: 'localhost'}, signal: AbortSignal.timeout(3000)}, r => {r.on('error', () => process.exit(1)); r.on('end', () => process.exit(r.statusCode >= 200 && r.statusCode < 300 ? 0 : 1)); r.resume()}).on('error', () => process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 12

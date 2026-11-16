@@ -20,6 +20,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/application"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/credentialusage"
 	githubservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/github"
+	identityservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity"
 	identityconfig "github.com/codetreker/daynight/packages/daynight-server/internal/service/identity/config"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcpdownload"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/mcptransfer"
@@ -47,6 +48,7 @@ type App struct {
 	githubRuntime        *githubRuntime
 	OAuthProfile         *OAuthProfile
 	OAuthError           error
+	PreviewSSOError      error
 	DirectMembers        *team.DirectMembers
 	APIIssuer            *oauthservice.UserAPIIssuer
 	ImageValidationError error
@@ -91,11 +93,13 @@ func NewIdentityClient(c identityconfig.Config) (*uniauth.Client, error) {
 // NewModules assembles modules from already-owned dependencies. Their owner must
 // stop the engine before closing those dependencies.
 func NewModules(c config.Config, database store.Transactions, ready func(context.Context) error, files filestorage.Storage, client *uniauth.Client, capture ...task.Capturer) *App {
+	preview, previewErr := identityservice.NewPreviewSSO(database, c.Server.PublicOrigin, c.Server.PreviewOrigin, c.UniAuth.CallbackURL)
 	app := &App{
-		Application:   application.New(database, files, client, c.UniAuth.CallbackURL, c.TaskSync.Overlap, capture...),
-		GitHubRead:    coregithub.NewReader(database, c.GitHub.Enabled),
-		GitHubManager: githubservice.NewManager(database, nil, 0),
-		Web:           webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
+		Application:     application.New(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, capture...),
+		PreviewSSOError: previewErr,
+		GitHubRead:      coregithub.NewReader(database, c.GitHub.Enabled),
+		GitHubManager:   githubservice.NewManager(database, nil, 0),
+		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
 	app.closeLock <- struct{}{}
@@ -235,6 +239,9 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 			return nil, errors.Join(cause, err)
 		}
 		return nil, cause
+	}
+	if app.PreviewSSOError != nil {
+		return failOpen(app.PreviewSSOError)
 	}
 	app.CredentialUsage, err = credentialusage.New(database.Transactions, logger, nil)
 	if err != nil {

@@ -11,6 +11,9 @@ import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEM
 import { createLocalSessionContent } from "../../../src/commands/controller/local-content.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { controllerPayloadHash } from "../../../src/commands/controller/launch-ticket.js";
+import { runSqliteImmediate } from "../../../src/platform/sqlite-access.js";
+import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 
 const roots: string[] = [], connections: Database.Database[] = [];
 afterEach(async () => {
@@ -193,14 +196,18 @@ test.each(["ahead", "missing", "unindexed", "missing-manifest"] as const)("v7 %s
   if (variant === "missing-manifest") await expect(readFile(manifest)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-test("v7 admission rollback retains its original state and retries only the unchanged source", async () => {
+test("v7 conversion remains committed after a subsequent transaction rolls back", async () => {
   const f = await legacyFixture();
-  expect(() => openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {}, onReady: () => { throw new Error("admission failed"); } })).toThrow("admission failed");
-  const observer = new Database(f.file, { readonly: true }); connections.push(observer);
-  expect(observer.pragma("user_version", { simple: true })).toBe(7);
-  expect(observer.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: f.state });
-  expect(await readFile(f.filename, "utf8")).toBe(f.original);
   const db = openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {} }); connections.push(db);
-  expect(readContent(f.file, f.sessionId, db).timeline.get(f.entry.entryId)).toEqual(f.entry);
-  expect(await readdir(path.join(`${f.file}.pending-content`, "entries"))).toHaveLength(2);
+  expect(() => runSqliteImmediate(db, () => {
+    db.prepare("UPDATE image_runtime_state SET value='uncommitted' WHERE key='native_provider:original'").run();
+    throw new Error("admission failed");
+  })).toThrow("admission failed");
+  closeControllerTestDatabase(db);
+  const observer = new Database(f.file, { readonly: true }); connections.push(observer);
+  expect(observer.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
+  expect(observer.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: f.state });
+  expect(observer.prepare("SELECT value FROM operations WHERE id='original'").get()).toEqual({ value: f.operation });
+  expect(readContent(f.file, f.sessionId, observer).timeline.get(f.entry.entryId)).toEqual(f.entry);
+  expect(await readFile(f.filename, "utf8")).toBe(f.original);
 });

@@ -68,6 +68,7 @@ func configuredTestConfig() Config {
 	c.Server.ShutdownTimeout = time.Second
 	c.TaskSync.Overlap = 10 * time.Second
 	c.Server.PublicOrigin = "https://daynight.example"
+	c.Server.PreviewOrigin = "https://preview.daynight.example"
 	c.UniAuth.URL = "https://auth.example"
 	c.UniAuth.AppID = "configuration-test"
 	c.UniAuth.AppSecret = "configuration-test"
@@ -78,7 +79,7 @@ func configuredTestConfig() Config {
 func configEnvironment(values map[string]string) func(string) string {
 	base := map[string]string{
 		"DAYNIGHT_DATABASE_URL": "postgres://database", "DAYNIGHT_STORAGE_ROOT": "storage",
-		"DAYNIGHT_PUBLIC_ORIGIN": "https://daynight.example", "DAYNIGHT_UNIAUTH_URL": "https://auth.example",
+		"DAYNIGHT_PUBLIC_ORIGIN": "https://daynight.example", "DAYNIGHT_PREVIEW_ORIGIN": "https://preview.daynight.example", "DAYNIGHT_UNIAUTH_URL": "https://auth.example",
 		"DAYNIGHT_UNIAUTH_APP_ID": "configuration-test", "DAYNIGHT_UNIAUTH_APP_SECRET": "configuration-test",
 		"DAYNIGHT_UNIAUTH_CALLBACK_URL": "https://daynight.example/api/v1/auth/callback",
 	}
@@ -204,7 +205,7 @@ func TestStorageRootConfiguration(t *testing.T) {
 
 func TestAuthenticationConfigurationIsRequiredAndFlagsAreExplicit(t *testing.T) {
 	for _, field := range []string{
-		"DAYNIGHT_PUBLIC_ORIGIN", "DAYNIGHT_UNIAUTH_URL", "DAYNIGHT_UNIAUTH_APP_ID",
+		"DAYNIGHT_PUBLIC_ORIGIN", "DAYNIGHT_PREVIEW_ORIGIN", "DAYNIGHT_UNIAUTH_URL", "DAYNIGHT_UNIAUTH_APP_ID",
 		"DAYNIGHT_UNIAUTH_APP_SECRET", "DAYNIGHT_UNIAUTH_CALLBACK_URL",
 	} {
 		for _, value := range []string{"", " \t"} {
@@ -224,6 +225,7 @@ func TestAuthenticationConfigurationIsRequiredAndFlagsAreExplicit(t *testing.T) 
 	}
 	config, err := LoadConfig(configEnvironment(map[string]string{
 		"DAYNIGHT_PUBLIC_ORIGIN":          "http://app.daynight.test:8080",
+		"DAYNIGHT_PREVIEW_ORIGIN":         "http://preview.daynight.test:8080",
 		"DAYNIGHT_UNIAUTH_CALLBACK_URL":   "http://app.daynight.test:8080/auth/callback",
 		"DAYNIGHT_UNIAUTH_URL":            "http://127.0.0.1:8081",
 		"DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN": "1", "DAYNIGHT_ALLOW_LOOPBACK_HTTP": "1",
@@ -318,6 +320,8 @@ func testRelativeField(env string) string {
 		return "overlap"
 	case "DAYNIGHT_PUBLIC_ORIGIN":
 		return "public_origin"
+	case "DAYNIGHT_PREVIEW_ORIGIN":
+		return "preview_origin"
 	case "DAYNIGHT_UNIAUTH_URL":
 		return "url"
 	case "DAYNIGHT_UNIAUTH_APP_ID":
