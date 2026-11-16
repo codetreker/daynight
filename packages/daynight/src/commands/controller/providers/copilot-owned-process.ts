@@ -15,6 +15,7 @@ export const copilotDeadline = <T>(promise: Promise<T>, label: string, ms = 30_0
 export type CopilotProcessOptions = {
   cwd: string; env?: NodeJS.ProcessEnv; executable?: string; toolLaunch?: ResolvedToolLaunch; toolRuntimeRoot?: string;
   unattended?: boolean; resumeNativeSessionId?: string | null;
+  observeImageRoute?: boolean;
   onSpawn(child: ChildProcess): void;
   onDiagnostic?(line: string): void;
   onNativeReadPolicy?(policy: NativeReadPolicy | null): void;
@@ -38,6 +39,9 @@ export const startCopilotProcess = (options: CopilotProcessOptions, lost: (error
     startup.check();
     if (closing) throw new Error("Copilot runtime closed before startup.");
     const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), COPILOT_CONNECTION_TOKEN: token }; delete env.NODE_DEBUG;
+    // The endpoint RPC is an opt-in read; preserve explicit native policy values.
+    const routeGate = "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT";
+    if (options.observeImageRoute && !Object.keys(env).some(key => (process.platform === "win32" ? key.toUpperCase() === routeGate : key === routeGate) && env[key] !== undefined)) env[routeGate] = "true";
     const profile = options.toolLaunch?.runtimeProfile;
     if (profile || artifacts) env.DAYNIGHT_COPILOT_AUTHORITY = execution;
     if (profile) { delete env.NODE_COMPILE_CACHE; env.NODE_DISABLE_COMPILE_CACHE = "1"; }

@@ -10,10 +10,11 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 export const declaredCopilotRouteDigest = (endpoint: unknown, modelId: string): string | null => {
   try {
     const { type, wireApi, transport, baseUrl } = object(endpoint);
-    if (!text(modelId) || typeof type !== "string" || !["openai", "azure", "anthropic"].includes(type) || typeof wireApi !== "string" || !["responses", "completions"].includes(wireApi) || typeof transport !== "string" || !["http", "websockets"].includes(transport) || typeof baseUrl !== "string" || baseUrl.length > 2048 || baseUrl.trim() !== baseUrl) return null;
+    if (!text(modelId) || typeof type !== "string" || !["openai", "azure", "anthropic"].includes(type) || typeof wireApi !== "string" || !["responses", "completions"].includes(wireApi) || transport !== undefined && (typeof transport !== "string" || !["http", "websockets"].includes(transport)) || typeof baseUrl !== "string" || baseUrl.length > 2048 || baseUrl.trim() !== baseUrl) return null;
     const url = new URL(baseUrl);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !url.hostname || /[%\\\s]/.test(baseUrl) || !/^\/[A-Za-z0-9/_-]*$/.test(url.pathname)) return null;
-    return createHash("sha256").update(canonicalImageJson({ kind: "native_declared_route_v1", type, wireApi, transport, endpoint: url.href, modelId })).digest("hex");
+    // An omitted declaration is distinct from either known transport, not an HTTP default.
+    return createHash("sha256").update(canonicalImageJson({ kind: "native_declared_route_v1", type, wireApi, transport: transport ?? null, endpoint: url.href, modelId })).digest("hex");
   } catch { return null; }
 };
 

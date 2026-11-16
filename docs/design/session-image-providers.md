@@ -172,7 +172,9 @@ native/resume pin 默认保留到原生 Session 删除。仅 profile 已证明 S
 
 ### 原生声明的运行时身份
 
-[私有路由观察器](../../packages/daynight/src/commands/controller/providers/copilot-route-observation.ts)读取同一 SDK Session 的当前模型、默认 endpoint，再读取当前模型核对。它只在支持的 type、wireApi、transport 及安全 URL 结构内生成 `native_declared_route_v1` 摘要；地址不得包含 userinfo、query 或 fragment。摘要和 modelId 可以由 bridge 返回；apiKey、headers、sessionToken 及完整 endpoint 不得从 bridge worker 返回 Controller 父进程、进入摘要或诊断。专用观察失败返回空结果，普通 RPC 不透传 getEndpoint。
+[私有路由观察器](../../packages/daynight/src/commands/controller/providers/copilot-route-observation.ts)读取同一 SDK Session 的当前模型、默认 endpoint，再读取当前模型核对。它只在支持的 type、wireApi、可选 transport 及安全 URL 结构内生成 `native_declared_route_v1` 摘要；地址不得包含 userinfo、query 或 fragment。原生省略 transport 时，摘要明确编码 null，与 http、websockets 区分，不推断实际传输方式；显式非法值仍拒绝。摘要和 modelId 可以由 bridge 返回；apiKey、headers、sessionToken 及完整 endpoint 不得从 bridge worker 返回 Controller 父进程、进入摘要或诊断。专用观察失败返回空结果，普通 RPC 不透传 getEndpoint。
+
+装配图片观察的 Controller 仅在所属原生子进程中默认设置 `COPILOT_ALLOW_GET_PROVIDER_ENDPOINT=true`，满足原生 endpoint 读取接口的显式开关。已有环境值保持不变，Windows 按键名大小写不敏感识别已有值；不修改父进程、用户配置、模型、路由或认证。原生继续拒绝读取时保持未知，不绕过认证或重发输入。
 
 程序身份复用 `verifyToolLaunch` 已验证的同一 Windows 直启原生 executable artifact，绑定实际所属进程。JS launcher、interpreter、materialized runtime 和未验证 fallback 保持未知；不能用 Node 或启动脚本的摘要冒充原生程序身份。进程关闭或退出后不再提供有效摘要。
 

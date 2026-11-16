@@ -1,5 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { CopilotRouteObserver, declaredCopilotRouteDigest, parseCopilotRouteObservation } from "../../../src/commands/controller/providers/copilot-route-observation.js";
+import { createHash } from "node:crypto";
+import { canonicalImageJson } from "../../../src/session/image-values.js";
 
 const endpoint = { type: "openai", wireApi: "responses", transport: "http", baseUrl: "https://api.enterprise.githubcopilot.com" };
 afterEach(() => vi.useRealTimers());
@@ -19,8 +21,24 @@ test("route hashing never accesses credentials and distinguishes visible routing
   expect(declaredCopilotRouteDigest(endpoint, "another-model")).not.toBe(digest);
 });
 
+test("an omitted transport hashes as an undeclared value without borrowing HTTP or WebSocket identity", async () => {
+  const { transport: _transport, ...undeclared } = endpoint;
+  for (const key of ["apiKey", "headers", "sessionToken"]) Object.defineProperty(undeclared, key, { get() { throw new Error("secret-canary"); } });
+  const digest = declaredCopilotRouteDigest(undeclared, "fixture-model");
+  expect(digest).toMatch(/^[a-f0-9]{64}$/);
+  expect(declaredCopilotRouteDigest({ ...endpoint, transport: undefined }, "fixture-model")).toBe(digest);
+  for (const transport of ["http", "websockets"]) {
+    const declared = { ...endpoint, transport };
+    const previous = createHash("sha256").update(canonicalImageJson({ kind: "native_declared_route_v1", type: declared.type, wireApi: declared.wireApi, transport, endpoint: declared.baseUrl + "/", modelId: "fixture-model" })).digest("hex");
+    expect(declaredCopilotRouteDigest(declared, "fixture-model")).not.toBe(digest);
+    expect(declaredCopilotRouteDigest(declared, "fixture-model")).toBe(previous);
+  }
+  const session = fixture(); session.rpc.provider.getEndpoint.mockResolvedValue(undeclared);
+  expect(await new CopilotRouteObserver().read(session)).toMatchObject({ backendIdentity: digest, modelId: "fixture-model" });
+});
+
 test.each([
-  { type: "unknown" }, { type: { toString: (): string => "openai" } }, { wireApi: undefined }, { transport: "websocket" },
+  { type: "unknown" }, { type: { toString: (): string => "openai" } }, { wireApi: undefined }, { transport: "websocket" }, { transport: null }, { transport: 1 },
   ...["http://example.com", "https://user:secret@example.com", "https://example.com?key=secret", "https://example.com#secret", "https://example.com/a%2fb", "https://example.com/../x?key=secret", " https://example.com", "https://example.com/a\\b"].map(baseUrl => ({ baseUrl })),
 ])("unsafe or unknown route remains unknown: %j", patch => {
   expect(declaredCopilotRouteDigest({ ...endpoint, ...patch }, "model")).toBeNull();

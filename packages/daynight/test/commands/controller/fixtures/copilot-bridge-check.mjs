@@ -12,6 +12,7 @@ import { validateImageFile } from "../../../../dist/commands/controller/media/im
 
 const [root, mode, mediaPath, mediaType = "image/png", expectedFrames = "1"] = process.argv.slice(2), log = path.join(root, "requests.log");
 const children = [], events = [], losses = [], traces = [];
+const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
 let permissionRequest;
 const correlation = new CopilotReadCorrelation("b".repeat(64), "fixture-session"), hidden = [];
 const records = () => readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
@@ -22,7 +23,7 @@ const eventually = async predicate => {
 let maxFrameBytes = 0, peakControllerRss = process.memoryUsage().rss, decodedImages = 0, bridgeSecretLeak = false, secretTail = "";
 const runtime = startCopilotRuntime({ cwd: root, model: null, args: [], resumeNativeSessionId: null,
   executable: fileURLToPath(new URL("copilot-bridge-native.mjs", import.meta.url)),
-  env: { ...process.env, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType }, onTimeline() {}, onState() {},
+  env: { ...environment, DAYNIGHT_TEST_BRIDGE_LOG: log, DAYNIGHT_TEST_BRIDGE_MODE: mode, DAYNIGHT_TEST_BRIDGE_MEDIA: mediaPath ?? "", DAYNIGHT_TEST_BRIDGE_MIME: mediaType }, onTimeline() {}, onState() {},
   onSpawn(child) {
     children.push(child);
     if (children.length === 2) {
@@ -38,6 +39,7 @@ let releaseReader;
 process.once("SIGTERM", () => { void runtime.close(true).finally(() => process.exit(1)); });
 try {
   const client = await runtime.ready;
+  assert.equal(records().find(record => Object.hasOwn(record, "routeGate")).routeGate, mode === "no-media" ? null : "true");
   assert.equal(children.length, 2);
   assert.notEqual(children[0].pid, children[1].pid);
   const config = { sessionId: "fixture-session", onEvent(event) { if (correlation.suppress(event)) { hidden.push(event); return; } if (event.id === "permission-event") assert.equal(event.data.permissionRequest, permissionRequest, "The bridge must preserve the exact callback object."); events.push(event); }, onPermissionRequest(request, context) {
@@ -124,6 +126,7 @@ try {
       const input = { path: filename, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), mimeType: "image/png" };
       const observation = await observeCopilotBridgeRoute(session);
       assert(observation); assert(!JSON.stringify(observation).includes("endpoint-secret-canary"));
+      if (mode === "route-undeclared-transport") assert.equal(observation.backendIdentity, createHash("sha256").update(JSON.stringify({ endpoint: "https://fixture.invalid/", kind: "native_declared_route_v1", modelId: "fixture-model", transport: null, type: "openai", wireApi: "responses" })).digest("hex"));
       await assert.rejects(session.rpc.provider.getEndpoint(), /credentials/);
       assert.equal(await sendCopilotBridgeImages(session, { prompt: "", mode: "immediate", attachments: [input, { ...input, displayName: "second.png" }] }, () => {}, observation), "sent-1");
       await eventually(() => events.some(event => event.id === "permission-event"));

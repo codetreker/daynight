@@ -22,6 +22,20 @@ fields before returning a digest. Credentials, arbitrary headers and raw endpoin
 responses do not leave that operation, including its failure paths. Unknown
 protocol values or unsafe endpoint representations produce no observation.
 
+The owned native process receives `COPILOT_ALLOW_GET_PROVIDER_ENDPOINT=true`
+only when its runtime has an image media owner and the caller has not supplied
+the variable. Copilot 1.0.105 gates this read on the exact string `true`.
+Explicit values, including empty strings and disabling values, remain untouched;
+Windows recognizes their environment names without regard to case. The default
+belongs to the cloned child environment, not the caller, SDK bridge or system.
+It grants endpoint observation, not different model, routing or authentication
+behavior; a refused read still closes image admission.
+
+The SDK permits an absent `transport` declaration. Its digest records that
+absence as `null`, distinct from both explicit HTTP and WebSocket declarations.
+Existing explicit-transport digests retain their values. A supplied null,
+non-string or unknown transport is invalid rather than an absent declaration.
+
 The executable digest comes from the verified launch artifact for the same owned
 Windows native process. A JavaScript launcher, interpreter, materialized runtime
 or unverified fallback does not acquire a native executable identity from its
@@ -53,6 +67,15 @@ A dedicated projection limits both the successful result and failure reporting.
 **Use every observation generation as qualification identity.** This would revoke
 an unchanged qualification on each read. Stable declared identity and transient
 dispatch ownership require separate values.
+
+**Assume an omitted transport means HTTP.** The endpoint declaration does not
+establish that default. Keeping a separate undeclared value allows an exact
+qualification to state the observation it covers without inventing transport
+evidence.
+
+**Enable endpoint reads for every Copilot process or replace explicit settings.**
+Text-only runtimes do not need this read. Replacing caller-supplied values would
+override native policy rather than applying a scoped default.
 
 **Install a production request handler to observe every native request.** The
 SDK buffers the entire request before its custom handler runs, and its default

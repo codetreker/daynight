@@ -14,7 +14,7 @@ const fixture = async () => {
   const node = path.join(root, process.platform === "win32" ? "worker-node.exe" : "worker-node");
   await copyFile(process.execPath, node); await chmod(node, 0o755);
   const entry = path.join(root, "copilot.mjs"), receipt = path.join(root, "receipt.json");
-  await writeFile(entry, `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(receipt)},JSON.stringify({node:process.execPath,args:process.argv.slice(2)})); console.log('Listening on port 12345'); setInterval(()=>{},1000);`);
+  await writeFile(entry, `import {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(receipt)},JSON.stringify({node:process.execPath,args:process.argv.slice(2),routeGate:process.env.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT??null})); console.log('Listening on port 12345'); setInterval(()=>{},1000);`);
   const operation = createOperation();
   try {
     const launch = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: entry }, cwd: root, environment: process.env, workerNode: node }, operation);
@@ -28,8 +28,37 @@ test("the shared Copilot owner starts the frozen Node and literal recipe despite
   try {
     await expect(runtime.ready).resolves.toMatchObject({ port: 12345 });
     expect(runtime.nativeExecutableSha256).toBeNull();
-    expect(JSON.parse(await readFile(f.receipt, "utf8"))).toEqual({ node: await realpath(f.node), args: ["--headless", "--no-auto-update"] });
+    expect(JSON.parse(await readFile(f.receipt, "utf8"))).toMatchObject({ node: await realpath(f.node), args: ["--headless", "--no-auto-update"] });
   } finally { await runtime.close(); }
+});
+
+test.each([
+  { observe: false, configured: undefined, expected: null },
+  { observe: true, configured: undefined, expected: "true" },
+  ...["false", "1", "", "true"].map(configured => ({ observe: true, configured, expected: configured })),
+])("owned image observation preserves native read policy: %j", async ({ observe, configured, expected }) => {
+  const f = await fixture();
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
+  environment.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT = configured;
+  const original = { ...environment }, parent = process.env.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT;
+  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: environment, observeImageRoute: observe, onSpawn() {} }, () => {});
+  try {
+    await runtime.ready;
+    expect(JSON.parse(await readFile(f.receipt, "utf8")).routeGate).toBe(expected);
+    expect(environment).toEqual(original);
+    expect(process.env.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT).toBe(parent);
+  } finally { await runtime.close(); }
+});
+
+test.skipIf(process.platform !== "win32").each(["false", "1", ""])("Windows preserves an explicitly mixed-case read gate: %j", async value => {
+  const f = await fixture();
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
+  environment.Copilot_Allow_Get_Provider_Endpoint = value;
+  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: environment, observeImageRoute: true, onSpawn() {} }, () => {});
+  try { await runtime.ready; expect(JSON.parse(await readFile(f.receipt, "utf8")).routeGate).toBe(value); }
+  finally { await runtime.close(); }
+  expect(environment.Copilot_Allow_Get_Provider_Endpoint).toBe(value);
+  expect(environment).not.toHaveProperty("COPILOT_ALLOW_GET_PROVIDER_ENDPOINT");
 });
 
 test("changed frozen Copilot input rejects before any process or receipt is created", async () => {
