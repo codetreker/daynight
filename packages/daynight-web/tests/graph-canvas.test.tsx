@@ -63,6 +63,23 @@ const ready = async (container: HTMLElement) => {
 beforeEach(installGraphMeasurements);
 
 describe('task dependency canvas', () => {
+  it('updates compact permission and its accessible name when a graph task changes', async () => {
+    const graphWithPermission = (allowAgents: boolean): TaskGraphData => ({ ...graph, tasks: graph.tasks.map(task => task.id === 'A' ? { ...task, allowAgents } : task) });
+    const renderGraph = (allowAgents: boolean) => <TaskGraph index={buildGraphIndex(graphWithPermission(allowAgents))} rootId="A" onOpenTask={noop} />;
+    const view = render(renderGraph(false));
+    await ready(view.container);
+    const node = () => view.container.querySelector<HTMLElement>('.react-flow__node[data-id="A"]')!;
+    expect(node().querySelector('.task-agent-permission')).toBeNull();
+    expect(node().querySelector('.task-node-body')).not.toHaveAccessibleName(/自动执行/);
+    view.rerender(renderGraph(true));
+    await waitFor(() => expect(node().querySelector('.task-agent-permission')).toHaveTextContent('自动'));
+    expect(node().querySelector('.task-agent-permission')).toHaveAttribute('title', '自动执行');
+    expect(node().querySelector('.task-node-body')).toHaveAccessibleName(/自动执行/);
+    view.rerender(renderGraph(false));
+    await waitFor(() => expect(node().querySelector('.task-agent-permission')).toBeNull());
+    expect(node().querySelector('.task-node-body')).not.toHaveAccessibleName(/自动执行/);
+  });
+
   it('uses caller framing and fit policy without a chain root', async () => {
     const geometry = layoutModule.layoutGraph({ mainIds: new Set(['A']), externalIds: new Set(), edges: [] });
     const node = geometry.nodes[0]!;
