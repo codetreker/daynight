@@ -785,3 +785,24 @@ test.skipIf(process.platform === "win32")("an unsafe temporary timeline candidat
     expect(marker(db)).toBe(1); expect(fs.readFileSync(source, "utf8")).toBe("retained");
   } finally { db.close(); f.permit.release(); }
 });
+
+test("v7 format commit survives a later stopped-storage identity refusal", () => {
+  const f = fixture(7), original = new Database(f.file), state = '{ "unknownAction": "commit", "phase": "query" }', operation = '{ "state": "unknown", "operationId": "original" }';
+  const source = path.join(`${f.file}.pending-content`, "timeline", `${createHash("sha256").update(f.entry.entryId).digest("hex")}.json`), sourceBytes = fs.readFileSync(source);
+  try {
+    original.prepare("INSERT INTO image_runtime_state VALUES('native_provider:original',?)").run(state);
+    original.prepare("INSERT INTO operations(id,value) VALUES('original',?)").run(operation);
+  } finally { original.close(); }
+  try {
+    expect(() => prepareControllerStorage({ ...f.request, ticket: { ...f.ticket, executionId: randomUUID() } }, f.permit, () => {})).toThrow("belongs to another execution");
+    const observer = new Database(f.file, { readonly: true });
+    try {
+      expect(observer.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
+      expect(openTimelineStore(observer, { assertWrite: () => { throw new Error("read only"); } }).get(f.entry.entryId)).toEqual(f.entry);
+      expect(observer.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: state });
+      expect(observer.prepare("SELECT value FROM operations WHERE id='original'").get()).toEqual({ value: operation });
+      expect(observer.prepare("SELECT legacy_timeline_cleanup_pending AS pending FROM execution").get()).toEqual({ pending: 1 });
+    } finally { observer.close(); }
+    expect(fs.readFileSync(source)).toEqual(sourceBytes);
+  } finally { f.permit.release(); }
+});
