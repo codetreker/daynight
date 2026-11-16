@@ -41,15 +41,6 @@ IPv6 is disabled and observed in the namespaces. The regression records actual
 host, Docker and namespace networks, rules, counters and cleanup results under
 its temporary run directory.
 
-Host alias discovery conservatively protects every name in a hostname-first
-hosts row when all fields are valid DNS names. It does not discard that row or
-resolve the names to invent a trusted address. Ordinary numeric hosts rows keep
-their protected-network classification; malformed names, oversized alias sets
-and nonnumeric route gateways still refuse setup with their input location.
-Some hosted-runner inputs contain hostnames where numeric address parsing was
-expected, so the fixture must preserve protection without assuming every hosts
-row begins with an IP address.
-
 The operator declaration follows the existing [egress profile decision](../architecture/2026-11-10-image-egress-profiles.md).
 Its policy identity contains the digest of installed stateless rules. The
 regression rechecks that digest before namespace execution and source shutdown.
@@ -79,10 +70,6 @@ evidence.
 and translation policy are not created by this regression. Automating changes
 there would affect unrelated resources and still leave unobserved deployment
 facts. The script therefore rejects ordinary local execution.
-
-**Ignore nonnumeric hosts rows.** That would erase possible protected aliases.
-Protecting every syntactically valid name in such a row is conservative; a row
-that cannot be represented safely remains an explicit setup failure.
 
 **Create a general acceptance platform or public fixture service.** Those add
 service ownership, credentials and ongoing resource costs beyond Markdown

@@ -333,20 +333,14 @@ for (const variable of Object.keys(cliResults)) {
 
 test("the final gate verifies both current-run artifacts against its own checkout", () => {
   const steps = stepsOf(gate);
-  const downloads = steps.filter(step => step.includes("windows-cli-shards.mts download"));
-  assert.equal(downloads.length, 1);
-  const download = downloads[0]!;
-  assert.match(download, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
-  assert.match(download, /^          GH_TOKEN: \$\{\{ github.token \}\}$/m);
-  const commands = ["node .github/scripts/windows-cli-shards.mts download .tmp/windows-cli-shards",
-    "python3 -m zipfile -e .tmp/windows-cli-shards/1.zip .tmp/windows-cli-shards/1",
-    "python3 -m zipfile -e .tmp/windows-cli-shards/2.zip .tmp/windows-cli-shards/2"];
-  for (const command of commands) assert.ok(download.includes(command));
-  assert.ok(download.indexOf(commands[0]!) < download.indexOf(commands[1]!));
-  assert.ok(download.indexOf(commands[0]!) < download.indexOf(commands[2]!));
-  assert.doesNotMatch(download, /GITHUB_RUN_ID:|GITHUB_REPOSITORY:|continue-on-error/);
-  assert.doesNotMatch(gate, /uses: actions\/download-artifact@/);
-  assert.match(gate, /^      actions: read$/m);
+  const downloads = steps.filter(step => step.includes("uses: actions/download-artifact@"));
+  assert.equal(downloads.length, 2);
+  for (const [index, download] of downloads.entries()) {
+    assert.ok(download.includes(`name: daynight-cli-tests-results-windows-latest-shard-${index + 1}`));
+    assert.ok(download.includes(`path: .tmp/windows-cli-shards/${index + 1}`));
+    assert.match(download, /^        if: \$\{\{ needs.detect-changes.outputs.cli == 'true' \}\}$/m);
+    assert.doesNotMatch(download, /run-id:|repository:|continue-on-error/);
+  }
   const checkout = steps.find(step => step.includes("uses: actions/checkout@"))!;
   const node = steps.find(step => step.includes("uses: actions/setup-node@"))!;
   const verify = steps.find(step => step.includes("windows-cli-shards.mts verify"))!;
