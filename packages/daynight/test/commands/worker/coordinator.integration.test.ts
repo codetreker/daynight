@@ -164,6 +164,7 @@ const fixture = async (maxConcurrent = 1, registerProject = true) => {
     prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); await mkdir(binding.worktreePath, { recursive: true }); worktrees.set(owner.claimId, { owner, binding }); manifests.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     resolveWorktreeBinding: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => (worktrees.get(owner.claimId) ?? manifests.get(owner.claimId))?.binding ?? null),
+    isOriginalWorktreeAbsent: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => !worktrees.has(owner.claimId)),
     listWorktreeManifests: vi.fn(async (source: WorkerProject, _operation: Operation, includeOtherProjects = false) => [...new Map([...manifests, ...worktrees]).values()].filter(({ owner }) => owner.projectId === source.projectId || includeOtherProjects && store.getProject(owner)?.localPath === source.localPath)),
     retireWorktreeManifest: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { manifests.delete(owner.claimId); }),
     removeUnpublishedReservation: vi.fn(async () => {}),
@@ -310,6 +311,125 @@ const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) =
 };
 
 describe("minimal worker resource reconciliation", () => {
+  it("cleans a stopped native worktree with real Git while recording finalization fails", async () => {
+    const f = await fixture(), owner = { projectId: f.project.projectId, taskId: uuid(100), claimId: uuid(700), worktreeId: uuid(702) };
+    await mkdir(f.project.localPath, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
+    git("init", "--initial-branch=main");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
+    git("remote", "add", "origin", f.project.repoUrl);
+    const bare = path.join(f.root, "origin.git");
+    execFileSync("git", ["clone", "--bare", f.project.localPath, bare], { timeout: 10_000 });
+    git("config", `url.${bare}.insteadOf`, f.project.repoUrl);
+    const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"), prepareFormat });
+    const operation = createOperation();
+    let binding: WorktreeBinding;
+    try { await manager.prepareRepository(f.project, operation); binding = await manager.prepareWorktree(f.project, owner, operation); }
+    finally { operation.dispose(); }
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" }));
+    f.candidates.splice(0);
+    const source = path.join(f.root, "recordings", "source"), journal = path.join(f.root, "archives", "journal.json");
+    await mkdir(source, { recursive: true }); await mkdir(path.dirname(journal), { recursive: true });
+    await writeFile(path.join(source, "frame"), "original frame"); await writeFile(journal, "original archive journal");
+    const resource = { owner, sessionId: uuid(703), stopped: true, stopEvidence: archiveFixture.runs.map(run => run.stopProof), terminal: true, worktreePath: binding.worktreePath, sourcePath: source, sourceBytes: "14", state: "failed", error: "upload unavailable", nextAttemptAt: null, worktreeDeleted: false, disposition: null };
+    const archive = { resources: () => [resource], advance: vi.fn(async () => false), cleaned: vi.fn() };
+    let stopped = false;
+    const cleanup = vi.fn(async () => { stopped = true; throw new Error("stopped ledger publication failed"); });
+    Object.assign(f.herdr, { lifecycle: {
+      responsibilities: () => f.store.getTask(owner)?.status === "done" ? [] : [owner],
+      worktreePath: () => binding.worktreePath, isStopped: () => stopped, cleanup,
+      observeExecutionStop: async () => ({ kind: "stopped", execution: { owner, backend: "herdr-native", runKey: "fixture" }, observedAt: 1000 }),
+      archive, stop: vi.fn(),
+    } });
+    const monitor = createMonitoringObserver({ now: f.options.now });
+    const coordinator = createWorkerCoordinator({ ...f.options, git: manager, hasHerdrJournal: true, monitoring: monitor });
+    try {
+      await coordinator.tick();
+      await eventually(() => { expect(f.store.getTask(owner)?.status).toBe("done"); expect(f.store.getCleanupSchedule(owner)).toBeNull(); });
+      expect(cleanup).toHaveBeenCalledOnce();
+      await expect(access(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
+      expect(await readFile(path.join(source, "frame"), "utf8")).toBe("original frame");
+      expect(await readFile(journal, "utf8")).toBe("original archive journal");
+      expect(archive.cleaned).not.toHaveBeenCalled();
+      await coordinator.tick();
+      expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ phase: "archive" }));
+    } finally { await coordinator.shutdown(); await manager.dispose(); }
+  }, 30_000);
+
+  it.each(["before schedule", "task completion", "schedule deletion"])("reconciles an interrupted native cleanup after restart: %s", async interruption => {
+    const f = await fixture(), owner = { projectId: f.project.projectId, taskId: uuid(100), claimId: uuid(700), worktreeId: uuid(702) };
+    await mkdir(f.project.localPath, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, stdio: "pipe", timeout: 10_000 });
+    git("init", "--initial-branch=main");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
+    git("remote", "add", "origin", f.project.repoUrl);
+    const bare = path.join(f.root, "origin.git");
+    execFileSync("git", ["clone", "--bare", f.project.localPath, bare], { timeout: 10_000 });
+    git("config", `url.${bare}.insteadOf`, f.project.repoUrl);
+    const manager = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temporary"), prepareFormat });
+    const operation = createOperation();
+    let binding: WorktreeBinding;
+    try { await manager.prepareRepository(f.project, operation); binding = await manager.prepareWorktree(f.project, owner, operation); }
+    finally { operation.dispose(); }
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex" })); f.candidates.splice(0);
+    const record = { owner: { ...owner }, claimId: owner.claimId, cwd: binding.worktreePath };
+    const records = [record];
+    const archive = { resources: () => [], advance: vi.fn(), cleaned: vi.fn() };
+    Object.assign(f.herdr, { lifecycle: {
+      responsibilities: () => [], worktreePath: () => binding.worktreePath, isStopped: () => true,
+      cleanup: async () => true,
+      observeExecutionStop: async () => ({ kind: "stopped", execution: { owner, backend: "herdr-native", runKey: "fixture" }, observedAt: 1000 }),
+      archive, stop: vi.fn(),
+      migration: { listLifecycles: () => records, listRetired: () => [], assertOrigin: () => {}, listLegacyBindings: async () => [], listLegacyPendingStops: () => [] },
+    } });
+    if (interruption === "before schedule") {
+      expect(f.store.getCleanupSchedule(owner)).toBeNull();
+      f.reopenStore();
+    } else {
+      const database = new Database(path.join(f.root, "state.sqlite"));
+      try {
+        database.exec(interruption === "task completion"
+          ? "CREATE TRIGGER interrupt_settlement BEFORE UPDATE OF status ON tasks WHEN NEW.status = 'done' BEGIN SELECT RAISE(ABORT, 'interrupted task completion'); END"
+          : "CREATE TRIGGER interrupt_settlement BEFORE DELETE ON cleanup_schedules BEGIN SELECT RAISE(ABORT, 'interrupted schedule deletion'); END");
+      } finally { database.close(); }
+    }
+    const create = () => createWorkerCoordinator({ ...f.options, store: f.store, git: manager, hasHerdrJournal: true });
+    let coordinator = create();
+    try {
+      if (interruption !== "before schedule") {
+        await coordinator.tick();
+        await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "cleanup-error" })));
+        await expect(access(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
+        expect(f.store.getTask(owner)?.status).toBe(interruption === "task completion" ? "active" : "done");
+        expect(f.store.getCleanupSchedule(owner)).not.toBeNull();
+        await coordinator.shutdown();
+        const resumed = new Database(path.join(f.root, "state.sqlite"));
+        try { resumed.exec("DROP TRIGGER interrupt_settlement"); } finally { resumed.close(); }
+        f.reopenStore(); f.clock(1_000_000); coordinator = create();
+      }
+      await coordinator.tick();
+      await eventually(() => { expect(f.store.getTask(owner)?.status).toBe("done"); expect(f.store.getCleanupSchedule(owner)).toBeNull(); });
+      await expect(access(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(worktreePaths(f.project.localPath)).not.toContain(path.normalize(binding.worktreePath));
+      const successor = { ...owner, claimId: uuid(711), worktreeId: uuid(712) };
+      const successorOperation = createOperation();
+      let successorBinding: WorktreeBinding;
+      try { successorBinding = await manager.prepareWorktree(f.project, successor, successorOperation); }
+      finally { successorOperation.dispose(); }
+      const successorFile = path.join(successorBinding.worktreePath, "successor.txt");
+      await writeFile(successorFile, "successor content");
+      records.push({ owner: successor, claimId: successor.claimId, cwd: successorBinding.worktreePath });
+      f.grant(task(successor.projectId, successor.taskId), { claimId: successor.claimId, worktreeId: successor.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex" });
+      await coordinator.tick();
+      await eventually(() => expect(createWorktreeManifestStore(binding.commonDirectory).read(owner.worktreeId)).toBeNull());
+      expect(await readFile(successorFile, "utf8")).toBe("successor content");
+      expect(worktreePaths(f.project.localPath)).toContain(path.normalize(successorBinding.worktreePath));
+      expect(archive.cleaned).not.toHaveBeenCalled();
+    } finally { await coordinator.shutdown(); await manager.dispose(); }
+  }, 30_000);
+
   it.each([false, true])("reconciles persisted deletion after restart and releases one slot (explicit=%s)", async explicit => {
     const f = await fixture(), saved = await deletedArchive(f, explicit);
     expect(saved.attach().resources()[0]!.worktreeDeleted).toBe(true);

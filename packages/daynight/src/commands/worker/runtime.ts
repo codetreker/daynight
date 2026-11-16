@@ -1245,22 +1245,30 @@ export const runWorkerResources = async (options: {
     herdr = createDurableWorkerHerdr({ paths, homeDirectory: options.homeDirectory, serverOrigin: serverUrl, serverToken, workerId, readTask: remote.readTask, currentUserId: remote.currentUserId });
     const archive = herdr.lifecycle?.archive;
     if (!archive) throw new Error("The installed Worker does not support retained Herdr recording resources.");
-    if (options.request.kind === "list") { options.output(`${JSON.stringify(archive.resources(), null, 2)}\n`); return; }
-    const request = options.request;
-    const resource = archive.resources().find(value => value.sessionId === request.sessionId);
-    if (!resource) throw new Error("The requested original Session has no retained resource record.");
-    if (request.kind === "retry") {
-      const result = await archive.retry(request, operation);
-      options.output(`${JSON.stringify(result, null, 2)}\n`); return;
-    }
     store = openWorkerStore(paths.databaseFile);
-    const project = store.getProject(request);
-    if (!project) throw new Error("The original worktree path has no matching project binding.");
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory,
       reportPending: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local cleanup remains pending for project ${pending.projectId}; waiting for local close.\n`),
       reportSettled: pending => options.output(`Git ${pending.command} attempt ${pending.attemptId} local resources closed for project ${pending.projectId}.\n`),
       prepareFormat: (candidate, repository, scoped) => prepareWorkerWorktreeFormat({ paths, store: store!, project: candidate, repository, operation: scoped, platform, verifyWebUnregistered: createWorkerSessionApi(serverUrl, serverToken).verifyUnregistered, getHerdr: async () => herdr! }),
     });
+    const projectResource = async (resource: ReturnType<typeof archive.resources>[number]) => {
+      if (resource.worktreeDeleted || !resource.stopped || store!.getTask(resource.owner)?.status !== "done" || store!.getCleanupSchedule(resource.owner) !== null) return resource;
+      const project = store!.getProject(resource.owner);
+      if (!project) return resource;
+      try {
+        return { ...resource, worktreeDeleted: await git!.isOriginalWorktreeAbsent(project, resource.owner, resource.worktreePath, operation) };
+      } catch (error) { operation.check(); return resource; }
+    };
+    if (options.request.kind === "list") { options.output(`${JSON.stringify(await Promise.all(archive.resources().map(projectResource)), null, 2)}\n`); return; }
+    const request = options.request;
+    const resource = archive.resources().find(value => value.sessionId === request.sessionId);
+    if (!resource) throw new Error("The requested original Session has no retained resource record.");
+    if (request.kind === "retry") {
+      const result = await archive.retry(request, operation);
+      options.output(`${JSON.stringify(await projectResource(result), null, 2)}\n`); return;
+    }
+    const project = store.getProject(request);
+    if (!project) throw new Error("The original worktree path has no matching project binding.");
     await lstat(project.localPath);
     await git.prepareRepository(project, operation);
     let diagnosticFailure: unknown;
@@ -1274,6 +1282,8 @@ export const runWorkerResources = async (options: {
         if (fresh.disposition?.operationId !== request.operationId || fresh.disposition.action !== request.action) throw new Error("The original authorized disposal intent is missing.");
         assertHerdrDisposalTarget(fresh, request);
         const binding = await git!.resolveWorktreeBinding(project, request, operation);
+        if (binding === null && store!.getTask(request)?.status === "done" && store!.getCleanupSchedule(request) === null
+          && await git!.isOriginalWorktreeAbsent(project, request, fresh.worktreePath, operation)) return true;
         if (binding === null || !await sameWorktreeLocation(binding.worktreePath, fresh.worktreePath)) throw new Error("The original worktree path has no matching project binding.");
         const outcome = await git!.removeWorktree(project, request, options.signal === undefined ? {} : { signal: options.signal });
         if (outcome.effectErrors.length > 0) {
@@ -1283,6 +1293,8 @@ export const runWorkerResources = async (options: {
             finally { await diagnostics.close(); }
           } catch (error) { diagnosticFailure = error; }
         }
+        if (!await git!.isOriginalWorktreeAbsent(project, request, fresh.worktreePath, operation)) throw new Error("The original worktree or its Git branch registration remains present.");
+        return true;
       }, options.signal === undefined ? {} : { signal: options.signal });
       options.signal?.throwIfAborted();
       if (reconcileDeletedHerdrResource(store, result)) {

@@ -102,6 +102,7 @@ export type WorkerHerdrLifecycle = {
   /** Complete original records used by the one-time worktree format conversion. */
   migration?: {
     listLifecycles(): import("./herdr/lifecycle-types.js").HerdrLifecycleRecord[];
+    getLifecycle?(owner: import("./types.js").ClaimIdentity): import("./herdr/lifecycle-types.js").HerdrLifecycleRecord | null;
     listRetired(): import("./herdr/lifecycle-types.js").HerdrLifecycleRecord[];
     assertOrigin(record: import("./herdr/lifecycle-types.js").HerdrLifecycleRecord): void;
     listBindings(projectId: string, operation: Operation): Promise<import("./herdr/agents.js").HerdrOwnedWorkspace[]>;
@@ -111,6 +112,7 @@ export type WorkerHerdrLifecycle = {
   activeToolSelections?(): import("./tool-selection.js").ActiveToolSelection[];
   neverStarted?: {
     candidates(): HerdrExecutionOwner[];
+    isCandidate?(owner: HerdrExecutionOwner): boolean;
     retired(): { owner: HerdrExecutionOwner; cwd: string; agent: import("./types.js").ExecutionConfiguration["agent"] }[];
     retire(owner: HerdrExecutionOwner, operation: Operation, verifyWorktreeAbsent: (cwd: string) => Promise<void>): Promise<void>;
   };

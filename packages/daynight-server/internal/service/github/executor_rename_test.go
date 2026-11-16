@@ -41,7 +41,7 @@ func TestRepositoryResolvesRenamedIdentityAfterOldPathForbidden(t *testing.T) {
 				}
 				return githubpr.RepositoryObservation{ID: repository, FullName: "new/name", Private: true}, nil
 			}
-			r := run{e: &Executor{remote: upstream}, connection: githubpr.Connection{AppID: &app, InstallationID: &installation, RepositoryID: &repository, RepositoryFullName: &old}}
+			r := run{remote: upstream, connection: githubpr.Connection{AppID: &app, InstallationID: &installation, RepositoryID: &repository, RepositoryFullName: &old}}
 			got, err := r.repository(context.Background())
 			if !reflect.DeepEqual(calls, []string{"verify old/name", "resolve", "verify new/name"}) {
 				t.Fatalf("calls %v", calls)

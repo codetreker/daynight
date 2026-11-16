@@ -19,6 +19,8 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
   const triggerRef = useRef<HTMLElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const selectedRef = useRef<HTMLDivElement>(null);
+  const positionRef = useRef<(() => void) | null>(null);
   const previousOpen = useRef(open);
 
   useLayoutEffect(() => {
@@ -69,6 +71,13 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
       const leftEdge = x + marginX, rightEdge = x + width - marginX;
       const topEdge = y + marginY, bottomEdge = y + height - marginY;
       const bounds = root.getBoundingClientRect();
+      const trigger = triggerRef.current;
+      if (trigger === null) return;
+      const anchor = trigger.getBoundingClientRect();
+      const selected = selectedRef.current;
+      const chips = selected !== null && selected.getClientRects().length > 0 && interactive(selected) ? selected.getBoundingClientRect() : null;
+      const anchorTop = chips === null ? anchor.top : Math.min(anchor.top, chips.top);
+      const anchorBottom = chips === null ? anchor.bottom : Math.max(anchor.bottom, chips.bottom);
       const write = (property: 'left' | 'top' | 'maxWidth' | 'maxHeight', value: number) => {
         const next = `${Math.max(property.startsWith('max') ? 0 : -Infinity, value)}px`;
         if (panel.style[property] !== next) panel.style[property] = next;
@@ -77,15 +86,15 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
       if (panel.style.getPropertyValue('--tag-filter-padding-x') !== paddingX) panel.style.setProperty('--tag-filter-padding-x', paddingX);
       write('maxWidth', rightEdge - leftEdge);
       const panelWidth = panel.getBoundingClientRect().width;
-      const left = Math.max(leftEdge, Math.min(bounds.left, rightEdge - panelWidth));
+      const left = Math.max(leftEdge, Math.min(anchor.left, rightEdge - panelWidth));
       const naturalHeight = panel.scrollHeight + panel.offsetHeight - panel.clientHeight;
       const gap = 5;
       let top: number, available: number;
-      if (bounds.bottom <= topEdge || bounds.top >= bottomEdge) {
+      if (anchorBottom <= topEdge || anchorTop >= bottomEdge) {
         top = topEdge; available = bottomEdge - topEdge;
       } else {
-        const belowStart = Math.max(topEdge, Math.min(bottomEdge, bounds.bottom + gap));
-        const aboveEnd = Math.max(topEdge, Math.min(bottomEdge, bounds.top - gap));
+        const belowStart = Math.max(topEdge, Math.min(bottomEdge, anchorBottom + gap));
+        const aboveEnd = Math.max(topEdge, Math.min(bottomEdge, anchorTop - gap));
         const below = bottomEdge - belowStart, above = aboveEnd - topEdge;
         if (naturalHeight <= below || below >= above) {
           top = belowStart; available = below;
@@ -101,9 +110,13 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
       write('top', top - bounds.top);
       write('maxHeight', available);
     };
+    positionRef.current = position;
     position();
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(position);
     observer?.observe(root); observer?.observe(panel);
+    if (triggerRef.current !== null) observer?.observe(triggerRef.current);
+    if (selectedRef.current !== null) observer?.observe(selectedRef.current);
+    if (root.parentElement !== null) observer?.observe(root.parentElement);
     const toolbar = root.closest('.task-list-filters');
     if (toolbar !== null) {
       observer?.observe(toolbar);
@@ -114,6 +127,7 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
     view.visualViewport?.addEventListener('resize', position);
     view.visualViewport?.addEventListener('scroll', position);
     return () => {
+      positionRef.current = null;
       doc.removeEventListener(filterOpened, competing);
       doc.removeEventListener('pointerdown', pointerdown, true);
       doc.removeEventListener('keydown', keydown);
@@ -124,6 +138,8 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
       view.visualViewport?.removeEventListener('scroll', position);
     };
   }, [open, setOpen]);
+
+  useLayoutEffect(() => { positionRef.current?.(); });
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDetailsElement>) => {
     const root = rootRef.current;
@@ -136,5 +152,5 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
     event.preventDefault(); event.stopPropagation(); setOpen(false);
     if (triggerRef.current !== null && interactive(triggerRef.current)) triggerRef.current.focus();
   };
-  return { rootRef, triggerRef, panelRef, searchRef, onKeyDown };
+  return { rootRef, triggerRef, panelRef, searchRef, selectedRef, onKeyDown };
 };

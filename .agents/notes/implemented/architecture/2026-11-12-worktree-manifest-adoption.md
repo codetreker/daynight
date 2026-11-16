@@ -37,7 +37,9 @@ permits retiring only the old metadata without inspecting the successor cwd.
 Standalone release retires its manifest before returning successfully. The
 [cleanup outcome decision](2026-11-12-worktree-cleanup-outcome.md) defines fresh
 resource observation and error propagation before retirement. Web and
-durable Herdr retain their own stop and archive obligations.
+durable Herdr retain their own stop and archive obligations. Native Herdr's
+[independent cleanup decision](../bug-fix/2026-11-16-herdr-cleanup-independent-of-archive.md)
+separates its worktree settlement from archive completion.
 The [migration decision](2026-11-11-worktree-resource-migration.md) describes
 source validation and recovery, while the [Worker design](../../../../docs/design/daynight-worker.md#git-工作区与资源身份) owns the current mechanisms.
 

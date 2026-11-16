@@ -141,9 +141,9 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
         {!child && onManage !== undefined && <div className="tag-filter-manage"><button className="tag-filter-text" type="button" onClick={onManage}>{m.manage}</button></div>}
       </div>
     </details>
-    <TagColorFeedback projectId={controller.projectId} ids={colorIds} onRetry={catalog.refresh} />
     {controller.invalid && <p className="tag-filter-error" role="alert">{m.invalid}</p>}
     {controller.error !== null && <p className="tag-filter-error" role="alert">{m.resolveError} <button type="button" onClick={controller.retry}>{m.retry}</button></p>}
-    {(value.tagIds.length > 0 || value.untagged) && <div className="tag-filter-selected">{value.tagIds.map(id => <TagColorChip className="tag-filter-chip" key={id} name={`${names[id] ?? id}${invalidIds.includes(id) && colors.items.get(id)?.state !== 'missing' ? ` · ${m.removed}` : ''}`} item={colors.items.get(id)}><button type="button" aria-label={`${m.remove} ${names[id] ?? id}`} onClick={() => update({ ...value, tagIds: value.tagIds.filter(selected => selected !== id) })}>×</button></TagColorChip>)}{value.untagged && <span className="tag-filter-chip">{m.untagged}<button type="button" aria-label={`${m.remove} ${m.untagged}`} onClick={() => update({ ...value, untagged: false })}>×</button></span>}</div>}
+    <div ref={popover.selectedRef} className="tag-filter-selected">{value.tagIds.map(id => <TagColorChip className="tag-filter-chip" key={id} name={`${names[id] ?? id}${invalidIds.includes(id) && colors.items.get(id)?.state !== 'missing' ? ` · ${m.removed}` : ''}`} item={colors.items.get(id)}><button type="button" aria-label={`${m.remove} ${names[id] ?? id}`} onClick={() => update({ ...value, tagIds: value.tagIds.filter(selected => selected !== id) })}>×</button></TagColorChip>)}{value.untagged && <span className="tag-filter-chip">{m.untagged}<button type="button" aria-label={`${m.remove} ${m.untagged}`} onClick={() => update({ ...value, untagged: false })}>×</button></span>}</div>
+    <TagColorFeedback projectId={controller.projectId} ids={colorIds} onRetry={catalog.refresh} />
   </div>;
 };

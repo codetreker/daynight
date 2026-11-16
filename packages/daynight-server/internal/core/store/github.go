@@ -63,9 +63,14 @@ type GitHubConfigurationWrite struct {
 // read through it before SaveConfiguration so broadcast changes cannot be lost.
 // The enclosing Project lock protects first creation of a virtual resource.
 type GitHubWriteDAO interface {
+	GitHubWorkDAO
+	SaveConfiguration(context.Context, GitHubConfigurationWrite) (bool, error)
+}
+
+// GitHubWorkDAO supplies synchronization operations without configuration writes.
+type GitHubWorkDAO interface {
 	Connection(context.Context) (githubpr.Connection, error)
 	ObservedAt(context.Context) (time.Time, error)
-	SaveConfiguration(context.Context, GitHubConfigurationWrite) (bool, error)
 	Claim(context.Context, GitHubClaim) (bool, error)
 	// Renew requires the caller to lock Connection, read ObservedAt afterwards,
 	// and supply that database time plus five minutes. It rejects expiration

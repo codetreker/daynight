@@ -20,58 +20,73 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
       observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "agent-stop" }, false);
       const lifecycle = deps.herdr.lifecycle;
       if (lifecycle !== undefined) {
-        if (request.kind === "terminal") {
-          const notified = await cleanupOperation(operation => lifecycle.cleanup(input.owner, workerCleanupPrompt(input.owner, deadline), operation, request.scope), signal);
-          if (!notified) deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup prompt was skipped or unconfirmed because the original input surface was not safely available; controlled stopping still completed." });
-        } else await cleanupOperation(operation => lifecycle.stop(input.owner, deleteWorktree ? "terminal" : "shutdown", operation), signal);
+        try {
+          // Stopped-recording maintenance may already be publishing; it is not
+          // a prerequisite for worktree removal.
+          if (!lifecycle.isStopped(input.owner)) {
+            if (request.kind === "terminal") {
+              const notified = await cleanupOperation(operation => lifecycle.cleanup(input.owner, workerCleanupPrompt(input.owner, deadline), operation, request.scope), signal);
+              if (!notified) deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup prompt was skipped or unconfirmed because the original input surface was not safely available; controlled stopping still completed." });
+            } else await cleanupOperation(operation => lifecycle.stop(input.owner, "shutdown", operation), signal);
+          }
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (!lifecycle.isStopped(input.owner)) throw error;
+          deps.emit({ kind: "cleanup-error", ...(input.task === undefined ? {} : { task: input.task }), message: "The original Herdr run stopped; recording finalization remains pending.", error });
+        }
         if (!lifecycle.isStopped(input.owner)) throw new Error("The original Herdr run stop is not confirmed; its resources are retained.");
+        if (request.kind === "terminal") {
+          const observation = await cleanupOperation(operation => lifecycle.observeExecutionStop(input.owner, operation), signal);
+          if (observation.kind !== "stopped" && observation.kind !== "not-started") throw new Error("The original Herdr execution stop is unconfirmed; its resources are retained.");
+          request.scope.onExecutionStopped({ attempt: request.scope.attempt, observation });
+        }
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "agent-stop" }, true);
-        deps.emit({ kind: "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: "Stopped the original Herdr run; its worktree and local source remain until archive finalization permits cleanup." });
-        return;
-      }
-      await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
-      const observe = async () => actualTaskPane(input.owner, await cleanupOperation(operation => deps.herdr.tasks.listResources(operation), signal));
-      let pane = await observe();
-      if (pane !== undefined) {
-        const agent: WorkerAgent | undefined = input.task?.agent ?? pane.kind ?? pane.nativeSession?.agent;
-        if (agent !== undefined && liveAgent(pane) && deps.now() < deadline) {
-          const context = executionContext({ ...input, task: { agent } }, await originalWorktreePath(input.project, input.owner, pane.cwd));
-          deps.emit({ kind: "cleanup-started", ...(input.task === undefined ? {} : { task: input.task }), message: `Cleaning claim ${input.owner.claimId}; observing its resources until ${new Date(deadline).toISOString()}.` });
-          // Herdr has no per-input operation lookup. The notification is advisory;
-          // a restarted attempt observes resources again and may notify the surviving agent.
-          try {
-            await cleanupOperation(operation => deps.herdr.tasks.submitPrompt(context, pane!.binding, workerCleanupPrompt(input.owner, deadline), operation), signal, Math.max(1, Math.min(CLEANUP_OPERATION_MS, deadline - deps.now())));
-          } catch (error) {
-            signal?.throwIfAborted();
-            deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup notification failed; actual resources will still be observed and stopped.", error });
-          }
-          while (true) {
-            if (deps.now() < deadline) await delay(Math.max(1, Math.min(1000, deadline - deps.now())), undefined, signal === undefined ? {} : { signal });
-            pane = await observe();
-            if (pane === undefined || !liveAgent(pane) || pane.status === "idle" || deps.now() >= deadline) break;
-          }
-        }
+        deps.emit({ kind: "agent-stopped", ...(input.task === undefined ? {} : { task: input.task }), message: "Stopped the original Herdr run; recording finalization continues independently." });
+      } else {
+        await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
+        const observe = async () => actualTaskPane(input.owner, await cleanupOperation(operation => deps.herdr.tasks.listResources(operation), signal));
+        let pane = await observe();
         if (pane !== undefined) {
-          try {
-            const cwd = await originalWorktreePath(input.project, input.owner, pane.cwd);
-            await cleanupOperation(operation => deps.herdr.tasks.stopAndClose({ ...input.owner, cwd }, pane!.binding, operation), signal);
+          const agent: WorkerAgent | undefined = input.task?.agent ?? pane.kind ?? pane.nativeSession?.agent;
+          if (agent !== undefined && liveAgent(pane) && deps.now() < deadline) {
+            const context = executionContext({ ...input, task: { agent } }, await originalWorktreePath(input.project, input.owner, pane.cwd));
+            deps.emit({ kind: "cleanup-started", ...(input.task === undefined ? {} : { task: input.task }), message: `Cleaning claim ${input.owner.claimId}; observing its resources until ${new Date(deadline).toISOString()}.` });
+            // Herdr has no per-input operation lookup. The notification is advisory;
+            // a restarted attempt observes resources again and may notify the surviving agent.
+            try {
+              await cleanupOperation(operation => deps.herdr.tasks.submitPrompt(context, pane!.binding, workerCleanupPrompt(input.owner, deadline), operation), signal, Math.max(1, Math.min(CLEANUP_OPERATION_MS, deadline - deps.now())));
+            } catch (error) {
+              signal?.throwIfAborted();
+              deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup notification failed; actual resources will still be observed and stopped.", error });
+            }
+            while (true) {
+              if (deps.now() < deadline) await delay(Math.max(1, Math.min(1000, deadline - deps.now())), undefined, signal === undefined ? {} : { signal });
+              pane = await observe();
+              if (pane === undefined || !liveAgent(pane) || pane.status === "idle" || deps.now() >= deadline) break;
+            }
           }
-          catch (error) {
-            signal?.throwIfAborted();
-            if (await observe() !== undefined) throw error;
+          if (pane !== undefined) {
+            try {
+              const cwd = await originalWorktreePath(input.project, input.owner, pane.cwd);
+              await cleanupOperation(operation => deps.herdr.tasks.stopAndClose({ ...input.owner, cwd }, pane!.binding, operation), signal);
+            }
+            catch (error) {
+              signal?.throwIfAborted();
+              if (await observe() !== undefined) throw error;
+            }
           }
         }
+        await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
+        if (await observe() !== undefined) throw new Error("The original task pane still exists after cleanup.");
+        if (deps.herdr.tasks.pendingStops().some(stop => sameClaim(stop.context, input.owner))) throw new Error("The original Herdr stop remains pending.");
+        if (request.kind === "terminal") {
+          const observation = await cleanupOperation(operation => deps.herdr.tasks.observeExecutionStop(input.owner, operation), signal);
+          if (observation.kind === "stopped" || observation.kind === "not-started") request.scope.onExecutionStopped({ attempt: request.scope.attempt, observation });
+          else if (observation.kind === "unknown" && observation.error instanceof LegacyBindingUnavailableError) input.onLegacyResourcesAbsent?.();
+          else throw new Error("The original Herdr execution stop is unconfirmed; its resources are retained.", observation.kind === "unknown" ? { cause: observation.error } : undefined);
+        }
+        observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "agent-stop" }, true);
       }
-      await settleWorkerStops(deps, input.owner, signal, cleanupOperation);
-      if (await observe() !== undefined) throw new Error("The original task pane still exists after cleanup.");
-      if (deps.herdr.tasks.pendingStops().some(stop => sameClaim(stop.context, input.owner))) throw new Error("The original Herdr stop remains pending.");
-      if (request.kind === "terminal") {
-        const observation = await cleanupOperation(operation => deps.herdr.tasks.observeExecutionStop(input.owner, operation), signal);
-        if (observation.kind === "stopped" || observation.kind === "not-started") request.scope.onExecutionStopped({ attempt: request.scope.attempt, observation });
-        else if (observation.kind === "unknown" && observation.error instanceof LegacyBindingUnavailableError) input.onLegacyResourcesAbsent?.();
-        else throw new Error("The original Herdr execution stop is unconfirmed; its resources are retained.", observation.kind === "unknown" ? { cause: observation.error } : undefined);
-      }
-      observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "agent-stop" }, true);
       stage = "worktree-removal";
       if (deleteWorktree) {
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, false);
@@ -82,6 +97,7 @@ export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask"
         }
         const after = await cleanupOperation(operation => deps.git.resolveWorktreeBinding(input.project, input.owner, operation), signal);
         if (binding?.worktreePath !== after?.worktreePath || binding?.repositoryPath !== after?.repositoryPath || binding?.commonDirectory !== after?.commonDirectory || binding?.branch !== after?.branch) throw new Error("The original worktree binding changed during cleanup.");
+        if (lifecycle !== undefined && binding !== null && !await cleanupOperation(operation => deps.git.isOriginalWorktreeAbsent(input.project, input.owner, binding.worktreePath, operation), signal)) throw new Error("The original worktree or its Git branch registration remains present.");
         signal?.throwIfAborted();
         observeWorkerPhase(deps.observePhase, input.owner, { kind: "cleanup", phase: "worktree-removal" }, true);
         signal?.throwIfAborted();

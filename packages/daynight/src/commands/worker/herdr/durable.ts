@@ -38,7 +38,6 @@ import { createHerdrRecordingRuntime } from "./recording-runtime.js";
 import { readHerdrTerminalSnapshot } from "./recording-sampler.js";
 import type { HerdrRecordingScreen } from "./recording-types.js";
 import { createHerdrArchiveApi, ensureHerdrRecordingResponsibility, type HerdrArchiveApi } from "./archive-api.js";
-import { hasConfirmedHerdrResourceDeletion } from "../resource-disposal.js";
 import { createHerdrRecordingArchive } from "./recording-archive.js";
 import { createHerdrRecordingResources } from "./recording-resources.js";
 import { createNativeSelectionVerifier, type NativeSelectionVerifier } from "../native-selection.js";
@@ -108,6 +107,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const inputStore = openHerdrInputStore(path.join(options.paths.workerDirectory, "herdr-inputs.sqlite"));
   const arbiters = new Map<string, HerdrInputArbiter>();
   const nativeBatches = new Map<string, { written: boolean; width: number; height: number }>();
+  const nativeOperations = new Map<string, number>();
+  const beginNativeOperation = (sessionId: string): (() => void) => {
+    nativeOperations.set(sessionId, (nativeOperations.get(sessionId) ?? 0) + 1);
+    return () => { const count = nativeOperations.get(sessionId)!; if (count === 1) nativeOperations.delete(sessionId); else nativeOperations.set(sessionId, count - 1); };
+  };
   const inputFailures = new Map<string, Error>();
   const promptGuards = new Map<string, (operation: Operation) => Promise<boolean>>();
   const bridgeRegistrations = new Set<string>();
@@ -129,6 +133,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const attachedRuns = new Set<string>();
   const pendingAttachmentPublications = new Set<string>();
   const locks = new Map<string, Promise<void>>();
+  const recordingLocks = new Map<string, Promise<void>>();
   const legacy = createAdapter({ ...options, selectionVerifier });
   const need = (owner: Identity): HerdrLifecycleRecord => {
     if (store.retired(owner)) throw new Error("The original never-started claim is retired; execution cannot resume.");
@@ -145,6 +150,20 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     await previous;
     try { return await action(); }
     finally { release(); if (locks.get(name) === tail) locks.delete(name); }
+  };
+  const serializeRecording = async <T>(owner: Identity, operation: Operation, action: () => Promise<T>): Promise<T> => {
+    const name = key(owner), previous = recordingLocks.get(name) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.then(() => gate); recordingLocks.set(name, tail);
+    void tail.then(() => { if (recordingLocks.get(name) === tail) recordingLocks.delete(name); });
+    let abort!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(operation.signal.reason);
+      if (operation.signal.aborted) abort(); else operation.signal.addEventListener("abort", abort, { once: true });
+    });
+    try { await Promise.race([previous, cancelled]); operation.check(); return await action(); }
+    finally { operation.signal.removeEventListener("abort", abort); release(); }
   };
   class ClaimAuthorizationError extends Error {}
   const verifyClaim = async (owner: Identity, operation: Operation): Promise<Task> => {
@@ -278,7 +297,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     if (!hadJournal && (record.automationBlocked || disconnectedBeforeInput.has(record.sessionId))) inputStore.update(initialized, draft => { draft.state = "suspended"; draft.unknownInput = true; });
     arbiter = createHerdrInputArbiter({ store: inputStore, sessionId: record.sessionId, propagateAutomaticFailures: true,
       verify: async (expected, purpose, signal) => {
+        const sessionId = need(owner).sessionId;
         const operation = createOperation({ ...(signal ? { signal } : {}), limits: { totalMs: 10_000 } });
+        const endNativeOperation = beginNativeOperation(sessionId);
         try {
           const fresh = need(owner);
           if (inputFailures.has(fresh.sessionId)) throw new SessionV2Error("source_corrupt");
@@ -324,10 +345,11 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
             try { await verifyRuntime(need(owner)); } catch { throw new SessionV2Error("target_changed"); }
             await verifyAutomaticAdmission(owner, operation);
           }
-        } finally { operation.dispose(); }
+        } finally { endNativeOperation(); operation.dispose(); }
       },
       execute: async (batch, write) => {
         const fresh = need(owner), operation = createOperation({ signal: write.signal, limits: { totalMs: 10_000 } });
+        const endNativeOperation = beginNativeOperation(fresh.sessionId);
         let progress: { written: boolean; width: number; height: number } | undefined;
         try {
           const readiness = await inspect(fresh, batch.source === "web" ? "manual" : batch.source === "cleanup" ? "cleanup" : "automatic", operation);
@@ -341,7 +363,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
           const outcome = await (options.submitInput ?? submitTerminalInput)({ endpoint: adapter(fresh).paths.clientEndpoint, terminalId: batch.target.binding.terminalId, ...readiness, inputs, signal: write.signal,
             beforeWrite: async () => { try { await write.beforeWrite(); } catch (error) { transportError = error instanceof Error ? error : new Error(String(error)); throw error; } }, onWrite: () => { write.markWritten(); progress!.written = true; } });
           if (outcome.status !== "transport_completed") throw transportError ?? new Error(outcome.reason);
-        } finally { if (nativeBatches.get(fresh.sessionId) === progress) nativeBatches.delete(fresh.sessionId); operation.dispose(); }
+        } finally { if (nativeBatches.get(fresh.sessionId) === progress) nativeBatches.delete(fresh.sessionId); endNativeOperation(); operation.dispose(); }
       },
     });
     arbiters.set(record.sessionId, arbiter); return arbiter;
@@ -413,19 +435,31 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     publishStopped: async (record, operation) => { await finishStop(identity(record), operation); }, readTask: options.readTask,
     currentUserId: options.currentUserId ?? (async () => { throw new Error("The original resource owner cannot be authenticated."); }),
   });
+  const assertRecordingQuiescent = (owner: Identity): void => {
+    const record = need(owner);
+    if (!recording.quiescent(record) || nativeOperations.has(record.sessionId)) throw new Error("An original local operation has not exited.");
+  };
+  const nativeRunStopped = (record: HerdrLifecycleRecord): boolean => recording.quiescent(record) && !nativeOperations.has(record.sessionId) && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null));
+  const nativeStopped = (record: HerdrLifecycleRecord): boolean => selectionEpoch === settledSelectionEpoch && nativeRunStopped(record);
+  const assertNativeRunStopped = (owner: Identity): void => {
+    assertRecordingQuiescent(owner);
+    if (!nativeRunStopped(need(owner))) throw new Error("The original native execution stop is not confirmed.");
+  };
   const resources: typeof recordingResources = {
-    resources: () => recordingResources.resources().map(resource => ({ ...resource, stopped: resource.stopped && selectionEpoch === settledSelectionEpoch })),
-    advance: async (...args) => { await settleSelection(); return recordingResources.advance(...args); },
-    retry: async (...args) => { await settleSelection(); return recordingResources.retry(...args); },
-    dispose: async (...args) => { await settleSelection(); return recordingResources.dispose(...args); },
+    resources: () => recordingResources.resources().map(resource => {
+      const record = store.get(resource.owner);
+      return { ...resource, stopped: resource.stopped && selectionEpoch === settledSelectionEpoch && record !== null && record.owner.workerId === options.workerId && record.owner.worktreeId === resource.owner.worktreeId && recording.quiescent(record) && !nativeOperations.has(record.sessionId) };
+    }),
+    advance: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => { await settleSelection(); assertNativeRunStopped(args[0]); return recordingResources.advance(...args); }); },
+    retry: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => { await settleSelection(); assertNativeRunStopped(args[0]); return recordingResources.retry(...args); }); },
+    dispose: async (...args) => { assertNativeRunStopped(args[0]); return serializeRecording(args[0], args[1], async () => { await settleSelection(); assertNativeRunStopped(args[0]); return recordingResources.dispose(...args); }); },
     cleaned: owner => {
       if (selectionEpoch !== settledSelectionEpoch) throw new Error("Native selection probe cleanup is unconfirmed; original resources must be retained.");
+      if (recordingLocks.has(key(owner))) throw new Error("Recording maintenance is still in progress.");
+      assertRecordingQuiescent(owner);
       recordingResources.cleaned(owner);
     },
   };
-  // The same durable deletion decision retires both resource ownership and
-  // pending stop publication. Disposal does not fabricate a remote ledger ACK.
-  const retainedResources = () => resources.resources().filter(resource => !hasConfirmedHerdrResourceDeletion(resource));
   const enrich = (owner: Identity, observed: HerdrAgentObservation): void => {
     if (observed.nativeSession === null) return;
     const agent = need(owner).owner.provider;
@@ -621,6 +655,16 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   };
   const stop = async (owner: Identity, reason: "shutdown" | "terminal", operation: Operation, scope?: TerminalCleanupContext): Promise<void> => {
     const before = need(owner);
+    if (nativeRunStopped(before)) {
+      if (reason === "terminal" && scope !== undefined) {
+        const observation = await observeExecutionStop(owner, operation);
+        if (observation.kind !== "stopped" && observation.kind !== "not-started") throw new Error("The original Herdr execution stop cannot be confirmed.");
+        scope.onExecutionStopped({ attempt: scope.attempt, observation });
+      }
+      await settleSelection(); operation.check();
+      if (!nativeStopped(need(owner))) throw new Error("The original Herdr execution stop cannot be confirmed.");
+      return;
+    }
     let input = arbiters.get(before.sessionId);
     let inputJournalError: unknown;
     let priorControl: SessionV2Payloads["control_state"] | null = null;
@@ -631,13 +675,12 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       input?.beginClosing();
       if (!options.sessionApi && inputSession.connected(before.sessionId)) releaseShutdown = inputSession.holdShutdown(before.sessionId);
     } catch (error) { inputJournalError = error; }
-    await stopRecording(owner, false);
     const closeInput = () => {
       try { inputSession.close(before.sessionId); } catch (error) { inputJournalError ??= error; }
       finally { releaseShutdown(); }
       bridgeRegistrations.delete(before.sessionId);
     };
-    try { await serialize(owner, async () => {
+    try { await serializeRecording(owner, operation, () => stopRecording(owner, false)); await serialize(owner, async () => {
     // Probe cleanup gates resource release, but cannot delay or suppress an
     // independent attempt to stop this claim's original native processes.
     const results = await Promise.allSettled([settleSelection(), (async () => {
@@ -712,7 +755,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     if (failures.length > 1) throw new AggregateError(failures, "Herdr native stopping and probe cleanup both failed.");
     if (results[1].status !== "fulfilled" || !results[1].value) return;
     // Segment closure is a separate recoverable boundary after the stop proof commits.
-    await finishStop(owner, operation);
+    await serializeRecording(owner, operation, () => finishStop(owner, operation));
     if (reason === "terminal" && input && !inputJournalError) input.close();
     }); } finally { closeInput(); }
     if (inputJournalError) throw new Error("The input closing journal could not commit; native stopping was attempted but input evidence remains unavailable.", { cause: inputJournalError });
@@ -746,10 +789,9 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
   const tasks: ReturnType<typeof createWorkerHerdr>["tasks"] = {
     ...legacy.tasks,
     pendingStops: () => {
-      const deleted = new Set(resources.resources().filter(hasConfirmedHerdrResourceDeletion).map(resource => key(resource.owner)));
-      return store.list().filter(record => !deleted.has(key(identity(record))) && record.runs.length > 0
-        && (["stop_intent", "close_requested", "stop_unknown"].includes(current(record).phase) || current(record).phase === "stopped_confirmed"
-          && (record.segments.some(segment => segment.endedAt === null) || record.publishedLedgerHash !== herdrLedgerHash(record))))
+      return store.list().filter(record => record.runs.length > 0
+        && (["stop_intent", "close_requested", "stop_unknown"].includes(current(record).phase)
+          || current(record).phase === "stopped_confirmed" && current(record).run.stopProof === null))
         .map(record => ({ context: contextFor(record), binding: bindingFor(current(record)) }));
     },
     listResources: async operation => {
@@ -762,7 +804,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       }
       return result;
     },
-    prepareWorkspace: (context, title, operation, input) => serialize(context, async () => {
+    prepareWorkspace: (context, title, operation, input) => serialize(context, () => serializeRecording(context, operation, async () => {
       await verifyClaim(context, operation);
       let record = need(context);
       if (record.runs.length === 0) {
@@ -808,7 +850,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       await publish(context, operation, input?.canAdmitNewExecution);
       await prepareRecording(context, operation);
       return binding;
-    }),
+    })),
     start: (context, binding, input, operation) => serialize(context, async () => {
       let record = need(context), run = current(record);
       if (run.phase !== "prepared" || run.nativeLaunch !== "not_submitted" || JSON.stringify(bindingFor(run)) !== JSON.stringify(binding)) throw new Error("Native launch requires the original prepared Herdr run.");
@@ -925,6 +967,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
     lifecycle: {
       migration: {
         listLifecycles: () => store.list(),
+        getLifecycle: owner => store.get(owner),
         listRetired: () => store.listRetired(),
         assertOrigin: record => {
           if (record.owner.serverOrigin !== options.serverOrigin || record.owner.workerId !== options.workerId) throw new Error("The original Herdr archive belongs to another server or worker and cannot be completely observed.");
@@ -947,6 +990,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
       },
       neverStarted: {
         candidates: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId && !store.retired(identity(record)) && isHerdrNeverStarted(record)).map(identity),
+        isCandidate: owner => { const record = store.get(owner); if (record === null) return false; if (record.owner.workerId !== options.workerId || record.owner.serverOrigin !== options.serverOrigin || record.owner.worktreeId !== owner.worktreeId) throw new Error("The original Herdr lifecycle belongs to another execution owner."); return !store.retired(owner) && isHerdrNeverStarted(record); },
         retired: () => store.listRetired().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId).map(record => ({ owner: identity(record), cwd: record.cwd, agent: record.owner.provider })),
         retire: (owner, operation, verifyWorktreeAbsent) => serialize(owner, async () => {
           await settleSelection();
@@ -1009,7 +1053,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
         }
         return entries;
       }),
-      responsibilities: () => retainedResources().map(resource => resource.owner),
+      responsibilities: () => store.list().filter(record => record.owner.serverOrigin === options.serverOrigin && record.owner.workerId === options.workerId && !store.retired(identity(record)) && (record.runs.length === 0 || !nativeStopped(record))).map(identity),
       worktreePath: owner => {
         const record = store.get(owner);
         if (record === null) return null;
@@ -1024,7 +1068,7 @@ export const createDurableWorkerHerdr = (options: BaseOptions & {
           && input.initialOutcome === "pending" && input.initialDisposition === null && !input.unknownInput ? record.initialPrompt : null;
       },
       observeExecutionStop,
-      isStopped: owner => { const record = store.get(owner); return selectionEpoch === settledSelectionEpoch && record !== null && record.preparation === null && (record.runs.length === 0 || record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null)) && record.segments.every(segment => segment.endedAt !== null); },
+      isStopped: owner => { const record = store.get(owner); return record !== null && nativeStopped(record); },
       cleanup: async (owner, prompt, operation, scope) => {
         let notified = false;
         const record = need(owner);
