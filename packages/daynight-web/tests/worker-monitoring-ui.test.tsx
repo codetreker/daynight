@@ -23,6 +23,13 @@ const detail: WorkerMonitoringDetail = { observedAt: receivedAt, state: 'availab
 } };
 const state = (snapshot: WorkerMonitoringDetail | null = detail, now: number | null = time): WorkerReadState<WorkerMonitoringDetail> => ({ snapshot, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh: vi.fn() });
 
+it.each(['en', 'zh-CN'] as const)('shows actionable Markdown repair guidance in %s', locale => {
+  const snapshot = structuredClone(detail);
+  snapshot.data.currentFailures[0]!.error = { type: 'operation', code: 'markdown-projection-repair', cause: 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.', causeTruncated: false };
+  renderWithLocale(<WorkerMonitoring state={state(snapshot)} readEnabled />, { locale });
+  expect(screen.getAllByText(/daynight worker repair-markdown --help/).length).toBeGreaterThan(0);
+});
+
 it('renders real capacity and cleanup details and preserves an expanded failure during background reads', () => {
   const view = renderWithLocale(<WorkerMonitoring state={state()} readEnabled />, { locale: 'en' });
   expect(screen.getByText('2 / 2')).toBeInTheDocument(); expect(screen.getByText(/Cleanup occupies capacity/)).toBeInTheDocument();

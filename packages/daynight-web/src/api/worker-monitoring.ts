@@ -19,7 +19,7 @@ const causes = {
   'configuration-missing': 'Required configuration is missing.', 'configuration-invalid': 'The configuration is invalid.', 'command-failed': 'A required command failed.',
   'io-error': 'A required I/O operation failed.', 'invalid-output': 'A required operation produced invalid output.', 'recovery-limit': 'The recovery limit was reached.',
   'native-identity-missing': 'The original native execution identity is missing.', 'worktree-validation-failed': 'The worktree failed ownership validation.',
-  'branch-mismatch': 'The worktree branch does not match the recorded owner.', 'recovery-blocked': 'Recovery is blocked and needs attention.',
+  'branch-mismatch': 'The worktree branch does not match the recorded owner.', 'markdown-projection-repair': 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.', 'recovery-blocked': 'Recovery is blocked and needs attention.',
   'outcome-unknown': 'The operation outcome is unknown.', unknown: 'The operation failed; inspect local Worker diagnostics for details.',
 } as const;
 

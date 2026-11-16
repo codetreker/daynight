@@ -19,6 +19,7 @@ import { controllerJournalWriteOptions } from "../../../src/commands/controller/
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { parseTimelineEntry } from "../../../src/session/protocol.js";
+import { createMarkdownImageProjector } from "../../../src/commands/controller/markdown/projection.js";
 const errorCauses = (error: unknown): Error[] => {
   const values: Error[] = [];
   for (let cause = error; cause instanceof Error; cause = cause.cause) values.push(cause);
@@ -49,14 +50,20 @@ const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunch
     expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
   } finally { confirm.mockRestore(); }
 };
-const fixture = async ({ finalizeStop = true }: { finalizeStop?: boolean } = {}) => {
+const fixture = async ({ finalizeStop = true, failedMarkdown = false }: { finalizeStop?: boolean; failedMarkdown?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/archive-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: path.join(home, "removed-worktree"), nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "managed task", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const journalPath = path.join(home, "journal.sqlite");
   const store = openControllerLifecycleStore(journalPath, ticket, { contentOwnedLocally: true });
   const entry = { entryId: randomUUID(), revision: "1", kind: "assistant_message" as const, content: [{ type: "text" as const, text: "durable answer" }] };
-  store.projectTimeline(entry); const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
+  if (failedMarkdown) {
+    const projector = createMarkdownImageProjector();
+    const prepared = projector.prepare(entry, { parts: [{ inputIndex: 0, sourceKey: `${entry.entryId}:body`, contextKey: "original", complete: true, truncated: false, format: "markdown" }] }, null);
+    const failed = projector.markFailed(prepared.state);
+    store.publishMarkdownProjection(failed.state, failed.entry);
+  } else store.projectTimeline(entry);
+  const sourceThrough=store.getLastSourceSequence(); store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
   if (finalizeStop) await completeFixtureStop(journalPath, ticket, home);
   return { home, ticket, journalPath, entry, sourceThrough, completeStop: () => completeFixtureStop(journalPath, ticket, home) };
 };
@@ -68,6 +75,16 @@ const migrate = (db: Database.Database, stateDirectory: string): void => {
   } finally { permit.release(); }
 };
 const emptyStatus = { state: "unavailable", sha256: null, byteLength: null, errorCode: null };
+test("classifies complete nontruncated Markdown failure before archive IO and preserves its original source", async () => {
+  const f = await fixture({ failedMarkdown: true });
+  const before = await readFile(f.journalPath);
+  expect(await archives.probeStoppedControllerArchive(f)).toEqual({ kind: "blocked", code: "markdown_projection_failed" });
+  const request = vi.fn<typeof fetch>();
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request })).rejects.toMatchObject({ name: "ArchiveRepairRequiredError", code: "markdown_projection_failed" });
+  expect(request).not.toHaveBeenCalled();
+  expect(await readFile(f.journalPath)).toEqual(before);
+  expect(pending(f.journalPath, f.ticket.sessionId).timeline.get(f.entry.entryId)).toMatchObject({ imageProjectionError: { code: "source_unavailable" } });
+});
 test.each(fixturePlatforms)("retries confirmed archive busy responses with the same request until the upload completes (%s)", async fixturePlatform => {
   selectFixturePlatform(fixturePlatform);
   const f = await fixture(), bodies: string[] = [];

@@ -40,26 +40,43 @@ afterEach(() => {
 });
 
 describe("minimal worker SQLite schema", () => {
-  it("retains archive repair scheduling across reopen without changing the owner or deadline", () => {
+  it.each(["archive_incomplete", "markdown_projection_failed"] as const)("retains archive repair %s across reopen without changing the owner or deadline", code => {
     const f = fixture(); f.register();
     const owner = { ...claim, worktreeId: uuid(4) };
-    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 3, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: "archive_incomplete" });
+    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 3, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: code });
     close(f.store);
     const reopened = open(f.file);
-    expect(reopened.getCleanupSchedule(owner)).toMatchObject({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 901000, archiveRepairCode: "archive_incomplete" });
+    expect(reopened.getCleanupSchedule(owner)).toMatchObject({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 901000, archiveRepairCode: code });
     expect(() => reopened.saveCleanupSchedule({ ...owner, worktreeId: uuid(5) }, reopened.getCleanupSchedule(owner)!)).toThrow("different worktree");
     expect(() => reopened.saveCleanupSchedule(owner, { ...reopened.getCleanupSchedule(owner)!, deadline: 101 })).toThrow("deadline");
   });
 
   it("upgrades a version 12 cleanup schedule without inventing an archive blocker", () => {
-    const f = fixture(); f.register();
-    f.store.saveCleanupSchedule({ ...claim, worktreeId: uuid(4) }, { deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
-    close(f.store);
-    const db = connect(f.file);
-    if ((db.pragma("table_info(cleanup_schedules)") as { name: string }[]).some(row => row.name === "archive_repair_code")) db.exec("ALTER TABLE cleanup_schedules DROP COLUMN archive_repair_code");
-    db.exec("DROP TABLE IF EXISTS archive_backfill_schedules; DROP TABLE claim_tool_reservations");
+    const f = fixture(); close(f.store);
+    const db = connect(path.join(f.directory, "version12.sqlite"));
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 12) db.exec(step.sql);
+    db.prepare("INSERT INTO cleanup_schedules VALUES(?,?,?,?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, uuid(4), 100, 3, 200, "archive", "retained");
     db.pragma("user_version=12"); db.close();
-    expect(open(f.file).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+    expect(open(db.name).getCleanupSchedule(claim)).toEqual({ ...claim, worktreeId: uuid(4), deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained" });
+  });
+
+  it("preserves both version 16 repair schedules while admitting the Markdown blocker", () => {
+    const f = fixture(); close(f.store);
+    const file = path.join(f.directory, "version16.sqlite"), db = connect(file);
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/worker/sqlite/", import.meta.url))) if (step.version <= 16) db.exec(step.sql);
+    db.prepare("INSERT INTO cleanup_schedules VALUES(?,?,?,?,?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, uuid(4), 100, 3, 200, "archive", "retained", "projection_gap");
+    const history = { ...claim, serverOrigin: "https://daynight.example", executionId: uuid(5), executionGeneration: "1", launchId: uuid(6) };
+    db.prepare("INSERT INTO archive_backfill_schedules VALUES(?,?,?,?,?,?,?,?,?)").run(history.serverOrigin, history.executionId, history.executionGeneration, history.launchId, claim.projectId, claim.taskId, claim.claimId, "archive_incomplete", 300);
+    db.pragma("user_version=16"); db.close();
+    const migrated = open(file), owner = { ...claim, worktreeId: uuid(4) };
+    expect(migrated.getCleanupSchedule(claim)).toEqual({ ...owner, deadline: 100, failures: 3, nextAttemptAt: 200, stage: "archive", lastError: "retained", archiveRepairCode: "projection_gap" });
+    expect(migrated.getArchiveBackfillSchedule(history)).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: 300 });
+    migrated.saveCleanupSchedule(owner, { ...migrated.getCleanupSchedule(owner)!, archiveRepairCode: "markdown_projection_failed" });
+    migrated.saveArchiveBackfillSchedule(history, { archiveRepairCode: "markdown_projection_failed", nextAttemptAt: 300 });
+    close(migrated);
+    const reopened = open(file);
+    expect(reopened.getCleanupSchedule(owner)?.archiveRepairCode).toBe("markdown_projection_failed");
+    expect(reopened.getArchiveBackfillSchedule(history)?.archiveRepairCode).toBe("markdown_projection_failed");
   });
 
   it("creates the project mapping, task index and cleanup schedule with WAL/FULL", () => {

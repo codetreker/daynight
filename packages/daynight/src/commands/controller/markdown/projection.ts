@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ProviderEntry } from "../providers/types.js";
 import type { MessagePart } from "../../../session/protocol.js";
 import { canonicalImageJson, parseImagePart, parseMarkdownImagePart, type ImageOccurrence, type ImagePart, type ImageUnavailablePart, type MarkdownImageBinding, type MarkdownImageMetadata, type MarkdownImagePart, type RetainedMarkdownImage } from "../../../session/image-values.js";
-import { parseMarkdownImages, type MarkdownSourceNode } from "./parser.js";
+import { MarkdownAnalysisError, markdownAnalysisFailureReason, parseMarkdownImages, type MarkdownAnalysisFailureReason, type MarkdownSourceNode } from "./parser.js";
 
 export type MarkdownProjectionPartInput = {
   readonly inputIndex: number;
@@ -34,6 +34,7 @@ export type MarkdownProjectionPartState = {
   readonly truncated: boolean;
   readonly format: "markdown" | "plain";
   readonly status: "streaming" | "pending" | "complete" | "failed" | "plain" | "removed";
+  readonly failureReason?: MarkdownAnalysisFailureReason;
   readonly current: readonly MarkdownProjectedOccurrence[];
   readonly retained: readonly MarkdownProjectedOccurrence[];
   readonly cache: { readonly textSha256: string; readonly contextKey: string; readonly occurrences: readonly MarkdownProjectedOccurrence[] } | null;
@@ -91,7 +92,12 @@ function render(state: MarkdownProjectionState): ProviderEntry {
   const addCarrier = (part: MarkdownProjectionPartState) => { if (fixedPositions) carriers.set(part.partId, part); else { projected.push(imageCarrier(part)); placed.add(part.partId); } };
   for (const [index, original] of body.entries()) {
     const carrier = original.type === "markdown" && original.text === "" ? state.parts.find(part => part.partId === original.partId && part.inputIndex !== index) : undefined;
-    if (carrier) { projected.push(imageCarrier(carrier)); placed.add(carrier.partId); continue; }
+    if (carrier) {
+      // A native image may have been committed after the failure carrier. Keep
+      // that slot when the body owns the recovered Markdown identity again.
+      projected.push(["failed", "plain", "removed"].includes(carrier.status) ? imageCarrier(carrier) : { type: "text", text: "" });
+      placed.add(carrier.partId); continue;
+    }
     const part = state.parts.find(value => value.inputIndex === index);
     if (!part || original.type !== "text") { projected.push(original); continue; }
     if (part.status === "failed") { projected.push(original); addCarrier(part); }
@@ -158,11 +164,11 @@ export function createMarkdownImageProjector(options: { parse?: (text: string) =
       const text = sourceText(input, part);
       try {
         const nodes = await parse(text), current: MarkdownProjectedOccurrence[] = [];
-        if (nodes.length > 1000) throw new Error("Markdown image node budget exceeded.");
+        if (nodes.length > 1000) throw new MarkdownAnalysisError("node_limit");
         let lastEnd = 0;
         for (const node of nodes) {
-          if (!Number.isSafeInteger(node.start) || !Number.isSafeInteger(node.end) || node.start < lastEnd || node.end <= node.start || node.end > text.length) throw new Error("Invalid Markdown image source range.");
-          for (const offset of [node.start, node.end]) if (offset > 0 && offset < text.length && /[\uD800-\uDBFF]/.test(text[offset - 1]!) && /[\uDC00-\uDFFF]/.test(text[offset]!)) throw new Error("Invalid Markdown image source range.");
+          if (!Number.isSafeInteger(node.start) || !Number.isSafeInteger(node.end) || node.start < lastEnd || node.end <= node.start || node.end > text.length) throw new MarkdownAnalysisError("invalid_range");
+          for (const offset of [node.start, node.end]) if (offset > 0 && offset < text.length && /[\uD800-\uDBFF]/.test(text[offset - 1]!) && /[\uDC00-\uDFFF]/.test(text[offset]!)) throw new MarkdownAnalysisError("invalid_range");
           lastEnd = node.end; const imageId = randomUUID();
           const occurrence: ImageOccurrence = { imageId, entryId: input.entryId, container: input.input.kind === "reasoning" ? "reasoning" : input.input.kind === "tool_call" ? "tool_output" : "content", partId: part.partId, sourceRevision: part.revision, sourceTextSha256: part.textSha256, callId: input.input.kind === "tool_call" ? input.input.callId : null, sourceKey: `markdown:${part.partId}:${part.revision}:${imageId}` };
           current.push({ occurrence, destination: node.destination, linkHref: node.linkHref, contextKey: part.contextKey, start: node.start, end: node.end, part: { type: "image_unavailable", imageId, label: node.label, error: { code: "source_unavailable", message: "Image has not been captured." } } });
@@ -170,8 +176,8 @@ export function createMarkdownImageProjector(options: { parse?: (text: string) =
         const resolved: MarkdownProjectionPartState = { ...part, current, cache: { textSha256: part.textSha256, contextKey: part.contextKey, occurrences: current }, status: "complete" };
         if (input.input.kind !== "reasoning") parseMarkdownImagePart({ type: "markdown", text, ...metadata(resolved, text) });
         parts.push(resolved); occurrences.push(...current);
-      } catch {
-        parts.push({ ...part, revision: String(BigInt(part.revision) + (input.input.kind === "reasoning" ? 0n : 1n)), current: [], retained: unique([...part.retained, ...part.current]), status: "failed" });
+      } catch (error) {
+        parts.push({ ...part, revision: String(BigInt(part.revision) + (input.input.kind === "reasoning" ? 0n : 1n)), current: [], retained: unique([...part.retained, ...part.current]), status: "failed", failureReason: markdownAnalysisFailureReason(error) });
       }
     }
     return { ...result({ ...input, token: input.pending ? randomUUID() : input.token, parts, pending: false }, occurrences), token: input.token };
@@ -188,5 +194,30 @@ export function createMarkdownImageProjector(options: { parse?: (text: string) =
     const parts = input.parts.map(part => part.status === "pending" || part.status === "streaming" ? { ...part, revision: String(BigInt(part.revision) + (input.input.kind === "reasoning" ? 0n : 1n)), current: [], retained: unique([...part.retained, ...part.current]), status: "failed" as const } : part);
     return { ...result({ ...input, token: randomUUID(), parts, pending: false }), token: input.token };
   };
-  return { prepare, complete, updateImagePart, markFailed, adoptCommitted, view: (state: MarkdownProjectionState) => result(state) };
+  /** Prepare only the original complete failed bodies. Persist before parsing; the caller owns stopped-writer admission and CAS. */
+  const retryFailed = (input: MarkdownProjectionState): MarkdownProjectionResult => {
+    if (input.schemaVersion !== 1 || input.entryId !== input.input.entryId || !input.token || input.pending !== input.parts.some(part => part.status === "pending")) throw new Error("Markdown repair requires an unchanged original projection.");
+    const keys = new Set<string>(), ids = new Set<string>(), indices = new Set<number>();
+    for (const part of input.parts) {
+      if (!part.sourceKey || !part.partId || !part.contextKey || keys.has(part.sourceKey) || ids.has(part.partId) || !/^[1-9][0-9]*$/.test(part.revision)) throw new Error("Markdown repair requires trusted unique block identities.");
+      keys.add(part.sourceKey); ids.add(part.partId);
+      if (part.inputIndex === null) {
+        if (part.status !== "removed") throw new Error("Markdown repair lost its original body.");
+        continue;
+      }
+      if (!Number.isSafeInteger(part.inputIndex) || part.inputIndex < 0 || indices.has(part.inputIndex)) throw new Error("Markdown repair requires trusted unique block identities.");
+      indices.add(part.inputIndex);
+      const text = sourceText(input, part);
+      if (sha(text) !== part.textSha256 || Buffer.byteLength(text) > 1_048_576) throw new Error("Markdown repair source differs from its original hash.");
+      if (["failed", "pending", "streaming"].includes(part.status) && (!part.complete || part.truncated || part.format !== "markdown" || part.sourceKey === `${input.entryId}:projection-unavailable`)) throw new Error("Markdown repair requires complete unambiguous original input.");
+    }
+    if (!input.parts.some(part => part.status === "failed")) return result(input);
+    const parts = input.parts.map(part => {
+      if (part.status !== "failed") return part;
+      const { failureReason, ...original } = part; void failureReason;
+      return { ...original, revision: String(BigInt(part.revision) + 1n), current: [], retained: unique([...part.retained, ...part.current]), cache: null, status: "pending" as const };
+    });
+    return { ...result({ ...input, token: randomUUID(), parts, pending: parts.some(part => part.status === "pending") }), token: input.token };
+  };
+  return { prepare, complete, retryFailed, updateImagePart, markFailed, adoptCommitted, view: (state: MarkdownProjectionState) => result(state) };
 }

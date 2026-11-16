@@ -23,7 +23,7 @@ const messages: Record<DiagnosticCode, string> = {
   "invalid-output": "A required operation produced invalid output.", "recovery-limit": "The recovery limit was reached.",
   "native-identity-missing": "The original native execution identity is missing.",
   "worktree-validation-failed": "The worktree failed ownership validation.", "branch-mismatch": "The worktree branch does not match the recorded owner.",
-  "recovery-blocked": "Recovery is blocked and needs attention.", "outcome-unknown": "The operation outcome is unknown.",
+  "markdown-projection-repair": "Markdown image projection requires repair. Run daynight worker repair-markdown --help.", "recovery-blocked": "Recovery is blocked and needs attention.", "outcome-unknown": "The operation outcome is unknown.",
   unknown: "The operation failed; inspect local Worker diagnostics for details.",
 };
 const configurationCodes: Readonly<Record<ReturnType<typeof classifyConfigurationFailure>["code"], DiagnosticCode>> = {
@@ -69,7 +69,7 @@ export const classifyFailure = (input: unknown, outcomeUnconfirmed = false): Str
     if (error.phase === "protocol" || error.phase === "pagination") return diagnostic("invalid-response");
     return diagnostic("unknown");
   }
-  if (error instanceof ArchiveRepairRequiredError) return diagnostic("recovery-blocked");
+  if (error instanceof ArchiveRepairRequiredError) return diagnostic(error.code === "markdown_projection_failed" ? "markdown-projection-repair" : "recovery-blocked");
   if (error instanceof MonitoringArchiveBusyEvidence) return diagnostic("rate-limited");
   if (error instanceof MonitoringRecoveryEvidence) {
     switch (error.reasonCode) {

@@ -31,6 +31,12 @@ const mutate = (path: readonly string[], value: unknown): unknown => {
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker monitoring response contracts', () => {
+  it('accepts only the fixed Markdown repair diagnostic', () => {
+    const error = { type: 'operation', code: 'markdown-projection-repair', cause: 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.', causeTruncated: false };
+    const value = mutate(['data', 'currentFailures', '0', 'error'], error);
+    expect(parseWorkerMonitoringDetail(value)).toEqual(value);
+    expect(() => parseWorkerMonitoringDetail(mutate(['data', 'currentFailures', '0', 'error'], { ...error, cause: `${error.cause} private path` }))).toThrow();
+  });
   it('accepts only canonical claim worktree locations and preserves absence', () => {
     expect(parseWorkerMonitoringDetail(detail())).toEqual(detail());
     for (const worktree of [
