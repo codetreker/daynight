@@ -81,7 +81,7 @@ test("stopped ACK reports its actual rollback and retains the original batch on 
     try { db.prepare("UPDATE outbox_totals SET byte_length=1 WHERE id=1").run(); } finally { db.close(); }
     return acknowledged(batch);
   } }).then(() => null, (error: unknown) => error);
-  expect(failure).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } });
+  expect(failure).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "rolled-back", connectionClosed: true, cause: { kind: "invalid-format", outcome: "rolled-back", cause: { kind: "invalid-format", outcome: "unknown" } } });
   expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
   expect(f.read().outbox).toEqual({ total: 101 });
   expect(f.read().batch).toEqual({ value: JSON.stringify(sent) });
@@ -98,10 +98,11 @@ test("a failed stopped ACK rollback retains both errors and does not invent an o
     });
     return acknowledged(batch);
   } }).then(() => null, (error: unknown) => error);
-  expect(failure).toBeInstanceOf(AggregateError);
-  expect((failure as AggregateError).errors[0]).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "unknown" });
-  expect((failure as AggregateError).errors[1]).toBe(rollbackFailure);
-  expect(sqliteAccess.sqliteTransactionOutcome(failure)).toBe("unknown");
+  expect(failure).toMatchObject({ kind: "operation-failed", outcome: "unknown", connectionClosed: true });
+  const errors = ((failure as Error).cause as AggregateError).errors;
+  expect(errors[0]).toMatchObject({ kind: "invalid-format", context: { phase: "outbox-ack" }, outcome: "unknown" });
+  expect(errors[1]).toBe(rollbackFailure);
+  expect(sqliteAccess.sqliteTransactionOutcome((failure as Error).cause)).toBe("unknown");
   expect(f.read().state).toMatchObject({ last_acknowledged: 0 });
   expect(f.read().outbox).toEqual({ total: 101 });
 });

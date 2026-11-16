@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
 import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
@@ -65,23 +65,25 @@ const get = async (config: { serverUrl: string; serverToken: string }, resource:
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
 };
 
-const discardUnreturnedLease = (file: string, key: string, nonce: string): void => {
-  const db = new Database(file, { fileMustExist: true });
-  let failed = false, failure: unknown;
+const leaseTransaction = (db: Database.Database, file: string, phase: string, action: () => void): void => {
+  let actionFailed = false, actionFailure: unknown;
   try {
     runSqliteImmediate(db, () => {
-      assertCurrentSqlite(db, nativeResumeLeaseFormat);
-      const existing = db.prepare("SELECT nonce FROM leases WHERE native_key=?").get(key) as { nonce: string } | undefined;
-      if (existing === undefined) return;
-      if (existing.nonce !== nonce) throw new Error("Native resume lease ownership changed; reconciliation is required.");
-      const changed = db.prepare("DELETE FROM leases WHERE native_key=? AND nonce=?").run(key, nonce);
-      if (changed.changes !== 1) throw new Error("Native resume lease ownership changed; reconciliation is required.");
+      try { assertCurrentSqlite(db, nativeResumeLeaseFormat); action(); }
+      catch (cause) { actionFailed = true; actionFailure = cause; throw cause; }
     });
-  } catch (cause) { failed = true; failure = cause; }
-  try { closeSqliteDatabase(db, { file, format: nativeResumeLeaseFormat }, failed ? sqliteTransactionOutcome(failure) : "committed"); }
-  catch (cleanup) { if (failed) throw new AggregateError([failure, cleanup], "Native resume lease reconciliation and shutdown failed."); throw cleanup; }
-  if (failed) throw failure;
+  } catch (cause) {
+    const outcome = sqliteTransactionOutcome(cause);
+    const sqliteError = cause instanceof Error && "code" in cause && typeof cause.code === "string" && cause.code.startsWith("SQLITE_");
+    if (cause instanceof SqliteAccessError) throw new SqliteAccessError(cause.kind, cause.context, { cause, outcome, connectionClosed: false });
+    if (!actionFailed || cause !== actionFailure || sqliteError) throw new SqliteAccessError("operation-failed", { database: nativeResumeLeaseFormat.name, file, phase }, { cause, outcome });
+    throw cause;
+  }
 };
+
+const closedLeaseFailure = (failure: unknown, closed: boolean): unknown => failure instanceof SqliteAccessError
+  ? new SqliteAccessError(failure.kind, failure.context, { cause: failure.cause, outcome: failure.outcome, connectionClosed: closed })
+  : failure;
 
 /** Acquire one stopped local Test Session's native writer. The caller releases
  * the lease only after proving its new controller and descendants stopped; an
@@ -120,32 +122,34 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
   try { const created = await open(file, "wx", 0o600); await created.close(); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   await privateFile(file);
   const key = createHash("sha256").update(JSON.stringify([input.provider, nativeHome, nativeSessionId])).digest("hex"), nonce = randomUUID(), processProof = await captureProcessProof(process.pid);
-  let db: Database.Database | undefined, acquired = false, inserted = false;
+  let db: Database.Database | undefined, acquired = false, outcome: SqliteOutcome = "not-started";
   const close = (outcome: SqliteOutcome = "unknown"): void => { if (db !== undefined && db.open) closeSqliteDatabase(db, { file, format: nativeResumeLeaseFormat }, outcome); };
   const release = async (): Promise<void> => {
     if (!acquired) { close("committed"); return; }
     let failed = false, failure: unknown;
     try {
-      runSqliteImmediate(db!, () => {
-        assertCurrentSqlite(db!, nativeResumeLeaseFormat);
+      leaseTransaction(db!, file, "lease-release", () => {
         const changed = db!.prepare("DELETE FROM leases WHERE native_key=? AND nonce=?").run(key, nonce);
         if (changed.changes !== 1) throw new Error("Native resume lease ownership changed; reconciliation is required.");
       });
       acquired = false;
     } catch (cause) { failed = true; failure = cause; }
-    try { close(failed ? sqliteTransactionOutcome(failure) : "committed"); }
-    catch (cleanup) { if (failed) throw new AggregateError([failure, cleanup], "Native resume lease release and shutdown failed."); throw cleanup; }
-    if (failed) throw failure;
+    const releaseOutcome = failed ? failure instanceof SqliteAccessError ? failure.outcome : sqliteTransactionOutcome(failure) : "committed";
+    try { close(releaseOutcome); }
+    catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: nativeResumeLeaseFormat.name, file, phase: "lease-release-close" }, { cause: failed ? new AggregateError([failure, cleanup], "Native resume lease release and shutdown failed.") : cleanup, outcome: releaseOutcome, connectionClosed: db === undefined || !db.open }); }
+    if (failed) throw closedLeaseFailure(failure, db === undefined || !db.open);
   };
   try {
     db = openSqliteDatabase({ file, format: nativeResumeLeaseFormat, allowCreate: true,
       assertMigrationAllowed: assertResumeLeaseMigrationAllowed,
-      onReady: (db) => {
-        if (db.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");
-        db.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run(key, nonce, ticket.sessionId, JSON.stringify(processProof), new Date().toISOString());
-        inserted = true;
-      },
     });
+    try {
+      leaseTransaction(db, file, "lease-acquire", () => {
+        if (db!.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");
+        db!.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run(key, nonce, ticket.sessionId, JSON.stringify(processProof), new Date().toISOString());
+      });
+      outcome = "committed";
+    } catch (cause) { outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); throw cause; }
     acquired = true;
     // Another continuation may have been launched since selection. Reinspect
     // every execution for this native identity while the shared lease is held.
@@ -158,14 +162,9 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
   } catch (error) {
     try {
       if (acquired) await release();
-      else {
-        close();
-        // Completion reporting can fail after INSERT commits but before the
-        // connection is returned. Only our known committed nonce is releasable.
-        if (db === undefined && inserted && error instanceof SqliteAccessError && error.outcome === "committed" && error.connectionClosed) discardUnreturnedLease(file, key, nonce);
-      }
+      else close(outcome);
     }
-    catch (cleanup) { throw new AggregateError([error, cleanup], "Native resume preparation and cleanup failed."); }
-    throw error;
+    catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: nativeResumeLeaseFormat.name, file, phase: "lease-acquire-close" }, { cause: new AggregateError([error, cleanup], "Native resume preparation and cleanup failed."), outcome: cleanup instanceof SqliteAccessError ? cleanup.outcome : acquired ? sqliteTransactionOutcome(cleanup) : outcome, connectionClosed: db === undefined ? error instanceof SqliteAccessError && error.connectionClosed : !db.open }); }
+    throw db === undefined ? error : closedLeaseFailure(error, !db.open);
   }
 };

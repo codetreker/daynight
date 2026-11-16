@@ -408,7 +408,7 @@ test("upgrade-only preserves stopping evidence while exact stopped maintenance r
     expect(upgradeControllerJournal(f.file, f.permit, { onMigration: () => {} })).toMatchObject({ legacyTimelineCleanupPending: true });
     const readback = new Database(f.file, { readonly: true });
     try { expect(JSON.parse((readback.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot)).toEqual(snapshot); } finally { readback.close(); }
-    expect(failureOf(() => prepareControllerStorage(f.request, f.permit, () => {}))).toMatchObject({ kind: "migration-failed", cause: { cause: { message: expect.stringMatching(/stopped generation/) } } });
+    expect(failureOf(() => prepareControllerStorage(f.request, f.permit, () => {}))).toMatchObject({ message: expect.stringMatching(/stopped generation/) });
     expect(fs.existsSync(f.old)).toBe(true);
   } finally { if (db.open) db.close(); f.permit.release(); }
 });
@@ -544,7 +544,7 @@ test("pure upgrade does not adopt SQL rows or retained files without the origina
   try {
     db.prepare("DELETE FROM execution").run(); db.close();
     expect(upgradeControllerJournal(f.file, f.permit, { onMigration: () => {} })).toMatchObject({ legacyTimelineCleanupPending: false });
-    expect(failureOf(() => prepareControllerStorage(f.request, f.permit, () => {}))).toMatchObject({ kind: "migration-failed" });
+    expect(failureOf(() => prepareControllerStorage(f.request, f.permit, () => {}))).toMatchObject({ message: expect.stringMatching(/first-generation ticket/) });
     expect(fs.existsSync(f.old)).toBe(true);
   } finally { if (db.open) db.close(); f.permit.release(); }
 });
@@ -636,16 +636,24 @@ test.each(["automatic-read", "stopped-storage"] as const)("%s emits the canonica
   } finally { f.permit.release(); }
 });
 
-test.each(["before-open", "after-open"] as const)("stopped settlement reports the actual version on %s failure", point => {
+test.each(["before-open", "after-open"] as const)("stopped settlement reports the committed version on %s refusal", point => {
   const f = fixture(); f.permit.release();
   const writes: string[] = [];
   vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => { writes.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; });
   if (point === "after-open") vi.mocked(fs.unlinkSync).mockImplementation(file => { if (String(file).startsWith(`${f.file}.pending-content`)) throw new Error("retirement failure"); return actualFs.unlinkSync(file); });
   expect(() => withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: () => { if (point === "before-open") throw new Error("original refusal"); } }, () => { throw new Error("action must not run"); })).toThrow(point === "before-open" ? /original refusal/ : /retirement failure/);
   const events = writes.flatMap(text => text.split("\n").filter(Boolean).map(line => (JSON.parse(line) as { sqlite: SqliteMigrationEvent }).sqlite)).filter(event => event?.file === f.file);
-  expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "storage-admission", fromVersion: point === "before-open" ? 9 : currentSqliteVersion(controllerJournalFormat), toVersion: currentSqliteVersion(controllerJournalFormat), storage: { role: "stopped-maintenance", roleResult: "rejected" } });
+  expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "storage-admission", fromVersion: currentSqliteVersion(controllerJournalFormat), toVersion: currentSqliteVersion(controllerJournalFormat), storage: { role: "stopped-maintenance", roleResult: "rejected" } });
   const db = new Database(f.file, { readonly: true });
-  try { expect(db.pragma("user_version", { simple: true })).toBe(point === "before-open" ? 9 : currentSqliteVersion(controllerJournalFormat)); } finally { db.close(); }
+  try { expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); } finally { db.close(); }
+});
+
+test("stopped action errors retain their outcome and the actual closed connection", () => {
+  const f = fixture(), db = upgrade(f); db.close(); f.permit.release();
+  const original = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "outbox-read" }, { outcome: "rolled-back" });
+  const error = failureOf(() => withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: () => {} }, () => { throw original; }));
+  expect(error).toMatchObject({ kind: "invalid-format", outcome: "rolled-back", connectionClosed: true, context: { phase: "outbox-read" }, cause: original });
+  const permit = acquireControllerStoragePermit(f.file); permit.release();
 });
 
 test("an automatic upgrade's supplied reporter cannot override committed storage, and current reads remain reporter-free under a held writer permit", () => {

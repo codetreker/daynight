@@ -1,4 +1,4 @@
-export type SqliteErrorKind = "unsupported-version" | "invalid-format" | "upgrade-blocked" | "migration-failed" | "cleanup-failed";
+export type SqliteErrorKind = "unsupported-version" | "invalid-format" | "upgrade-blocked" | "migration-failed" | "operation-failed" | "cleanup-failed";
 export type SqliteOutcome = "not-started" | "committed" | "rolled-back" | "unknown";
 export type SqliteErrorContext = {
   database: string;

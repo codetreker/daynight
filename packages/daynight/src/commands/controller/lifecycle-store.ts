@@ -123,9 +123,11 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     if (writeDepth === 0 || !db.inTransaction) throw new Error("SQL timeline publication requires the original Controller write transaction.");
     if (additionalBytes > 0) reserveContent(additionalBytes, contentGrowth);
   };
-  db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, undefined, options.onMigration), file: options.database ?? file, allowCreate: true,
-    onReady: (connection) => {
-      db = connection;
+  db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, options.mediaStateDirectory ?? path.dirname(file), ticket.executionId, undefined, options.onMigration), file: options.database ?? file, allowCreate: true });
+  let initializationOutcome: SqliteOutcome = "not-started";
+  try {
+    runSqliteImmediate(db, () => {
+      assertCurrentSqlite(db, controllerJournalFormat);
       metadataBudget = controllerMetadataBudget(file, db);
       if (controllerTimelineCleanupPending(db)) throw new Error("Controller timeline maintenance must finish before writer initialization.");
       if (!db.memory) chmodSync(file, 0o600);
@@ -159,9 +161,8 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       if (existing !== undefined && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
       sessionContent = openSessionContent(file, ticket.sessionId, db, { read, assertWrite: assertTimelineWrite });
       if (existing === undefined && (sessionContent.timeline.totals().entryCount !== 0 || sessionContent.resourceFiles.resources.size !== 0)) throw new Error("Pending archive source has no original controller execution.");
-    },
-  });
-  try {
+    });
+    initializationOutcome = "committed";
   const outbox = openControllerOutbox(db, { assertWrite: () => { assertOutboxWrites(); assertTimelineWrite(0); } });
   const markdownStore = createMarkdownSourceStore(db, { read, write: atomic }, metadataBudget);
   const getSnapshot = (): ControllerSnapshot => read(() => checkedSnapshot(json((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)));
@@ -439,9 +440,13 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
     },
   };
   } catch (primary) {
-    try { if (db.open) closeSqliteDatabase(db, { file, format: controllerJournalFormat }, "committed"); }
-    catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "initialize-close" }, { cause: new AggregateError([primary, cleanup], "Controller journal initialization and shutdown failed."), outcome: "committed", connectionClosed: !db.open }); }
-    throw new SqliteAccessError("migration-failed", { database: controllerJournalFormat.name, file, phase: "initialize" }, { cause: primary, outcome: "committed", connectionClosed: true });
+    const outcome = initializationOutcome === "committed" ? "committed" : sqliteTransactionOutcome(primary);
+    try { if (db.open) closeSqliteDatabase(db, { file, format: controllerJournalFormat }, outcome); }
+    catch (cleanup) { throw new SqliteAccessError("cleanup-failed", { database: controllerJournalFormat.name, file, phase: "initialize-close" }, { cause: new AggregateError([primary, cleanup], "Controller journal initialization and shutdown failed."), outcome, connectionClosed: !db.open }); }
+    if (initializationOutcome === "committed" || primary instanceof Database.SqliteError || primary instanceof SyntaxError || primary instanceof AggregateError || primary instanceof SqliteAccessError || outcome === "unknown" || outcome === "not-started") {
+      throw new SqliteAccessError(primary instanceof SqliteAccessError ? primary.kind : "operation-failed", { database: controllerJournalFormat.name, file, phase: "initialize" }, { cause: primary, outcome, connectionClosed: !db.open });
+    }
+    throw primary;
   }
 };
 
