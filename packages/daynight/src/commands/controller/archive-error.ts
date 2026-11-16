@@ -1,4 +1,4 @@
-export type ArchiveRepairCode = "archive_incomplete" | "projection_gap";
+export type ArchiveRepairCode = "archive_incomplete" | "projection_gap" | "markdown_projection_failed";
 export type ArchiveProbeResult = { kind: "blocked"; code: ArchiveRepairCode } | { kind: "attempt" } | { kind: "complete" };
 
 export class ArchiveRequestError extends Error {
@@ -11,7 +11,7 @@ export class ArchiveRequestError extends Error {
 
 export class ArchiveRepairRequiredError extends Error {
   constructor(readonly code: ArchiveRepairCode) {
-    super(code === "archive_incomplete" ? "Pending archive has an unresolved projection gap: original history is incomplete." : "Pending archive has an unresolved projection gap: its source requires repair.");
+    super(code === "markdown_projection_failed" ? "Markdown image projection requires repair. Run daynight worker repair-markdown --help and select the original Task, Project, claim, Session and worktree." : code === "archive_incomplete" ? "Pending archive has an unresolved projection gap: original history is incomplete." : "Pending archive has an unresolved projection gap: its source requires repair.");
     this.name = "ArchiveRepairRequiredError";
   }
 }

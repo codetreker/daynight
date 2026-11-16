@@ -177,6 +177,39 @@ recording recovery retains `worker resources list`, `retry` and `dispose` with
 their original Session and stop-evidence requirements. Successful observation
 clears repaired monitoring failures; recovery does not create a new execution.
 
+## Repair stopped Markdown image projections
+
+On the original Worker machine, use an explicitly authorized repair for the
+retained terminal Web execution:
+
+```bash
+daynight worker repair-markdown <task-id> --project <project-id> --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id>
+```
+
+The command checks the signed-in owner, service, terminal Task, completed original
+claim, Session, Worker configuration, launch ticket and actual managed worktree.
+A paused Task, changed identity or unconfirmed original stop prevents repair.
+It uses the stopped Controller storage permit and can run beside the Worker;
+it does not take over scheduling, start an Agent or replay user input.
+
+Only preserved complete, nontruncated inputs with trusted block identities can
+be reanalyzed. Original text, entry order and identities, prior image references
+and the original failed projection remain retained. Newly discovered images
+must resolve to verified retained resources or ordinary local files inside the
+original directory root. Repair does not download external URLs or follow links
+outside that root. Missing files, changed roots, ambiguous blocks and analysis
+failures remain explicit failures; restoring the reported original source or
+context permits another attempt with the same arguments.
+
+Successful repair continues the existing archive upload and validates its
+receipt. A pending source-tail batch, history checkpoint, upload intent or receipt
+selects reconciliation instead of rewriting its source. The Worker still owns
+resource cleanup. Read the original
+Session afterwards and distinguish a ready content archive from an archived
+lifecycle. Unknown output or upload results require observing that same
+execution before deciding again. Successful reanalysis does not prove the cause
+of an earlier failure whose diagnostic details were not recorded.
+
 ## Pause and complete an assigned claim
 
 A worker-managed Task may expose `paused`; authorized changes use ordinary Task

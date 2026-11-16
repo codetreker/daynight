@@ -416,9 +416,9 @@ describe("safe monitoring diagnostics", () => {
 });
 
 
-it.each(["archive_incomplete", "projection_gap"] as const)("reports typed archive repair %s without exposing its diagnostic text", code => {
+it.each(["archive_incomplete", "projection_gap", "markdown_projection_failed"] as const)("reports typed archive repair %s without exposing its diagnostic text", code => {
   const error = new ArchiveRepairRequiredError(code); error.message = secret;
-  expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic("recovery-blocked"));
+  expect(classifyFailure(new WorkerCleanupError("archive", error))).toEqual(diagnostic(code === "markdown_projection_failed" ? "markdown-projection-repair" : "recovery-blocked"));
   expect(classifyFailure(new Error("archive_incomplete"))).toEqual(diagnostic("unknown"));
 });
 

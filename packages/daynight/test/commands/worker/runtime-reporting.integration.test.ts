@@ -1525,7 +1525,7 @@ it("retains backfill blocker and probe deadline across runtime restart without c
 });
 
 
-it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
+it.each((["archive_incomplete", "projection_gap", "markdown_projection_failed"] as const).flatMap(code =>
   (["complete", "receipt", "blocked", "unconfirmed", "regressed", "clear-failed"] as const).map(outcome => ({ code, outcome })),
 ))("updates backfill scheduling only after confirmed completeness: $code/$outcome", async ({ code, outcome }) => {
   const f = await fixture();

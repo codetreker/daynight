@@ -45,7 +45,7 @@ describe("worker command", () => {
     await expect(runWorkerCommand([...args, "--worktree-id", "wrong"], cli, deps)).rejects.toThrow();
     expect(deps.resources).not.toHaveBeenCalled();
   });
-  it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+  it.each([[], ["--help"], ["-h"], ...["list", "show", "setup", "run", "attach", "repo", "resources", "repair-markdown", "retry", "release"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
     ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
     const deps = dependencies();
@@ -117,10 +117,10 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["list", "show", "setup", "run", "attach", "repo", "resources", "retry", "release"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["list", "show", "setup", "run", "attach", "repo", "resources", "repair-markdown", "retry", "release"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'attach' 'repo' 'resources' 'retry' 'release')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'show' 'setup' 'run' 'attach' 'repo' 'resources' 'repair-markdown' 'retry' 'release')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
     expect(renderZshCompletion(commandTree)).toContain("repo:Prepare local repository selections before cloud management");
     expect(renderBashCompletion(commandTree)).not.toContain("--target-agent");

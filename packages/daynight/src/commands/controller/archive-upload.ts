@@ -51,7 +51,14 @@ export const probeStoppedControllerArchive = async (options: { journalPath: stri
     assertJournalMigrationAllowed(db, inspectSqlite(db, controllerJournalFormat));
     const source = db.prepare("SELECT projection_gap,archive_incomplete FROM execution WHERE id=1").get() as { projection_gap: string | null; archive_incomplete: number };
     const code = archiveRepairCode(source);
-    return code === null ? { kind: "complete" } : { kind: "blocked", code };
+    if (code !== null) return { kind: "blocked", code };
+    if (version >= 10) {
+      // Inspect the SQL projection marker without opening resource manifests or
+      // materializing the whole history. Full archival still validates each entry.
+      const failed = db.prepare("SELECT 1 FROM timeline_entries WHERE json_type(value,'$.imageProjectionError') NOT IN ('null') LIMIT 1").get();
+      if (failed !== undefined) return { kind: "blocked", code: "markdown_projection_failed" };
+    }
+    return { kind: "complete" };
   }).deferred());
   options.signal?.throwIfAborted();
   return result;
@@ -179,6 +186,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     const repairCode = archiveRepairCode(source);
     if (repairCode !== null) throw new ArchiveRepairRequiredError(repairCode);
     const timeline = materializeTimeline(content);
+    if (timeline.entries.some(entry => entry.imageProjectionError != null)) throw new ArchiveRepairRequiredError("markdown_projection_failed");
     const allResources = [...content.resourceFiles.resources.values()].map(value => parseSessionResource(JSON.parse(JSON.stringify(value.resource)))).sort((a,b) => a.resourceId.localeCompare(b.resourceId));
     const refs = sessionArchiveReferences(timeline.entries), resources = [...refs.resources].sort().map(id => { const resource = allResources.find(resource => resource.resourceId === id); if (!resource || resource.status === "pending") throw new Error("Pending archive resource is incomplete."); return resource; });
     const epochRow = db.prepare("SELECT value FROM image_runtime_state WHERE key='history_epoch'").get() as {value:string}|undefined;

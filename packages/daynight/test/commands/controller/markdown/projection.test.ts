@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { parseTimelineEntry } from "../../../../src/session/protocol.js";
 import type { ProviderEntry } from "../../../../src/commands/controller/providers/types.js";
 import { createMarkdownImageProjector, type MarkdownProjectionMetadata } from "../../../../src/commands/controller/markdown/projection.js";
+import { MarkdownAnalysisError, parseMarkdownImages } from "../../../../src/commands/controller/markdown/parser.js";
 const id = randomUUID(), hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const entry = (text: string, entryId = id): ProviderEntry => ({ entryId, kind: "assistant_message", revision: "1", content: [{ type: "text", text }] });
 const meta = (complete = true, contextKey = "trusted-context"): MarkdownProjectionMetadata => ({ parts: [{ inputIndex: 0, sourceKey: `${id}:body`, complete, truncated: false, format: "markdown", contextKey }] });
@@ -118,4 +119,77 @@ test("the original one-MiB text capacity remains readable and oversized input is
   const projector = createMarkdownImageProjector(), text = "x".repeat(1_048_576), prepared = projector.prepare(entry(text), meta(), null);
   expect(prepared.failed).toBe(false); valid(prepared.entry);
   expect(() => projector.prepare(entry(text + "x"), meta(), prepared.state)).toThrow("capacity");
+});
+
+test.each(["original text without images", "![new](new.png)"])("failed original bodies can be reparsed after serialization: %s", async text => {
+  let fail = false;
+  const projector = createMarkdownImageProjector({ parse: async body => { if (fail) throw new MarkdownAnalysisError("startup_timeout"); return parseMarkdownImages(body); } });
+  const first = await projector.complete(projector.prepare(entry("![old](old.png)"), meta(), null).state);
+  const old = first.occurrences[0]!, available = projector.updateImagePart(first.state, old.occurrence.imageId, { type: "image", imageId: old.occurrence.imageId, resourceId: randomUUID(), label: "original" });
+  fail = true;
+  const failed = await projector.complete(projector.prepare(entry(text), meta(), available.state).state), original = JSON.stringify(failed.state);
+  expect(failed.state.parts[0]!.failureReason).toBe("startup_timeout");
+  const prepared = projector.retryFailed(JSON.parse(original));
+  expect(JSON.stringify(failed.state)).toBe(original);
+  expect(prepared.token).toBe(failed.state.token); expect(prepared.state.token).not.toBe(prepared.token);
+  expect(prepared.state.parts[0]).toMatchObject({ partId: failed.state.parts[0]!.partId, sourceKey: failed.state.parts[0]!.sourceKey, status: "pending", retained: failed.state.parts[0]!.retained });
+  expect(projector.retryFailed(prepared.state).state).toEqual(prepared.state);
+  fail = false;
+  const repaired = await projector.complete(JSON.parse(JSON.stringify(prepared.state)));
+  expect(repaired.failed).toBe(false); expect(repaired.pending).toBe(false); valid(repaired.entry);
+  expect(repaired.entry).toMatchObject({ imageProjectionError: null, content: [{ type: "markdown", text, retainedImages: [{ imageId: old.occurrence.imageId, part: { type: "image" } }] }] });
+  expect(repaired.occurrences).toHaveLength(text.includes("![") ? 1 : 0);
+  expect(projector.retryFailed(repaired.state).state).toEqual(repaired.state);
+  expect((await projector.complete(repaired.state)).entry).toEqual(repaired.entry);
+});
+
+test("retry failure preserves the readable body and retained resources without exposing parser diagnostics", async () => {
+  const projector = createMarkdownImageProjector({ parse: async () => { throw new Error("private source path"); } });
+  const failed = await projector.complete(projector.prepare(entry("![a](private.png)"), meta(), null).state);
+  const repeated = await projector.complete(projector.retryFailed(failed.state).state);
+  expect(repeated.failed).toBe(true); expect(repeated.state.input).toEqual(failed.state.input);
+  expect(repeated.state.parts[0]!.failureReason).toBe("parse_failed");
+  expect(JSON.stringify(repeated.state)).not.toContain("private source path");
+  expect(repeated.entry).toMatchObject({ content: [{ type: "text", text: "![a](private.png)" }, { type: "markdown", text: "", retainedImages: [] }], imageProjectionError: { code: "source_unavailable" } }); valid(repeated.entry);
+});
+
+test("repair retains native slots committed after an adopted failure carrier", async () => {
+  let fail = true;
+  const projector = createMarkdownImageProjector({ parse: async text => { if (fail) throw new Error("controlled"); return parseMarkdownImages(text); } });
+  const native = { type: "image" as const, imageId: randomUUID(), resourceId: randomUUID(), label: "native" };
+  const appended = { ...native, imageId: randomUUID(), resourceId: randomUUID(), label: "appended" };
+  const input: ProviderEntry = { ...entry("unused"), kind: "assistant_message", imageProjectionError: null, content: [{ type: "text", text: "![a](one.png)" }, native] };
+  const failed = await projector.complete(projector.prepare(input, meta(), null).state);
+  if (failed.entry.kind !== "assistant_message") throw new Error("Invalid fixture");
+  const committed = { ...failed.entry, content: [...failed.entry.content, appended] }, adopted = projector.adoptCommitted(failed.state, committed);
+  fail = false;
+  const pending = projector.retryFailed(adopted); valid(pending.entry);
+  const repaired = await projector.complete(pending.state); valid(repaired.entry);
+  expect(repaired.entry).toMatchObject({ imageProjectionError: null, content: [
+    { type: "markdown", text: "![a](one.png)", partId: failed.state.parts[0]!.partId, bindings: [{ imageId: repaired.occurrences[0]!.occurrence.imageId }] },
+    native, { type: "text", text: "" }, { type: "text", text: "" }, appended,
+  ] });
+  expect(projector.retryFailed(repaired.state).entry).toEqual(repaired.entry);
+});
+
+test.each([
+  ["hash", "projection_input_changed"], ["incomplete", "projection_input_incomplete"], ["truncated", "projection_input_incomplete"],
+  ["ambiguous", "projection_identity_ambiguous"], ["identity", "projection_input_changed"], ["index", "projection_input_missing"],
+  ["pending", "projection_input_changed"], ["removed-index", "projection_input_missing"], ["duplicate", "projection_identity_ambiguous"],
+])("repair refuses %s changes without mutating the original projection", async (corruption, code) => {
+  const projector = createMarkdownImageProjector({ parse: async () => { throw new Error("controlled"); } });
+  const failed = await projector.complete(projector.prepare(entry("body"), meta(), null).state);
+  const changed = JSON.parse(JSON.stringify(failed.state));
+  if (corruption === "hash") changed.input.content[0].text = "changed";
+  if (corruption === "incomplete") changed.parts[0].complete = false;
+  if (corruption === "truncated") changed.parts[0].truncated = true;
+  if (corruption === "ambiguous") changed.parts[0].sourceKey = `${id}:projection-unavailable`;
+  if (corruption === "identity") changed.entryId = randomUUID();
+  if (corruption === "index") changed.parts[0].inputIndex = 2;
+  if (corruption === "pending") changed.pending = true;
+  if (corruption === "removed-index") changed.parts[0].inputIndex = null;
+  if (corruption === "duplicate") changed.parts.push(structuredClone(changed.parts[0]));
+  const original = JSON.stringify(changed);
+  expect(() => projector.retryFailed(changed)).toThrowError(expect.objectContaining({ code }));
+  expect(JSON.stringify(changed)).toBe(original);
 });

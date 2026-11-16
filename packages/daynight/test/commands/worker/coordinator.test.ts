@@ -4633,7 +4633,7 @@ it.each(["current", "legacy", "mismatch"] as const)("reconciles an original rece
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
-it.each((["archive_incomplete", "projection_gap"] as const).flatMap(code =>
+it.each((["archive_incomplete", "projection_gap", "markdown_projection_failed"] as const).flatMap(code =>
   (["complete", "receipt", "blocked", "unconfirmed", "regressed", "clear-failed"] as const).map(outcome => ({ code, outcome })),
 ))("updates cleanup scheduling only after confirmed completeness: $code/$outcome", async ({ code, outcome }) => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
