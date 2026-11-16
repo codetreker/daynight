@@ -1,7 +1,6 @@
-import { NativeSelect, isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, isAbortError } from '../../api/client';
-import { nearestOverlayOwner } from '../../app/overlay';
 import { resolveProjectTags } from '../../api/task-tags';
 import type { TaskTag } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -9,6 +8,7 @@ import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useProjectTags } from './useProjectTags';
 import { TagColorChip, TagColorFeedback } from './TagColor';
 import { useTagColors } from './useTagColors';
+import { useTagFilterPopover } from './useTagFilterPopover';
 import './tag-filter.css';
 
 export type TagFilterValue = { readonly tagIds: readonly string[]; readonly tagMatch: 'all' | 'any'; readonly untagged: boolean };
@@ -103,18 +103,6 @@ export const useTagFilter = (projectId: string, active = true) => {
 };
 
 export type TagFilterController = ReturnType<typeof useTagFilter>;
-const filterOpened = 'daynight:tag-filter-opened';
-const interactive = (element: HTMLElement): boolean => {
-  if (!element.isConnected || element.closest('[hidden], [inert]') !== null) return false;
-  const view = element.ownerDocument.defaultView;
-  for (let node: HTMLElement | null = element; node !== null; node = node.parentElement) {
-    const style = view?.getComputedStyle(node);
-    if (style?.display === 'none' || style?.visibility === 'hidden' || style?.visibility === 'collapse') return false;
-  }
-  return true;
-};
-const dialogOwner = (element: Element | null): Element | null => element?.closest('dialog, [role="dialog"], [role="alertdialog"]') ?? null;
-
 const messages = {
   en: { manage: 'Manage tags', title: 'Tag filter', child: 'Child task tag filter', clear: 'Clear', search: 'Search tags', all: 'Match all (AND)', any: 'Match any (OR)', untagged: 'No tags', invalid: 'A selected tag is unavailable. Remove it to search again.', removed: 'unavailable', remove: 'Remove', loading: 'Loading tags…', empty: 'No tags yet.', noMatches: 'No matching tags.', error: 'Could not load tags.', resolveError: 'Could not check selected tags.', retry: 'Retry', next: 'Next', first: 'First page' },
   'zh-CN': { manage: '管理标签', title: '标签筛选', child: '子 Task 标签筛选', clear: '清除', search: '搜索标签', all: '全部匹配（AND）', any: '任一匹配（OR）', untagged: '无标签', invalid: '选中的标签已不可用，请移除后重新查询。', removed: '已不可用', remove: '移除', loading: '正在读取标签…', empty: '还没有标签。', noMatches: '没有匹配的标签。', error: '无法读取标签。', resolveError: '无法核对选中的标签。', retry: '重试', next: '下一页', first: '首页' },
@@ -126,82 +114,16 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
   const title = child ? m.child : m.title;
   const colorIds = [...value.tagIds, ...(controller.open ? catalog.page?.items.map(tag => tag.id) ?? [] : [])];
   const colors = useTagColors(controller.projectId, colorIds);
-  const details = useRef<HTMLDetailsElement>(null);
-  useLayoutEffect(() => {
-    const element = details.current;
-    if (!controller.open || element === null) return;
-    const doc = element.ownerDocument;
-    const competing = (event: Event) => {
-      if ((event as CustomEvent<HTMLElement>).detail !== element && interactive(element)) controller.setOpen(false);
-    };
-    const pointerdown = (event: PointerEvent) => {
-      if (interactive(element) && event.target instanceof Node && !element.contains(event.target)) controller.setOpen(false);
-    };
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229 || !interactive(element) || !(event.target instanceof Node) || element.contains(event.target)) return;
-      if (isNativeSelectPopupOpen(event.target)) return;
-      const target = event.target instanceof Element ? event.target : null;
-      if (dialogOwner(target) !== dialogOwner(element)) return;
-      // Registered overlays can be non-dialog surfaces, so inspect their active owner too.
-      const overlay = nearestOverlayOwner(new Set(doc.querySelectorAll<HTMLElement>('*')));
-      if (overlay !== null && !overlay.contains(element)) return;
-      event.preventDefault(); event.stopPropagation();
-      controller.setOpen(false);
-      const trigger = element.querySelector<HTMLElement>('summary');
-      if (trigger !== null && interactive(trigger)) trigger.focus();
-    };
-    doc.addEventListener(filterOpened, competing);
-    if (interactive(element)) doc.dispatchEvent(new CustomEvent(filterOpened, { detail: element }));
-    doc.addEventListener('pointerdown', pointerdown, true);
-    doc.addEventListener('keydown', keydown);
-    return () => {
-      doc.removeEventListener(filterOpened, competing);
-      doc.removeEventListener('pointerdown', pointerdown, true);
-      doc.removeEventListener('keydown', keydown);
-    };
-  }, [controller.open, controller.setOpen]);
-  useLayoutEffect(() => {
-    if (!controller.open) return;
-    const position = () => {
-      const element = details.current;
-      const panel = element?.querySelector<HTMLElement>('.tag-filter-panel');
-      if (element === null || panel === undefined || panel === null) return;
-      const bounds = element.getBoundingClientRect();
-      const width = panel.getBoundingClientRect().width;
-      const left = Math.max(16, Math.min(bounds.left, document.documentElement.clientWidth - width - 16));
-      panel.style.left = `${left - bounds.left}px`;
-    };
-    position();
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(position);
-    if (details.current !== null) {
-      observer?.observe(details.current);
-      const toolbar = details.current.closest('.task-list-filters');
-      if (toolbar !== null) {
-        observer?.observe(toolbar);
-        for (const control of toolbar.children) observer?.observe(control);
-      }
-    }
-    window.addEventListener('resize', position);
-    window.addEventListener('scroll', position, true);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', position); window.removeEventListener('scroll', position, true); };
-  }, [controller.open, locale]);
+  const popover = useTagFilterPopover(controller.open, controller.setOpen);
   const toggle = (tag: TaskTag, checked: boolean) => update({ ...value, untagged: false, tagIds: checked ? [...value.tagIds, tag.id] : value.tagIds.filter(id => id !== tag.id) }, { [tag.id]: tag.name });
   const clear = () => update({ ...value, tagIds: [], untagged: false });
   const count = value.untagged ? 1 : value.tagIds.length;
   return <div className="tag-filter-wrap">
-    <details ref={details} className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={event => {
-      if (event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || !interactive(event.currentTarget)) return;
-      if (event.key === 'Escape' && event.currentTarget.open) {
-        if (isNativeSelectPopupOpen(event.target)) { event.stopPropagation(); return; }
-        event.preventDefault(); event.stopPropagation(); controller.setOpen(false);
-        const trigger = event.currentTarget.querySelector<HTMLElement>('summary');
-        if (trigger !== null && interactive(trigger)) trigger.focus();
-      }
-    }}>
-      <summary className="tag-filter-trigger" onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}{count > 0 ? ` (${count})` : ''}</summary>
-      <div className="tag-filter-panel">
+    <details ref={popover.rootRef} className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={popover.onKeyDown}>
+      <summary ref={popover.triggerRef} className="tag-filter-trigger" onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}{count > 0 ? ` (${count})` : ''}</summary>
+      <div ref={popover.panelRef} className="tag-filter-panel">
         <div className="tag-filter-head"><strong>{title}</strong><button type="button" onClick={clear}>{m.clear}</button></div>
-        <input type="search" aria-label={`${title}: ${m.search}`} placeholder={m.search} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
+        <input ref={popover.searchRef} type="search" aria-label={`${title}: ${m.search}`} placeholder={m.search} value={controller.query} onChange={event => controller.setQuery(event.target.value)} />
         <NativeSelect density="filter" focusTone="task" layout="fill" wrapperClassName="tag-filter-match" aria-label={`${title}: AND / OR`} value={value.tagMatch} disabled={value.untagged} onChange={event => update({ ...value, tagMatch: event.target.value as 'all' | 'any' })}><option value="all">{m.all}</option><option value="any">{m.any}</option></NativeSelect>
         <label><input type="checkbox" checked={value.untagged} onChange={event => update({ ...value, untagged: event.target.checked, tagIds: event.target.checked ? [] : value.tagIds })} /> {m.untagged}</label>
         {catalog.error !== null ? <p role="alert">{m.error} <button type="button" onClick={catalog.refresh}>{m.retry}</button></p> : catalog.loading && catalog.page === null ? <p>{m.loading}</p> : catalog.page?.items.length === 0 ? <p>{controller.query ? m.noMatches : m.empty}</p> : <div className="tag-filter-options">{catalog.page?.items.map(tag => <label key={tag.id}><input type="checkbox" checked={value.tagIds.includes(tag.id)} onChange={event => toggle(tag, event.target.checked)} /> <TagColorChip name={tag.name} item={colors.items.get(tag.id)} /></label>)}</div>}

@@ -25,9 +25,9 @@ access changes use the existing tag controller's isolation. Filtering changes
 rows, while Goal identity, progress, composition, pause and Session summaries,
 and dependency graph membership continue to use their complete scopes.
 
-Panels use a readable 285px width capped by viewport space. Positioning observes
-actual trigger and panel bounds when opened and when scrolling or resizing the window or neighboring filters,
-so a control near the toolbar's right edge does not move its panel offscreen.
+Panels retain a readable 285px natural width capped by visible viewport space.
+The [viewport decision](../architecture/2026-11-16-tag-filter-viewport.md) extends
+positioning to visible viewport offsets, vertical space and offscreen anchors.
 The [Web design](../../../../docs/design/daynight-web.md) owns current mechanisms.
 The [tag panel dismissal decision](../bug-fix/2026-11-16-tag-filter-dismissal.md)
 defines how the independently owned conditions share panel visibility.

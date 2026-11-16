@@ -16,8 +16,11 @@ the event or moving focus. Escape closes from inside or outside the panel and
 returns focus to an available trigger. Prevented and composing events, native
 select menus, hidden or inert triggers and active overlays retain their own
 keyboard handling. A local opening notification closes other visible tag panels;
-each controller retains its own query and conditions. Listeners exist only for
-the open instance and are removed on closing or unmounting.
+each controller retains its own query and conditions. Opening an interactive
+instance focuses its search input; background checks do not refocus it. Tab
+alone does not close the panel. Listeners exist only for the open instance and
+are removed on closing or unmounting. The [viewport decision](../architecture/2026-11-16-tag-filter-viewport.md)
+keeps this lifecycle local while adding visible viewport positioning.
 
 The [unified toolbar decision](../feature/2026-11-14-unified-tag-filter-toolbar.md)
 owns the independent project and child conditions, while the
