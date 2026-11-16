@@ -15,7 +15,7 @@ memory database would remove the shared state those regressions observe.
 
 Business-state unit fixtures create private native `:memory:` connections through
 `test/helpers/sqlite.ts` and supply them explicitly to their stores. The same SQL,
-format checks, migrations, startup callbacks and transaction boundaries execute
+format checks, migrations, business startup and transaction boundaries execute
 against SQLite. A fixture uses its original connection for direct SQL assertions;
 each case owns its connection and closes it during cleanup.
 
@@ -37,8 +37,9 @@ missing file or acquire a filesystem maintenance permit.
 Controller fixtures retain a filename for resource storage and historical body
 migration sources, and supply the database connection through lifecycle-store
 options. Current timeline bodies use the same SQL owner for memory and file
-connections. Startup ownership and content checks retain their original transaction
-boundary. In-memory SQLite does not imply that Git fixtures, IPC, resource files
+connections. Startup ownership and content checks use their own transaction after format commit,
+as described in the [independent commit decision](../bug-fix/2026-11-16-sqlite-format-before-business.md).
+In-memory SQLite does not imply that Git fixtures, IPC, resource files
 or historical migration sources stop using real files.
 
 Cases proving reopen persistence, WAL snapshots, separate live connections,

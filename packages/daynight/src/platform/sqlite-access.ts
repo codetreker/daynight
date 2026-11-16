@@ -17,7 +17,7 @@ export type SqliteMigrationEvent = {
 export type SqliteMigrationReporter = (event: SqliteMigrationEvent) => undefined;
 export type SqliteDatabaseSource = string | Database.Database;
 type CommonOptions = { file: SqliteDatabaseSource; format: SqliteFormat; timeoutMs?: number; onMigration?: SqliteMigrationReporter; assertMigrationAllowed?: (db: Database.Database, source: SqliteSource) => void };
-export type OpenSqliteOptions = CommonOptions & { allowCreate: boolean; onReady?: (db: Database.Database) => void };
+export type OpenSqliteOptions = CommonOptions & { allowCreate: boolean };
 export type ReadSqliteOptions<T> = CommonOptions & { onMissing: () => T; acquireMaintenance?: () => MaintenancePermit };
 const outcomes = new WeakMap<object, SqliteOutcome>();
 const phases = new WeakMap<object, string>();
@@ -136,7 +136,6 @@ const prepareSqliteDatabase = (options: OpenSqliteOptions, closeOnFailure: boole
         }
         if (fresh.kind !== "current") { phase = "admission"; options.assertMigrationAllowed?.(db, fresh); }
         phase = "migrate"; const upgraded = upgradeSqlite(db, options.format);
-        phase = "startup"; options.onReady?.(db);
         if (upgraded?.reset === true) {
           phase = "foreign-key-check";
           const violations = db.pragma("foreign_key_check") as unknown[];
@@ -170,7 +169,6 @@ const prepareSqliteDatabase = (options: OpenSqliteOptions, closeOnFailure: boole
       try { report({ ...event("failed", failedPhase, wrapped.outcome), error: serializeSqliteError(wrapped), ...(wrapped.context.stepVersion === undefined ? {} : { stepVersion: wrapped.context.stepVersion }) }); }
       catch (reportError) { throw wrap(options, "report", new AggregateError([wrapped, reportError], "SQLite operation and failure reporting failed."), closed, wrapped.outcome, source?.version); }
     }
-    if (phase === "startup" && transactionPhase === "action" && closed && failure === primary && primary instanceof Error && primary.constructor === Error && !(primary instanceof SqliteAccessError) && !("code" in primary && typeof primary.code === "string" && primary.code.startsWith("SQLITE_"))) throw primary;
     throw wrapped;
   }
 };

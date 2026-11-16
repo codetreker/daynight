@@ -1,8 +1,9 @@
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { chmodSync, existsSync, lstatSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { MaintenanceLockHeldError } from "../../platform/instance-lock.js";
-import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, reportSqliteMigrationEvent, sqliteTransactionOutcome, type SqliteDatabaseSource, type SqliteMigrationEvent, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, reportSqliteMigrationEvent, runSqliteImmediate, sqliteTransactionOutcome, type SqliteDatabaseSource, type SqliteMigrationEvent, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { canonicalId } from "../../api/parse.js";
 import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
 import { assertJournalMigrationAllowed, controllerJournalFormat, controllerJournalFormatForMigration, type JournalMigrationContext } from "./journal-format.js";
@@ -30,9 +31,6 @@ export class ControllerStorageWaitingError extends Error {
   }
 }
 
-class ControllerStorageAdmissionError extends Error {
-  constructor(cause: unknown) { super("Controller storage admission failed.", { cause }); }
-}
 const storageTimeout = (deadline?: number): number => {
   if (deadline === undefined) return 5000;
   if (!Number.isSafeInteger(deadline) || deadline <= 0) throw new TypeError("Controller storage deadline must be a positive safe integer.");
@@ -249,6 +247,7 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
   if (!path.isAbsolute(request.stateDirectory)) throw new TypeError("Controller storage state directory must be absolute.");
   let db: Database.Database | undefined, reservation: TimelineMaintenanceReservation | undefined, snapshot: ControllerSnapshot | null = null;
   let outcome: SqliteOutcome = "not-started", failure: unknown, result: ControllerStoragePreparation | undefined;
+  let phase: "open" | "admission" | "maintenance" = "open";
   const observation: ControllerStorageObservation = { role: request.mode, roleResult: "pending" };
   const context = (connection: Database.Database): JournalMigrationContext => {
     observation.db = connection;
@@ -263,33 +262,42 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
         try { assertJournalMigrationAllowed(connection, source); observation.roleResult = "admitted"; }
         catch (cause) { observation.roleResult = "rejected"; throw cause; }
       },
-      onReady: connection => {
-        try {
-          storageTimeout(request.deadline);
-          snapshot = assertControllerStorageRole(request, controllerStorageExecutionRow(connection));
-          observeControllerStorage(observation, connection, request.mode === "writer" ? request.ticket : undefined);
-          if (snapshot === null) {
-            assertNoOrphanTimelineSource(request.journalFile);
-            if (openTimelineStore(connection, { assertWrite: () => { throw new Error("Controller admission is read-only."); } }).totals().entryCount !== 0) throw new Error("SQL timeline source has no original controller execution.");
-          } else if (!existsSync(path.join(`${request.journalFile}.pending-content`, "manifest.json"))) throw new Error("Pending archive source is missing.");
-          if (!connection.memory) chmodSync(request.journalFile, 0o600);
-          observation.roleResult = "admitted";
-        } catch (cause) { observation.roleResult = "rejected"; throw new ControllerStorageAdmissionError(cause); }
-      },
+    });
+    phase = "admission";
+    runSqliteImmediate(db, () => {
+      const connection = db!;
+      assertCurrentSqlite(connection, format);
+      try {
+        storageTimeout(request.deadline);
+        snapshot = assertControllerStorageRole(request, controllerStorageExecutionRow(connection));
+        observeControllerStorage(observation, connection, request.mode === "writer" ? request.ticket : undefined);
+        if (snapshot === null) {
+          assertNoOrphanTimelineSource(request.journalFile);
+          if (openTimelineStore(connection, { assertWrite: () => { throw new Error("Controller admission is read-only."); } }).totals().entryCount !== 0) throw new Error("SQL timeline source has no original controller execution.");
+        } else if (!existsSync(path.join(`${request.journalFile}.pending-content`, "manifest.json"))) throw new Error("Pending archive source is missing.");
+        if (!connection.memory) chmodSync(request.journalFile, 0o600);
+        observation.roleResult = "admitted";
+      } catch (cause) { observation.roleResult = "rejected"; throw cause; }
     });
     outcome = "committed";
+    phase = "maintenance";
     storageTimeout(request.deadline);
     reservation ??= createTimelineMaintenanceReservation(db, { ...request, storagePermit, executionId: request.ticket.executionId });
     readSqliteDatabase({ file: request.journalFile, format: controllerJournalFormat, onMissing: () => { throw new Error("Controller journal disappeared before committed content readback."); } }, connection => openTimelineStore(connection, { assertWrite: () => { throw new Error("Controller preparation readback is read-only."); } }).totals());
     storageTimeout(request.deadline);
     result = maintainControllerTimeline({ db, request, storagePermit, reservation, ...(onMigration === undefined ? {} : { onMigration }) });
     storageTimeout(request.deadline);
-  } catch (cause) { failure = cause; if (outcome !== "committed" || cause instanceof SqliteAccessError && cause.outcome === "unknown") outcome = cause instanceof SqliteAccessError ? cause.outcome : sqliteTransactionOutcome(cause); }
+  } catch (cause) { failure = cause; outcome = phase === "admission" ? sqliteTransactionOutcome(cause) : cause instanceof SqliteAccessError ? cause.outcome : phase === "open" ? "not-started" : sqliteTransactionOutcome(cause); }
   if (db !== undefined && db.open) try { closeSqliteDatabase(db, { file: request.journalFile, format }, outcome); }
   catch (close) { throw new SqliteAccessError("cleanup-failed", { database: format.name, file: request.journalFile, phase: "timeline-preparation-close" }, { cause: failure === undefined ? close : new AggregateError([failure, close], "Controller timeline preparation and close failed."), outcome, connectionClosed: !db.open }); }
   if (failure !== undefined) {
-    if (!(failure instanceof SqliteAccessError)) failure = new SqliteAccessError("migration-failed", { database: format.name, file: request.journalFile, phase: "storage-preparation" }, { cause: failure, outcome, connectionClosed: db === undefined || !db.open });
     if (capacityCause(failure) !== undefined && failure instanceof Error) return { kind: "waiting", reason: "physical_capacity", cause: failure };
+    if (phase === "admission" && failure instanceof SqliteAccessError) {
+      throw new SqliteAccessError(failure.kind, { database: format.name, file: request.journalFile, phase: "storage-admission" }, { cause: failure, outcome, connectionClosed: db === undefined || !db.open });
+    }
+    if (phase !== "open" && (failure instanceof Database.SqliteError || failure instanceof SyntaxError || failure instanceof AggregateError || outcome === "unknown" || outcome === "not-started")) {
+      throw new SqliteAccessError("operation-failed", { database: format.name, file: request.journalFile, phase: "storage-preparation" }, { cause: failure, outcome, connectionClosed: db === undefined || !db.open });
+    }
     throw failure;
   }
   return result!;

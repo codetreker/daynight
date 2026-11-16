@@ -257,7 +257,7 @@ it("publishes the first generation and its Controller proof in one visible commi
   const spy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
     if (this.name === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
       const observer = new Database(file, { readonly: true });
-      try { expect(observer.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get()).toBeUndefined(); }
+      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(12); }
       finally { observer.close(); }
       observedInitialCommit = true;
     }
@@ -285,6 +285,36 @@ it("holds writer ownership until close and keeps a supplied permit with its call
   expect(() => acquireControllerStoragePermit(file)).toThrow("Cannot acquire instance lock");
   permit.release();
   const successor = acquireControllerStoragePermit(file); successor.release();
+});
+
+it("retains the storage permit when a rejected business transaction cannot close its connection", async () => {
+  const { home, ticket } = await fixture(), file = path.join(home, "journal.sqlite"), lock = path.join(home, "storage.lock");
+  const store = openControllerLifecycleStore(file, ticket, { onMigration: () => {} });
+  store.close();
+  const exec = Database.prototype.exec, close = Database.prototype.close;
+  let immediate = 0, unclosed: Database.Database | undefined;
+  const execSpy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    if (this.name === file && sql === "BEGIN IMMEDIATE") immediate++;
+    return exec.call(this, sql);
+  });
+  const closeSpy = vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) {
+    if (this.name === file && immediate >= 2 && !this.readonly) { unclosed = this; throw new Error("injected journal close failure"); }
+    return close.call(this);
+  });
+  try {
+    let failure: unknown;
+    try { openControllerLifecycleStore(file, { ...ticket, executionId: randomUUID() }, { onMigration: () => {} }); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ kind: "cleanup-failed", outcome: "rolled-back", connectionClosed: false, context: { phase: "initialize-close" } });
+    const causes = ((failure as Error).cause as AggregateError).errors;
+    expect(causes[0]).toMatchObject({ message: expect.stringMatching(/another execution/) });
+    expect(causes[1]).toMatchObject({ kind: "cleanup-failed" });
+    expect(filesystem.existsSync(lock)).toBe(true);
+    expect(() => acquireControllerStoragePermit(file)).toThrow();
+  } finally {
+    closeSpy.mockRestore(); execSpy.mockRestore();
+    if (unclosed?.open) unclosed.close();
+    if (filesystem.existsSync(lock)) filesystem.unlinkSync(lock);
+  }
 });
 
 it("closes a journal and releases owned storage when a postcommit constructor fails", async () => {

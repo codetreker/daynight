@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openSqliteDatabase, readSqliteDatabase, runSqliteImmediate, type SqliteMigrationReporter, type SqliteMigrationEvent } from "../../src/platform/sqlite-access.js";
 import { MaintenanceLockHeldError } from "../../src/platform/instance-lock.js";
-import { serializeSqliteError, SqliteAccessError } from "../../src/platform/sqlite-error.js";
+import { serializeSqliteError } from "../../src/platform/sqlite-error.js";
 import type { SqliteFormat } from "../../src/platform/sqlite-format.js";
 
 const temporary = fileURLToPath(new URL("../../../../.tmp/sqlite-core-tests/", import.meta.url));
@@ -125,14 +125,13 @@ describe("SQLite access lifecycle", () => {
       INSERT INTO parent VALUES(1); INSERT INTO child VALUES(1,1);
     `);
     expect(original.pragma("foreign_key_check")).toEqual([]); original.close();
-    const onReady = vi.fn((db: Database.Database) => { expect(db.pragma("foreign_keys", { simple: true })).toBe(0); db.exec("INSERT INTO records(id,value) VALUES(2,'startup')"); });
-    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, onReady }); connections.add(db);
-    expect(onReady).toHaveBeenCalledOnce(); expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); connections.add(db);
+    expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.pragma("user_version", { simple: true })).toBe(2);
     expect(db.prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual([{ name: "records" }]);
-    expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 2, value: "startup", extra: null }]);
+    expect(db.prepare("SELECT * FROM records").all()).toEqual([]);
   });
-  it.each([0, 1])("rolls reset and startup back when the rebuilt database violates foreign keys with original mode %s", originalMode => {
+  it.each([0, 1])("rolls reset back when the rebuilt database violates foreign keys with original mode %s", originalMode => {
     const file = makeFile(), original = connect(file); original.exec("CREATE TABLE original(value TEXT); INSERT INTO original VALUES('retained');"); original.close();
     if (originalMode === 0) {
       const pragma = Database.prototype.pragma;
@@ -141,10 +140,11 @@ describe("SQLite access lifecycle", () => {
         return pragma.call(this, command, pragmaOptions);
       });
     }
+    const invalid: SqliteFormat = { ...format, baseline: { ...format.baseline, create: db => {
+      baseline(db); db.exec("CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(parent_id INTEGER REFERENCES parent(id)); INSERT INTO child VALUES(99)");
+    } } };
     let error: unknown;
-    try { openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, onReady: db => {
-      db.exec("CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(parent_id INTEGER REFERENCES parent(id)); INSERT INTO child VALUES(99)");
-    } }); } catch (caught) { error = caught; }
+    try { openSqliteDatabase({ file, format: invalid, allowCreate: false, onMigration: quiet }); } catch (caught) { error = caught; }
     expect(error).toMatchObject({ kind: "migration-failed", context: { phase: "foreign-key-check" }, outcome: "rolled-back", connectionClosed: true, cause: expect.objectContaining({ message: "SQLite foreign key validation failed after reset." }) });
     const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(0); expect(db.prepare("SELECT * FROM original").all()).toEqual([{ value: "retained" }]);
   });
@@ -155,14 +155,15 @@ describe("SQLite access lifecycle", () => {
       connections.add(this); if (command === "foreign_keys = 1") throw failure; return pragma.call(this, command, pragmaOptions);
     });
     let error: unknown;
-    try { openSqliteDatabase({ file, format, allowCreate: false, onMigration: event => { events.push(event); }, onReady: db => { db.exec("INSERT INTO records(id,value) VALUES(1,'committed')"); } }); } catch (caught) { error = caught; }
+    const seeded: SqliteFormat = { ...format, baseline: { ...format.baseline, create: db => { baseline(db); db.exec("INSERT INTO records VALUES(1,'committed')"); } } };
+    try { openSqliteDatabase({ file, format: seeded, allowCreate: false, onMigration: event => { events.push(event); } }); } catch (caught) { error = caught; }
     expect(error).toMatchObject({ kind: "cleanup-failed", context: { phase: "restore-foreign-keys" }, cause: failure, outcome: "committed", connectionClosed: true });
     expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "restore-foreign-keys", outcome: "committed" });
     vi.restoreAllMocks(); const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(2); expect(db.prepare("SELECT value FROM records").all()).toEqual([{ value: "committed" }]);
   });
-  it("hands a raced versioned source back to normal foreign key enforcement before startup", () => {
+  it("hands a raced versioned source back to normal foreign key enforcement", () => {
     const file = makeFile(), original = connect(file); original.exec("CREATE TABLE original(value TEXT)"); original.close();
-    const exec = Database.prototype.exec, onReady = vi.fn((db: Database.Database) => { expect(db.pragma("foreign_keys", { simple: true })).toBe(1); });
+    const exec = Database.prototype.exec;
     let interleaved = false;
     vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
       if (!interleaved && this.name === file && sql === "BEGIN IMMEDIATE") {
@@ -171,12 +172,12 @@ describe("SQLite access lifecycle", () => {
       }
       return exec.call(this, sql);
     });
-    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, onReady }); connections.add(db);
-    expect(interleaved).toBe(true); expect(onReady).toHaveBeenCalledOnce(); expect(db.pragma("foreign_keys", { simple: true })).toBe(1); expect(db.pragma("user_version", { simple: true })).toBe(2);
+    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); connections.add(db);
+    expect(interleaved).toBe(true); expect(db.pragma("foreign_keys", { simple: true })).toBe(1); expect(db.pragma("user_version", { simple: true })).toBe(2);
   });
   it("fails before admission when competing writers repeatedly change the required foreign key mode", () => {
     const file = makeFile(), original = connect(file); original.exec("CREATE TABLE original(value TEXT)"); original.close();
-    const exec = Database.prototype.exec, assertMigrationAllowed = vi.fn(), onReady = vi.fn();
+    const exec = Database.prototype.exec, assertMigrationAllowed = vi.fn();
     let subject: Database.Database | undefined, attempts = 0;
     vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
       if (this.name === file && sql === "BEGIN IMMEDIATE" && (subject === undefined || subject === this)) {
@@ -187,9 +188,9 @@ describe("SQLite access lifecycle", () => {
       return exec.call(this, sql);
     });
     let error: unknown;
-    try { openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, assertMigrationAllowed, onReady }); } catch (caught) { error = caught; }
+    try { openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, assertMigrationAllowed }); } catch (caught) { error = caught; }
     expect(error).toMatchObject({ kind: "migration-failed", context: { phase: "handoff" }, outcome: "rolled-back", connectionClosed: true });
-    expect(attempts).toBe(2); expect(assertMigrationAllowed).not.toHaveBeenCalled(); expect(onReady).not.toHaveBeenCalled();
+    expect(attempts).toBe(2); expect(assertMigrationAllowed).not.toHaveBeenCalled();
     const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(0); expect(db.prepare("SELECT value FROM records").all()).toEqual([{ value: "retained" }]);
   });
   it("rechecks readonly once if another owner upgraded before maintenance admission", () => {
@@ -241,12 +242,15 @@ describe("SQLite access lifecycle", () => {
     expect(() => openSqliteDatabase({ file, format, allowCreate: false, onMigration: event => { events.push(event); if (event.kind === "completed") throw new Error("report failed"); } })).toThrow("cleanup-failed");
     expect(events.at(-1)).toMatchObject({ kind: "failed", outcome: "committed" }); expect(connect(file).pragma("user_version", { simple: true })).toBe(2);
   });
-  it("keeps explicitly authored startup admission errors but safely wraps parser failures", () => {
-    const file = makeFile(), business = new Error("Original execution is still running.");
-    expect(() => openSqliteDatabase({ file, format, allowCreate: true, onMigration: quiet, onReady: () => { throw business; } })).toThrow(business);
-    let error: unknown;
-    try { openSqliteDatabase({ file, format, allowCreate: true, onMigration: quiet, onReady: () => { JSON.parse('{"secret":"prompt" broken}'); } }); } catch (caught) { error = caught; }
-    expect(error).toBeInstanceOf(SqliteAccessError); expect(JSON.stringify(serializeSqliteError(error))).not.toContain('"prompt"'); expect((error as Error).cause).toBeInstanceOf(SyntaxError);
+  it("commits the format before a later rejected business transaction", () => {
+    const file = makeFile(); seed(file); const events: SqliteMigrationEvent[] = [], business = new Error("admission rejected");
+    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: event => { events.push(event); } }); connections.add(db);
+    expect(db.inTransaction).toBe(false);
+    expect(() => runSqliteImmediate(db, () => { db.exec("UPDATE records SET value='uncommitted'"); throw business; })).toThrow(business);
+    const reader = connect(file);
+    expect(reader.pragma("user_version", { simple: true })).toBe(2);
+    expect(reader.prepare("SELECT * FROM records").all()).toEqual([{ id: 1, value: "committed", extra: null }]);
+    expect(events.map(event => [event.kind, event.outcome])).toEqual([["started", "not-started"], ["completed", "committed"]]);
   });
   it("identifies a baseline failure and rolls its partial DDL back", () => {
     const file = makeFile(), events: SqliteMigrationEvent[] = [];
