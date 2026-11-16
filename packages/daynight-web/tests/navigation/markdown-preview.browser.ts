@@ -222,7 +222,9 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Tas
     const target = new URL(route.request().url()).pathname === imagePath;
     const attempt = requests.filter(value => new URL(value).pathname === imagePath).length;
     if (target && attempt > 1) await retryGate.promise;
-    return route.fulfill({ status: target && attempt === 1 ? 404 : 200, contentType: 'image/svg+xml', body: svg });
+    return target && attempt === 1
+      ? route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":{"code":"not_found"}}' })
+      : route.fulfill({ contentType: 'image/svg+xml', body: svg });
   });
   const native: string[] = [];
   await page.route('https://external-image.invalid/**', route => { native.push(route.request().url()); return route.abort('failed'); });

@@ -30,9 +30,9 @@ const files = [
   { path: longPath, contentType: 'text/plain', sizeBytes: 4, createdAt: time, updatedAt: time },
 ];
 
-async function install(page: Page, linked = false, claimed = false) {
+async function install(page: Page, linked = false, claimed = false, description?: string) {
   const worker = { claimId: successorId, state: 'active', userId: TEST_VIEWER_ID, workerId: projectId, machine: { id: projectId, name: 'Worker machine' }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: taskId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time };
-  const task = detailFixture(projectId, taskId, { title: 'Attachment reading', version: 5n, ...(claimed ? { status: 'in_progress', startedAt: time, ready: false, assignedTo: TEST_VIEWER_ID, allowAgents: true, properties: { worker } } : {}) });
+  const task = detailFixture(projectId, taskId, { title: 'Attachment reading', version: 5n, ...(description === undefined ? {} : { description }), ...(claimed ? { status: 'in_progress', startedAt: time, ready: false, assignedTo: TEST_VIEWER_ID, allowAgents: true, properties: { worker } } : {}) });
   const successor = detailFixture(projectId, successorId, { title: 'Linked successor', version: 5n, dependsOn: [taskId], blockedBy: [taskId], ready: false });
   const graph = graphFixture(linked ? [task, successor] : [task]);
   const state = { writes: [] as string[], resources: [] as string[], accessReads: 0, holdAccess: null as Promise<void> | null, files: files.map(file => ({ ...file })) };
@@ -92,7 +92,7 @@ async function checkDuringForeground(page: Page, state: Awaited<ReturnType<typeo
 }
 
 test('Markdown image retry preserves attachment drafts, selected document and retained HTML frame', async ({ page }) => {
-  const state = await install(page);
+  const state = await install(page, false, false, '# Task image\n\n![Task attachment](retry.svg)');
   const document = '# Document image\n\n' + 'Earlier reading paragraph.\n\n'.repeat(30) + '## Image recovery anchor\n\n![Document attachment](images/failed%20image.svg?view=one%2Ftwo#diagram)\n\n' + Array.from({ length: 60 }, (_, index) => `Retained paragraph ${index}.`).join('\n\n');
   state.files.push({ path: 'docs/reading.md', contentType: 'text/markdown', sizeBytes: document.length, createdAt: time, updatedAt: time });
   let documentReads = 0;
@@ -102,24 +102,20 @@ test('Markdown image retry preserves attachment drafts, selected document and re
   await page.route('**/preview/docs/images/failed%20image.svg?view=one%2Ftwo', async route => {
     images.push(route.request().url());
     if (images.length > 1) await retryGate.promise;
-    return route.fulfill({ status: images.length === 1 ? 404 : 200, contentType: 'image/svg+xml', body: svg });
+    return images.length === 1
+      ? route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":{"code":"not_found"}}' })
+      : route.fulfill({ contentType: 'image/svg+xml', body: svg });
   });
-  await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/interactive.html`);
+  let taskImages = 0;
+  await page.route('**/preview/retry.svg', route => ++taskImages === 1 ? route.abort('failed') : route.fulfill({ contentType: 'image/svg+xml', body: svg }));
+  await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/docs/reading.md`);
   const attachments = page.locator('.task-attachments');
-  const frame = attachments.locator('iframe');
-  const counter = frame.contentFrame().locator('#counter');
-  await counter.click(); await expect(counter).toHaveText('1');
-  const frameHandle = await frame.elementHandle();
-  await frame.contentFrame().locator('html').evaluate(element => { element.scrollTop = 500; });
-  const frameScroll = await frame.contentFrame().locator('html').evaluate(element => element.scrollTop);
   await attachments.locator('.attachment-upload-disclosure summary').click();
   const input = attachments.locator('input[type=file]');
   await input.setInputFiles({ name: 'unsent.txt', mimeType: 'text/plain', buffer: Buffer.from('Unsent draft') });
   const inputHandle = await input.elementHandle();
   await attachments.getByRole('textbox', { name: 'Target relative path' }).fill('drafts/unsent.txt');
   await attachments.locator('.attachment-upload-disclosure summary').click();
-  await attachments.locator('.attachment-tree summary').filter({ hasText: 'docs' }).click();
-  await attachments.getByRole('button', { name: /^reading\.md/ }).last().click();
   const reader = attachments.locator('.attachment-markdown').filter({ has: page.getByRole('heading', { name: 'Document image', exact: true }) });
   const error = reader.getByRole('alert');
   await expect(error).toContainText('Unable to load the attachment image');
@@ -148,6 +144,21 @@ test('Markdown image retry preserves attachment drafts, selected document and re
   await expect(attachments.getByRole('textbox', { name: 'Target relative path' })).toHaveValue('drafts/unsent.txt');
   await attachments.locator('.attachment-upload-disclosure summary').click();
   await attachments.getByRole('button', { name: /^interactive\.html/ }).click();
+  const frame = attachments.locator('iframe');
+  const counter = frame.contentFrame().locator('#counter');
+  await expect(counter).toHaveText('0');
+  await counter.click(); await expect(counter).toHaveText('1');
+  const frameHandle = await frame.elementHandle();
+  await frame.contentFrame().locator('html').evaluate(element => { element.scrollTop = 500; });
+  const frameScroll = await frame.contentFrame().locator('html').evaluate(element => element.scrollTop);
+  const retainedResources = [...state.resources];
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+  const taskError = page.locator('.task-description').getByRole('alert');
+  await expect(taskError).toContainText('Unable to load the attachment image');
+  await taskError.getByRole('button', { name: 'Retry image', exact: true }).click();
+  await expect.poll(() => page.locator('.task-description').getByRole('img', { name: 'Task attachment', exact: true }).evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(200);
+  expect(taskImages).toBe(2); expect(state.resources).toEqual(retainedResources);
+  await page.getByRole('tab', { name: 'Attachments', exact: true }).click();
   expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
   await expect(counter).toHaveText('1');
   expect(await frame.contentFrame().locator('html').evaluate(element => element.scrollTop)).toBe(frameScroll);
