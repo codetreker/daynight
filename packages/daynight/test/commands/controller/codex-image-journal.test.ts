@@ -45,7 +45,8 @@ test.each([false, true])("Codex startup with resume=%s journals unknown geometry
     onState: state => { if (state.images) capabilities.push(f.journal.providerImageCapabilities(state.images)); },
   }).catch(async error => { await f.cleanup(); throw error; });
   try {
-    expect(capabilities.at(-1)).toMatchObject({ modelId: "fixture-vision", expectedNativeSessionId: "images-thread", send: "unknown", steer: "unknown", reasonCode: process.platform === "darwin" ? "capability_unknown" : "profile_disabled", geometry: { known: false } });
+    // Version compatibility alone supplies no profile without a verified observation.
+    expect(capabilities.at(-1)).toMatchObject({ modelId: "fixture-vision", expectedNativeSessionId: "images-thread", send: "unknown", steer: "unknown", reasonCode: "profile_disabled", geometry: { known: false } });
     await expect(provider.send({ content: [{ type: "image", imageId: randomUUID(), resourceId: randomUUID(), localPath: path.join(f.root, "unopened.png"), mediaType: "image/png", byteLength: "1", sha256: "a".repeat(64) }] }, randomUUID(), null)).rejects.toThrow("capability is unknown or unsupported");
     const calls = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     expect(calls.filter(call => ["turn/start", "turn/steer"].includes(call.method))).toEqual([]);
