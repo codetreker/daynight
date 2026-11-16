@@ -50,7 +50,7 @@ export const useOperation = (admission: TaskCacheScope) => {
     }
     return () => { mounted.current = false; active.current?.abort(); publication.current?.abort(); retainedPublication.current = null; publicationFailed.current = false; retryPublicationRef.current = null; };
   }, [admission]);
-  const run = async <T,>(operation: (signal: AbortSignal, dispatched: () => void) => Promise<T>, success: (value: T) => void, rejected?: (error: unknown) => void) => {
+  const run = async <T,>(operation: (signal: AbortSignal, dispatched: () => void) => Promise<T>, success: (value: T) => void, rejected?: (error: unknown) => void, isDefiniteRefusal?: (error: unknown) => boolean) => {
     if (authRequestsPaused() || active.current !== null || publicationFailed.current || resultRef.current?.kind === "unknown") return;
     publication.current?.abort(); publication.current = null; retainedPublication.current = null; retryPublicationRef.current = null; setPublicationPending(false);
     const controller = new AbortController(); active.current = controller;
@@ -106,7 +106,7 @@ export const useOperation = (admission: TaskCacheScope) => {
       if (owns() && active.current === controller) { setOutcome("confirmed"); publish(() => success(value)); }
     } catch (error) {
       if (!owns() || active.current !== controller) return;
-      const definite = error instanceof ApiError && error.kind === "server" && error.status !== null && error.status < 500 && error.code !== "write_outcome_unknown";
+      const definite = error instanceof ApiError && error.kind === "server" && error.status !== null && (error.status < 500 && error.code !== "write_outcome_unknown" || isDefiniteRefusal?.(error) === true);
       if (!sent && (signal.aborted || isAbortError(error))) { setOutcome("cancelled"); return; }
       const kind = sent && !definite ? "unknown" : "rejected";
       const localError = error instanceof ApiError && definite

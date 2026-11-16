@@ -58,6 +58,7 @@ export type ProtectedRoute = Route
   | WebhookRoute
   | { readonly kind: "team" | "teamSettings" | "teamMembers" | "teamGitHubApps"; readonly teamId: string }
   | { readonly kind: "sharedProjects" | "myTasks" }
+  | { readonly kind: "githubApps"; readonly appId: string | null }
   | { readonly kind: "bots" }
   | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals"; readonly recordId?: string; readonly eventId?: string }
   | { readonly kind: "bot"; readonly botId: string }
@@ -110,6 +111,12 @@ export const parseRoute = (pathname: string, search = ""): Route => {
 
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/webhooks") return webhookRoute(search);
+  if (pathname === "/github-apps") return { kind: "githubApps", appId: null };
+  const githubApp = /^\/github-apps\/([^/]+)$/.exec(pathname);
+  if (githubApp !== null) {
+    try { const appId = canonicalId(decodeURIComponent(githubApp[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubApps", appId }; }
+    catch { return { kind: "notFound" }; }
+  }
   if (pathname === "/my-tasks") return { kind: "myTasks" };
   if (pathname === "/shared-projects") return { kind: "sharedProjects" };
   const team = /^\/teams\/([^/]+)(\/(?:settings|members|github-apps))?$/.exec(pathname);
