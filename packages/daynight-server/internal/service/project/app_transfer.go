@@ -1,0 +1,60 @@
+package project
+
+import (
+	"context"
+
+	github "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/project"
+	session "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	webhook "github.com/codetreker/daynight/packages/daynight-server/internal/core/webhook"
+)
+
+// AppProjects retains ordinary project operations and supplies App-aware
+// transfer and deletion coordinators for the application composition root.
+type AppProjects struct {
+	*Projects
+	lifecycle store.GitHubProjectLifecycleStore
+}
+
+func NewAppProjects(db interface {
+	database
+	store.GitHubProjectLifecycleStore
+}, engines ...*session.Engine) *AppProjects {
+	return &AppProjects{Projects: NewProjects(db, engines...), lifecycle: db}
+}
+
+func (s *AppProjects) Transfer(ctx context.Context, p model.Principal, id string, input core.TransferInput) (core.TransferReceipt, error) {
+	id, source, target, err := core.ValidateTransfer(p, id, input)
+	if err != nil {
+		return core.TransferReceipt{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, github.OperationTimeout)
+	defer cancel()
+	var result core.TransferReceipt
+	c, err := s.lifecycle.WriteGitHubProjectTransfer(ctx, id, func(scope store.GitHubProjectTransferScope) error {
+		var err error
+		result, err = core.Transfer(ctx, scope.ProjectDAO(), p, id, source, target, input)
+		if err != nil {
+			return err
+		}
+		if result.Changed {
+			dao := scope.GitHubDAO()
+			if _, err = dao.LockBinding(ctx); err != nil {
+				return err
+			}
+			if err = dao.Stop(ctx, github.DisconnectionDecision()); err != nil {
+				return err
+			}
+			if err = dao.AdvanceImpact(ctx); err != nil {
+				return err
+			}
+		}
+		return webhook.RefreshEligibility(ctx, scope.EligibilityDAO(), store.WebhookEligibilityFilter{ProjectID: id})
+	})
+	if err := completed(c, err, nil); err != nil {
+		return core.TransferReceipt{}, err
+	}
+	return result, nil
+}
