@@ -300,12 +300,8 @@ func (e *Entry) errorResult(actor RequestActor, failure envelopeError) *sdk.Call
 		// References are supplementary and can themselves be malformed; preserve the
 		// request and established completion facts in the fallback envelope.
 		failure.Refs = nil
-		encoded, err = json.Marshal(envelope{Error: &failure})
-		if err != nil {
-			failure.Code = "internal_error"
-			failure.Message = "The tool result could not be constructed."
-			encoded, _ = json.Marshal(envelope{Error: &failure})
-		}
+		// With refs removed, the envelope contains only encodable strings.
+		encoded, _ = json.Marshal(envelope{Error: &failure})
 	}
 	return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: failure.Message}}, StructuredContent: json.RawMessage(encoded)}
 }
