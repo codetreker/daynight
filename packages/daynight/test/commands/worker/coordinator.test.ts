@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ensureCleanupSchedule } from "../../../src/commands/worker/cleanup-schedule.js";
 import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
-import { ArchiveRepairRequiredError, type ArchiveProbeResult } from "../../../src/commands/controller/archive-error.js";
+import { ArchiveRepairRequiredError } from "../../../src/commands/controller/archive-error.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { execFileSync } from "node:child_process";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
@@ -2816,7 +2816,8 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's slot whi
   const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration }], globalConfiguration: configuration, webStore, webBackend: { ...backend, advance }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick();
-    await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
+    if (stage === "archive") await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
+    else await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
     expect(f.store.getTask(owner)?.status).toBe("active");
     expect(f.worktrees.has(owner.claimId)).toBe(true);
     await coordinator.tick();
@@ -2827,7 +2828,7 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's slot whi
     await coordinator.tick();
     await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
     expect(webStore.getTask(owner)?.status).toBe("done");
-    expect(f.order.slice(-2)).toEqual(["archive-ready", "remove-worktree"]);
+    expect(f.order).toContain("remove-worktree");
     // The done row is visible before the cleanup job's final responsibility is released.
     await vi.waitFor(async () => {
       await coordinator.tick();
@@ -2835,7 +2836,7 @@ it.each(["archive", "worktree removal"])("releases a deleted Web task's slot whi
     }, { timeout: 3500, interval: 10 });
     expect(f.remote.claim).toHaveBeenCalledOnce();
     expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
-    expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(1);
+    expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(stage === "archive" ? 0 : 1);
     // A completed record still reconciles the original claim against physical resources.
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     await coordinator.completeSource(owner);
@@ -3016,61 +3017,6 @@ describe("terminal cleanup retry scheduling", () => {
       await f.coordinator.tick();
       expect(f.coordinator.archiveYield()).toBe(false);
     } finally { release(); await f.coordinator.shutdown(); }
-  });
-
-  it.each([
-    { kind: "busy lower jitter", status: 429, code: "resource_busy", nested: false, stage: "archive", initialFailures: 0, failures: 0, random: 0, wait: 5000, busy: true },
-    { kind: "busy upper jitter", status: 429, code: "resource_busy", nested: false, stage: "archive", initialFailures: 0, failures: 0, random: 0.999999, wait: 7000, busy: true },
-    { kind: "nested busy", status: 429, code: "resource_busy", nested: true, stage: "archive", initialFailures: 0, failures: 0, random: 0.5, wait: 6000, busy: true },
-    { kind: "busy after restart", status: 429, code: "resource_busy", nested: false, stage: "archive", initialFailures: 5, failures: 5, random: 0.5, wait: 6000, busy: true },
-    { kind: "different 429", status: 429, code: "rate_limit", nested: false, stage: "archive", initialFailures: 2, failures: 3, random: 0.5, wait: 4000, busy: false },
-    { kind: "different status", status: 503, code: "resource_busy", nested: false, stage: "archive", initialFailures: 3, failures: 4, random: 0.5, wait: 8000, busy: false },
-    { kind: "busy outside archive", status: 429, code: "resource_busy", nested: false, stage: "worktree-removal", initialFailures: 0, failures: 1, random: 0.5, wait: 1000, busy: false },
-  ] as const)("retains archive ownership and schedules $kind without inflating busy failures", async ({ kind, status, code, nested, stage, initialFailures, failures, random, wait, busy }) => {
-    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
-    const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
-    const f = await fixture(2), webStore = openWebExecutionStore(createMemoryDatabase());
-    const config = { ...configuration, args: [], agentControlMode: "web" as const };
-    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(910), worktreeId: uuid(911) };
-    f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }); f.store.activateTask(owner);
-    let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
-    record = webStore.bindWorktree(record, await f.git.prepareWorktree(f.project, owner, {} as Operation), 2);
-    record = webStore.initializeWebExecution(record, 3);
-    record = webStore.updateWebExecution(record, { sessionId: uuid(912), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
-    const stopped = await stoppedWebExecution(f, webStore, record);
-    webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 7);
-    f.store.saveCleanupSchedule(owner, { deadline: 100, failures: initialFailures, nextAttemptAt: 1000, stage: "archive", lastError: initialFailures === 0 ? null : "Previous failure." });
-    f.candidates.splice(0);
-    const failure = Object.assign(new Error("Archive request failed."), { status, code });
-    const archive = vi.fn<() => Promise<void>>(async () => { throw nested ? new Error("Archive operation failed.", { cause: failure }) : failure; });
-    if (stage === "worktree-removal") { archive.mockResolvedValue(undefined); vi.mocked(f.git.removeWorktree).mockRejectedValue(failure); }
-    const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, jobLeases: stopped.jobLeases, request: stopped.request });
-    const monitor = createMonitoringObserver({ now: f.options.now });
-    const create = () => createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
-    let coordinator = create();
-    vi.spyOn(Math, "random").mockReturnValue(random);
-    try {
-      await coordinator.tick();
-      await eventually(() => expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(1));
-      expect(f.store.getCleanupSchedule(owner)).toMatchObject({ stage, failures, nextAttemptAt: 1000 + wait });
-      expect(f.store.getTask(owner)?.status).toBe("active");
-      expect(f.worktrees.has(owner.claimId)).toBe(true);
-      expect(coordinator.archiveYield()).toBe(true);
-      expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ phase: stage, retryState: "scheduled", nextAttemptAt: new Date(1000 + wait).toISOString(), ...(busy ? { error: expect.objectContaining({ code: "rate-limited" }) } : {}) }));
-      if (busy) expect(f.events.find(event => event.kind === "cleanup-error")?.message).toContain("archive busy, short retry");
-      if (kind === "busy after restart") { await coordinator.shutdown(); coordinator = create(); expect(coordinator.archiveYield()).toBe(true); }
-      f.clock(999 + wait); await coordinator.tick();
-      expect(archive).toHaveBeenCalledOnce();
-      archive.mockResolvedValue(undefined);
-      if (stage === "worktree-removal") vi.mocked(f.git.removeWorktree).mockImplementation(async () => { f.worktrees.delete(owner.claimId); return { kind: "absent", effectErrors: [] }; });
-      f.clock(1000 + wait); await coordinator.tick();
-      await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
-      expect(archive).toHaveBeenCalledTimes(2);
-      await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
-      expect(f.worktrees.has(owner.claimId)).toBe(false);
-      await coordinator.tick();
-      expect(coordinator.archiveYield()).toBe(false);
-    } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
   it("retries durable stop on its claim schedule and cleans after stop confirmation", async () => {
@@ -4644,7 +4590,7 @@ describe("real Git resource isolation", () => {
 
 });
 
-it.each(["blocked", "probe-error", "storage-failure", "cancelled", "receipt-mismatch", "removal-error", "repaired"] as const)("retains archive repair responsibility across coordinator restart: %s", async outcome => {
+it.each(["archive_incomplete", "projection_gap", "markdown_projection_failed", null] as const)("cleans a persisted Web archive retry immediately after restart: %s", async code => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
   const f = await fixture(1), webStore = openWebExecutionStore(createMemoryDatabase());
@@ -4658,61 +4604,67 @@ it.each(["blocked", "probe-error", "storage-failure", "cancelled", "receipt-mism
   const stopped = await stoppedWebExecution(f, webStore, record);
   webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 7);
   f.candidates.splice(0);
-  const archive = vi.fn<() => Promise<void>>(async () => { throw new ArchiveRepairRequiredError("archive_incomplete"); });
-  const probeArchive = vi.fn(async (_task: WebTask, _path: string, signal: AbortSignal): Promise<ArchiveProbeResult> => {
-    if (outcome === "cancelled") return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
-    if (outcome === "probe-error") throw new Error("probe unavailable");
-    return outcome === "blocked" || outcome === "storage-failure" ? { kind: "blocked", code: "archive_incomplete" } : { kind: "attempt" };
-  });
+  f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 4, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: code });
+  const archive = vi.fn(async () => { throw code === null ? new Error("Archive unavailable") : new ArchiveRepairRequiredError(code); });
+  const probeArchive = vi.fn(async () => ({ kind: "blocked" as const, code: "archive_incomplete" as const }));
+  const recordLegacyFailure = vi.fn(() => { throw new Error("Maintenance unavailable"); });
   const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, probeArchive, jobLeases: stopped.jobLeases, request: stopped.request });
-  const cleanup = vi.spyOn(backend, "cleanup");
-  let monitor = createMonitoringObserver({ now: f.options.now });
-  const create = () => createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
-  let coordinator = create();
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, archiveMaintenance: { recordLegacyFailure }, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick();
-    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ stage: "archive", failures: 1, archiveRepairCode: "archive_incomplete", nextAttemptAt: 901000 }));
-    expect(archive).toHaveBeenCalledOnce();
-    await coordinator.shutdown(); cleanup.mockClear();
-    monitor = createMonitoringObserver({ now: f.options.now }); coordinator = create();
-    f.clock(900999);
-    await coordinator.tick(); await coordinator.tick();
-    expect(probeArchive).not.toHaveBeenCalled(); expect(cleanup).not.toHaveBeenCalled();
-    expect(monitor.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ phase: "archive", error: expect.objectContaining({ code: "recovery-blocked" }), retryState: "scheduled" })]));
-    if (outcome === "repaired" || outcome === "removal-error") archive.mockImplementation(async () => {});
-    if (outcome === "removal-error") vi.mocked(f.git.removeWorktree).mockRejectedValue(new Error("Removal denied."));
-    if (outcome === "receipt-mismatch") archive.mockImplementation(async () => { throw new Error("Server archive differs from the confirmed receipt."); });
-    if (outcome === "storage-failure") vi.spyOn(f.store, "saveCleanupSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
-    f.clock(901000); await coordinator.tick();
-    await eventually(() => expect(probeArchive).toHaveBeenCalledOnce());
-    if (outcome === "cancelled") {
-      await coordinator.shutdown();
-      expect(f.store.getCleanupSchedule(owner)).toMatchObject({ archiveRepairCode: "archive_incomplete", failures: 1, nextAttemptAt: 901000 });
-      expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(1);
-      expect(archive).toHaveBeenCalledOnce(); expect(f.worktrees.has(owner.claimId)).toBe(true);
-    } else if (outcome === "repaired") {
-      await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
-      expect(f.store.getTask(owner)?.status).toBe("done"); expect(f.worktrees.has(owner.claimId)).toBe(false);
-    } else {
-      await eventually(() => expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(2));
-      if (outcome === "storage-failure") {
-        expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1, nextAttemptAt: 901000 });
-        expect(f.events.filter(event => event.kind === "cleanup-error").at(-1)?.error).toBeInstanceOf(AggregateError);
-        f.clock(1800999); await coordinator.tick(); expect(probeArchive).toHaveBeenCalledOnce();
-      } else if (outcome === "removal-error") {
-        expect(f.store.getCleanupSchedule(owner)).toMatchObject({ stage: "worktree-removal", failures: 2, nextAttemptAt: 903000 });
-        expect(f.store.getCleanupSchedule(owner)?.archiveRepairCode).toBeUndefined();
-      } else expect(f.store.getCleanupSchedule(owner)).toMatchObject({ archiveRepairCode: "archive_incomplete", failures: outcome === "receipt-mismatch" ? 2 : 1, nextAttemptAt: 1801000 });
-      expect(f.store.getTask(owner)?.status).toBe("active"); expect(f.worktrees.has(owner.claimId)).toBe(true);
-      expect(f.remote.claim).not.toHaveBeenCalled();
-      expect(monitor.capture("2").capacity).toMatchObject({ occupied: 0, available: 1 });
-      if (outcome !== "removal-error") expect(monitor.capture("3").lastRecovery?.component).not.toBe("cleanup");
-      else expect(monitor.capture("3").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ phase: "worktree-removal" })]));
-      if (outcome !== "receipt-mismatch" && outcome !== "removal-error") { expect(cleanup).not.toHaveBeenCalled(); expect(archive).toHaveBeenCalledOnce(); }
-    }
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    expect(archive).toHaveBeenCalledOnce(); expect(probeArchive).not.toHaveBeenCalled();
+    expect(recordLegacyFailure).toHaveBeenCalledOnce();
+    const registration = f.events.find(event => event.kind === "session-archive-retry");
+    expect(registration?.error).toBeInstanceOf(AggregateError);
+    expect((registration?.error as AggregateError).errors[0]).toMatchObject({ message: "retained" });
+    expect(f.store.getTask(owner)?.status).toBe("done");
+    expect(webStore.getTask(owner)?.status).toBe("done");
+    expect(f.worktrees.has(owner.claimId)).toBe(false);
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
+it.each([
+  { failure: "denied", persistenceFails: false },
+  { failure: "busy", persistenceFails: false },
+  { failure: "denied", persistenceFails: true },
+] as const)("retains worktree-removal retry backoff after an old Web archive schedule: $failure, persistence failure $persistenceFails", async ({ failure, persistenceFails }) => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
+  const f = await fixture(1), webStore = openWebExecutionStore(createMemoryDatabase());
+  const config = { ...configuration, args: [], agentControlMode: "web" as const };
+  const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(910), worktreeId: uuid(911) };
+  f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }); f.store.activateTask(owner);
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  record = webStore.bindWorktree(record, await f.git.prepareWorktree(f.project, owner, {} as Operation), 2);
+  record = webStore.initializeWebExecution(record, 3);
+  record = webStore.updateWebExecution(record, { sessionId: uuid(912), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
+  const stopped = await stoppedWebExecution(f, webStore, record);
+  webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 7);
+  f.candidates.splice(0);
+  f.store.saveCleanupSchedule(owner, { deadline: 100, failures: 1, nextAttemptAt: 901000, stage: "archive", lastError: "retained", archiveRepairCode: "archive_incomplete" });
+  if (persistenceFails) vi.spyOn(f.store, "saveCleanupSchedule").mockImplementationOnce(() => { throw new Error("Schedule unavailable"); });
+  const archive = vi.fn(async () => { throw new ArchiveRepairRequiredError("archive_incomplete"); });
+  const removalError = failure === "busy" ? Object.assign(new Error("Removal busy"), { status: 429, code: "resource_busy" }) : new Error("Removal denied");
+  vi.mocked(f.git.removeWorktree).mockRejectedValue(removalError);
+  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, jobLeases: stopped.jobLeases, request: stopped.request });
+  const create = () => createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
+  let coordinator = create();
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(1));
+    expect(f.store.getCleanupSchedule(owner)).toMatchObject(persistenceFails ? { stage: "archive", nextAttemptAt: 901000 } : { stage: "worktree-removal", nextAttemptAt: 3000 });
+    if (persistenceFails) expect(f.events.find(event => event.kind === "cleanup-error")?.error).toBeInstanceOf(AggregateError);
+    expect(f.worktrees.has(owner.claimId)).toBe(true);
+    expect(f.store.getTask(owner)?.status).toBe("active");
+    if (!persistenceFails) { await coordinator.shutdown(); coordinator = create(); }
+    f.clock(2999); await coordinator.tick(); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+    vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, actual) => { f.worktrees.delete(actual.claimId); return { kind: "absent", effectErrors: [] }; });
+    f.clock(3000); await coordinator.tick();
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    expect(f.store.getTask(owner)?.status).toBe("done"); expect(f.worktrees.has(owner.claimId)).toBe(false);
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
 
 it.each(["current", "legacy", "mismatch"] as const)("reconciles an original receipt while a persisted archive blocker remains: %s", async variant => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
@@ -4748,85 +4700,10 @@ it.each(["current", "legacy", "mismatch"] as const)("reconciles an original rece
   const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
   try {
     await coordinator.tick();
-    if (variant === "mismatch") {
-      await eventually(() => expect(f.store.getCleanupSchedule(owner)?.failures).toBe(5));
-      expect(f.store.getCleanupSchedule(owner)).toMatchObject({ archiveRepairCode: "archive_incomplete", nextAttemptAt: 901000 });
-      expect(f.worktrees.has(owner.claimId)).toBe(true); expect(f.store.getTask(owner)?.status).toBe("active");
-      expect(f.remote.claim).not.toHaveBeenCalled();
-    } else await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
+    expect(f.worktrees.has(owner.claimId)).toBe(false); expect(f.store.getTask(owner)?.status).toBe("done");
     expect(request.mock.calls.map(([,init]) => init?.method)).toEqual(["GET"]);
     const inspect = new Database(journalPath, { readonly: true });
     try { expect(inspect.prepare("SELECT archive_incomplete FROM execution").get()).toEqual({ archive_incomplete: 1 }); } finally { inspect.close(); }
-  } finally { await coordinator.shutdown(); webStore.close(); }
-});
-
-it.each((["archive_incomplete", "projection_gap", "markdown_projection_failed"] as const).flatMap(code =>
-  (["complete", "receipt", "blocked", "unconfirmed", "regressed", "clear-failed"] as const).map(outcome => ({ code, outcome })),
-))("updates cleanup scheduling only after confirmed completeness: $code/$outcome", async ({ code, outcome }) => {
-  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
-  const { createWebExecutionBackend } = await import("../../../src/commands/worker/backends/web.js");
-  const f = await fixture(1), webStore = openWebExecutionStore(createMemoryDatabase());
-  const config = { ...configuration, args: [], agentControlMode: "web" as const };
-  const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(910), worktreeId: uuid(911) };
-  f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }); f.store.activateTask(owner);
-  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
-  record = webStore.bindWorktree(record, await f.git.prepareWorktree(f.project, owner, {} as Operation), 2);
-  record = webStore.initializeWebExecution(record, 3);
-  record = webStore.updateWebExecution(record, { sessionId: uuid(912), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
-  const stopped = await stoppedWebExecution(f, webStore, record);
-  webStore.beginCleanup(stopped.task, { kind: "terminal", deadline: 100 }, 7);
-  f.candidates.splice(0);
-  const archive = vi.fn<() => Promise<void>>(async () => { throw new ArchiveRepairRequiredError(code); });
-  const probeArchive = vi.fn(async (): Promise<ArchiveProbeResult> => {
-    if (outcome === "unconfirmed") throw new Error("metadata unavailable");
-    if (outcome === "blocked") return { kind: "blocked", code };
-    return { kind: outcome === "receipt" ? "attempt" : "complete" };
-  });
-  const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: f.options.now, archive, probeArchive, jobLeases: stopped.jobLeases, request: stopped.request });
-  const monitor = createMonitoringObserver({ now: f.options.now });
-  const create = () => createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore, webBackend: backend, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {} });
-  let coordinator = create();
-  try {
-    await coordinator.tick();
-    await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 1, archiveRepairCode: code, nextAttemptAt: 901000 }));
-    await coordinator.shutdown(); coordinator = create();
-    const admissions: ReturnType<typeof f.store.getCleanupSchedule>[] = [];
-    archive.mockImplementation(async () => {
-      admissions.push(f.store.getCleanupSchedule(owner));
-      if (outcome === "regressed") throw new ArchiveRepairRequiredError(code);
-      throw new Error("Session archive request failed (503).");
-    });
-    if (outcome === "clear-failed") vi.spyOn(f.store, "saveCleanupSchedule").mockImplementationOnce(() => { throw new Error("schedule unavailable"); });
-    f.clock(901000); await coordinator.tick();
-    await eventually(() => expect(f.events.filter(event => event.kind === "cleanup-error")).toHaveLength(2));
-    const schedule = f.store.getCleanupSchedule(owner);
-    expect(schedule).not.toBeNull();
-    expect(f.store.getTask(owner)?.status).toBe("active");
-    expect(f.worktrees.has(owner.claimId)).toBe(true);
-    expect(f.git.removeWorktree).not.toHaveBeenCalled();
-    expect(f.remote.claim).not.toHaveBeenCalled();
-    expect(monitor.capture("1").capacity).toMatchObject({ occupied: 0, available: 1 });
-    if (outcome === "complete") {
-      expect(schedule).toMatchObject({ stage: "archive", failures: 2, nextAttemptAt: 903000 });
-      expect(schedule?.archiveRepairCode).toBeUndefined();
-      expect(admissions).toHaveLength(1);
-      expect(admissions[0]).toMatchObject({ worktreeId: owner.worktreeId, failures: 1 });
-      expect(admissions[0]?.archiveRepairCode).toBeUndefined();
-      f.clock(902999); await coordinator.tick(); expect(archive).toHaveBeenCalledTimes(2);
-      f.clock(903000); await coordinator.tick();
-      await eventually(() => expect(f.store.getCleanupSchedule(owner)).toMatchObject({ failures: 3, nextAttemptAt: 907000 }));
-      expect(probeArchive).toHaveBeenCalledOnce();
-      await coordinator.shutdown(); coordinator = create();
-      archive.mockResolvedValue(undefined);
-      f.clock(907000); await coordinator.tick();
-      await eventually(() => expect(f.store.getCleanupSchedule(owner)).toBeNull());
-      expect(f.store.getTask(owner)?.status).toBe("done");
-      expect(f.worktrees.has(owner.claimId)).toBe(false);
-      expect(probeArchive).toHaveBeenCalledOnce();
-    } else {
-      expect(schedule).toMatchObject({ archiveRepairCode: code, nextAttemptAt: 1801000 });
-      expect(archive).toHaveBeenCalledTimes(outcome === "receipt" || outcome === "regressed" ? 2 : 1);
-      f.clock(903000); await coordinator.tick(); expect(probeArchive).toHaveBeenCalledOnce();
-    }
   } finally { await coordinator.shutdown(); webStore.close(); }
 });

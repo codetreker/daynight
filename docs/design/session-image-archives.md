@@ -262,7 +262,7 @@ timeline 和两种完整历史同步共用以下传输规则：
 
 ### 已停止执行的 Markdown 图片投影修复
 
-`worker repair-markdown` 是原 Worker 上的显式终态修复入口。命令核验当前账号、服务、终态 Task、completed 原 claim、Session、Worker 配置、完整 launch ticket、工作树 manifest、Git 分支和实际路径。远端 Session、停止 journal 和本地执行绑定必须具有相同的非空 native Session 身份；claim 的可选 nativeSessionId 摘要缺失不构成冲突，非空时必须与这些证据一致。任务暂停或任一已知身份变化均拒绝；它不占用 Worker 调度锁，也不创建 Controller 或 Provider，不重放输入。停止写入使用原 Controller storage permit，沿用 Windows Job stop proof 等平台停止证明。
+`worker repair-markdown` 是原 Worker 上的显式终态修复入口。正常 Web 清理可能在归档失败后删除工作树；命令要求原工作树仍被保留，不访问或重建后继工作树，缺失来源时不能完成依赖该来源的修复。命令核验当前账号、服务、终态 Task、completed 原 claim、Session、Worker 配置、完整 launch ticket、工作树 manifest、Git 分支和实际路径。远端 Session、停止 journal 和本地执行绑定必须具有相同的非空 native Session 身份；claim 的可选 nativeSessionId 摘要缺失不构成冲突，非空时必须与这些证据一致。任务暂停或任一已知身份变化均拒绝；它不占用 Worker 调度锁，也不创建 Controller 或 Provider，不重放输入。停止写入使用原 Controller storage permit，沿用 Windows Job stop proof 等平台停止证明。
 
 `stopped-markdown-repair` 从 SQL timeline 找出非空 `imageProjectionError`，使用保留的 `markdown:projection` 输入重新分析。当前投影必须与原输入渲染结果一致；只有完整、非截断且块身份明确的失败部分可进入分析。每个条目的修复计划保留原 entry、原 projection、ticket hash、停止快照及解析结果。解析完成后先保存计划，使新 imageId 在中断后保持不变；失败不替换原 timeline。每次写入前重读业务授权，再在存储锁内核对快照、source/ACK 截止点、输入、条目和目录根身份。
 

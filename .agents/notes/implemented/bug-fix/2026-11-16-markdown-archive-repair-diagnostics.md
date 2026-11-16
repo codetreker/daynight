@@ -13,7 +13,7 @@ minute and gives the operator no repair action.
 
 The [Worker archive policy](../../../../docs/design/daynight-worker.md) recognizes
 non-null image projection errors before opening image resource files. It retains
-`markdown_projection_failed` in the original cleanup or historical backfill
+`markdown_projection_failed` in the independent archive backfill
 schedule and uses the existing 15-minute stopped-generation condition probe.
 Worker SQLite migration 17 copies both schedule tables without changing their
 owners, deadlines, failure counts or retry times, extending their code constraint.
@@ -40,9 +40,8 @@ optional claim summary does not override those authoritative records, while a
 conflicting known summary still prevents repair.
 
 This extends the [typed archive waiting decision](2026-11-10-worker-recovery-evidence.md).
-Receipt reconciliation remains first, and only actual archival and cleanup can
-release retained resources. A successful condition probe does not manufacture a
-receipt or mark a resource available.
+Receipt reconciliation remains first, and a successful condition probe does not
+manufacture a receipt or mark a resource available. [Web archive independence](2026-11-16-web-archive-independent-cleanup.md) separates cleanup from archive repair.
 
 ## Alternatives
 
@@ -74,8 +73,10 @@ keep their original IDs and bytes.
 
 ## Consequences
 
-The original claim, worktree, source and cleanup responsibility remain intact.
-Probes read SQL projection markers without loading image resources. Invalid SQL
+Controller archive sources and the original execution identity remain available.
+The explicit repair command requires the retained original worktree; after normal
+cleanup removes it, repair cannot read missing worktree sources or use a successor
+checkout. Probes read SQL projection markers without loading image resources. Invalid SQL
 JSON or identity evidence remains a failure; it never proves repair. Legacy
 journals retain their migration path and receive the same check during full
 archival. The diagnostic addition requires coordinated service and client
