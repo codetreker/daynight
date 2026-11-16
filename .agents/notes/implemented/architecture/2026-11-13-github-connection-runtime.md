@@ -4,11 +4,11 @@ Status: implemented
 
 ## Problem
 
-Project administrators need to connect a repository and keep retained PR facts current across restarts and multiple service instances. Remote authorization can change while a connection or synchronization is in flight, and the service must stop work before releasing its dependencies.
+Teams need to connect a repository and keep retained PR facts current across restarts and multiple service instances. Remote authorization can change while a connection or synchronization is in flight, and the service must stop work before releasing its dependencies.
 
 ## Decision
 
-Verify the configured App's actual installation and repository read access outside the Project transaction, then recheck administrator access, version and stable repository identity in a short write. The service schedules the existing single-Project executor with bounded scanning and concurrency, and owns its cancellation, supervision and drain. Generation and lease checks isolate disconnected, replaced and deleted bindings. The [runtime design](../../../../docs/design/github-connection-runtime.md) owns the operational contract.
+Verify the selected App's actual installation and repository read access outside the Project transaction, then recheck owner Team administrator access, App and grant identity, versions and stable repository identity in a short write. The later [App cutover](2026-11-17-github-app-cutover.md) replaces the original service-wide App boundary. The service schedules the existing single-Project executor with bounded scanning and concurrency, and owns its cancellation, supervision and drain. Generation and lease checks isolate disconnected, replaced and deleted bindings. The [runtime design](../../../../docs/design/github-connection-runtime.md) owns the operational contract.
 
 ## Alternatives
 

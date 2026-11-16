@@ -193,6 +193,9 @@ describe("Team workspace routes", () => {
     expect(parseAuthRoute(`/teams/${projectId}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
     expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/settings`)).toEqual({ kind: "teamSettings", teamId: projectId });
     expect(parseAuthRoute(`/teams/${projectId}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/github-apps`)).toEqual({ kind: "teamGitHubApps", teamId: projectId });
+    expect(parseAuthRoute(`/teams/${projectId}/github-apps/extra`)).toEqual({ kind: "notFound" });
+    expect(isLoginReturnPath(`/teams/${projectId}/github-apps`)).toBe(true);
     expect(parseAuthRoute(`/teams/%61${projectId.slice(1)}/members`)).toEqual({ kind: "teamMembers", teamId: projectId });
     expect(parseAuthRoute("/my-tasks")).toEqual({ kind: "myTasks" });
     expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: "/my-tasks" })}`)).toBe("/my-tasks");

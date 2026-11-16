@@ -17,7 +17,7 @@ type projectAppClientProvider interface {
 }
 
 // ProjectAppManager composes current Team usage authorization, remote repository
-// proof and the dedicated Project/App transaction. It is assembled at cutover.
+// proof and the dedicated Project/App transaction.
 type ProjectAppManager struct {
 	db       store.GitHubProjectAppStore
 	provider projectAppClientProvider

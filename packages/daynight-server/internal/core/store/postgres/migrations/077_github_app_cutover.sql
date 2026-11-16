@@ -1,0 +1,25 @@
+UPDATE project_github SET
+    version = version + 1,
+    generation = generation + 1,
+    revision = revision + 1,
+    enabled = false,
+    app_id = NULL,
+    installation_id = NULL,
+    app_resource_id = NULL,
+    team_grant_id = NULL,
+    credential_version = NULL,
+    installation_account_login = NULL,
+    access_state = 'unknown',
+    access_reason = NULL,
+    access_checked_at = NULL,
+    next_access_check_at = NULL,
+    next_poll_at = NULL,
+    not_before = NULL,
+    claim_token = NULL,
+    claim_until = NULL,
+    claim_kind = NULL,
+    access_hint_id = NULL,
+    access_delivery_id = NULL,
+    updated_at = statement_timestamp();
+
+DELETE FROM project_github_pending_prs;

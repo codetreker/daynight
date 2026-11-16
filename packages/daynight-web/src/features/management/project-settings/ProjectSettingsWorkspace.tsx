@@ -23,7 +23,7 @@ import { WorkerPromptEditor } from "../../worker-prompts/WorkerPromptEditor";
 import type { ProjectDeletionReceipt } from "../../../api/project-deletion";
 import { ProjectDeletion } from "../ProjectDeletion";
 import { useProjectManagementGuard } from "../ProjectManagementGuard";
-import { GitHubSettings } from "../../github-integration/GitHubSettings";
+import { ProjectGitHubConsumption } from "../../github-integration/ProjectGitHubConsumption";
 import { MembersPanel } from "../MembersPanel";
 import type { ReactNode } from "react";
 
@@ -86,7 +86,7 @@ const ProjectSettingsContent = ({ projectId, user, selection = { kind: "tab", ta
     <ExecutionSettingsSection state={state} guard={guard} />
     </section>
     <section id={`project-settings-${projectId}-section-prompts`} role="region" aria-labelledby={`project-settings-${projectId}-tab-prompts`} hidden={selected !== 'prompts'} inert={selected !== 'prompts'}><WorkerPromptEditor state={prompt} scope="project" /></section>
-    <section id={`project-settings-${projectId}-section-github`} role="region" aria-labelledby={`project-settings-${projectId}-tab-github`} hidden={selected !== 'github'} inert={selected !== 'github'}><GitHubSettings projectId={projectId} userId={user.id} repoUrl={state.project?.repoUrl ?? null} active={sectionActive('github')} onRoute={onRoute} guard={guard} onRetentionChange={onGitHubRetentionChange} onStateChange={githubState} presentationGeneration={generations.current.github} /></section>
+    <section id={`project-settings-${projectId}-section-github`} role="region" aria-labelledby={`project-settings-${projectId}-tab-github`} hidden={selected !== 'github'} inert={selected !== 'github'}><ProjectGitHubConsumption projectId={projectId} userId={user.id} repoUrl={state.project?.repoUrl ?? null} active={sectionActive('github')} onRoute={onRoute} guard={guard} onRetentionChange={onGitHubRetentionChange} onStateChange={githubState} presentationGeneration={generations.current.github} /></section>
     <section id={`project-settings-${projectId}-section-members`} role="region" aria-labelledby={`project-settings-${projectId}-tab-members`} hidden={selected !== 'members'} inert={selected !== 'members'}><MembersPanel projectId={projectId} user={user} projectName={state.project?.name ?? null} active={sectionActive('members')} onRoute={onRoute} onGuardChange={onMemberRetentionChange} onStateChange={membersState} resultHost={memberResultHost} presentationGeneration={generations.current.members} onRemoved={onMemberRemoved ?? (() => {})} onUnavailable={onMemberUnavailable} onMembershipChange={onMembershipChange} /></section>
     <section id={`project-settings-${projectId}-section-management`} role="region" aria-labelledby={`project-settings-${projectId}-tab-management`} hidden={selected !== 'management'} inert={selected !== 'management'}><ProjectOwnership projectId={projectId} projectName={state.project?.name ?? null} onTransferred={onTransferred} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onRetentionChange} guard={guard} onStateChange={transferState} presentationGeneration={generations.current.management} />
     <ProjectDeletion projectId={projectId} active={sectionActive('management')} onRoute={onRoute} unavailable={state.unavailable} onRetentionChange={onDeletionRetentionChange} guard={guard} onDeleted={onDeleted} onOutcome={onDeletionOutcome} onStateChange={deletionState} presentationGeneration={generations.current.management} /></section>

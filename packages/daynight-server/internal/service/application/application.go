@@ -90,8 +90,8 @@ type Application struct {
 	OAuth            *oauth.Authenticator
 	OAuthGrants      *oauthcore.GrantLifecycle
 	Memberships      *project.Memberships
-	Projects         *project.Projects
-	Teams            *team.Teams
+	Projects         *project.AppProjects
+	Teams            *team.AppTeams
 	Workers          *worker.Workers
 	Prompts          *prompt.Prompts
 	WorkerReadOnly   *workerreadonly.Broker
@@ -118,7 +118,7 @@ type Application struct {
 type constructors struct {
 	identity         func(store.IdentityWriter, *uniauth.Client, string, *identity.PreviewSSO) *identity.Identity
 	taskObservations func(store.SnapshotReader, task.SessionObserver) *task.Observations
-	projects         func(store.Transactions, *sessioncore.Engine) *project.Projects
+	projects         func(store.Transactions, *sessioncore.Engine) *project.AppProjects
 	tasks            func(store.Transactions, task.Capturer) *task.Tasks
 	taskSteps        func(task.StepsStore, ...task.Capturer) *task.TaskSteps
 	attachments      func(store.SnapshotReader, store.AttachmentMutationWriter, filestorage.Storage) *attachment.Attachments
@@ -128,8 +128,8 @@ func New(database store.Transactions, files filestorage.Storage, client *uniauth
 	return assemble(database, files, client, callbackURL, preview, overlap, constructors{
 		identity:         identity.NewWithPreviewSSO,
 		taskObservations: task.NewObservations,
-		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.Projects {
-			return project.NewProjects(database, engine)
+		projects: func(database store.Transactions, engine *sessioncore.Engine) *project.AppProjects {
+			return project.NewAppProjects(database, engine)
 		},
 		tasks: func(database store.Transactions, capturer task.Capturer) *task.Tasks {
 			return task.NewTasks(database, capturer)
@@ -155,7 +155,7 @@ func assemble(database store.Transactions, files filestorage.Storage, client *un
 		OAuthGrants:      oauthcore.NewGrantLifecycle(database),
 		Memberships:      project.NewMemberships(database),
 		Projects:         construct.projects(database, engine),
-		Teams:            team.NewTeams(database),
+		Teams:            team.NewAppTeams(database),
 		Workers:          worker.NewWorkersWithPrompts(database, database),
 		Prompts:          prompt.New(database),
 		WorkerReadOnly:   workerReadOnly,

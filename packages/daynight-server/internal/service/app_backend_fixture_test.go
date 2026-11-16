@@ -21,6 +21,7 @@ import (
 // not change later reads; only resource opening and closure retain local state.
 type appBackend struct {
 	store.Transactions
+	unusedGitHubCapabilities
 	store.WebhookDeliveryTransactions
 	store.WebhookRetentionTransactions
 	store.WebhookReceiptGC
@@ -676,4 +677,14 @@ func (s unexpectedAppTransactions) WriteWorker(context.Context, func(store.Worke
 	failure := s.backend.unexpected("WriteWorker")
 	var value0 store.Completion
 	return value0, failure
+}
+
+func (s unexpectedAppTransactions) WriteGitHubProjectTransfer(context.Context, string, func(store.GitHubProjectTransferScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteGitHubProjectTransfer")
+}
+func (s unexpectedAppTransactions) WriteGitHubProjectDeletion(context.Context, string, func(store.GitHubProjectDeletionScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteGitHubProjectDeletion")
+}
+func (s unexpectedAppTransactions) WriteGitHubTeamDeletion(context.Context, string, func(store.GitHubTeamDeletionScope) error) (store.Completion, error) {
+	return store.Completion{}, s.backend.unexpected("WriteGitHubTeamDeletion")
 }

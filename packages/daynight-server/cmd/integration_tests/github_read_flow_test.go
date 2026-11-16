@@ -30,10 +30,10 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 		return result
 	}
 	initial := read(base + "/github")
-	if initial["projectId"] != project.ID || initial["version"] != "1" || initial["revision"] != "0" || initial["serviceAvailable"] != false || initial["connection"] != "not_connected" || initial["pollIntervalMinutes"] != float64(5) {
+	if initial["projectId"] != project.ID || initial["version"] != "1" || initial["revision"] != "0" || initial["serviceAvailable"] != true || initial["connection"] != "not_connected" || initial["pollIntervalMinutes"] != float64(5) {
 		t.Fatalf("initial GitHub state differs: %+v", initial)
 	}
-	for _, key := range []string{"repository", "installation"} {
+	for _, key := range []string{"repository", "installation", "app", "grantId"} {
 		if value, present := initial[key]; !present || value != nil {
 			t.Fatalf("initial %s must be null: %+v", key, initial)
 		}
@@ -45,8 +45,8 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	}
 	defer db.Close()
 	_, err = db.Exec(f.context, `INSERT INTO project_github
-		(project_id,version,generation,revision,enabled,app_id,installation_id,repository_id,installation_account_login,repository_full_name,repository_private,poll_interval_minutes,access_state,last_full_generation,last_full_success_at)
-		VALUES ($1,3,2,7,false,123,456,9007199254740993,'owner','owner/repository',true,5,'available',1,'2026-01-02T03:04:05Z')`, project.ID)
+		(project_id,version,generation,revision,enabled,repository_id,repository_full_name,repository_private,poll_interval_minutes,access_state,last_full_generation,last_full_success_at)
+		VALUES ($1,3,2,7,false,9007199254740993,'owner/repository',true,5,'unknown',1,'2026-01-02T03:04:05Z')`, project.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func serverAPIGitHubReadNormalFlow(t *testing.T, f *fixture) {
 	}
 
 	state := read(base + "/github")
-	if state["connection"] != "disconnected" || state["serviceAvailable"] != false || state["version"] != "3" || state["revision"] != "7" {
+	if state["connection"] != "not_connected" || state["serviceAvailable"] != true || state["version"] != "3" || state["revision"] != "7" {
 		t.Fatalf("retained GitHub state differs: %+v", state)
 	}
 	repository, ok := state["repository"].(map[string]any)

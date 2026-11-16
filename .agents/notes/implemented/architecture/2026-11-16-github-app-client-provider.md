@@ -18,4 +18,4 @@ The provider reads the current live credential snapshot for each borrow and shar
 
 ## Consequences
 
-Teams using the same App can share its token source; different Apps and credential versions do not. Snapshot reads add a database operation per borrow and do not replace execution authorization or its database fence. The provider is available independently of the existing fixed App runtime.
+Teams using the same App can share its token source; different Apps and credential versions do not. Snapshot reads add a database operation per borrow and do not replace execution authorization or its database fence. The production runtime drains work before closing the provider.

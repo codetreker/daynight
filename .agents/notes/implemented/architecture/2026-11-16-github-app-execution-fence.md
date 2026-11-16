@@ -12,7 +12,7 @@ Independent App execution uses a dedicated production work transaction and DAO. 
 
 The App executor borrows its client only after a confirmed claim and releases it after all use. Acquisition has the same fifteen-second bound as other database operations, so a stalled credential read cannot occupy all runner slots indefinitely. Cancelling acquisition after it returns does not cancel the subsequent synchronization. The provider owns client resources, while the database owns authorization. Unknown claims stop without replay and recover by lease expiry. A single App runner bounds scans and concurrency across Apps and exposes unexpected termination to readiness and supervision. The [execution design](../../../../docs/design/github-app-execution.md) owns the mechanisms and lifecycle contract.
 
-The fixed App constructors and lease predicate retain their behavior. Both execution modes use the same synchronization algorithm through explicit work, snapshot and remote capabilities; each admission path retains its own authorization responsibility.
+The synchronization algorithm receives explicit work, snapshot and remote capabilities; the production App-aware admission path owns authorization.
 
 ## Alternatives
 
@@ -26,4 +26,4 @@ The fixed App constructors and lease predicate retain their behavior. Both execu
 
 Revocation, credential changes and ownership changes cannot authorize publication by an earlier execution, including repository observations and hint mutations. Every short work transaction incurs authorization reads and locks. An unknown claim can delay that Project until lease expiry. Requests that crossed a checkpoint before revocation may still reach GitHub, but their results remain fenced.
 
-The components are independently constructible and tested. Their public runtime adoption remains a separate coordinated change; the existing fixed App path retains its original authorization guarantees until that adoption.
+The public runtime uses these components as part of the coordinated [App cutover](2026-11-17-github-app-cutover.md).

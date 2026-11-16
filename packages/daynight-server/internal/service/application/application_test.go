@@ -286,7 +286,7 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 		marker := identity.NewWithPreviewSSO(database, client, callbackURL, preview)
 		observationMarker := task.NewObservations(database, nil)
 		capturer := &assemblyCapturer{t: t}
-		var projects *project.Projects
+		var projects *project.AppProjects
 		var tasks *task.Tasks
 		var steps *task.TaskSteps
 		var attachments *attachment.Attachments
@@ -309,13 +309,13 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 				observer = actualObserver
 				return observationMarker
 			},
-			projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.Projects {
+			projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.AppProjects {
 				projectCalls++
 				if actual != database {
 					t.Error("Projects received another business store")
 				}
 				projectEngine = engine
-				projects = project.NewProjects(actual, engine)
+				projects = project.NewAppProjects(actual, engine)
 				return projects
 			},
 			tasks: func(actual store.Transactions, capture task.Capturer) *task.Tasks {
@@ -369,8 +369,8 @@ func TestApplicationSharesSessionEngineAndBusinessStore(t *testing.T) {
 			app := assemble(database, files, nil, "", nil, time.Second, constructors{
 				identity:         identity.NewWithPreviewSSO,
 				taskObservations: task.NewObservations,
-				projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.Projects {
-					return project.NewProjects(actual, engine)
+				projects: func(actual store.Transactions, engine *sessioncore.Engine) *project.AppProjects {
+					return project.NewAppProjects(actual, engine)
 				},
 				tasks: func(actual store.Transactions, capture task.Capturer) *task.Tasks {
 					taskCalls++

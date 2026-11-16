@@ -21,7 +21,6 @@ import (
 )
 
 type ReadOperations interface {
-	Get(context.Context, model.Principal, string) (coregithub.Status, error)
 	List(context.Context, model.Principal, string, coregithub.ListRequest) (coregithub.Page, error)
 	Detail(context.Context, model.Principal, string, int64) (coregithub.Detail, error)
 }
@@ -33,13 +32,11 @@ type handler struct {
 	logger *slog.Logger
 }
 
-// RegisterReadRoutes mounts authenticated read-only project GitHub resources.
-func RegisterReadRoutes(mux *http.ServeMux, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
+// RegisterPullRequestRoutes mounts the shared PR reads independently of the connection protocol.
+func RegisterPullRequestRoutes(mux *http.ServeMux, reader ReadOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &handler{reader: reader, logger: logger}
-	mux.HandleFunc("GET /api/v1/projects/{projectId}/github", auth.Require(h.status))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests", auth.Require(h.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(h.detail))
-	mux.HandleFunc("/api/v1/projects/{projectId}/github", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/pull-requests/{number}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD")))
 }
@@ -57,18 +54,6 @@ func (h *handler) run(w http.ResponseWriter, r *http.Request, p model.Principal,
 		return
 	}
 	httpx.WriteJSON(w, r, logger, http.StatusOK, value)
-}
-func (h *handler) status(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "status", func(id string) (any, error) {
-		if _, err := query(r); err != nil {
-			return nil, err
-		}
-		result, err := h.reader.Get(r.Context(), p, id)
-		if err != nil {
-			return nil, err
-		}
-		return statusResponse(result)
-	})
 }
 func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.run(w, r, p, "list", func(id string) (any, error) {

@@ -20,4 +20,4 @@ Self removal returns a finite receipt without a subsequent privileged read. Invi
 
 ## Consequences
 
-Each App serializes its administrative mutations while different Apps remain independent. Sequence values may have gaps after rollback and are never reused for a removed membership. The schema requires no migration beyond the existing registration tables. Adapters remain unmounted until the invitation reception page and its fragment handling are adopted together; this component does not publish an unusable invitation link. Existing global GitHub runtime and Project access rules remain in effect.
+Each App serializes its administrative mutations while different Apps remain independent. Sequence values may have gaps after rollback and are never reused for a removed membership. The schema requires no migration beyond the existing registration tables. Adapters remain unmounted until the invitation reception page and its fragment handling are adopted together; this component does not publish an unusable invitation link. The independent App runtime and Project connection access rules are described in the [App cutover](2026-11-17-github-app-cutover.md).

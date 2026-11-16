@@ -316,3 +316,11 @@ func TestProjectAppHTTPCancellationAndNullProjection(t *testing.T) {
 		t.Fatalf("null projection: %d %s", w.Code, w.Body)
 	}
 }
+
+func managementCall(m *http.ServeMux, method, path, body string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	m.ServeHTTP(w, r)
+	return w
+}

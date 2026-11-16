@@ -66,7 +66,7 @@ func (s *readerStub) Detail(ctx context.Context, p model.Principal, id string, n
 }
 func newMux(s *readerStub) *http.ServeMux {
 	m := http.NewServeMux()
-	RegisterReadRoutes(m, s, authStub{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	RegisterPullRequestRoutes(m, s, authStub{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return m
 }
 func call(m *http.ServeMux, method, path string) *httptest.ResponseRecorder {
@@ -83,15 +83,7 @@ func TestReadResponses(t *testing.T) {
 	c, pr := fixture()
 	s := &readerStub{status: coregithub.Status{Connection: c, ServiceAvailable: false}, page: coregithub.Page{Connection: c, Items: []githubpr.PullRequestSummary{pr}, Total: 1, Counts: store.GitHubPRCounts{Active: 1, All: 1}}, detail: coregithub.Detail{Connection: c, PullRequest: githubpr.PullRequest{PullRequestSummary: pr, Description: pointer("")}}}
 	m := newMux(s)
-	w := call(m, "GET", "/api/v1/projects/"+projectID+"/github")
-	var status api.GitHubStatus
-	if e := json.Unmarshal(w.Body.Bytes(), &status); e != nil || w.Code != 200 {
-		t.Fatalf("status %d %s %v", w.Code, w.Body, e)
-	}
-	if status.Version != "9007199254740993" || status.Connection != "connected" || status.ServiceAvailable || !status.Initializing || !status.Poll.Running || status.Poll.Error == nil || status.Webhook.Error != nil || status.Repository.ID != "9007199254740995" || status.Poll.LastAttemptAt.Location() != time.UTC {
-		t.Fatalf("status: %+v", status)
-	}
-	w = call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests?state=all&q=%23hello&limit=6&cursor=token")
+	w := call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests?state=all&q=%23hello&limit=6&cursor=token")
 	var page api.PullRequestPage
 	if e := json.Unmarshal(w.Body.Bytes(), &page); e != nil || w.Code != 200 {
 		t.Fatalf("page %d %s %v", w.Code, w.Body, e)
@@ -116,7 +108,7 @@ func TestProtocolRejectsBeforeReading(t *testing.T) {
 	s := &readerStub{}
 	m := newMux(s)
 	base := "/api/v1/projects/" + projectID
-	for _, path := range []string{base + "/github?x=1", base + "/pull-requests?state=bad", base + "/pull-requests?state=", base + "/pull-requests?limit=0", base + "/pull-requests?limit=101", base + "/pull-requests?limit=x", base + "/pull-requests?limit=01", base + "/pull-requests?q=%00", base + "/pull-requests?q=" + strings.Repeat("a", 1025), base + "/pull-requests?cursor=", base + "/pull-requests?state=all&state=all", base + "/pull-requests?other=x", base + "/pull-requests?q=%FF", base + "/pull-requests?q=%GG", base + "/pull-requests/0", base + "/pull-requests/01", base + "/pull-requests/-1", base + "/pull-requests/9223372036854775808", "/api/v1/projects/invalid/github"} {
+	for _, path := range []string{base + "/pull-requests?state=bad", base + "/pull-requests?state=", base + "/pull-requests?limit=0", base + "/pull-requests?limit=101", base + "/pull-requests?limit=x", base + "/pull-requests?limit=01", base + "/pull-requests?q=%00", base + "/pull-requests?q=" + strings.Repeat("a", 1025), base + "/pull-requests?cursor=", base + "/pull-requests?state=all&state=all", base + "/pull-requests?other=x", base + "/pull-requests?q=%FF", base + "/pull-requests?q=%GG", base + "/pull-requests/0", base + "/pull-requests/01", base + "/pull-requests/-1", base + "/pull-requests/9223372036854775808", "/api/v1/projects/invalid/pull-requests"} {
 		w := call(m, "GET", path)
 		if w.Code != 400 || s.calls != 0 {
 			t.Errorf("%q: %d %s calls %d", path, w.Code, w.Body, s.calls)
@@ -126,7 +118,7 @@ func TestProtocolRejectsBeforeReading(t *testing.T) {
 	if w.Code != http.StatusRequestURITooLong || s.calls != 0 {
 		t.Fatalf("long query: %d", w.Code)
 	}
-	w = call(m, "POST", base+"/github")
+	w = call(m, "POST", base+"/pull-requests")
 	if w.Code != 405 || w.Header().Get("Allow") != "GET, HEAD" || s.calls != 0 {
 		t.Fatalf("method %d %v", w.Code, w.Header())
 	}
@@ -140,7 +132,7 @@ func TestErrorsAndProjection(t *testing.T) {
 		t.Fatalf("error %d %s", w.Code, w.Body)
 	}
 	s.err = errors.New("database failure")
-	w = call(m, "GET", "/api/v1/projects/"+projectID+"/github")
+	w = call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests")
 	if w.Code != 500 || strings.Contains(w.Body.String(), "database failure") {
 		t.Fatal(w.Body)
 	}
@@ -192,18 +184,18 @@ type blockingReader struct {
 	stopped chan struct{}
 }
 
-func (s *blockingReader) Get(ctx context.Context, p model.Principal, id string) (coregithub.Status, error) {
+func (s *blockingReader) List(ctx context.Context, p model.Principal, id string, input coregithub.ListRequest) (coregithub.Page, error) {
 	close(s.started)
 	<-ctx.Done()
 	close(s.stopped)
-	return coregithub.Status{}, ctx.Err()
+	return coregithub.Page{}, ctx.Err()
 }
 func TestCancellationReachesRead(t *testing.T) {
 	reader := &blockingReader{started: make(chan struct{}), stopped: make(chan struct{})}
 	mux := http.NewServeMux()
-	RegisterReadRoutes(mux, reader, authStub{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	RegisterPullRequestRoutes(mux, reader, authStub{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest("GET", "/api/v1/projects/"+projectID+"/github", nil).WithContext(ctx)
+	req := httptest.NewRequest("GET", "/api/v1/projects/"+projectID+"/pull-requests", nil).WithContext(ctx)
 	w := httptest.NewRecorder()
 	finished := make(chan struct{})
 	go func() { mux.ServeHTTP(w, req); close(finished) }()
@@ -267,9 +259,8 @@ func TestDisabledSyncStatusRetainsHistory(t *testing.T) {
 func TestUnknownRepositoryVisibility(t *testing.T) {
 	c, _ := fixture()
 	c.RepositoryPrivate = nil
-	s := &readerStub{status: coregithub.Status{Connection: c}}
-	w := call(newMux(s), "GET", "/api/v1/projects/"+projectID+"/github")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"private":null`) {
-		t.Fatalf("status %d: %s", w.Code, w.Body)
+	response, err := statusResponse(coregithub.Status{Connection: c})
+	if err != nil || response.Repository.Private != nil {
+		t.Fatalf("status: %+v %v", response, err)
 	}
 }

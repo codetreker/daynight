@@ -3,6 +3,9 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -309,3 +312,23 @@ func TestAppWebhookAuthenticationDeadlineOverridesRefusal(t *testing.T) {
 		}
 	}
 }
+
+func webhookSignature(body []byte) string {
+	mac := hmac.New(sha256.New, []byte("secret"))
+	_, _ = mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+type slowWebhookBody struct {
+	body    io.Reader
+	delayed bool
+}
+
+func (s *slowWebhookBody) Read(p []byte) (int, error) {
+	if !s.delayed {
+		time.Sleep(100 * time.Millisecond)
+		s.delayed = true
+	}
+	return s.body.Read(p)
+}
+func (*slowWebhookBody) Close() error { return nil }
