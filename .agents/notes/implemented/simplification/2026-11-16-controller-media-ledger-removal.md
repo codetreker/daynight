@@ -32,6 +32,11 @@ private-path checks, immutable originals, file leases, transaction outcomes and
 atomic publication remain unchanged. Actual filesystem, SQLite, commit and close
 failures remain visible with their original certainty and cleanup semantics.
 Worker deletion completes the same physical cleanup without a separate refund.
+On POSIX, the captured execution parent is synced after directory removal and
+before cleanup completion is persisted, including a retry whose original target
+is already absent. This durability barrier belongs to execution cleanup and does
+not depend on the existence of an obsolete ledger. Sync failures retain the
+original deletion responsibility.
 
 This partially supersedes the cumulative media accounting in the
 [unified media](../architecture/2026-11-09-unified-session-media-core.md),

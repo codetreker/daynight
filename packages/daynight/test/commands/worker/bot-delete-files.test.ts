@@ -1,5 +1,7 @@
 import Database from "better-sqlite3";
 import { createServer } from "node:net";
+import { constants } from "node:fs";
+import * as filesystem from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,10 +12,12 @@ import type { BotExecution } from "../../../src/commands/worker/bots/execution-s
 import { removeHerdrSourceDirectory } from "../../../src/commands/worker/resource-disposal.js";
 import type { BotRecord } from "../../../src/commands/worker/bots/types.js";
 
+vi.mock("node:fs/promises", async original => ({ ...await original<typeof import("node:fs/promises")>() }));
+
 const id = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const signal = () => new AbortController().signal;
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/t15/files");
   await mkdir(base, { recursive: true });
@@ -44,6 +48,78 @@ const fixture = async () => {
 };
 const metadata = async (target: string) => { const entry = await lstat(target, { bigint: true }); return `${entry.dev}:${entry.ino}`; };
 const captured = async (target: string, kind: BotDeletionTarget["kind"]): Promise<BotDeletionTarget> => ({ path: target, root: path.dirname(target), kind, identity: await metadata(target), rootIdentity: await metadata(path.dirname(target)), completed: false });
+const observeParentHandle = (target: BotDeletionTarget, configure: (handle: filesystem.FileHandle) => void) => {
+  const original = filesystem.open;
+  return vi.spyOn(filesystem, "open").mockImplementation(async (...args) => {
+    const handle = await original(...args);
+    if (args[0] === target.root) configure(handle);
+    return handle;
+  });
+};
+
+describe.skipIf(process.platform === "win32")("durable original execution removal", () => {
+  it("joins the original parent's real sync after removal before allowing completion", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory");
+    const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    let returned = false, synced = false;
+    const opened = observeParentHandle(target, handle => {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, "sync").mockImplementation(async () => {
+        await expect(lstat(target.path)).rejects.toMatchObject({ code: "ENOENT" });
+        const parent = await handle.stat({ bigint: true });
+        expect(`${parent.dev}:${parent.ino}`).toBe(target.rootIdentity);
+        await sync(); synced = true; entered.resolve(); await finish.promise;
+      });
+    });
+    const removing = removeBotDeletionFile(target, signal()).then(() => { returned = true; });
+    try {
+      await Promise.race([entered.promise, removing.then(() => { throw new Error("Deletion returned before synchronizing its parent."); })]);
+      expect(synced).toBe(true); expect(returned).toBe(false);
+      expect(opened).toHaveBeenCalledWith(target.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    } finally { finish.resolve(); await removing; }
+    expect(returned).toBe(true);
+  });
+
+  it("rejects a failed parent sync and resyncs the already absent original execution on retry", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), failure = Object.assign(new Error("parent sync failed"), { code: "EIO" });
+    let attempts = 0;
+    observeParentHandle(target, handle => {
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, "sync").mockImplementation(async () => { if (++attempts === 1) throw failure; await sync(); });
+    });
+    await expect(removeBotDeletionFile(target, signal())).rejects.toBe(failure);
+    await expect(lstat(target.path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(target.completed).toBe(false);
+    await removeBotDeletionFile(target, signal());
+    expect(attempts).toBe(2);
+  });
+
+  it("rejects an opened parent with a different identity without syncing it", async () => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), sync = vi.fn();
+    observeParentHandle(target, handle => {
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, "stat").mockImplementation(async () => {
+        const value = await stat({ bigint: true });
+        return { ...value, ino: value.ino + 1n };
+      });
+      vi.spyOn(handle, "sync").mockImplementation(sync);
+    });
+    await expect(removeBotDeletionFile(target, signal())).rejects.toThrow(/identity/i);
+    expect(sync).not.toHaveBeenCalled(); expect(target.completed).toBe(false);
+  });
+
+  it.each([false, true])("preserves close failure and any preceding sync failure (%s)", async failSync => {
+    const f = await fixture(), target = await captured(f.directory, "directory"), closeFailure = new Error("parent close failed"), syncFailure = new Error("parent sync failed");
+    observeParentHandle(target, handle => {
+      const close = handle.close.bind(handle);
+      if (failSync) vi.spyOn(handle, "sync").mockRejectedValue(syncFailure);
+      vi.spyOn(handle, "close").mockImplementation(async () => { await close(); throw closeFailure; });
+    });
+    if (failSync) await expect(removeBotDeletionFile(target, signal())).rejects.toMatchObject({ errors: [syncFailure, closeFailure] });
+    else await expect(removeBotDeletionFile(target, signal())).rejects.toBe(closeFailure);
+    expect(target.completed).toBe(false);
+  });
+});
 
 describe("Bot private file deletion", () => {
   it("captures only owned execution, launch and aliases while leaving cwd, native home and task worktrees intact", async () => {
