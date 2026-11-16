@@ -137,7 +137,7 @@ const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, keyboa
   );
   if (preview.status !== 'ready') return null;
   if (kind === 'markdown') return (
-    <MarkdownContent className="attachment-markdown" remotePaused={paused} text={preview.text!} resolveUrl={(value) => resolveAttachmentUrl(value, attachment.path, previewRoot)} />
+    <MarkdownContent className="attachment-markdown" attachmentBase={{ kind: 'document', path: attachment.path }} remotePaused={paused} text={preview.text!} resolveUrl={(value) => resolveAttachmentUrl(value, attachment.path, previewRoot)} />
   );
   if (kind === 'text') return <pre className="attachment-text">{preview.text}</pre>;
   if (kind === 'image') return <ImagePreview key={url} url={url} path={attachment.path} paused={paused} />;

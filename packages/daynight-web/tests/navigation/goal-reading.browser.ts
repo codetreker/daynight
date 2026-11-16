@@ -21,6 +21,33 @@ const layoutWorkerId = '00000000-0000-4000-8000-000000000209';
 const personalId = '00000000-0000-4000-8000-000000000701';
 const time = '2026-10-22T10:00:00Z';
 const longChainTitle = 'Long completed chain title '.repeat(5).trim();
+
+test('Goal attachment image recovers from a network failure without rereading the Goal', async ({ page }) => {
+  const state = await install(page);
+  state.setGoalDescription('# Goal image\n\n![Goal attachment](images/goal.svg?size=small#diagram)\n\nGoal text remains readable.');
+  const images: string[] = [];
+  let detailReads = 0;
+  page.on('request', request => { if (new URL(request.url()).pathname === `/api/v1/projects/${projectId}/tasks/${goalId}`) detailReads++; });
+  await page.route('**/preview/images/goal.svg?size=small', route => {
+    images.push(route.request().url());
+    return images.length === 1 ? route.abort('failed') : route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#256a48"/></svg>' });
+  });
+  await page.goto(`/projects/${projectId}/tasks/${goalId}`);
+  const description = page.locator('.goal-detail-description');
+  await expect(description.getByRole('heading', { name: 'Goal image', exact: true })).toBeVisible();
+  const error = description.getByRole('alert');
+  await expect(error).toContainText('Unable to load the attachment image');
+  const before = detailReads;
+  await error.getByRole('button', { name: 'Retry image', exact: true }).click();
+  await expect(error).toHaveCount(0);
+  const image = description.getByRole('img', { name: 'Goal attachment', exact: true });
+  await expect(image).toHaveAttribute('src', `/api/v1/projects/${projectId}/tasks/${goalId}/preview/images/goal.svg?size=small#diagram`);
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(120);
+  expect(images).toHaveLength(2); expect(images[0]).toBe(images[1]);
+  expect(detailReads).toBe(before);
+  expect(state.statusWrites()).toEqual([]); expect(state.edits()).toEqual([]);
+});
+
 async function restoreGoalGraph(page: Page, surface: Locator, representativeId = firstId) {
   await expect(surface.locator('.goal-information-counts').first()).toBeAttached();
   await page.waitForFunction(() => history.state?.__daynightNavigation?.view !== undefined);
@@ -168,6 +195,16 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
       { ...first, status: 'in_progress', startedAt: time, properties: { worker } }, { ...second, properties: { paused: true } }, single];
     sessionStates = { [firstId]: indicator };
     currentGraph = { ...graphFixture(details), observedAt: changedAt };
+  }, mixedLayoutGoal: () => {
+    const statuses = ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const;
+    const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
+    details = [goal, ...statuses.map((status, i) => detailFixture(projectId,
+      `00000000-0000-4000-8000-${String(900 + i).padStart(12, '0')}`,
+      { parentId: goalId, title: 'Long title 中文长标题 '.repeat(12).trim(), status, assignedTo: TEST_VIEWER_ID,
+        startedAt: status === 'in_progress' ? time : null, completedAt: status === 'done' ? time : null,
+        cancelledAt: status === 'cancelled' ? time : null, properties: status === 'in_progress' ? { worker } : {},
+        tags: [{ id: layoutChildId, name: 'Long tag '.repeat(6).trim() }, { id: layoutWorkerId, name: 'Second tag 标签' }] }))];
+    currentGraph = graphFixture(details);
   }, taggedAndEmptyGoals: () => {
     details = [goal, ...[first, second, single].map(item => ({ ...item, tags: [{ id: layoutChildId, name: 'Tagged' }] })),
       detailFixture(projectId, otherGoalId, { type: 'goal', title: 'Empty goal', ready: false })];
@@ -2493,6 +2530,79 @@ test('Goal list retires an old epoch and rejects its late background result', as
 });
 
 
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`mixed Goal members remain readable at ${width}px in ${locale}`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page, locale); fixture.mixedLayoutGoal();
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await card.locator('.goal-list-toggle').click();
+  const rows = card.locator('.goal-task-list > li .task-row');
+  await expect(rows).toHaveCount(5);
+  for (const status of ['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const) {
+    const row = card.locator(`.goal-task-list > li .task-row[data-task-status="${status}"]`);
+    await page.mouse.move(0, 0);
+    await expect(row).toHaveCSS('background-color', roleColors[status][0]);
+    await row.hover();
+    await expect(row).toHaveCSS('background-color', roleColors[status][1]);
+    expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await expect(row.locator('.task-row-id')).toBeVisible();
+    await expect(row.locator('.task-tag')).toHaveCount(2);
+    await row.locator('.task-row-title').focus();
+    await expect(row.locator('.task-row-title')).toBeFocused();
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+for (const width of [1280, 601, 600, 390, 320]) test(`expanded member rows preserve their inset at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 800 });
+  const fixture = await install(page); fixture.completionGoal(true);
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const inset = width <= 600 ? 12 : 16;
+  const verify = async (container: Locator, toggle: Locator, contentSelector: string, bottom: number) => {
+    const headerBefore = await toggle.boundingBox();
+    await toggle.click();
+    const headerAfter = await toggle.boundingBox();
+    expect(headerAfter!.x).toBeCloseTo(headerBefore!.x, 1);
+    const content = container.locator(contentSelector);
+    const list = content.locator(':scope > .goal-task-list');
+    await expect(list.locator(':scope > li .task-row').first()).toBeVisible();
+    const geometry = await list.evaluate(element => {
+      const content = element.parentElement!.getBoundingClientRect();
+      const listBox = element.getBoundingClientRect();
+      const rows = [...element.querySelectorAll<HTMLElement>(':scope > li .task-row')].map(row => {
+        const box = row.getBoundingClientRect();
+        return { left: box.left, right: box.right, overflow: row.scrollWidth > row.clientWidth + 1 };
+      });
+      return { left: content.left, right: content.right, listBottom: listBox.bottom,
+        lastBottom: element.lastElementChild!.getBoundingClientRect().bottom, rows,
+        pageOverflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    expect(geometry.rows.length).toBeGreaterThan(0);
+    for (const row of geometry.rows) {
+      expect(row.left - geometry.left).toBeCloseTo(inset, 1);
+      expect(row.right).toBeCloseTo(geometry.right, 1);
+      expect(row.overflow).toBe(false);
+    }
+    expect(geometry.listBottom - geometry.lastBottom).toBeCloseTo(bottom, 1);
+    expect(geometry.pageOverflow).toBe(false);
+  };
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const goalRow = page.locator(`[data-goal-id="${goalId}"]`);
+  await verify(goalRow, goalRow.locator('.goal-list-toggle'), '.goal-list-contents', 0);
+  await expect(goalRow.locator('.goal-task-list')).toHaveCount(1);
+  await expect(goalRow.locator('.goal-task-list > li')).toHaveCount(3);
+  await page.getByRole('tab', { name: 'Task chains' }).click();
+  for (const id of [otherTask2Id, outsideId]) {
+    const chain = page.locator(`[data-chain-id="${id}"]`);
+    await verify(chain, chain.locator('.goal-toggle'), '.goal-children', 5);
+  }
+  expect(fixture.statusWrites()).toEqual([]);
+  expect(fixture.edits()).toEqual([]);
+});
+
 test('completed and incomplete full and scoped chains have compact desktop headers', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const fixture = await install(page, 'en', 'Owner'); fixture.compactChains();
@@ -2556,6 +2666,52 @@ for (const width of [1440, 1280, 740, 600, 390, 320]) for (const locale of ['en'
   expect(await page.locator('button button, button a, a button').count()).toBe(0);
   expect(fixture.statusWrites()).toEqual([]);
   expect(fixture.edits()).toEqual([]);
+});
+
+for (const width of [1280, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`chain graph icon matches Goal and preserves interaction at ${width}px in ${locale}`, async ({ page }) => {
+  const fixture = await install(page, locale); fixture.completionGoal(true);
+  await page.clock.install({ time: new Date('2055-01-01T00:00:00Z') });
+  await page.setViewportSize({ width, height: 800 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const reference = page.locator(`#project-goal-graph-${goalId}`);
+  const style = (element: Element) => {
+    const s = getComputedStyle(element), r = element.getBoundingClientRect();
+    return { width: r.width, height: r.height, color: s.color, background: s.backgroundColor, border: s.borderColor, radius: s.borderRadius, outline: s.outline, offset: s.outlineOffset };
+  };
+  const normal = await reference.evaluate(style);
+  await reference.hover(); const hover = await reference.evaluate(style);
+  await page.keyboard.press('Tab'); await reference.focus(); const focus = await reference.evaluate(style);
+  await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链' }).click();
+  const action = locale === 'en' ? 'View dependencies' : '查看依赖关系';
+  for (const id of [otherTask2Id, outsideId]) {
+    const row = page.locator(`[data-chain-id="${id}"]`), toggle = row.locator('.goal-toggle'), button = row.locator('.goal-graph-button');
+    await expect(button).toHaveAccessibleName(`${longChainTitle}${locale === 'en' ? ', ' : '，'}${action}`);
+    await expect(button).toHaveAttribute('title', action);
+    await expect(button).toHaveText('');
+    await expect(button.locator('svg[aria-hidden="true"]')).toHaveCount(1);
+    expect(await button.evaluate(style)).toEqual(normal);
+    await button.hover(); expect(await button.evaluate(style)).toEqual(hover);
+    await toggle.focus();
+    for (let i = 0; i < 5 && !(await button.evaluate(element => element === document.activeElement)); i++) await page.keyboard.press('Tab');
+    await expect(button).toBeFocused(); expect(await button.evaluate(style)).toEqual(focus);
+    await expectHit(button);
+    for (const key of ['Enter', 'Space']) {
+      await page.keyboard.press(key);
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await page.keyboard.press('Escape');
+      await expect(button).toBeFocused();
+    }
+    await toggle.click(); await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await button.click(); await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(button).toBeFocused(); await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]);
 });
 
 for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal completion is readable in its list and detail at ${width}px in ${locale}`, async ({ page }) => {

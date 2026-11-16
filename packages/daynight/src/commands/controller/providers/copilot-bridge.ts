@@ -5,13 +5,16 @@ import { fileURLToPath } from "node:url";
 import type { CopilotClient, CopilotSession, SessionConfig } from "@github/copilot-sdk";
 import { CopilotBridgeChannel } from "./copilot-bridge-channel.js";
 import type { CopilotBridgeImageInput, CopilotBridgeExport } from "./copilot-bridge-media.js";
+import { parseCopilotRouteObservation, type CopilotRouteObservation } from "./copilot-route-observation.js";
 
 export type CopilotBridgeSpool = { readonly path: string; write(bytes: Uint8Array): void; seal(): void; remove(): void };
 export type CopilotBridgeMediaOptions = { createSpool(maxBytes: number): CopilotBridgeSpool };
 export type CopilotBridgeImage = Readonly<{ kind: "copilot_bridge_image"; path: string; byteLength: string; sha256: string; mediaType: string }>;
 type ImageOwnership = { spool: CopilotBridgeSpool; owner: boolean; readers: number; removed: boolean; retired(): void };
 const images = new WeakMap<object, ImageOwnership>();
-const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput, verify: () => void) => Promise<string>>();
+const imageSessions = new WeakMap<object, (input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null) => Promise<string>>();
+const routeSessions = new WeakMap<object, () => Promise<CopilotRouteObservation | null>>();
+export const observeCopilotBridgeRoute = async (session: CopilotSession): Promise<CopilotRouteObservation | null> => routeSessions.get(session)?.() ?? null;
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const retire = (entry: ImageOwnership) => { if (!entry.owner && !entry.readers && !entry.removed) { entry.spool.remove(); entry.removed = true; entry.retired(); } };
 export const isCopilotBridgeImage = (value: unknown): value is CopilotBridgeImage => value !== null && typeof value === "object" && images.has(value) && !images.get(value)!.removed;
@@ -22,8 +25,8 @@ export const retainCopilotBridgeImage = (image: CopilotBridgeImage): (() => void
   return () => { if (!released) { released = true; entry.readers--; } retire(entry); };
 };
 export const releaseCopilotBridgeImage = (image: CopilotBridgeImage): void => { const entry = images.get(image); if (!entry) throw new Error("Copilot image has no controlled bridge lease."); entry.owner = false; retire(entry); };
-export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput, verify: () => void): Promise<string> => {
-  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input, verify);
+export const sendCopilotBridgeImages = (session: CopilotSession, input: CopilotBridgeImageInput, verify: () => void, observation: CopilotRouteObservation | null = null): Promise<string> => {
+  const send = imageSessions.get(session); if (!send) return Promise.reject(new Error("Copilot image bridge is unavailable.")); return send(input, verify, observation);
 };
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (code: number, message: string) => Error };
 const remoteError = (raw: unknown): Error => {
@@ -192,11 +195,12 @@ export const startCopilotBridge = (options: {
       };
       return (...args: unknown[]) => request("call", [sessionId, [name], args]);
     } }) as CopilotSession;
-    imageSessions.set(value, async (input, verify) => {
+    routeSessions.set(value, async () => parseCopilotRouteObservation(await request("observeRoute", [sessionId]), sessionId));
+    imageSessions.set(value, async (input, verify, observation) => {
       if (closed || closing || failed || admissions.size) throw new Error("Copilot image admission is unavailable.");
       const admissionId = randomUUID(), admission = { sessionId, verify, consumed: false, error: undefined as Error | undefined };
       admissions.set(admissionId, admission);
-      try { return await request("sendImages", [sessionId, input, admissionId]) as string; }
+      try { return await request("sendImages", [sessionId, input, admissionId, observation]) as string; }
       catch (error) { throw admission.error ?? error; }
       finally { admissions.delete(admissionId); }
     });

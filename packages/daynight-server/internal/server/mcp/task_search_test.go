@@ -59,16 +59,17 @@ func TestTaskSearchDiscoveryAndProtocol(t *testing.T) {
 					found = tool
 				}
 			}
-			if found == nil || found.Description == "" || found.InputSchema == nil || found.OutputSchema == nil || found.Annotations == nil || !found.Annotations.ReadOnlyHint || found.Annotations.DestructiveHint == nil || *found.Annotations.DestructiveHint || found.Annotations.OpenWorldHint == nil || *found.Annotations.OpenWorldHint {
+			if found == nil || found.Description == "" || found.InputSchema == nil || found.OutputSchema != nil || found.Annotations == nil || !found.Annotations.ReadOnlyHint || found.Annotations.DestructiveHint == nil || *found.Annotations.DestructiveHint || found.Annotations.OpenWorldHint == nil || *found.Annotations.OpenWorldHint {
 				t.Fatalf("discovery: %+v", found)
 			}
+			definition := singleResultDefinition(t, taskSearchToolDefinition, "task_search")
 			args := map[string]any{"projectId": testProjectID, "query": "title:cache OR id:abc", "type": "task", "parentId": parent, "assignedTo": "me", "status": "todo", "ready": true, "allowAgents": true, "compatiblePlatform": "linux", "tagIds": []string{testTargetID}, "tagMatch": "any", "limit": 1}
 			for page := 0; page < 2; page++ {
 				result := tagTestCall(t, client, "task_search", args)
 				if result.IsError {
 					t.Fatalf("search: %+v", structured(t, result))
 				}
-				validateDiscoveredResult(t, client, "task_search", result)
+				validateToolResult(t, definition, result)
 				data := object(t, structured(t, result)["data"])
 				if data["projectId"] != testProjectID || data["total"] != float64(2) {
 					t.Fatalf("page: %+v", data)

@@ -6,7 +6,11 @@
 
 ## 原生事实与版本资格
 
-以下固定资料解释设计选择，不是运行中的版本声明或最低支持版本。发布 profile 必须绑定实际 executable、SDK、backend、精确模型、原生 payload/receipt/history 与平台证据，不能仅按版本字符串或一次识图成功开放支持。
+以下固定资料解释设计选择，不是运行中的版本声明或最低支持版本。发布 profile 必须绑定实际 executable、SDK、backend、精确模型、平台、send/steer、原始输入限制和适用条件，并关联原生 payload/receipt/history 与视觉证据，不能仅按版本字符串或一次识图成功开放支持。资格是对明确组合的发布判断，不宣称证明全部不可观测内部算法；当前生产资格目录为空，未匹配组合继续关闭。[资格边界决策](../../.agents/notes/implemented/architecture/2026-11-16-image-qualification-boundaries.md)解释原件责任和局部发布的取舍。
+
+[资格目录与选择器](../../packages/daynight/src/commands/controller/providers/image-qualification.ts)以 `ImageRuntimeIdentity` 记录 provider、nativeVersion、nativeExecutableSha256、sdkVersion、platform、arch、backendIdentity 和 modelId。nativeExecutableSha256 绑定实际可执行文件字节摘要，版本字符串不能代替。backendIdentity 按对应 Provider 机制编码可观测身份并取 SHA256，公共值不保存地址或凭据，也不把 Provider 别名本身当作充分身份；其证据范围受下文观察机制限制；Codex app-server 的 sdkVersion=null 表示不使用 SDK，Copilot 的缺失 SDK 版本则是未知。`ImageQualification` 在同一精确身份上保存 evidenceId、evidenceSha256、独立 send/steer 开关、MIME、单图/整条字节、图数及原始输入 geometry。证据文档拥有适用条件及原生处理观察，不增加未经验证的默认支持。
+
+只有完整运行时身份唯一匹配合法目录项时，`selectImageQualification` 才返回冻结的 `QualifiedImages` 和该完整资格记录的 fingerprint；缺项、歧义或非法证据拒绝。Codex 工厂尚未获得可信 nativeExecutableSha256 和 backendIdentity；Copilot 可使用下文限定的程序与原生声明路由观察，但观察本身不建立资格。不能从版本字符串、modelProvider 或 SDK 版本猜测身份，当前空目录使协议兼容的组合也保持 unknown。数值能力对象以私有 WeakMap 绑定 fingerprint，不扩展公共 DTO。journal 将 `provider_images_qualification` 与 Provider 能力同事务持久化；证据变化即使不改变数值上限，也推进 providerRevision。原授权保留该绑定，native 最终派发比较当前资格，不能在同一数值能力下沿用另一份证据。
 
 | 来源 | 影响设计的原生事实 |
 | --- | --- |
@@ -37,11 +41,13 @@ Provider 只交出本地或外部 locator，不自行打开路径或抓取 URL�
 
 图片的上传完成、SDK 消费输入、本地回显、同文字/图片摘要、当前恰有一个回合都不是接受证据。派发后超时、断线、坏回执或不能证明未接受的 SDK 异常维持 unknown；只查询原 operation，不重放原生调用。原生明确未接纳的 profile 错误要与“从未调用”分开持久化，不能把所有 rejected/failed 当作零调用。恢复只结算原 target/draftId/revision，旧回执不得清除后继草稿或升级旧上传资格。
 
-接受证明也不等于模型已读每张图。若原生接受后出现明确部分附件交付失败，原 operation、消息、原件和失败原因均持久可回看，同时关闭有问题的 profile。不得撤回接受事实、只弹 toast、伪装普通未派发拒绝或自动重发。
+Daynight 将公共存储中的完整原件按原顺序交给原生图片接口，不自行缩放、压缩、转码或省略输入以绕过限制。接口之后的正常原生转换、缩放和历史压缩允许产生不同字节，不改变 Daynight 保存的原件。模型请求中的转换图片、原生返回的图片和原上传图分别记录来源；不能要求它们摘要相等，也不能用转换后较小的字节数替代原始输入限额。
+
+接受证明也不等于模型已读每张图。本次输入不得被静默省略或变成纯文字占位；正常历史压缩不承诺永久保留旧图。若原生接受后出现明确部分附件交付失败，原 operation、消息、原件和失败原因均持久可回看，同时关闭有问题的 profile。不得撤回接受事实、只弹 toast、伪装普通未派发拒绝或自动重发。资格证据将传输、精确接受和视觉回答分开，已知省略条件不得获资格；无法观察的内部字节不伪造为与原件一致。
 
 能力取原生 profile 与完整上传、解码、保存、历史读取、归档及策略能力的交集。输入为 PNG/JPEG/WebP，通用上限为 8 图、每图 10485760 bytes、消息图片合计 20971520 bytes；原生有更小的明确限制时取交集。send 与 steer 分别报告 supported/unsupported/unknown，未知不猜支持，文字能力独立。
 
-公共 `geometry` 和 `frameCount` 只由协议设计定义。Provider 将模型、backend、累计原生历史与工具图片上下文条件归约为当前固定宽高、像素、帧数上限；不能拿本条 8 图代替累计上下文。上下文不可见时使用已证明覆盖全部可达分支的最严格包络，否则 unknown。存储画布宽高不交换 EXIF 方向；涉及显示方向的 profile 先归约成两种方向均安全的固定上限。模型、权限、原生绑定或限制变化推进持久 providerRevision，无变化复核不推进。
+公共 `geometry` 和 `frameCount` 只由协议设计定义，表示获资格组合允许提交的原始画布与帧数。Provider 依据精确组合的证据、明确接口限制和适用条件给出固定上限；不能拿本条 8 图代替累计上下文，也不能把通用解码上限或另一 backend 的规则当作资格。历史、工具、恢复和压缩证据按实际覆盖条件保留，未确认的组合保持 unknown。存储画布宽高不交换 EXIF 方向；涉及显示方向的 profile 先归约成两种方向都满足已确认输入限制的固定上限。模型、权限、原生绑定、可观测上下文条件、资格或限制变化推进持久 providerRevision，无变化复核不推进。
 
 原生原件只能从公共存储的受控 lease 取得。当前 Controller 读取服务原件时，必须受同代次 `operation_authorized` 的原 actor、完整有序 intent、有效发送 pin 和每块授权约束；不能借浏览器 token、枚举历史或修复旧代次任意 native 路径。服务历史可读与 native resume 文件存在分别报告。
 
@@ -51,7 +57,7 @@ Provider 只交出本地或外部 locator，不自行打开路径或抓取 URL�
 
 当前精确模型必须在完整 `model/list` 分页结果中得到可靠映射，并明确 `inputModalities` 含 image；`imageGeneration` 是输出能力。缺字段、模型未知、设置未确认或版本 profile 不匹配时禁图片。steer 按当前回合的已确认模型判断，不能沿用未来默认模型；二者无法同时准确表达时 steer=unknown。
 
-profile 还绑定 `thread/start` 或 `thread/resume` 返回的实际 `modelProvider`。模型目录的 image modality 不能证明宽高、像素或帧数限制；自定义 gateway 不能借用官方 OpenAI backend 的几何规则。缺少精确 backend/model 的几何证据时，公共能力为 `unknown`、`capability_unknown` 和全零 unknown geometry。受控测试注入的 profile 只证明编码和回执处理，不构成生产支持证据。
+profile 还绑定 `thread/start` 或 `thread/resume` 返回的实际 `modelProvider`。模型目录的 image modality 不能证明原始输入几何资格；自定义 gateway 不能借用官方 OpenAI backend 的规则。只有当前 executable、SDK、平台、backend/model 和操作精确匹配已发布证据及输入限制，才能提供资格。缺少匹配时，公共能力为 `unknown`、`capability_unknown` 和全零 unknown geometry。受控测试注入的 profile 只证明编码和回执处理，不构成生产支持证据。
 
 原生数组保持顺序：可选 `{type:"text",text,text_elements:[]}` 后接 `{type:"localImage",path}`。path 仅来自稳定私有文件，纯图片省略文字块，不添加提示词、文件名、Markdown 或空 TextPart；detail 沿原生缺省。不以 data URL 或远程 URL 作隐式 fallback。
 
@@ -164,9 +170,25 @@ native/resume pin 默认保留到原生 Session 删除。仅 profile 已证明 S
 
 ## Copilot
 
+### 原生声明的运行时身份
+
+[私有路由观察器](../../packages/daynight/src/commands/controller/providers/copilot-route-observation.ts)读取同一 SDK Session 的当前模型、默认 endpoint，再读取当前模型核对。它只在支持的 type、wireApi、可选 transport 及安全 URL 结构内生成 `native_declared_route_v1` 摘要；地址不得包含 userinfo、query 或 fragment。原生省略 transport 时，摘要明确编码 null，与 http、websockets 区分，不推断实际传输方式；显式非法值仍拒绝。摘要和 modelId 可以由 bridge 返回；apiKey、headers、sessionToken 及完整 endpoint 不得从 bridge worker 返回 Controller 父进程、进入摘要或诊断。专用观察失败返回空结果，普通 RPC 不透传 getEndpoint。
+
+装配图片观察的 Controller 仅在所属原生子进程中默认设置 `COPILOT_ALLOW_GET_PROVIDER_ENDPOINT=true`，满足原生 endpoint 读取接口的显式开关。已有环境值保持不变，Windows 按键名大小写不敏感识别已有值；不修改父进程、用户配置、模型、路由或认证。原生继续拒绝读取时保持未知，不绕过认证或重发输入。
+
+程序身份复用 `verifyToolLaunch` 已验证的同一 Windows 直启原生 executable artifact，绑定实际所属进程。JS launcher、interpreter、materialized runtime 和未验证 fallback 保持未知；不能用 Node 或启动脚本的摘要冒充原生程序身份。进程关闭或退出后不再提供有效摘要。
+
+`CopilotRouteObservation` 的 sessionId、generation 和模型读回限制异步观察及最终图片派发；原生没有提供原子快照，因此前后模型相同也不能被描述成原子证明。设置、模型或模式变化、恢复及断连使旧观察失效，稳定读回后可重新观察。发送前在现有派发互斥范围内刷新，bridge 在异步图片编码和最终授权回调之后再次核对 generation。generation 不参与稳定资格摘要，无变化读回不制造新的资格身份。观察必须有界，晚到结果不得恢复已失效观察；图片观察失败不得永久占有普通文字发送门禁。
+
+这里的 backendIdentity 仅标识原生声明的可见路由配置，不证明最终 HTTP 目标、隐藏部署或模型权重，也不是实际出站请求观察。生产不为此安装 requestHandler：SDK 在回调前全量缓冲请求，默认转发的重定向行为也需要独立验证。当前资格目录仍为空；真实输入、精确回执、历史及产品证据由资格验收负责，不能由配置读回替代。[决策记录](../../.agents/notes/implemented/architecture/2026-11-16-copilot-image-runtime-observation.md)保留替代方案和成本。
+
+### 图片输入与目录限制
+
 ### 当前模型与 blob 输入
 
 `model.getCurrent` 的精确 modelId 必须在完整目录中唯一对应，`supports.vision === true`，MIME、`max_prompt_image_size`（bytes）、`max_prompt_images`（张数）均合法；缺项、重复、非布尔、非法限额为 unknown。明确 vision=false 或 MIME 交集为空为 unsupported。动态限制与公共 geometry 同时有效，不以模型名称猜测。
+
+目录事实还须与当前 `QualifiedImages` 的精确 modelId、身份和 send/steer 资格匹配，MIME 与数值限制取资格、模型目录及通用上限的交集。原生允许内部缩放不表示可以忽略 `max_prompt_image_size`；没有资格时，目录支持 vision 也不能开放输入。
 
 model/effort/permission 变更发起后暂停图片资格，deferred、超时或尚未 readback 时不沿旧模型发图；实际应用、runtimeSettingsChanged 和恢复后重新核对，最终检查与 SDK send 互斥。初始化 native ID 尚未建立时 unknown，不为图片另建 Session。
 

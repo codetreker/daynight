@@ -133,7 +133,7 @@ QuotaExceeded、IDB 不可用、schema blocked/不认识、transaction abort 均
 
 ## 发送事务、编辑和未知结果
 
-含图资格消费公共协议的 `geometry:{version:1,known,maxWidth,maxHeight,maxPixels,maxFrames}`，宽高按存储画布，帧数按完整解码。known=false 或模型/上下文限制缺少可证明包络时，send/steer 不能 supported。每个 available 资源的 `frameCount` 必须为 1..256 并与原件 hash 绑定；本地预览未完整遍历时不能伪造帧数，发送消费上传 complete 的双端校验结果。Provider 已知更小限制与通用限制取交集；模型、权限或实际上下文变化重算 revision，保留草稿重新核验，不偷偷继续使用旧 profile。
+含图资格消费服务合成的 `geometry:{version:1,known,maxWidth,maxHeight,maxPixels,maxFrames}`，表示已验证组合允许提交的原始存储画布和完整帧数，不表示原生内部转换后的尺寸。known=false、组合未获资格或必要组件不满足时，send/steer 不能 supported；浏览器不从模型名称、本地预览或 decoder 上限猜测资格。每个 available 资源的 `frameCount` 必须为 1..256 并与原件 hash 绑定；本地预览未完整遍历时不能伪造帧数，发送消费上传 complete 的双端校验结果。Provider 已确认更小输入限制与通用限制取交集；模型、权限、可观测上下文条件或资格变化重算 revision，保留草稿重新核验，不偷偷继续使用旧 profile。某一组合开放不改变其他组合的拒绝，也不表示全部入口或 A6 已通过。
 
 含图 Send 同时要求：原 sessionSendGate、当前 auth/active、无本地/跨 tab 未结算提交、持久保存最新内容、无拒绝候选/缺 bytes/失败图、完整有序集合≤8张/20 MiB及每图≤10 MiB（与原生更小上限取交集）、每图当前 complete、同 target、最新图片能力 idle send 或 working steer 为 supported。未知或不支持禁用，不推断默认模型 vision。控件 pending/recovery/initialInput 原门禁保持；上传可为工作回合后的 idle 准备，但不会扩展队列、取消回合或自动发送。
 

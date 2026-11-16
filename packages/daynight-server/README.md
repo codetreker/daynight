@@ -585,8 +585,8 @@ Invitation links are returned
 only by creation; listing returns metadata without secrets. Task mutation inputs
 use the existing 1 MiB business JSON limit; versions are decimal strings and
 property values use `valueText`. Task and Step reads default to marked
-summaries; request `full` for complete content. Task full and summary schemas
-require `type` and nullable `parentId`; the Goal full schema also describes
+summaries; request `full` for complete content. Task full and summary results
+include `type` and nullable `parentId`; the Goal full result also includes
 `progress`. MCP creation accepts ordinary Tasks and Goals; Task list and ready
 filters select Goal membership, and Task updates can assign or clear a Parent.
 Task and Goal creation and updates accept `tagIds` as a complete set of Project
@@ -638,9 +638,13 @@ project task versions change. Task list pages use item-count continuation, and
 Task graph summary and full views return the complete selected graph. They do
 not apply domain read-byte or graph-size admission. Successful MCP reads use
 ordinary encoding without runtime output-schema validation or shared result-byte
-admission; advertised schemas are verified by protocol tests. Input, concurrency
-and deadline rules remain. `task_list`, `task_show` and normal `task_graph` reads
-include Session observations with `meta.observedAt`, `partial` and resource
+admission; protocol tests validate result fixtures against the full internal
+output definitions. Tool discovery advertises input schemas and omits the
+`outputSchema` member for every tool; it does not relocate those schemas to
+other discovery fields. Actual `content` and `structuredContent` retain their
+result contracts, and product manual Resources explain business semantics.
+Input, concurrency and deadline rules remain. `task_list`, `task_show` and normal
+`task_graph` reads include Session observations with `meta.observedAt`, `partial` and resource
 references. `task_work_list` calls the work-overview use case, including its
 dedicated response budget. Session module registration advertises only
 implemented capabilities.
@@ -2168,8 +2172,10 @@ physical persistence.
 ### MCP protocol tests
 
 `internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,
-schemas and tool response encoding. Most use controlled direct service/use-case
-operations; Project, Team and Invitation organization scenarios also execute
+schemas and tool response encoding. Result contract fixtures use the original
+internal output definitions. Root discovery assertions separately check that every
+production tool omits `outputSchema` while retaining its other metadata. Most MCP
+tests use controlled direct service/use-case operations; Project, Team and Invitation organization scenarios also execute
 real Service and Core with controlled DAO facts through a host registering only
 their adapters. Bot's completed-response loss test also uses real Service and
 Core, the SDK and socket through a Bot-only host; its later reads use explicitly

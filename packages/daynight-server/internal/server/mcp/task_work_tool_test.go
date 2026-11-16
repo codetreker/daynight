@@ -28,32 +28,6 @@ func workFixture() taskwork.Page {
 	return taskwork.Page{Groups: []taskwork.Group{{GroupID: testTargetID, Kind: "chain", DisplayTaskID: testTargetID, TitlePreview: "Work", AssignedTo: testUserID, AggregationScope: "accessible_in_progress_members", MemberCount: 2, MatchedCount: 1, InProgressCount: 1, RootCount: 1, Roots: []taskwork.Root{{TaskID: testTargetID, TitlePreview: "Root"}}, Summary: taskwork.Aggregation{UnknownCount: 1, ObservedAt: stamp}, Targets: []taskwork.Target{{TaskID: testTargetID, Reason: "observation_failed", Send: observationFixture().Send}}, ObservedAt: stamp}}, ObservedAt: stamp, Partial: true}
 }
 
-func validateDiscoveredResult(t *testing.T, client *sdk.ClientSession, name string, result *sdk.CallToolResult) {
-	t.Helper()
-	listed, err := client.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range listed.Tools {
-		if tool.Name != name {
-			continue
-		}
-		schema, err := resolveSchema(tool.OutputSchema)
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, err := json.Marshal(structured(t, result))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := validateJSON(schema, raw); err != nil {
-			t.Fatalf("%s protocol result violates advertised schema: %v\n%s", name, err, raw)
-		}
-		return
-	}
-	t.Fatalf("tool %s was not discovered", name)
-}
-
 func TestTaskWorkToolPreservesUseCasePagingAndStrictProtocol(t *testing.T) {
 	f := newEntryFixture(t)
 	calls := 0
@@ -69,12 +43,14 @@ func TestTaskWorkToolPreservesUseCasePagingAndStrictProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")
+	assertNoDiscoveredOutputSchemas(t, client, "task_work_list")
+	definition := singleResultDefinition(t, taskWorkToolDefinition, "task_work_list")
 	args := map[string]any{"projectId": testProjectID, "assignedTo": assigned, "groupId": group, "targetsCursor": cursor, "limit": 7}
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_work_list", Arguments: args})
 	if err != nil || result.IsError || calls != 1 {
 		t.Fatalf("work=%+v %v calls=%d", result, err, calls)
 	}
-	validateDiscoveredResult(t, client, "task_work_list", result)
+	validateToolResult(t, definition, result)
 	env := structured(t, result)
 	if object(t, env["meta"])["partial"] != true || len(object(t, env["data"])["groups"].([]any)) != 1 {
 		t.Fatalf("partial work lost: %#v", env)
@@ -85,7 +61,7 @@ func TestTaskWorkToolPreservesUseCasePagingAndStrictProtocol(t *testing.T) {
 		if err != nil || !result.IsError || calls != 1 {
 			t.Fatalf("invalid input reached work use case: %+v %v calls=%d", result, err, calls)
 		}
-		validateDiscoveredResult(t, client, "task_work_list", result)
+		validateToolResult(t, definition, result)
 	}
 }
 

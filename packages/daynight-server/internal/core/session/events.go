@@ -171,11 +171,14 @@ func (s *Execution) applyState(ctx context.Context, tx *operationTx, r *record, 
 	v.InitialInputState = state.InitialInputState
 	v.Activity = state.Activity
 	v.CurrentTurnID = state.CurrentTurnID
+	images := v.Capabilities.Images
 	v.Capabilities = state.Capabilities
+	// Effective image revisions belong to the service, not the Controller frame.
+	v.Capabilities.Images = images
+	v.Controls = state.Controls
 	if err := s.refreshImageState(ctx, tx, r, state.ProviderImages); err != nil {
 		return err
 	}
-	v.Controls = state.Controls
 	v.TurnStartedAt = state.TurnStartedAt
 	v.CleanupInteractionIDs = state.CleanupInteractionIDs
 	for _, id := range state.CleanupInteractionIDs {

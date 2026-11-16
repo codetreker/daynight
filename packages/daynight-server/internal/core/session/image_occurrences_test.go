@@ -310,7 +310,7 @@ func TestImageCapabilityObservationHasIndependentRateAndStableRevisions(t *testi
 	f := newImageRuleFixture(t, []byte("original"))
 	tx := &operationTx{dao: f.d, op: &Operation{}}
 	reason := "profile_disabled"
-	provider := &sp.ProviderImageCapabilities{Revision: "2", ReasonCode: &reason}
+	provider := &sp.ProviderImageCapabilities{Revision: "2", ExpectedNativeSessionID: f.r.Snapshot.Identity.NativeSessionID, Send: "unsupported", Steer: "unsupported", ReasonCode: &reason, InputMediaTypes: []string{}, MaxImageBytes: "0", MaxMessageImageBytes: "0", Geometry: sp.ImageGeometry{Version: 1}}
 	if e := f.s.refreshImageState(t.Context(), tx, f.r, provider); e != nil {
 		t.Fatal(e)
 	}

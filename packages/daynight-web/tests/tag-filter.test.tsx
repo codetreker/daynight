@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
+import { registerOverlay } from '../src/app/overlay';
 import { resolveProjectTags } from '../src/api/task-tags';
 import { emptyTagFilter, matchesTagFilter, TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
@@ -18,7 +19,8 @@ vi.mock('../src/features/task-tags/useProjectTags', async () => {
   return { useProjectTags: (_project: string, active: boolean) => {
     data.catalogActive(active);
     const [query, setQuery] = useState('');
-    return { page: { ...data.page, items: data.page.items.filter(tag => tag.name.includes(query)) }, cursor: null, query, loading: false, refreshing: false, error: null, setQuery, refresh: vi.fn(), first: vi.fn(), next: vi.fn() };
+    const [cursor, setCursor] = useState<string | null>(null);
+    return { page: { ...data.page, items: data.page.items.filter(tag => tag.name.includes(query)) }, cursor, query, loading: false, refreshing: false, error: null, setQuery, refresh: vi.fn(), first: () => setCursor(null), next: () => setCursor(data.page.nextCursor) };
   } };
 });
 const Harness = ({ child = false, onManage }: { child?: boolean; onManage?: () => void }) => {
@@ -73,6 +75,8 @@ it('preserves the panel for prevented, composing and open native popup Escape ev
   const composing = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true });
   fireEvent(select, composing);
   expect(picker).toHaveAttribute('open');
+  fireEvent.keyDown(select, { key: 'Escape', keyCode: 229 });
+  expect(picker).toHaveAttribute('open');
   const prevented = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
   prevented.preventDefault(); fireEvent(select, prevented);
   expect(picker).toHaveAttribute('open');
@@ -85,6 +89,183 @@ it('preserves the panel for prevented, composing and open native popup Escape ev
   fireEvent.keyDown(select, { key: 'Escape' });
   expect(picker).not.toHaveAttribute('open');
   expect(summary).toHaveFocus();
+});
+
+it('closes on an outside pointer without consuming it and retains the filter when reopened', async () => {
+  setup();
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!;
+  fireEvent.click(summary);
+  fireEvent.click(within(picker).getByLabelText('bug'));
+  fireEvent.change(within(picker).getByLabelText('Tag filter: AND / OR'), { target: { value: 'any' } });
+  fireEvent.change(within(picker).getByLabelText('Tag filter: Search tags'), { target: { value: 'bug' } });
+  fireEvent.pointerDown(within(picker).getByLabelText('Tag filter: Search tags'));
+  expect(picker).toHaveAttribute('open');
+  const outside = screen.getByRole('button', { name: 'Server invalid' });
+  outside.focus();
+  const pointer = new Event('pointerdown', { bubbles: true, cancelable: true });
+  fireEvent(outside, pointer);
+  expect(pointer.defaultPrevented).toBe(false);
+  expect(outside).toHaveFocus();
+  expect(picker).not.toHaveAttribute('open');
+  fireEvent.click(summary);
+  expect(within(picker).getByLabelText('Tag filter: Search tags')).toHaveValue('bug');
+  expect(within(picker).getByLabelText('bug')).toBeChecked();
+  expect(within(picker).getByLabelText('Tag filter: AND / OR')).toHaveValue('any');
+  await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
+});
+
+it('keeps the panel open for paging and clearing controls', () => {
+  data.page.nextCursor = 'next'; setup();
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!; fireEvent.click(summary);
+  for (const name of ['Next', 'First page', 'Clear']) {
+    const button = within(picker).getByRole('button', { name });
+    fireEvent.pointerDown(button); fireEvent.click(button);
+    expect(picker).toHaveAttribute('open');
+  }
+});
+
+it('handles outside Escape only while open, respecting prevented and composition events', () => {
+  const view = setup();
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!;
+  const outside = screen.getByRole('button', { name: 'Server invalid' });
+  fireEvent.click(summary); outside.focus();
+  const prevented = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  prevented.preventDefault(); fireEvent(outside, prevented);
+  fireEvent.keyDown(outside, { key: 'Escape', isComposing: true });
+  fireEvent.keyDown(outside, { key: 'Escape', keyCode: 229 });
+  expect(picker).toHaveAttribute('open');
+  const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  fireEvent(outside, escape);
+  expect(escape.defaultPrevented).toBe(true);
+  expect(picker).not.toHaveAttribute('open');
+  expect(summary).toHaveFocus();
+  const closedEscape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  fireEvent(outside, closedEscape);
+  expect(closedEscape.defaultPrevented).toBe(false);
+  fireEvent.click(summary);
+  view.unmount();
+  const unmountedEscape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  fireEvent(document.body, unmountedEscape);
+  expect(unmountedEscape.defaultPrevented).toBe(false);
+});
+
+it('gives Escape to a different dialog and to an external native popup', () => {
+  setup();
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!;
+  fireEvent.click(summary);
+  const dialog = document.createElement('div'); dialog.setAttribute('role', 'dialog');
+  const dialogButton = document.createElement('button'); dialog.appendChild(dialogButton); document.body.appendChild(dialog);
+  const select = document.createElement('select'); document.body.appendChild(select);
+  const popup = vi.spyOn(select, 'matches').mockReturnValue(true);
+  try {
+    for (const target of [dialogButton, select]) {
+      target.focus();
+      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      fireEvent(target, event);
+      expect(event.defaultPrevented).toBe(false); expect(picker).toHaveAttribute('open'); expect(target).toHaveFocus();
+    }
+  } finally { popup.mockRestore(); dialog.remove(); select.remove(); }
+});
+
+it('focuses search only on an interactive opening and ignores hidden pointer events', () => {
+  const content = (hidden: boolean) => <LocaleProvider initial={{ locale: 'en', issue: null }}><div hidden={hidden}><Harness /></div><button type="button">Outside</button></LocaleProvider>;
+  const view = render(content(false));
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!;
+  const outside = screen.getByRole('button', { name: 'Outside' });
+  fireEvent.click(summary);
+  const search = within(picker).getByLabelText('Tag filter: Search tags');
+  expect(search).toHaveFocus();
+  outside.focus(); view.rerender(content(false));
+  expect(outside).toHaveFocus(); expect(picker).toHaveAttribute('open');
+  view.rerender(content(true)); fireEvent.pointerDown(outside);
+  expect(picker).toHaveAttribute('open'); expect(outside).toHaveFocus();
+  view.rerender(content(false));
+  expect(outside).toHaveFocus();
+  fireEvent.pointerDown(outside); expect(picker).not.toHaveAttribute('open');
+});
+
+it('releases viewport listeners and size observers when closed or unmounted', () => {
+  const previousViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+  const previousObserver = globalThis.ResizeObserver;
+  const viewport = new EventTarget();
+  Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport });
+  const add = vi.spyOn(viewport, 'addEventListener'), remove = vi.spyOn(viewport, 'removeEventListener');
+  const disconnect = vi.fn();
+  globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() { disconnect(); } };
+  try {
+    const view = setup();
+    const summary = screen.getByText('Tag filter', { selector: 'summary' });
+    fireEvent.click(summary);
+    const resize = add.mock.calls.find(call => call[0] === 'resize')?.[1];
+    const scroll = add.mock.calls.find(call => call[0] === 'scroll')?.[1];
+    expect(resize).toBeDefined(); expect(scroll).toBeDefined();
+    fireEvent.click(summary);
+    expect(remove).toHaveBeenCalledWith('resize', resize); expect(remove).toHaveBeenCalledWith('scroll', scroll);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    fireEvent.click(summary); view.unmount();
+    expect(disconnect).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledTimes(4);
+  } finally {
+    add.mockRestore(); remove.mockRestore(); globalThis.ResizeObserver = previousObserver;
+    if (previousViewport) Object.defineProperty(window, 'visualViewport', previousViewport);
+    else Reflect.deleteProperty(window, 'visualViewport');
+  }
+});
+
+it('opens only one of two filters while retaining their independent conditions and queries', () => {
+  const Pair = () => {
+    const main = useTagFilter('project'); const child = useTagFilter('project');
+    return <><TagFilter controller={main} /><TagFilter controller={child} child /></>;
+  };
+  render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Pair /></LocaleProvider>);
+  const mainSummary = screen.getByText('Tag filter', { selector: 'summary' });
+  const childSummary = screen.getByText('Child task tag filter', { selector: 'summary' });
+  const main = mainSummary.closest('details')!, child = childSummary.closest('details')!;
+  fireEvent.click(mainSummary);
+  fireEvent.click(within(main).getByLabelText('bug'));
+  fireEvent.change(within(main).getByLabelText('Tag filter: Search tags'), { target: { value: 'bug' } });
+  fireEvent.click(childSummary);
+  expect(main).not.toHaveAttribute('open'); expect(child).toHaveAttribute('open');
+  fireEvent.click(within(child).getByLabelText('backend'));
+  fireEvent.change(within(child).getByLabelText('Child task tag filter: Search tags'), { target: { value: 'back' } });
+  fireEvent.click(mainSummary);
+  expect(child).not.toHaveAttribute('open'); expect(main).toHaveAttribute('open');
+  expect(within(main).getByLabelText('Tag filter: Search tags')).toHaveValue('bug');
+  expect(within(main).getByLabelText('bug')).toBeChecked();
+  fireEvent.click(childSummary);
+  expect(within(child).getByLabelText('Child task tag filter: Search tags')).toHaveValue('back');
+  expect(within(child).getByLabelText('backend')).toBeChecked();
+});
+
+it('does not consume Escape for hidden or inert filters or over an active overlay', () => {
+  const content = (hidden: boolean, inert: boolean) => <LocaleProvider initial={{ locale: 'en', issue: null }}><div hidden={hidden} inert={inert}><Harness /></div><button type="button">Outside</button></LocaleProvider>;
+  const view = render(content(false, false));
+  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const picker = summary.closest('details')!;
+  const outside = screen.getByRole('button', { name: 'Outside' });
+  fireEvent.click(summary);
+  for (const [hidden, inert] of [[true, false], [false, true]] as const) {
+    view.rerender(content(hidden, inert)); outside.focus();
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    fireEvent(outside, escape);
+    expect(escape.defaultPrevented).toBe(false); expect(picker).toHaveAttribute('open'); expect(outside).toHaveFocus();
+  }
+  view.rerender(content(false, false));
+  const overlay = document.createElement('div'); document.body.appendChild(overlay);
+  const release = registerOverlay(overlay, null);
+  try {
+    outside.focus();
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    fireEvent(outside, escape);
+    expect(escape.defaultPrevented).toBe(false); expect(picker).toHaveAttribute('open'); expect(outside).toHaveFocus();
+  } finally { release(); overlay.remove(); }
+  fireEvent.keyDown(outside, { key: 'Escape' });
+  expect(picker).not.toHaveAttribute('open'); expect(summary).toHaveFocus();
 });
 
 it('retains the selected name and condition when a later catalog epoch reports deletion', async () => {

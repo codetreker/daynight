@@ -1063,7 +1063,16 @@ project filters resets the task lists to page one. Full-chain progress, readines
 dependencies, statistics and graph use the complete index. Child filtering also
 preserves Goal composition, in-progress and pause counts, and Session summaries.
 Overview positioning adjusts project filters that hide its target. Tag panels
-retain a readable width within the viewport as toolbars wrap on narrow screens.
+follow the visible viewport, including its offset, while toolbars wrap, the
+viewport changes or the anchor moves offscreen. The list and, when needed, the
+whole panel scroll so the final action remains reachable. Opening an interactive
+panel focuses its search input; Tab alone does not close it. An outside pointer
+action closes an open panel without intercepting the target;
+Escape closes it and restores focus to its available trigger. An open native
+select, an active overlay, prevented events and IME composition retain their
+own Escape handling. Opening another visible tag panel closes the first while
+keeping each filter's conditions and query. Background checks preserve an open
+panel, text selection and focus without repeating opening focus.
 The [assignment design](../../docs/design/daynight-task-assignment.md) owns people,
 mutation and presentation mechanisms; the
 [Web design](../../docs/design/daynight-web.md) owns tag filtering and lifecycle.
@@ -1575,9 +1584,11 @@ Standalone rows are compact native detail triggers with title, individual
 status, ID, creation time, automation permission and known execution timing. The
 clock and duration follow creation time in the same wrapping information line. An
 unsatisfied prerequisite produces an explicit Blocked / 被阻塞 badge; done and
-cancelled prerequisites are satisfied. A Goal row
+cancelled prerequisites are satisfied. A chain row
 expands a task list through its main native button, independently of its
-sibling View dependencies / 查看依赖关系 button. The list contains every other
+sibling dependency-graph button. Complete and scoped chains show the same 32×32
+icon control as the Goal graph action, with a localized tooltip and an accessible
+name containing the chain title and action. The list contains every other
 ordinary-component member exactly once, with `in_progress` first, then `todo`, then `proposed`,
 then terminal outcomes. Terminal children use exact completedAt for done or
 cancelledAt for cancelled in descending order, with unknown times last. Equal
@@ -1781,7 +1792,7 @@ owns admission, precedence, expiry, visibility and stable annotation geometry;
 the [TaskSync design](../../docs/design/daynight-task-sync.md) owns request and
 cache responsibilities.
 
-The explicit View dependencies / 查看依赖关系 action opens one centered
+The icon-only View dependencies / 查看依赖关系 action opens one centered
 dependency-graph dialog at a time without changing any disclosure state.
 The toolbar selects horizontal or vertical direction and remembers it locally per
 project and representative task, defaulting to horizontal. Read, invalid-value
@@ -2189,8 +2200,19 @@ source, lifecycle and narrow-layout behavior. Raw HTML remains escaped. Relative
 images and links resolve
 from the Markdown file's directory to the task preview route; standalone `#fragment`
 links remain on the rendered document. Paths that escape the task root are
-rejected. Text, JSON and source previews preserve text and newlines. Images use
-native image loading with error/retry feedback; PDF and HTML use native iframes.
+rejected. In Task and Goal descriptions and Markdown attachments, an attachment-relative
+image that fails to load displays a localized error and Retry control. Each image
+owns its failure and retry attempt; Retry requests that image's unchanged URL,
+including its query and fragment, without rereading the Markdown or attachment
+inventory or resetting drafts, file input, selection, frames or reading position.
+Classification uses the original Markdown reference, so external, protocol-relative,
+root-relative and other native image URLs retain native behavior. Remote pause
+blocks pending/new image requests and retry while preserving loaded images; late
+events from a replaced source or attempt cannot update its replacement. The
+[Markdown image recovery decision](../../.agents/notes/implemented/feature/2026-11-16-markdown-attachment-image-retry.md)
+records ownership and classification trade-offs. Text, JSON and source previews
+preserve text and newlines. Selected image previews use native image loading with
+error/retry feedback; PDF and HTML use native iframes.
 HTML/PDF first check preview availability with HEAD and never decode a HEAD error
 as a JSON body. The frame then performs normal resource requests. HEAD success
 does not prove that native content has rendered; integrated acceptance must

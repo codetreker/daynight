@@ -177,7 +177,11 @@ Mermaid 图表及共享样式，覆盖标题、段落、列表、引用、代码
 任务附件根解析相对链接和图片；附件 Markdown 从实际文件目录解析。既有路径解析
 逐段解码、处理 parent 段并拒绝越过任务根，继续使用真实预览 URL 构造器；不为描述
 虚构文件名。API 保存和 CLI/Agent 读取保持原始字符串，不增加格式标记、迁移或
-旧数据特判，描述更新保留完整字段替换及观察到的版本语义。
+旧数据特判，描述更新保留完整字段替换及观察到的版本语义。Task 和 Goal 描述向
+共享 renderer 提供各自附件根及远程暂停状态；附件相对图片拥有本地失败提示与
+普通单图重试，来源分类、URL 保留和请求生命周期由
+[附件图片渲染设计](daynight-task-attachments.md#web-文件树与预览)拥有。重试不重建
+描述或附件控制器，保留文件输入、草稿、选择、frame 和阅读位置。
 
 `TaskDetailReading` 在当前 project/task 身份内持有单个 `useAttachments`，将同一
 控制器交给描述导航、`TaskDetailPanels` 和 `TaskAttachmentsPanel`。普通主键点击

@@ -4,11 +4,14 @@ import { CopilotClient, RuntimeConnection, type CopilotSession, type SessionConf
 import { CopilotBridgeChannel } from "./copilot-bridge-channel.js";
 import { encodeCopilotBridgeImages, exportCopilotBridgeMedia, type CopilotBridgeImageInput } from "./copilot-bridge-media.js";
 import { startCopilotFrameProxy } from "./copilot-frame.js";
+import { CopilotRouteObserver } from "./copilot-route-observation.js";
 
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const { ResponseError } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as { ResponseError: new (...args: never[]) => Error & { code: number } };
 const errorValue = (error: unknown) => ({ kind: error instanceof ResponseError ? "response" : "unknown", ...(error instanceof ResponseError ? { code: error.code } : {}), message: error instanceof Error ? error.message.slice(0, 4096) : "Copilot bridge operation failed; outcome is unknown." });
 let client: CopilotClient | undefined, session: CopilotSession | undefined;
+const route = new CopilotRouteObserver();
+let observingRoute = false, changingRoute = false;
 let proxy: Awaited<ReturnType<typeof startCopilotFrameProxy>> | undefined;
 let closing = false, stoppingClient = false, fatalFailure = false, initializing = false, openingSession = false, sending = false, history = false;
 let eventWork: Promise<void> = Promise.resolve(), queuedEventBytes = 0;
@@ -25,6 +28,7 @@ metrics.unref();
 function fatal(error: Error): void {
   if (fatalFailure || closing) return;
   fatalFailure = true;
+  route.invalidate();
   for (const waiter of waiters.values()) waiter.reject(error); waiters.clear();
   void (async () => {
     try { await channel.send({ type: "fatal", error: errorValue(error) }); } catch { /* The parent also observes process exit. */ }
@@ -88,6 +92,7 @@ const eventSize = (input: unknown): number => {
 };
 const permissionIdentities = new WeakMap<object, string>();
 const enqueueEvent = (sessionId: string, event: unknown) => {
+  if (["session.model_change", "session.mode_changed", "session.shutdown", "session.error"].includes(String(object(event).type))) route.invalidate();
   try {
     const request = object(object(event).data).permissionRequest;
     const permissionIdentity = object(event).type === "permission.requested" && request !== null && typeof request === "object" ? permissionIdentities.get(request) : undefined;
@@ -130,6 +135,7 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
     await client.start(); return {};
   }
   if (method === "close") {
+    route.invalidate();
     closing = true; clearInterval(metrics);
     for (const waiter of waiters.values()) waiter.reject(new Error("Copilot bridge is closing.")); waiters.clear();
     await client?.forceStop(); await proxy?.close(); return {};
@@ -150,29 +156,44 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
     if (session.sessionId !== id) throw new Error("Copilot SDK session identity differs.");
     return { sessionId: id };
   }
+  if (method === "observeRoute") {
+    if (!session || args.length !== 1 || args[0] !== session.sessionId || observingRoute || changingRoute || sending) return null;
+    observingRoute = true;
+    try { return await route.read(session); } finally { observingRoute = false; }
+  }
   if (method === "sendImages") {
-    if (!session || args[0] !== session.sessionId || sending) throw new Error("Copilot image send is unavailable or already in progress.");
+    if (!session || args[0] !== session.sessionId || sending || observingRoute || changingRoute) throw new Error("Copilot image send is unavailable or already in progress.");
     sending = true;
     try {
       if (typeof args[2] !== "string") throw new Error("Copilot image admission identity is missing.");
       const input = await encodeCopilotBridgeImages(args[1] as CopilotBridgeImageInput);
+      if (!route.matches(args[3], session.sessionId)) throw new Error("Copilot route observation changed before image dispatch.");
       const allowed = await request({ method: "image_admission", sessionId: session.sessionId, admissionId: args[2] });
       if (allowed !== true || closing || fatalFailure) throw new Error("Copilot image admission ended before native dispatch.");
+      if (!route.matches(args[3], session.sessionId)) throw new Error("Copilot route observation changed before image dispatch.");
       return await session.send(input);
     }
     finally { sending = false; }
   }
   if (method !== "call" || !Array.isArray(args[1]) || args[1].some(part => typeof part !== "string") || !Array.isArray(args[2])) throw new Error("Invalid Copilot bridge call.");
   const [target, rawParts, input] = args as [unknown, string[], unknown[]];
+  const path = rawParts.join(".");
+  if (path === "rpc.provider.getEndpoint") throw new Error("Copilot endpoint credentials cannot cross the bridge.");
   const owner = target === "client" ? client : session && target === session.sessionId ? session : undefined;
   if (!owner || rawParts[0] !== "rpc" && !(target === "client" ? ["ping", "getStatus", "getSessionMetadata", "stop", "forceStop"] : ["send", "getEvents", "disconnect"]).includes(rawParts[0]!)) throw new Error("Copilot bridge call is outside its bound session.");
   if (target !== "client" && Object.hasOwn(object(input[0]), "sessionId")) throw new Error("Copilot bridge calls cannot replace their bound session identity.");
   if (rawParts.join(".") === "getEvents") throw new Error("Copilot bridge requires bounded eventLog.read history pages.");
   if (rawParts.join(".") === "rpc.eventLog.read" && (object(input[0]).max !== 1 || object(input[0]).includeEphemeral !== false)) throw new Error("Copilot bridge history requires max=1 and includeEphemeral=false.");
   const isSend = rawParts.join(".") === "send";
+  const changesRoute = path.startsWith("rpc.model.") && !["rpc.model.getCurrent", "rpc.model.list"].includes(path) || ["rpc.provider.add", "rpc.options.update", "rpc.mode.set", "rpc.commands.invoke"].includes(path);
+  if (["disconnect", "stop", "forceStop", "rpc.runtime.shutdown"].includes(path)) route.invalidate();
+  if (changesRoute) {
+    if (sending || observingRoute || changingRoute) throw new Error("Copilot route change is already in progress.");
+    changingRoute = true; route.invalidate();
+  }
   if (isSend && object(input[0]).attachments !== undefined) throw new Error("Copilot image sends require controlled bridge leases.");
-  if (isSend && sending) throw new Error("Copilot bridge operation is already in progress.");
-  if (isSend) sending = true;
+  if (isSend && (sending || changingRoute)) throw new Error("Copilot bridge operation is already in progress.");
+  if (isSend) { route.invalidate(); sending = true; }
   if (target === "client" && rawParts.length === 1 && ["stop", "forceStop"].includes(rawParts[0]!)) stoppingClient = true;
   if (target === "client" && rawParts.join(".") === "rpc.runtime.shutdown") {
     // The owner shuts down this external SDK runtime. Detach while its socket is
@@ -181,7 +202,7 @@ async function operation(method: string, args: unknown[]): Promise<unknown> {
     await session?.disconnect();
   }
   try { return await invoke(owner, rawParts, input); }
-  finally { if (isSend) sending = false; }
+  finally { if (isSend) sending = false; if (changesRoute) changingRoute = false; }
 }
 async function receive(message: Record<string, unknown>): Promise<void> {
   if (message.type === "response" && typeof message.id === "string") {

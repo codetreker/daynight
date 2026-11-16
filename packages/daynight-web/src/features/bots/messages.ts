@@ -1,6 +1,7 @@
 import { useI18n } from '../../i18n/LocaleProvider';
 
 const en = {
+  legacyRoleNotice: 'Recreate this assistant to enable assistant task collaboration.',
   welcomeTitle: 'Start with a conversation', welcomeDescription: 'Check progress, clarify an idea, or move your work forward.',
   conversationStarters: [
     { label: 'See which tasks are running', prompt: 'Show me which tasks are running right now' },
@@ -18,6 +19,7 @@ const en = {
   refresh: 'Refresh', retry: 'Retry', loading: 'Loading…', more: 'Load more', search: 'Search assistants', empty: 'No assistants yet', noMatches: 'No matching assistants', select: 'Choose an assistant to open its conversation.', closeChat: 'Close conversation', listError: 'Could not load assistants.', detailError: 'Could not load this assistant.', pending: 'Starting', ready: 'Started', failed: 'Startup failed', offline: 'Worker offline', unsupported: 'This Worker does not support assistant hosting.', stale: 'The Worker capability report is out of date.', unavailable: 'Assistant hosting is unavailable.', noWorker: 'No available Worker. Connect a Worker that supports assistant hosting.', deleted: 'This assistant has been deleted.', end: 'All assistants are shown.', requestId: 'Request ID', automatic: 'Automatic', defaultAgent: 'Worker default', providerUnavailable: 'This Agent is unavailable on the selected Worker.', host: 'Hosted by', connectionUnknown: 'Connection unconfirmed',
 };
 const zh: typeof en = {
+  legacyRoleNotice: '重建后可获得助手任务协作能力',
   welcomeTitle: '从一段对话开始', welcomeDescription: '查进度、理清想法，或一起推进手头的工作。',
   conversationStarters: [
     { label: '看看现在有哪些任务在执行', prompt: '看看我现在有哪些任务在执行' },

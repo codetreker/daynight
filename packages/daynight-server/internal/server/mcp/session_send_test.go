@@ -68,11 +68,12 @@ func TestSessionSendModulePublishesStrictToolsAndPreservesIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")
+	assertNoDiscoveredOutputSchemas(t, client, "task_session_send", "task_session_operation")
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_session_send", Arguments: args})
 	if err != nil || result.IsError || calls != 1 {
 		t.Fatalf("send result=%#v %v calls=%d", result, err, calls)
 	}
-	validateDiscoveredResult(t, client, "task_session_send", result)
+	validateToolResult(t, arrayResultDefinition(t, sessionSendDefinitions, "task_session_send"), result)
 	env := structured(t, result)
 	meta := object(t, env["meta"])
 	if meta["writeOutcome"] != "confirmed" || meta["phase"] != "commit" || object(t, meta["refs"])["operationId"] != args["operationId"] || object(t, object(t, env["data"])["operation"])["state"] != "accepted" {
@@ -84,8 +85,9 @@ func TestSessionSendModulePublishesStrictToolsAndPreservesIntent(t *testing.T) {
 	}
 	for _, tool := range listed.Tools {
 		if tool.Name == "task_session_send" || tool.Name == "task_session_operation" {
-			if object(t, tool.InputSchema)["additionalProperties"] != false || object(t, tool.OutputSchema)["additionalProperties"] != false {
-				t.Fatal("Session schema is not strict")
+			definition := arrayResultDefinition(t, sessionSendDefinitions, tool.Name)
+			if object(t, tool.InputSchema)["additionalProperties"] != false || tool.OutputSchema != nil || object(t, definition.OutputSchema)["additionalProperties"] != false {
+				t.Fatal("Session schemas are not strict or output schema is published")
 			}
 		}
 	}
@@ -156,7 +158,7 @@ func TestSessionOperationReadRetainsOriginalRefsAndUnknownAbsence(t *testing.T) 
 			if err != nil || result.IsError != missing || calls != 1 {
 				t.Fatalf("read result %#v %v", result, err)
 			}
-			validateDiscoveredResult(t, client, "task_session_operation", result)
+			validateToolResult(t, arrayResultDefinition(t, sessionSendDefinitions, "task_session_operation"), result)
 			env := structured(t, result)
 			key := "meta"
 			if missing {
