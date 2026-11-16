@@ -219,8 +219,12 @@ func TestProjectAppManagerPrecheckAndProviderFailure(t *testing.T) {
 }
 
 func TestProjectAppManagerConnectBoundProofAndCompletion(t *testing.T) {
-	for _, outcome := range []store.TransactionOutcome{store.TransactionCommitted, store.TransactionUnknown} {
-		t.Run(string(outcome), func(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		bound   bool
+		outcome store.TransactionOutcome
+	}{{"bound", true, store.TransactionCommitted}, {"unknown", true, store.TransactionUnknown}, {"initial", false, store.TransactionCommitted}} {
+		t.Run(scenario.name, func(t *testing.T) {
 			paths := []string{}
 			client := projectAppRemoteClient(t, func(w http.ResponseWriter, r *http.Request) {
 				paths = append(paths, r.URL.Path)
@@ -229,8 +233,10 @@ func TestProjectAppManagerConnectBoundProofAndCompletion(t *testing.T) {
 			f := projectAppServiceFacts()
 			repoID := int64(42)
 			name := "owner/old-name"
-			f.Connection.RepositoryID = &repoID
-			f.Connection.RepositoryFullName = &name
+			if scenario.bound {
+				f.Connection.RepositoryID = &repoID
+				f.Connection.RepositoryFullName = &name
+			}
 			releases, writes, saves := 0, 0, 0
 			cause := errors.New("receipt lost")
 			db := projectAppScopeStub{t: t, read: func(ctx context.Context, id string, work func(store.GitHubProjectAppReadDAO) error) error {
@@ -250,10 +256,10 @@ func TestProjectAppManagerConnectBoundProofAndCompletion(t *testing.T) {
 				}
 				dao.impact = func(context.Context, string) error { return nil }
 				err := work(dao)
-				if outcome == store.TransactionUnknown {
+				if scenario.outcome == store.TransactionUnknown {
 					err = errors.Join(err, cause)
 				}
-				return store.Completion{Outcome: outcome}, err
+				return store.Completion{Outcome: scenario.outcome}, err
 			}}
 			provider := projectAppAcquireFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
 				return client, func() { releases++ }, nil
@@ -262,10 +268,14 @@ func TestProjectAppManagerConnectBoundProofAndCompletion(t *testing.T) {
 			if writes != 1 || saves != 1 || releases != 1 {
 				t.Fatalf("writes=%d saves=%d release=%d err=%v", writes, saves, releases, err)
 			}
-			if !reflect.DeepEqual(paths, []string{"/app/installations/99/access_tokens", "/installation/repositories", "/repos/owner/repo", "/repos/owner/repo/pulls", "/repos/owner/repo/installation"}) {
+			wantPaths := []string{"/app/installations/99/access_tokens", "/installation/repositories", "/repos/owner/repo", "/repos/owner/repo/pulls", "/repos/owner/repo/installation"}
+			if !scenario.bound {
+				wantPaths = []string{"/repos/owner/repo/installation", "/app/installations/99/access_tokens", "/repos/owner/repo", "/repos/owner/repo/pulls"}
+			}
+			if !reflect.DeepEqual(paths, wantPaths) {
 				t.Fatalf("paths=%v", paths)
 			}
-			if outcome == store.TransactionUnknown {
+			if scenario.outcome == store.TransactionUnknown {
 				var mgmt *ManagementError
 				if !errors.As(err, &mgmt) || mgmt.Code != "github_write_outcome_unknown" || !errors.Is(err, cause) {
 					t.Fatalf("unknown=%v", err)
@@ -307,6 +317,159 @@ func TestProjectAppManagerLocalOperationsUseBoundScope(t *testing.T) {
 			}
 			if err != nil || (op == "get" && (reads != 1 || writes != 0)) || (op != "get" && (reads != 0 || writes != 1)) {
 				t.Fatalf("op=%s reads=%d writes=%d err=%v", op, reads, writes, err)
+			}
+		})
+	}
+}
+
+func TestProjectAppManagerInvalidRequestsHaveNoExternalWork(t *testing.T) {
+	for _, operation := range []string{"discover", "connect"} {
+		for _, invalid := range []string{"principal", "project", "selection", "version", "installation"} {
+			if operation == "discover" && (invalid == "version" || invalid == "installation") {
+				continue
+			}
+			t.Run(operation+"/"+invalid, func(t *testing.T) {
+				principal, id := mgmtPrincipal, mgmtProject
+				in := core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99}
+				switch invalid {
+				case "principal":
+					principal = model.Principal{}
+				case "project":
+					id = "invalid"
+				case "selection":
+					in.GrantID = "invalid"
+				case "version":
+					in.Version = 0
+				case "installation":
+					in.InstallationID = 0
+				}
+				manager := NewProjectAppManager(projectAppScopeStub{t: t}, nil)
+				var err error
+				if operation == "discover" {
+					_, err = manager.Discover(context.Background(), principal, id, in.ProjectAppSelection)
+				} else {
+					_, err = manager.Connect(context.Background(), principal, id, in)
+				}
+				var fault *model.Fault
+				if !errors.As(err, &fault) || (fault.Code != "invalid_input" && fault.Code != "unauthenticated") {
+					t.Fatalf("invalid request=%v", err)
+				}
+			})
+		}
+	}
+	_, err := NewProjectAppManager(projectAppScopeStub{t: t}, nil).Disconnect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppDisconnect{Version: 1})
+	var fault *model.Fault
+	if !errors.As(err, &fault) || fault.Code != "invalid_input" {
+		t.Fatalf("missing ownership condition=%v", err)
+	}
+}
+
+func TestProjectAppManagerDiscoveryFailureDoesNotReturnCandidate(t *testing.T) {
+	for _, mode := range []string{"role", "read", "provider", "remote", "second-read", "connection-changed", "repository-changed"} {
+		t.Run(mode, func(t *testing.T) {
+			cause := errors.New("controlled unavailable dependency")
+			client := projectAppRemoteClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if mode == "remote" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				projectAppRemoteResponse(t, w, r)
+			})
+			reads, acquired, released := 0, 0, 0
+			db := projectAppScopeStub{t: t, read: func(ctx context.Context, id string, work func(store.GitHubProjectAppReadDAO) error) error {
+				reads++
+				if mode == "read" || (mode == "second-read" && reads == 2) {
+					return cause
+				}
+				f := projectAppServiceFacts()
+				if mode == "role" {
+					f.Access.TeamRole = nil
+				}
+				if reads == 2 {
+					if mode == "connection-changed" {
+						f.Connection.Version++
+					}
+					if mode == "repository-changed" {
+						f.Project.RepoURL = "https://github.com/owner/changed"
+					}
+				}
+				return work(projectAppReadDAO(t, f))
+			}}
+			provider := projectAppAcquireFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
+				acquired++
+				if mode == "provider" {
+					return nil, nil, cause
+				}
+				return client, func() { released++ }, nil
+			})
+			out, err := NewProjectAppManager(db, provider).Discover(context.Background(), mgmtPrincipal, mgmtProject, projectAppServiceSelection())
+			if err == nil || out != (core.InstallationCandidate{}) {
+				t.Fatalf("candidate=%+v err=%v", out, err)
+			}
+			if mode == "read" || mode == "provider" || mode == "second-read" {
+				if !errors.Is(err, cause) {
+					t.Fatalf("lost cause=%v", err)
+				}
+			}
+			wantAcquired, wantReleased, wantReads := 1, 1, 2
+			switch mode {
+			case "role", "read":
+				wantAcquired, wantReleased, wantReads = 0, 0, 1
+			case "provider":
+				wantReleased, wantReads = 0, 1
+			case "remote":
+				wantReads = 1
+				var upstream *remote.Error
+				if !errors.As(err, &upstream) || upstream.Status != http.StatusServiceUnavailable {
+					t.Fatalf("remote cause=%v", err)
+				}
+			}
+			if acquired != wantAcquired || released != wantReleased || reads != wantReads {
+				t.Fatalf("read/acquire/release=%d/%d/%d", reads, acquired, released)
+			}
+		})
+	}
+}
+
+func TestProjectAppManagerConnectProofFailureReleasesWithoutWrite(t *testing.T) {
+	for _, mode := range []string{"invalid-repository", "pull-request-access"} {
+		t.Run(mode, func(t *testing.T) {
+			requests := 0
+			client := projectAppRemoteClient(t, func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.URL.Path == "/repos/owner/repo/pulls" {
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
+					return
+				}
+				projectAppRemoteResponse(t, w, r)
+			})
+			f := projectAppServiceFacts()
+			if mode == "invalid-repository" {
+				f.Project.RepoURL = "https://example.com/owner/repo"
+			}
+			db := projectAppScopeStub{t: t, read: func(ctx context.Context, id string, work func(store.GitHubProjectAppReadDAO) error) error {
+				return work(projectAppReadDAO(t, f))
+			}}
+			released := 0
+			provider := projectAppAcquireFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
+				return client, func() { released++ }, nil
+			})
+			out, err := NewProjectAppManager(db, provider).Connect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
+			if err == nil || out.Connection.ProjectID != "" || released != 1 {
+				t.Fatalf("out=%+v released=%d err=%v", out, released, err)
+			}
+			if mode == "invalid-repository" {
+				var fault *model.Fault
+				if !errors.As(err, &fault) || fault.Code != "github_repository_mismatch" || requests != 0 {
+					t.Fatalf("invalid repository: requests=%d err=%v", requests, err)
+				}
+			} else {
+				var management *ManagementError
+				var upstream *remote.Error
+				if !errors.As(err, &management) || management.Code != "github_permission_denied" || !errors.As(err, &upstream) || upstream.Status != http.StatusForbidden {
+					t.Fatalf("PR permission failure=%v", err)
+				}
 			}
 		})
 	}
