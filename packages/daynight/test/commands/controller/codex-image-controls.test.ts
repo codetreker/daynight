@@ -16,6 +16,11 @@ test("the native image profile rejects unverified executable versions and platfo
   expect(supportsCodexImageProfile({ ...native, userAgent: native.userAgent.replace("0.167.0", "0.168.0") }, "darwin")).toBe(false);
   expect(supportsCodexImageProfile({ ...native, platformOs: "linux" }, "linux")).toBe(false);
   expect(supportsCodexImageProfile({}, "darwin")).toBe(false);
+  const windows = { userAgent: "daynight/0.169.0 (Windows; x86_64)", platformOs: "windows" };
+  expect(supportsCodexImageProfile(windows, "win32")).toBe(true);
+  expect(supportsCodexImageProfile(windows, "darwin")).toBe(false);
+  const profile = codexImageProfile(windows, { model: "vision", modelProvider: "gateway" }, "win32", "a".repeat(64), { kind: "native_declared_config_v1", nativeSessionId: "thread", model: "vision", modelProvider: "gateway", backendIdentity: "b".repeat(64), generation: 1 });
+  expect(profile?.qualification).toBeNull(); expect(profile?.geometry.known).toBe(false);
 });
 
 test("an image modality without exact backend geometry stays unknown and satisfies the public capability protocol", async () => {
