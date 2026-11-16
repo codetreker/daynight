@@ -23,6 +23,16 @@ vi.mock("../../../src/commands/controller/providers/codex-image-profile.js", asy
   return { ...actual, codexImageProfile: (value: any, native: any) => value.userAgent === "controlled-fixture" ? { qualification: controlledImageQualification("codex", native.model), modelProvider: native.modelProvider, modelId: native.model, geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } } : null };
 });
 const rpcPolicy = vi.hoisted(() => ({ timeoutMs: 30_000 }));
+const authorityPolicy = vi.hoisted(() => ({ beforeInput: undefined as (() => Promise<void>) | undefined }));
+vi.mock("../../../src/commands/controller/providers/codex-read-authority.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../../src/commands/controller/providers/codex-read-authority.js")>();
+  return { ...actual, CodexReadAuthority: class extends actual.CodexReadAuthority {
+    override async request(...args: Parameters<InstanceType<typeof actual.CodexReadAuthority>["request"]>) {
+      if (["turn/start", "turn/steer"].includes(args[0])) await authorityPolicy.beforeInput?.();
+      return super.request(...args);
+    }
+  } };
+});
 vi.mock("../../../src/commands/controller/providers/codex-rpc.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../../src/commands/controller/providers/codex-rpc.js")>();
   return { ...actual, CodexRpc: class extends actual.CodexRpc {
@@ -55,6 +65,98 @@ const fixture = async (mode = "normal", history: unknown[] = []) => {
   const requests = async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
   return { root, options, image, input, requests, entries, states, observations, captures, state, child: () => child, cleanup: () => rm(root, { recursive: true, force: true }) };
 };
+
+test("fresh configuration restores the original image qualification but never adopts another route", async () => {
+  const f = await fixture(), route = join(f.root, "route.txt");
+  await writeFile(route, "https://example.test"); f.options.env = { ...f.options.env, CODEX_IMAGES_ROUTE_FILE: route };
+  const provider = await openCodexProvider(f.options);
+  try {
+    const before = f.states.at(-1)!.images!; expect(before.send).toBe("supported");
+    await writeFile(route, "https://another.example"); await provider.refreshControls!(); expect(f.states.at(-1)!.images!.send).toBe("unknown");
+    await writeFile(route, "https://example.test"); await provider.refreshControls!();
+    expect(f.states.at(-1)!.images!.send).toBe("supported");
+    expect(imageQualificationFingerprint(f.states.at(-1)!.images)).toBe(imageQualificationFingerprint(before));
+    expect((await f.requests()).filter(row => ["turn/start", "turn/steer"].includes(row.method))).toHaveLength(0);
+  } finally { await provider.close(); await f.cleanup(); }
+});
+
+test("execution authorization is rechecked after optional configuration reads before creating the thread", async () => {
+  const f = await fixture(); let checks = 0;
+  f.options.assertNativeDispatch = () => { if (++checks === 2) throw new Error("Execution revoked after configuration observation."); };
+  try {
+    await expect(openCodexProvider(f.options)).rejects.toThrow("Execution revoked");
+    expect((await f.requests()).filter(row => row.method === "config/read")).toHaveLength(1);
+    expect((await f.requests()).filter(row => row.method === "thread/start")).toHaveLength(0);
+    expect(f.child()!.exitCode !== null || f.child()!.signalCode !== null).toBe(true);
+  } finally { await f.cleanup(); }
+});
+
+test("configuration observation errors preserve ordinary text and never emit raw credentials", async () => {
+  const f = await fixture(), route = join(f.root, "route.txt"), diagnostics: string[] = [];
+  await writeFile(route, "error"); f.options.env = { ...f.options.env, CODEX_IMAGES_ROUTE_FILE: route }; f.options.onDiagnostic = line => diagnostics.push(line);
+  const provider = await openCodexProvider(f.options);
+  try {
+    expect(f.states.at(-1)!.images!.send).toBe("unknown");
+    await expect(provider.send({ content: [{ type: "text", text: "ordinary text" }] }, randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+    expect(JSON.stringify({ states: f.states, diagnostics })).not.toContain("secret-config-canary");
+  } finally { await provider.close(); await f.cleanup(); }
+});
+
+test("resumed threads cannot acquire image identity from current global configuration", async () => {
+  const f = await fixture(); f.options.resumeNativeSessionId = "images-thread";
+  const provider = await openCodexProvider(f.options);
+  try { expect(f.states.at(-1)!.images!.send).toBe("unknown"); await provider.refreshControls!(); expect(f.states.at(-1)!.images!.send).toBe("unknown"); }
+  finally { await provider.close(); await f.cleanup(); }
+});
+
+test("a settings event during asynchronous read-authority preparation rejects the final native write", async () => {
+  const f = await fixture(); f.options.onNativeReadPolicy = () => {};
+  const provider = await openCodexProvider(f.options);
+  try {
+    const input = f.input([await f.image()]);
+    authorityPolicy.beforeInput = async () => {
+      f.child()!.stdin!.write(JSON.stringify({ method: "fixture/settings", params: { model: "other-model" } }) + "\n");
+      await vi.waitFor(() => expect(f.states.at(-1)?.images?.send).toBe("unknown"));
+    };
+    await expect(provider.send(input.value, input.operationId, null)).rejects.toThrow("configuration changed");
+    expect((await f.requests()).filter(row => ["turn/start", "turn/steer"].includes(row.method))).toHaveLength(0);
+    expect(f.observations).toHaveLength(0);
+  } finally { authorityPolicy.beforeInput = undefined; await provider.close(); await f.cleanup(); }
+});
+
+test.each([null, "image-turn"])("an approval during read-authority preparation prevents image dispatch to %s", async expectedTurnId => {
+  const f = await fixture(); f.options.onNativeReadPolicy = () => {};
+  const provider = await openCodexProvider(f.options);
+  try {
+    if (expectedTurnId) await provider.send({ content: [{ type: "text", text: "start work" }] }, randomUUID(), null);
+    const input = f.input([await f.image()], expectedTurnId), observed = f.observations.length;
+    authorityPolicy.beforeInput = async () => {
+      f.child()!.stdin!.write(JSON.stringify({ method: "fixture/approval", params: { turnId: expectedTurnId } }) + "\n");
+      await vi.waitFor(() => expect(f.states.at(-1)?.activity).toBe("waiting_input"));
+    };
+    await expect(provider.send(input.value, input.operationId, expectedTurnId)).rejects.toThrow("interaction pending");
+    expect((await f.requests()).filter(row => ["turn/start", "turn/steer"].includes(row.method))).toHaveLength(expectedTurnId ? 1 : 0);
+    expect(f.observations).toHaveLength(observed);
+  } finally { authorityPolicy.beforeInput = undefined; await provider.close(); await f.cleanup(); }
+});
+
+test("text remains available during background configuration recovery and schedules a fresh observation", async () => {
+  const f = await fixture(), route = join(f.root, "route.txt");
+  await writeFile(route, "https://example.test"); f.options.env = { ...f.options.env, CODEX_IMAGES_ROUTE_FILE: route };
+  const provider = await openCodexProvider(f.options);
+  try {
+    const before = (await f.requests()).filter(row => row.method === "config/read").length;
+    await writeFile(route, "defer"); f.child()!.stdin!.write(JSON.stringify({ method: "fixture/settings", params: { model: "fixture-vision" } }) + "\n");
+    await vi.waitFor(async () => expect((await f.requests()).filter(row => row.method === "config/read")).toHaveLength(before + 1));
+    expect(f.states.at(-1)?.images?.send).toBe("unknown");
+    await expect(provider.send({ content: [{ type: "text", text: "text during image recovery" }] }, randomUUID(), null)).resolves.toMatchObject({ disposition: "started" });
+    await writeFile(route, "https://example.test");
+    f.child()!.stdin!.write(JSON.stringify({ method: "fixture/release-config" }) + "\n");
+    await vi.waitFor(() => expect(f.states.at(-1)?.images?.send).toBe("supported"));
+    expect((await f.requests()).filter(row => row.method === "turn/start")).toHaveLength(1);
+    expect((await f.requests()).filter(row => row.method === "config/read").length).toBeGreaterThan(before + 1);
+  } finally { await provider.close(); await f.cleanup(); }
+});
 
 test.each(["second-geometry", "qualification-revoked"])("Codex sends nothing when final admission rejects %s", async failure => {
   const f = await fixture(), provider = await openCodexProvider(f.options);

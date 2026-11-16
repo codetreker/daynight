@@ -23,6 +23,7 @@ export class CodexControls {
   private settingInFlight = false;
   constructor(private readonly rpc: Pick<NativeRpc, "request">, private readonly session: () => string, private readonly turn: () => string | null, private readonly cwd: string, private readonly home: string, private readonly changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly assertNativeDispatch?: () => void) { this.store = new ProviderControls(changed, revisionFloor); }
   beginTurn(): void { this.turnModel = string(this.native.model) || null; }
+  imageSelection(): { model: string | null; modelProvider: string | null; cwd: string | null } { return { model: string(this.native.model) || null, modelProvider: string(this.native.modelProvider) || null, cwd: string(this.native.cwd) || null }; }
   imageCapabilities(profile: CodexImageProfile | null): Omit<ProviderImageCapabilities, "revision"> {
     const model = string(this.native.model) || null;
     const matches = this.capabilityModels.filter(item => item.model === model || item.id === model);

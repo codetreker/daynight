@@ -10,7 +10,7 @@
 
 [资格目录与选择器](../../packages/daynight/src/commands/controller/providers/image-qualification.ts)以 `ImageRuntimeIdentity` 记录 provider、nativeVersion、nativeExecutableSha256、sdkVersion、platform、arch、backendIdentity 和 modelId。nativeExecutableSha256 绑定实际可执行文件字节摘要，版本字符串不能代替。backendIdentity 按对应 Provider 机制编码可观测身份并取 SHA256，公共值不保存地址或凭据，也不把 Provider 别名本身当作充分身份；其证据范围受下文观察机制限制；Codex app-server 的 sdkVersion=null 表示不使用 SDK，Copilot 的缺失 SDK 版本则是未知。`ImageQualification` 在同一精确身份上保存 evidenceId、evidenceSha256、独立 send/steer 开关、MIME、单图/整条字节、图数及原始输入 geometry。证据文档拥有适用条件及原生处理观察，不增加未经验证的默认支持。
 
-只有完整运行时身份唯一匹配合法目录项时，`selectImageQualification` 才返回冻结的 `QualifiedImages` 和该完整资格记录的 fingerprint；缺项、歧义或非法证据拒绝。Codex 工厂尚未获得可信 nativeExecutableSha256 和 backendIdentity；Copilot 可使用下文限定的程序与原生声明路由观察，但观察本身不建立资格。不能从版本字符串、modelProvider 或 SDK 版本猜测身份，当前空目录使协议兼容的组合也保持 unknown。数值能力对象以私有 WeakMap 绑定 fingerprint，不扩展公共 DTO。journal 将 `provider_images_qualification` 与 Provider 能力同事务持久化；证据变化即使不改变数值上限，也推进 providerRevision。原授权保留该绑定，native 最终派发比较当前资格，不能在同一数值能力下沿用另一份证据。
+只有完整运行时身份唯一匹配合法目录项时，`selectImageQualification` 才返回冻结的 `QualifiedImages` 和该完整资格记录的 fingerprint；缺项、歧义或非法证据拒绝。Codex 和 Copilot 可使用下文各自限定的程序与原生声明配置观察，但观察本身不建立资格。不能从版本字符串、modelProvider 或 SDK 版本猜测身份，当前空目录使协议兼容的组合也保持 unknown。数值能力对象以私有 WeakMap 绑定 fingerprint，不扩展公共 DTO。journal 将 `provider_images_qualification` 与 Provider 能力同事务持久化；证据变化即使不改变数值上限，也推进 providerRevision。原授权保留该绑定，native 最终派发比较当前资格，不能在同一数值能力下沿用另一份证据。
 
 | 来源 | 影响设计的原生事实 |
 | --- | --- |
@@ -52,6 +52,18 @@ Daynight 将公共存储中的完整原件按原顺序交给原生图片接口�
 原生原件只能从公共存储的受控 lease 取得。当前 Controller 读取服务原件时，必须受同代次 `operation_authorized` 的原 actor、完整有序 intent、有效发送 pin 和每块授权约束；不能借浏览器 token、枚举历史或修复旧代次任意 native 路径。服务历史可读与 native resume 文件存在分别报告。
 
 ## Codex
+
+### 新 thread 的声明配置身份
+
+[配置观察器](../../packages/daynight/src/commands/controller/providers/codex-config-observation.ts)通过同一 app-server、同一实际 thread/start cwd 读取 config/read，只投影选中 model_provider 的显式 base_url、wire_api 和 supports_websockets。native_declared_config_v1 摘要标识这些非秘密声明字段；supports_websockets 保留 true、false 和未声明的区别，不代表实际传输方式。headers、token、完整配置及原生错误正文不进入摘要或诊断，URL 不接受 userinfo、query、fragment 和未验证编码结构。未处理的 OPENAI_BASE_URL、OPENAI_API_BASE 非空覆盖使观察未知；环境变量名按原生平台规则识别，Windows 不区分大小写。其他未纳入的配置字段不被宣称已经证明。
+
+观察器核对实际发送的thread/start参数，明确model覆盖由原生response确认，未指定模型时使用首次配置默认值；不增加provider开关。未知thread配置覆盖拒绝建立观察，已知权限、effort及Agent CLI alias配置保留。新thread的modelProvider必须匹配选中配置，启动前后路由摘要一致才能建立基线；物理cwd仍由adapter验证。前后相同表示有界一致性，不是原子快照或thread专属endpoint证明。
+
+程序摘要来自verifyToolLaunch已验证、与实际child直接启动路径相符的唯一Windows原生artifact；JS、interpreter和未验证fallback保持未知。Windows0.169.0与既有macOS0.167.0是分别识别的协议兼容入口，不是通用版本许可或receipt/history资格。sdkVersion=null表示无SDK。当前生产目录为空，所以观察成功仍不能开放图片。
+
+设置、模型、cwd、进程与连接变化撤销generation和旧观察。公开controls刷新与确认设置事件可重新读取；同一thread只能回到原路由基线，不能因全局配置变化而套用新backend身份。不同模型必须匹配其自己的资格，活动turn继续受已确认turnModel限制。resume不建立新观察，图片保持unknown；已接受输入、历史、归档及原操作查询仍保留。观察5秒到期后撤销，最多保留一个未完成原生读取，迟到不能恢复观察；后台观察不占用普通文字发送门禁。
+
+图片在读取、编码后核对原 grant 和观察，实际 transport 写入前再次验证同 child 生命周期、thread、generation、controls revision、资格 fingerprint 及待处理的原生交互。该检查位于 Read authority 可能等待 drain 之后；提交前失败零次输入，提交后的失败保留接受或 unknown，不重发。[决策记录](../../.agents/notes/implemented/architecture/2026-11-16-codex-image-config-observation.md)解释新 thread 范围和恢复成本。
 
 ### 能力、编码与接受
 
