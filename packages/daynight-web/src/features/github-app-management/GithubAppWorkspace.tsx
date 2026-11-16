@@ -226,7 +226,7 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
   return <>
     <button className="button" type="button" onClick={() => navigate('/github-apps')}>← {m.back}</button>
     {loading && (!app || !entryVerified.current) && <p role="status">{m.loading}</p>}
-    {error !== null && <div className="notice error" role="alert">{unavailable ? m.unavailable : m.failed} <button type="button" className="button" disabled={admissionBlocked} onClick={() => void load()}>{m.retry}</button></div>}
+    {(error !== null || unavailable) && <div className="notice error" role="alert">{unavailable ? m.unavailable : m.failed} <button type="button" className="button" disabled={admissionBlocked} onClick={() => void load()}>{m.retry}</button></div>}
     {notice && <p role="status">{notice}</p>}
     {unknown && !modal && <div className="notice warning" role="alert">{m.unknown} <button className="button" type="button" onClick={review}>{m.check}</button>{checked && <><p>{m.checked}</p><button className="button" type="button" onClick={() => { op.clear(); setChecked(false); }}>{m.dismiss}</button></>}</div>}
     {app && !unavailable && entryVerified.current && <>
