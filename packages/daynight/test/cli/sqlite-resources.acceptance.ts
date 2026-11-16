@@ -110,11 +110,11 @@ try {
   timelineDb = openSqliteDatabase({ file: timelineFile, format: controllerJournalFormat, allowCreate: false, onMigration: () => {} });
   const reopened = openTimelineStore(timelineDb, { assertWrite: () => { throw new Error("Installed readback is read-only."); } });
   assert.deepEqual(reopened.get(entry.entryId), replacement);
-  assert.equal(timelineDb.pragma("user_version", { simple: true }), 12);
-  versions.push(12);
+  assert.equal(timelineDb.pragma("user_version", { simple: true }), 13);
+  versions.push(13);
 } finally { if (timelineDb !== undefined && timelineDb.open) timelineDb.close(); timelinePermit.release(); }
 console.log(JSON.stringify(versions));
 `, [installed, databases, JSON.stringify({ version: workerVersion, tables: workerTables })], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 12, 1, 12]);
+  expect(JSON.parse(result.stdout)).toEqual([2, workerVersion, 4, 13, 1, 13]);
 });
