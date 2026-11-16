@@ -58,7 +58,7 @@ func (s appOps) ListApps(ctx context.Context, p model.Principal, in core.ListApp
 	}
 	return s.list(ctx, p, in)
 }
-func appMux(t *testing.T, ops AppOperations, log io.Writer) http.Handler {
+func appMux(t *testing.T, ops AppOperations, log io.Writer, config ...AppConfigOperations) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(log, nil))
 	auth, err := authhttp.NewRequestAuthentication(func(_ context.Context, kind model.CredentialKind, value string) (model.Principal, error) {
@@ -71,7 +71,7 @@ func appMux(t *testing.T, ops AppOperations, log io.Writer) http.Handler {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	RegisterAppRoutes(mux, ops, auth, "https://daynight.example", logger)
+	RegisterAppRoutes(mux, ops, auth, "https://daynight.example", logger, config...)
 	return httpx.RequestLogging(logger, mux)
 }
 func appRequest(method, path, body string) *http.Request {

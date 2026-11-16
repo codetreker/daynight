@@ -94,7 +94,7 @@ func (h *grantHandler) fail(w http.ResponseWriter, r *http.Request, phase string
 	if r.Context().Err() == nil && !errors.As(err, &management) && !known && !failed && !facts.CleanupFailed && (facts.Phase == "" || facts.Phase == "operation") && (facts.Outcome == "" || facts.Outcome == store.TransactionNotCommitted) && errors.Is(err, context.DeadlineExceeded) {
 		err = &model.Fault{Code: "timeout", Message: "GitHub App operation timed out."}
 	}
-	if f, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == f.Code && (f.Code == "github_grant_changed" || f.Code == "impact_changed") {
+	if f, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == f.Code && (f.Code == "github_grant_changed" || f.Code == "impact_changed" || f.Code == "github_admin_changed") {
 		httpx.CloseUnreadBody(w, r)
 		httpx.LogFailure(logger, r.Context(), "github", phase, err)
 		if r.Context().Err() == nil {
