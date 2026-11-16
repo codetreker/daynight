@@ -9,7 +9,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | 数据库 | 路径 | 当前版本与受支持非零来源 |
 |---|---|---|
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
-| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 12，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，旧详细库 1–4 明确拒绝 |
+| Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 17，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，版本 16 增加认领工具预留；16→17 保留独立补归档身份和调度，并支持保存旧清理归档错误，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
 | Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 12，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计和 12 capture state 转换 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |

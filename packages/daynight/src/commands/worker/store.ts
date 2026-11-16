@@ -89,8 +89,8 @@ const asArchiveBackfillIdentity = (value: ArchiveBackfillIdentity): ArchiveBackf
   return { ...archiveBackfillKey(value), ...claimKey(value), executionGeneration: generation, launchId: id(value.launchId, "Archive launch ID") };
 };
 const asArchiveBackfillSchedule = (value: ArchiveBackfillSchedule): ArchiveBackfillSchedule => {
-  if (value.archiveRepairCode !== "archive_incomplete" && value.archiveRepairCode !== "projection_gap") throw new TypeError("Invalid archive repair code.");
-  return { archiveRepairCode: value.archiveRepairCode, nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Archive next attempt") };
+  if (value.archiveRepairCode !== null && value.archiveRepairCode !== "archive_incomplete" && value.archiveRepairCode !== "projection_gap") throw new TypeError("Invalid archive repair code.");
+  return { archiveRepairCode: value.archiveRepairCode, nextAttemptAt: nonnegativeInteger(value.nextAttemptAt, "Archive next attempt"), ...(value.legacyError == null ? {} : { legacyError: text(value.legacyError, "Legacy archive error") }) };
 };
 const asProject = (row: WorkerProject): WorkerProject => ({ ...projectKey(row), repoUrl: text(row.repoUrl, "Repository URL"), localPath: absolutePath(row.localPath, "Project local path") });
 const asTask = (row: LocalTask): LocalTask => {
@@ -156,7 +156,7 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
   const getArchiveBackfillSchedule = (identity: ArchiveBackfillIdentity): ArchiveBackfillScheduleRecord | null => read(() => {
     const row = db.prepare(`SELECT server_origin AS serverOrigin, execution_id AS executionId, execution_generation AS executionGeneration,
       launch_id AS launchId, project_id AS projectId, task_id AS taskId, claim_id AS claimId,
-      archive_repair_code AS archiveRepairCode, next_attempt_at AS nextAttemptAt
+      archive_repair_code AS archiveRepairCode, next_attempt_at AS nextAttemptAt, legacy_error AS legacyError
       FROM archive_backfill_schedules WHERE server_origin = @serverOrigin AND execution_id = @executionId`).get(archiveBackfillKey(identity)) as ArchiveBackfillScheduleRecord | undefined;
     if (row === undefined) return null;
     const owner = asArchiveBackfillIdentity(identity);
@@ -275,9 +275,9 @@ export const openWorkerStore = (databaseFile: SqliteDatabaseSource, options: { b
     saveArchiveBackfillSchedule: (identity: ArchiveBackfillIdentity, state: ArchiveBackfillSchedule): void => atomic(() => {
       const record = { ...asArchiveBackfillIdentity(identity), ...asArchiveBackfillSchedule(state) };
       getArchiveBackfillSchedule(record);
-      db.prepare(`INSERT INTO archive_backfill_schedules(server_origin, execution_id, execution_generation, launch_id, project_id, task_id, claim_id, archive_repair_code, next_attempt_at)
-        VALUES (@serverOrigin, @executionId, @executionGeneration, @launchId, @projectId, @taskId, @claimId, @archiveRepairCode, @nextAttemptAt)
-        ON CONFLICT(server_origin, execution_id) DO UPDATE SET archive_repair_code = excluded.archive_repair_code, next_attempt_at = excluded.next_attempt_at`).run(record);
+      db.prepare(`INSERT INTO archive_backfill_schedules(server_origin, execution_id, execution_generation, launch_id, project_id, task_id, claim_id, archive_repair_code, next_attempt_at, legacy_error)
+        VALUES (@serverOrigin, @executionId, @executionGeneration, @launchId, @projectId, @taskId, @claimId, @archiveRepairCode, @nextAttemptAt, @legacyError)
+        ON CONFLICT(server_origin, execution_id) DO UPDATE SET archive_repair_code = excluded.archive_repair_code, next_attempt_at = excluded.next_attempt_at, legacy_error = COALESCE(archive_backfill_schedules.legacy_error, excluded.legacy_error)`).run({ ...record, legacyError: record.legacyError ?? null });
     }),
     deleteArchiveBackfillSchedule: (identity: ArchiveBackfillIdentity): void => atomic(() => {
       if (getArchiveBackfillSchedule(identity) === null) return;

@@ -22,6 +22,7 @@ import { InstanceLockHeldError } from "../../../src/platform/instance-lock.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { ControllerIpcIdentityConflictError, ControllerIpcOutcomeUnknownError, type requestController } from "../../../src/commands/controller/local-client.js";
+import { ArchiveRepairRequiredError, ArchiveRequestError } from "../../../src/commands/controller/archive-error.js";
 import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
@@ -659,7 +660,21 @@ it("preserves an existing cleanup deadline and gives an expired first terminal c
   expect(f.git.removeWorktree).toHaveBeenCalledTimes(2);
 });
 
-it("retains the stopped task worktree on archive failure and retries without relaunching business work", async () => {
+it.each([
+  ["uploader missing", undefined],
+  ["SQLite admission", new Error("SQLite admission failed")],
+  ["invalid archive", new Error("Invalid Daynight session archive")],
+  ["image projection", new Error("image projection failed")],
+  ["missing source", Object.assign(new Error("source missing"), { code: "ENOENT" })],
+  ["identity", new Error("archive identity mismatch")],
+  ["busy", new ArchiveRequestError(429, "resource_busy")],
+  ["permission", new ArchiveRequestError(403, "forbidden")],
+  ["network", new Error("network failed")],
+  ["archive timeout", new DOMException("archive timeout", "TimeoutError")],
+  ["incomplete", new ArchiveRepairRequiredError("archive_incomplete")],
+  ["projection gap", new ArchiveRepairRequiredError("projection_gap")],
+  ["unknown", { unexpected: true }],
+])("cleans the stopped worktree after %s archive failure", async (_label, archiveError) => {
   const f = await fixture();
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 3);
   task = f.store.initializeWebExecution(task, 4);
@@ -667,19 +682,31 @@ it("retains the stopped task worktree on archive failure and retries without rel
   task = f.store.beginCleanup(task, { kind: "terminal", deadline: 10 }, 6);
   const source = await cleanupSource(f, task); task = source.task;
 
-  const archiveError = new Error("archive offline");
-  const archive = vi.fn().mockRejectedValueOnce(archiveError).mockResolvedValue(undefined);
+  const archive = archiveError === undefined ? undefined : vi.fn().mockRejectedValue(archiveError);
   const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
   const request = source.request;
-  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
-  await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "archive", cause: archiveError });
-  expect(f.git.removeWorktree).not.toHaveBeenCalled();
-  expect(f.store.getTask(task)?.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
+  const onArchiveFailure = vi.fn(), successes = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, ...(archive === undefined ? {} : { archive }), onArchiveFailure, request });
+  backend.setMonitoringObserver({ observeSuccess: successes });
   const result = await backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } });
   expect(result.complete).toBe(true);
-  expect(archive).toHaveBeenCalledTimes(2);
+  expect(onArchiveFailure).toHaveBeenCalledOnce();
+  expect(onArchiveFailure).toHaveBeenCalledWith(expect.objectContaining({ claimId: task.claimId, webExecution: expect.objectContaining({ executionId: task.webExecution!.executionId }) }), archiveError ?? expect.objectContaining({ message: "Session archive uploader is unavailable." }));
+  expect(successes).not.toHaveBeenCalledWith(expect.anything(), { kind: "cleanup", phase: "archive" });
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
-  expect(launcher.launch).not.toHaveBeenCalled(); expect(source.stopped).toHaveBeenCalledTimes(2);
+  expect(launcher.launch).not.toHaveBeenCalled(); expect(source.stopped).toHaveBeenCalledOnce();
+});
+
+it("retains archive and registration errors without masking a worktree removal failure", async () => {
+  const f = await fixture();
+  const task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 3);
+  const source = await cleanupSource(f, task);
+  const archiveError = new Error("archive failed"), registrationError = new Error("registration failed"), removalError = new Error("removal failed");
+  vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(removalError);
+  const emit = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit, now: () => 20, archive: async () => { throw archiveError; }, onArchiveFailure: () => { throw registrationError; }, request: source.request });
+  await expect(backend.cleanup(source.task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: source.task }, onExecutionStopped: () => {} } })).rejects.toMatchObject({ stage: "worktree-removal", cause: removalError });
+  expect(emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "session-archive-retry", component: "archive", error: expect.objectContaining({ cause: archiveError, errors: [archiveError, registrationError] }) }));
 });
 
 it("ordinary shutdown retains history without publishing an ended archive", async () => {
@@ -694,7 +721,7 @@ it("ordinary shutdown retains history without publishing an ended archive", asyn
   expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
 
-it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execution after failed terminal archival without retrying or losing finalization", async provider => {
+it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execution without publishing an archive", async provider => {
   const f = await fixture(provider);
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 3);
   task = f.store.initializeWebExecution(task, 4);
@@ -707,23 +734,22 @@ it.each(["codex", "claude", "copilot"] as const)("shuts down a stopped %s execut
   const request = source.request;
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
 
-  await expect(backend.cleanup(task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: task }, onExecutionStopped: () => {} } })).rejects.toThrow("archive offline");
   const pending = f.store.getTask(task)!;
   expect(pending.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
   const stopped = await backend.cleanup(pending, { kind: "shutdown", deadline: 20, immediateStop: true });
   expect(stopped.task.cleanup).toEqual(pending.cleanup);
   expect(f.store.getTask(task)?.cleanup).toEqual(pending.cleanup);
-  expect(archive).toHaveBeenCalledOnce();
+  expect(archive).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 
   archive.mockResolvedValue(undefined);
   const completed = await backend.cleanup(stopped.task, { kind: "terminal", deadline: 30, immediateStop: false, scope: { attempt: { attemptId: randomUUID(), owner: stopped.task }, onExecutionStopped: () => {} } });
   expect(completed.task.cleanup).toMatchObject({ kind: "terminal", startedAt: 6, deadline: 10 });
-  expect(archive).toHaveBeenCalledTimes(2);
+  expect(archive).toHaveBeenCalledOnce();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   expect(launcher.launch).not.toHaveBeenCalled();
   expect(request.mock.calls.every(([, action]) => action.kind === "observe")).toBe(true);
-  expect(source.stopped).toHaveBeenCalledTimes(3);
+  expect(source.stopped).toHaveBeenCalledTimes(2);
 });
 
 it("cleanup stops the original bootstrap when its journal snapshot read fails", async () => {

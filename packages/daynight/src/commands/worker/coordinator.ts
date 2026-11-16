@@ -44,6 +44,7 @@ import { MonitoringArchiveBusyEvidence, MonitoringOwnershipUnconfirmedEvidence, 
 import { encodeWorktree } from "./monitoring/worktree.js";
 import { createSelectedWorktrees } from "./monitoring/selected-worktrees.js";
 import type { FailureWorktree } from "./monitoring/types.js";
+import type { createWebArchiveMaintenance } from "./web-archive-backfill.js";
 
 export type WorkerRepositoryAssignment = { project: WorkerProject; configuration: ExecutionConfiguration };
 export type WorkerInputWait = { kind: "waiting_input"; reason: "prompt_unknown" | "prompt_too_large" | "storage_maintenance" | "configuration_pending" };
@@ -54,6 +55,7 @@ export type WorkerCoordinatorOptions = {
   availableDiskBytes?: () => bigint;
   webBackend?: Pick<WebExecutionBackend, "advance" | "cleanup" | "observeExecutionStop"> & Partial<Pick<WebExecutionBackend, "observeStartupReport" | "advanceResult" | "setMonitoringObserver" | "probeArchive">>;
   webStore?: WebExecutionStore; verifyWebServer?: WorkerSessionApi["verifySupport"]; verifyWebUnregistered?: WorkerSessionApi["verifyUnregistered"];
+  archiveMaintenance?: Pick<ReturnType<typeof createWebArchiveMaintenance>, "recordLegacyFailure">;
   verifyWebStartupReporting?: WorkerSessionApi["supportsStartupReports"];
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter; remote: WorkerRemote;
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
@@ -274,7 +276,6 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const ending = new Map<string, CleanupTarget>(options.store.listCleanupSchedules().map(record => [key(record), record]));
   let capacityWarning = "";
   const cleanupRetries = new Map<string, { failures: number; nextAttemptAt: number; stage: string; lastError: string | null; archiveRepairCode?: ArchiveRepairCode | null }>();
-  const archiveProbes = new Set<string>();
   const failures = new Map<string, number>();
   const inputWaiting = new Map<string, string>();
   const snapshotWarnings = new Map<string, Set<string>>();
@@ -756,7 +757,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (terminal) for (const [failureKey, failure] of monitoringFailures) if (failureKey.startsWith(`true/${identityKey}/`)) { observe(m => m.recover(failure)); monitoringFailures.delete(failureKey); }
       });
     }).then(() => { inputWaiting.delete(identityKey); }).catch((error: unknown) => {
-      if (isWorkerCancellation(error, signal)) { archiveProbes.delete(identityKey); return; }
+      if (isWorkerCancellation(error, signal)) return;
       if (!terminal && error instanceof HerdrInputWaitingError) {
         if (operationId !== undefined) observe(m => m.updateActivity(operationId!, pausedClaims.has(identityKey) ? { phase: "paused", status: "paused", waitReason: "task-paused" } : { phase: "waiting", status: "waiting", waitReason: "native-input" }));
         if (inputWaiting.get(identityKey) !== error.message) {
@@ -776,12 +777,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         let previous: ReturnType<WorkerStore["getCleanupSchedule"]> = null;
         try { previous = options.store.getCleanupSchedule(owner); count = Math.max(count, previous?.failures ?? 0); }
         catch (storageError) { reportedError = new AggregateError([error, storageError], "Cleanup failed and its retry state could not be read."); }
-        const probeOnly = archiveProbes.delete(identityKey);
         const cause = error instanceof WorkerCleanupError ? error.cause : error;
         const stage = error instanceof WorkerCleanupError ? error.stage : "observation";
         const repairCode = stage !== "archive" ? null : cause instanceof ArchiveRepairRequiredError ? cause.code : cleanupRetries.get(identityKey)?.archiveRepairCode ?? previous?.archiveRepairCode ?? null;
         const archiveBusy = stage === "archive" && isArchiveBusy(cause);
-        if (!probeOnly && !archiveBusy) count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
+        if (!archiveBusy) count = Math.min(count + 1, Number.MAX_SAFE_INTEGER);
         const retryMs = archiveBusy ? 5000 + Math.floor(Math.random() * 2001) : repairCode === null ? Math.min(60_000, 1000 * 2 ** Math.min(count - 1, 6)) : ARCHIVE_REPAIR_PROBE_INTERVAL_MS;
         const nextAttemptAt = now() + retryMs;
         if (operationId !== undefined) {
@@ -883,6 +883,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const webRecord = options.webStore?.getTask(owner);
     if (webRecord != null && webRecord.worktreeId !== owner.worktreeId) throw new Error("The Web cleanup claim has conflicting worktree identities.");
     if (local?.agentControlMode === "web" || webRecord != null) {
+      if (schedule?.stage === "archive") {
+        signal?.throwIfAborted();
+        try {
+          if (webRecord == null || !options.archiveMaintenance) throw new Error("Legacy archive maintenance registration is unavailable.");
+          options.archiveMaintenance.recordLegacyFailure(webRecord, schedule);
+        } catch (error) {
+          try { options.emit({ kind: "session-archive-retry", identity: owner, component: "archive", phase: "archive-backfill", message: "Legacy archive failure registration failed; its source remains available for retry.", error: new AggregateError([new Error(schedule.lastError ?? "Legacy archive failure."), error], "Legacy archive failure registration failed.", { cause: error }) }); } catch { /* Diagnostics cannot prevent cleanup. */ }
+        }
+      }
       if (!options.webBackend || !options.webStore) throw new Error("The Web execution backend is unavailable.");
       if (webRecord == null) {
         // Registration precedes every native launch. Missing local evidence alone proves nothing.
@@ -934,55 +943,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return binding;
   };
 
-  const observeArchiveRepair = (owner: CleanupTarget, code: ArchiveRepairCode, nextAttemptAt: number): void => {
-    const identity = key(owner), failureKey = `true/${identity}/archive`, activityKey = `true/${identity}`;
-    const scope = { kind: "claim" as const, projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId };
-    observe(m => {
-      if (!monitoringFailures.has(failureKey)) {
-        const id = randomUUID(); monitoringFailures.set(failureKey, id);
-        m.fail({ operationId: id, component: "cleanup", phase: "archive", scope, ...worktreeContext(owner), error: new ArchiveRepairRequiredError(code), retryState: "scheduled", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
-      }
-      if (!monitoringActivities.has(activityKey)) {
-        const id = m.startActivity({ kind: "cleanup", phase: "archive", scope, status: "waiting", waitReason: "recovery-blocked", nextAttemptAt: new Date(nextAttemptAt).toISOString() });
-        monitoringActivities.set(activityKey, id);
-      }
-    });
-  };
-
   const launchCleanups = (): void => {
     for (const [identityKey, owner] of ending) {
       // A stopped archive owns its separate persisted retry schedule. Native
       // cleanup must not consume or erase that schedule after a runner restart.
       if (hasWorktreeIdentity(owner) && lifecycle()?.archive && isStopped(owner)) continue;
       if (jobs.has(identityKey)) continue;
-      let retained = cleanupRetries.get(identityKey);
-      try { retained ??= options.store.getCleanupSchedule(owner) ?? undefined; }
+      const currentRetry = cleanupRetries.get(identityKey);
+      let retained: ReturnType<WorkerStore["getCleanupSchedule"]> = null;
+      let legacyWebArchive = false;
+      try {
+        retained = options.store.getCleanupSchedule(owner);
+        legacyWebArchive = retained?.stage === "archive"
+          && (options.webStore?.getTask(owner) != null || options.store.getTask(owner)?.agentControlMode === "web");
+      }
       catch { /* Read failures are handled inside the isolated cleanup job. */ }
-      if (retained?.archiveRepairCode) observeArchiveRepair(owner, retained.archiveRepairCode, retained.nextAttemptAt);
-      if (now() < (cleanupRetries.get(identityKey)?.nextAttemptAt ?? 0)) continue;
-      // Creation and ownership validation run inside the isolated job's error boundary.
-      let nextAttemptAt = 0;
-      try { nextAttemptAt = options.store.getCleanupSchedule(owner)?.nextAttemptAt ?? 0; }
-      catch { /* The job records the storage failure without stopping other claims. */ }
-      if (now() < nextAttemptAt) continue;
+      // Old Web archive retries are maintenance, not a worktree-removal gate.
+      // New cleanup failures retain their own in-process and persisted backoff.
+      if (now() < Math.max(currentRetry?.nextAttemptAt ?? 0, legacyWebArchive ? 0 : retained?.nextAttemptAt ?? 0)) continue;
       startJob(owner, async (signal) => {
-        if (retained?.archiveRepairCode) {
-          archiveProbes.add(identityKey);
-          try {
-            const task = options.webStore?.getTask(owner);
-            if (!task || !hasWorktreeIdentity(owner) || task.worktreeId !== owner.worktreeId || !options.webBackend?.probeArchive) throw new Error("The original archive probe binding is unavailable.");
-            const result = await options.webBackend.probeArchive(task, signal);
-            signal.throwIfAborted();
-            if (result.kind === "blocked") throw new ArchiveRepairRequiredError(result.code);
-            if (result.kind === "complete") {
-              // Clear only the repaired condition; cleanup still owns the claim and worktree.
-              const schedule = ensureCleanupSchedule(options.store, owner, now());
-              const cleared = options.store.saveCleanupSchedule(owner, { ...schedule, ...retained, archiveRepairCode: null });
-              cleanupRetries.set(identityKey, cleared);
-            }
-          } catch (error) { throw new WorkerCleanupError("archive", error); }
-          archiveProbes.delete(identityKey);
-        }
         const completedBinding = await runCleanup(owner, true, signal);
         signal.throwIfAborted();
         const actual = ending.get(identityKey);

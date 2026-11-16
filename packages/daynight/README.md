@@ -2032,8 +2032,8 @@ reports `reason: "login_required"`. Failed reads exit 1.
 `daynight worker run` is a foreground reconciler. It claims eligible ready tasks
 assigned to its authenticated account across configured repositories, runs native agents through the claim's Herdr or
 Web backend, and stops executions when the original claim leaves its complete
-inventory. Resource deletion also requires the backend's cleanup and archive
-conditions. The agent owns delivery, acceptance, evidence and final claim-bound
+inventory. Resource deletion also requires the backend's cleanup conditions. Web archive
+maintenance is independent of worktree deletion. The agent owns delivery, acceptance, evidence and final claim-bound
 completion. Worker follows the CLI platform support policy: Linux, Windows and
 Apple Silicon (ARM64) macOS.
 
@@ -2982,18 +2982,17 @@ stop from a stopped agent awaiting backend closure, archive upload or worktree
 removal. If a retry-state write fails, the current process retains bounded
 backoff and both errors without claiming that the latest decision is durable.
 
-A known incomplete Web archive enters a durable repair-required state. Every
-15 minutes the Worker checks the original stopped generation without loading
-pending timeline content or resource bytes. The claim and source remain reserved; a confirmed stopped execution no longer
-occupies capacity. A recovered receipt still enters the normal remote receipt validation;
-its presence alone neither clears the repair classification nor releases resources.
-Confirmed complete source conditions clear the saved repair classification before
-a full cleanup attempt, which must pass every archive and ownership check. Later
-transient upload failures use normal cleanup backoff or the 60-second historical
-backfill retry. A failed classification write preserves the repair wait; successful
-classification changes still retain cleanup responsibility until complete cleanup
-succeeds; execution capacity follows the original stop observation. Repeated checks do not repair missing history or clear
-its completeness flags.
+After Web execution and backend closure are confirmed, archive failure or
+unavailability does not prevent safe worktree removal and local settlement.
+The original Controller execution directory and archive sources remain available
+for independent backfill using the original execution identity. A known incomplete
+archive enters a durable repair-required state: every 15 minutes the Worker checks
+the stopped generation without loading pending timeline content or resource bytes.
+A receipt still requires remote validation; it does not itself clear the repair
+classification. Transient backfill failures use a bounded retry. Only successful
+archival recovers its alert; neither the repair wait nor an old archive cleanup
+schedule blocks worktree removal or a successor claim. Stopping, ownership and Git
+safety checks remain required, and cancellation stops subsequent file operations.
 
 The Worker prepares each selected or retained repository by converting legacy
 ownership into durable manifests before admitting file operations. Conversion
@@ -3483,7 +3482,7 @@ notify and stop agent → close workspace → submit remote change
 macOS Herdr release instead confirms the durable original stop without a
 cleanup prompt, submits the remote change, and retains the worktree until
 a matching finalization receipt permits deletion. The ordering above applies to legacy Herdr;
-Web also applies its own archive gate. The worktree is retained until remote
+Web attempts archive independently of deletion. The worktree is retained until remote
 confirmation. A refusal leaves it available
 for original execution recovery; success followed by local deletion failure is
 finished by the next run's ordinary absent-claim cleanup. Stopping failure cannot

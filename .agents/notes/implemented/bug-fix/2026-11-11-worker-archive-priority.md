@@ -17,8 +17,7 @@ latest capacity observation is full. The independent maintenance owner checks
 that condition again immediately before starting an attempt; it never interrupts
 an upload already in progress. Its nonblocking ownership and shutdown behavior
 remain as described in the [maintenance decision](../architecture/2026-11-11-worker-archive-maintenance.md).
-Cleanup retains its original resource ownership until archival and worktree
-removal are confirmed. The [execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
+Cleanup retains its original resource ownership until safe worktree removal is confirmed; [independent Web archive maintenance](2026-11-16-web-archive-independent-cleanup.md) owns archive failures separately. The [execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
 independently releases the slot after the original execution stops. The scheduling and
 request rules are owned by the [Worker design](../../../../docs/design/daynight-worker.md).
 
@@ -31,11 +30,10 @@ replay. A future preparation reset must be evaluated separately. Busy can follow
 recoverable upload settlement work, so it does not imply that no state changed.
 Unknown network outcomes retain their existing reconciliation behavior.
 
-An exhausted archive busy attempt schedules cleanup again after 5–7 seconds
-without increasing the existing failure count. The monitoring payload retains
-the existing `rate-limited` classification, archive phase and scheduled deadline;
-local logs identify the archive busy short retry. No service protocol changes
-are needed. This specializes the transient retry policy from the immutable
+The original choice used a 5–7 second cleanup retry for an exhausted archive
+busy response without increasing the failure count. This reduced contention while
+cleanup still waited for archival. Web archive failures now belong to independent
+backfill rather than cleanup retry. No service protocol changes are needed. This specializes the transient retry policy from the immutable
 [cleanup retry decision](../../archived/bug-fix/2026-11-04-worker-cleanup-retry.md).
 The separate [archive repair policy](2026-11-10-worker-recovery-evidence.md)
 continues to retain incomplete originals for low-frequency condition probes.
