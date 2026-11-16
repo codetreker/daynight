@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOperation } from "../../../src/api/operation.js";
+import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { JsonValue, Task } from "../../../src/api/types.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createExecutionDriver, settleWorkerStops } from "../../../src/commands/worker/execution.js";
@@ -144,24 +144,32 @@ describe("execution from current Herdr resources", () => {
     try { await expect(f.manager.submitPrompt(f.context, { session: "w", workspaceId: String(f.agents[0]!.workspace_id), paneId: String(f.agents[0]!.pane_id), terminalId: String(f.agents[0]!.terminal_id) }, "ordinary continuation must remain closed", operation)).rejects.toMatchObject({ promptSubmission: "not-submitted" }); }
     finally { operation.dispose(); }
     f.holdSessionDiscovery();
+    const deadline = new OperationError("deadline");
+    let expireConfirmation = false;
     if (outcome === "deadline") {
       const submit = f.manager.submitInitialPrompt.bind(f.manager);
-      vi.spyOn(f.manager, "submitInitialPrompt").mockImplementationOnce(async (context, binding, prompt, _operation, guard, completed) => {
-        const deadline = createOperation({ limits: { totalMs: 100 } });
-        try { return await submit(context, binding, prompt, deadline, guard, completed); }
-        finally { deadline.dispose(); }
+      vi.spyOn(f.manager, "submitInitialPrompt").mockImplementationOnce((context, binding, prompt, originalOperation, guard, completed) => {
+        const check = () => { originalOperation.check(); if (expireConfirmation) throw deadline; };
+        return submit(context, binding, prompt, { ...originalOperation, check, remainingMs: () => { check(); return originalOperation.remainingMs(); } }, guard, completed);
       });
     }
     let completed = false;
     const advance = f.driver.advance(f.input).finally(() => { completed = true; });
-    const expected = outcome === "deadline" ? expect(advance).rejects.toMatchObject({ promptSubmission: "submitted", submission: "unknown" }) : undefined;
-    await vi.waitFor(() => expect(f.heldSessionSnapshots()).toBeGreaterThanOrEqual(3));
-    expect(completed).toBe(false);
-    expect(f.store.getTask(f.input.task)?.sessionId).toBeNull();
-    expect(f.events.filter(event => event.kind === "started" || event.kind === "reconnected")).toHaveLength(0);
-    if (expected !== undefined) await expected;
-    f.releaseSessionDiscovery();
-    if (outcome === "confirmed") await expect(advance).resolves.toMatchObject({ kind: "observed" });
+    const settled = Promise.allSettled([advance]);
+    try {
+      await vi.waitFor(() => expect(f.heldSessionSnapshots()).toBeGreaterThanOrEqual(3));
+      expect(completed).toBe(false);
+      expect(f.store.getTask(f.input.task)?.sessionId).toBeNull();
+      expect(f.events.filter(event => event.kind === "started" || event.kind === "reconnected")).toHaveLength(0);
+      if (outcome === "deadline") {
+        // Expire only after the submitted input is awaiting official discovery.
+        expireConfirmation = true;
+        const result = (await settled)[0]!;
+        expect(result).toMatchObject({ status: "rejected", reason: { promptSubmission: "submitted", submission: "unknown" } });
+        if (result.status === "rejected") expect(result.reason.cause).toBe(deadline);
+      }
+    } finally { f.releaseSessionDiscovery(); await settled; }
+    if (outcome === "confirmed") expect((await settled)[0]).toMatchObject({ status: "fulfilled", value: { kind: "observed" } });
     await f.driver.advance(f.input); await f.driver.advance(f.input);
     expect(f.calls.filter(call => call.method === "agent.prompt").map(call => call.params.text)).toEqual(["managed assignment"]);
     expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
