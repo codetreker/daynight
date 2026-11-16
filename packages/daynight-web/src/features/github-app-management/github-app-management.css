@@ -23,3 +23,4 @@
   .github-app-list > li > div { flex-basis: 100%; }
   .github-app-details dl > div { grid-template-columns: 1fr; gap: 4px; }
 }
+.github-app-workspace .button[aria-disabled="true"], .github-app-details .copy-button[aria-disabled="true"], .github-app-impact .button[aria-disabled="true"], .github-app-action[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }

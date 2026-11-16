@@ -9,10 +9,10 @@ const time = '2026-10-20T09:00:00Z';
 const team = { id: teamId, kind: 'personal', name: null };
 const profile = { id: actorId, personalTeam: team, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const metadata = (id = appId) => ({ id, githubAppId: '9007199254740993', name: 'Platform App', githubName: 'Platform', githubSlug: 'platform', version: '4', administrators: '2', authorizedTeams: '1', connectedProjects: '3', webhookUrl: `https://daynight.example/api/v1/github/apps/${id}/webhook`, createdAt: time, updatedAt: time });
-type State = { app: ReturnType<typeof metadata>; writes: { path: string; method: string; body: Record<string, unknown> }[]; mode: 'ok' | 'reject' | 'conflict' | 'unknown' | 'github_unavailable' | 'github_rate_limited'; removed: boolean; denied: boolean; holdPatch: Promise<void> | null; holdAppRead: Promise<void> | null; holdListRead: Promise<void> | null; holdProjectRead: Promise<void> | null; holdRemove: Promise<void> | null; holdImpactRecheck: Promise<void> | null; impactReads: number; impactDenied: boolean; metadataReturned: number; unknownRemoveCommitted: boolean; projectReads: number; projectPagination: boolean; projectRevoked: boolean; teamPagination: boolean; reads: number };
+type State = { app: ReturnType<typeof metadata>; writes: { path: string; method: string; body: Record<string, unknown> }[]; mode: 'ok' | 'reject' | 'conflict' | 'unknown' | 'github_unavailable' | 'github_rate_limited'; removed: boolean; denied: boolean; holdPatch: Promise<void> | null; holdAppRead: Promise<void> | null; holdListRead: Promise<void> | null; holdProjectRead: Promise<void> | null; holdRemove: Promise<void> | null; holdImpactRecheck: Promise<void> | null; impactReads: number; impactReturned: number; impactDenied: boolean; metadataReturned: number; unknownRemoveCommitted: boolean; projectReads: number; projectPagination: boolean; projectRevoked: boolean; teamPagination: boolean; reads: number };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { app: metadata(), writes: [], mode: 'ok', removed: false, denied: false, holdPatch: null, holdAppRead: null, holdListRead: null, holdProjectRead: null, holdRemove: null, holdImpactRecheck: null, impactReads: 0, impactDenied: false, metadataReturned: 0, unknownRemoveCommitted: false, projectReads: 0, projectPagination: false, projectRevoked: false, teamPagination: false, reads: 0 };
+  const state: State = { app: metadata(), writes: [], mode: 'ok', removed: false, denied: false, holdPatch: null, holdAppRead: null, holdListRead: null, holdProjectRead: null, holdRemove: null, holdImpactRecheck: null, impactReads: 0, impactReturned: 0, impactDenied: false, metadataReturned: 0, unknownRemoveCommitted: false, projectReads: 0, projectPagination: false, projectRevoked: false, teamPagination: false, reads: 0 };
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
@@ -46,6 +46,7 @@ const install = async (page: Page): Promise<State> => {
     }
     if (path === `/api/v1/github/apps/${state.app.id}/removal-preview`) {
       state.impactReads++; if (state.impactDenied) return error('not_found', 404); if (state.holdImpactRecheck && state.projectReads > 0) await state.holdImpactRecheck;
+      state.impactReturned++;
       const second = { id: '00000000-0000-4000-8000-000000000012', kind: 'ordinary', name: 'Engineering' };
       return send({ appId: state.app.id, grantId: null, version: state.app.version, impactVersion: '7', totalProjects: '3', visibleProjects: state.projectPagination && !state.projectRevoked ? '2' : '1', hiddenProjects: state.projectPagination && !state.projectRevoked ? '1' : '2', teams: state.teamPagination && url.searchParams.has('cursor') ? [{ team: second, projects: '1' }] : [{ team, projects: state.teamPagination ? '2' : '3' }], nextCursor: state.teamPagination && !url.searchParams.has('cursor') ? 'team-next' : null });
     }
@@ -150,7 +151,7 @@ test('foreground refresh keeps the draft and permission loss clears pending secr
   await other.close();
 });
 
-test('returning to an App waits for admission and clears drafts after access is removed', async ({ page }) => {
+test('returning to an App retains its visible draft until access is confirmed lost', async ({ page }) => {
   const state = await install(page); await page.goto('/github-apps');
   await page.getByRole('button', { name: 'Manage' }).click();
   await page.getByRole('button', { name: 'Edit configuration' }).click();
@@ -160,8 +161,10 @@ test('returning to an App waits for admission and clears drafts after access is 
   const gate = Promise.withResolvers<void>(); state.holdAppRead = gate.promise; state.denied = true;
   const reads = state.reads; await page.getByRole('button', { name: 'Manage' }).click();
   await expect.poll(() => state.reads).toBeGreaterThan(reads);
-  await expect(page.getByText('Platform App', { exact: true })).toBeHidden();
-  await expect(page.getByLabel('Webhook secret')).toBeHidden();
+  await expect(page.getByRole('heading', { name: 'Platform App' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByLabel('Webhook secret')).toHaveValue('retained-secret');
+  await expect(page.getByLabel('Webhook secret')).toBeEditable();
   gate.resolve(); state.holdAppRead = null;
   await expect(page.getByText('This App is unavailable or you do not have access.')).toBeVisible();
   await expect(page.getByLabel('Webhook secret')).toHaveCount(0);
@@ -193,7 +196,7 @@ test('removal requires all Team summaries while project details remain optional'
   expect(state.writes).toHaveLength(0);
 });
 
-test('project details stay hidden while foreground permissions are rechecked', async ({ page }) => {
+test('project details remain visible during a foreground check and change after permission is lost', async ({ page }) => {
   const state = await install(page); state.projectPagination = true; await page.goto(`/github-apps/${appId}`);
   await page.getByRole('button', { name: 'Delete App', exact: true }).click();
   const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'View accessible projects' }).click();
@@ -202,11 +205,11 @@ test('project details stay hidden while foreground permissions are rechecked', a
   const other = await page.context().newPage(); await other.goto('/projects');
   const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach(); await other.bringToFront();
   await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
-  const gate = Promise.withResolvers<void>(); state.holdProjectRead = gate.promise; state.projectRevoked = true;
+  const gate = Promise.withResolvers<void>(); state.holdProjectRead = gate.promise;
   const reads = state.projectReads; await page.bringToFront(); await expect.poll(() => state.projectReads).toBeGreaterThan(reads);
-  await expect(dialog.getByText('Visible project')).toBeHidden();
-  await expect(dialog.getByText('https://github.com/example/visible')).toBeHidden();
-  gate.resolve(); state.holdProjectRead = null;
+  await expect(dialog.getByText('Visible project')).toBeVisible();
+  await expect(dialog.getByText('https://github.com/example/visible')).toBeVisible();
+  state.projectRevoked = true; gate.resolve(); state.holdProjectRead = null;
   await expect(dialog.getByText('Other project')).toBeVisible();
   await expect(dialog.getByText('Visible project')).toHaveCount(0); await other.close();
 });
@@ -343,4 +346,157 @@ test('an old metadata response cannot restore access after removal preview denie
   await expect(page.getByRole('heading', { name: 'Platform App' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Edit configuration' })).toBeEnabled();
   await other.close();
+});
+
+test('foreground metadata checks preserve the open editor, focus and selection throughout the wait', async ({ page }) => {
+  const state = await install(page); await page.goto(`/github-apps/${appId}`);
+  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  const dialog = page.getByRole('dialog'), secret = dialog.getByLabel('Webhook secret');
+  await secret.fill('editable-secret'); await secret.focus(); await secret.evaluate((input: HTMLInputElement) => input.setSelectionRange(2, 7));
+  const original = await secret.elementHandle(), originalDialog = await dialog.elementHandle();
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach(); await other.bringToFront();
+  await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  const gate = Promise.withResolvers<void>(); state.holdAppRead = gate.promise;
+  try {
+    const reads = state.reads; const pendingRequest = page.waitForRequest(request => new URL(request.url()).pathname === `/api/v1/github/apps/${appId}` && request.method() === 'GET');
+    await page.bringToFront(); const metadataRequest = await pendingRequest; await expect.poll(() => state.reads).toBeGreaterThan(reads);
+    await expect(dialog).toBeVisible(); await expect(secret).toBeVisible(); await expect(secret).toBeFocused(); await expect(secret).toBeEditable();
+    await expect(secret).toHaveValue('editable-secret');
+    expect(await secret.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([2, 7]);
+    expect(await secret.evaluate((node, previous) => node === previous, original)).toBe(true);
+    expect(await dialog.evaluate((node, previous) => node === previous, originalDialog)).toBe(true);
+    gate.resolve(); state.holdAppRead = null; const response = await metadataRequest.response(); if (response !== null) await response.finished();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(secret).toBeFocused(); await expect(secret).toHaveValue('editable-secret');
+    expect(await secret.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([2, 7]);
+    expect(await secret.evaluate((node, previous) => node === previous, original)).toBe(true);
+  } finally { gate.resolve(); await other.close(); }
+});
+
+test('returning to an unchanged App retains its editor and focus while metadata is pending', async ({ page }) => {
+  const state = await install(page); await page.goto('/github-apps');
+  await page.getByRole('button', { name: 'Manage' }).click();
+  const opener = page.getByRole('button', { name: 'Edit configuration' });
+  const originalOpener = await opener.elementHandle(); await opener.click();
+  const dialog = page.getByRole('dialog'), secret = dialog.getByLabel('Webhook secret');
+  await secret.fill('retained-draft'); await secret.focus(); await secret.evaluate((input: HTMLInputElement) => input.setSelectionRange(2, 6));
+  const original = await secret.elementHandle(), originalDialog = await dialog.elementHandle();
+  await page.goBack(); await expect(page.getByRole('button', { name: 'Manage' })).toBeVisible();
+  const gate = Promise.withResolvers<void>(); state.holdAppRead = gate.promise;
+  try {
+    const reads = state.reads; const pendingRequest = page.waitForRequest(request => new URL(request.url()).pathname === `/api/v1/github/apps/${appId}` && request.method() === 'GET');
+    await page.getByRole('button', { name: 'Manage' }).click(); const metadataRequest = await pendingRequest; await expect.poll(() => state.reads).toBeGreaterThan(reads);
+    await expect(dialog).toBeVisible(); await expect(secret).toBeVisible(); await expect(secret).toBeEditable(); await expect(secret).toHaveValue('retained-draft');
+    await expect(secret).toBeFocused();
+    expect(await secret.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([2, 6]);
+    expect(await secret.evaluate((node, previous) => node === previous, original)).toBe(true);
+    expect(await dialog.evaluate((node, previous) => node === previous, originalDialog)).toBe(true);
+    gate.resolve(); state.holdAppRead = null; const response = await metadataRequest.response(); if (response !== null) await response.finished();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(secret).toBeFocused(); await expect(secret).toHaveValue('retained-draft');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toHaveCount(0); await expect(opener).toBeVisible(); await expect(opener).toBeFocused();
+    expect(await opener.evaluate((node, previous) => node === previous, originalOpener)).toBe(true);
+  } finally { gate.resolve(); }
+});
+
+test('closing an editor during a foreground metadata check retains the resulting admission', async ({ page }) => {
+  const state = await install(page); await page.goto(`/github-apps/${appId}`);
+  await page.getByRole('button', { name: 'Edit configuration' }).click(); const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Webhook secret').fill('draft-to-cancel');
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach(); await other.bringToFront();
+  await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  const gate = Promise.withResolvers<void>(); state.holdAppRead = gate.promise;
+  try {
+    const reads = state.reads; await page.bringToFront(); await expect.poll(() => state.reads).toBeGreaterThan(reads);
+    await expect(dialog).toBeVisible(); await dialog.getByRole('button', { name: 'Cancel', exact: true }).click(); await expect(dialog).toHaveCount(0);
+    gate.resolve(); state.holdAppRead = null;
+    await expect(page.getByRole('button', { name: 'Edit configuration' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Delete App', exact: true })).toBeEnabled();
+    expect(state.writes).toHaveLength(0);
+  } finally { gate.resolve(); await other.close(); }
+});
+
+test('returning during a write keeps focus within the retained editor', async ({ page }) => {
+  const state = await install(page); await page.goto('/github-apps');
+  await page.getByRole('button', { name: 'Manage' }).click();
+  await page.getByRole('button', { name: 'Edit configuration' }).click();
+  const dialog = page.getByRole('dialog'), secret = dialog.getByLabel('Webhook secret');
+  await secret.fill('pending-secret'); await secret.focus();
+  const gate = Promise.withResolvers<void>(); state.holdPatch = gate.promise;
+  try {
+    await dialog.getByRole('button', { name: 'Verify and save' }).click();
+    await expect.poll(() => state.writes.length).toBe(1); await expect(secret).toBeDisabled();
+    await page.goBack(); await expect(page.getByRole('button', { name: 'Manage' })).toBeVisible();
+    await page.getByRole('button', { name: 'Manage' }).click();
+    await expect(dialog).toBeVisible(); await expect(secret).toBeDisabled();
+    await expect.poll(() => dialog.evaluate(element => {
+      const focused = document.activeElement;
+      return focused instanceof HTMLElement && element.contains(focused) &&
+        !focused.matches(':disabled, [aria-disabled="true"]') && !focused.closest('[hidden], [inert]') &&
+        focused.getClientRects().length > 0;
+    })).toBe(true);
+    gate.resolve(); state.holdPatch = null;
+    await expect(page.getByText('Configuration saved.')).toBeVisible();
+  } finally { gate.resolve(); }
+});
+
+test('closing a removal preview isolates its delayed refresh from the next dialog', async ({ page }) => {
+  const state = await install(page); await page.goto(`/github-apps/${appId}`);
+  await page.getByRole('button', { name: 'Delete App', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'View accessible projects' }).click();
+  await expect(dialog.getByText('Visible project')).toBeVisible();
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach(); await other.bringToFront();
+  await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  const oldGate = Promise.withResolvers<void>(), newGate = Promise.withResolvers<void>();
+  state.holdImpactRecheck = oldGate.promise;
+  try {
+    const impacts = state.impactReads;
+    await page.bringToFront(); await expect.poll(() => state.impactReads).toBeGreaterThan(impacts);
+    const projects = state.projectReads, returned = state.impactReturned;
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click(); await expect(dialog).toHaveCount(0);
+    state.holdImpactRecheck = newGate.promise;
+    const pendingRequest = page.waitForRequest(request => new URL(request.url()).pathname === `/api/v1/github/apps/${appId}/removal-preview`);
+    await page.getByRole('button', { name: 'Delete App', exact: true }).click();
+    const newRequest = await pendingRequest; await expect.poll(() => state.impactReads).toBeGreaterThan(impacts + 1);
+    oldGate.resolve(); await expect.poll(() => state.impactReturned).toBeGreaterThan(returned);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    expect(state.projectReads).toBe(projects);
+    newGate.resolve(); state.holdImpactRecheck = null;
+    const response = await newRequest.response(); expect(response).not.toBeNull();
+    if (response !== null) expect(await response.finished()).toBeNull();
+    await expect(dialog.getByText('Personal Team')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Delete App and stop connections' })).toBeEnabled();
+    expect(state.projectReads).toBe(projects);
+  } finally { oldGate.resolve(); newGate.resolve(); await other.close(); }
+});
+
+test('changed hidden project count removes stale details before a delayed project recheck', async ({ page }) => {
+  const state = await install(page); state.projectPagination = true; await page.goto(`/github-apps/${appId}`);
+  await page.getByRole('button', { name: 'Delete App', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'View accessible projects' }).click();
+  await expect(dialog.getByText('Visible project')).toBeVisible();
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach(); await other.bringToFront();
+  await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  const gate = Promise.withResolvers<void>(); state.holdProjectRead = gate.promise; state.projectRevoked = true;
+  try {
+    const projects = state.projectReads, impacts = state.impactReturned;
+    await page.bringToFront();
+    await expect.poll(() => state.impactReturned).toBeGreaterThan(impacts);
+    await expect.poll(() => state.projectReads).toBeGreaterThan(projects);
+    await expect(dialog.getByText('Visible project')).toHaveCount(0);
+    await expect(dialog.getByText('https://github.com/example/visible')).toHaveCount(0);
+    gate.resolve(); state.holdProjectRead = null;
+    await expect(dialog.getByText('Other project')).toBeVisible();
+  } finally { gate.resolve(); await other.close(); }
 });

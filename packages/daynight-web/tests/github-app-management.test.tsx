@@ -67,6 +67,31 @@ describe('GitHub App management', () => {
     expect(mocks.get.mock.calls.at(-1)![0]).toBe(mocks.create.mock.calls[0]![0].id); expect(mocks.create).toHaveBeenCalledOnce();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Finish review and decide again' })); expect(screen.queryByRole('dialog')).toBeNull(); expect(mocks.create).toHaveBeenCalledOnce();
   });
+  for (const lateResult of ['success', 'failure'] as const) {
+    it(`does not apply an old registration check's late ${lateResult} to a new draft`, async () => {
+      const old = deferred<GitHubApp>();
+      mocks.create.mockImplementation(async (_input, _signal, admission) => { admission.onDispatch(); throw new ApiError('network'); });
+      mocks.get.mockReturnValueOnce(old.promise).mockRejectedValueOnce(new ApiError('server', 404, 'not_found'));
+      render(subject({ appId: null })); fireEvent.click(await screen.findByRole('button', { name: 'Register GitHub App' }));
+      let dialog = screen.getByRole('dialog');
+      fireEvent.change(within(dialog).getByLabelText('App ID'), { target: { value: '23' } }); fireEvent.change(within(dialog).getByLabelText('Registration name'), { target: { value: 'Old App' } });
+      fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: 'old key' } }); fireEvent.change(within(dialog).getByLabelText('Webhook secret'), { target: { value: 'old secret' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Verify and register' })); await within(dialog).findByText(/result is unknown/i);
+      const check = within(dialog).getByRole('button', { name: 'Check current state' });
+      fireEvent.click(check); await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(1));
+      const oldSignal = mocks.get.mock.calls[0]![1] as AbortSignal;
+      fireEvent.click(check); await within(dialog).findByText(/cannot confirm the original operation/i); expect(oldSignal.aborted).toBe(true);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Finish review and decide again' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Register GitHub App' })); dialog = screen.getByRole('dialog');
+      const name = within(dialog).getByLabelText('Registration name'), secret = within(dialog).getByLabelText('Webhook secret');
+      fireEvent.change(name, { target: { value: 'New draft' } }); fireEvent.change(secret, { target: { value: 'new secret' } });
+      await act(async () => { if (lateResult === 'success') old.resolve(app); else old.reject(new ApiError('network')); });
+      expect(name).toHaveValue('New draft'); expect(secret).toHaveValue('new secret');
+      expect(within(dialog).queryByText(/cannot confirm the original operation/i)).toBeNull();
+      expect(within(dialog).queryByText('Release App')).toBeNull(); expect(within(dialog).queryByRole('button', { name: 'Finish review and decide again' })).toBeNull();
+      expect(screen.queryByText('The operation failed.')).toBeNull(); expect(mocks.create).toHaveBeenCalledOnce();
+    });
+  }
   it('discards a project page if hidden counts change before publication', async () => {
     const project = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' };
     mocks.projects.mockResolvedValue({ items: [project], hiddenProjects: '0', nextCursor: null });
@@ -92,6 +117,99 @@ describe('GitHub App management', () => {
     fireEvent.click(await within(dialog).findByRole('button', { name: 'View accessible projects' })); await waitFor(() => expect(mocks.projectAccess).toHaveBeenCalledOnce());
     const signal = mocks.projectAccess.mock.calls[0]![1] as AbortSignal; fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); expect(signal.aborted).toBe(true);
     await act(async () => pending.resolve({})); expect(screen.queryByText(/Private project/)).toBeNull();
+  });
+
+  it('keeps the editor and focus during a temporary admission block and its recovery read', async () => {
+    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Edit configuration' }));
+    const dialog = screen.getByRole('dialog'), secret = within(dialog).getByLabelText('Webhook secret') as HTMLInputElement;
+    fireEvent.change(secret, { target: { value: 'retained-secret' } }); secret.focus(); secret.setSelectionRange(2, 6);
+    const reads = mocks.get.mock.calls.length, pending = deferred<GitHubApp>(); mocks.get.mockReturnValue(pending.promise);
+    view.rerender(subject({ admissionBlocked: true }));
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(secret).toBeVisible(); expect(secret).toBeEnabled(); expect(secret).toHaveFocus();
+    expect(secret).toHaveValue('retained-secret'); expect([secret.selectionStart, secret.selectionEnd]).toEqual([2, 6]);
+    expect(within(dialog).getByRole('button', { name: 'Verify and save' })).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify and save' })); expect(mocks.get).toHaveBeenCalledTimes(reads); expect(mocks.update).not.toHaveBeenCalled();
+    fireEvent.change(secret, { target: { value: 'edited-locally' } });
+    view.rerender(subject()); await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(reads + 1));
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(secret).toBeVisible(); expect(secret).toHaveFocus(); expect(secret).toHaveValue('edited-locally');
+    expect(within(dialog).getByRole('button', { name: 'Verify and save' })).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => pending.resolve({ ...app }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Verify and save' })).toHaveAttribute('aria-disabled', 'false'));
+    expect(secret).toHaveFocus(); expect(secret).toHaveValue('edited-locally'); expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps expanded project details and focus while temporary admission blocks requests', async () => {
+    const project = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' };
+    mocks.impact.mockResolvedValue({ appId: id, grantId: null, version: app.version, impactVersion: '4', totalProjects: '1', visibleProjects: '1', hiddenProjects: '0', teams: [], nextCursor: null });
+    mocks.projects.mockResolvedValue({ items: [project], hiddenProjects: '0', nextCursor: null });
+    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Delete App' })); const dialog = screen.getByRole('dialog');
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'View accessible projects' }));
+    await within(dialog).findByText(/Private project/); const cancel = within(dialog).getByRole('button', { name: 'Cancel' }); cancel.focus();
+    const counts = [mocks.get.mock.calls.length, mocks.impact.mock.calls.length, mocks.projects.mock.calls.length], pending = deferred<GitHubApp>(); mocks.get.mockReturnValue(pending.promise);
+    view.rerender(subject({ admissionBlocked: true }));
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(within(dialog).getByText(/Private project/)).toBeVisible(); expect(cancel).toHaveFocus();
+    expect(within(dialog).getByRole('button', { name: 'Delete App and stop connections' })).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(within(dialog).getByRole('button', { name: 'Delete App and stop connections' }));
+    expect([mocks.get.mock.calls.length, mocks.impact.mock.calls.length, mocks.projects.mock.calls.length]).toEqual(counts); expect(mocks.remove).not.toHaveBeenCalled();
+    view.rerender(subject()); await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(counts[0]! + 1));
+    expect(screen.getByRole('dialog')).toBe(dialog); expect(within(dialog).getByText(/Private project/)).toBeVisible(); expect(cancel).toHaveFocus();
+    await act(async () => pending.resolve({ ...app }));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Delete App and stop connections' })).toHaveAttribute('aria-disabled', 'false'));
+    expect(within(dialog).getByText(/Private project/)).toBeVisible(); expect(cancel).toHaveFocus(); expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it('clears displayed projects as soon as the first refreshed Team page changes hidden counts', async () => {
+    const project = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' };
+    const initial = { appId: id, grantId: null, version: app.version, impactVersion: '4', totalProjects: '2', visibleProjects: '2', hiddenProjects: '0', teams: [], nextCursor: 'next' };
+    const next = deferred<unknown>(); let refreshing = false;
+    mocks.impact.mockImplementation((_id, cursor) => refreshing ? cursor ? next.promise : Promise.resolve({ ...initial, visibleProjects: '1', hiddenProjects: '1' }) : Promise.resolve({ ...initial, nextCursor: cursor ? null : 'next' }));
+    mocks.projects.mockResolvedValue({ items: [project], hiddenProjects: '0', nextCursor: null });
+    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Delete App' })); const dialog = screen.getByRole('dialog');
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Load more' }));
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Load more' })).toBeNull());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'View accessible projects' })); await within(dialog).findByText(/Private project/);
+    view.rerender(subject({ admissionBlocked: true })); refreshing = true; const reads = mocks.impact.mock.calls.length;
+    view.rerender(subject());
+    await waitFor(() => expect(mocks.impact.mock.calls.length).toBeGreaterThanOrEqual(reads + 2));
+    expect(within(dialog).queryByText(/Private project/)).toBeNull(); expect(within(dialog).queryByText(/example.test\/private/)).toBeNull();
+    await act(async () => next.resolve({ ...initial, visibleProjects: '1', hiddenProjects: '1', nextCursor: null }));
+  });
+
+  it('clears displayed projects on one denied check before another concurrent check finishes', async () => {
+    const projects = [
+      { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' },
+      { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b9', name: 'Second project', repoUrl: 'https://example.test/second' },
+    ];
+    mocks.impact.mockResolvedValue({ appId: id, grantId: null, version: app.version, impactVersion: '4', totalProjects: '2', visibleProjects: '2', hiddenProjects: '0', teams: [], nextCursor: null });
+    mocks.projects.mockResolvedValue({ items: projects, hiddenProjects: '0', nextCursor: null });
+    const view = render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Delete App' })); const dialog = screen.getByRole('dialog');
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'View accessible projects' })); await within(dialog).findByText(/Private project/);
+    const denied = deferred<unknown>(), pending = deferred<unknown>();
+    mocks.projectAccess.mockImplementation(projectId => projectId === projects[0]!.id ? denied.promise : pending.promise);
+    view.rerender(subject({ admissionBlocked: true })); const reads = mocks.projectAccess.mock.calls.length; view.rerender(subject());
+    await waitFor(() => expect(mocks.projectAccess).toHaveBeenCalledTimes(reads + 2));
+    expect(within(dialog).getByText(/Private project/)).toBeVisible();
+    await act(async () => denied.reject(new ApiError('server', 404, 'not_found')));
+    await waitFor(() => expect(within(dialog).queryByText(/Private project/)).toBeNull());
+    expect(within(dialog).queryByText(/Second project/)).toBeNull(); expect(within(dialog).queryByText(/example.test/)).toBeNull();
+    await act(async () => pending.resolve({})); await within(dialog).findByText(/Project access changed/);
+  });
+
+  it('keeps registration and unknown-outcome check buttons focused while admission gates requests', async () => {
+    mocks.create.mockImplementation(async (_input, _signal, admission) => { admission.onDispatch(); throw new ApiError('network'); });
+    mocks.get.mockRejectedValue(new ApiError('server', 404, 'not_found'));
+    const view = render(subject({ appId: null })); const opener = await screen.findByRole('button', { name: 'Register GitHub App' }); opener.focus();
+    view.rerender(subject({ appId: null, admissionBlocked: true })); expect(opener).toHaveFocus(); expect(opener).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(opener); expect(screen.queryByRole('dialog')).toBeNull();
+    view.rerender(subject({ appId: null })); fireEvent.click(opener);
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('App ID'), { target: { value: '23' } }); fireEvent.change(within(dialog).getByLabelText('Registration name'), { target: { value: 'New App' } });
+    fireEvent.change(within(dialog).getByLabelText('Private key'), { target: { value: 'private' } }); fireEvent.change(within(dialog).getByLabelText('Webhook secret'), { target: { value: 'secret' } });
+    const submit = within(dialog).getByRole('button', { name: 'Verify and register' }); submit.focus(); view.rerender(subject({ appId: null, admissionBlocked: true }));
+    expect(submit).toHaveFocus(); expect(submit).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(submit); expect(mocks.create).not.toHaveBeenCalled();
+    view.rerender(subject({ appId: null })); fireEvent.click(submit); await within(dialog).findByText(/result is unknown/i);
+    const check = within(dialog).getByRole('button', { name: 'Check current state' }); check.focus(); view.rerender(subject({ appId: null, admissionBlocked: true }));
+    expect(check).toHaveFocus(); expect(check).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(check); expect(mocks.get).not.toHaveBeenCalled(); expect(mocks.create).toHaveBeenCalledOnce();
+    view.rerender(subject({ appId: null })); fireEvent.click(check); await within(dialog).findByText(/cannot confirm the original operation/i);
+    expect(mocks.get).toHaveBeenCalledOnce(); expect(mocks.create).toHaveBeenCalledOnce();
   });
 
 });
