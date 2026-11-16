@@ -382,3 +382,110 @@ func TestAppCreateCancelledAfterResponseHeader(t *testing.T) {
 		t.Fatalf("calls=%d status=%d writes=%d body=%s logs=%s", calls, w.Code, w.writes, w.Body, logs.String())
 	}
 }
+
+// controlledAppBudget expires on demand while retaining a live client context.
+type controlledAppBudget struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *controlledAppBudget) Deadline() (time.Time, bool) {
+	return time.Now().Add(appWriteBudget), true
+}
+func (c *controlledAppBudget) Done() <-chan struct{} { return c.done }
+func (c *controlledAppBudget) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return c.Context.Err()
+	}
+}
+func (c *controlledAppBudget) expire() { close(c.done) }
+
+type expireAppBody struct{ budget *controlledAppBudget }
+
+func (b expireAppBody) Read([]byte) (int, error) {
+	b.budget.expire()
+	return 0, context.DeadlineExceeded
+}
+func (expireAppBody) Close() error { return nil }
+
+func TestAppCreateInternalBudgetResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		operationErr error
+		status       int
+		code         string
+		committed    bool
+	}{
+		{"deadline", context.DeadlineExceeded, http.StatusGatewayTimeout, "timeout", false},
+		{"unknown commit", &service.ManagementError{Code: "github_write_outcome_unknown", Message: "unknown", Cause: context.DeadlineExceeded}, http.StatusServiceUnavailable, "github_write_outcome_unknown", false},
+		{"duplicate app", &service.ManagementError{Code: "github_app_already_registered", Message: "already registered"}, http.StatusConflict, "github_app_already_registered", false},
+		{"invalid credentials", &service.ManagementError{Code: "github_app_credentials_invalid", Message: "invalid credentials"}, http.StatusUnprocessableEntity, "github_app_credentials_invalid", false},
+		{"identity mismatch", &model.Fault{Code: "identity_mismatch", Message: "identity mismatch"}, http.StatusConflict, "identity_mismatch", false},
+		{"committed", nil, http.StatusCreated, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			budget := &controlledAppBudget{Context: context.Background(), done: make(chan struct{})}
+			calls := 0
+			var logs bytes.Buffer
+			h := &appHandler{origin: "https://daynight.example", logger: slog.New(slog.NewTextHandler(&logs, nil)), operations: appOps{t: t, create: func(ctx context.Context, _ model.Principal, _ core.CreateAppInput) (core.AppMetadata, error) {
+				calls++
+				if ctx != budget {
+					t.Fatal("budget not propagated")
+				}
+				budget.expire()
+				return appMetadata(), tc.operationErr
+			}}}
+			w := httptest.NewRecorder()
+			r := appRequest(http.MethodPost, appPath, appBody)
+			h.createWithContext(w, r, model.Principal{UserID: userID}, budget)
+			if calls != 1 || r.Context().Err() != nil || w.Code != tc.status {
+				t.Fatalf("calls=%d status=%d body=%s", calls, w.Code, w.Body)
+			}
+			if tc.committed {
+				if w.Header().Get("Location") != appPath+"/"+appID {
+					t.Fatalf("location=%s", w.Header().Get("Location"))
+				}
+			} else if w.Header().Get("Location") != "" || !strings.Contains(w.Body.String(), `"code":"`+tc.code+`"`) {
+				t.Fatalf("headers=%v body=%s", w.Header(), w.Body)
+			}
+			if tc.code == "github_write_outcome_unknown" && !strings.Contains(w.Body.String(), `"writeOutcome":"unknown"`) {
+				t.Fatal(w.Body)
+			}
+		})
+	}
+}
+
+func TestAppCreateInputBudgetResponse(t *testing.T) {
+	budget := &controlledAppBudget{Context: context.Background(), done: make(chan struct{})}
+	h := &appHandler{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), operations: appOps{t: t}}
+	r := appRequest(http.MethodPost, appPath, "")
+	r.Body = expireAppBody{budget: budget}
+	w := httptest.NewRecorder()
+	h.createWithContext(w, r, model.Principal{UserID: userID}, budget)
+	if r.Context().Err() != nil || w.Code != http.StatusGatewayTimeout || w.Header().Get("Location") != "" || !strings.Contains(w.Body.String(), `"code":"timeout"`) {
+		t.Fatalf("status=%d headers=%v body=%s", w.Code, w.Header(), w.Body)
+	}
+}
+
+type unreadAppBody struct{ reads int }
+
+func (b *unreadAppBody) Read([]byte) (int, error) { b.reads++; return 0, io.EOF }
+func (b *unreadAppBody) Close() error             { return nil }
+
+func TestAppCreateCancelledBeforeBodyRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := appRequest(http.MethodPost, appPath, "").WithContext(ctx)
+	body := &unreadAppBody{}
+	r.Body = body
+	var logs bytes.Buffer
+	h := &appHandler{logger: slog.New(slog.NewTextHandler(&logs, nil)), operations: appOps{t: t}}
+	w := httptest.NewRecorder()
+	h.create(w, r, model.Principal{UserID: userID})
+	if body.reads != 0 || !r.Close || w.Header().Get("Connection") != "close" || w.Header().Get("Location") != "" || w.Body.Len() != 0 || !strings.Contains(logs.String(), "canceled") {
+		t.Fatalf("reads=%d close=%v headers=%v body=%s logs=%s", body.reads, r.Close, w.Header(), w.Body, logs.String())
+	}
+}

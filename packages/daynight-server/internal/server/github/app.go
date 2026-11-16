@@ -153,21 +153,49 @@ func appCreateInput(w http.ResponseWriter, r *http.Request) (core.CreateAppInput
 func (h *appHandler) create(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	ctx, cancel := context.WithTimeout(r.Context(), appWriteBudget)
 	defer cancel()
-	r = r.WithContext(ctx)
+	h.createWithContext(w, r, p, ctx)
+}
+
+// The operation budget covers body reading and the service, while the original
+// request context controls response delivery after an internal deadline.
+func (h *appHandler) createWithContext(w http.ResponseWriter, r *http.Request, p model.Principal, ctx context.Context) {
 	w.Header().Set("Cache-Control", "no-store")
 	logger := h.logger.With("user_id", p.UserID)
-	input, err := appCreateInput(w, r)
+	if err := ctx.Err(); err != nil {
+		h.writeCreateError(w, r, logger, err)
+		return
+	}
+	workRequest := r.WithContext(ctx)
+	input, err := appCreateInput(w, workRequest)
+	r.Body = workRequest.Body
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
-		h.writeError(w, r, logger, "create", err)
+		h.writeCreateError(w, r, logger, err)
 		return
 	}
 	result, err := h.operations.CreateApp(ctx, p, input)
 	if err != nil {
-		h.writeError(w, r, logger.With("app_resource_id", input.ID), "create", err)
+		h.writeCreateError(w, r, logger.With("app_resource_id", input.ID), err)
 		return
 	}
-	response := appCreatedWriter{ResponseWriter: w, ctx: ctx, location: "/api/v1/github/apps/" + result.ID}
+	response := appCreatedWriter{ResponseWriter: w, ctx: r.Context(), location: "/api/v1/github/apps/" + result.ID}
 	httpx.WriteMutationJSON(&response, r, logger, "github", http.StatusCreated, h.response(result))
+}
+
+func (h *appHandler) writeCreateError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	if r.Context().Err() != nil {
+		httpx.CloseUnreadBody(w, r)
+		httpx.LogFailure(logger, r.Context(), "github", "create", err)
+		return
+	}
+	var management *service.ManagementError
+	_, knownFault := httpx.KnownFault(err)
+	if !errors.As(err, &management) && !knownFault && errors.Is(err, context.DeadlineExceeded) {
+		err = &model.Fault{Code: "timeout", Message: "GitHub App operation timed out."}
+	}
+	h.writeError(w, r, logger, "create", err)
 }
 
 // A Location is published only with the successful response, after encoding and
