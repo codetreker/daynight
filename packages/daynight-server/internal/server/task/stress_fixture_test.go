@@ -48,7 +48,7 @@ func projectTestHandler(t *testing.T, database *postgres.Store, output io.Writer
 	config := configpkg.Config{
 		Database: databaseconfig.Config{URL: "postgres://database"},
 		Storage:  storageconfig.Config{Root: "storage"},
-		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, AllowHTTPTestOrigin: true},
+		Server:   serverconfig.Config{ListenAddress: "127.0.0.1:0", StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, PublicOrigin: origin, PreviewOrigin: testauth.PreviewOrigin(origin), AllowHTTPTestOrigin: true},
 		TaskSync: applicationconfig.TaskSyncConfig{Overlap: 10 * time.Second},
 		UniAuth:  identityconfig.Config{URL: gateway.Origin, AppID: gateway.AppID, AppSecret: gateway.AppSecret, CallbackURL: callback, AllowLoopbackHTTP: true},
 	}

@@ -19,6 +19,7 @@ import (
 	s2shttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/s2s"
 	oauthtoken "github.com/codetreker/daynight/packages/daynight-server/internal/server/oauth/token"
 	projecthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/project"
+	previewhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/preview"
 	prompthttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/prompt"
 	sessionhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/session"
 	taghttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/tag"
@@ -52,6 +53,12 @@ type Handler interface {
 }
 
 func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handler, error) {
+	if app.PreviewSSOError != nil {
+		return nil, app.PreviewSSOError
+	}
+	if app.Identity.PreviewSSO() == nil {
+		return nil, errors.New("preview SSO is unavailable")
+	}
 	if err := config.S2S.Validate(config.Server.AllowHTTPTestOrigin); err != nil {
 		return nil, err
 	}
@@ -97,6 +104,12 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	mux.HandleFunc("/api/v1/oauth/requests/{id}/decision", authorization.Decide)
 	oauthhttp.RegisterMetadata(mux, config.Server.PublicOrigin)
 	auth.RegisterRoutes(mux)
+	preview, err := previewhttp.New(app.Identity.PreviewSSO(), auth.AuthenticateSessionRequest, config.Server.PublicOrigin, config.Server.PreviewOrigin, logger)
+	if err != nil {
+		endpoint.BeginShutdown()
+		return nil, err
+	}
+	preview.RegisterMain(mux)
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
@@ -139,7 +152,8 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		w.Header().Set("Cache-Control", "no-store")
 		httpx.WriteError(w, request, logger, "server", "route", &model.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return &sessionApplication{Handler: cors.Wrap(attachmenthttp.PathGuard(mux, logger), mux, config.S2S.AllowedOrigin, logger, auth.CallbackPath()), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
+	main := cors.Wrap(attachmenthttp.PathGuard(mux, logger), mux, config.S2S.AllowedOrigin, logger, auth.CallbackPath(), "/api/v1/auth/preview/authorize")
+	return &sessionApplication{Handler: preview.Wrap(main), relay: relay, service: sessions, engine: app.Engine, mcp: endpoint, workerReadOnly: workerReadOnly, stopClaims: app.StopClaims}, nil
 }
 
 type sessionApplication struct {

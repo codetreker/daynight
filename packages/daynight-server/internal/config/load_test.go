@@ -27,6 +27,7 @@ func lookupValues(values map[string]string) func(string) (string, bool) {
 
 const validBase = `server:
   public_origin: https://daynight.example
+  preview_origin: https://preview.daynight.example
 database:
   url: postgres://db
 uniauth:
@@ -115,7 +116,7 @@ mcp:
 `)
 	_, err = LoadServer(root, lookupValues(nil))
 	var f *configvalue.ConfigurationError
-	if !errors.As(err, &f) || f.Field != "mcp.temp_budget_bytes" || f.Origin.Source != "config.yml" || f.Origin.Line != 10 {
+	if !errors.As(err, &f) || f.Field != "mcp.temp_budget_bytes" || f.Origin.Source != "config.yml" || f.Origin.Line != 11 {
 		t.Fatalf("alias origin: %#v", err)
 	}
 }
@@ -192,6 +193,7 @@ func TestAllYAMLFields(t *testing.T) {
 	writeLayer(t, root, "config.yml", `server:
   listen_address: 127.0.0.1:0
   public_origin: https://daynight.example
+  preview_origin: https://preview.daynight.example
   startup_timeout: 2s
   shutdown_timeout: 3s
   allow_http_test_origin: false
@@ -231,6 +233,7 @@ func TestServerSemanticFailureOrigins(t *testing.T) {
 	for _, tc := range []struct{ name, layer, field, source, phase string }{
 		{"blank storage", "storage: {root: ' '}\n", "storage.root", "config.local.yml", "validate"},
 		{"public origin", "server: {public_origin: 'invalid'}\n", "server.public_origin", "config.local.yml", "validate"},
+		{"preview origin", "server: {preview_origin: 'https://external.example'}\n", "server.preview_origin", "config.local.yml", "validate"},
 		{"callback", "uniauth: {callback_url: 'https://daynight.example/mcp'}\n", "uniauth.callback_url", "config.local.yml", "validate"},
 		{"mcp origin", "mcp: {allowed_origins: ['https://client.example/path']}\n", "mcp.allowed_origins", "config.local.yml", "validate"},
 		{"credential", "uniauth: {app_id: 'private:bad'}\n", "uniauth.app_id", "config.local.yml", "validate"},

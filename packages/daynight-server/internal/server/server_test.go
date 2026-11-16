@@ -101,6 +101,7 @@ type httpTestStore struct {
 	t                           *testing.T
 	ReadSnapshotCall            func(ctx context.Context, fn func(store.SnapshotScope) error) error
 	WriteIdentityCall           func(ctx context.Context, fn func(store.IdentityScope) error) (store.Completion, error)
+	WritePreviewSSOCall         func(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error)
 	WriteProjectCall            func(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error)
 	WriteProjectCreationCall    func(ctx context.Context, owner string, fn func(store.ProjectCreationDAO) error) (store.Completion, error)
 	CreateTeamCall              func(ctx context.Context, owner string, fn func(store.TeamCreationDAO) error) (store.Completion, error)
@@ -140,6 +141,13 @@ func (s *httpTestStore) WriteIdentity(ctx context.Context, fn func(store.Identit
 		unexpectedHTTPCall(s.t, "WriteIdentity")
 	}
 	return s.WriteIdentityCall(ctx, fn)
+}
+
+func (s *httpTestStore) WritePreviewSSO(ctx context.Context, fn func(store.PreviewSSODAO) error) (store.Completion, error) {
+	if s.WritePreviewSSOCall == nil {
+		unexpectedHTTPCall(s.t, "WritePreviewSSO")
+	}
+	return s.WritePreviewSSOCall(ctx, fn)
 }
 
 func (s *httpTestStore) WriteProject(ctx context.Context, id string, fn func(store.ProjectWriteScope) error) (store.Completion, error) {

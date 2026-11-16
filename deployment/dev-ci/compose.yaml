@@ -24,7 +24,7 @@ services:
     volumes:
       - ../localhost/nginx.conf:/etc/nginx/nginx.conf:ro
     healthcheck:
-      test: [CMD, wget, -q, -T, "3", -O, /dev/null, "http://127.0.0.1:80/readyz"]
+      test: [CMD, wget, -q, -T, "3", -O, /dev/null, --header, "Host: localhost", "http://127.0.0.1:80/readyz"]
       interval: 2s
       timeout: 5s
       retries: 60
@@ -56,7 +56,7 @@ services:
       gateway:
         condition: service_started
     healthcheck:
-      test: [CMD, node, -e, "fetch('http://127.0.0.1:8787/readyz', {signal: AbortSignal.timeout(3000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: [CMD, node, -e, "require('node:http').get('http://127.0.0.1:8787/readyz', {headers: {Host: 'localhost'}, signal: AbortSignal.timeout(3000)}, r => {r.on('error', () => process.exit(1)); r.on('end', () => process.exit(r.statusCode >= 200 && r.statusCode < 300 ? 0 : 1)); r.resume()}).on('error', () => process.exit(1))"]
       interval: 2s
       timeout: 5s
       retries: 30

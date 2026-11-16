@@ -216,6 +216,9 @@ func LoadServer(root string, lookup func(string) (string, bool)) (Config, error)
 		}
 		return Config{}, decorate(err, group, "validate", origins, configvalue.Origin{})
 	}
+	if err = c.Server.ValidatePreviewOrigin(); err != nil {
+		return Config{}, decorate(err, "server", "validate", origins, configvalue.Origin{})
+	}
 	for _, item := range []struct {
 		group    string
 		validate func() error

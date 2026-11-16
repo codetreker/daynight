@@ -784,11 +784,12 @@ source scripts/env.sh
 go build -o .tmp/daynight-server ./cmd/daynight-server
 export DAYNIGHT_DATABASE_URL='postgres://daynight:password@127.0.0.1:5432/daynight?sslmode=disable'
 export DAYNIGHT_ROOT="$PWD/.tmp/server-root"
-export DAYNIGHT_PUBLIC_ORIGIN='http://127.0.0.1:8787'
+export DAYNIGHT_PUBLIC_ORIGIN='http://app.daynight.localhost:8787'
+export DAYNIGHT_PREVIEW_ORIGIN='http://preview.daynight.localhost:8787'
 export DAYNIGHT_UNIAUTH_URL='https://identity.example.com'
 export DAYNIGHT_UNIAUTH_APP_ID='<registered-app-id>'
 export DAYNIGHT_UNIAUTH_APP_SECRET='<server-side-app-secret>'
-export DAYNIGHT_UNIAUTH_CALLBACK_URL='http://127.0.0.1:8787/api/v1/auth/callback'
+export DAYNIGHT_UNIAUTH_CALLBACK_URL='http://app.daynight.localhost:8787/api/v1/auth/callback'
 export DAYNIGHT_ALLOW_HTTP_TEST_ORIGIN=1
 .tmp/daynight-server --root "$DAYNIGHT_ROOT"
 ```
@@ -855,6 +856,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_GITHUB_WEBHOOK_SECRET` | Webhook secret, required when enabled | Unconfigured |
 | `DAYNIGHT_STORAGE_ROOT` | Writable local storage directory; relative to the selected root | `storage` |
 | `DAYNIGHT_PUBLIC_ORIGIN` | Exact main-site origin, HTTPS in production | Required |
+| `DAYNIGHT_PREVIEW_ORIGIN` | Exact same-site preview origin on a separate hostname; HTTPS in production | Required |
 | `DAYNIGHT_MCP_ALLOWED_ORIGINS` | Comma-separated exact browser origins additionally permitted for MCP requests | Only `DAYNIGHT_PUBLIC_ORIGIN` |
 | `DAYNIGHT_S2S_SHARED_KEY` | Server-only S2S issuer key; empty disables issuance, otherwise 32–256 visible ASCII bytes | Empty (disabled) |
 | `DAYNIGHT_S2S_ALLOWED_ORIGIN` | One canonical exact application browser origin for user REST CORS | Empty (disabled) |
@@ -950,7 +952,7 @@ must differ. Port zero requests an ephemeral port; the lifecycle log reports the
 actual bound address. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
 `/mcp`, `/login`, `/auth/complete`, `/setup`, `/teams` and every descendant path, together with the
-`/api/v1/teams` API namespace and `/api/v1/webhook-event-types`. If an existing callback occupies that
+`/api/v1/teams` API namespace, `/api/v1/webhook-event-types`, `/api/v1/auth/preview` and `/auth/sso`. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
 starting the server. Login return loops, including `/login` and `/auth/complete`, are rejected before a
 login transaction is created. An absent return target defaults to `/projects`; a
@@ -959,6 +961,21 @@ validated target, including when local session creation fails. A successful call
 sets the session Cookie and redirects to `/auth/complete` with the complete encoded
 return target, including its query and fragment, and the escaped path of the
 callback request.
+Explicit preview SSO starts at `DAYNIGHT_PREVIEW_ORIGIN/auth/sso/start` for an
+already signed-in browser. The four GET navigation endpoints, state binding,
+preview Domain Cookie, completion check and retry behavior are described in the
+[authentication design](../../docs/design/daynight-auth.md#显式浏览器预览-sso).
+The ordinary login callback and existing attachment reads do not automatically
+enter this flow. The bare preview host serves only SSO; Task subdomains are
+reserved and currently return 404. Configure preview DNS/TLS and preserve the
+original Host before deploying, without adding a startup network probe. Container readiness uses numeric loopback listener URLs
+with `Host: localhost` to select the main namespace independently of public
+ports, while the preview namespace remains SSO-only. Proxy
+access logs must omit code/state query values, Cookie headers and credentials;
+the service correlates safe SSO stage/results by request ID. For local DNS names,
+configure a loopback resolver or browser host mapping. Explicit HTTP socket tests
+may use the same numeric loopback address on different ports; that mode does not
+prove the production Cookie scope.
 The completion page validates that local path and uses it to preserve the original
 redirect destination for accepted relative references. The existing Web shell serves
 that page over GET/HEAD; other methods are rejected. Only the configured callback

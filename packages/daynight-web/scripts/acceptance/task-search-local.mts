@@ -53,7 +53,7 @@ try {
   await mkdir(configDirectory, { mode: 0o700 });
   // JSON is a YAML 1.2 flow document; serialize the whole mapping to preserve types and credentials.
   const configuration = {
-    server: { listen_address: `127.0.0.1:${port}`, public_origin: origin, allow_http_test_origin: true },
+    server: { listen_address: `127.0.0.1:${port}`, public_origin: origin, preview_origin: `http://127.0.0.1:${port === 65535 ? 65534 : port + 1}`, allow_http_test_origin: true },
     database: { url: `postgres://daynight:daynight-search-local@127.0.0.1:${databasePort}/daynight?sslmode=disable` },
     storage: { root: 'storage' },
     uniauth: { url: fixture.origin, app_id: fixture.appId, app_secret: fixture.appSecret, callback_url: `${origin}/auth/callback`, allow_loopback_http: true },

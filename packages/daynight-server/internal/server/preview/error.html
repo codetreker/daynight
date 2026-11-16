@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="{{.Language}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #172132; background: #f7f8fa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; line-height: 1.55; }
+    .invite-page { min-height: 100vh; min-height: 100dvh; padding: 35px 24px 100px; }
+    .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 15px; min-height: 76px; padding: 14px 40px; background: #fff; border-bottom: 1px solid #e5e8ee; }
+    .brand { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 0; margin-bottom: 42px; color: #172132; text-decoration: none; font-size: 23px; font-weight: 650; letter-spacing: -1px; }
+    .brand-mark { flex: none; width: 25px; height: 25px; border-radius: 50%; background: linear-gradient(90deg, #e6e6ff 50%, #7777ec 50%); box-shadow: 0 0 0 5px #ffffff08; }
+    .invite-card { max-width: 530px; margin: auto; padding: 35px; min-width: 0; background: #fff; border: 1px solid #e5e8ee; border-radius: 13px; box-shadow: 0 12px 38px #1c285809; }
+    h1 { margin: 0 0 12px; text-align: center; font-size: 24px; font-weight: 650; line-height: 1.3; letter-spacing: -.7px; overflow-wrap: anywhere; }
+    .notice { margin-top: 20px; padding: 12px 15px; color: #a3322b; background: #fff0ef; border: 1px solid #df9d96; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
+    .notice p { margin: 0; }
+    .notice.warning { background: #fff7e8; border-color: #d4a04a; color: #805b27; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; margin: 11px 6px 0 0; padding: 8px 13px; color: #37445b; background: #fff; border: 1px solid #dce0e8; border-radius: 7px; text-decoration: none; font-size: 12px; line-height: 1.55; box-shadow: 0 1px 2px #1c285803; }
+    .button:hover { background: #f5f5fd; border-color: #c9c9ec; }
+    a:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 3px; }
+    .details { margin: 20px 0 0; color: #556176; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
+    .details a { color: #5c5ce0; }
+    @media (max-width: 600px) {
+      .invite-page { padding: 26px 16px 85px; }
+      .topbar { padding: 14px 20px; }
+      .brand { margin-bottom: 27px; }
+      .invite-card { padding: 26px 22px; }
+      h1 { font-size: 22px; }
+      .button { max-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="invite-page device-page">
+    <header class="topbar"><a class="brand" href="{{.Home}}" aria-label="Daynight"><span class="brand-mark" aria-hidden="true"></span>daynight</a></header>
+    <main class="invite-card device-card" aria-labelledby="page-title">
+      <h1 id="page-title">{{.Title}}</h1>
+      <div class="notice {{if .NeedsLogin}}warning{{end}}" role="alert">
+        <p>{{.Message}}</p>
+        <a class="button" href="{{.Retry}}">{{.RetryLabel}}</a>
+        <a class="button" href="{{.Login}}" target="_blank" rel="noopener noreferrer">{{.LoginLabel}}</a>
+      </div>
+      <p class="details">{{.HomeLabel}} <a href="{{.Home}}">{{.ProjectsLabel}}</a><br>{{.RequestLabel}}: {{.RequestID}}</p>
+    </main>
+  </div>
+</body>
+</html>

@@ -8,6 +8,7 @@ type Transactions interface {
 	ProjectCreationWriter
 	TeamWriter
 	IdentityWriter
+	PreviewSSOWriter
 	CredentialFamilyWriter
 	CredentialUsageWriter
 	GrantLifecycleWriter

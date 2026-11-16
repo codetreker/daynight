@@ -3,6 +3,7 @@
 server:
   listen_address: "127.0.0.1:8787"
   public_origin: "https://daynight.example.com" # required
+  preview_origin: "https://preview.daynight.example.com" # required; same-site HTTPS origin
   startup_timeout: 10s
   shutdown_timeout: 10s
   allow_http_test_origin: false

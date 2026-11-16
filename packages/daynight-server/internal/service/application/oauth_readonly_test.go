@@ -59,7 +59,7 @@ func (d readonlyAssemblyDAO) LockAccess(ctx context.Context, principal model.Pri
 func TestApplicationReadOnlyUsesItsSharedOAuthAuthenticator(t *testing.T) {
 	borrowed, files := borrowedDependencies(t)
 	db := &readonlyAssemblyStore{borrowedStore: borrowed, principal: model.Principal{UserID: uuid.NewString(), CredentialID: uuid.NewString(), Kind: model.OAuthCredential}, failure: errors.New("family read failed")}
-	app := New(db, files, nil, "", time.Second)
+	app := New(db, files, nil, "", nil, time.Second)
 	t.Cleanup(app.WorkerReadOnly.Close)
 	verifySharedEngine(t, app)
 	for _, origin := range []string{"https://daynight.test", "https://other.daynight.test"} {

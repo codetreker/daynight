@@ -107,6 +107,7 @@ func TestConcurrentServerProcessesShareMigratedTaskSync(t *testing.T) {
 		t.Fatal("could not select distinct service addresses")
 	}
 	secondValues["DAYNIGHT_PUBLIC_ORIGIN"] = "http://" + secondValues["DAYNIGHT_LISTEN_ADDR"]
+	secondValues["DAYNIGHT_PREVIEW_ORIGIN"] = testauth.PreviewOrigin(secondValues["DAYNIGHT_PUBLIC_ORIGIN"])
 	secondValues["DAYNIGHT_UNIAUTH_CALLBACK_URL"] = secondValues["DAYNIGHT_PUBLIC_ORIGIN"] + "/api/v1/auth/callback"
 	adminURL := firstValues["DAYNIGHT_DATABASE_URL"]
 	applications := []string{"migration_first_" + strings.ToLower(rand.Text()), "migration_second_" + strings.ToLower(rand.Text())}
