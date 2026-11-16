@@ -86,11 +86,8 @@ func TestProjectResolveProtocol(t *testing.T) {
 					tool = candidate
 				}
 			}
-			if tool == nil || tool.OutputSchema == nil || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
+			if tool == nil || tool.OutputSchema != nil || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
 				t.Fatalf("annotations: %+v", tool)
-			}
-			if _, err := resolveSchema(tool.OutputSchema); err != nil {
-				t.Fatalf("published output schema: %v", err)
 			}
 			inputBytes, err := json.Marshal(tool.InputSchema)
 			if err != nil {

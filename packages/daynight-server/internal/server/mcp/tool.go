@@ -28,7 +28,7 @@ import (
 // ToolResult carries only completion facts established by the operation.
 type ToolResult struct {
 	// SuccessMetadata exposes completion fields and references on successful
-	// results whose published schema includes them. Observation metadata is independent.
+	// results whose internal result contract includes them. Observation metadata is independent.
 	SuccessMetadata bool
 	Data            any
 	Outcome         string
@@ -318,8 +318,8 @@ func requiredExactly(value any, keys ...string) bool {
 	return len(seen) == len(keys)
 }
 
-// RegisterTool validates the exact schemas advertised to clients before a tool
-// becomes discoverable. Class must describe the largest internal materialization.
+// RegisterTool validates the published input and internal result schemas before a
+// tool becomes discoverable. Class must describe the largest internal materialization.
 func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHandler) error {
 	if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 		return errors.New("invalid MCP tool registration")
@@ -337,28 +337,32 @@ func (e *Entry) registerReadTool(tool *sdk.Tool, budget func(json.RawMessage) Bu
 	return e.registerToolFor(tool, budget, handler, false, false)
 }
 
-func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, inferWriteOutcome, admitOutput bool) error {
-	if tool == nil || tool.Name == "" || tool.InputSchema == nil || tool.OutputSchema == nil || handler == nil || budget == nil {
+func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, inferWriteOutcome, admitOutput bool) error {
+	if definition == nil || definition.Name == "" || definition.InputSchema == nil || definition.OutputSchema == nil || handler == nil || budget == nil {
 		return errors.New("invalid MCP tool registration")
 	}
-	input, err := resolveSchema(tool.InputSchema)
+	input, err := resolveSchema(definition.InputSchema)
 	if err != nil {
 		return fmt.Errorf("input schema: %w", err)
 	}
 	var inputRoot map[string]any
-	inputBytes, _ := json.Marshal(tool.InputSchema)
+	inputBytes, _ := json.Marshal(definition.InputSchema)
 	_ = json.Unmarshal(inputBytes, &inputRoot)
 	if inputRoot["type"] != "object" || !objectPropertySchemas(inputRoot) {
 		return errors.New("input schema must have object root and object property schemas")
 	}
-	output, err := resolveSchema(tool.OutputSchema)
+	output, err := resolveSchema(definition.OutputSchema)
 	if err != nil {
 		return fmt.Errorf("output schema: %w", err)
 	}
-	if !acceptsErrorEnvelope(tool.OutputSchema) {
+	if !acceptsErrorEnvelope(definition.OutputSchema) {
 		return errors.New("output schema must accept the common error envelope")
 	}
-	e.server.AddTool(tool, func(sdkctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+	// Publish a copy so discovery omits the result schema while invocation keeps
+	// the compiled internal contract and the original definition stays intact.
+	published := *definition
+	published.OutputSchema = nil
+	e.server.AddTool(&published, func(sdkctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		call, err := e.beginInvocation(sdkctx)
 		if err != nil {
 			return nil, err
@@ -406,7 +410,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			if errors.Is(err, ErrResourceBusy) {
 				cause = "resource_busy"
 			}
-			e.logger.ErrorContext(ctx, "MCP tool admission failed", "type", "operation_error", "component", "mcp", "operation", tool.Name, "phase", "tool_admission", "cause", cause, "error_code", "resource_busy", "request_id", actor.RequestID)
+			e.logger.ErrorContext(ctx, "MCP tool admission failed", "type", "operation_error", "component", "mcp", "operation", definition.Name, "phase", "tool_admission", "cause", cause, "error_code", "resource_busy", "request_id", actor.RequestID)
 			return e.errorResult(output, actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
 		}
 		scope.hold(release)
@@ -426,7 +430,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			}
 		}
 		result, err := handler(ctx, actor, raw)
-		logger := e.logger.With(resourceLogReferences(tool.Name, result.Refs)...)
+		logger := e.logger.With(resourceLogReferences(definition.Name, result.Refs)...)
 		if err != nil {
 			failure := envelopeError{Code: "internal_error", Message: "The tool could not complete.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: result.Phase, Refs: result.Refs}
 			facts := operation.CompletionFacts(err)
@@ -456,7 +460,7 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			if errors.Is(err, ErrResourceBusy) {
 				cause = "resource_busy"
 			}
-			logger.ErrorContext(ctx, "MCP tool failed", "type", "operation_error", "component", "mcp", "operation", tool.Name, "phase", "tool_call", "cause", cause, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
+			logger.ErrorContext(ctx, "MCP tool failed", "type", "operation_error", "component", "mcp", "operation", definition.Name, "phase", "tool_call", "cause", cause, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
 			return e.errorResult(output, actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
@@ -486,10 +490,10 @@ func (e *Entry) registerToolFor(tool *sdk.Tool, budget func(json.RawMessage) Bud
 			if inferWriteOutcome && result.WriteOutcome == "" && (result.Outcome == "changed" || result.Outcome == "unchanged") {
 				result.WriteOutcome = "confirmed"
 			}
-			logger.ErrorContext(ctx, "MCP output construction failed", "type", "operation_error", "component", "mcp", "operation", tool.Name, "phase", "output", "cause", "output_invalid", "error_code", "internal_error", "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
+			logger.ErrorContext(ctx, "MCP output construction failed", "type", "operation_error", "component", "mcp", "operation", definition.Name, "phase", "output", "cause", "output_invalid", "error_code", "internal_error", "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
 			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool result could not be constructed.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: "output", Refs: result.Refs}), nil
 		}
-		logger.InfoContext(ctx, "MCP tool completed", "component", "mcp", "operation", tool.Name, "request_id", actor.RequestID, "user_id", actor.Principal.UserID, "credential_id", actor.Principal.CredentialID, "outcome", result.Outcome, "write_outcome", result.WriteOutcome)
+		logger.InfoContext(ctx, "MCP tool completed", "component", "mcp", "operation", definition.Name, "request_id", actor.RequestID, "user_id", actor.Principal.UserID, "credential_id", actor.Principal.CredentialID, "outcome", result.Outcome, "write_outcome", result.WriteOutcome)
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "Completed."}}, StructuredContent: json.RawMessage(encoded)}, nil
 	})
 	return nil

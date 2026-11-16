@@ -43,7 +43,7 @@ func TestTaskWorkToolPreservesUseCasePagingAndStrictProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")
-	assertDiscoveredOutputSchemas(t, client, "task_work_list")
+	assertNoDiscoveredOutputSchemas(t, client, "task_work_list")
 	definition := singleResultDefinition(t, taskWorkToolDefinition, "task_work_list")
 	args := map[string]any{"projectId": testProjectID, "assignedTo": assigned, "groupId": group, "targetsCursor": cursor, "limit": 7}
 	result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: "task_work_list", Arguments: args})

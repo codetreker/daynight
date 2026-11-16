@@ -165,7 +165,7 @@ func TestTagToolsDiscoveryAndProtocol(t *testing.T) {
 			expected := map[string]bool{"tag_list": true, "tag_show": true, "tag_create": true, "tag_rename": true, "tag_update": true, "tag_delete": true}
 			for _, tool := range listing.Tools {
 				if expected[tool.Name] {
-					if tool.Description == "" || tool.InputSchema == nil || tool.OutputSchema == nil || tool.Annotations == nil {
+					if tool.Description == "" || tool.InputSchema == nil || tool.OutputSchema != nil || tool.Annotations == nil {
 						t.Errorf("incomplete discovery: %+v", tool)
 					} else if a := tool.Annotations; a.ReadOnlyHint != (tool.Name == "tag_list" || tool.Name == "tag_show") || a.DestructiveHint == nil || *a.DestructiveHint != (tool.Name == "tag_delete") || a.OpenWorldHint == nil || *a.OpenWorldHint {
 						t.Errorf("incorrect annotations for %s: %+v", tool.Name, a)

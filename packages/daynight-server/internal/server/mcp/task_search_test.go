@@ -59,7 +59,7 @@ func TestTaskSearchDiscoveryAndProtocol(t *testing.T) {
 					found = tool
 				}
 			}
-			if found == nil || found.Description == "" || found.InputSchema == nil || found.OutputSchema == nil || found.Annotations == nil || !found.Annotations.ReadOnlyHint || found.Annotations.DestructiveHint == nil || *found.Annotations.DestructiveHint || found.Annotations.OpenWorldHint == nil || *found.Annotations.OpenWorldHint {
+			if found == nil || found.Description == "" || found.InputSchema == nil || found.OutputSchema != nil || found.Annotations == nil || !found.Annotations.ReadOnlyHint || found.Annotations.DestructiveHint == nil || *found.Annotations.DestructiveHint || found.Annotations.OpenWorldHint == nil || *found.Annotations.OpenWorldHint {
 				t.Fatalf("discovery: %+v", found)
 			}
 			definition := singleResultDefinition(t, taskSearchToolDefinition, "task_search")

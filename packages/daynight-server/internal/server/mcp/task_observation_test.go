@@ -110,7 +110,7 @@ func TestTaskObservationSchemasMatchActualProtocolResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := f.client(t, "2026-07-28", "alice")
-	assertDiscoveredOutputSchemas(t, client, "task_list", "task_graph")
+	assertNoDiscoveredOutputSchemas(t, client, "task_list", "task_graph")
 	for _, name := range []string{"task_list", "task_graph"} {
 		definition := arrayResultDefinition(t, taskQueryToolDefinitions, name)
 		for _, view := range []string{"summary", "full"} {
@@ -134,7 +134,7 @@ func TestTaskObservationSchemasMatchActualProtocolResults(t *testing.T) {
 		}
 	}
 	resource := newTaskResourceFixture(t)
-	assertDiscoveredOutputSchemas(t, resource.client, "task_show")
+	assertNoDiscoveredOutputSchemas(t, resource.client, "task_show")
 	showDefinition := arrayResultDefinition(t, taskToolDefinitions, "task_show")
 	for _, view := range []string{"summary", "full"} {
 		expectTaskGet(t, resource, task, nil)
