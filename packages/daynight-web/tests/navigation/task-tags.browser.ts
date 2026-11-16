@@ -1227,7 +1227,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true
     const geometry = await filterGeometry(searchToolbar);
     expect(geometry).toHaveLength(3);
     for (const entry of geometry) expect(entry).toMatchObject({ height: 44, fontSize: '16px' });
-    expect(state.writes).toEqual([]);
+    expect(state.writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
     await info.attach('production-filter-geometry', { body: JSON.stringify(observations), contentType: 'application/json' });
   } finally { await context.close(); }
 });

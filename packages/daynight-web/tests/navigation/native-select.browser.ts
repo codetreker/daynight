@@ -224,6 +224,9 @@ test('shares trigger presentation across densities, native disabled states and e
         observations.push({ order, density, state, ...actual });
       }
     }
+    const hover = page.getByTestId('trigger-filter-normal');
+    await hover.hover(); expect((await triggerMetrics(hover)).background).toBe('rgb(240, 243, 247)');
+    await page.mouse.move(0, 0);
     const summary = page.getByTestId('trigger-summary');
     await summary.focus();
     expect(await triggerMetrics(summary)).toMatchObject({ height: 32, fontSize: '11px', outlineWidth: '3px', outline: 'rgb(52, 64, 84)' });
