@@ -46,7 +46,7 @@ const fixture = async () => {
   const configuration = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
   let local;
   try {
-    store.register({ ...target, project: { projectId: target.projectId, serverOrigin: serverUrl, repoUrl: "https://example.test/repository.git", localPath: repositoryPath }, serverOrigin: serverUrl, workerId, userId, configuration }, 1);
+    store.register({ ...target, project: { projectId: target.projectId, repoUrl: "https://example.test/repository.git", localPath: repositoryPath }, serverOrigin: serverUrl, workerId, userId, configuration }, 1);
     store.initializeWebExecution(target, 2);
     store.updateWebExecution(target, { sessionId: target.sessionId }, 3);
     store.bindWorktree(target, binding, 4);
