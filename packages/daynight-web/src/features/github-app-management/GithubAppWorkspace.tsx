@@ -137,20 +137,20 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
   if (!active) { wasActive.current = false; projectsFresh.current = false; }
   else if (!wasActive.current) { wasActive.current = true; entryVerified.current = false; }
   if (!active || admissionBlocked) { fresh.current = false; impactFresh.current = false; }
-  const loseAccess = () => { onUnavailable(id); deniedRef.current = true; epoch.current++; fresh.current = false; current.current = null; setApp(null); setUnavailable(true); setModal(null); setName(''); setKey(''); setSecret(''); setImpact(null); setProjects(null); impactRead.current?.abort(); };
+  const loseAccess = () => { onUnavailable(id); deniedRef.current = true; epoch.current++; read.current?.abort(); read.current = null; setLoading(false); fresh.current = false; current.current = null; setApp(null); setUnavailable(true); setModal(null); setName(''); setKey(''); setSecret(''); setImpact(null); setProjects(null); impactRead.current?.abort(); };
   const load = useCallback(async () => {
     if (!active || admissionBlocked || admission.isInvalidated) return null;
     fresh.current = false; read.current?.abort(); const controller = new AbortController(); read.current = controller;
-    const signal = AbortSignal.any([controller.signal, admission.signal]); if (!current.current || !entryVerified.current) setLoading(true);
+    const signal = AbortSignal.any([controller.signal, admission.signal]), revision = epoch.current; if (!current.current || !entryVerified.current) setLoading(true);
     try {
       await admission.ready(signal); const value = await getGitHubApp(id, signal, auth(admission, onIdentityMismatch)); await admission.ready(signal);
-      if (signal.aborted || admission.isInvalidated) return null;
+      if (signal.aborted || admission.isInvalidated || epoch.current !== revision) return null;
       const prior = current.current;
       if (prior && BigInt(prior.version) > BigInt(value.version)) { entryVerified.current = true; fresh.current = true; setApp({ ...prior }); return prior; }
       if (prior && prior.version !== value.version) setChanged(true);
       entryVerified.current = true; deniedRef.current = false; current.current = value; setApp(value); setUnavailable(false); setError(null); fresh.current = true; return value;
     } catch (failure) {
-      if (!signal.aborted && !admission.isInvalidated) { try { await admission.ready(signal); } catch { return null; } if (!signal.aborted && !admission.isInvalidated) { if (denied(failure)) loseAccess(); setError(failure); } }
+      if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) { try { await admission.ready(signal); } catch { return null; } if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) { if (denied(failure)) loseAccess(); setError(failure); } }
       return null;
     } finally { if (read.current === controller) { read.current = null; if (!signal.aborted && !admission.isInvalidated) setLoading(false); } }
   }, [active, admissionBlocked, admission, id, onIdentityMismatch, onUnavailable]);

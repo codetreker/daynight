@@ -9,10 +9,10 @@ const time = '2026-10-20T09:00:00Z';
 const team = { id: teamId, kind: 'personal', name: null };
 const profile = { id: actorId, personalTeam: team, name: 'Alice', email: null, emailVerified: null, avatarUrl: null };
 const metadata = (id = appId) => ({ id, githubAppId: '9007199254740993', name: 'Platform App', githubName: 'Platform', githubSlug: 'platform', version: '4', administrators: '2', authorizedTeams: '1', connectedProjects: '3', webhookUrl: `https://daynight.example/api/v1/github/apps/${id}/webhook`, createdAt: time, updatedAt: time });
-type State = { app: ReturnType<typeof metadata>; writes: { path: string; method: string; body: Record<string, unknown> }[]; mode: 'ok' | 'reject' | 'conflict' | 'unknown' | 'github_unavailable' | 'github_rate_limited'; removed: boolean; denied: boolean; holdPatch: Promise<void> | null; holdAppRead: Promise<void> | null; holdListRead: Promise<void> | null; holdProjectRead: Promise<void> | null; holdRemove: Promise<void> | null; holdImpactRecheck: Promise<void> | null; impactReads: number; unknownRemoveCommitted: boolean; projectReads: number; projectPagination: boolean; projectRevoked: boolean; teamPagination: boolean; reads: number };
+type State = { app: ReturnType<typeof metadata>; writes: { path: string; method: string; body: Record<string, unknown> }[]; mode: 'ok' | 'reject' | 'conflict' | 'unknown' | 'github_unavailable' | 'github_rate_limited'; removed: boolean; denied: boolean; holdPatch: Promise<void> | null; holdAppRead: Promise<void> | null; holdListRead: Promise<void> | null; holdProjectRead: Promise<void> | null; holdRemove: Promise<void> | null; holdImpactRecheck: Promise<void> | null; impactReads: number; impactDenied: boolean; metadataReturned: number; unknownRemoveCommitted: boolean; projectReads: number; projectPagination: boolean; projectRevoked: boolean; teamPagination: boolean; reads: number };
 
 const install = async (page: Page): Promise<State> => {
-  const state: State = { app: metadata(), writes: [], mode: 'ok', removed: false, denied: false, holdPatch: null, holdAppRead: null, holdListRead: null, holdProjectRead: null, holdRemove: null, holdImpactRecheck: null, impactReads: 0, unknownRemoveCommitted: false, projectReads: 0, projectPagination: false, projectRevoked: false, teamPagination: false, reads: 0 };
+  const state: State = { app: metadata(), writes: [], mode: 'ok', removed: false, denied: false, holdPatch: null, holdAppRead: null, holdListRead: null, holdProjectRead: null, holdRemove: null, holdImpactRecheck: null, impactReads: 0, impactDenied: false, metadataReturned: 0, unknownRemoveCommitted: false, projectReads: 0, projectPagination: false, projectRevoked: false, teamPagination: false, reads: 0 };
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, method = request.method();
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': actorId } });
@@ -35,7 +35,7 @@ const install = async (page: Page): Promise<State> => {
       if (state.mode === 'unknown') return error('github_write_outcome_unknown', 503);
       state.app = { ...metadata(String(body.id)), name: String(body.name), githubAppId: String(body.githubAppId) }; return send(state.app, 201);
     }
-    if (path === `/api/v1/github/apps/${state.app.id}` && method === 'GET') { state.reads++; if (state.holdAppRead) await state.holdAppRead; return state.denied || state.removed ? error('not_found', 404) : send(state.app); }
+    if (path === `/api/v1/github/apps/${state.app.id}` && method === 'GET') { state.reads++; if (state.holdAppRead) await state.holdAppRead; state.metadataReturned++; return state.denied || state.removed ? error('not_found', 404) : send(state.app); }
     if (path === `/api/v1/github/apps/${state.app.id}` && method === 'PATCH') {
       const body = request.postDataJSON() as Record<string, unknown>; state.writes.push({ path, method, body });
       if (state.holdPatch) await state.holdPatch;
@@ -45,7 +45,7 @@ const install = async (page: Page): Promise<State> => {
       state.app = { ...state.app, version: '5', ...(body.name === undefined ? {} : { name: String(body.name) }) }; return send(state.app);
     }
     if (path === `/api/v1/github/apps/${state.app.id}/removal-preview`) {
-      state.impactReads++; if (state.holdImpactRecheck && state.projectReads > 0) await state.holdImpactRecheck;
+      state.impactReads++; if (state.impactDenied) return error('not_found', 404); if (state.holdImpactRecheck && state.projectReads > 0) await state.holdImpactRecheck;
       const second = { id: '00000000-0000-4000-8000-000000000012', kind: 'ordinary', name: 'Engineering' };
       return send({ appId: state.app.id, grantId: null, version: state.app.version, impactVersion: '7', totalProjects: '3', visibleProjects: state.projectPagination && !state.projectRevoked ? '2' : '1', hiddenProjects: state.projectPagination && !state.projectRevoked ? '1' : '2', teams: state.teamPagination && url.searchParams.has('cursor') ? [{ team: second, projects: '1' }] : [{ team, projects: state.teamPagination ? '2' : '3' }], nextCursor: state.teamPagination && !url.searchParams.has('cursor') ? 'team-next' : null });
     }
@@ -312,4 +312,27 @@ test('unknown credential replacement does not offer replay', async ({ page }) =>
   await expect(dialog.getByRole('button', { name: 'Verify and save' })).toHaveCount(0);
   await expect(dialog.getByLabel('Webhook secret')).toHaveValue('uncertain-secret');
   expect(state.writes).toHaveLength(1);
+});
+
+test('an old metadata response cannot restore access after removal preview denies it', async ({ page }) => {
+  const state = await install(page); await page.goto(`/github-apps/${appId}`);
+  await page.getByRole('button', { name: 'Delete App', exact: true }).click();
+  await expect(page.getByRole('dialog').getByText('Personal Team')).toBeVisible();
+  const primary = await page.context().newCDPSession(page); await primary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await primary.detach();
+  const other = await page.context().newPage(); await other.goto('/projects');
+  const secondary = await page.context().newCDPSession(other); await secondary.send('Emulation.setFocusEmulationEnabled', { enabled: false }); await secondary.detach(); await other.bringToFront();
+  await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
+  const gate = Promise.withResolvers<void>(); state.holdAppRead = gate.promise; state.impactDenied = true;
+  const reads = state.reads, impacts = state.impactReads, returned = state.metadataReturned;
+  const pendingRequest = page.waitForRequest(request => new URL(request.url()).pathname === `/api/v1/github/apps/${appId}` && request.method() === 'GET');
+  await page.bringToFront(); const metadataRequest = await pendingRequest; await expect.poll(() => state.reads).toBeGreaterThan(reads); await expect.poll(() => state.impactReads).toBeGreaterThan(impacts);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Platform App' })).toHaveCount(0);
+  gate.resolve(); state.holdAppRead = null;
+  await expect.poll(() => state.metadataReturned).toBeGreaterThan(returned);
+  await metadataRequest.finished();
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(page.getByRole('heading', { name: 'Platform App' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit configuration' })).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0); await other.close();
 });
