@@ -326,13 +326,13 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     const ids = statuses.map((_, index) => `00000000-0000-4000-8000-${String(60 + index).padStart(12, '0')}`);
     const overdueId = '00000000-0000-4000-8000-000000000065', blockedId = '00000000-0000-4000-8000-000000000066';
     const details = statuses.map((status, index) => detailFixture(projectId, ids[index]!, {
-      title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo',
+      title: `Palette ${status} · 长标题与执行信息 `.repeat(4), version: 5n, status, ready: status === 'todo', allowAgents: index % 2 === 0,
       completedAt: status === 'done' ? '2026-10-22T09:59:50Z' : null,
       cancelledAt: status === 'cancelled' ? '2026-10-22T09:59:55Z' : null,
       properties: { pullRequests: [], ...(status === 'in_progress' ? { paused: true } : {}) },
     }));
     details.push(detailFixture(projectId, overdueId, { title: 'Overdue task', version: 5n, status: 'in_progress', ready: false, allowAgents: true, startedAt: '2026-10-22T08:00:00Z' }));
-    details.push(detailFixture(projectId, taskId, { title: 'Proposed chain', version: 5n, status: 'proposed', ready: false, dependsOn: [ids[3]!, overdueId], externalDependsOn: [ids[3]!, overdueId] }));
+    details.push(detailFixture(projectId, taskId, { title: 'Proposed chain', version: 5n, status: 'proposed', ready: false, allowAgents: true, dependsOn: [ids[3]!, overdueId], externalDependsOn: [ids[3]!, overdueId] }));
     details.push(detailFixture(projectId, successorId, { title: 'Proposed successor', version: 5n, status: 'proposed', ready: false, dependsOn: [taskId], blockedBy: [taskId] }));
     details.push(detailFixture(projectId, blockedId, { title: 'Blocked task', version: 5n, dependsOn: [taskId], externalDependsOn: [taskId], ready: false, blockedBy: [taskId] }));
     const state = await install(page, false, false, 'Reading task', details);
@@ -348,12 +348,19 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
       await expect(row).toHaveCSS('background-color', roleColors[status][0]);
       await expect(row).toHaveCSS('border-top-color', roleColors[status][2]);
       await expect(row).toHaveCSS('opacity', '1');
-      await expect(row.locator('.task-agent-permission')).toHaveCSS('color', roleColors.todo[3]);
-      await expect(row.locator('.task-agent-permission')).toHaveCSS('background-color', roleColors.todo[0]);
+      const badge = row.locator('.task-agent-permission');
+      await expect(badge).toHaveCount(index % 2 === 0 ? 1 : 0);
+      if (index % 2 === 0) {
+        await expect(badge).toHaveText(locale === 'en' ? 'Automatic execution' : '自动执行');
+        await expect(badge).toHaveCSS('color', roleColors.done[3]);
+        await expect(badge).toHaveCSS('background-color', roleColors.done[0]);
+        await expect(badge).toHaveCSS('border-top-color', roleColors.done[2]);
+      }
       for (const hover of [false, true]) {
         if (hover) await row.hover();
         await expect(row).toHaveCSS('background-color', roleColors[status][hover ? 1 : 0]);
-        for (const selector of ['.task-row-title', '.task-row-meta', '.root-status', '.task-agent-permission']) await expectTextContrast(row.locator(selector));
+        for (const selector of ['.task-row-title', '.task-row-meta', '.root-status']) await expectTextContrast(row.locator(selector));
+        if (index % 2 === 0) await expectTextContrast(badge);
       }
     }
     const overdue = taskRow(page.locator(`#standalone-task-${overdueId}`)), blocked = taskRow(page.locator(`#standalone-task-${blockedId}`));
@@ -361,6 +368,10 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await expect(overdue).toHaveCSS('background-color', roleColors.attention[0]);
     await expect(overdue.locator('.root-status')).toHaveCSS('color', roleColors.in_progress[3]);
     await expect(overdue.locator('.task-stuck-label')).toBeVisible();
+    await expect(overdue.locator('.task-agent-permission')).toHaveCount(1);
+    await expectTextContrast(overdue.locator('.task-agent-permission'));
+    await overdue.hover();
+    await expectTextContrast(overdue.locator('.task-agent-permission'));
     await expect(blocked).toHaveCSS('background-color', roleColors.todo[0]);
     await expect(blocked.locator('.graph-blocked-badge')).toHaveCSS('color', roleColors.attention[3]);
     await expect(taskRow(page.locator(`#standalone-task-${ids[2]}`)).locator('.task-paused-badge')).toHaveCSS('color', roleColors.attention[3]);
@@ -373,6 +384,18 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) 
     await page.locator(`#task-chain-graph-${taskId}`).click();
     const node = page.locator(`.react-flow__node[data-id="${taskId}"] .task-node`);
     const body = node.locator('.task-node-body');
+    const graphBadge = node.locator('.task-agent-permission');
+    await expect(graphBadge).toHaveText(locale === 'en' ? 'Auto' : '自动');
+    await expect(graphBadge).toHaveAttribute('aria-label', locale === 'en' ? 'Automatic execution' : '自动执行');
+    await expect(graphBadge).toHaveAttribute('title', locale === 'en' ? 'Automatic execution' : '自动执行');
+    await expect(graphBadge).toHaveCSS('background-color', roleColors.done[0]);
+    await expect(graphBadge).toHaveCSS('border-top-color', roleColors.done[2]);
+    await expect(graphBadge).toHaveCSS('color', roleColors.done[3]);
+    await expectTextContrast(graphBadge);
+    await expect(body).toHaveAccessibleName(new RegExp(locale === 'en' ? 'Automatic execution' : '自动执行'));
+    const disabledNode = page.locator(`.react-flow__node[data-id="${successorId}"]`);
+    await expect(disabledNode.locator('.task-agent-permission')).toHaveCount(0);
+    await expect(disabledNode.locator('.task-node-body')).not.toHaveAccessibleName(new RegExp(locale === 'en' ? 'Automatic execution' : '自动执行'));
     await page.mouse.move(0, 0);
     await expect(node).toHaveCSS('background-color', roleColors.proposed[0]);
     await body.click();
@@ -560,10 +583,10 @@ for (const kind of ['chain', 'goal'] as const) test(`shared ${kind} row supports
   await page.keyboard.press('Escape'); await expect(session).toBeFocused();
 });
 
-test('equivalent ordinary Tasks share facts across standalone, chain, Goal and personal lists', async ({ page }) => {
+for (const allowAgents of [false, true]) test(`equivalent ordinary Tasks share facts across standalone, chain, Goal and personal lists with permission ${allowAgents}`, async ({ page }) => {
   const goalId = '00000000-0000-4000-8000-000000000060';
   const memberId = '00000000-0000-4000-8000-000000000061';
-  const common = { version: 5n, status: 'in_progress' as const, ready: false, assignedTo: TEST_VIEWER_ID, requiredPlatform: 'linux' as const };
+  const common = { version: 5n, status: 'in_progress' as const, ready: false, assignedTo: TEST_VIEWER_ID, requiredPlatform: 'linux' as const, allowAgents };
   const details = [detailFixture(projectId, taskId, { version: 5n, title: 'Completed root', status: 'done' }),
     detailFixture(projectId, standaloneId, { ...common, title: 'Equivalent standalone' }),
     detailFixture(projectId, successorId, { ...common, title: 'Equivalent chain', dependsOn: [taskId] }),
@@ -576,7 +599,7 @@ test('equivalent ordinary Tasks share facts across standalone, chain, Goal and p
   await page.route('**/api/v1/projects/*/task-sync*', route => route.fulfill({ body: stringifyWireJson(taskSyncFixture(graph, { query: taskSyncQuery(new URL(route.request().url())), versionForTask: () => 5n, taskObservations: Object.fromEntries(running.map(task => [task.id, row])) })), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } }));
   await page.route('**/api/v1/me/in-progress-tasks?*', route => route.fulfill({ body: stringifyWireJson({ observedAt: graph.observedAt, responseTaskAt: graph.observedAt, responseSessionAt: graph.observedAt, inventoryRevision: 'b'.repeat(64), totalTaskCount: 3, totalProjectCount: 1, sessionPartial: false, nextCursor: null,
     items: running.map(task => ({ project: { id: projectId, name: graph.project.name, ownerTeam: directAccessFixture(projectId).ownerTeam, executionWarningMinutes: 60, matchedTaskCount: 3 },
-      task: { id: task.id, version: '5', title: task.title, status: 'in_progress', startedAt: null, createdAt: task.createdAt, requiredPlatform: task.requiredPlatform, tags: [], blockedBy: [], ready: false, allowAgents: false, paused: false, worker: null, goal: task.parentId === null ? null : { id: goalId, title: 'Actual Goal' } },
+      task: { id: task.id, version: '5', title: task.title, status: 'in_progress', startedAt: null, createdAt: task.createdAt, requiredPlatform: task.requiredPlatform, tags: [], blockedBy: [], ready: false, allowAgents: task.allowAgents, paused: false, worker: null, goal: task.parentId === null ? null : { id: goalId, title: 'Actual Goal' } },
       session: { ...unsupportedSessionObservation(), observation: 'observed', registration: 'not_applicable', reason: 'no_execution', error: null, observedAt: row.observedAt, freshUntil: row.freshUntil }, sessionRow: { ...row, taskVersion: '5' } })) }), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } }));
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('combobox', { name: '语言 / Language' }).selectOption('en');
@@ -584,6 +607,8 @@ test('equivalent ordinary Tasks share facts across standalone, chain, Goal and p
   const facts = async (id: string) => {
     const element = page.locator('.task-row').filter({ has: page.locator(`.task-row-id:text-is("${id}")`) });
     await expect(element.locator('.assignee-name')).toHaveText('Reader');
+    await expect(element.locator('.task-agent-permission')).toHaveCount(allowAgents ? 1 : 0);
+    if (allowAgents) await expect(element.locator('.task-agent-permission')).toHaveText('Automatic execution');
     return element.evaluate(row => ({ meta: Array.from(row.querySelector('.task-row-meta')!.children).filter(child => !child.matches('.task-row-goal')).map(child => child.textContent), state: row.querySelector('.task-row-status')!.textContent, background: getComputedStyle(row).backgroundColor, titleSize: getComputedStyle(row.querySelector('.task-row-title')!).fontSize, idSize: getComputedStyle(row.querySelector('.task-row-id')!).fontSize }));
   };
   await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();

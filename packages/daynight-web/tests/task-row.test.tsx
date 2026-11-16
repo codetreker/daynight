@@ -102,6 +102,25 @@ describe('shared task row', () => {
     expect(row.querySelectorAll('.task-tag')).toHaveLength(0);
   });
 
+  it.each(['proposed', 'todo', 'in_progress', 'done', 'cancelled'] as const)('renders permission solely from allowAgents for %s and updates it', status => {
+    const model = { ...base, status, allowAgents: true, paused: true, worker: { kind: 'none' as const } };
+    const view = renderWithLocale(tree(model), { locale: 'zh-CN' });
+    const row = screen.getByRole('link', { name: model.title }).closest('.task-row')!;
+    const badge = () => row.querySelector('.task-agent-permission');
+    expect(badge()).toHaveTextContent('自动执行');
+    expect(badge()).toHaveAttribute('aria-label', '自动执行');
+    expect(badge()).toHaveAttribute('title', '自动执行');
+    view.rerender(tree({ ...model, allowAgents: false, worker: { kind: 'active', name: 'live machine' } }));
+    expect(badge()).toBeNull();
+    expect(row).toHaveTextContent('live machine');
+    view.setLocale('en');
+    view.rerender(tree({ ...model, worker: { kind: 'historical', name: 'old machine' } }));
+    expect(badge()).toHaveTextContent('Automatic execution');
+    expect(badge()).toHaveAttribute('aria-label', 'Automatic execution');
+    expect(badge()).toHaveAttribute('title', 'Automatic execution');
+    expect(row).toHaveTextContent('old machine');
+  });
+
   it('distinguishes an unavailable Session from an expired observation without inventing an entry', () => {
     const model = { ...base, status: 'in_progress' as const, session: { state: 'unavailable' as const, needsAttention: null, canOpen: false } };
     const view = renderWithLocale(tree(model), { locale: 'en' });

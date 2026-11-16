@@ -50,9 +50,9 @@ describe('chain worker machine presentation', () => {
     const onOpenTask = vi.fn();
     const view = renderWithLocale(workspace(snapshot(initial), onOpenTask), { locale: 'zh-CN', taskCache: true });
     fireEvent.click(document.getElementById(`task-root-${root.id}`)!);
-    expect(rowContent(2)).toHaveTextContent('自动执行已开启');
+    expect(rowContent(2).querySelector('.task-agent-permission')).toHaveTextContent('自动执行');
     expect(rowContent(2)).toHaveTextContent('暂无执行机器记录');
-    expect(rowContent(3)).toHaveTextContent('自动执行已关闭');
+    expect(rowContent(3).querySelector('.task-agent-permission')).toBeNull();
     expect(rowContent(3)).toHaveTextContent(`执行机器记录：${longName}`);
     expect(rowContent(4)).toHaveTextContent('认领机器：live host');
     expect(rowContent(3).querySelector('button button, a button, button a, a a')).toBeNull();
@@ -64,12 +64,13 @@ describe('chain worker machine presentation', () => {
     view.setLocale('en');
     expect(rowContent(3)).toHaveTextContent(`Recorded machine: ${longName}`);
     expect(rowContent(4)).toHaveTextContent('Claim machine: live host');
-    const changed = initial.map((item) => item.id === id(3) ? { ...item, allowAgents: true, properties: { worker: claim('replacement', 'completed') } } : item.id === id(4) ? { ...item, properties: {} } : item);
+    const changed = initial.map((item) => item.id === id(3) ? { ...item, allowAgents: true, properties: { worker: claim('replacement', 'completed') } } : item.id === id(4) ? { ...item, allowAgents: false, properties: {} } : item);
     view.rerender(workspace(snapshot(changed), onOpenTask));
     expect(document.getElementById(`task-root-${root.id}`)).toHaveAttribute('aria-expanded', 'true');
-    expect(rowContent(3)).toHaveTextContent('Automatic execution on');
+    expect(rowContent(3).querySelector('.task-agent-permission')).toHaveTextContent('Automatic execution');
     expect(rowContent(3)).toHaveTextContent('Recorded machine: replacement');
     expect(rowContent(3)).not.toHaveTextContent(longName);
+    expect(rowContent(4).querySelector('.task-agent-permission')).toBeNull();
     expect(rowContent(4)).toHaveTextContent('No machine record');
     expect(rowContent(4)).not.toHaveTextContent('live host');
   });

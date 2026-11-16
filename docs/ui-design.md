@@ -63,11 +63,12 @@ use `attention`, retaining their distinct text and aggregation priority; a
 warning name, disconnection, or stopped Session alone does not establish failure.
 
 A green online dot expresses runtime availability. Its adjacent header label
-uses neutral helper text; actual work has its separate activity marker. Automatic
-execution permission uses a neutral outlined label with explicit on/off text:
-background `#FAFBFC`, border `#D5DCE5`, and foreground `#526174`. Permission does not
-establish acquisition or activity. Existing checked-switch brand colors remain
-control selection cues.
+uses neutral helper text; actual work has its separate activity marker. Ordinary
+Task rows and graph nodes show an automatic execution permission label only when
+`allowAgents=true`, using background `#EAF6EF`, border `#B9D9C5`, and foreground
+`#256A48`. The compact graph label retains the full accessible name and tooltip.
+Permission does not establish acquisition, activity, or completion. Existing
+checked-switch brand colors remain control selection cues.
 
 ### Progress and interaction hierarchy
 
