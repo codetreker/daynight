@@ -266,6 +266,22 @@ describe('project dialog focus restoration', () => {
     expectModalReleased();
   });
 
+  it('does not steal focus moved while replacement history is being read', async () => {
+    const replacement = resetSnapshot(graph(remainingChain));
+    const pending = Promise.withResolvers<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(replacement).mockReturnValueOnce(pending.promise);
+    const { dialog } = await openDialog();
+    fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const refresh = screen.getByRole('button', { name: '刷新' });
+    refresh.focus();
+    expect(refresh).toHaveFocus();
+    await act(async () => { pending.resolve(replacement); });
+    await waitFor(() => expect(screen.getByText('所选任务已不在新的任务图中，详情已关闭。')).toBeVisible());
+    expect(refresh).toHaveFocus();
+  });
+
   it('returns focus to a surviving task when the dialog closes normally', async () => {
     graphRequest.mockResolvedValueOnce(graph());
     const { trigger, dialog } = await openDialog();

@@ -261,6 +261,103 @@ describe('Project reading history', () => {
       unmount();
     } finally { scope.dispose(); }
   });
+
+  it('carries only the currently displayed Goal through content retirement on the same render', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const retire = () => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); };
+    const goal = { ...selection, view: 'goals' } as const;
+    const carried = { ...goal, detail: null };
+    const renders: ProjectReading[] = [];
+    try {
+      const { result, unmount } = renderHook(() => {
+        const value = useProjectHistory(user, project, true, defaults, scope, id => id === root);
+        renders.push(value.selection); return value;
+      });
+      act(() => result.current.select(goal));
+      const old = history.state;
+      act(() => result.current.select({ ...goal, detail: { ...goal.detail!, id: child } }));
+      const start = renders.length;
+      act(retire);
+      expect(renders.slice(start)).not.toHaveLength(0);
+      expect(renders.slice(start).every(value => value.projectGraphWitness === root && value.detail === null)).toBe(true);
+      expect(result.current.selection).toEqual(carried);
+      expect(browserNavigation().snapshot().view).toEqual(projectHistory(user, project, carried));
+      arrival(old, path);
+      expect(result.current.selection).toEqual({ ...defaults, projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it.each(['access-first', 'history-first', 'combined'])('never carries a Goal across access retirement (%s)', order => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const emit = (event: Parameters<Parameters<typeof scope.subscribe>[0]>[0]) => { for (const listener of listeners) listener(event); };
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, id => id === root));
+      act(() => result.current.select({ ...selection, view: 'goals' }));
+      act(() => {
+        if (order === 'combined') emit({ projectId: project, accessRevoked: true, historyChanged: true });
+        else if (order === 'access-first') { scope.suspendProject(project); emit({ projectId: project, historyChanged: true }); }
+        else { emit({ projectId: project, historyChanged: true }); scope.suspendProject(project); }
+      });
+      expect(result.current.selection).toEqual({ ...defaults, projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('respects a same-entry close and later admitted navigation during retirement', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    const retire = () => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); };
+    const goal = { ...selection, view: 'goals', detail: null } as const;
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope, id => id === root));
+      act(() => result.current.select(goal));
+      act(() => { result.current.select({ ...goal, projectGraphWitness: null }, true); retire(); });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      act(() => result.current.select(goal));
+      act(retire);
+      expect(result.current.selection).toEqual(goal);
+      act(() => result.current.select({ ...goal, section: 'overview', projectGraphWitness: null }));
+      expect(result.current.selection.section).toBe('overview');
+      act(retire);
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('does not carry an undisplayed Goal or across a scope or identity change', () => {
+    history.replaceState(null, '', path);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const replacement = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    try {
+      const { result, rerender, unmount } = renderHook(({ cache, identity, displayed }) => useProjectHistory(identity, project, true, defaults, cache, () => displayed),
+        { initialProps: { cache: scope, identity: user, displayed: false } });
+      act(() => result.current.select({ ...selection, view: 'goals' }));
+      act(() => { for (const listener of listeners) listener({ projectId: project, historyChanged: true }); });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      rerender({ cache: scope, identity: user, displayed: true });
+      act(() => result.current.select({ ...selection, view: 'goals' }));
+      rerender({ cache: replacement, identity: user, displayed: true });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      rerender({ cache: replacement, identity: other, displayed: true });
+      expect(result.current.selection.projectGraphWitness).toBeNull();
+      unmount();
+    } finally { scope.dispose(); replacement.dispose(); }
+  });
 });
 
 describe('account reading history', () => {

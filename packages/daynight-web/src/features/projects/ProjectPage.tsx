@@ -79,11 +79,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const { filter: assigneeFilter, onFilterChange: setAssigneeFilter, issue: assigneeIssue } = useProjectAssigneeFilter(projectId, viewer.userId);
   const [statusFilter, setStatusFilter] = useState<TaskStatus | "all">("all");
   const sessions = useTaskDetailSessions();
-  useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
+  useEffect(() => sessions.subscribeProject(projectId, graph.reconcile), [sessions, projectId, graph.reconcile]);
   const { locale, messages: { workspace: { project: m, projects, app, preferences, overview }, auth: { shell: auth } }, format } = useI18n();
   const { section: preferredSection, onSectionChange, issue: sectionIssue } = useProjectSection(projectId);
   const { activeView: preferredView, onViewChange, issue: tabIssue } = useTaskView(projectId);
-  const history = useProjectHistory(viewer.userId, projectId, true, { section: preferredSection, view: preferredView }, viewer);
+  const displayedGoal = useRef<string | null>(null);
+  const isDisplayedGoal = useCallback((witness: string) => displayedGoal.current === witness, []);
+  const history = useProjectHistory(viewer.userId, projectId, true, { section: preferredSection, view: preferredView }, viewer, isDisplayedGoal);
   const selection = history.selection;
   const { section, view: activeView, projectGraphWitness: graphWitness, detail: detailSelection } = selection;
   const [tasksMounted, setTasksMounted] = useState(false);
@@ -122,38 +124,22 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const restoreRequested = useRef(false);
   const previousDetail = useRef(detailSelection);
   const closedDetail = useRef(detailSelection);
-  const pendingRetirement = useRef<{
-    summaryId: string | null;
-    snapshot: GraphSnapshot | null;
-    goal: { id: string; section: ProjectSection; view: TaskView; entryId: string | null } | null;
-  } | null>(null);
-  const currentSnapshot = useRef(graph.snapshot);
-  currentSnapshot.current = graph.snapshot;
   const currentSelection = useRef(selection);
   currentSelection.current = selection;
+  const currentGraphSnapshot = useRef(graph.snapshot);
+  currentGraphSnapshot.current = graph.snapshot;
+  const retiredReading = useRef<{ summaryId: string | null; snapshot: GraphSnapshot | null; entryId: string | null; section: ProjectSection; view: TaskView; goalWitness: string | null; waitForFocus: boolean } | null>(null);
   useLayoutEffect(() => viewer.subscribe((event) => {
     if (event.projectId !== projectId) return;
-    if (event.accessRevoked) { pendingRetirement.current = null; return; }
-    if (event.historyChanged && (currentSelection.current.detail !== null || currentSelection.current.projectGraphWitness !== null)) {
-      const detail = currentSelection.current.detail;
-      const target = openGraph.current;
-      const goal = target?.kind === "goal" ? { id: target.goalId, section: currentSelection.current.section,
-        view: currentSelection.current.view, entryId: browserNavigation().snapshot().entryId } : null;
-      pendingRetirement.current = { summaryId: detail?.source === "summary" ? detail.id : null, snapshot: currentSnapshot.current, goal };
-      if (goal === null) { listOrigin.current = null; lastGraphResource.current = null; }
-      originalTrigger.current = null; pausedOrigin.current = null; closedDetail.current = null;
-    }
+    if (event.accessRevoked) { retiredReading.current = null; return; }
+    const reading = currentSelection.current;
+    if (!event.historyChanged || (reading.detail === null && reading.projectGraphWitness === null)) return;
+    const goalWitness = reading.projectGraphWitness !== null && displayedGoal.current === reading.projectGraphWitness ? reading.projectGraphWitness : null;
+    retiredReading.current = { summaryId: reading.detail?.source === "summary" ? reading.detail.id : null,
+      snapshot: currentGraphSnapshot.current, entryId: browserNavigation().snapshot().entryId, section: reading.section, view: reading.view,
+      goalWitness, waitForFocus: goalWitness === null };
+    if (goalWitness === null) { listOrigin.current = null; lastGraphResource.current = null; originalTrigger.current = null; pausedOrigin.current = null; }
   }), [viewer, projectId]);
-  useLayoutEffect(() => {
-    const navigation = browserNavigation();
-    return navigation.subscribe(() => {
-      const goal = pendingRetirement.current?.goal;
-      if (goal == null || navigation.snapshot().entryId === goal.entryId) return;
-      pendingRetirement.current = null;
-      restoreRequested.current = false;
-      listOrigin.current = null; lastGraphResource.current = null; closedDetail.current = null;
-    });
-  }, []);
   const suppressRestore = useRef(false);
   if (previousDetail.current !== null && detailSelection === null) {
     closedDetail.current = previousDetail.current;
@@ -169,7 +155,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   currentSection.current = section;
   const overviewPosition = useRef(0);
   const prPosition = useRef(0);
-  const snapshot = graph.snapshot;
+  const snapshot = graph.displaySnapshot;
+  const currentSnapshot = graph.snapshot;
   const overviewFence = useRef({ snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid });
   overviewFence.current = { snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid };
   useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [selection, snapshot, assigneeFilter, statusFilter, tagFilter.value, tagFilter.invalid]);
@@ -263,11 +250,15 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     ? resolveProjectGraphTarget(graphWitness, snapshot?.index ?? null, activeView === "goals" ? snapshot?.summaries : undefined) : null;
   openGraph.current = openGraphTarget;
   useLayoutEffect(() => {
-    if (graphWitness === null || snapshot === null || snapshot.receivedAt === null || openGraphTarget !== null) return;
+    displayedGoal.current = openGraphTarget?.kind === "goal" && chainOverlay?.isConnected ? graphWitness : null;
+    return () => { displayedGoal.current = null; };
+  }, [openGraphTarget, chainOverlay, graphWitness]);
+  useLayoutEffect(() => {
+    if (graphWitness === null || currentSnapshot === null || currentSnapshot.receivedAt === null || openGraphTarget !== null) return;
     history.select({ ...selection, projectGraphWitness: null }, true);
     if (section !== "tasks") focusVisible(document.getElementById(`project-section-tab-${section}`));
     else if (activeView !== "chains" && activeView !== "goals") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
-  }, [graphWitness, openGraphTarget, section, activeView, snapshot, selection, history.select]);
+  }, [graphWitness, openGraphTarget, section, activeView, currentSnapshot, selection, history.select]);
   const onOpenListChain = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
     history.select({ ...selection, projectGraphWitness: id }, false, () => {
       listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger }; pausedOrigin.current = null;
@@ -279,14 +270,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
 
   const selectedSummary = useRef<{ id: string; revision: number } | null>(null);
   if (detailSelection === null || detailSelection.source !== "summary") selectedSummary.current = null;
-  else if (snapshot !== null && selectedSummary.current?.id !== detailSelection.id) selectedSummary.current = { id: detailSelection.id, revision: snapshot.revision };
+  else if (currentSnapshot !== null && selectedSummary.current?.id !== detailSelection.id) selectedSummary.current = { id: detailSelection.id, revision: currentSnapshot.revision };
   useEffect(() => {
-    if (snapshot === null || detailSelection === null || detailSelection.source !== "summary" || selectedSummary.current?.revision === snapshot.revision || snapshot.summaries.has(detailSelection.id)) return;
+    if (currentSnapshot === null || detailSelection === null || detailSelection.source !== "summary" || selectedSummary.current?.revision === currentSnapshot.revision || currentSnapshot.summaries.has(detailSelection.id)) return;
     history.select({ ...selection, detail: null }, true, () => {
       restoreRequested.current = true;
       setNotice({ kind: "selected-task-removed" });
     });
-  }, [snapshot, detailSelection, selection, history.select]);
+  }, [currentSnapshot, detailSelection, selection, history.select]);
 
   const onOpenTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: trigger.closest(".task-chain-dialog") !== null,
@@ -326,9 +317,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     });
   }, [activeView, history.select, selection]);
   const onSelectRelation = useCallback((id: string) => {
-    history.select({ ...selection, detail: { id, source: detailSelection?.source === "direct" || snapshot === null ? "direct" : "summary",
+    history.select({ ...selection, detail: { id, source: detailSelection?.source === "direct" || currentSnapshot === null ? "direct" : "summary",
       insideProjectGraph: detailSelection?.insideProjectGraph ?? false, navigation: { tab: "overview", path: null }, goalChildren: null } }, false);
-  }, [history.select, selection, detailSelection, snapshot]);
+  }, [history.select, selection, detailSelection, currentSnapshot]);
   const onClose = useCallback(() => { history.select({ ...selection, detail: null }, true, () => { restoreRequested.current = true; }); }, [history.select, selection]);
   const projectMounted = useRef(true);
   useLayoutEffect(() => { projectMounted.current = true; return () => { projectMounted.current = false; }; }, []);
@@ -337,7 +328,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const summariesForFocus = useRef(snapshot?.summaries);
   summariesForFocus.current = snapshot?.summaries;
   const restoreFocus = useCallback(() => {
-    if (!restoreRequested.current || pendingRetirement.current !== null || previousDetail.current !== null) return;
+    if (!restoreRequested.current || previousDetail.current !== null || retiredReading.current?.waitForFocus) return;
     const trigger = originalTrigger.current;
     const fromSearch = searchTrigger.current;
     const origin = listOrigin.current;
@@ -362,7 +353,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       return focusVisible(heading.current);
     };
     const finish = () => {
-      if (!restoreRequested.current || pendingRetirement.current !== null || !focus()) return;
+      if (!restoreRequested.current || retiredReading.current?.waitForFocus || !focus()) return;
       restoreRequested.current = false;
       originalTrigger.current = null;
       searchTrigger.current = false;
@@ -378,21 +369,19 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     restoreFocus();
   }, [restoreFocus]);
   useEffect(() => {
-    const retired = pendingRetirement.current;
-    if (retired === null || snapshot === null || snapshot === retired.snapshot || snapshot.receivedAt === null) return;
-    pendingRetirement.current = null;
-    if (retired.summaryId !== null && !snapshot.summaries.has(retired.summaryId)) setNotice({ kind: "selected-task-removed" });
-    const goal = retired.goal;
-    if (goal !== null && browserNavigation().snapshot().entryId === goal.entryId &&
-      selection.projectGraphWitness === null && selection.detail === null &&
-      resolveProjectGraphTarget(goal.id, snapshot.index, snapshot.summaries)?.kind === "goal") {
-      restoreRequested.current = false;
-      history.select({ section: goal.section, view: goal.view, projectGraphWitness: goal.id, detail: null }, true);
+    const retired = retiredReading.current;
+    if (retired === null) return;
+    if (browserNavigation().snapshot().entryId !== retired.entryId || section !== retired.section || activeView !== retired.view ||
+      detailSelection !== null || graphWitness !== retired.goalWitness) {
+      retiredReading.current = null;
+      if (retired.waitForFocus) restoreRequested.current = false;
       return;
     }
-    restoreRequested.current = true;
-    restoreFocus();
-  }, [snapshot, selection, history.select, restoreFocus]);
+    if (currentSnapshot === null || currentSnapshot === retired.snapshot || currentSnapshot.receivedAt === null) return;
+    retiredReading.current = null;
+    if (retired.summaryId !== null && !currentSnapshot.summaries.has(retired.summaryId)) setNotice({ kind: "selected-task-removed" });
+    if (retired.waitForFocus && document.activeElement === document.body) restoreFocus();
+  }, [currentSnapshot, section, activeView, detailSelection, graphWitness, restoreFocus]);
 
   const selectView = useCallback((view: TaskView) => {
     if (view === activeView) return;
@@ -637,7 +626,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const detailInsideGraph = detailSelection?.source === "summary" && detailSelection.insideProjectGraph === true && openGraphTarget !== null;
   const detailOwner = useMemo(() => detailInsideGraph && chainOverlay !== null
     ? { current: chainOverlay } : null, [detailInsideGraph, chainOverlay]);
-  const detailDialog = detailSelection === null ? null : <ProjectDraftHost projectId={projectId} taskId={detailSelection.id} source={detailSelection.source} summaryType={snapshot === null ? undefined : snapshot.summaries.get(detailSelection.id)?.type ?? null} insideProjectGraph={detailSelection.insideProjectGraph} graphWitness={selection.projectGraphWitness}><TaskDetailDialog projectId={projectId} taskId={detailSelection.id} snapshot={snapshot} observation={detailSelection.source === "direct" ? { kind: "direct" } : { kind: "project-summary", revision: snapshot?.revision ?? 0, task: snapshot?.index.nodes.get(detailSelection.id) }} onSelectTask={onSelectRelation}
+  const detailDialog = detailSelection === null ? null : <ProjectDraftHost projectId={projectId} taskId={detailSelection.id} source={detailSelection.source} summaryType={currentSnapshot === null ? undefined : currentSnapshot.summaries.get(detailSelection.id)?.type ?? null} insideProjectGraph={detailSelection.insideProjectGraph} graphWitness={selection.projectGraphWitness}><TaskDetailDialog projectId={projectId} taskId={detailSelection.id} snapshot={currentSnapshot} observation={detailSelection.source === "direct" ? { kind: "direct" } : { kind: "project-summary", revision: currentSnapshot?.revision ?? 0, task: currentSnapshot?.index.nodes.get(detailSelection.id) }} onSelectTask={onSelectRelation}
     navigation={detailSelection.navigation} onNavigate={(navigation) => history.select({ ...selection, detail: { ...detailSelection, navigation } })}
     goalChildren={detailSelection.goalChildren ?? { graphRootId: null, task: null }} onGoalChildrenChange={(goalChildren, options) => history.select({ ...selection, detail: { ...detailSelection, goalChildren } }, options?.replace)}
     onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} goalGraphError={graph.error} onNavigateExternalTask={onNavigateExternalTask} onNavigateExternalChain={onNavigateExternalChain} /></ProjectDraftHost>;
@@ -674,7 +663,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {projectRead.project !== null && <p className="project-repository">{projectRead.project.repoUrl}</p>}
           </div>
         </div>
-        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><TaskOrganization projectId={projectId} snapshot={snapshot} onRefreshGraph={graph.refresh} /></div>
+        <div className="project-title-actions">{projectRead.project !== null ? renderActions?.(projectRead.project) : renderActions !== undefined && <span className="project-title-actions-placeholder" aria-hidden="true"><span className="button">{auth.members}</span><span className="button">{auth.projectSettings}</span></span>}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button><TaskOrganization projectId={projectId} snapshot={currentSnapshot} displaySnapshot={snapshot} onRefreshGraph={graph.refresh} /></div>
       </div>
       {projectRead.error !== null && <section className="snapshot-error" role="alert">
         <p>{locale === "zh-CN" ? "无法读取项目信息。" : "Could not read project information."}</p>

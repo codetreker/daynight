@@ -8,14 +8,15 @@ import { detailFixture, snapshotFixture } from './helpers/taskDetail';
 
 vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), createTask: vi.fn() }));
 vi.mock('../src/api/auth', () => ({ listProjectPeople: vi.fn().mockResolvedValue({ items: [], unresolvedUserIds: [] }) }));
+const admission = vi.hoisted(() => ({ revision: 1, ready: async () => {} }));
 vi.mock('../src/features/task-cache/TaskCacheProvider', () => {
-  const scope = { userId: 'viewer', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), ready: async () => {} };
+  const scope = { userId: 'viewer', signal: new AbortController().signal, isInvalidated: false, principalMismatch: vi.fn(), getHistoryGeneration: () => 1, getProjectRevision: () => admission.revision, ready: () => admission.ready() };
   return { useTaskCacheScope: () => scope };
 });
 vi.mock('../src/features/projects/ProjectAccess', () => ({ ProjectAccessBoundary: ({ children }: { children: React.ReactNode }) => children, useProjectAccess: () => ({ ready: true, session: { waitForFreshAccess: async () => ({}) } }) }));
 vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onChange, canWrite }: { value: readonly { id: string; name: string }[]; onChange: (value: readonly { id: string; name: string }[]) => void; canWrite: boolean }) => <div><output aria-label="Selected tags">{value.map(tag => tag.name).join(',')}</output><button type="button" disabled={!canWrite} onClick={() => onChange([{ id: 'tag-a', name: 'Alpha' }])}>Select Alpha</button></div> }));
 const snapshot = { summaries: new Map(), index: { nodes: new Map() } } as unknown as GraphSnapshot;
-afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.clearAllMocks(); admission.revision = 1; admission.ready = async () => {}; });
 
 describe('Task creation', () => {
   it('lets the native menu and composing Escape finish before closing the form', () => {
@@ -42,6 +43,41 @@ describe('Task creation', () => {
       expect(createTask).not.toHaveBeenCalled();
     } finally { matches.mockRestore(); }
   });
+  it('retains the draft but requires a current snapshot before creating in a displayed Goal', async () => {
+    const goal = detailFixture('history-project', 'history-goal', { type: 'goal', title: 'Goal' });
+    const display = snapshotFixture([goal]);
+    const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    const refresh = vi.fn();
+    const view = renderWithLocale(<TaskOrganization projectId="history-project" snapshot={display} onRefreshGraph={refresh} />, { locale: 'en', container: root });
+    fireEvent.click(screen.getByRole('button', { name: 'New Task' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Draft' } });
+    view.rerender(<TaskOrganization projectId="history-project" snapshot={null} displaySnapshot={display} onRefreshGraph={refresh} />);
+    fireEvent.change(screen.getByRole('combobox', { name: 'Goal' }), { target: { value: 'history-goal' } });
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Draft');
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('button', { name: 'Create' }).closest('form')!);
+    expect(createTask).not.toHaveBeenCalled();
+    view.rerender(<TaskOrganization projectId="history-project" snapshot={display} displaySnapshot={display} onRefreshGraph={refresh} />);
+    expect(screen.getByRole('combobox', { name: 'Goal' })).toHaveValue('history-goal');
+    vi.mocked(createTask).mockResolvedValueOnce({} as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(createTask).toHaveBeenCalledOnce());
+  });
+
+  it('rejects a pending creation if project history becomes uncertain before dispatch', async () => {
+    const pending = Promise.withResolvers<void>();
+    admission.ready = () => pending.promise;
+    const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    renderWithLocale(<TaskOrganization projectId="fenced-project" snapshot={snapshot} onRefreshGraph={vi.fn()} />, { locale: 'en', container: root });
+    fireEvent.click(screen.getByRole('button', { name: 'New Task' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Draft' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    admission.revision++;
+    await act(async () => pending.resolve());
+    expect(createTask).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: 'Title' })).toHaveValue('Draft');
+  });
+
   it('freezes the submitted draft while a delayed creation is pending', async () => {
     let resolve!: (value: never) => void;
     vi.mocked(createTask).mockReturnValue(new Promise(done => { resolve = done; }));

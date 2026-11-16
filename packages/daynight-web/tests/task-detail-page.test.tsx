@@ -109,11 +109,14 @@ describe('standalone full task details', () => {
     const cold = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const oldDelta = Promise.withResolvers<TaskSync>();
     const freshDetail = Promise.withResolvers<TaskDetail>();
-    const applied = Promise.withResolvers<void>();
-    const readSync = vi.spyOn(client, 'getTaskSync').mockImplementation(async () => taskSyncReadFixture(await oldDelta.promise));
+    const delivered = Promise.withResolvers<void>();
+    const readSync = vi.spyOn(client, 'getTaskSync').mockImplementation(async () => {
+      const response = await oldDelta.promise;
+      delivered.resolve();
+      return taskSyncReadFixture(response);
+    });
     const readDetail = vi.spyOn(client, 'getTask').mockReturnValue(freshDetail.promise);
-    const apply = cold.applySync.bind(cold);
-    vi.spyOn(cold, 'applySync').mockImplementation(async (...args) => { try { return await apply(...args); } finally { applied.resolve(); } });
+    const apply = vi.spyOn(cold, 'applySync');
     const fetcher = vi.fn(async (url: string) => {
       if (url === `${root}/access`) return new Response(JSON.stringify({ error: { code: 'not_found', message: 'Denied', requestId: 'trusted-cold-denial' } }), {
         status: 404, headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID },
@@ -135,7 +138,7 @@ describe('standalone full task details', () => {
       expect(query.epoch).toBeDefined();
       await act(async () => {
         oldDelta.resolve(taskSyncFromGraph(graph, { query, versionForTask: () => detail.version, propertiesForTask: () => detail.properties }));
-        await applied.promise;
+        await delivered.promise;
       });
       await waitFor(() => {
         expect(screen.queryByText(detail.description)).toBeNull();
@@ -144,6 +147,7 @@ describe('standalone full task details', () => {
       });
       expect(screen.queryByText(detail.description)).toBeNull();
       expect(cold.getAuthorizedProject(projectId)).toBeNull();
+      expect(apply).not.toHaveBeenCalled();
       expect(readDetail).not.toHaveBeenCalled();
     } finally { view.unmount(); cold.dispose(); freshDetail.resolve(detail); }
   });
