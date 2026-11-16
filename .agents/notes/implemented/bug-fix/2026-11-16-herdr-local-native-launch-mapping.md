@@ -19,7 +19,10 @@ the existing priority inputs: process roles, phase, daemon, stop operation,
 admission and segment IDs. Other values pass through without business validation
 or relationship repair. Invalid JSON or inaccessible root/runs containers retain
 the original string; an inaccessible run retains its own value while other runs
-continue. Rows without a mapped change are not rewritten. SQL identity and
+continue. Mapping edits only the target field's source tokens; other tokens,
+duplicate keys and original numeric representations remain unchanged. Parsed
+JavaScript values determine the field mapping, but never regenerate the complete
+row. Rows without a mapped change are not rewritten. SQL identity and
 version columns remain untouched. Only JSON syntax errors are skipped at the
 parse boundary; real database failures still propagate through the migration
 transaction.
@@ -47,6 +50,11 @@ those values preserves them without declaring them healthy.
 **Raise the aggregate size threshold.** Another fixed threshold still rejects
 valid stored history at that threshold and incorrectly assigns new-write policy
 to format conversion and stored reads.
+
+**Parse and serialize complete rows.** JavaScript turns JSON numbers such as
+`1e400` into infinity, which serialization replaces with null, and collapses
+duplicate keys. That loses unrelated evidence and can hide conflicts from the
+strict business reader. Source token edits preserve those original values.
 
 **Introduce a separate permissive stored parser.** The existing strict decoder
 already accepts an explicit byte ceiling, and the valid aggregate-size cases

@@ -33,7 +33,7 @@ lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际�
 
 格式 3 的转换在 `executions` 和 `never_started_retirements` 中独立映射 `runs[].nativeLaunch`，不调用 lifecycle 或 Session 业务 parser，也不核对 SQL identity/version 与 JSON、retirement 与主记录的关系。映射只读取必要容器及 `processes[].role`、`phase`、`daemon`、`stopOperationId`、`admission`、`run.segmentIds`：含 agent 时为 observed；否则 launch_requested 为 requested；否则 prepared、daemon 非 null、唯一 process 为 shell、stopOperationId/admission 均为 null 且 segmentIds 为空时为 not_submitted；其余可操作 run 为 unknown。其他字段直接携带，不修改停止证明、待确认 ledger、版本或哈希。
 
-必要 JSON 无法解析或 root/runs 不可操作时保留原字符串；单个 run 的必要容器不可访问时保留该 run，其余 run 继续映射。没有字段变化时保留原字符串，不生成空 runs、不删除 retirement 或修复关系。转换不执行输入/输出的 8 MiB 门槛或普通字段、条数容量政策；真实 SQL、IO 和提交错误仍使转换失败或结果未知。业务读取继续执行严格 JSON 语法、lifecycle 结构、身份、版本及关系校验，只解除已存行的总字节门槛，使有效超 8 MiB 映射结果可重开和只读 attach。普通新写入仍执行原 8 MiB 及字段/列表限制。旧二进制不能读取新格式，attach 仍只读且不执行迁移。转换职责与取舍见[局部映射决策](../../.agents/notes/implemented/bug-fix/2026-11-16-herdr-local-native-launch-mapping.md)。
+必要 JSON 无法解析或 root/runs 不可操作时保留原字符串；单个 run 的必要容器不可访问时保留该 run，其余 run 继续映射。转换只在源文本中插入或替换必要的 `nativeLaunch` 字段值，其他 token、重复键及无法用 JavaScript 数字精确表示的原数值保持，不通过整行重新序列化来丢弃证据。没有字段变化时保留原字符串，不生成空 runs、不删除 retirement 或修复关系。转换不执行输入/输出的 8 MiB 门槛或普通字段、条数容量政策；真实 SQL、IO 和提交错误仍使转换失败或结果未知。业务读取继续执行严格 JSON 语法、lifecycle 结构、身份、版本及关系校验，只解除已存行的总字节门槛，使有效超 8 MiB 映射结果可重开和只读 attach。普通新写入仍执行原 8 MiB 及字段/列表限制。旧二进制不能读取新格式，attach 仍只读且不执行迁移。转换职责与取舍见[局部映射决策](../../.agents/notes/implemented/bug-fix/2026-11-16-herdr-local-native-launch-mapping.md)。
 
 只有本次明确成功取得的新 claim 能通过 `lifecycle.registerClaim` 创建空运行记录。顺序为主索引 pending、持久启动来源、active、资源创建。完整库存只能找回 claim，远端摘要为空不能证明该 claim 从未启动；缺少 lifecycle 记录的旧 claim 保持未知，不自动补建运行。
 

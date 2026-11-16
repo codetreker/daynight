@@ -13,19 +13,78 @@ const definition = (sql: string): string => {
   return meaningful.map(token => token.startsWith("'") ? token : token.toLowerCase()).join("\0");
 };
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-const mapNativeLaunch = (value: unknown): unknown => {
-  if (!object(value) || !Array.isArray(value.processes) || !value.processes.every(object) || !object(value.run) || !Array.isArray(value.run.segmentIds)) return value;
+const mapNativeLaunch = (value: unknown): string | undefined => {
+  if (!object(value) || !Array.isArray(value.processes) || !value.processes.every(object) || !object(value.run) || !Array.isArray(value.run.segmentIds)) return;
   const nativeLaunch = value.processes.some(process => process.role === "agent") ? "observed" : value.phase === "launch_requested" ? "requested"
     : value.phase === "prepared" && Object.hasOwn(value, "daemon") && value.daemon !== null && value.processes.length === 1 && value.processes[0]!.role === "shell" && value.stopOperationId === null && value.admission === null && value.run.segmentIds.length === 0 ? "not_submitted" : "unknown";
-  return value.nativeLaunch === nativeLaunch ? value : { ...value, nativeLaunch };
+  return value.nativeLaunch === nativeLaunch ? undefined : nativeLaunch;
+};
+type JsonSpan = { start: number; end: number };
+const skipSpace = (source: string, start: number): number => {
+  let at = start;
+  while (at < source.length && " \t\r\n".includes(source[at]!)) at++;
+  return at;
+};
+// These scans follow JSON.parse syntax validation; source tokens are never re-encoded.
+const stringEnd = (source: string, start: number): number => {
+  let at = start + 1;
+  while (source[at] !== '"') { if (source[at] === "\\") at++; at++; }
+  return at + 1;
+};
+const valueEnd = (source: string, start: number): number => {
+  if (source[start] === '"') return stringEnd(source, start);
+  if (source[start] === "{" || source[start] === "[") {
+    let at = start + 1, depth = 1;
+    while (depth !== 0) {
+      const token = source[at];
+      if (token === '"') { at = stringEnd(source, at); continue; }
+      if (token === "{" || token === "[") depth++;
+      else if (token === "}" || token === "]") depth--;
+      at++;
+    }
+    return at;
+  }
+  let at = start;
+  while (at < source.length && !",]} \t\r\n".includes(source[at]!)) at++;
+  return at;
+};
+const propertySpan = (source: string, container: JsonSpan, name: string): JsonSpan | undefined => {
+  let at = skipSpace(source, container.start + 1), result: JsonSpan | undefined;
+  while (at < container.end - 1) {
+    const keyEnd = stringEnd(source, at), key: unknown = JSON.parse(source.slice(at, keyEnd));
+    const start = skipSpace(source, skipSpace(source, keyEnd) + 1), end = valueEnd(source, start);
+    // The last decoded key is the effective property, matching JSON.parse without collapsing duplicates.
+    if (key === name) result = { start, end };
+    at = skipSpace(source, end);
+    if (source[at] === ",") at = skipSpace(source, at + 1);
+  }
+  return result;
 };
 const mapLifecycleData = (data: string): string => {
   let value: unknown;
   try { value = JSON.parse(data); }
   catch (error) { if (error instanceof SyntaxError) return data; throw error; }
   if (!object(value) || !Array.isArray(value.runs)) return data;
-  const original = value.runs, runs = original.map(mapNativeLaunch);
-  return runs.some((run, index) => run !== original[index]) ? JSON.stringify({ ...value, runs }) : data;
+  const rootStart = skipSpace(data, 0), runs = propertySpan(data, { start: rootStart, end: valueEnd(data, rootStart) }, "runs")!;
+  const edits: (JsonSpan & { text: string })[] = [];
+  let at = skipSpace(data, runs.start + 1);
+  for (const run of value.runs) {
+    const end = valueEnd(data, at), nativeLaunch = mapNativeLaunch(run);
+    if (nativeLaunch !== undefined) {
+      const existing = propertySpan(data, { start: at, end }, "nativeLaunch");
+      edits.push(existing === undefined
+        ? { start: end - 1, end: end - 1, text: `,"nativeLaunch":${JSON.stringify(nativeLaunch)}` }
+        : { ...existing, text: JSON.stringify(nativeLaunch) });
+    }
+    at = skipSpace(data, end);
+    if (data[at] === ",") at = skipSpace(data, at + 1);
+  }
+  if (edits.length === 0) return data;
+  const parts: string[] = [];
+  let copied = 0;
+  for (const edit of edits) { parts.push(data.slice(copied, edit.start), edit.text); copied = edit.end; }
+  parts.push(data.slice(copied));
+  return parts.join("");
 };
 const migrateNativeLaunch = (db: Database.Database): void => {
   for (const table of ["executions", "never_started_retirements"] as const) {

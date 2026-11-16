@@ -42,9 +42,66 @@ it("maps only native launch fields across independent executions and retirements
   expect(() => readHerdrLifecycleRecords(f.file)).toThrow();
 });
 
-it("leaves already mapped strings unchanged without issuing an UPDATE", () => {
+it("preserves source tokens in inaccessible runs and unrelated fields while mapping their siblings", () => {
   const f = fixture(); close(f.store);
-  const data = ' { "runs": [{ "processes": [], "run": { "segmentIds": [] }, "nativeLaunch": "unknown" }] } ';
+  const run = '{"processes":[],"phase":"launch_requested","run":{"segmentIds":[]},"nested":{"nativeLaunch":"untouched"}}';
+  const nested = "[".repeat(200) + "1e400" + "]".repeat(200);
+  const data = ` \n{"recipe":${nested},"runs":[1e400, {"processes":null,"evidence":1e400}, ${run}, {"run":false,"large":9007199254740993}],"zero":-0,"last":1e400}\t`;
+  const expected = data.replace(run, run.slice(0, -1) + ',"nativeLaunch":"requested"}');
+  const db = new Database(f.file);
+  db.prepare("UPDATE executions SET data = ?").run(data);
+  db.exec("INSERT INTO never_started_retirements SELECT * FROM executions");
+  db.pragma("user_version = 2"); db.close();
+  const upgraded = open(f.file); close(upgraded);
+  const inspect = new Database(f.file);
+  for (const table of ["executions", "never_started_retirements"]) expect(inspect.prepare(`SELECT data FROM ${table}`).get()).toEqual({ data: expected });
+  inspect.close();
+});
+
+it.each(["duplicate initialAssignment", "nonfinite admission", "duplicate nativeLaunch"])("keeps %s invalid for the strict reader after committing its field mapping", kind => {
+  const f = fixture(), original = active(f); close(f.store);
+  const legacy = JSON.parse(JSON.stringify(original)); delete legacy.runs[0].nativeLaunch;
+  const originalRun = JSON.stringify(legacy.runs[0]);
+  const run = kind === "nonfinite admission" ? originalRun.replace(`"admission":"${legacy.runs[0].admission}"`, '"admission":1e400')
+    : kind === "duplicate nativeLaunch" ? originalRun.slice(0, -1) + String.raw`,"nativeLaunch":"requested","native\u004caunch":"unknown"}` : originalRun;
+  let data = JSON.stringify(legacy).replace(originalRun, run);
+  if (kind === "duplicate initialAssignment") data = data.replace('"initialAssignment":"pending"', '"initialAssignment":"dispatching","initialAssignment":"pending"');
+  const expected = kind === "duplicate nativeLaunch" ? data.replace(String.raw`"native\u004caunch":"unknown"`, String.raw`"native\u004caunch":"observed"`)
+    : data.replace(run, run.slice(0, -1) + ',"nativeLaunch":"observed"}');
+  const db = new Database(f.file);
+  db.prepare("UPDATE executions SET data = ?").run(data);
+  db.exec("INSERT INTO never_started_retirements SELECT * FROM executions");
+  db.pragma("user_version = 2"); db.close();
+  const upgraded = open(f.file);
+  expect(() => upgraded.get(identity)).toThrow(); close(upgraded);
+  const inspect = new Database(f.file);
+  expect(inspect.pragma("user_version", { simple: true })).toBe(4);
+  for (const table of ["executions", "never_started_retirements"]) expect(inspect.prepare(`SELECT data FROM ${table}`).get()).toEqual({ data: expected });
+  inspect.close();
+  expect(() => readHerdrLifecycleRecords(f.file)).toThrow();
+});
+
+it("locates escaped keys and only replaces the effective nativeLaunch value without collapsing duplicate containers", () => {
+  const f = fixture(); close(f.store);
+  const ignored = '{"processes":[],"phase":"launch_requested","run":{"segmentIds":[]}}';
+  const run = String.raw`{"processes":[{"role":"agent"}],"phase":"prepared","run":null,"r\u0075n":{"segmentIds":[]},"nativeLaunch":"requested","native\u004caunch" : {"ignored":"} ] \\\""},"text":"[ { } ] \" , \\"}`;
+  const data = String.raw` {"runs":[${ignored}],"r\u0075ns" : [${run}],"tail":"unmodified"} `;
+  const expected = data.replace(String.raw`"native\u004caunch" : {"ignored":"} ] \\\""}`, String.raw`"native\u004caunch" : "observed"`);
+  const db = new Database(f.file);
+  db.prepare("UPDATE executions SET data = ?").run(data); db.pragma("user_version = 2"); db.close();
+  const upgraded = open(f.file); close(upgraded);
+  const inspect = new Database(f.file);
+  expect(inspect.prepare("SELECT data FROM executions").get()).toEqual({ data: expected }); inspect.close();
+  expect(() => readHerdrLifecycleRecords(f.file)).toThrow();
+});
+
+it.each([
+  ' { "runs": [{ "processes": [], "run": { "segmentIds": [] }, "nativeLaunch": "unknown" }] } ',
+  '{"runs":[{"processes":[],"run":{"segmentIds":[]},"nativeLaunch":"requested","nativeLaunch":"unknown"}]}',
+  String.raw`{"runs":[{"processes":[],"run":{"segmentIds":[]},"nativeLaunch":"unkno\u0077n"}]}`,
+  '{"runs":[{"processes":[],"run":{"segmentIds":[]}}],"runs":null}',
+])("leaves unchanged source without issuing an UPDATE: %s", data => {
+  const f = fixture(); close(f.store);
   const db = new Database(f.file);
   db.prepare("UPDATE executions SET data = ?").run(data); db.pragma("user_version = 2");
   db.exec("CREATE TEMP TRIGGER reject_update BEFORE UPDATE ON executions BEGIN SELECT RAISE(ABORT, 'unexpected rewrite'); END");
