@@ -103,10 +103,9 @@ const ChainRow = memo(({ projectId, index, summaries, workerMachines, rootId, re
       <span className="root-progress" id={`chain-progress-${rootId}`}><span className="root-progress-label">{m.progress({ done: displayProgress.displayDone, total: displayProgress.displayTotal })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${displayProgress.widthPercent}%` }} /></span></span>
       <SessionStatus title={title} status={progress.status} indicator={sessionIndicator} chain expanded={expanded} controls={`goal-children-${rootId}`}
         {...(sessionIndicator === null ? {} : { onActivate: () => setExpanded(true) })} />
-      <button className="button goal-graph-button" type="button" id={`task-chain-graph-${rootId}`} aria-label={m.viewDependenciesLabel({ title })} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined}
+      <button className="goal-graph-button" type="button" id={`task-chain-graph-${rootId}`} aria-label={m.viewDependenciesLabel({ title })} title={m.viewDependencies} aria-haspopup="dialog" aria-controls={open ? `task-graph-${rootId}` : undefined}
         onClick={(event) => onOpenChain(rootId, event.currentTarget)}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.4" /><rect x="15" y="15" width="6" height="6" rx="1.4" /><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v5a4 4 0 0 0 4 4h5" /></svg>
-        {m.viewDependencies}
       </button>
     </div>
     <div id={`goal-children-${rootId}`} hidden={!expanded} className="goal-children">
