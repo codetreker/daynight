@@ -110,6 +110,18 @@ describe('GitHub App management', () => {
     expect(within(dialog).queryByText(/Private project/)).toBeNull(); expect(screen.queryByText('This App is unavailable or you do not have access.')).toBeNull();
   });
 
+  it('ignores a late denial from an older failed Project check after a successful retry', async () => {
+    const first = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' }, second = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b9', name: 'Second project', repoUrl: 'https://example.test/second' }, late = deferred<unknown>();
+    mocks.projects.mockResolvedValue({ items: [first, second], hiddenProjects: '0', nextCursor: null });
+    mocks.projectAccess.mockImplementation(projectId => projectId === first.id ? Promise.reject(new ApiError('network')) : late.promise);
+    render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Delete App' })); const dialog = screen.getByRole('dialog');
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'View accessible projects' })); await within(dialog).findByRole('alert');
+    expect(mocks.projectAccess).toHaveBeenCalledTimes(2); mocks.projectAccess.mockResolvedValue({});
+    fireEvent.click(within(dialog).getByRole('button', { name: 'View accessible projects' })); await within(dialog).findByText(/Private project/);
+    await act(async () => late.reject(new ApiError('server', 403, 'forbidden')));
+    expect(within(dialog).getByText(/Private project/)).toBeVisible(); expect(within(dialog).getByText(/Second project/)).toBeVisible();
+  });
+
   it('cancels a pending project permission check when the dialog closes', async () => {
     const pending = deferred<unknown>(); const project = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' };
     mocks.projects.mockResolvedValue({ items: [project], hiddenProjects: '0', nextCursor: null }); mocks.projectAccess.mockReturnValue(pending.promise);
@@ -211,6 +223,7 @@ describe('GitHub App management', () => {
     view.rerender(subject({ appId: null })); fireEvent.click(check); await within(dialog).findByText(/cannot confirm the original operation/i);
     expect(mocks.get).toHaveBeenCalledOnce(); expect(mocks.create).toHaveBeenCalledOnce();
   });
+
 
   it('keeps the retry available when a foreground impact refresh fails with projects expanded', async () => {
     const project = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' };

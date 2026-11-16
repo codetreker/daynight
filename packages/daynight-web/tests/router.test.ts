@@ -75,6 +75,9 @@ describe("GitHub App management routes", () => {
     expect(parseAuthRoute("/github-apps")).toEqual({ kind: "githubApps", appId: null });
     expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}`)).toEqual({ kind: "githubApps", appId: taskId });
     expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}/admins`)).toEqual({ kind: "githubAppAdmins", appId: taskId });
+    expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}/teams`)).toEqual({ kind: "githubAppTeams", appId: taskId });
+    expect(isLoginReturnPath(`/github-apps/${taskId}/teams`)).toBe(true);
+    expect(parseAuthRoute("/github-apps/not-a-uuid/teams")).toEqual({ kind: "notFound" });
     expect(isLoginReturnPath(`/github-apps/${taskId}`)).toBe(true);
     for (const path of ["/github-apps/", "/github-apps/bad", `/github-apps/${taskId}/extra`]) expect(parseAuthRoute(path)).toEqual({ kind: "notFound" });
   });

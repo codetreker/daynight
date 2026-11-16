@@ -2,6 +2,9 @@ import { GitHubAppAdministration, type GitHubAppAdminConfirmedResult, type GitHu
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError } from '../../api/client';
 import { getProjectAccess } from '../../api/auth';
+import { ImpactProjects } from '../github-app-impact/ImpactProjects';
+import { verifyImpactProjects } from '../github-app-impact/verify-projects';
+import { GitHubAppGrants, type GitHubAppGrantUnknownReview } from '../github-app-grants/GitHubAppGrants';
 import { createGitHubApp, getGitHubApp, getGitHubAppRemovalImpact, listGitHubAppRemovalProjects, listGitHubApps, removeGitHubApp, updateGitHubApp, type GitHubApp, type GitHubAppImpact, type GitHubImpactProjectPage } from '../../api/github-app-management';
 import { navigate } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -13,7 +16,7 @@ import { useTeamForeground } from '../teams/useTeamForeground';
 import { appMessages } from './messages';
 import './github-app-management.css';
 
-type Props = { readonly appId: string | null; readonly section?: 'configuration' | 'admins'; readonly active: boolean; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly onIdentityMismatch: () => void };
+type Props = { readonly appId: string | null; readonly section?: 'configuration' | 'admins' | 'teams'; readonly active: boolean; readonly admission: TaskCacheScope; readonly admissionBlocked: boolean; readonly onIdentityMismatch: () => void };
 type Shared = Omit<Props, 'appId' | 'section'>;
 type AccessState = { revision: number; denied: Set<string> };
 type AppPage = { readonly items: readonly GitHubApp[]; readonly nextCursor: string | null; readonly pages: number };
@@ -22,17 +25,6 @@ const conflict = (error: unknown) => error instanceof ApiError && error.kind ===
 // These GitHub failures occur during credential proof, before the transaction.
 const proofRefused = (error: unknown) => error instanceof ApiError && error.kind === 'server' && error.status === 502 && (error.code === 'github_rate_limited' || error.code === 'github_unavailable');
 class ProjectVisibilityChanged extends Error {}
-const verifyProjects = async (items: GitHubImpactProjectPage['items'], signal: AbortSignal, admission: TaskCacheScope, mismatch: () => void, onDenied: () => void) => {
-  let next = 0, failed = false, failure: unknown;
-  await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
-    while (!failed && next < items.length) {
-      const item = items[next++]!;
-      try { await admission.ready(signal); await getProjectAccess(item.id, signal, auth(admission, mismatch)); await admission.ready(signal); }
-      catch (error) { failed = true; if (denied(error)) { onDenied(); failure = new ProjectVisibilityChanged(); } else failure = error; }
-    }
-  }));
-  if (failed) throw failure;
-};
 const validName = (s: string) => s.isWellFormed() && !s.includes('\0') && /[^\p{White_Space}]/u.test(s) && [...s].length <= 256 && new TextEncoder().encode(s).length <= 1024;
 const validAppId = (s: string) => /^[1-9][0-9]*$/.test(s) && s.length <= 19 && BigInt(s) <= 9223372036854775807n;
 const auth = (admission: TaskCacheScope, mismatch: () => void, dispatched?: () => void) => ({ userId: admission.userId, onPrincipalMismatch: mismatch, ...(dispatched ? { onDispatch: dispatched } : {}) });
@@ -46,9 +38,13 @@ export const GithubAppWorkspace = (props: Props) => {
 
 const Workspace = ({ appId, section = 'configuration', active, ...shared }: Props) => {
   const owners = useRef<string[]>([]), access = useRef<AccessState>({ revision: 0, denied: new Set() });
+  const [grantReviews, setGrantReviews] = useState<ReadonlyMap<string, GitHubAppGrantUnknownReview>>(() => new Map());
+  const [grantResults, setGrantResults] = useState<readonly { id: string; result: 'granted' | 'revoked'; sequence: number }[]>([]);
   const [adminReviews, setAdminReviews] = useState<ReadonlyMap<string, GitHubAppAdminUnknownReview>>(() => new Map());
   const [adminResults, setAdminResults] = useState<readonly { id: string; result: GitHubAppAdminConfirmedResult; sequence: number }[]>([]);
   const resultSequence = useRef(0);
+  const onGrantResult = useCallback((id: string, result: 'granted' | 'revoked') => { const sequence = ++resultSequence.current; setGrantResults(previous => [...previous, { id, result, sequence }]); }, []);
+  const onGrantReview = useCallback((id: string, review: GitHubAppGrantUnknownReview | null) => setGrantReviews(previous => { if (review === null && !previous.has(id)) return previous; const next = new Map(previous); if (review === null) next.delete(id); else next.set(id, review); return next; }), []);
   const onAdminResult = useCallback((id: string, result: GitHubAppAdminConfirmedResult) => { const sequence = ++resultSequence.current; setAdminResults(previous => [...previous, { id, result, sequence }]); }, []);
   const onAdminReview = useCallback((id: string, review: GitHubAppAdminUnknownReview | null) => setAdminReviews(previous => { if (review === null && !previous.has(id)) return previous; const next = new Map(previous); if (review === null) next.delete(id); else next.set(id, review); return next; }), []);
   const [, refreshAccess] = useState(0), [result, setResult] = useState<'saved' | 'removed' | 'left' | null>(null);
@@ -57,11 +53,13 @@ const Workspace = ({ appId, section = 'configuration', active, ...shared }: Prop
   const onListRead = useCallback((revision: number) => { if (access.current.revision !== revision) return false; access.current.denied.clear(); return true; }, []);
   if (appId !== null && !owners.current.includes(appId)) owners.current.push(appId);
   return <div className="github-app-workspace">
+    {grantResults.map(item => <div className="notice" role="status" key={item.sequence}><p>{locale === 'zh-CN' ? 'App 资源 ID' : 'App resource ID'}: <code>{item.id}</code></p><p>{item.result === 'granted' ? (locale === 'zh-CN' ? 'Team 已获 App 使用权。' : 'Team access granted.') : (locale === 'zh-CN' ? 'Team 使用授权已撤销，相关连接已停止。已有 PR 保留。' : 'Team access revoked and affected connections stopped. Existing PRs are retained.')}</p><button className="button" type="button" onClick={() => setGrantResults(previous => previous.filter(result => result.sequence !== item.sequence))}>{locale === 'zh-CN' ? '关闭' : 'Dismiss'}</button></div>)}
+    {[...grantReviews].filter(([id, review]) => review.state === 'app-unavailable' || !(active && appId === id && section === 'teams' && !access.current.denied.has(id))).map(([id, review]) => <div className="notice warning" role="alert" key={id}><p>{locale === 'zh-CN' ? 'App 资源 ID' : 'App resource ID'}: <code>{id}</code></p><p>{locale === 'zh-CN' ? 'Team 授权操作结果未知。当前状态不能证明原操作的结果。' : 'The Team access operation outcome is unknown. Current state cannot establish the original result.'}</p>{review.state === 'app-unavailable' ? <p>{locale === 'zh-CN' ? '此 App 当前不可访问。' : 'This App is currently unavailable.'}</p> : <button className="button" type="button" onClick={() => navigate(`/github-apps/${id}/teams`)}>{locale === 'zh-CN' ? '核对当前状态' : 'Check current state'}</button>}{review.finish && <button className="button" type="button" onClick={review.finish}>{locale === 'zh-CN' ? '结束核对' : 'Finish review'}</button>}</div>)}
     {adminResults.map(item => <div className="notice" role="status" key={item.sequence}><p>{locale === 'zh-CN' ? 'App 资源 ID' : 'App resource ID'}: <code>{item.id}</code></p><p>{item.result === 'invite' ? (locale === 'zh-CN' ? '邀请已创建，但链接无法在此显示。' : 'Invitation created, but its link cannot be shown here.') : item.result === 'remove' ? (locale === 'zh-CN' ? '管理员已移除。' : 'Administrator removed.') : (locale === 'zh-CN' ? '邀请已撤销。' : 'Invitation revoked.')}</p><button className="button" type="button" onClick={() => setAdminResults(previous => previous.filter(result => result.sequence !== item.sequence))}>{locale === 'zh-CN' ? '关闭' : 'Dismiss'}</button></div>)}
     {[...adminReviews].filter(([id, review]) => review.state === 'app-unavailable' || !(active && appId === id && section === 'admins' && !access.current.denied.has(id))).map(([id, review]) => <div className="notice warning" role="alert" key={id}><p>{locale === 'zh-CN' ? 'App 资源 ID' : 'App resource ID'}: <code>{id}</code></p><p>{locale === 'zh-CN' ? '管理员操作结果未知。当前状态不能证明原操作的结果。' : 'The administrator operation outcome is unknown. Current state cannot establish the original result.'}</p>{review.state === 'app-unavailable' ? <p>{locale === 'zh-CN' ? '此 App 当前不可访问。' : 'This App is currently unavailable.'}</p> : <button className="button" type="button" onClick={() => navigate(`/github-apps/${id}/admins`)}>{locale === 'zh-CN' ? '核对当前状态' : 'Check current state'}</button>}{review.finish && <button className="button" type="button" onClick={review.finish}>{locale === 'zh-CN' ? '结束核对' : 'Finish review'}</button>}</div>)}
     {result && <p role="status">{result === 'left' ? (locale === 'zh-CN' ? '已移除你的 App 管理员身份。' : 'Your App administrator access was removed.') : appMessages(locale === 'zh-CN')[result]}</p>}
     <div hidden={!active || appId !== null} inert={!active || appId !== null}><AppList {...shared} active={active && appId === null} access={access} onListRead={onListRead} /></div>
-    {owners.current.map(id => <div key={id} hidden={!active || appId !== id} inert={!active || appId !== id}><AppDetail {...shared} id={id} section={section} active={active && appId === id} onUnavailable={onUnavailable} onDeleted={() => setResult('removed')} onSaved={() => setResult('saved')} onLeft={() => setResult('left')} onAdminReview={onAdminReview} onAdminResult={onAdminResult} /></div>)}
+    {owners.current.map(id => <div key={id} hidden={!active || appId !== id} inert={!active || appId !== id}><AppDetail {...shared} id={id} section={section} active={active && appId === id} onUnavailable={onUnavailable} onDeleted={() => setResult('removed')} onSaved={() => setResult('saved')} onLeft={() => setResult('left')} onAdminReview={onAdminReview} onAdminResult={onAdminResult} onGrantReview={onGrantReview} onGrantResult={onGrantResult} /></div>)}
   </div>;
 };
 
@@ -135,17 +133,17 @@ const AppList = ({ active, admission, admissionBlocked, onIdentityMismatch, acce
   </>;
 };
 
-type DetailProps = Shared & { readonly section: 'configuration' | 'admins'; readonly onLeft: () => void; readonly onAdminReview: (id: string, review: GitHubAppAdminUnknownReview | null) => void; readonly onAdminResult: (id: string, result: GitHubAppAdminConfirmedResult) => void; readonly id: string; readonly onUnavailable: (id: string) => void; readonly onDeleted: () => void; readonly onSaved: () => void };
-const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentityMismatch, onUnavailable, onDeleted, onSaved, onLeft, onAdminReview, onAdminResult }: DetailProps) => {
+type DetailProps = Shared & { readonly section: 'configuration' | 'admins' | 'teams'; readonly onLeft: () => void; readonly onAdminReview: (id: string, review: GitHubAppAdminUnknownReview | null) => void; readonly onAdminResult: (id: string, result: GitHubAppAdminConfirmedResult) => void; readonly onGrantReview: (id: string, review: GitHubAppGrantUnknownReview | null) => void; readonly onGrantResult: (id: string, result: 'granted' | 'revoked') => void; readonly id: string; readonly onUnavailable: (id: string) => void; readonly onDeleted: () => void; readonly onSaved: () => void };
+const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentityMismatch, onUnavailable, onDeleted, onSaved, onLeft, onAdminReview, onAdminResult, onGrantReview, onGrantResult }: DetailProps) => {
   const { locale } = useI18n(), zh = locale === 'zh-CN', m = appMessages(zh);
   const [app, setApp] = useState<GitHubApp | null>(null), [loading, setLoading] = useState(false), [error, setError] = useState<unknown>(null), [unavailable, setUnavailable] = useState(false), [notice, setNotice] = useState('');
   const [modal, setModal] = useState<'edit' | 'delete' | null>(null), [name, setName] = useState(''), [key, setKey] = useState(''), [secret, setSecret] = useState(''), [invalid, setInvalid] = useState(false), [changed, setChanged] = useState(false), [checked, setChecked] = useState(false);
   const [impact, setImpact] = useState<GitHubAppImpact | null>(null), [projects, setProjects] = useState<GitHubImpactProjectPage | null>(null), [impactError, setImpactError] = useState<unknown>(null), [impactLoading, setImpactLoading] = useState(false);
-  const adminsOpened = useRef(false); if (section === 'admins') adminsOpened.current = true;
-  const current = useRef<GitHubApp | null>(null), read = useRef<AbortController | null>(null), impactRead = useRef<AbortController | null>(null), epoch = useRef(0), accessEpoch = useRef(0), projectCursor = useRef<string | null>(null), impactPages = useRef(0), impactFresh = useRef(false), projectsFresh = useRef(false), deniedRef = useRef(false), entryVerified = useRef(false), fresh = useRef(false), activeRef = useRef(active), op = useOperation(admission);
-  activeRef.current = active;
+  const adminsOpened = useRef(false), grantsOpened = useRef(false), grantVisible = useRef(false); if (section === 'admins') adminsOpened.current = true; if (section === 'teams') grantsOpened.current = true;
+  const current = useRef<GitHubApp | null>(null), read = useRef<AbortController | null>(null), impactRead = useRef<AbortController | null>(null), impactReadGeneration = useRef(0), epoch = useRef(0), accessEpoch = useRef(0), projectCursor = useRef<string | null>(null), impactPages = useRef(0), impactFresh = useRef(false), projectsFresh = useRef(false), deniedRef = useRef(false), entryVerified = useRef(false), fresh = useRef(false), activeRef = useRef(active), op = useOperation(admission);
+  activeRef.current = active; grantVisible.current = active && section === 'teams' && entryVerified.current && !unavailable;
   if (!active || admissionBlocked) { fresh.current = false; impactFresh.current = false; }
-  const loseAccess = () => { onUnavailable(id); deniedRef.current = true; epoch.current++; accessEpoch.current++; read.current?.abort(); read.current = null; setLoading(false); fresh.current = false; current.current = null; setApp(null); setUnavailable(true); setModal(null); setName(''); setKey(''); setSecret(''); setImpact(null); setProjects(null); impactRead.current?.abort(); };
+  const loseAccess = () => { grantVisible.current = false; onUnavailable(id); deniedRef.current = true; epoch.current++; impactReadGeneration.current++; accessEpoch.current++; read.current?.abort(); read.current = null; setLoading(false); fresh.current = false; current.current = null; setApp(null); setUnavailable(true); setModal(null); setName(''); setKey(''); setSecret(''); setImpact(null); setProjects(null); impactRead.current?.abort(); };
   const load = useCallback(async () => {
     if (!active || admissionBlocked || admission.isInvalidated) return null;
     fresh.current = false; read.current?.abort(); const controller = new AbortController(); read.current = controller;
@@ -166,7 +164,7 @@ const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentit
   useTeamForeground(active && !admissionBlocked, () => { void load(); if (modal === 'delete') void refreshImpact(); });
   const loadImpact = async (more = false) => {
     if (!active || admissionBlocked || unavailable || more && (!impact || !impact.nextCursor)) return false;
-    impactRead.current?.abort(); const controller = new AbortController(); impactRead.current = controller;
+    impactRead.current?.abort(); const controller = new AbortController(); impactRead.current = controller; impactReadGeneration.current++;
     const signal = AbortSignal.any([controller.signal, admission.signal]), revision = epoch.current;
     impactFresh.current = false; setImpactLoading(true); setImpactError(null);
     try {
@@ -191,14 +189,14 @@ const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentit
   };
   const loadProjects = async (more = false) => {
     if (!active || admissionBlocked || !impact || !impactFresh.current || more && (!projects || !projects.nextCursor)) return;
-    impactRead.current?.abort(); const controller = new AbortController(); impactRead.current = controller;
+    impactRead.current?.abort(); const controller = new AbortController(); impactRead.current = controller; const generation = ++impactReadGeneration.current;
     const signal = AbortSignal.any([controller.signal, admission.signal]), revision = epoch.current;
     setImpactLoading(true); setImpactError(null);
     try {
       const cursor = more ? projects!.nextCursor : projectCursor.current;
       await admission.ready(signal);
       const value = await listGitHubAppRemovalProjects(id, cursor, signal, auth(admission, onIdentityMismatch));
-      await verifyProjects(value.items, signal, admission, onIdentityMismatch, () => { if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) { projectsFresh.current = false; setProjects(null); projectCursor.current = null; } });
+      await verifyImpactProjects(value.items, { signal, ready: next => admission.ready(next), read: (projectId, next) => getProjectAccess(projectId, next, auth(admission, onIdentityMismatch)), isDenied: denied, isCurrent: () => !admission.isInvalidated && epoch.current === revision && generation === impactReadGeneration.current, onDenied: () => { projectsFresh.current = false; setProjects(null); projectCursor.current = null; }, mapDenied: () => new ProjectVisibilityChanged() });
       const checkedImpact = await getGitHubAppRemovalImpact(id, null, signal, auth(admission, onIdentityMismatch)); await admission.ready(signal);
       if (signal.aborted || admission.isInvalidated || epoch.current !== revision) return;
       if (value.nextCursor !== null && value.nextCursor === cursor) throw new ApiError('protocol');
@@ -210,7 +208,7 @@ const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentit
   };
   const refreshImpact = async () => { const revision = epoch.current; if (await loadImpact() && epoch.current === revision && projects) await loadProjects(); };
   useEffect(() => { if (active && !admissionBlocked && modal === 'delete' && !op.pending && !op.result) void refreshImpact(); }, [active, admissionBlocked]);
-  const close = () => { epoch.current++; impactRead.current?.abort(); setImpactLoading(false); setModal(null); setName(''); setKey(''); setSecret(''); setImpact(null); setProjects(null); impactPages.current = 0; projectCursor.current = null; impactFresh.current = false; projectsFresh.current = false; setInvalid(false); if (op.result?.kind !== 'unknown') { op.clear(); setChecked(false); } };
+  const close = () => { epoch.current++; impactReadGeneration.current++; impactRead.current?.abort(); setImpactLoading(false); setModal(null); setName(''); setKey(''); setSecret(''); setImpact(null); setProjects(null); impactPages.current = 0; projectCursor.current = null; impactFresh.current = false; projectsFresh.current = false; setInvalid(false); if (op.result?.kind !== 'unknown') { op.clear(); setChecked(false); } };
   const edit = () => { if (!app || op.guarded()) return; op.clear(); setChanged(false); setInvalid(false); setName(app.name); setKey(''); setSecret(''); setNotice(''); setModal('edit'); };
   const openDelete = () => { if (!app || !fresh.current || op.guarded() || admissionBlocked) return; op.clear(); setChanged(false); setNotice(''); setModal('delete'); void loadImpact(); };
   const save = (event: FormEvent) => {
@@ -241,7 +239,7 @@ const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentit
     {unknown && !modal && <div className="notice warning" role="alert">{m.unknown} <button className="button" type="button" onClick={review}>{m.check}</button>{checked && <><p>{m.checked}</p><button className="button" type="button" onClick={() => { op.clear(); setChecked(false); }}>{m.dismiss}</button></>}</div>}
     {app && !unavailable && entryVerified.current && <>
       <div className="page-heading"><div><div className="eyebrow">GITHUB APP</div><h1>{app.name}</h1><p>App ID {app.githubAppId} · {app.githubSlug}</p></div></div>
-      <nav className="project-management-nav" aria-label={m.configuration}><a className="button" href={`/github-apps/${id}`} aria-current={section === 'configuration' ? 'page' : undefined} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(event.currentTarget.pathname); } }}>{m.configuration}</a><a className="button" href={`/github-apps/${id}/admins`} aria-current={section === 'admins' ? 'page' : undefined} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(event.currentTarget.pathname); } }}>{zh ? '管理员' : 'Administrators'}</a></nav>
+      <nav className="project-management-nav" aria-label={m.configuration}><a className="button" href={`/github-apps/${id}`} aria-current={section === 'configuration' ? 'page' : undefined} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(event.currentTarget.pathname); } }}>{m.configuration}</a><a className="button" href={`/github-apps/${id}/admins`} aria-current={section === 'admins' ? 'page' : undefined} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(event.currentTarget.pathname); } }}>{zh ? '管理员' : 'Administrators'}</a><a className="button" href={`/github-apps/${id}/teams`} aria-current={section === 'teams' ? 'page' : undefined} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); navigate(event.currentTarget.pathname); } }}>{zh ? 'Team 使用授权' : 'Team access'}</a></nav>
       <div hidden={section !== 'configuration'} inert={section !== 'configuration'}>
       <section className="panel github-app-details"><header className="panel-heading"><div><h2>{m.configTitle}</h2><p>{m.configHint}</p></div><button className="button" type="button" disabled={op.guarded()} onClick={edit}>{m.edit}</button></header>
         <div className="panel-body"><dl><div><dt>{m.name}</dt><dd>{app.name}</dd></div><div><dt>GitHub App</dt><dd>{app.githubName} · {app.githubSlug}<p>App ID {app.githubAppId}</p></dd></div><div><dt>{m.privateKey}</dt><dd>{m.configured}</dd></div><div><dt>Webhook secret</dt><dd>{m.configured}</dd></div></dl>
@@ -249,6 +247,7 @@ const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentit
       <section className="panel danger-zone"><header className="panel-heading"><div><h2>{m.delete}</h2><p>{m.deleteHint}</p></div><button className="button danger" type="button" aria-disabled={!fresh.current || admissionBlocked || op.guarded()} onClick={openDelete}>{m.delete}</button></header></section></div>
     </>}
     {adminsOpened.current && <div hidden={!active || section !== 'admins' || !entryVerified.current || unavailable} inert={!active || section !== 'admins' || !entryVerified.current || unavailable}><GitHubAppAdministration appId={id} active={active && section === 'admins' && entryVerified.current && !unavailable} admission={admission} admissionBlocked={admissionBlocked} onIdentityMismatch={onIdentityMismatch} accessDenied={unavailable} onUnknownReviewChange={review => onAdminReview(id, review)} onConfirmedResult={result => onAdminResult(id, result)} onAccessLost={loseAccess} onSelfRemoved={() => { loseAccess(); onLeft(); if (activeRef.current) navigate('/github-apps'); }} /></div>}
+    {grantsOpened.current && <div hidden={!active || section !== 'teams' || !entryVerified.current || unavailable} inert={!active || section !== 'teams' || !entryVerified.current || unavailable}><GitHubAppGrants appId={id} active={active && section === 'teams' && entryVerified.current && !unavailable} admission={admission} admissionBlocked={admissionBlocked} onIdentityMismatch={onIdentityMismatch} accessDenied={unavailable} onUnknownReviewChange={review => onGrantReview(id, review)} onResult={result => { if (!grantVisible.current) onGrantResult(id, result); }} onUnavailable={loseAccess} /></div>}
     {modal && app && !unavailable && <ManagementDialog preserveFocus title={modal === 'edit' ? m.edit : m.deleteTitle} busy={op.pending} suspended={!active || section !== 'configuration' || !entryVerified.current} onClose={close} footer={<><button type="button" className="button" disabled={op.pending} onClick={close}>{unknown ? m.close : m.cancel}</button>{unknown || changed ? <button type="button" className="button github-app-action" aria-disabled={admissionBlocked} onClick={review}>{m.review}</button> : modal === 'edit' ? <button type="submit" form={`github-edit-${id}`} className="button primary github-app-action" disabled={op.pending || op.publicationPending} aria-disabled={admissionBlocked || !fresh.current}>{op.pending ? m.submitting : m.save}</button> : <button type="button" className="button danger github-app-action" disabled={op.pending || op.publicationPending} aria-disabled={admissionBlocked || impactLoading || impact === null || impact.nextCursor !== null || !fresh.current || !impactFresh.current} onClick={remove}>{op.pending ? m.submitting : m.confirmDelete}</button>}</>}>
       {modal === 'edit' ? <><p>{m.registerHint}</p><form id={`github-edit-${id}`} className="github-app-modal-form" onSubmit={save}>
         <div className="field"><label htmlFor={`app-id-${id}`}>App ID</label><input id={`app-id-${id}`} value={app.githubAppId} disabled /></div>
@@ -256,7 +255,7 @@ const AppDetail = ({ id, section, active, admission, admissionBlocked, onIdentit
         <div className="field"><label htmlFor={`app-key-${id}`}>{m.privateKey}</label><textarea id={`app-key-${id}`} value={key} disabled={op.pending || unknown} onChange={e => setKey(e.target.value)} /><p>{m.secretHint}</p></div>
         <div className="field"><label htmlFor={`app-secret-${id}`}>Webhook secret</label><input id={`app-secret-${id}`} type="password" autoComplete="off" value={secret} disabled={op.pending || unknown} onChange={e => setSecret(e.target.value)} /><p>{m.secretHint}</p></div>
         <p>Webhook URL: <code>{app.webhookUrl}</code></p><p>{m.webhookHint}</p></form>{invalid && <div className="notice error" role="alert">{m.invalid}</div>}</> : <div className="github-app-impact"><p><strong>{app.name}</strong> · App ID {app.githubAppId}</p><p>{m.deleteBody}</p><h3>{m.impact}</h3>{impactLoading && !impact && <p role="status">{m.loading}</p>}
-        {impact && <><ul>{impact.teams.map(row => <li key={row.team.id}><strong>{row.team.kind === 'personal' ? m.personal : row.team.name}</strong><p><code>{row.team.id}</code></p><p>{row.projects} {m.connections}</p></li>)}</ul>{impact.nextCursor && <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked} onClick={() => { if (!impactLoading && !admissionBlocked) void loadImpact(true); }}>{m.more}</button>}<p><strong>{m.total}: {impact.totalProjects}</strong></p><p>{projectsFresh.current && projects ? projects.hiddenProjects : impact.hiddenProjects} {m.hidden}</p><h3>{m.visible}</h3>{projects && projectsFresh.current ? <><ul>{projects.items.map(project => <li key={project.id}>{project.name} · {project.repoUrl}</li>)}</ul>{projects.nextCursor && <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked || !impactFresh.current} onClick={() => { if (!impactLoading && !admissionBlocked && impactFresh.current) void loadProjects(true); }}>{m.more}</button>}</> : <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked || !impactFresh.current} onClick={() => { if (!impactLoading && !admissionBlocked && impactFresh.current) void loadProjects(); }}>{m.projects}</button>}</>}
+        {impact && <><ul>{impact.teams.map(row => <li key={row.team.id}><strong>{row.team.kind === 'personal' ? m.personal : row.team.name}</strong><p><code>{row.team.id}</code></p><p>{row.projects} {m.connections}</p></li>)}</ul>{impact.nextCursor && <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked} onClick={() => { if (!impactLoading && !admissionBlocked) void loadImpact(true); }}>{m.more}</button>}<p><strong>{m.total}: {impact.totalProjects}</strong></p><ImpactProjects hiddenProjects={impact.hiddenProjects} page={projectsFresh.current ? projects : null} blocked={impactLoading || admissionBlocked || !impactFresh.current} labels={m} onRead={() => void loadProjects()} onMore={() => void loadProjects(true)} /></>}
         {impactError !== null && <div className="notice error" role="alert">{impactError instanceof ProjectVisibilityChanged ? m.projectChanged : conflict(impactError) ? m.conflict : m.failed} <button className="button" type="button" onClick={review}>{m.retry}</button></div>}<p>{m.deleteFooter}</p></div>}
       {op.result && <div className="notice error" role="alert">{unknown ? m.unknown : conflict(op.result.error) ? m.conflict : m.rejected}</div>}{changed && <div className="notice warning" role="alert">{m.conflict}</div>}{checked && <><p role="status">{m.checked}</p>{unknown && <button className="button" type="button" onClick={() => { op.clear(); close(); setChecked(false); }}>{m.dismiss}</button>}</>}<OperationPublicationError operation={op} zh={zh} />
     </ManagementDialog>}
