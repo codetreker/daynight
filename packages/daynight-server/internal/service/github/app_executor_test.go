@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
@@ -34,7 +35,7 @@ func (f appClientFunc) Acquire(ctx context.Context, id string, version int64) (*
 	return f(ctx, id, version)
 }
 
-var executionIdentity = store.GitHubAppWorkIdentity{AppResourceID: "58484824-12a6-42f3-914a-052a6673403b", GrantID: "878c7887-c79d-4c79-8ac8-d19f40a1d146", TeamID: "90f335d4-873a-4812-a611-247437338c23", AppID: 10, CredentialVersion: 3}
+var executionIdentity = store.GitHubAppWorkIdentity{AppResourceID: "58484824-12a6-42f3-914a-052a6673403b", GrantID: "878c7887-c79d-4c79-8ac8-d19f40a1d146", TeamID: "90f335d4-873a-4812-a611-247437338c23", AppID: 10, CredentialVersion: 3, OwnershipVersion: 7}
 
 func appFixtureStore(t *testing.T, f *pollFixture) appExecutionStore {
 	t.Helper()
@@ -116,6 +117,28 @@ func TestAppExecutorIdleAndProviderFailure(t *testing.T) {
 	}))
 	if err := e.Execute(context.Background(), testProject); !errors.Is(err, cause) {
 		t.Fatalf("provider failure: %v", err)
+	}
+}
+
+func TestAppExecutorBoundsAcquisitionAndHonorsEarlierDeadline(t *testing.T) {
+	f := newPollFixture(t)
+	calls := 0
+	e := appExecutor(t, appFixtureStore(t, f), appClientFunc(func(ctx context.Context, _ string, _ int64) (*remote.Client, func(), error) {
+		calls++
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 15*time.Second {
+			t.Fatal("client acquisition lacks bounded deadline")
+		}
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := e.ExecuteWithClaimContext(ctx, context.Background(), testProject); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("acquisition deadline: %v", err)
+	}
+	if calls != 1 || len(f.runtimes) != 0 {
+		t.Fatalf("acquisitions=%d runtime writes=%d", calls, len(f.runtimes))
 	}
 }
 

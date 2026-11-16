@@ -88,11 +88,13 @@ func (e *AppExecutor) ExecuteWithClaimContext(ctx, claims context.Context, proje
 		return nil
 	}
 	r.appID = identity.AppID
-	r.log = r.log.With("app_resource_id", identity.AppResourceID, "app_id", identity.AppID, "credential_version", identity.CredentialVersion, "grant_id", identity.GrantID, "team_id", identity.TeamID, "generation", r.lease.Generation, "trigger", r.kind)
+	r.log = r.log.With("app_resource_id", identity.AppResourceID, "app_id", identity.AppID, "credential_version", identity.CredentialVersion, "grant_id", identity.GrantID, "team_id", identity.TeamID, "ownership_version", identity.OwnershipVersion, "generation", r.lease.Generation, "trigger", r.kind)
 	r.write = func(c context.Context, fn func(context.Context, store.GitHubWorkDAO) error) (store.Completion, error) {
 		return e.db.WriteGitHubAppWork(c, project, &identity, func(d store.GitHubAppWorkDAO) error { return fn(c, d) })
 	}
-	client, release, err := e.clients.Acquire(ctx, identity.AppResourceID, identity.CredentialVersion)
+	acquireCtx, cancelAcquire := context.WithTimeout(ctx, core.OperationTimeout)
+	client, release, err := e.clients.Acquire(acquireCtx, identity.AppResourceID, identity.CredentialVersion)
+	cancelAcquire()
 	if err != nil {
 		return err
 	}

@@ -7,10 +7,10 @@ import (
 )
 
 // GitHubAppWorkIdentity is captured at admission and retained for the entire job.
-// A later grant or credential version cannot authorize an earlier execution.
+// Later grants, credentials or ownership incarnations cannot authorize earlier work.
 type GitHubAppWorkIdentity struct {
-	AppResourceID, GrantID, TeamID string
-	AppID, CredentialVersion       int64
+	AppResourceID, GrantID, TeamID             string
+	AppID, CredentialVersion, OwnershipVersion int64
 }
 
 var ErrGitHubAppWorkUnavailable = errors.New("github App work authorization is no longer current")

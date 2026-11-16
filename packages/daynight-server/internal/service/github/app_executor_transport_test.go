@@ -13,12 +13,17 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/githubpr"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 )
 
 func TestAppExecutorProductionProviderPollsWithRequestFences(t *testing.T) {
 	f := newPollFixture(t)
 	var requests atomic.Int32
+	var acquisition context.Context
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if acquisition.Err() != context.Canceled {
+			t.Error("acquisition context survived client handoff")
+		}
 		requests.Add(1)
 		switch r.URL.Path {
 		case "/app/installations/20/access_tokens":
@@ -59,9 +64,23 @@ func TestAppExecutorProductionProviderPollsWithRequestFences(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { closeProvider(t, provider) })
-	e := appExecutor(t, appFixtureStore(t, f), provider)
-	if err := e.Execute(context.Background(), testProject); err != nil {
+	acquisitions := 0
+	e := appExecutor(t, appFixtureStore(t, f), appClientFunc(func(ctx context.Context, app string, version int64) (*remote.Client, func(), error) {
+		acquisitions++
+		acquisition = ctx
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 15*time.Second {
+			t.Fatal("acquisition deadline exceeds operation budget")
+		}
+		return provider.Acquire(ctx, app, version)
+	}))
+	work, cancelWork := context.WithCancel(context.Background())
+	defer cancelWork()
+	if err := e.Execute(work, testProject); err != nil {
 		t.Fatal(err)
+	}
+	if acquisitions != 1 || work.Err() != nil {
+		t.Fatalf("acquisitions=%d work error=%v", acquisitions, work.Err())
 	}
 	if requests.Load() != 4 || f.renews < int(requests.Load()) {
 		t.Fatalf("requests=%d renewals=%d", requests.Load(), f.renews)

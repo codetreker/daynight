@@ -27,7 +27,7 @@ func newAppWorkFixture(t *testing.T) appWorkFixture {
 	t.Helper()
 	db, project := dbFixture(t)
 	f := appWorkFixture{db: db, project: project, app: uuid.NewString(), grant: uuid.NewString(), team: uuid.NewString(), hint: uuid.NewString(), request: uuid.NewString()}
-	f.identity = store.GitHubAppWorkIdentity{AppResourceID: f.app, GrantID: f.grant, TeamID: f.team, AppID: 91, CredentialVersion: 1}
+	f.identity = store.GitHubAppWorkIdentity{AppResourceID: f.app, GrantID: f.grant, TeamID: f.team, AppID: 91, CredentialVersion: 1, OwnershipVersion: 1}
 	for _, q := range []struct {
 		sql  string
 		args []any
@@ -173,6 +173,7 @@ func TestAppWorkEveryWriteRejectsStaleAuthorization(t *testing.T) {
 		{"grant revoked", `UPDATE github_app_team_grants SET revoked_at=now() WHERE id=$1`, []any{f.grant}},
 		{"grant replaced", `UPDATE project_github SET team_grant_id=$2 WHERE project_id=$1`, []any{f.project, uuid.NewString()}},
 		{"owner changed", `UPDATE project_ownership SET team_id=$2 WHERE project_id=$1`, []any{f.project, uuid.NewString()}},
+		{"ownership incarnation changed", `UPDATE project_ownership SET version=version+2 WHERE project_id=$1`, []any{f.project}},
 		{"Project deleted", `UPDATE projects SET deleted_at=now() WHERE id=$1`, []any{f.project}},
 		{"Team deleted", `DELETE FROM teams WHERE id=$1`, []any{f.team}},
 		{"disabled", `UPDATE project_github SET enabled=false WHERE project_id=$1`, []any{f.project}},

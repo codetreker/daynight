@@ -4,15 +4,15 @@
 
 ## 原始执行身份
 
-领取在短事务中捕获本地 App UUID、外部 App ID、credentialVersion、grant UUID、当前 owner Team、connection generation 与独立 lease token。连接、同步意愿和 installation/repository 身份必须有效。后续事务携带原始授权身份，不能把重新授权或新凭据当作旧工作的授权。候选扫描仅提供提示，领取再次验证当前事实。
+领取在短事务中捕获本地 App UUID、外部 App ID、credentialVersion、grant UUID、当前 owner Team 及 ownership version、connection generation 与独立 lease token。连接、同步意愿和 installation/repository 身份必须有效。后续事务携带原始授权身份，不能把重新授权、新凭据或转移后恢复的 owner Team 当作旧工作的授权；ownership version 拒绝 A→B→A 转移后的原领取，即使 connection generation 尚未改变。候选扫描仅提供提示，领取再次验证当前事实。
 
 `GitHubAppWorkWriter` 在 Read Committed 事务内按 Project、ownership、Team 共享锁、App 共享锁、grant 共享锁、connection、pending 的顺序取得锁。读取候选绑定时不先锁 connection；获得上游锁后重新读取当前绑定。授权解除或 App 更新只按 App 到 connection 的顺序处理，不反向取得 Project 根，因此可以与执行事务串行化。
 
-所有工作 DAO 操作复用同一授权检查：活 Project、活 App、当前凭据版本、未撤销的原 grant、grant 的 App 与当前 owner Team 一致、有效连接与同步意愿。领取另查 generation、到期计划与无活动领取；检查点、续约、PR 和仓库观察发布、提示确认与重排、运行状态写入均另查原 generation、token 和数据库时间中的有效 lease。原有固定 App 的 lease predicate 保持原行为。
+所有工作 DAO 操作复用同一授权检查：活 Project、活 App、当前凭据版本、未撤销的原 grant、grant 的 App 与当前 owner Team 一致、原 ownership version、有效连接与同步意愿。领取另查 generation、到期计划与无活动领取；检查点、续约、PR 和仓库观察发布、提示确认与重排、运行状态写入均另查原 generation、token 和数据库时间中的有效 lease。原有固定 App 的 lease predicate 保持原行为。
 
 ## 远端操作与结果
 
-确认领取后，执行器按捕获的 App UUID 与 credentialVersion 从 provider 借用 client，所有使用退出后释放。每次实际 HTTP 请求前通过 context 检查点验证并续约原领取，包括 token 获取、重试与重定向。数据库事务不跨远端请求。停止前已通过检查点的请求可能继续完成；停止后的检查点和旧结果发布均须拒绝。
+确认领取后，执行器按捕获的 App UUID 与 credentialVersion 从 provider 借用 client。借用操作有独立的 15 秒期限，返回时立即取消该操作 context；后续同步仍使用原工作 context，所有使用退出后释放 client。凭据读取或连接池等待不能无限占用 runner 槽位。每次实际 HTTP 请求前通过 context 检查点验证并续约原领取，包括 token 获取、重试与重定向。数据库事务不跨远端请求。停止前已通过检查点的请求可能继续完成；停止后的检查点和旧结果发布均须拒绝。
 
 独立 App 与固定 App 执行入口共用[同步算法](github-sync-executor.md)中的访问检查、完整轮询、提示处理、标准化和失败调度；共用算法接收明确的远端、snapshot 与工作事务能力，不决定授权来源。独立入口使用 App-aware DAO，不能通过固定 App Store 适配器获得资格。
 

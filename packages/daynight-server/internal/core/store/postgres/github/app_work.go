@@ -66,8 +66,8 @@ func NewAppWorkWriter(ctx context.Context, tx pgx.Tx, projectID string, expected
 	if _, err := w.sql.Connection(ctx); err != nil {
 		return nil, err
 	}
-	err := tx.QueryRow(ctx, `SELECT a.id::text,r.id::text,o.team_id::text,a.github_app_id,a.credential_version `+appWorkJoins+` WHERE g.project_id=$1 AND `+appWorkAuthorization, projectID).
-		Scan(&w.identity.AppResourceID, &w.identity.GrantID, &w.identity.TeamID, &w.identity.AppID, &w.identity.CredentialVersion)
+	err := tx.QueryRow(ctx, `SELECT a.id::text,r.id::text,o.team_id::text,a.github_app_id,a.credential_version,o.version `+appWorkJoins+` WHERE g.project_id=$1 AND `+appWorkAuthorization, projectID).
+		Scan(&w.identity.AppResourceID, &w.identity.GrantID, &w.identity.TeamID, &w.identity.AppID, &w.identity.CredentialVersion, &w.identity.OwnershipVersion)
 	if err != nil {
 		return nil, appWorkError("read github work authorization", err)
 	}
@@ -90,8 +90,8 @@ func (w *appWorkWriter) authorized(ctx context.Context) (bool, error) {
 	i := w.identity
 	var valid bool
 	err := w.sql.tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 `+appWorkJoins+` WHERE g.project_id=$1 AND `+appWorkAuthorization+`
- AND a.id=$2 AND a.credential_version=$3 AND r.id=$4 AND o.team_id=$5 AND a.github_app_id=$6)`,
-		w.sql.projectID, i.AppResourceID, i.CredentialVersion, i.GrantID, i.TeamID, i.AppID).Scan(&valid)
+ AND a.id=$2 AND a.credential_version=$3 AND r.id=$4 AND o.team_id=$5 AND a.github_app_id=$6 AND o.version=$7)`,
+		w.sql.projectID, i.AppResourceID, i.CredentialVersion, i.GrantID, i.TeamID, i.AppID, i.OwnershipVersion).Scan(&valid)
 	if err != nil {
 		return false, pg.QueryError("check github App work authorization", err)
 	}

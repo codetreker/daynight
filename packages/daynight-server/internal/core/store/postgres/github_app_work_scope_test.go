@@ -17,7 +17,7 @@ func appWorkScopeFixture(t *testing.T) (*Store, string, store.GitHubAppWorkIdent
 	t.Helper()
 	s := isolatedStore(t)
 	project := uuid.NewString()
-	i := store.GitHubAppWorkIdentity{AppResourceID: uuid.NewString(), GrantID: uuid.NewString(), TeamID: uuid.NewString(), AppID: 91, CredentialVersion: 1}
+	i := store.GitHubAppWorkIdentity{AppResourceID: uuid.NewString(), GrantID: uuid.NewString(), TeamID: uuid.NewString(), AppID: 91, CredentialVersion: 1, OwnershipVersion: 1}
 	mustQueryExec(t, s, `INSERT INTO projects(id,name,repo_url) VALUES($1,'Project','repo')`, project)
 	mustQueryExec(t, s, `INSERT INTO teams(id,name) VALUES($1,'Team')`, i.TeamID)
 	mustQueryExec(t, s, `INSERT INTO project_ownership(project_id,team_id) VALUES($1,$2)`, project, i.TeamID)
@@ -246,5 +246,54 @@ func TestAppWorkScopeLostCommitReceipt(t *testing.T) {
 	var retained string
 	if err := s.Pool.QueryRow(ctx, `SELECT claim_token::text FROM project_github WHERE project_id=$1`, project).Scan(&retained); err != nil || retained != token {
 		t.Fatalf("persisted unknown claim: %s %v", retained, err)
+	}
+}
+
+func TestAppWorkOriginalClaimRejectsOwnershipABA(t *testing.T) {
+	s, project, identity := appWorkScopeFixture(t)
+	ctx := t.Context()
+	token := uuid.NewString()
+	completion, err := s.WriteGitHubAppWork(ctx, project, &identity, func(w store.GitHubAppWorkDAO) error {
+		ok, err := appWorkClaim(ctx, w, token)
+		if err == nil && !ok {
+			return errors.New("claim refused")
+		}
+		return err
+	})
+	if err != nil || completion.Outcome != store.TransactionCommitted {
+		t.Fatalf("claim: %+v %v", completion, err)
+	}
+	otherTeam := uuid.NewString()
+	mustQueryExec(t, s, `INSERT INTO teams(id,name) VALUES($1,'Other Team')`, otherTeam)
+	for _, team := range []string{otherTeam, identity.TeamID} {
+		completion, err = s.WriteProject(ctx, project, func(scope store.ProjectWriteScope) error {
+			ownership, err := scope.ProjectDAO().LockTransferOwnership(ctx)
+			if err != nil {
+				return err
+			}
+			if _, err := scope.ProjectDAO().MoveOwnership(ctx, team); err != nil {
+				return err
+			}
+			if ownership.Version < identity.OwnershipVersion {
+				return errors.New("ownership version regressed")
+			}
+			return nil
+		})
+		if err != nil || completion.Outcome != store.TransactionCommitted {
+			t.Fatalf("transfer: %+v %v", completion, err)
+		}
+	}
+	var otherwiseCurrent bool
+	if err := s.Pool.QueryRow(ctx, `SELECT o.team_id=$2 AND o.version=3 AND g.generation=1 AND g.claim_token=$3 AND g.claim_until>clock_timestamp() AND g.enabled AND g.sync_enabled FROM project_github g JOIN project_ownership o ON o.project_id=g.project_id WHERE g.project_id=$1`, project, identity.TeamID, token).Scan(&otherwiseCurrent); err != nil || !otherwiseCurrent {
+		t.Fatalf("ABA fixture did not retain the original lease: %v %v", otherwiseCurrent, err)
+	}
+	called := false
+	completion, err = s.WriteGitHubAppWork(ctx, project, &identity, func(w store.GitHubAppWorkDAO) error {
+		called = true
+		_, err := w.Renew(ctx, store.GitHubLease{Generation: 1, Token: token}, time.Now().Add(time.Hour))
+		return err
+	})
+	if !errors.Is(err, store.ErrGitHubAppWorkUnavailable) || called || completion.Outcome != store.TransactionNotCommitted {
+		t.Fatalf("old ownership revived: %+v %v callback=%v", completion, err, called)
 	}
 }
