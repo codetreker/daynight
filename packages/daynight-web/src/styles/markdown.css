@@ -8,6 +8,9 @@
 .markdown-content a { color: #5c5cbd; text-decoration: underline; text-underline-offset: 3px; }
 .markdown-content a:hover { color: #44449b; }
 .markdown-content img { max-width: 100%; height: auto; }
+.markdown-image-error { display: block; min-width: 0; max-width: 100%; margin: 12px 0; padding: 12px; border: 1px solid #df9d96; border-radius: 7px; background: #fff0ef; color: #a3322b; }
+.markdown-image-error-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.markdown-image-error .button:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
 .markdown-content ul, .markdown-content ol { padding-left: 21px; margin: 9px 0; }
 .markdown-content li { margin: 3px 0; }
 .markdown-content code { font: 10px/1.8 ui-monospace, SFMono-Regular, Consolas, monospace; background: #f2f3f7; border-radius: 3px; padding: 2px 4px; color: #5e587c; }

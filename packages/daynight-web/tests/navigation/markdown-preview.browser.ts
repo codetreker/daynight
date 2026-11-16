@@ -5,6 +5,7 @@ import { stringifyWireJson } from '../helpers/wireJson';
 import { stableDiagrams } from './mermaid-stable-fixture';
 import { captureStableDependencyGeometry, checkDependencyGeometry, expectedDependencyTopology } from '../helpers/dependency-geometry';
 import { expectDescriptionCard } from '../helpers/description-card';
+import { expectTextContrast } from './color-roles';
 
 const projectId = '00000000-0000-4000-8000-000000000031';
 const taskId = '00000000-0000-4000-8000-000000000041';
@@ -205,4 +206,67 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Tas
   await check(pageSurface);
   await pageSurface.getByRole('button', { name: locale === 'en' ? 'Enter fullscreen' : '进入全屏' }).click();
   await check(pageSurface);
+});
+
+for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN']) test(`Task attachment image retry preserves reading at ${width}px in ${locale}`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 800 });
+  const imagePath = `${root}/preview/images/failed%20image.svg`;
+  const imageUrl = `${imagePath}?variant=one%2Ftwo&size=2#drawing`;
+  const source = `# Delivery\n\n${'Earlier reading paragraph.\n\n'.repeat(30)}## Image recovery anchor\n\n![${'Long attachment image name '.repeat(15)}](images/failed%20image.svg?variant=one%2Ftwo&size=2#drawing)\n\n![Loaded sibling](images/loaded.svg)\n\n![External image](https://external-image.invalid/failed.svg)\n\n![Native image](/native-image.svg)\n\n${'A paragraph retained around the failed image.\n\n'.repeat(60)}`;
+  const state = await install(page, source, false, locale);
+  const requests: string[] = [];
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#256a48"/></svg>';
+  const retryGate = Promise.withResolvers<void>();
+  await page.route('**/preview/images/**', async route => {
+    requests.push(route.request().url());
+    const target = new URL(route.request().url()).pathname === imagePath;
+    const attempt = requests.filter(value => new URL(value).pathname === imagePath).length;
+    if (target && attempt > 1) await retryGate.promise;
+    return target && attempt === 1
+      ? route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":{"code":"not_found"}}' })
+      : route.fulfill({ contentType: 'image/svg+xml', body: svg });
+  });
+  const native: string[] = [];
+  await page.route('https://external-image.invalid/**', route => { native.push(route.request().url()); return route.abort('failed'); });
+  await page.route('**/native-image.svg', route => { native.push(route.request().url()); return route.fulfill({ contentType: 'image/svg+xml', body: svg }); });
+  await open(page);
+  const reader = page.locator('.task-description');
+  const error = reader.getByRole('alert');
+  await expect(error).toHaveCount(1);
+  await expect(error).toContainText(locale === 'en' ? 'Unable to load the attachment image' : '无法加载附件图片');
+  await expectTextContrast(error);
+  const retry = error.getByRole('button', { name: locale === 'en' ? 'Retry image' : '重试图片', exact: true });
+  await expect(retry).toBeVisible();
+  await expect(reader.getByRole('img', { name: 'External image', exact: true })).toHaveAttribute('src', 'https://external-image.invalid/failed.svg');
+  await expect(reader.getByRole('img', { name: 'Native image', exact: true })).toHaveAttribute('src', '/native-image.svg');
+  const sibling = reader.getByRole('img', { name: 'Loaded sibling', exact: true });
+  await expect.poll(() => sibling.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(200);
+  const siblingHandle = await sibling.elementHandle();
+  const before = [...requests], nativeBefore = [...native];
+  const readerHandle = await reader.elementHandle();
+  await retry.scrollIntoViewIfNeeded();
+  const readingPosition = () => reader.getByRole('heading', { name: 'Image recovery anchor', exact: true }).evaluate(element => {
+    let owner = element.parentElement!;
+    while (owner.parentElement && !(owner.scrollHeight > owner.clientHeight && /auto|scroll/.test(getComputedStyle(owner).overflowY))) owner = owner.parentElement;
+    return { top: owner.scrollTop, anchor: element.getBoundingClientRect().top };
+  });
+  const position = await readingPosition();
+  expect(position.top).toBeGreaterThan(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath('attachment-image-failure.png') });
+  try {
+    await retry.click();
+    await expect.poll(() => requests.length).toBe(before.length + 1);
+    await expect(error).toHaveCount(0);
+    expect(await readingPosition()).toEqual(position);
+  } finally { retryGate.resolve(); }
+  const recovered = reader.locator(`img[src="${imageUrl}"]`);
+  await expect.poll(() => recovered.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(200);
+  expect(await readingPosition()).toEqual(position);
+  expect(requests.slice(before.length)).toEqual([`http://127.0.0.1:4203${imageUrl.split('#')[0]}`]);
+  expect(native).toEqual(nativeBefore);
+  expect(await siblingHandle!.evaluate(element => element.isConnected)).toBe(true);
+  expect(await readerHandle!.evaluate(element => element.isConnected)).toBe(true);
+  expect(state.writes).toEqual([]);
+  await siblingHandle!.dispose(); await readerHandle!.dispose();
 });

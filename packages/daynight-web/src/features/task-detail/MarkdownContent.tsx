@@ -2,26 +2,32 @@ import { createContext, useContext, useState, type ComponentPropsWithoutRef, typ
 import Markdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { MermaidDiagram } from './MermaidDiagram';
+import { MarkdownAttachmentImage } from './MarkdownAttachmentImage';
+import { resolveAttachmentReference, type MarkdownAttachmentBase } from './attachments/model';
 import '../../styles/markdown.css';
 
 type MarkdownContentProps = {
   readonly text: string;
   readonly className: string;
   readonly resolveUrl: (value: string) => string | null;
+  readonly attachmentBase: MarkdownAttachmentBase;
   readonly remotePaused?: boolean;
   readonly onLinkClick?: (value: string, event: MouseEvent<HTMLAnchorElement>) => void;
 };
 
-type MarkdownLinks = { readonly references: WeakMap<object, string>; readonly onLinkClick: MarkdownContentProps['onLinkClick']; readonly remotePaused: boolean };
+type MarkdownLinks = { readonly references: WeakMap<object, string>; readonly attachmentBase: MarkdownAttachmentBase; readonly onLinkClick: MarkdownContentProps['onLinkClick']; readonly remotePaused: boolean };
 const MarkdownLinksContext = createContext<MarkdownLinks | null>(null);
 const MarkdownLink = ({ node, ...props }: ComponentPropsWithoutRef<'a'> & ExtraProps) => {
   const links = useContext(MarkdownLinksContext)!;
   const blocked = links.remotePaused && !props.href?.startsWith('#');
   return <a {...props} href={blocked ? undefined : props.href} aria-disabled={blocked || undefined} role={blocked ? "link" : undefined} tabIndex={blocked ? 0 : undefined} onClick={(event) => links.onLinkClick?.(links.references.get(node!)!, event)} />;
 };
-const MarkdownImage = ({ node: _node, ...props }: ComponentPropsWithoutRef<'img'> & ExtraProps) => {
-  const { remotePaused } = useContext(MarkdownLinksContext)!;
-  return <MarkdownImageSource key={props.src} {...props} remotePaused={remotePaused} />;
+const MarkdownImage = ({ node, ...props }: ComponentPropsWithoutRef<'img'> & ExtraProps) => {
+  const { references, attachmentBase, remotePaused } = useContext(MarkdownLinksContext)!;
+  const reference = resolveAttachmentReference(references.get(node!)!, attachmentBase);
+  return reference.kind === 'relative' && props.src !== ''
+    ? <MarkdownAttachmentImage key={props.src} {...props} remotePaused={remotePaused} />
+    : <MarkdownImageSource key={props.src} {...props} remotePaused={remotePaused} />;
 };
 const MarkdownImageSource = ({ remotePaused, ...props }: ComponentPropsWithoutRef<'img'> & { readonly remotePaused: boolean }) => {
   const [loaded, setLoaded] = useState(false);
@@ -38,11 +44,11 @@ const MarkdownPre = ({ node, ...props }: ComponentPropsWithoutRef<'pre'> & Extra
 };
 const components = { a: MarkdownLink, img: MarkdownImage, table: MarkdownTable, pre: MarkdownPre };
 
-export const MarkdownContent = ({ text, className, resolveUrl, onLinkClick, remotePaused = false }: MarkdownContentProps) => {
+export const MarkdownContent = ({ text, className, resolveUrl, attachmentBase, onLinkClick, remotePaused = false }: MarkdownContentProps) => {
   const references = new WeakMap<object, string>();
   return <div className={`markdown-content ${className}`}>
-    <MarkdownLinksContext value={{ references, onLinkClick, remotePaused }}><Markdown remarkPlugins={[remarkGfm]} urlTransform={(value, key, node) => {
-      if (key === 'href') references.set(node, value);
+    <MarkdownLinksContext value={{ references, attachmentBase, onLinkClick, remotePaused }}><Markdown remarkPlugins={[remarkGfm]} urlTransform={(value, key, node) => {
+      if (key === 'href' || key === 'src') references.set(node, value);
       const resolved = resolveUrl(value);
       return resolved === null ? '' : defaultUrlTransform(resolved);
     }} components={components}>{text}</Markdown></MarkdownLinksContext>

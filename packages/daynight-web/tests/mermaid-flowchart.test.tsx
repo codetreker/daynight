@@ -34,7 +34,7 @@ describe('Markdown Mermaid flowcharts', () => {
   it('uses one shared block renderer while preserving ordinary Markdown and inert image output', async () => {
     const bindFunctions = vi.fn();
     engine.render.mockResolvedValue({ ...result, bindFunctions });
-    const view = render(<MarkdownContent className="test-markdown" resolveUrl={(value) => value} text={`# Heading\n\n| A | B |\n| --- | --- |\n| C | D |\n\n\`inline\`\n\n\`\`\`typescript\nconst value = 1;\n\`\`\`\n\n\`\`\`mermaid\n${source}\n\`\`\``} />);
+    const view = render(<MarkdownContent attachmentBase={{ kind: 'root' }} className="test-markdown" resolveUrl={(value) => value} text={`# Heading\n\n| A | B |\n| --- | --- |\n| C | D |\n\n\`inline\`\n\n\`\`\`typescript\nconst value = 1;\n\`\`\`\n\n\`\`\`mermaid\n${source}\n\`\`\``} />);
     expect(screen.getByRole('status')).toHaveTextContent('正在渲染图表');
     expect(screen.getByRole('heading')).toHaveTextContent('Heading');
     expect(screen.getByRole('table')).toHaveTextContent('CD');
@@ -57,7 +57,7 @@ describe('Markdown Mermaid flowcharts', () => {
       if (text.includes('broken')) throw new Error('parser failure');
       return result;
     });
-    render(<MarkdownContent className="test-markdown" resolveUrl={(value) => value} text={`正文\n\n\`\`\`mermaid\nflowchart TD\nbroken\n\`\`\`\n\n\`\`\`mermaid\n${source}\n\`\`\``} />);
+    render(<MarkdownContent attachmentBase={{ kind: 'root' }} className="test-markdown" resolveUrl={(value) => value} text={`正文\n\n\`\`\`mermaid\nflowchart TD\nbroken\n\`\`\`\n\n\`\`\`mermaid\n${source}\n\`\`\``} />);
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('无法渲染此图表'));
     await waitFor(() => expect(screen.getByRole('img', { name: '图表' })).toBeInTheDocument());
     expect(screen.getByText('正文')).toBeVisible();
@@ -66,7 +66,7 @@ describe('Markdown Mermaid flowcharts', () => {
   });
 
   it('shows empty Mermaid fences as unsupported source without changing empty ordinary fences', async () => {
-    const view = render(<MarkdownContent className="test-markdown" resolveUrl={(value) => value} text={'```mermaid\n```\n\n```text\n```'} />);
+    const view = render(<MarkdownContent attachmentBase={{ kind: 'root' }} className="test-markdown" resolveUrl={(value) => value} text={'```mermaid\n```\n\n```text\n```'} />);
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('不支持此 Mermaid 图表类型'));
     expect(view.container.querySelectorAll('.mermaid-chart')).toHaveLength(1);
     expect(view.container.querySelector('pre > code.language-text')).toBeInTheDocument();

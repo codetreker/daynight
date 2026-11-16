@@ -262,6 +262,8 @@ export type InspectionMessages = {
     readonly previewLoadError: string;
     readonly previewReadError: string;
     readonly retryPreview: string;
+    readonly markdownImageLoadError: string;
+    readonly retryMarkdownImage: string;
     readonly frameTitle: (args: { kind: 'PDF' | 'HTML'; path: string }) => string;
     readonly unsupportedPreview: string;
   };
