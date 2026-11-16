@@ -243,8 +243,18 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	readGrant := func() *time.Time { return usageTimestamp(t, usageFind(t, readGrants(), grantID)) }
 
 	accessStart := time.Now()
+	_, data = usageRequest(t, f, plain, http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"oauth-integration","version":"1"}}}`, "application/json", tokens.AccessToken, http.StatusOK)
+	initialized := usageDecode[struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}](t, data)
+	if len(initialized.Error) != 0 || initialized.Result.ProtocolVersion != "2025-11-25" {
+		t.Fatal("OAuth MCP initialize did not negotiate the requested protocol")
+	}
+	_, _ = usageRequest(t, f, plain, http.MethodPost, "/mcp", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, "application/json", tokens.AccessToken, http.StatusAccepted)
 	_, data = usageRequest(t, f, plain, http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`, "application/json", tokens.AccessToken, http.StatusOK)
-	accessEnd := time.Now()
 	result := usageDecode[struct {
 		Result json.RawMessage `json:"result"`
 		Error  json.RawMessage `json:"error"`
@@ -263,6 +273,7 @@ func TestServerAPICredentialUsageNormalFlow(t *testing.T) {
 	if len(call.Error) != 0 || call.Result.IsError || len(call.Result.Content) == 0 {
 		t.Fatal("OAuth MCP read-only team_list did not succeed")
 	}
+	accessEnd := time.Now()
 	accessAt := usageWait(t, f, readGrant, nil, accessStart, accessEnd)
 	refresh := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tokens.RefreshToken}, "client_id": {registration.ClientID}, "resource": {f.origin + "/mcp"}}
 	refreshStart := time.Now()
