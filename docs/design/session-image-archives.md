@@ -262,15 +262,15 @@ timeline 和两种完整历史同步共用以下传输规则：
 
 ### 已停止执行的 Markdown 图片投影修复
 
-`worker repair-markdown` 是原 Worker 上的显式终态修复入口。命令核验当前账号、服务、终态 Task、completed 原 claim、Session、Worker 配置、完整 launch ticket、工作树 manifest、Git 分支和实际路径。任务暂停或任一身份变化均拒绝；它不占用 Worker 调度锁，也不创建 Controller 或 Provider，不重放输入。停止写入使用原 Controller storage permit，沿用 Windows Job stop proof 等平台停止证明。
+`worker repair-markdown` 是原 Worker 上的显式终态修复入口。命令核验当前账号、服务、终态 Task、completed 原 claim、Session、Worker 配置、完整 launch ticket、工作树 manifest、Git 分支和实际路径。远端 Session、停止 journal 和本地执行绑定必须具有相同的非空 native Session 身份；claim 的可选 nativeSessionId 摘要缺失不构成冲突，非空时必须与这些证据一致。任务暂停或任一已知身份变化均拒绝；它不占用 Worker 调度锁，也不创建 Controller 或 Provider，不重放输入。停止写入使用原 Controller storage permit，沿用 Windows Job stop proof 等平台停止证明。
 
 `stopped-markdown-repair` 从 SQL timeline 找出非空 `imageProjectionError`，使用保留的 `markdown:projection` 输入重新分析。当前投影必须与原输入渲染结果一致；只有完整、非截断且块身份明确的失败部分可进入分析。每个条目的修复计划保留原 entry、原 projection、ticket hash、停止快照及解析结果。解析完成后先保存计划，使新 imageId 在中断后保持不变；失败不替换原 timeline。每次写入前重读业务授权，再在存储锁内核对快照、source/ACK 截止点、输入、条目和目录根身份。
 
-已有图片及 retained 引用保留。新发现的图片优先复用同来源身份的已确认资源；否则只有显式修复授权允许读取原 cwd 根内的普通本地文件，核对原 dev/ino、逐段路径证明及源摘要，再经实际图片解码器验证。外部 URL、链接或 reparse 跳转、缺失根身份、丢失文件及变化源均拒绝，不制造 `image_unavailable` 来完成修复。该授权不恢复 Agent 的 Read grant；普通自动归档仍不发起新的来源读取。已保存图片继续要求原描述符、长度和 SHA-256 一致，不能靠重新抓源替换已知原件。
+已有图片及 retained 引用保留。新发现的图片优先复用具有明确出现对应关系的已确认资源，核对块、正文摘要、上下文、目标、原范围及修订来源；相同目标地址不能代替出现身份，多份历史资源的歧义不能用首个匹配消除。没有对应原件时，只有显式修复授权允许读取原 cwd 根内的普通本地文件，核对原 dev/ino、逐段路径证明及源摘要，再经实际图片解码器验证。外部 URL、链接或 reparse 跳转、缺失根身份、丢失文件及变化源均拒绝，不制造 `image_unavailable` 来完成修复。该授权不恢复 Agent 的 Read grant；普通自动归档仍不发起新的来源读取。已保存图片继续要求原描述符、长度和 SHA-256 一致，不能靠重新抓源替换已知原件。
 
 所有新图片验证成功后，在原事务中保留 entryId、entrySeq 和正文，提高条目 revision，提交投影和修复计划，并追加连续的 `timeline_upsert` outbox 事件及 source 序号。资源文件先耐久保存；中断后沿计划中稳定的资源身份核验，不删除原失败输入。随后现有 source-tail、最终 history、资源上传、seal 与 manifest 回执链完成归档。新本地资源采用无 revision 描述符，须先出现在最终 history ledger，才能沿 `migrationOnly` 资源入口提交；服务在 seal 时核对实际已保存原件。
 
-存在 archive intent、receipt、待确认 stopped source-tail 或最终 history checkpoint 时，修复器拒绝改写源。命令遇到已开始的归档转入既有对账；不可变上传身份不能由修复操作替换。每条修复失败报告固定原因码并保留原件；命令返回成功仅在归档回执已验证后成立，最终资源清理由原 Worker 负责。
+存在 archive intent、receipt、待确认 stopped source-tail 或最终 history checkpoint 时，修复器拒绝改写源。命令识别这些全部协调状态并转入既有对账，包括尚未生成 archive intent 的 source-tail 请求失败或响应丢失；沿原批次与冻结字节继续，不删除标记或重建上传身份。每条修复失败报告固定原因码并保留原件；命令返回成功仅在归档回执已验证后成立，最终资源清理由原 Worker 负责。
 
 旧 projection 只保存通用 `source_unavailable`，可能来自分析超时、解析器启动失败、预算拒绝或无法建立可信块映射；这些记录不足以判定最初触发条件。新分析保留稳定原因码并区分启动与解析预算。重分析成功只证明当前输入可分析，不能反推历史根因。
 

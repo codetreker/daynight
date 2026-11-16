@@ -18,7 +18,7 @@ import * as outbox from "../../../src/commands/controller/outbox-store.js";
 
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-const fixture = async (text = "Original 中文 **answer** 🐈", stop = true, retainImage = false) => {
+const fixture = async (text = "Original 中文 **answer** 🐈", stop = true, retainImage: boolean | "repeated" | "ambiguous" = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/stopped-markdown-tests"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: home, nativeHome: path.join(home, ".codex"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(home, "grant.json"), ipcEndpoint: path.join(home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
@@ -26,12 +26,29 @@ const fixture = async (text = "Original 中文 **answer** 🐈", stop = true, re
   const entryId = randomUUID(), projector = createMarkdownImageProjector();
   const prepared = projector.prepare({ entryId, revision: "1", kind: "assistant_message", content: [{ type: "text", text }] }, { parts: [{ inputIndex: 0, sourceKey: `${entryId}:body`, complete: true, truncated: false, format: "markdown", contextKey: "original" }] }, null);
   let failed = projector.markFailed(prepared.state);
-  if (retainImage) {
+  if (retainImage === true) {
     const complete = await projector.complete(prepared.state), image = complete.state.parts[0]!.current[0]!;
     const saved = await resolveImage(image, {} as never);
     store.saveResource(saved.resource!, saved.bytes);
     const updated = projector.updateImagePart(complete.state, image.occurrence.imageId, saved.part);
     failed = projector.markFailed({ ...updated.state, pending: true, parts: updated.state.parts.map(part => ({ ...part, status: "pending" })) });
+  }
+  if (retainImage === "repeated" || retainImage === "ambiguous") {
+    const meta = { parts: [{ inputIndex: 0, sourceKey: `${entryId}:body`, complete: true, truncated: false, format: "markdown" as const, contextKey: "original" }] };
+    const body = (text: string, revision: string) => ({ entryId, revision, kind: "assistant_message" as const, content: [{ type: "text" as const, text }] });
+    let captured = await projector.complete(prepared.state);
+    for (let cycle = 0; cycle < (retainImage === "ambiguous" ? 2 : 1); cycle++) {
+      for (const [index, image] of captured.state.parts[0]!.current.entries()) {
+        const bytes = index === 0 ? png : secondPng;
+        const saved = await resolveImage(image, {} as never);
+        store.saveResource({ ...saved.resource!, byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex") }, bytes);
+        captured = projector.updateImagePart(captured.state, image.occurrence.imageId, saved.part);
+      }
+      const changed = await projector.complete(projector.prepare(body("temporary body", String(cycle * 2 + 2)), meta, captured.state).state);
+      const returned = projector.prepare(body(text, String(cycle * 2 + 3)), meta, changed.state);
+      if (cycle + 1 < (retainImage === "ambiguous" ? 2 : 1)) captured = await projector.complete(returned.state);
+      else failed = await createMarkdownImageProjector({ parse: async () => { throw new Error("analysis unavailable after original text returned"); } }).complete(returned.state);
+    }
   }
   store.publishMarkdownProjection(failed.state, failed.entry);
   store.patchSnapshot({ nativeSessionId: randomUUID(), ...(stop ? { lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() } : {}) }); store.close();
@@ -109,6 +126,7 @@ test("refuses source mutation during asynchronous analysis without overwriting i
 });
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=", "base64");
+const secondPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 const resolveImage: StoppedMarkdownImageResolver = async source => ({
   part: { type: "image", imageId: source.occurrence.imageId, resourceId: source.occurrence.imageId, label: source.part.label },
   resource: { resourceId: source.occurrence.imageId, status: "available", name: "original.png", mediaType: "image/png", byteLength: String(png.length), sha256: createHash("sha256").update(png).digest("hex"), error: null }, bytes: png,
@@ -138,6 +156,34 @@ test("a previously captured image stays retained and can satisfy the same source
   expect(part.current[0].occurrence.imageId).not.toBe(original.occurrence.imageId);
   expect(sessionArchiveReferences([after.entry]).resources).toEqual(new Set([original.part.resourceId]));
 });
+
+test("repeated destinations reuse the correct original occurrence bytes after the body returns", async () => {
+  const f = await fixture("![original](original.png) between ![original](original.png)", true, "repeated"), before = f.inspect();
+  const originals = before.state.parts[0].retained;
+  expect(originals).toHaveLength(2);
+  expect(originals[0].part.resourceId).not.toBe(originals[1].part.resourceId);
+  const unexpectedRead = vi.fn<StoppedMarkdownImageResolver>().mockRejectedValue(new Error("original file changed"));
+  expect(await repairStoppedMarkdownProjections({ ...f, resolveImage: unexpectedRead })).toEqual({ repaired: [f.entryId], failures: [] });
+  expect(unexpectedRead).not.toHaveBeenCalled();
+  const after = f.inspect();
+  expect(after.state.parts[0].current.map((image: { part: { resourceId: string } }) => image.part.resourceId)).toEqual(originals.map((image: { part: { resourceId: string } }) => image.part.resourceId));
+  expect(after.state.parts[0].retained).toEqual(originals);
+  const bodies: string[] = [], receiver = archiveTestReceiver({ bodies, sourceThrough: "2" });
+  expect(await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver.request })).toMatchObject({ state: "ready", completeness: "complete" });
+  const manifest = JSON.parse(bodies[0]!);
+  for (const [index, original] of originals.entries()) expect(receiver.files.get(manifest.resources.find((item: { resource: { resourceId: string } }) => item.resource.resourceId === original.part.resourceId).blobId)).toEqual(index === 0 ? png : secondPng);
+  expect(receiver.entries(bodies[0]!)).toEqual([after.entry]);
+}, 15_000);
+
+test("multiple retained revision lineages for one range refuse repair without choosing old bytes", async () => {
+  const f = await fixture("![original](original.png) between ![original](original.png)", true, "ambiguous"), before = f.inspect();
+  expect(before.state.parts[0].retained).toHaveLength(4);
+  const unexpectedRead = vi.fn<StoppedMarkdownImageResolver>().mockRejectedValue(new Error("ambiguous original"));
+  expect(await repairStoppedMarkdownProjections({ ...f, resolveImage: unexpectedRead })).toEqual({ repaired: [], failures: [{ entryId: f.entryId, code: "image_identity_ambiguous" }] });
+  expect(unexpectedRead).not.toHaveBeenCalled();
+  const after = f.inspect();
+  expect(after.entry).toEqual(before.entry); expect(after.state).toEqual(before.state); expect(after.outbox).toEqual(before.outbox); expect(after.execution).toEqual(before.execution);
+}, 15_000);
 
 test("interruption after durable analysis keeps the original and resumes the same plan", async () => {
   const f = await fixture("![image](original.png)"), before = f.inspect(), controller = new AbortController();

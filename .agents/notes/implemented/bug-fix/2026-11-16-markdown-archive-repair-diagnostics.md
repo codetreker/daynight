@@ -31,6 +31,14 @@ Persisted per-entry plans retain the original failed projection and stable new
 image identities. New source reads require explicit local repair authority and
 the original directory root, rather than a fabricated native Read grant.
 
+Saved-image reuse requires an unambiguous occurrence correspondence, including
+its original range and revision lineage. Equal destinations can represent
+different bytes at different positions; retaining every resource does not prove
+that the current bindings display the right resource. The Session, stopped
+journal and local execution must agree on a nonempty native identity. A missing
+optional claim summary does not override those authoritative records, while a
+conflicting known summary still prevents repair.
+
 This extends the [typed archive waiting decision](2026-11-10-worker-recovery-evidence.md).
 Receipt reconciliation remains first, and only actual archival and cleanup can
 release retained resources. A successful condition probe does not manufacture a
@@ -57,9 +65,12 @@ conflate repair permission with Agent execution permission. Explicit repair
 admits only verified ordinary files inside the original root; external sources
 without a saved resource remain blocked.
 
-**Change the frozen archive upload.** Replacing a source after an intent or
-receipt exists would break reconciliation of earlier writes. Repair is admitted
-before that boundary; existing archive operations keep their own original IDs.
+**Change the frozen archive upload.** Replacing a source after a source-tail
+batch, history checkpoint, intent or receipt exists would break reconciliation
+of earlier writes. Repair is admitted before that boundary. The command selects
+the original uploader for every persisted coordination state, including a tail
+request whose result was lost before archive preparation; existing operations
+keep their original IDs and bytes.
 
 ## Consequences
 

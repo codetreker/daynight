@@ -202,8 +202,9 @@ failures remain explicit failures; restoring the reported original source or
 context permits another attempt with the same arguments.
 
 Successful repair continues the existing archive upload and validates its
-receipt. An existing upload intent or receipt selects reconciliation instead of
-rewriting its source. The Worker still owns resource cleanup. Read the original
+receipt. A pending source-tail batch, history checkpoint, upload intent or receipt
+selects reconciliation instead of rewriting its source. The Worker still owns
+resource cleanup. Read the original
 Session afterwards and distinguish a ready content archive from an archived
 lifecycle. Unknown output or upload results require observing that same
 execution before deciding again. Successful reanalysis does not prove the cause

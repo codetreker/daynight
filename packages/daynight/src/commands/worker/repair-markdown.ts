@@ -22,7 +22,7 @@ import { retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/p
 
 export type WorkerMarkdownRepairTarget = { projectId: string; taskId: string; claimId: string; sessionId: string; worktreeId: string };
 const repairNextAction = (code: string): string => {
-  if (["projection_input_incomplete", "projection_identity_ambiguous", "projection_input_missing", "repair_plan_changed"].includes(code)) return "Keep the original journal and native history for source recovery; this command cannot reconstruct missing or ambiguous input. Do not remove failure markers.";
+  if (["projection_input_incomplete", "projection_identity_ambiguous", "image_identity_ambiguous", "projection_input_missing", "repair_plan_changed"].includes(code)) return "Keep the original journal and native history for source recovery; this command cannot reconstruct missing or ambiguous input. Do not remove failure markers.";
   if (["source_forbidden", "policy_restricted", "context_unavailable"].includes(code)) return "Keep the original resources and inspect the original worktree context. This command cannot fetch external images or bypass source policy.";
   if (code.startsWith("analysis_")) return "Keep the original input and inspect its retained analysis diagnostics before retrying; do not treat an unsuccessful analysis as an empty image list.";
   return "Restore the reported original source or context, then rerun this exact command. Original failed entries remain retained.";
@@ -55,7 +55,7 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
       const user = await api.getCurrentUser();
       if ((task.status !== "done" && task.status !== "cancelled") || readTaskPaused(task.properties) === true || claim?.state !== "completed" || claim.claimId !== target.claimId || claim.workerId !== local.workerId || claim.worktreeId !== target.worktreeId || claim.agentControlMode !== "web" || claim.userId !== user.id || ticket.userId !== user.id) throw new Error("The terminal task, original claim or repair permission changed; original resources were retained.");
       const session = await api.inspectTaskSession(target.projectId, target.taskId, target.sessionId);
-      if (session.fence.claimId !== target.claimId || session.fence.executionGeneration !== ticket.executionGeneration || session.session.nativeSessionId !== claim.nativeSessionId || !["archived", "stopped"].includes(session.session.lifecycle ?? "")) throw new Error("The selected Session does not confirm the original stopped execution.");
+      if (session.fence.claimId !== target.claimId || session.fence.executionGeneration !== ticket.executionGeneration || !session.session.nativeSessionId || claim.nativeSessionId != null && session.session.nativeSessionId !== claim.nativeSessionId || !["archived", "stopped"].includes(session.session.lifecycle ?? "")) throw new Error("The selected Session does not confirm the original stopped execution.");
       const journal = new Database(journalPath, { readonly: true, fileMustExist: true, timeout: 1000 });
       let snapshot: ControllerSnapshot | null;
       try {
@@ -66,7 +66,7 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
         }).deferred();
       } finally { journal.close(); }
       const platform = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : process.platform;
-      if (!snapshot?.nativeSessionId || snapshot.nativeSessionId !== claim.nativeSessionId || snapshot.nativeSessionId !== local.resources.nativeSession?.sessionId || claim.agent !== ticket.provider || claim.platform !== platform) throw new Error("The original native Session, provider or platform identity differs.");
+      if (!snapshot?.nativeSessionId || snapshot.nativeSessionId !== session.session.nativeSessionId || snapshot.nativeSessionId !== local.resources.nativeSession?.sessionId || claim.agent !== ticket.provider || claim.platform !== platform) throw new Error("The original native Session, provider or platform identity differs.");
       const configuration = parseConfigurationDocument(await readConfigurationSource(paths, operation.signal), paths);
       if (configuration.mapping.workerId !== local.workerId || controllerPayloadHash(readLocal()) !== original || controllerPayloadHash(await readLaunchTicket(context.homeDirectory(), execution.launchId)) !== controllerPayloadHash(ticket)) throw new Error("The local Worker assignment changed during repair.");
       const binding = local.resources.worktree!;
@@ -79,7 +79,17 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
       if (!await sameWorktreeLocation(top.stdout.trim(), ticket.cwd) || !await sameWorktreeLocation(common.stdout.trim(), binding.commonDirectory) || branch.stdout.trim() !== binding.branch) throw new Error("The actual worktree differs from its recorded owner.");
     };
     await verify();
-    const started = existsSync(`${journalPath}.archive-intent-${ticket.executionGeneration}.json`) || existsSync(`${journalPath}.archive-receipt-${ticket.executionGeneration}.json`);
+    const coordination = new Database(journalPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+    let started: boolean;
+    try {
+      started = coordination.transaction(() => {
+        inspectSqlite(coordination, controllerJournalFormat);
+        // A durable source batch freezes the source before an archive intent exists.
+        // The uploader owns reconciliation of that original batch and its receipt.
+        return existsSync(`${journalPath}.archive-intent-${ticket.executionGeneration}.json`) || existsSync(`${journalPath}.archive-receipt-${ticket.executionGeneration}.json`)
+          || coordination.prepare("SELECT 1 FROM image_runtime_state WHERE key IN ('stopped_source_tail','archive_history_checkpoint') LIMIT 1").get() !== undefined;
+      }).deferred();
+    } finally { coordination.close(); }
     const repair = started ? { repaired: [], failures: [] } : await repairStoppedMarkdownProjections({ journalPath, ticket, stateDirectory: paths.stateDirectory, signal: operation.signal, resolveImage: resolveStoppedMarkdownImage, beforeWrite: verify });
     if (repair.failures.length) return { kind: "known-session-operation", output: `${JSON.stringify({ ...target, ...repair, failures: repair.failures.map(item => ({ ...item, nextAction: repairNextAction(item.code) })), archive: "not-started" })}\n`, exitCode: 1, failureText: () => "Markdown repair results could not be printed; inspect the same original execution before retrying." };
     await verify();

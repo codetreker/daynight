@@ -163,9 +163,24 @@ export async function repairStoppedMarkdownProjections(options: {
       const oldIds = new Set(captured.state.parts.flatMap(part => [...part.current, ...part.retained].map(source => source.occurrence.imageId)));
       for (const source of plan.parsedState.parts.flatMap(part => part.current)) {
         if (oldIds.has(source.occurrence.imageId) || source.part.type === "image") continue;
-        const previousImage = captured.state.parts.flatMap(part => [...part.current, ...part.retained]).find(previous =>
+        const originalPart = captured.state.parts.find(part => part.partId === source.occurrence.partId);
+        const previousImages = captured.state.parts.flatMap(part => [...part.current, ...part.retained]).filter(previous =>
           previous.part.type === "image" && previous.destination === source.destination && previous.contextKey === source.contextKey
-          && previous.occurrence.partId === source.occurrence.partId && previous.occurrence.sourceTextSha256 === source.occurrence.sourceTextSha256);
+          && previous.occurrence.partId === source.occurrence.partId && previous.occurrence.sourceTextSha256 === source.occurrence.sourceTextSha256
+          && previous.start === source.start && previous.end === source.end);
+        // A returning body can retain several captures for the same range from
+        // different revisions. Neither array order nor destination proves which
+        // historical bytes belong to the new occurrence, so leave it unresolved.
+        if (previousImages.length > 1) failure("image_identity_ambiguous");
+        const previousImage = previousImages[0];
+        if (previousImage) {
+          const occurrence = previousImage.occurrence, revision = occurrence.sourceRevision;
+          if (!originalPart || !revision || !/^[1-9][0-9]*$/.test(revision) || BigInt(revision) > BigInt(originalPart.revision)
+            || BigInt(revision) >= BigInt(source.occurrence.sourceRevision!) || occurrence.entryId !== source.occurrence.entryId
+            || occurrence.container !== source.occurrence.container || occurrence.callId !== source.occurrence.callId
+            || occurrence.sourceKey !== `markdown:${occurrence.partId}:${revision}:${occurrence.imageId}`
+            || previousImage.part.imageId !== occurrence.imageId || previousImage.linkHref !== source.linkHref || previousImage.part.label !== source.part.label) failure("image_identity_ambiguous");
+        }
         const reused = local(db => {
           unchanged(db);
           const resourceId = previousImage?.part.type === "image" ? previousImage.part.resourceId : source.occurrence.imageId;
