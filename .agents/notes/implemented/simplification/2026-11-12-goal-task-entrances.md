@@ -15,6 +15,8 @@ independent Tasks in Goal detail's Task tab while removing creation and
 add-existing entrances. Project Task creation retained its Goal and assignee
 choices; Goal creation remained available in the Goal list. Shared forms,
 membership operations and APIs remained owned by their existing consumers.
+The [project Goal creation entrance decision](../bug-fix/2026-11-16-project-goal-create-entrance.md)
+later moves that entrance to the persistent project toolbar.
 
 This partially superseded the [Web Goal operations decision](../feature/2026-11-11-web-goal-operations.md)
 and the [read-only Goal link decision](2026-11-12-task-detail-goal-link.md),
