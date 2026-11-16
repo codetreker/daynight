@@ -40,6 +40,7 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityOwnership(t, pool); after != beforeOwnership {
 		t.Fatal("migration changed account credentials or ownership")
 	}
+	assertMicrosoftSessionPreviewUnset(t, pool)
 	var identities []string
 	if err := pool.QueryRow(ctx, `SELECT array_agg(uniauth_id ORDER BY id) FROM users`).Scan(&identities); err != nil {
 		t.Fatal(err)
@@ -72,6 +73,7 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityOwnership(t, pool); after != beforeOwnership {
 		t.Fatal("subsequent login changed account credentials or ownership")
 	}
+	assertMicrosoftSessionPreviewUnset(t, pool)
 	for _, kind := range []model.CredentialKind{model.SessionCredential, model.PATCredential} {
 		token := "retained-session"
 		if kind == model.PATCredential {
@@ -89,6 +91,7 @@ func TestMicrosoftIdentityMigrationPreservesAccountAndOwnership(t *testing.T) {
 	if after := microsoftIdentityRows(t, pool, false); after != beforeRepeat {
 		t.Fatal("repeated migration changed accounts")
 	}
+	assertMicrosoftSessionPreviewUnset(t, pool)
 }
 
 func TestMicrosoftIdentityMigrationRejectsInvalidOrCollidingKeysAtomically(t *testing.T) {
@@ -146,9 +149,18 @@ func microsoftIdentityOwnership(t *testing.T, pool *pgxpool.Pool) string {
  'projects',(SELECT jsonb_agg(to_jsonb(t)-'tag_catalog_epoch' ORDER BY id) FROM projects t),
  'ownership',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id) FROM project_ownership t),
  'grants',(SELECT jsonb_agg(to_jsonb(t) ORDER BY project_id,user_id) FROM project_grants t),
- 'sessions',(SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM sessions t),
+ 'sessions',(SELECT jsonb_agg(to_jsonb(t)-'preview_token_hash' ORDER BY id) FROM sessions t),
  'tokens',(SELECT jsonb_agg(to_jsonb(t)-'last_used_at' ORDER BY id) FROM personal_access_tokens t))::text`).Scan(&result); err != nil {
 		t.Fatal(err)
 	}
 	return result
+}
+
+func assertMicrosoftSessionPreviewUnset(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var count int
+	var unset bool
+	if err := pool.QueryRow(t.Context(), `SELECT count(*),coalesce(bool_and(preview_token_hash IS NULL),false) FROM sessions`).Scan(&count, &unset); err != nil || count != 1 || !unset {
+		t.Fatalf("migrated preview credential: count=%d unset=%v error=%v", count, unset, err)
+	}
 }
