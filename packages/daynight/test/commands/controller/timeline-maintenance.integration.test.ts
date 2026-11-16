@@ -683,3 +683,97 @@ test("an unresolved marker transaction reports its physical evidence without cla
     try { expect(marker(observer)).toBe(1); } finally { observer.close(); }
   } finally { restoreMocks(); if (db.inTransaction) db.exec("ROLLBACK"); db.close(); f.permit.release(); }
 });
+
+test.each(["prepared", "before-marker"] as const)("old v6 %s interruption retries without retiring incomplete backups", phase => {
+  const f = fixture(5), pending = `${f.file}.pending-content`, resources = openResourceFiles(f.file, f.ticket.sessionId);
+  const bytes = Buffer.from("retained-resource"), resourceId = randomUUID();
+  const resource = { resourceId, status: "available" as const, name: "retained.txt", mediaType: "text/plain", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
+  resources.writeResource(resource, bytes); resources.pinResource(resourceId, "original-reference");
+  const legacy = path.join(pending, "legacy-sql"), markerPath = path.join(pending, "migration.json");
+  const row = { seq: "1", value: JSON.stringify(f.entry) }, markerData = JSON.stringify({ migrationId: randomUUID(), sourceHash: createHash("sha256").update(JSON.stringify(row)).digest("hex"), phase: "prepared" });
+  const name = `${createHash("sha256").update(f.entry.entryId).digest("hex")}.json`;
+  const timeline = path.join(pending, "timeline"), temporary = path.join(timeline, `${name}.${randomUUID()}.tmp`);
+  const backup = path.join(legacy, "1.timeline.json"), beforeMarker = `${markerPath}.${randomUUID()}.tmp`;
+  const original = new Database(f.file);
+  try {
+    original.exec("BEGIN IMMEDIATE");
+    fs.mkdirSync(legacy, { mode: 0o700 });
+    if (phase === "prepared") {
+      fs.writeFileSync(markerPath, markerData, { mode: 0o600 });
+      fs.writeFileSync(backup, JSON.stringify(row), { mode: 0o600 });
+      fs.mkdirSync(timeline, { mode: 0o700 });
+      fs.writeFileSync(path.join(timeline, name), JSON.stringify(f.entry), { mode: 0o600 });
+      fs.writeFileSync(temporary, "interrupted old write", { mode: 0o600 });
+    } else fs.writeFileSync(beforeMarker, markerData, { mode: 0o600 });
+    original.exec("ROLLBACK");
+    expect(original.pragma("user_version", { simple: true })).toBe(5);
+    expect(original.prepare("SELECT value FROM projection").get()).toEqual({ value: row.value });
+  } finally { original.close(); }
+  const descriptor = path.join(pending, "resources", `${createHash("sha256").update(resourceId).digest("hex")}.json`);
+  const retainedPaths = [path.join(pending, "manifest.json"), path.join(pending, "resource-pins.json"), descriptor, ...(phase === "prepared" ? [markerPath, backup, temporary] : [beforeMarker])];
+  const retained = retainedPaths.map(file => fs.readFileSync(file));
+  const reader = new Database(f.file, { readonly: true }); reader.exec("BEGIN"); reader.prepare("SELECT * FROM projection").all();
+  const db = upgrade(f);
+  try {
+    expect(maintainControllerTimeline({ db, request: { ...f.request, deadline: Date.now() + 1000 }, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "waiting", reason: "reader_busy" });
+    expect(marker(db)).toBe(1);
+    retainedPaths.forEach((file, i) => expect(fs.readFileSync(file)).toEqual(retained[i]));
+    expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, db).bytes());
+    reader.exec("ROLLBACK");
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(openTimelineStore(db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);
+    retainedPaths.forEach((file, i) => expect(fs.readFileSync(file)).toEqual(retained[i]));
+  } finally { reader.close(); db.close(); f.permit.release(); }
+});
+
+test("interrupted new timeline and entry temporary publications survive stopped maintenance", () => {
+  const f = fixture(5), pending = `${f.file}.pending-content`;
+  openResourceFiles(f.file, f.ticket.sessionId);
+  const timeline = path.join(pending, "timeline"); fs.mkdirSync(timeline, { mode: 0o700 });
+  const name = `${createHash("sha256").update(f.entry.entryId).digest("hex")}.json.${randomUUID()}.tmp`;
+  const paths = [path.join(timeline, name), path.join(pending, "entries", `${randomUUID()}.json.${randomUUID()}.tmp`)];
+  for (const file of paths) fs.writeFileSync(file, "interrupted publication", { mode: 0o600 });
+  const db = upgrade(f);
+  try {
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(openTimelineStore(db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);
+    for (const file of paths) expect(fs.readFileSync(file, "utf8")).toBe("interrupted publication");
+  } finally { db.close(); f.permit.release(); }
+});
+
+test("durable old v6 backups retain their existing retirement behavior", () => {
+  const f = fixture(5), pending = `${f.file}.pending-content`, legacy = path.join(pending, "legacy-sql");
+  openResourceFiles(f.file, f.ticket.sessionId); fs.mkdirSync(legacy, { mode: 0o700 });
+  const row = { seq: "1", value: JSON.stringify(f.entry) }, backup = path.join(legacy, "1.timeline.json");
+  fs.writeFileSync(path.join(pending, "migration.json"), JSON.stringify({ migrationId: randomUUID(), sourceHash: createHash("sha256").update(JSON.stringify(row)).digest("hex"), phase: "files_durable" }), { mode: 0o600 });
+  fs.writeFileSync(backup, JSON.stringify(row), { mode: 0o600 });
+  const db = upgrade(f);
+  try {
+    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(fs.existsSync(backup)).toBe(false);
+  } finally { db.close(); f.permit.release(); }
+});
+
+test("nonempty old backup directory without a marker still fails without retiring its contents", () => {
+  const f = fixture(5), pending = `${f.file}.pending-content`, legacy = path.join(pending, "legacy-sql");
+  openResourceFiles(f.file, f.ticket.sessionId); fs.mkdirSync(legacy, { mode: 0o700 });
+  const backup = path.join(legacy, "1.timeline.json"); fs.writeFileSync(backup, "unproven backup", { mode: 0o600 });
+  const db = upgrade(f);
+  try {
+    expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toThrow("no durable identity");
+    expect(marker(db)).toBe(1);
+    expect(fs.readFileSync(backup, "utf8")).toBe("unproven backup");
+  } finally { db.close(); f.permit.release(); }
+});
+
+test.skipIf(process.platform === "win32")("an unsafe temporary timeline candidate still fails maintenance", () => {
+  const f = fixture(5), pending = `${f.file}.pending-content`, timeline = path.join(pending, "timeline");
+  openResourceFiles(f.file, f.ticket.sessionId); fs.mkdirSync(timeline, { mode: 0o700 });
+  const source = path.join(f.root, "source"), candidate = path.join(timeline, `${createHash("sha256").update(f.entry.entryId).digest("hex")}.json.${randomUUID()}.tmp`);
+  fs.writeFileSync(source, "retained", { mode: 0o600 }); fs.symlinkSync(source, candidate);
+  const db = upgrade(f);
+  try {
+    expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toThrow();
+    expect(marker(db)).toBe(1); expect(fs.readFileSync(source, "utf8")).toBe("retained");
+  } finally { db.close(); f.permit.release(); }
+});

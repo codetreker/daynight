@@ -47,3 +47,7 @@ Independent representable items can advance even when another item cannot.
 The current format may retain bad values, and ordinary readers can reject them;
 a successful upgrade does not establish complete or healthy business history.
 The original external files are not cleaned or repaired by this conversion.
+Stopped maintenance retains a valid `prepared` backup from an interrupted old
+export without rewriting its marker, an empty backup directory without a marker,
+and interrupted publication temporary files. Completed backups keep their existing
+retirement path. Retained bytes remain part of actual storage accounting.

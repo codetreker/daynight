@@ -134,19 +134,38 @@ const retirementSources = (journalFile: string, sessionId: string): RetainedSour
   const manifest = JSON.parse(readFileSync(manifestFile, "utf8")) as { schemaVersion: unknown; sessionId: unknown };
   if (manifest.schemaVersion !== 1 || manifest.sessionId !== sessionId) throw new Error("Controller timeline source belongs to another session.");
   const sources: RetainedSource[] = [];
+  const legacyDirectory = path.join(root, "legacy-sql");
+  let hasLegacyDirectory = false, prepared = false;
+  try { privateDirectory(legacyDirectory); hasLegacyDirectory = true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (hasLegacyDirectory) {
+    const markerFile = path.join(root, "migration.json");
+    let markerExists = true;
+    try { lstatSync(markerFile); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") markerExists = false; else throw error; }
+    if (!markerExists && readdirSync(legacyDirectory).length === 0) prepared = true;
+    else {
+      if (size(markerFile) === 0) throw new Error("Controller migration backup has no durable identity.");
+      const marker = JSON.parse(readFileSync(markerFile, "utf8")) as { migrationId: unknown; sourceHash: unknown; phase: unknown };
+      if (marker === null || typeof marker !== "object" || typeof marker.migrationId !== "string" || canonicalId(marker.migrationId) !== marker.migrationId || typeof marker.sourceHash !== "string" || !/^[a-f0-9]{64}$/.test(marker.sourceHash)) throw new Error("Controller migration backup identity is invalid.");
+      // A prepared legacy export can survive the SQL rollback. It is not proof
+      // that these backups belong to the completed conversion, so retain them.
+      prepared = marker.phase === "prepared";
+      if (!prepared && !["files_durable", "committed", "verified"].includes(String(marker.phase))) throw new Error("Controller migration backup identity is invalid.");
+    }
+  }
   for (const kind of ["entries", "timeline", "legacy-sql"] as const) {
+    if (kind === "legacy-sql" && (prepared || !hasLegacyDirectory)) continue;
     const directory = path.join(root, kind);
     try { privateDirectory(directory); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    if (kind === "legacy-sql") {
-      const markerFile = path.join(root, "migration.json");
-      if (size(markerFile) === 0) throw new Error("Controller migration backup has no durable identity.");
-      const marker = JSON.parse(readFileSync(markerFile, "utf8")) as { migrationId: unknown; sourceHash: unknown; phase: unknown };
-      if (typeof marker.migrationId !== "string" || canonicalId(marker.migrationId) !== marker.migrationId || typeof marker.sourceHash !== "string" || !/^[a-f0-9]{64}$/.test(marker.sourceHash) || !["files_durable", "committed", "verified"].includes(String(marker.phase))) throw new Error("Controller migration backup identity is invalid.");
-    }
     for (const name of readdirSync(directory)) {
       const file = path.join(directory, name), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || process.platform !== "win32" && (stat.mode & 0o077) !== 0) throw new Error("Controller timeline retirement found an unsafe source.");
+      // A durable file publication may stop before its rename or link. Its
+      // temporary candidate is not a committed timeline source.
+      if (kind === "timeline" && /^[a-f0-9]{64}\.json\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/.test(name)) continue;
+      if (kind === "entries" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.tmp$/.test(name)) continue;
       if (kind === "legacy-sql" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.resource\.json$/.test(name)) continue;
       if (kind === "entries") {
         if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(name)) throw new Error("Controller timeline retirement found an unrecognized candidate.");
