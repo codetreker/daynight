@@ -46,8 +46,8 @@ it('matches only the selected IDs and implements all, any and untagged', () => {
 });
 
 it('keeps the picker open and query while choosing tags, switches modes and clears only tags', async () => {
-  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
-  const picker = screen.getByText('Tag filter', { selector: 'summary' }).closest('details')!;
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
+  const picker = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!.closest('details')!;
   const all = within(picker).getByRole('radio', { name: 'All selected' });
   const any = within(picker).getByRole('radio', { name: 'Any selected' });
   expect(all).toBeChecked(); expect(all).toBeDisabled(); expect(any).toBeDisabled();
@@ -82,7 +82,7 @@ it('keeps the picker open and query while choosing tags, switches modes and clea
 
 it('preserves the panel for prevented and composing Escape events', () => {
   setup();
-  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   fireEvent.click(summary);
   const picker = summary.closest('details')!;
   const search = within(picker).getByLabelText('Tag filter: Find tags');
@@ -101,7 +101,7 @@ it('preserves the panel for prevented and composing Escape events', () => {
 
 it('closes on an outside pointer without consuming it and retains the filter when reopened', async () => {
   setup();
-  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   const picker = summary.closest('details')!;
   fireEvent.click(summary);
   fireEvent.click(within(picker).getByLabelText('bug'));
@@ -126,7 +126,7 @@ it('closes on an outside pointer without consuming it and retains the filter whe
 
 it('keeps the panel open for paging and clearing controls', () => {
   data.page.nextCursor = 'next'; setup();
-  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   const picker = summary.closest('details')!; fireEvent.click(summary);
   fireEvent.click(within(picker).getByLabelText('bug'));
   for (const name of ['Next', 'First page', 'Clear filter']) {
@@ -138,7 +138,7 @@ it('keeps the panel open for paging and clearing controls', () => {
 
 it('handles outside Escape only while open, respecting prevented and composition events', () => {
   const view = setup();
-  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   const picker = summary.closest('details')!;
   const outside = screen.getByRole('button', { name: 'Server invalid' });
   fireEvent.click(summary); outside.focus();
@@ -164,7 +164,7 @@ it('handles outside Escape only while open, respecting prevented and composition
 
 it('gives Escape to a different dialog and to an external native popup', () => {
   setup();
-  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   const picker = summary.closest('details')!;
   fireEvent.click(summary);
   const dialog = document.createElement('div'); dialog.setAttribute('role', 'dialog');
@@ -184,7 +184,7 @@ it('gives Escape to a different dialog and to an external native popup', () => {
 it('focuses search only on an interactive opening and ignores hidden pointer events', () => {
   const content = (hidden: boolean) => <LocaleProvider initial={{ locale: 'en', issue: null }}><div hidden={hidden}><Harness /></div><button type="button">Outside</button></LocaleProvider>;
   const view = render(content(false));
-  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   const picker = summary.closest('details')!;
   const outside = screen.getByRole('button', { name: 'Outside' });
   fireEvent.click(summary);
@@ -209,7 +209,7 @@ it('releases viewport listeners and size observers when closed or unmounted', ()
   globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() { disconnect(); } };
   try {
     const view = setup();
-    const summary = screen.getByText('Tag filter', { selector: 'summary' });
+    const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
     fireEvent.click(summary);
     const resize = add.mock.calls.find(call => call[0] === 'resize')?.[1];
     const scroll = add.mock.calls.find(call => call[0] === 'scroll')?.[1];
@@ -233,8 +233,8 @@ it('opens only one of two filters while retaining their independent conditions a
     return <><TagFilter controller={main} /><TagFilter controller={child} child /></>;
   };
   render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Pair /></LocaleProvider>);
-  const mainSummary = screen.getByText('Tag filter', { selector: 'summary' });
-  const childSummary = screen.getByText('Child task tag filter', { selector: 'summary' });
+  const mainSummary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
+  const childSummary = screen.getByText('Child task tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   const main = mainSummary.closest('details')!, child = childSummary.closest('details')!;
   fireEvent.click(mainSummary);
   fireEvent.click(within(main).getByLabelText('bug'));
@@ -255,7 +255,7 @@ it('opens only one of two filters while retaining their independent conditions a
 it('does not consume Escape for hidden or inert filters or over an active overlay', () => {
   const content = (hidden: boolean, inert: boolean) => <LocaleProvider initial={{ locale: 'en', issue: null }}><div hidden={hidden} inert={inert}><Harness /></div><button type="button">Outside</button></LocaleProvider>;
   const view = render(content(false, false));
-  const summary = screen.getByText('Tag filter', { selector: 'summary' });
+  const summary = screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!;
   const picker = summary.closest('details')!;
   const outside = screen.getByRole('button', { name: 'Outside' });
   fireEvent.click(summary);
@@ -279,7 +279,7 @@ it('does not consume Escape for hidden or inert filters or over an active overla
 });
 
 it('retains the selected name and condition when a later catalog epoch reports deletion', async () => {
-  const view = setup(true); fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+  const view = setup(true); fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByLabelText('bug'));
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   vi.mocked(resolveProjectTags).mockRejectedValue(new ApiError('server', 404, 'tag_not_found'));
@@ -294,7 +294,7 @@ it('retains the selected name and condition when a later catalog epoch reports d
 });
 
 it('keeps a server invalid condition until explicitly removed, including while checks wait', async () => {
-  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' })); fireEvent.click(screen.getByLabelText('bug'));
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!); fireEvent.click(screen.getByLabelText('bug'));
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   const pending = Promise.withResolvers<readonly { id: string; name: string }[]>();
   vi.mocked(resolveProjectTags).mockReturnValue(pending.promise);
@@ -308,7 +308,7 @@ it('keeps a server invalid condition until explicitly removed, including while c
 });
 
 it('identifies the missing ID without clearing other selected tags', async () => {
-  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByLabelText('bug')); fireEvent.click(screen.getByLabelText('backend'));
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => {
@@ -326,7 +326,7 @@ it('identifies the missing ID without clearing other selected tags', async () =>
 });
 
 it('unlocks an unidentified server error only after removal and successful resolution of the remainder', async () => {
-  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByLabelText('bug')); fireEvent.click(screen.getByLabelText('backend'));
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   const first = Promise.withResolvers<readonly { id: string; name: string }[]>();
@@ -346,7 +346,7 @@ it('unlocks an unidentified server error only after removal and successful resol
 
 
 it('preserves the filter through uncertain access, retires old reads and rechecks on restoration', async () => {
-  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByLabelText('bug'));
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   const pending = Promise.withResolvers<readonly { id: string; name: string }[]>();
@@ -370,7 +370,7 @@ it('preserves the filter through uncertain access, retires old reads and recheck
 });
 
 it('re-admits individual resolve results before publishing and retires them when access becomes uncertain', async () => {
-  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByLabelText('bug')); await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   const admission = Promise.withResolvers<void>();
   data.scope.ready.mockReset().mockResolvedValueOnce(undefined).mockReturnValueOnce(admission.promise);
@@ -388,7 +388,7 @@ it('re-admits individual resolve results before publishing and retires them when
 
 it('loads the catalog only while open or while a selection needs revalidation', async () => {
   setup(); expect(data.catalogActive).toHaveBeenLastCalledWith(false);
-  fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   await waitFor(() => expect(data.catalogActive).toHaveBeenLastCalledWith(true));
   fireEvent.click(screen.getByLabelText('bug'));
   fireEvent.keyDown(screen.getByLabelText('bug'), { key: 'Escape' });
@@ -398,7 +398,7 @@ it('loads the catalog only while open or while a selection needs revalidation', 
 });
 
 it('publishes individual missing IDs only after admission completes', async () => {
-  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  const view = setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByLabelText('bug')); await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   const admission = Promise.withResolvers<void>();
   data.scope.ready.mockReset().mockResolvedValueOnce(undefined).mockReturnValueOnce(admission.promise);
@@ -415,7 +415,7 @@ it('publishes individual missing IDs only after admission completes', async () =
 it('offers tag management only in the main filter when a navigation action is supplied', () => {
   const manage = vi.fn();
   const view = render(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness onManage={manage} /></LocaleProvider>);
-  fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByRole('button', { name: 'Manage tags' }));
   expect(manage).toHaveBeenCalledOnce();
   view.rerender(<LocaleProvider initial={{ locale: 'en', issue: null }}><Harness child onManage={manage} /></LocaleProvider>);
@@ -424,7 +424,7 @@ it('offers tag management only in the main filter when a navigation action is su
 
 
 it('retains the removal decision across a failed resolve and unlocks after Retry confirms the remainder', async () => {
-  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
+  setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
   fireEvent.click(screen.getByLabelText('bug')); fireEvent.click(screen.getByLabelText('backend'));
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
   const pending = Promise.withResolvers<readonly { id: string; name: string }[]>();

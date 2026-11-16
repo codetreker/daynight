@@ -1,0 +1,90 @@
+.selection-control[data-density] {
+  --selection-control-height: 38px;
+  --selection-control-font-size: 12px;
+  --selection-control-focus: #8c8cf0;
+  --selection-control-min-hit-width: 0px;
+  --selection-control-count-height: 18px;
+  --selection-control-count-font-size: 10px;
+}
+.selection-control[data-density="compact"] { --selection-control-height: 24px; --selection-control-font-size: 10px; }
+.selection-control[data-density="filter"] { --selection-control-height: 32px; --selection-control-font-size: 11px; }
+.selection-control[data-focus-tone="task"] { --selection-control-focus: #344054; }
+
+@media (max-width: 800px), (pointer: coarse) {
+  .selection-control[data-touch-mode="responsive"] {
+    --selection-control-height: 44px;
+    --selection-control-font-size: 16px;
+    --selection-control-min-hit-width: 44px;
+    --selection-control-count-height: 20px;
+    --selection-control-count-font-size: 12px;
+  }
+}
+@container native-select-region (max-width: 600px) {
+  .selection-control[data-touch-mode="container"] { --selection-control-height: 44px; --selection-control-min-hit-width: 44px; }
+}
+@media (pointer: coarse) {
+  .selection-control[data-touch-mode="container"] {
+    --selection-control-height: 44px;
+    --selection-control-font-size: 16px;
+    --selection-control-min-hit-width: 44px;
+    --selection-control-count-height: 20px;
+    --selection-control-count-font-size: 12px;
+  }
+}
+
+/* Layout defaults remain overridable by the caller's width and flex/grid placement. */
+:where(.select-trigger[data-density]) { inline-size: fit-content; min-inline-size: var(--selection-control-min-hit-width); max-inline-size: 100%; }
+.select-trigger[data-density] {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  block-size: var(--selection-control-height);
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid #dce0e8;
+  border-radius: 6px;
+  background: #fff;
+  color: #344258;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: var(--selection-control-font-size);
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: start;
+  list-style: none;
+  cursor: pointer;
+}
+.select-trigger[data-density]::-webkit-details-marker { display: none; }
+.select-trigger[data-density][hidden] { display: none; }
+.select-trigger[data-density] > .select-trigger__label { min-inline-size: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-trigger[data-density] > .select-trigger__count {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-inline-size: var(--selection-control-count-height);
+  block-size: var(--selection-control-count-height);
+  padding: 0 5px;
+  border-radius: 5px;
+  background: #52649b;
+  color: #fff;
+  font-size: var(--selection-control-count-font-size);
+  font-variant-numeric: tabular-nums;
+}
+.select-trigger[data-density] > .select-trigger__arrow { flex: none; inline-size: 10px; block-size: 10px; color: #556176; pointer-events: none; }
+.select-trigger[data-density]:hover { background: #f0f3f7; }
+.select-trigger[data-density][aria-expanded="true"] { border-color: #52649b; background: #eef1f8; }
+.select-trigger[data-density][data-pending="true"] { border-color: #d4a04a; }
+.select-trigger[data-density][aria-invalid="true"] { border-color: #df9d96; }
+.select-trigger[data-density]:disabled, .select-trigger[data-density][aria-disabled="true"] { color: #747d91; background: #f5f6f9; cursor: default; }
+.select-trigger[data-density]:focus-visible { outline: 3px solid var(--selection-control-focus); outline-offset: 2px; }
+
+@media (forced-colors: active) {
+  .selection-control[data-density] { --selection-control-focus: Highlight; }
+  .select-trigger[data-density], .select-trigger[data-density][aria-expanded="true"], .select-trigger[data-density][aria-invalid="true"], .select-trigger[data-density][data-pending="true"] { color: CanvasText; background: Canvas; border-color: CanvasText; }
+  .select-trigger[data-density]:disabled, .select-trigger[data-density][aria-disabled="true"] { color: GrayText; border-color: GrayText; background: Canvas; }
+  .select-trigger[data-density] > .select-trigger__arrow { color: inherit; }
+  .select-trigger[data-density] > .select-trigger__count { color: HighlightText; background: Highlight; }
+}

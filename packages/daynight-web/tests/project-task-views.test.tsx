@@ -385,7 +385,7 @@ describe('project task views', () => {
         title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${id}/${taskId}`)! };
     });
     mount(); await findTab('chains');
-    fireEvent.click(screen.getByText('标签筛选', { selector: 'summary' }));
+    fireEvent.click(screen.getByText('标签筛选', { selector: 'summary > span:first-child' }).closest('summary')!);
     fireEvent.click(await screen.findByRole('checkbox', { name: 'backend' }));
     if (invalid) await screen.findByText('选中的标签已不可用，请移除后重新查询。');
     const originalList = document.getElementById('project-chain-list');

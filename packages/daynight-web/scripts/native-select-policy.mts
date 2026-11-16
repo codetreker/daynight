@@ -85,8 +85,9 @@ export const checkNativeSelectPolicy = async (packageDirectory: string): Promise
       const text = await readFile(path, 'utf8').catch(error => {
         throw new Error(`${label(path)}:1: cannot read product CSS.`, { cause: error });
       });
-      const violations = inspectSelectCss(text, label(path), wrappers);
-      if (path !== join(root, 'src/ui/native-select/native-select.css')) diagnostics.push(...violations);
+      const owner = path === join(root, 'src/ui/native-select/native-select.css') ? 'native'
+        : path === join(root, 'src/ui/selection-control/selection-control.css') ? 'selection' : 'consumer';
+      diagnostics.push(...inspectSelectCss(text, label(path), wrappers, owner));
     }
     return { files: paths.length, wrappers: [...wrappers].sort(), diagnostics };
   });

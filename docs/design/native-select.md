@@ -1,8 +1,8 @@
-# 公共原生选择组件
+# 公共选择控件呈现
 
 ## 职责与依赖
 
-`packages/daynight-web/src/ui/native-select/NativeSelect.tsx` 是 Web 原生选择控件的唯一生产声明入口，并直接导入同目录的 `native-select.css`；该 CSS 独占内部控件与箭头的样式。页面通过相对路径导入组件，提供选项、值、事件、权限和业务状态。公共层拥有控件结构、文字与箭头空间、尺寸、焦点和状态外观，不依赖认证外壳、API、语言 Provider 或 Session。
+`packages/daynight-web/src/ui/selection-control/` 拥有公共展示参数、无状态 `SelectTrigger` 和装饰箭头。`selection-control.css` 是 `--selection-control-*` 参数、公共展示标识及自定义入口皮肤的唯一所有者。`src/ui/native-select/NativeSelect.tsx` 仍是 Web 原生选择控件的唯一生产声明入口，直接导入的 `native-select.css` 独占原生内部控件与箭头选择器，并引用公共参数。页面通过相对路径导入组件，提供选项、值、事件、权限和业务状态。公共层不依赖认证外壳、API、语言 Provider 或 Session。
 
 原生 `select` 保留浏览器的表单校验、键盘与触摸选择、焦点和多选行为。公共层没有内部选中状态、请求、存储、定时器或自建弹层；箭头只是装饰。采用这一结构的原因及此前局部箭头决策见[决策记录](../../.agents/notes/implemented/architecture/2026-11-14-shared-native-select.md)。配色与一般交互规则由 [UI 原则](../ui-design.md)拥有。
 
@@ -36,6 +36,16 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 `wrapperClassName` 必须是可静态解析的字符串 token 列表，支持字符串字面量及可解析的字面量组合；不能传入运行时计算的类名。对应 CSS 仅设置外部宽度、外边距及 flex/grid 占位，不得设置内部字体、背景、边框、padding、行高、箭头、焦点、禁用或触控尺寸，也不得添加伪元素箭头。页面选择公开展示属性来表达这些差异；固定列宽或网格位置属于页面布局。
 
+## 自定义菜单入口
+
+`SelectTrigger` 默认渲染真实 `button`，`as="summary"` 渲染真实 `summary` 并保持为 `details` 的直接子元素。区分元素的 props 类型透传真实 ref、ARIA 和事件；button 保留原生 `disabled`。组件排除任意 `className` 和 `style`，静态 `layoutClassName` 仅允许外部宽度、外边距及 flex/grid 定位。`children` 是入口内容，可选 `count` 由公共组件呈现徽标；完整可访问名称由调用者提供。
+
+`density`、`touchMode`、`focusTone` 与 NativeSelect 同名概念一致。公共 host 使用 `selection-control` 标识及对应 data 属性。默认外观为白底、`#344258` 文字、1px `#dce0e8` 边框、6px 圆角、0 10px 内边距、8px 内容间距、系统字体、400 字重和 1.5 行高。内容宽度随文字与计数决定并受容器约束；长负责人省略且保留完整可访问名称。徽标在紧凑尺寸为 18px 高、10px 字，在响应式放大后为 20px 高、12px 字。箭头共用 10px 装饰路径。
+
+调用者通过真实 `aria-expanded`、`aria-invalid`、禁用和公开 `pending` 提供状态。公共 owner 呈现中性 hover `#f0f3f7`、展开背景 `#eef1f8` 与边框 `#52649b`、禁用、错误和焦点；Task 焦点使用 3px 深色轮廓。summary marker 也由公共层隐藏。菜单 owner 继续管理开关、选中值、目录、网络、存储、定位和焦点恢复。
+
+TaskAssigneeFilter 显式选择 AssigneePicker 的标准入口，任务行、详情和表单的原有人员编辑保留各自呈现。普通状态多选与两种 TagFilter 使用 SelectTrigger，表达式搜索仍使用单选 NativeSelect；这些任务筛选均显式选择 `filter`、`responsive`、`task`。细指针且宽度大于 800px 时统一 32px/11px；800px 及以下或粗指针时统一 44px/16px，触控命中宽度至少 44px。窄屏自然换行，标签和计数可见。TagFilter 的 352px 面板、14px 正文、外部 chip 与定位生命周期独立于入口展示，几何变化沿既有观察更新位置。选择共享展示且保留各菜单语义的取舍见[筛选入口决策](../../.agents/notes/implemented/architecture/2026-11-16-shared-selection-presentation.md)。
+
 ## 结构与几何
 
 组件使用无交互 `span` 包含原生控件。普通单选另有 `aria-hidden`、`focusable=false`、`pointer-events:none` 的 SVG；容器没有 role、tabIndex 或点击处理。点击箭头区域命中下方真实选择控件。`hidden` 和 `dir` 同时映射到容器与控件，隐藏时不会留下箭头，显式 RTL 使用逻辑末端位置。
@@ -68,7 +78,7 @@ import { NativeSelect } from '../../ui/native-select/NativeSelect';
 
 `packages/daynight-web/scripts/native-select-policy.mts` 先枚举完整 `src/` 中的 TS/TSX 和 CSS，再使用 TypeScript 7 的 `typescript/unstable/sync` 项目 API 与 `typescript/unstable/ast` 遍历源码，包括未被其他模块引用的输入。除公共组件文件外，原生 JSX `select` 和标准 React `createElement` 原生创建均失败；React、`createElement` 和 NativeSelect 的导入别名按实际绑定识别；创建 HTML 控件的标签字符串按大小写不敏感语义判断，JSX 大写组件标识仍保留组件含义。注释、普通字符串与泛型不作为元素声明。
 
-CSS 使用显式开发依赖 `css-tree` 的 AST 分析完整选择器与声明。公共 CSS 外对 `select`、公共 control/arrow 类或对应标记的内部外观覆盖，以及 `wrapperClassName` 布局类的核心外观、伪元素箭头或 `appearance` 恢复均失败。混合选择器、嵌套规则与条件规则仍接受检查，全部生产 select 均位于公共容器内；内部箭头和控件的子节点，以及通过 select 类型或内部标记定位的同一容器内兄弟节点也归公共 CSS 所有；公共容器之外的相邻字段仍由页面管理。`:has()` 的直接子节点及内部兄弟关系按同一结构判断所有权。只有直接子节点关系的全部分支都能证明目标是公共容器的直接子节点时，才把父节点视为可设置外部布局的公共容器；内部后代或混合分支不能获得该布局权限，应改用直接 wrapper 布局类或公共 CSS。仅包含 select 的外层页面祖先不会自动获得内部所有权。以受保护选择器为根的 `@scope` 明确拒绝；布局类使用直接规则，内部样式放入公共 CSS。普通 input/textarea 及其他菜单保持各自所有权。检查没有遗留名单或页面豁免。
+CSS 使用显式开发依赖 `css-tree` 的 AST 分析完整选择器与声明。公共参数声明与 SelectTrigger host、箭头、计数皮肤仅允许公共展示 CSS owner，native 内部选择器仍仅允许 native CSS owner；两者分别检查，不使用宽泛豁免。SelectTrigger 导入别名及静态 `layoutClassName` 别名复用绑定解析与布局白名单，任意 className/style、动态或不可解析布局 token 均拒绝；标准 host 不保留旧 feature 皮肤别名。公共 CSS 外对 `select`、公共 control/arrow 类或对应标记的内部外观覆盖，以及 `wrapperClassName` 布局类的核心外观、伪元素箭头或 `appearance` 恢复均失败。混合选择器、嵌套规则与条件规则仍接受检查，全部生产 select 均位于公共容器内；内部箭头和控件的子节点，以及通过 select 类型或内部标记定位的同一容器内兄弟节点也归公共 CSS 所有；公共容器之外的相邻字段仍由页面管理。`:has()` 的直接子节点及内部兄弟关系按同一结构判断所有权。只有直接子节点关系的全部分支都能证明目标是公共容器的直接子节点时，才把父节点视为可设置外部布局的公共容器；内部后代或混合分支不能获得该布局权限，应改用直接 wrapper 布局类或公共 CSS。仅包含 select 的外层页面祖先不会自动获得内部所有权。以受保护选择器为根的 `@scope` 明确拒绝；布局类使用直接规则，内部样式放入公共 CSS。普通 input/textarea 及其他菜单保持各自所有权。检查没有遗留名单或页面豁免。
 
 诊断包含相对路径、行号和被违反的规则；文件读取、源码/CSS 解析、缺失 AST 及资源释放错误均令命令失败。TypeScript 快照与 API 在成功和失败路径都释放。检查约束直接声明与样式所有权，不能判断任意绘图代码的视觉意图；真实浏览器和独立审查继续负责重复箭头、几何及原生交互。
 

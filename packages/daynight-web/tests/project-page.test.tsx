@@ -170,7 +170,7 @@ describe("project dashboard", () => {
     await findListButton("另一任务链");
     const chainCount = () => document.querySelector("#project-task-tab-chains .graph-count-pill");
     expect(chainCount()).toHaveTextContent(/^2$/);
-    const filter = screen.getByText("标签筛选", { selector: "summary" });
+    const filter = screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!;
     expect(filter.parentElement?.parentElement?.previousElementSibling).toHaveClass("task-status-filter");
     fireEvent.click(filter);
     fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
@@ -182,9 +182,9 @@ describe("project dashboard", () => {
     fireEvent.change(input, { target: { value: "query" } }); fireEvent.submit(input.closest("form")!);
     await waitFor(() => expect(searchTasks).toHaveBeenCalledWith(projectId, "query", expect.objectContaining({ type: "task", tagIds: [E], tagMatch: "all" }), null, expect.anything(), expect.anything(), expect.anything()));
     expect(chainCount()).toHaveTextContent(/^2$/);
-    const searchFilter = document.querySelector(".task-search-filters .tag-filter-trigger")!;
+    const searchFilter = document.querySelector(".task-search-filters .tag-filter > summary")!;
     expect(searchFilter).toHaveTextContent("标签筛选");
-    expect(searchFilter.querySelector(".tag-filter-count")).toHaveTextContent("1");
+    expect(searchFilter.querySelector(".select-trigger__count")).toHaveTextContent("1");
     expect(searchFilter.parentElement?.parentElement?.previousElementSibling).toHaveClass("task-status-filter");
     expect(document.querySelectorAll(".tag-filter")).toHaveLength(1);
     fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));
@@ -212,7 +212,7 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("已完成根");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       selectStatus('todo');
       expect(chainList().queryByRole("button", { name: "已完成根" })).toBeNull();
@@ -244,7 +244,7 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("已完成根");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       selectStatus('todo');
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -281,7 +281,7 @@ describe("project dashboard", () => {
     });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("已完成根");
-    fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+    fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
     fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
     await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
     fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -310,7 +310,7 @@ describe("project dashboard", () => {
     });
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("已完成根");
-    fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+    fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
     fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
     await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
     fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -347,7 +347,7 @@ describe("project dashboard", () => {
     const view = localeRender(<ProjectPage projectId={projectId} />, { taskCache: { scope } });
     try {
       selectTasks(); await findListButton("已完成根");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -398,7 +398,7 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("Chain 1");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
@@ -433,7 +433,7 @@ describe("project dashboard", () => {
     try {
       render(<ProjectPage projectId={projectId} />); selectTasks();
       await findListButton("Chain 21");
-      fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+      fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
       const chainPagination = () => within(screen.getByRole("navigation", { name: "任务链列表分页" }));
       fireEvent.click(chainPagination().getByRole("button", { name: "下一页" }));
@@ -460,7 +460,7 @@ describe("project dashboard", () => {
     vi.mocked(searchTasks).mockImplementationOnce(async () => { missing = true; throw new ApiError("server", 400, "invalid_tag_filter"); })
       .mockResolvedValue({ projectId, total: 0, items: [], nextCursor: null });
     render(<ProjectPage projectId={projectId} />); selectTasks(); await findListButton("另一任务链");
-    fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
+    fireEvent.click(screen.getByText("标签筛选", { selector: "summary > span:first-child" }).closest('summary')!);
     fireEvent.click(await screen.findByRole("checkbox", { name: "已删除" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "保留" }));
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
