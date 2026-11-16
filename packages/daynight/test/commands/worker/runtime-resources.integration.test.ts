@@ -1,11 +1,13 @@
 import path from "node:path";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWorkerResources } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { createHerdrRecordingArchive } from "../../../src/commands/worker/herdr/recording-archive.js";
 import { createHerdrRecordingResources } from "../../../src/commands/worker/herdr/recording-resources.js";
+import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import type { HerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/lifecycle-types.js";
 import type { Task } from "../../../src/api/types.js";
@@ -44,11 +46,27 @@ const fixture = () => {
   const removeWorktree = vi.fn(async () => { rmSync(cwd, { force: true, recursive: true }); return { kind: "absent" as const, effectErrors: [] as unknown[] }; });
   const binding = { repositoryPath: localPath, commonDirectory: path.join(localPath, ".git"), worktreePath: cwd, branch: `daynight/${doc.owner.taskId}` };
   const findWorktree = vi.fn(async (): Promise<typeof binding | null> => null);
+  const isOriginalWorktreeAbsent = vi.fn(async () => true);
   const retireWorktreeManifest = vi.fn(async () => {});
   const disposeGit = vi.fn(async () => {});
-  mocks.git.mockReturnValue({ prepareRepository: async () => {}, resolveWorktreeBinding: async () => binding, removeWorktree, findWorktree, retireWorktreeManifest, dispose: disposeGit });
+  mocks.git.mockReturnValue({ prepareRepository: async () => {}, resolveWorktreeBinding: async () => binding, removeWorktree, findWorktree, isOriginalWorktreeAbsent, retireWorktreeManifest, dispose: disposeGit });
   const request = { kind: "dispose" as const, projectId: doc.owner.projectId, taskId: doc.owner.taskId, claimId: doc.claimId, worktreeId: doc.owner.worktreeId, sessionId: doc.sessionId, operationId: "00000000-0000-4000-8000-000000000099", confirmed: true as const };
-  return { homeDirectory, request, resource, readTask, removeWorktree, findWorktree, retireWorktreeManifest, disposeGit, cwd, binding, active: () => { active = true; } };
+  return { homeDirectory, request, resource, readTask, removeWorktree, findWorktree, isOriginalWorktreeAbsent, retireWorktreeManifest, disposeGit, cwd, source, binding, active: () => { active = true; } };
+};
+
+const useRealGit = async (f: ReturnType<typeof fixture>) => {
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Resource fixture", "-c", "user.email=resource@example.test", ...args], { cwd: f.binding.repositoryPath, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_"))) }).trim();
+  rmSync(f.cwd, { recursive: true, force: true });
+  git("init", "-b", "main");
+  writeFileSync(path.join(f.binding.repositoryPath, "tracked"), "fixture\n");
+  git("add", "tracked"); git("commit", "-m", "fixture");
+  git("remote", "add", "origin", "https://example.test/org/repo.git");
+  const actual = await vi.importActual<typeof import("../../../src/commands/worker/worktrees.js")>("../../../src/commands/worker/worktrees.js");
+  mocks.git.mockImplementation(options => actual.createWorkerGitManager({ ...options, prepareFormat: async () => {} }));
+  const store = openWorkerStore(resolveWorkerPaths(f.homeDirectory).databaseFile);
+  try { store.completeTask(f.request); store.deleteCleanupSchedule(f.request); }
+  finally { store.close(); }
+  return git;
 };
 
 describe.skipIf(process.platform !== "darwin")("retained-resource runtime authorization", () => {
@@ -69,6 +87,15 @@ describe.skipIf(process.platform !== "darwin")("retained-resource runtime author
     const f = fixture(); f.active();
     await expect(runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} })).rejects.toThrow("original claim is still active");
     expect(f.readTask).toHaveBeenCalledOnce(); expect(f.removeWorktree).not.toHaveBeenCalled(); expect(f.resource.resources()[0]!.disposition).toBeNull();
+  });
+  it("retains the original source when Git removal is not confirmed", async () => {
+    const f = fixture(); f.isOriginalWorktreeAbsent.mockResolvedValue(false);
+    await expect(runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} })).rejects.toThrow("Git branch registration remains present");
+    expect(f.removeWorktree).toHaveBeenCalledOnce(); expect(f.isOriginalWorktreeAbsent).toHaveBeenCalledOnce();
+    expect(existsSync(f.source)).toBe(true); expect(f.resource.resources()[0]!.disposition?.completed).toBe(false);
+    const store = openWorkerStore(resolveWorkerPaths(f.homeDirectory).databaseFile);
+    try { expect(store.getTask(f.request)?.status).toBe("active"); expect(store.getCleanupSchedule(f.request)).not.toBeNull(); }
+    finally { store.close(); }
   });
   it.each([true, false])("retains independent disposal failures when diagnostic stderr is available=%s", async stderrAvailable => {
     const f = fixture(), diagnosticPath = resolveWorkerPaths(f.homeDirectory).logsDirectory, retirement = new Error("metadata retirement failed"), teardown = new Error("Git disposal failed"), reporting = new Error("diagnostic stderr failed");
@@ -133,5 +160,38 @@ describe.skipIf(process.platform !== "darwin")("retained-resource runtime author
     await runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: () => {} });
     expect(f.removeWorktree).toHaveBeenCalledOnce();
     expect(f.retireWorktreeManifest).toHaveBeenCalledOnce();
+  });
+  it("disposes the retained source after the settled original manifest was retired", async () => {
+    const f = fixture(); await useRealGit(f); const output: string[] = [];
+    await runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: message => { output.push(message); } });
+    expect(JSON.parse(output[0]!)).toMatchObject({ worktreeDeleted: true, disposition: { action: "delete", completed: true } });
+    expect(existsSync(f.source)).toBe(false); expect(existsSync(f.cwd)).toBe(false);
+  });
+  it("does not project cleanup while the original Git registration was moved", async () => {
+    const f = fixture(), git = await useRealGit(f), moved = path.join(f.homeDirectory, "moved-worktree");
+    git("worktree", "add", "-b", `daynight/${f.request.taskId}`, f.cwd);
+    const { projectId, taskId, claimId, worktreeId } = f.request;
+    createWorktreeManifestStore(f.binding.commonDirectory).publish({ schemaVersion: 1, projectId, taskId, claimId, worktreeId, directoryName: taskId });
+    git("worktree", "move", f.cwd, moved);
+    const listed = async () => { const output: string[] = []; await runWorkerResources({ homeDirectory: f.homeDirectory, request: { kind: "list" }, output: message => { output.push(message); } }); return JSON.parse(output[0]!)[0]; };
+    expect(await listed()).toMatchObject({ worktreeDeleted: false });
+    expect(readFileSync(path.join(moved, "tracked"), "utf8")).toBe("fixture\n");
+    git("worktree", "remove", moved);
+    expect(await listed()).toMatchObject({ worktreeDeleted: true });
+    expect(existsSync(f.source)).toBe(true);
+  });
+  it("disposes only the old source when a verified successor owns the task path", async () => {
+    const f = fixture(), git = await useRealGit(f);
+    git("worktree", "add", "-b", `daynight/${f.request.taskId}`, f.cwd);
+    const successor = { projectId: f.request.projectId, taskId: f.request.taskId, claimId: "00000000-0000-4000-8000-000000000091", worktreeId: "00000000-0000-4000-8000-000000000092" };
+    createWorktreeManifestStore(f.binding.commonDirectory).publish({ schemaVersion: 1, ...successor, directoryName: f.request.taskId });
+    writeFileSync(path.join(f.cwd, "successor"), "keep successor\n");
+    const output: string[] = [];
+    await runWorkerResources({ homeDirectory: f.homeDirectory, request: { ...f.request, action: "delete" }, output: message => { output.push(message); } });
+    expect(JSON.parse(output[0]!)).toMatchObject({ worktreeDeleted: true, disposition: { action: "delete", completed: true } });
+    expect(existsSync(f.source)).toBe(false);
+    expect(readFileSync(path.join(f.cwd, "successor"), "utf8")).toBe("keep successor\n");
+    expect(git("worktree", "list", "--porcelain")).toContain(f.cwd);
+    expect(createWorktreeManifestStore(f.binding.commonDirectory).read(successor.worktreeId)).toMatchObject(successor);
   });
 });

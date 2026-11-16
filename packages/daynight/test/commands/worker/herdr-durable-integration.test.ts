@@ -4,6 +4,7 @@ import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createHash } from "node:crypto";
 import * as inputSessionModule from "../../../src/commands/worker/herdr/input-session.js";
 import { openHerdrRecordingStore } from "../../../src/commands/worker/herdr/recording-store.js";
+import * as recordingStoreModule from "../../../src/commands/worker/herdr/recording-store.js";
 import { SESSION_V2_LIMITS } from "../../../src/session/v2/values.js";
 import { canonicalSessionJson } from "../../../src/session/v2/values.js";
 import { openHerdrInputStore } from "../../../src/commands/worker/herdr/input-store.js";
@@ -23,6 +24,7 @@ import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createExecutionDriver, type WorkerEvent, type WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import { createHerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import { createDurableWorkerHerdr } from "../../../src/commands/worker/herdr/durable.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
@@ -62,15 +64,22 @@ const frozenLaunch = (tool: "codex" | "herdr"): ResolvedToolLaunch => {
   const value = { schemaVersion: 1 as const, tool, context: "herdr" as const, source: "explicit" as const, entryPath: process.execPath, canonicalEntryPath: workerExecutable, executablePath: workerExecutable, interpreterPath: null, command: { file: workerExecutable, prefixArgs: [] }, artifacts: [{ role: "entry" as const, ...workerArtifact }] };
   return { ...value, selectionKey: toolSelectionKey(value) };
 };
-const fixture = (realInspector = false, driverResources = false, selectionVerifier?: NativeSelectionVerifier) => {
+type RealNativeFixture = {
+  tools: ReturnType<typeof recordedHerdrTools>;
+  processControl: MacProcessControl;
+  adapter: typeof createWorkerHerdr;
+  prepare: (directory: string) => { herdrDirectory: string; environment: NodeJS.ProcessEnv };
+};
+const fixture = (realInspector = false, driverResources = false, selectionVerifier?: NativeSelectionVerifier, real?: RealNativeFixture) => {
   mkdirSync(root, { recursive: true }); const directory = mkdtempSync(path.join(root, "run-")); directories.push(directory);
-  const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: driverResources ? path.join(directory, "repo", ".worktrees", "daynight", uuid(2)) : directory, agent: "codex" };
-  mkdirSync(context.cwd, { recursive: true });
+  const context: HerdrExecutionContext = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4), cwd: driverResources ? path.join(directory, "repo", ".worktrees", "daynight", real ? uuid(4) : uuid(2)) : directory, agent: "codex" };
+  if (!real) mkdirSync(context.cwd, { recursive: true });
   const ownerId = uuid(5), workerId = uuid(6), nativeId = uuid(7), serverOrigin = "https://daynight.example";
-  const paths: WorkerPaths = { stateDirectory: directory, workerDirectory: path.join(directory, "worker"), configFile: path.join(directory, "config.yml"), databaseFile: path.join(directory, "worker.sqlite"), configurationFile: path.join(directory, "configuration.json"), lockFile: path.join(directory, "worker.lock"), herdrDirectory: path.resolve("/state/h"), logsDirectory: path.resolve("/state/logs"), temporaryDirectory: path.join(directory, "tmp") };
+  const realSetup = real?.prepare(directory);
+  const paths: WorkerPaths = { stateDirectory: directory, workerDirectory: path.join(directory, "worker"), configFile: path.join(directory, "config.yml"), databaseFile: path.join(directory, "worker.sqlite"), configurationFile: path.join(directory, "configuration.json"), lockFile: path.join(directory, "worker.lock"), herdrDirectory: realSetup?.herdrDirectory ?? path.resolve("/state/h"), logsDirectory: real ? path.join(directory, "logs") : path.resolve("/state/logs"), temporaryDirectory: path.join(directory, "tmp") };
   let task: Task = { type: "task", parentId: null, id: context.taskId, projectId: context.projectId, title: "Original assignment", description: "Implement the assigned feature", tags: [], status: "in_progress", allowAgents: true, requiredPlatform: "macos", assignedTo: ownerId, startedAt: "2026-11-04T00:00:00Z", completedAt: null, cancelledAt: null, version: 1n, createdAt: "2026-11-04T00:00:00Z", updatedAt: "2026-11-04T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
     properties: { worker: { claimId: context.claimId, state: "active", userId: ownerId, workerId, machine: { id: uuid(8), name: "test-machine" }, platform: "macos", agent: "codex", agentControlMode: "herdr", worktreeId: context.worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-04T00:00:00Z" } } };
-  let frozenTools = { ...recordedHerdrTools(), agent: frozenLaunch("codex"), herdr: frozenLaunch("herdr") };
+  let frozenTools = real?.tools ?? { ...recordedHerdrTools(), agent: frozenLaunch("codex"), herdr: frozenLaunch("herdr") };
   const events: string[] = [], registrations: Registration[] = [], ledgers: Ledger[] = [], inputs: { initial: boolean; body: string }[] = [], launches: { resumeSessionId?: string }[] = [];
   const adapterSelectionVerifiers: (NativeSelectionVerifier | undefined)[] = [];
   const settings = { recordingBlocked: false, launchReceiptMissing: false, helperExited: false, unrelatedHelper: false, nativeStatus: "idle", nativeReady: true, nativeWrites: 0, nativeDraft: false, nativeScreen: "› Ask Codex to do anything\n GPT-6.1 Terra medium · daynight/task\n ? for shortcuts", nativeAtLaunch: false, nativeAfterInput: true, observeFailure: undefined as Error | undefined, observeAfterInputFailure: undefined as Error | undefined, observeFailureAfterCount: 1, inputUnknown: false, peerReplaced: false, stopUnknown: false, ledgerFailure: "none" as "none" | "before" | "after", prepareFailure: "none" as "none" | "before" | "after", recoveryFailure: "none" as "none" | "before" | "after" };
@@ -80,6 +89,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   let beforeDefiniteRetry: (() => void) | undefined;
   let beforePromptGuard: (() => void) | undefined;
   let beforeFrame: ((index: number) => void | Promise<void>) | undefined;
+  let beforeRecording: (() => void | Promise<void>) | undefined;
   let beforeInspect: ((purpose: string) => void | Promise<void>) | undefined;
   let taskReadFailure: Error | undefined;
   let beforeLaunchRetry: (() => void) | undefined;
@@ -136,9 +146,10 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   const digestMessage = (value: unknown) => createHash("sha256").update(canonicalSessionJson(value)).digest("hex");
   const api: HerdrSessionApi = {
     verifySupport: async () => { events.push("support"); },
-    current: async expected => remote ? stateView() : { status: "not_registered", protocol: "daynight.session.v2", claimId: expected.claimId, agentControlMode: "herdr" },
+    current: async expected => remote?.claimId === expected.claimId ? stateView() : { status: "not_registered", protocol: "daynight.session.v2", claimId: expected.claimId, agentControlMode: "herdr" },
     register: async request => {
       registrations.push(structuredClone(request)); events.push(`register:${request.payload.mode}`);
+      if (remote?.claimId !== request.claimId) remote = undefined;
       const connectionEpoch = request.payload.connectionEpoch === null ? "1" : String(BigInt(request.payload.connectionEpoch) + 1n);
       remote = { status: "registered", protocol: "daynight.session.v2", schemaVersion: 2, projectionVersion: 1, sessionId: request.sessionId, claimId: request.claimId, executionGeneration: request.executionGeneration, agentControlMode: "herdr", contentKind: "terminal_recording", owner: structuredClone(request.payload.owner), binding: structuredClone(request.payload.binding), connectionEpoch, connected: true, capabilities: request.payload.capabilities, control: remote?.control ? { ...remote.control, state: "suspended", lease: null, connectionEpoch, availableActions: [] } : null, snapshot: null, ledger: remote?.ledger ?? { runs: [], finalizationId: null }, archive: { state: "pending", sha256: null, byteLength: null, completeness: null, errorCode: null, finalizationId: null }, recording: remote?.recording ?? [] };
       return { ...request, type: "registration_ack", payload: { registrationId: request.payload.registrationId, connectionEpoch } };
@@ -246,20 +257,21 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
   };
   const reopen = (injectSessionApi = true) => {
     if (facade) { facade.lifecycle!.close(); facades.delete(facade); }
-    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => { if (taskReadFailure) throw taskReadFailure; return task; }, processControl: native, readExecutionConfiguration: () => ({ agent: "codex", model: null, args: [], recoveryLimit: 3, agentControlMode: "herdr", toolLaunch: frozenTools.agent, toolObservation: frozenTools.agentObservation, herdrLaunch: frozenTools.herdr, herdrObservation: frozenTools.herdrObservation }), ...(selectionVerifier ? { selectionVerifier } : {}),
-      readRecording: async (_record, signal) => {
+    facade = createDurableWorkerHerdr({ paths, homeDirectory: directory, serverOrigin, serverToken: "fixture-token", workerId, readTask: async () => { if (taskReadFailure) throw taskReadFailure; return task; }, processControl: real?.processControl ?? native, ...(realSetup ? { environment: realSetup.environment, agentEnvironment: { PATH: realSetup.environment.PATH! } } : {}), readExecutionConfiguration: () => ({ agent: "codex", model: null, args: [], recoveryLimit: 3, agentControlMode: "herdr", toolLaunch: frozenTools.agent, toolObservation: frozenTools.agentObservation, herdrLaunch: frozenTools.herdr, herdrObservation: frozenTools.herdrObservation }), ...(selectionVerifier ? { selectionVerifier } : {}),
+      ...(!real ? { readRecording: async (_record, signal) => {
+        await beforeRecording?.();
         if (settings.recordingBlocked) await new Promise<void>((_resolve, reject) => {
           if (signal.aborted) reject(signal.reason);
           else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
         return { width: 1, height: 1, rows: [[]] };
-      }, currentUserId: async () => ownerId,
+      } } : {}), currentUserId: async () => ownerId,
       archiveApi: { ...createHerdrArchiveApi(serverOrigin, "fixture-token"), state: async () => stateView(), recording: async (_expected, message) => {
         const m = message as SessionV2Message;
         if (m.type !== "recording_responsibility" || !remote) throw new Error("Unexpected recording fixture message");
         remote.recording.push({ executionGeneration: m.executionGeneration, responsibility: m.payload, evidence: null }); return message;
       } },
-      inspectInput: async request => {
+      ...(!real ? { inspectInput: async request => {
         await beforeInspect?.(request.purpose);
         if (realInspector) return inspectHerdrInput({ ...request, readSize: async () => ({ width: 100, height: 24 }), rpc: { request: async method => {
           const local = [...instances.values()].find(value => value.binding.terminalId === request.binding.terminalId)!;
@@ -290,7 +302,7 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
           await transmit.get(request.endpoint)!(read().initialAssignment === "dispatching", body);
           return { status: "transport_completed", reason: "detached" };
         } catch (error) { return { status: "unknown", reason: String(error) }; }
-      }, ...(injectSessionApi ? { sessionApi: api } : {}), createAdapter }); facades.add(facade); return facade;
+      } } : {}), ...(injectSessionApi ? { sessionApi: api } : {}), createAdapter: real?.adapter ?? createAdapter }); facades.add(facade); return facade;
   };
   mkdirSync(paths.workerDirectory, { recursive: true });
   const initialStore = openHerdrLifecycleStore(path.join(paths.workerDirectory, "herdr-executions.sqlite"), { onMigration: () => {} }); initialStore.close();
@@ -309,8 +321,122 @@ const fixture = (realInspector = false, driverResources = false, selectionVerifi
     acknowledgeControl: (control: NonNullable<HerdrSessionState["control"]>) => { if (!remote) throw new Error("No remote state"); remote.control = structuredClone(control); },
     revealNative: () => { for (const local of instances.values()) if (local.launched) local.nativeVisible = true; },
     mutateRecord: (change: Parameters<HerdrLifecycleStore["update"]>[1]) => { const record = read(); return reader!.update(record, change); },
-    get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeFrame: (hook: typeof beforeFrame) => { beforeFrame = hook; }, beforeInspect: (hook: typeof beforeInspect) => { beforeInspect = hook; }, failTaskRead: (error?: Error) => { taskReadFailure = error; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
+    get facade() { return facade; }, adjustControlRead: (hook: NonNullable<typeof adjustControlRead>) => { adjustControlRead = hook; }, recoveryDelay: (hook: NonNullable<typeof recoveryDelay>) => { recoveryDelay = hook; }, beforePromptGuard: (hook: () => void) => { beforePromptGuard = hook; }, beforeFrame: (hook: typeof beforeFrame) => { beforeFrame = hook; }, beforeRecording: (hook: typeof beforeRecording) => { beforeRecording = hook; }, beforeInspect: (hook: typeof beforeInspect) => { beforeInspect = hook; }, failTaskRead: (error?: Error) => { taskReadFailure = error; }, beforeLaunchRetry: (hook: () => void) => { beforeLaunchRetry = hook; }, changeTask: (value: Partial<Task>) => { task = { ...task, ...value }; } };
 };
+
+it.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_HERDR_NATIVE_CLEANUP_TEST !== "1")("cleans a real native run and retains its recording for a same-task successor", async () => {
+  const { randomUUID } = await import("node:crypto");
+  const { execFileSync } = await import("node:child_process");
+  const { createServer } = await import("node:http");
+  const { symlinkSync, unlinkSync } = await import("node:fs");
+  const { createMacProcessControl } = await import("../../../src/commands/worker/herdr/native-macos.js");
+  const { createWorkerHerdr } = await import(new URL("../../../dist/commands/worker/herdr.js", import.meta.url).href) as typeof import("../../../src/commands/worker/herdr.js");
+  const { createHerdrRpcClient } = await import("../../../src/commands/worker/herdr/rpc.js");
+  const { resolveToolLaunch } = await import("../../../src/platform/tool-executables.js");
+  const { createWorkerGitManager } = await import("../../../src/commands/worker/worktrees.js");
+  const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
+  const { createCleanupDriver } = await import("../../../src/commands/worker/cleanup.js");
+  const codex = process.env.DAYNIGHT_TEST_CODEX, herdr = process.env.DAYNIGHT_TEST_HERDR;
+  if (!codex || !herdr || !path.isAbsolute(codex) || !path.isAbsolute(herdr)) throw new Error("Absolute native Codex and Herdr paths are required.");
+  const provider = createServer((_request, response) => { response.statusCode = 501; response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ error: { message: "isolated fixture" } })); });
+  await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
+  const address = provider.address(); if (address === null || typeof address === "string") throw new Error("Loopback provider did not bind.");
+  const active = createOperation({ limits: { totalMs: 120_000, requestMs: 20_000 } });
+  const native = createMacProcessControl();
+  const link = path.join("/tmp", `dn-native-${randomUUID().slice(0, 8)}`);
+  let linkCreated = false;
+  let f: ReturnType<typeof fixture> | undefined;
+  let manager: ReturnType<typeof createWorkerGitManager> | undefined;
+  let workerStore: WorkerStore | undefined;
+  const successor = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(13), worktreeId: uuid(14), agent: "codex" as const, cwd: "" };
+  try {
+    const toolEnvironment = { PATH: "/usr/bin:/bin:/opt/homebrew/bin" };
+    const agent = await resolveToolLaunch({ tool: "codex", context: "herdr", choice: { kind: "path", path: codex }, cwd: process.cwd(), workerNode: process.execPath, environment: toolEnvironment }, active);
+    const herdrLaunch = await resolveToolLaunch({ tool: "herdr", context: "herdr", choice: { kind: "path", path: herdr }, cwd: process.cwd(), workerNode: process.execPath, environment: toolEnvironment }, active);
+    const tools = { agent, herdr: herdrLaunch, agentObservation: { version: "0.166.0", checkedAt: new Date().toISOString() }, herdrObservation: { version: "0.9.5", checkedAt: new Date().toISOString() } };
+    const adapter: typeof createWorkerHerdr = options => {
+      const actual = createWorkerHerdr(options), ensure = actual.ensureInstance.bind(actual);
+      actual.ensureInstance = async operation => {
+        const result = await ensure(operation);
+        await createHerdrRpcClient(actual.paths.apiEndpoint).request("integration.install", { target: "codex" }, operation);
+        return result;
+      };
+      return actual;
+    };
+    const real: RealNativeFixture = { tools, processControl: native, adapter, prepare: directory => {
+      symlinkSync(directory, link); linkCreated = true;
+      const home = path.join(directory, "home"), codexHome = path.join(home, "codex");
+      mkdirSync(codexHome, { recursive: true }); mkdirSync(path.join(directory, "logs"), { recursive: true });
+      writeFileSync(path.join(codexHome, "config.toml"), `model = "gpt-5.4"\nmodel_provider = "platform_test"\ncheck_for_update_on_startup = false\n[model_providers.platform_test]\nname = "Task-owned loopback"\nbase_url = "http://127.0.0.1:${address.port}/v1"\nwire_api = "responses"\nenv_key = "PROBE_LOOPBACK_KEY"\nrequires_openai_auth = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[features]\nhooks = true\nplugins = false\n`);
+      return { herdrDirectory: path.join(link, "h"), environment: { HOME: home, PATH: "/usr/bin:/bin:/opt/homebrew/bin", XDG_CONFIG_HOME: path.join(home, "config"), XDG_STATE_HOME: path.join(home, "state"), TERM: "xterm-256color", LANG: "en_US.UTF-8", CODEX_HOME: codexHome, CODEX_SQLITE_HOME: codexHome, PROBE_LOOPBACK_KEY: "loopback-only", CI: "1" } };
+    } };
+    const verifier: NativeSelectionVerifier = { verify: async () => {}, settle: async () => {}, close: async () => {} };
+    f = fixture(false, true, verifier, real);
+    const repository = path.join(f.paths.stateDirectory, "repo"); mkdirSync(repository, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repository, stdio: "pipe", timeout: 10_000 });
+    git("init", "--initial-branch=main"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
+    const repoUrl = "https://example.test/owner/repo.git", bare = path.join(f.paths.stateDirectory, "origin.git");
+    git("remote", "add", "origin", repoUrl); execFileSync("git", ["clone", "--bare", repository, bare], { timeout: 10_000 }); git("config", `url.${bare}.insteadOf`, repoUrl);
+    const empty = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    manager = createWorkerGitManager({ temporaryDirectory: path.join(f.paths.stateDirectory, "tmp"), prepareFormat: async (_project, repo, op) => { await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op, sources: empty }); } });
+    const project = { projectId: f.context.projectId, repoUrl, localPath: repository };
+    await manager.prepareRepository(project, active); const binding = await manager.prepareWorktree(project, f.context, active);
+    expect(binding.worktreePath).toBe(f.context.cwd);
+    workerStore = openWorkerStore(f.paths.databaseFile); workerStore.registerProject(project); const task = workerStore.activateTask(workerStore.registerPending({ ...f.context, agent: "codex" }));
+    f.register();
+    const pane = await f.facade.tasks.prepareWorkspace(f.context, "Native cleanup fixture", active);
+    await f.facade.tasks.start(f.context, pane, { configuration: { agent: "codex", model: null, args: ["--no-alt-screen"] }, prompt: "Reply briefly for this isolated test." }, active);
+    await vi.waitFor(() => expect(f!.facade.lifecycle!.archive!.resources()[0]?.sourceBytes).not.toBe("0"), { timeout: 15_000, interval: 100 });
+    f.settings.ledgerFailure = "before";
+    const source = f.facade.lifecycle!.archive!.resources()[0]!;
+    const driver = createCleanupDriver({ store: workerStore, git: manager, herdr: f.facade, platform: "macos", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "fixture", emit: () => {}, now: Date.now });
+    await driver.advance({ owner: f.context, project, task }, { kind: "terminal", deadline: Date.now(), immediateStop: true, scope: cleanupScope(f.context) });
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+    expect(await manager.isOriginalWorktreeAbsent(project, f.context, f.context.cwd, active)).toBe(true);
+    expect(statSync(source.sourcePath).isDirectory()).toBe(true);
+    expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ sessionId: source.sessionId, worktreeDeleted: false });
+    f.settings.ledgerFailure = "none";
+    const nextBinding = await manager.prepareWorktree(project, successor, active); successor.cwd = nextBinding.worktreePath;
+    const previousWorker = (await f.readTask()).properties.worker as Record<string, unknown>;
+    f.changeTask({ properties: { worker: { ...previousWorker, claimId: successor.claimId, worktreeId: successor.worktreeId } } });
+    f.facade.lifecycle!.registerClaim(successor, uuid(5));
+    const nextPane = await f.facade.tasks.prepareWorkspace(successor, "Successor fixture", active);
+    await f.facade.tasks.start(successor, nextPane, { configuration: { agent: "codex", model: null, args: ["--no-alt-screen"] }, prompt: "Reply briefly for this isolated successor test." }, active);
+    expect(nextBinding.worktreePath).not.toBe(binding.worktreePath);
+    expect(statSync(source.sourcePath).isDirectory()).toBe(true);
+    expect(f.facade.lifecycle!.archive!.resources()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ owner: expect.objectContaining({ claimId: f.context.claimId, worktreeId: f.context.worktreeId }), sessionId: source.sessionId }),
+      expect.objectContaining({ owner: expect.objectContaining({ claimId: successor.claimId, worktreeId: successor.worktreeId }), sessionId: expect.not.stringMatching(source.sessionId) }),
+    ]));
+  } finally {
+    let cleanupError: unknown;
+    if (f) for (const owner of [f.context, successor]) {
+      const cleanup = createOperation({ limits: { totalMs: 30_000, requestMs: 10_000 } });
+      try {
+        const reader = openHerdrLifecycleStore(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"), { onMigration: () => {} });
+        const record = reader.get(owner); reader.close();
+        if (!record) continue;
+        try { await f.facade.lifecycle!.stop(owner, "shutdown", cleanup); } catch { /* Reconcile any original processes below. */ }
+        const reopened = openHerdrLifecycleStore(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"), { onMigration: () => {} });
+        const current = reopened.get(owner); reopened.close();
+        const run = current?.runs.at(-1), daemon = run?.daemon ?? current?.preparation?.daemon;
+        if (daemon && await native.observe(daemon) === "same") {
+          const result = await native.stopExclusiveRun({ daemon, processes: run?.processes ?? [] }, cleanup);
+          if (result.state !== "stopped_confirmed") throw new Error("Original native cleanup is unconfirmed.");
+        }
+        for (const original of [daemon, ...(run?.processes ?? [])]) {
+          if (original && await native.observe(original) === "same") throw new Error("An original native process remains running.");
+        }
+      } catch (error) { cleanupError ??= error; }
+      finally { cleanup.dispose(); }
+    }
+    if (f) { f.facade.lifecycle!.close(); facades.delete(f.facade); }
+    workerStore?.close(); await manager?.dispose(); active.dispose();
+    await new Promise<void>(resolve => provider.close(() => resolve()));
+    if (linkCreated && !cleanupError) unlinkSync(link);
+    if (cleanupError) { if (f) directories.splice(directories.indexOf(f.paths.stateDirectory), 1); throw cleanupError; }
+  }
+}, 180_000);
 
 describe("durable Herdr facade with real SQLite", () => {
   it("resumes the same unstarted run after a definite busy rejection and configuration outage", async () => {
@@ -586,6 +712,56 @@ describe("durable Herdr facade with real SQLite", () => {
     expect(f.events).toContain("stop");
     expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
     expect(f.read().runs[0]!.run.stopProof).toBeNull();
+  });
+
+  it("keeps native stop unconfirmed for cleanup until an in-flight recording read exits", async () => {
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const f = fixture(); f.beforeRecording(async () => { enter(); await gate; });
+    f.register(); const binding = await f.prepare(); await f.start(binding); await entered;
+    const stopping = f.facade.lifecycle!.stop(f.context, "terminal", operation());
+    try {
+      expect(f.read().runs[0]!.run.stopProof).toBeNull();
+      expect(f.events).not.toContain("stop");
+      expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+      expect(f.facade.lifecycle!.archive!.resources()[0]!.stopped).toBe(false);
+      await expect(f.facade.lifecycle!.archive!.advance(f.context, operation())).rejects.toThrow("local operation has not exited");
+    } finally { release(); await stopping; }
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  });
+
+  it("still confirms native stopping when the recording checkpoint fails", async () => {
+    const open = recordingStoreModule.openHerdrRecordingStore;
+    vi.spyOn(recordingStoreModule, "openHerdrRecordingStore").mockImplementation(options => {
+      const source = open(options);
+      return { ...source, checkpoint: () => { throw new Error("recording checkpoint failed"); } };
+    });
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    await f.facade.lifecycle!.stop(f.context, "terminal", operation());
+    expect(f.events).toContain("stop");
+    expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  });
+
+  it("retains cleanup responsibility until a cancelled native input operation exits", async () => {
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const f = fixture(); f.register(); const binding = await f.prepare(); await f.start(binding);
+    f.beforeFrame(async () => { enter(); await gate; });
+    const cancellation = new AbortController(), inputOperation = createOperation({ signal: cancellation.signal });
+    const submitting = f.facade.tasks.submitPrompt(f.context, binding, "Delayed input", inputOperation);
+    try {
+      await entered; cancellation.abort(new Error("cancel input"));
+      await expect(submitting).rejects.toThrow();
+      await f.facade.lifecycle!.stop(f.context, "terminal", operation());
+      expect(f.read().runs[0]!.run.stopProof).not.toBeNull();
+      expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+      expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+      release();
+      await vi.waitFor(() => expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true));
+    } finally { release(); inputOperation.dispose(); }
   });
 
   it.each(["never-started", "prepared", "unconfirmed-preparation"])("retains %s resources until native selection probes have confirmed cleanup", async phase => {
@@ -1360,7 +1536,9 @@ describe("durable Herdr facade with real SQLite", () => {
     const source = openHerdrRecordingStore({ directory: path.join(f.paths.workerDirectory, "herdr-recordings", record.sessionId), owner: record.owner, sessionId: record.sessionId, claimId: record.claimId });
     const recordedEnd = source.recoveryBoundary(record.segments[0]!.segmentId).endedAt;
     expect(Date.parse(recordedEnd)).toBeLessThanOrEqual(Date.parse(stoppedAt!));
-    f.reopen(); expect(f.facade.tasks.pendingStops()).toHaveLength(1);
+    f.reopen(); expect(f.facade.tasks.pendingStops()).toHaveLength(0);
+    expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+    expect(f.facade.lifecycle!.archive!.resources()[0]!.stopped).toBe(true);
     const successor = await f.prepare();
     expect(f.read().segments[0]!.endedAt).toBe(recordedEnd);
     expect(f.ledgers.some(message => message.payload.runs[0]?.stopProof !== null)).toBe(true);
@@ -1872,7 +2050,7 @@ it("releases a deleted claim with an unacknowledged stopped ledger for the next 
   await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
   const stopped = f.read();
   expect(stopped.runs[0]!.run.stopProof).not.toBeNull(); expect(stopped.segments.every(segment => segment.endedAt !== null)).toBe(true);
-  expect(stopped.publishedLedgerHash).not.toBe(herdrLedgerHash(stopped)); expect(f.facade.tasks.pendingStops()).toHaveLength(1);
+  expect(stopped.publishedLedgerHash).not.toBe(herdrLedgerHash(stopped)); expect(f.facade.tasks.pendingStops()).toHaveLength(0);
   const project = { projectId: f.context.projectId, repoUrl: "https://example.test/repo.git", localPath: path.resolve(f.context.cwd, "../../..") };
   let store = openWorkerStore(f.paths.databaseFile);
   store.registerProject(project); store.activateTask(store.registerPending({ ...f.context, agent: "codex" }));
@@ -1907,7 +2085,7 @@ it("releases a deleted claim with an unacknowledged stopped ledger for the next 
   } finally { await coordinator.shutdown(); store.close(); }
 });
 
-it.each(["abandon", "delete-intent", "wrong-owner", "stop-unknown"] as const)("keeps pending stopped responsibility for %s", async failure => {
+it.each(["abandon", "delete-intent", "wrong-owner", "stop-unknown"] as const)("separates pending native stop from archive responsibility for %s", async failure => {
   const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
   const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
   f.settings.ledgerFailure = "before"; f.settings.stopUnknown = failure === "stop-unknown";
@@ -1917,7 +2095,7 @@ it.each(["abandon", "delete-intent", "wrong-owner", "stop-unknown"] as const)("k
   if (failure === "abandon") await f.facade.lifecycle!.archive!.dispose(request, operation(), async () => { throw new Error("Abandon must retain the worktree"); });
   else await expect(f.facade.lifecycle!.archive!.dispose(request, operation(), async () => { throw new Error("Deletion interrupted"); })).rejects.toThrow();
   f.reopen();
-  expect(f.facade.tasks.pendingStops()).toHaveLength(1); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+  expect(f.facade.tasks.pendingStops()).toHaveLength(failure === "stop-unknown" ? 1 : 0); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(failure === "stop-unknown" ? 1 : 0);
   expect(f.facade.lifecycle!.archive!.resources()[0]!.worktreeDeleted).toBe(false);
 });
 
@@ -1932,7 +2110,7 @@ it("retains pending responsibility when the completed deletion journal belongs t
   const journal = JSON.parse(readFileSync(file, "utf8")); journal.state.owner.worktreeId = uuid(995);
   journal.sha256 = createHash("sha256").update(canonicalSessionJson(journal.state)).digest("hex"); writeFileSync(file, JSON.stringify(journal));
   f.reopen();
-  expect(f.facade.tasks.pendingStops()).toHaveLength(1); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(1);
+  expect(f.facade.tasks.pendingStops()).toHaveLength(0); expect(f.facade.lifecycle!.responsibilities()).toHaveLength(0);
   expect(f.facade.lifecycle!.archive!.resources()[0]).toMatchObject({ state: "failed", worktreeDeleted: false });
 });
 
@@ -2028,4 +2206,53 @@ it("reads the original lifecycle worktree path without scanning archive contents
     expect(() => f.facade.lifecycle!.worktreePath!({ ...f.context, worktreeId: uuid(991) })).toThrow();
     expect(resources).not.toHaveBeenCalled();
   } finally { resources.mockRestore(); }
+});
+
+it("serializes original archive maintenance even when a queued operation is cancelled", async () => {
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture(false, true); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  f.settings.ledgerFailure = "none";
+  const state = f.api.state; f.api.state = async (...args) => { entered(); await gate; return state(...args); };
+  const archive = f.facade.lifecycle!.archive!, first = archive.advance(f.context, operation());
+  const cancellation = new AbortController(), cancelledOperation = createOperation({ signal: cancellation.signal });
+  try {
+    await Promise.race([started, first.then(() => { throw new Error("Archive completed before the blocked state read."); })]);
+    const cancelled = archive.advance(f.context, cancelledOperation);
+    cancellation.abort(new Error("cancel queued archive"));
+    await expect(cancelled).rejects.toMatchObject({ kind: "cancelled" });
+    let removals = 0;
+    const disposal = archive.dispose({ ...f.context, sessionId: f.read().sessionId, operationId: uuid(996), action: "delete", confirmed: true }, operation(), async () => { removals++; rmSync(f.context.cwd, { recursive: true }); });
+    await Promise.resolve();
+    expect(removals).toBe(0); expect(archive.resources()[0]!.disposition).toBeNull();
+    release(); await first; await disposal;
+    expect(removals).toBe(1); expect(archive.resources()[0]!.disposition?.completed).toBe(true);
+  } finally { release(); cancelledOperation.dispose(); await first.catch(() => {}); }
+});
+
+it("joins selection and completes stopped cleanup while archive network work is blocked", async () => {
+  let entered!: () => void, releaseArchive!: () => void, releaseProbe!: () => void, probeEntered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { releaseArchive = resolve; });
+  const probeStarted = new Promise<void>(resolve => { probeEntered = resolve; }), probeGate = new Promise<void>(resolve => { releaseProbe = resolve; });
+  let probePending = false;
+  const verifier: NativeSelectionVerifier = { verify: async () => { if (probePending) { probeEntered(); await probeGate; } }, settle: async () => { if (probePending) await probeGate; }, close: async () => {} };
+  const f = fixture(false, true, verifier); f.register(); const binding = await f.prepare(); await f.start(binding);
+  const task = await f.readTask(); f.changeTask({ status: "done", properties: { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } } });
+  f.settings.ledgerFailure = "before"; await expect(f.facade.lifecycle!.stop(f.context, "terminal", operation())).rejects.toThrow();
+  f.settings.ledgerFailure = "none";
+  const state = f.api.state; f.api.state = async (...args) => { entered(); await gate; return state(...args); };
+  const archive = f.facade.lifecycle!.archive!, advancing = archive.advance(f.context, operation());
+  try {
+    await Promise.race([started, advancing.then(() => { throw new Error("Archive completed before the blocked state read."); })]); probePending = true;
+    const probing = f.adapterSelectionVerifiers[0]!.verify({ native: { agent: "codex", model: null, args: [] }, cwd: f.context.cwd, environment: {} }, operation());
+    await probeStarted; expect(f.facade.lifecycle!.isStopped(f.context)).toBe(false);
+    const scope = cleanupScope(f.context), notified = vi.fn(); scope.onExecutionStopped = notified;
+    const cleaning = f.facade.lifecycle!.cleanup(f.context, "cleanup", operation(), scope);
+    releaseProbe(); await probing;
+    await expect(cleaning).resolves.toBe(false);
+    expect(notified).toHaveBeenCalledOnce(); expect(f.facade.lifecycle!.isStopped(f.context)).toBe(true);
+  } finally { releaseProbe(); releaseArchive(); await advancing.catch(() => {}); }
 });

@@ -195,6 +195,62 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
     await expect(adapter.findWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("manifest is missing");
   });
 
+  it("does not report a removed original when Git moved its branch registration", async () => {
+    const f = await fixture(), adapter = manager(f.root);
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const moved = path.join(f.root, "moved-worktree");
+    git(f.repository, ["worktree", "move", binding.worktreePath, moved]);
+    await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await adapter.isOriginalWorktreeAbsent(f.project, f.owner, binding.worktreePath, operation())).toBe(false);
+    expect(await readFile(path.join(moved, "tracked.txt"), "utf8")).toBe("original\n");
+    git(f.repository, ["worktree", "remove", moved]);
+    expect(await adapter.isOriginalWorktreeAbsent(f.project, f.owner, binding.worktreePath, operation())).toBe(true);
+  });
+
+  it("retains a moved original registration even after its HEAD is detached", async () => {
+    const f = await fixture(), adapter = manager(f.root);
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const moved = path.join(f.root, "moved-detached-worktree");
+    git(f.repository, ["worktree", "move", binding.worktreePath, moved]);
+    git(moved, ["checkout", "--detach"]);
+    await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await adapter.isOriginalWorktreeAbsent(f.project, f.owner, binding.worktreePath, operation())).toBe(false);
+    expect(worktreePaths(f.repository)).toContain(path.normalize(moved));
+    expect(await readFile(path.join(moved, "tracked.txt"), "utf8")).toBe("original\n");
+    git(f.repository, ["worktree", "remove", moved]);
+    expect(await adapter.isOriginalWorktreeAbsent(f.project, f.owner, binding.worktreePath, operation())).toBe(true);
+  });
+
+  it("recognizes a verified successor in a different worktree directory", async () => {
+    const f = await fixture(), adapter = manager(f.root);
+    const original = await adapter.prepareWorktree(f.project, f.owner, operation());
+    await adapter.removeWorktree(f.project, f.owner, {});
+    await adapter.retireWorktreeManifest(f.project, f.owner, operation());
+    const successor = changedClaim(f.owner);
+    const next = await adapter.prepareWorktree(f.project, successor, operation());
+    expect(next.worktreePath).not.toBe(original.worktreePath);
+    expect(git(next.worktreePath, ["branch", "--show-current"])).toBe(`daynight/${f.owner.taskId}`);
+    expect(await adapter.isOriginalWorktreeAbsent(f.project, f.owner, original.worktreePath, operation())).toBe(true);
+    expect(await readFile(path.join(next.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(worktreePaths(f.repository)).toContain(path.normalize(next.worktreePath));
+  });
+
+  it("does not accept an unrelated manifest as proof of the successor", async () => {
+    const f = await fixture(), adapter = manager(f.root);
+    const original = await adapter.prepareWorktree(f.project, f.owner, operation());
+    await adapter.removeWorktree(f.project, f.owner, {});
+    await adapter.retireWorktreeManifest(f.project, f.owner, operation());
+    const successor = changedClaim(f.owner);
+    const next = await adapter.prepareWorktree(f.project, successor, operation());
+    const manifests = createWorktreeManifestStore(original.commonDirectory);
+    const current = manifests.read(successor.worktreeId)!;
+    manifests.remove(current);
+    manifests.publish({ ...current, projectId: "88888888-8888-4888-8888-888888888888" });
+    expect(await adapter.isOriginalWorktreeAbsent(f.project, f.owner, original.worktreePath, operation())).toBe(false);
+    expect(await readFile(path.join(next.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(worktreePaths(f.repository)).toContain(path.normalize(next.worktreePath));
+  });
+
   it("inspects linked metadata from the repository cwd with its original absolute context and operation budget", async () => {
     const f = await fixture();
     const calls: { cwd: string; args: readonly string[]; op: Operation; timeoutMs: number | undefined }[] = [];

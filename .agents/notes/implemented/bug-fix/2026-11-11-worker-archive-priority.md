@@ -17,8 +17,9 @@ latest capacity observation is full. The independent maintenance owner checks
 that condition again immediately before starting an attempt; it never interrupts
 an upload already in progress. Its nonblocking ownership and shutdown behavior
 remain as described in the [maintenance decision](../architecture/2026-11-11-worker-archive-maintenance.md).
-Cleanup retains its original resource ownership until archival and worktree
-removal are confirmed. The [execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
+Web cleanup retains its original resource ownership until archival and worktree
+removal are confirmed. Native Herdr follows the separate [cleanup decision](2026-11-16-herdr-cleanup-independent-of-archive.md).
+The [execution capacity decision](../architecture/2026-11-11-worker-execution-capacity.md)
 independently releases the slot after the original execution stops. The scheduling and
 request rules are owned by the [Worker design](../../../../docs/design/daynight-worker.md).
 

@@ -587,7 +587,7 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     const f = historicalFixture();
     try {
       const record = f.registerHerdr(f.old); f.release(); f.herdr.retireNeverStarted(record);
-      const resource = { owner: f.old, sessionId: record.sessionId, stopped: false, stopEvidence: [], terminal: false,
+      const resource = { owner: f.old, sessionId: record.sessionId, stopped: false, stoppedLedgerPending: false, stopEvidence: [], terminal: false,
         worktreePath: record.cwd, sourcePath: path.join(f.root, "recordings", record.sessionId), sourceBytes: "0",
         state: "pending" as const, error: null, nextAttemptAt: null, worktreeDeleted: false, disposition: null };
       await expect(f.run({ ...f.sources, listHerdrResources: () => [resource] })).rejects.toThrow();

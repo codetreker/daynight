@@ -2920,11 +2920,13 @@ visible in partial archives.
 A durable input arbiter revokes control before cleanup. It sends one bounded
 advisory prompt only from safe automation with no manual draft or unknown
 input; other states skip the prompt and proceed with controlled stopping.
-Confirmed stopping releases the execution slot while a separate queue freezes
-the original Session and uploads its fixed archive. Worktree deletion requires
-the matching durable `ready` or legitimate `unavailable` receipt. Failed source
-or upload responsibility retains the original worktree and blocks a new claim
-for that task; other tasks may run within the independent resource budgets.
+Confirmed stopping releases the execution slot. After the original local
+operations and selection cleanup have joined, terminal cleanup verifies and
+removes the original worktree independently of archive results. A separate queue
+retains the original recording source and Session identity for sealing and
+upload; its failure remains visible without blocking a successor after the
+worktree is settled. Unknown stop, conflicting ownership or Git failure still
+retains the corresponding cleanup responsibility.
 See [retained recordings](#retained-herdr-recordings) for inspection and explicit
 recovery or disposal.
 
@@ -3445,8 +3447,9 @@ daynight worker resources retry <task-id> --project <project-id> \
 
 Archive retry preserves the original operation and source. It never resumes an
 Agent, switches archive owner or converts corrupt source into a partial or
-unavailable archive. Normal worktree cleanup requires a durable, matching
-`ready` or legitimate `unavailable` receipt.
+unavailable archive. Normal worktree cleanup is independent of the archive
+receipt; the reported worktree result reflects verified Git and filesystem
+state, not archive status.
 
 For an irrecoverable failure, explicitly choose `abandon` to stop retries while
 retaining files, or `delete` to remove that original worktree and recording
@@ -3501,8 +3504,8 @@ notify and stop agent → close workspace → submit remote change
 ```
 
 macOS Herdr release instead confirms the durable original stop without a
-cleanup prompt, submits the remote change, and retains the worktree until
-a matching finalization receipt permits deletion. The ordering above applies to legacy Herdr;
+cleanup prompt, submits the remote change, and cleans the worktree independently
+of archive finalization. The ordering above applies to legacy Herdr;
 Web also applies its own archive gate. The worktree is retained until remote
 confirmation. A refusal leaves it available
 for original execution recovery; success followed by local deletion failure is

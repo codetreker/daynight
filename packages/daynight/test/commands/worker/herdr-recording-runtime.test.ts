@@ -26,6 +26,19 @@ test("captures independently of offline publication and seals its own monotonic 
   expect(source.segments[0]!.durationMs).toBe(boundary!.durationMs);
   runtime.close();
 });
+test("keeps capture non-quiescent until an in-flight local read exits", async () => {
+  const f = setup(); let release!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const runtime = createHerdrRecordingRuntime({ directory: f.directory, read: async () => { entered(); await blocked; return { width: 1, height: 1, rows: [[]] }; }, publish: async () => {} });
+  try {
+    runtime.prepare({ ...f.record, segments: [] }); runtime.start(f.record); await started;
+    const stopping = runtime.stop(f.record);
+    expect(runtime.quiescent(f.record)).toBe(false);
+    release(); await stopping;
+    expect(runtime.quiescent(f.record)).toBe(true);
+  } finally { release(); runtime.close(); }
+});
 test("recovery marks the uncheckpointed tail without extending its last durable observation", async () => {
   const f = setup(); const runtime = createHerdrRecordingRuntime({ directory: f.directory, read: async () => ({ width: 1, height: 1, rows: [[]] }), publish: async () => {} });
   runtime.prepare({ ...f.record, segments: [] }); const source = runtime.source(f.record); source.openSegment(f.record.segments[0]!);

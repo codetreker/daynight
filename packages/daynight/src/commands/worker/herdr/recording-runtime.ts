@@ -34,6 +34,7 @@ export const createHerdrRecordingRuntime = (options: {
   };
   return {
     directory, source,
+    quiescent: (record: HerdrLifecycleRecord): boolean => !samplers.has(record.sessionId),
     canAllocate,
     canPrepareRun: (record: HerdrLifecycleRecord): boolean => record.runs.length < SESSION_V2_LIMITS.maxRuns && (record.runs.length === 0 || canAllocate(record)) && herdrRecordingMetadataBudget(record, record.runs.length === 0 ? [] : source(record).metadata().gaps, "run") <= SESSION_V2_LIMITS.metadataMaxBytes,
     prepare(record: HerdrLifecycleRecord): void {
@@ -97,8 +98,12 @@ export const createHerdrRecordingRuntime = (options: {
       }
       const active = samplers.get(record.sessionId);
       if (!active) return null;
-      samplers.delete(record.sessionId); latest.delete(record.sessionId);
-      const boundary = await active.sampler.stop(); source(record).endSegment(active.segmentId, boundary); return boundary;
+      latest.delete(record.sessionId);
+      try {
+        const boundary = await active.sampler.stop(); source(record).endSegment(active.segmentId, boundary); return boundary;
+      } finally {
+        if (samplers.get(record.sessionId) === active) samplers.delete(record.sessionId);
+      }
     },
     closeRun(record: HerdrLifecycleRecord): void { source(record).closeRun(record.runs.at(-1)!.run.executionGeneration); },
     close(): void {

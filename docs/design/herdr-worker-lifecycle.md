@@ -78,19 +78,19 @@ lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际�
 
 journal 无法落盘时只依据已有证明尝试受控停止，并报告结果未确认；不能写成功状态。没有持久停止意图而原 daemon 在同一 boot 已消失时，重启不能补写意图来追认完整停止。pane 消失、内存 Map 为空或进程命令行变化也不是停止证明。已持久确认停止但封段或同步中断时，重试只补收尾，不重新停止或启动 agent。
 
-准备停止确认后仍封闭实际录制责任并同步原 ledger。纯准备且零帧的终态执行使用实际零计数和无 captureError 的 unavailable/ended_before_first_sample，不生成 ready 空归档；前代有录制时保留其原帧和该代 unavailableRuns。服务端在 ledger 与 recording evidence/snapshot 的两个到达顺序上均拒绝准备证明关联非零 selected/registered 或已观察内容。新 proof 变体要求支持它的 server/Web reader；旧 reader 拒绝时，未确认的同步、归档与 worktree 责任继续保留。
+准备停止确认后仍封闭实际录制责任并同步原 ledger。纯准备且零帧的终态执行使用实际零计数和无 captureError 的 unavailable/ended_before_first_sample，不生成 ready 空归档；前代有录制时保留其原帧和该代 unavailableRuns。服务端在 ledger 与 recording evidence/snapshot 的两个到达顺序上均拒绝准备证明关联非零 selected/registered 或已观察内容。新 proof 变体要求支持它的 server/Web reader；旧 reader 拒绝时，未确认的同步与归档责任继续保留；原停止及 Git 清理条件满足后独立结算 worktree。
 
 证明范围受可核验的原进程、session 和连续父子关系约束。无法证明的后台、脱离 session 或其他外部服务没有通用停止保证；未知责任必须保留，不能宣称覆盖任意后台后代。
 
 ## 调度、退出与人工接入
 
-Coordinator 将持久责任并入资源发现、同 task 启动屏障及 shutdown。终态清理的原执行 stop proof 已提交后可释放执行槽，不等待封段或网络确认；保留的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。自动领取在远端写入前检查同 task 旧资源，尚未完成的 Herdr archive/worktree 责任阻止同一 Worker 申请新 claim。
+Coordinator 将未结算的本机行、清理计划、真实停止责任与 worktree 归属并入资源发现、同 task 启动屏障及 shutdown。终态清理的原执行 stop proof 已提交后可释放执行槽，不等待封段或网络确认；尚未清理的 worktree 仍阻止同 task 新 claim 覆盖。已排队恢复的 job 继续占槽，不能因旧代已停止而超配。仅剩独立归档源和补传时不再投影为 worktree 清理 owner 或同 task 屏障。
 
 终态清理由共享 `cleanup_schedules` 保存原资源身份、首个期限和每 claim 重试策略，不能用 schedule 中的步骤标记替代 lifecycle 原身份、停止证明或服务端 ledger 确认。失败按 1、2、4、8、16、32 秒及最多 60 秒退避，到期后的正常对账才重试；不会消耗业务恢复预算，也不能清除尚未确认的停止责任。调度写失败保留原错误与 SQLite 错误，进程内继续有界退避，不能宣称本次调度已持久保存。
 
 共享清理操作的单次预算为 5 分钟，内部 RPC、HTTP 和原生停止继续受外层取消与期限约束；原生停止的信号升级间隔保持自身语义。Session HTTP 使用当前 `Operation.limits.requestMs`：普通操作为 30 秒，清理操作为 5 分钟，外层 `Operation.signal` 仍可提前取消。macOS 终态 cleanup 先持久撤销旧输入；仅此前安全 automation、任务未暂停、结构化状态就绪且没有已知菜单或禁用输入时，通过同一仲裁器发送一次有界 cleanup prompt；cleanup 不要求正向空 composer，读取结果仍为 unavailable。人工草稿或未知输入时跳过提示并受控停止，不以通知回执或 native idle 代替原进程停止证明。封段或 ledger 失败只补对应收尾，不重新停止已确认的原运行、不启动新业务执行。未确认的 ledger 请求仍只允许读回，退避到期不会赋予重发权限。Linux/Windows legacy Herdr 的建议性通知、原十分钟期限和 Git 删除规则由 [Worker 架构](daynight-worker.md#结束清理与退出)拥有。
 
-Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止证明提交后释放执行槽，本地封段及 ledger 确认后可以结束本机执行行；独立归档队列继续保存源、冻结最终 ledger、核对不可变回执后才删除原 worktree。失败保留资源责任。正常归档删除和显式 delete 都必须从原持久删除记录收敛对应本机任务与清理计划；崩溃在删除确认与 SQLite 更新之间时，调度恢复继续该收敛，不将已删除资源变成永久占槽或缺失原始证据。
+Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止证明提交后释放执行槽；确认原运行、选择清理及在途本地操作结束后，安全删除原 worktree 并核验目录和 Git 注册，再结算本机行与清理计划。独立队列继续保存原源、封段、发布 ledger、冻结并核对不可变归档回执；这些步骤的失败不阻断文件清理。重启从原停止证明、实际 Git 状态、本机行和计划收敛清单退休；已确认后继的目录不能被旧责任删除。显式 delete 的持久处置记录保持独立。
 
 `worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再校验并使用原实例目录及冻结 Herdr launch 打开 client。缺少原工具身份或文件变化时拒绝新 client，不使用当前目标替代；已有 endpoint 的停止和归档不依赖 executable 仍可启动。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 lifecycle journal 时只读共享实例的原 launch 和 daemon 证明；缺历史工具身份时拒绝新 client。
 
@@ -101,4 +101,4 @@ Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。
 - `herdr/lifecycle-store.ts` 校验不可变身份、状态迁移和追加历史，并提供 attach 专用只读读取；`session-connection.ts` 拥有注册、读回和 ledger 确认。
 - `herdr/native-macos.ts` 拥有原进程身份与独占停止；`execution.ts`、`cleanup.ts`、`coordinator.ts` 消费持久准入和停止结果。
 
-验证应覆盖旧 prepared 的保守迁移、准备停止与零帧收尾、准备证明不授予恢复、两类停止证明独立校验、先记录身份后输入、注册与 ledger 丢响应、准备/启动/停止/封段崩溃、未知输入不重放、重连与运行换代、替代实例保护、终态同步、归档前工作区保留、只读 attach，以及 Web/legacy 回归。模拟故障证明状态机与拒绝语义；macOS 真实 daemon、socket 与进程身份实验分别证明支持范围。二者不能互相替代，也不等同于 provider 登录或完整业务交付验收。
+验证应覆盖旧 prepared 的保守迁移、准备停止与零帧收尾、准备证明不授予恢复、两类停止证明独立校验、先记录身份后输入、注册与 ledger 丢响应、准备/启动/停止/封段崩溃、未知输入不重放、重连与运行换代、替代实例保护、终态同步、归档失败时安全工作区清理与重启收敛、只读 attach，以及 Web/legacy 回归。模拟故障证明状态机与拒绝语义；macOS 真实 daemon、socket 与进程身份实验分别证明支持范围。二者不能互相替代，也不等同于 provider 登录或完整业务交付验收。

@@ -9,13 +9,15 @@ import type { ResourceOwner } from "../types.js";
 import { assertHerdrDisposalTarget, removeHerdrSourceDirectory } from "../resource-disposal.js";
 import { canonicalSessionJson, decodeStrictSessionJson, uuid } from "../../../session/v2/values.js";
 import type { HerdrLifecycleRecord } from "./lifecycle-types.js";
+import { herdrLedgerHash } from "./lifecycle-store.js";
 import type { HerdrRecordingSnapshot } from "./recording-types.js";
 import type { HerdrArchiveResources, HerdrRetainedResource, HerdrResourceTarget } from "./resource-types.js";
 import type { HerdrArchiveState, HerdrRecordingArchive } from "./recording-archive.js";
 
 const same = (left: unknown, right: unknown): boolean => canonicalSessionJson(left) === canonicalSessionJson(right);
 const ownerOf = (record: HerdrLifecycleRecord): ResourceOwner => ({ projectId: record.owner.projectId, taskId: record.owner.taskId, claimId: record.claimId, worktreeId: record.owner.worktreeId });
-const stopped = (record: HerdrLifecycleRecord): boolean => record.preparation === null && record.runs.length > 0 && record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null) && record.segments.every(segment => segment.endedAt !== null);
+const stopped = (record: HerdrLifecycleRecord): boolean => record.preparation === null && record.runs.length > 0 && record.runs.every(run => run.phase === "stopped_confirmed" && run.run.stopProof !== null);
+const sealed = (record: HerdrLifecycleRecord): boolean => stopped(record) && record.segments.every(segment => segment.endedAt !== null);
 const absent = (file: string): boolean => { try { lstatSync(file); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; } };
 const sourceIdentity = (directory: string): string | null => {
   if (absent(directory)) return null;
@@ -73,12 +75,13 @@ export const createHerdrRecordingResources = (options: {
     const disposition = state?.disposition;
     return {
       owner: ownerOf(record), sessionId: record.sessionId, stopped: stopped(record),
+      stoppedLedgerPending: stopped(record) && (!sealed(record) || record.registrationRequest !== null || record.ledgerRequest !== null || record.publishedLedgerHash !== herdrLedgerHash(record)),
       stopEvidence: record.runs.flatMap(run => run.run.stopProof ? [run.run.stopProof] : []),
       terminal: state !== null || record.runs.some(run => run.stopReason === "terminal"),
       worktreePath: record.cwd, sourcePath: directory, sourceBytes: bytes,
       state: disposition?.phase === "completed" ? "abandoned" : journalFailure || sourceFailure && !state?.receipt ? "failed" : state?.state ?? "pending",
       error: error ?? state?.error ?? null,
-      nextAttemptAt: journalFailure ? null : state?.nextAttemptAt ?? (sourceFailure && !state ? 0 : null),
+      nextAttemptAt: journalFailure ? 0 : state?.nextAttemptAt ?? (sourceFailure && !state ? 0 : null),
       worktreeDeleted: state?.worktreeDeleted ?? false,
       disposition: disposition ? { operationId: disposition.operationId, action: disposition.action, completed: disposition.phase === "completed" } : null,
     };
@@ -98,21 +101,36 @@ export const createHerdrRecordingResources = (options: {
     }
     if (!stopped(record)) throw new Error("The original native execution stop is not confirmed.");
   };
-  const authorize = async (target: HerdrResourceTarget, operation: Operation): Promise<HerdrLifecycleRecord> => {
+  const authorize = async (target: HerdrResourceTarget, operation: Operation, requireSealed = true): Promise<HerdrLifecycleRecord> => {
     const record = get(target, target.sessionId); operation.check();
     if (!options.currentUserId || await options.currentUserId(operation.signal) !== record.owner.ownerUserId) throw new Error("Resource management requires the original authenticated execution owner.");
-    await terminal(record, operation); return get(target, target.sessionId);
+    await terminal(record, operation);
+    if (requireSealed && !sealed(record)) throw new Error("The original recording segments are not closed.");
+    return get(target, target.sessionId);
   };
   const advance = async (owner: ResourceOwner, operation: Operation): Promise<boolean> => {
     let record = get(owner); await terminal(record, operation);
-    const previous = options.archive.inspect(record);
+    let previous: HerdrArchiveState | null;
+    try { previous = options.archive.inspect(record); }
+    catch (journalError) {
+      // Segment closure and stopped-ledger synchronization remain recoverable
+      // even when the independent archive decision cannot be read.
+      try { await options.publishStopped(record, operation); }
+      catch (stopError) { operation.check(); throw new AggregateError([journalError, stopError], "Archive journal and stopped-ledger maintenance failed."); }
+      throw journalError;
+    }
     // Frozen Sessions reject ordinary ledger publication. Resume the exact
     // archive decision directly after its first stopped-ledger confirmation.
-    if (!previous?.finalization && previous?.state !== "failed") {
+    if (!previous?.finalization) {
       try { await options.publishStopped(record, operation); }
-      catch (cause) { operation.check(); options.archive.defer(record, cause); return false; }
+      catch (cause) {
+        operation.check();
+        if (previous?.nextAttemptAt === null && (previous.state === "failed" || previous.state === "permission_denied")) throw cause;
+        options.archive.defer(get(owner), cause); return false;
+      }
     }
     record = get(owner); operation.check();
+    if (previous?.nextAttemptAt === null && (previous.state === "failed" || previous.state === "permission_denied")) return false;
     const state = await options.archive.advance(record, () => options.source(record), operation.signal);
     return state.receipt !== null && (state.state === "ready" || state.state === "unavailable");
   };
@@ -120,7 +138,11 @@ export const createHerdrRecordingResources = (options: {
     resources: () => options.list().map(inspect),
     advance,
     cleaned: owner => { const record = get(owner); if (!absent(record.cwd)) throw new Error("The original worktree is still present; cleanup cannot be recorded."); options.archive.cleaned(record); },
-    retry: async (target, operation) => { const record = await authorize(target, operation); options.archive.retry(record); await advance(target, operation); return inspect(get(target, target.sessionId)); },
+    retry: async (target, operation) => {
+      let record = await authorize(target, operation, false);
+      if (!sealed(record)) { await options.publishStopped(record, operation); record = get(target, target.sessionId); }
+      options.archive.retry(record); await advance(target, operation); return inspect(get(target, target.sessionId));
+    },
     dispose: async (request, operation, removeWorktree, scope) => {
       const signal = scope === undefined ? operation.signal : scope.signal;
       const record = await authorize(request, operation), resource = { ...inspect(record), terminal: true };
@@ -133,10 +155,10 @@ export const createHerdrRecordingResources = (options: {
       } else assertSourceOwner(directory, record);
       options.archive.disposition(record, { operationId: request.operationId, action: request.action, phase: "intent", sourceIdentity: previous?.sourceIdentity ?? currentIdentity });
       if (request.action === "delete") {
-        operation.check(); await removeWorktree();
+        operation.check(); const originalAbsent = await removeWorktree();
         await cleanupOperation(async sourceOperation => {
           sourceOperation.check();
-          if (!absent(record.cwd)) throw new Error("The original worktree removal was not confirmed.");
+          if (originalAbsent !== true && !absent(record.cwd)) throw new Error("The original worktree removal was not confirmed.");
           if (sourceIdentity(directory) !== currentIdentity) throw new Error("The recording source changed during worktree disposal.");
           await removeHerdrSourceDirectory(options.directory, directory, sourceOperation);
           if (!absent(directory)) throw new Error("The recording source removal was not confirmed.");

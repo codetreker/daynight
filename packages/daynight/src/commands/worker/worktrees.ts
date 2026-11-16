@@ -14,7 +14,7 @@ import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
 import { removeWorktreeContents } from "./remove-worktree-contents.js";
 import { createWorktreeManifestStore, type WorktreeManifest } from "./worktrees/manifest.js";
-import { bindingForManifest, managedNamespace, sameWorktreeLocation } from "./worktrees/paths.js";
+import { bindingForManifest, managedNamespace, retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
 import { sameResourceOwner } from "./resource-owner.js";
 
 import { WorktreeValidationError } from "./worktree-errors.js";
@@ -395,6 +395,47 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (result === null) throw new Error("The original worktree manifest is missing; resource absence cannot be inferred.");
       return result.leaf === null && result.registration === null ? null : result.binding;
     },
+    isOriginalWorktreeAbsent: async (project: WorkerProject, owner: ResourceOwner, cwd: string, operation: Operation): Promise<boolean> => {
+      const repository = await inspectRepository(project, operation);
+      if (!retainedWorktreePathInScope(project.localPath, owner, cwd)) throw new Error("The retained worktree path does not belong to its original project and owner.");
+      const manifest = manifestFor(project, owner, repository);
+      if (manifest !== null && !await sameWorktreeLocation(bindingForManifest(project.localPath, repository.commonDirectory, manifest).worktreePath, cwd)) throw new Error("The retained worktree path conflicts with its original manifest.");
+      const target = path.join(repository.root, ".worktrees", "daynight", path.basename(cwd));
+      if (manifest === null) {
+        const successors = createWorktreeManifestStore(repository.commonDirectory).list().filter(candidate => candidate.directoryName === path.basename(cwd));
+        if (successors.length > 1) throw new Error("The retained worktree path has conflicting successor manifests.");
+        const successor = successors[0];
+        if (successor !== undefined) {
+          if (successor.projectId !== owner.projectId || successor.taskId !== owner.taskId || successor.claimId === owner.claimId || successor.worktreeId === owner.worktreeId) throw new Error("The retained worktree path belongs to an unrelated owner.");
+          const next = { projectId: successor.projectId, taskId: successor.taskId, claimId: successor.claimId, worktreeId: successor.worktreeId };
+          const observed = await inspectWorktree(project, next, repository, operation, false);
+          if (observed?.leaf == null || observed.registration === null) throw new Error("The successor worktree binding is not confirmed.");
+          return true;
+        }
+      }
+      if (await directory(target) !== null) return false;
+      const index = await readRegistrationIndex(repository, readers, operation);
+      if ((await registrations(repository, target, operation, index)).length !== 0) return false;
+      // Git retains the administrative directory name when a worktree moves,
+      // including after HEAD is detached. Its original basename may have a
+      // numeric collision suffix; without a matching owner it remains ambiguous.
+      const adminName = new RegExp(`^${path.basename(target)}[0-9]*$`);
+      if (index.entries.some(entry => adminName.test(path.basename(entry.directory)))) return false;
+      const records = (await git(repository.root, ["worktree", "list", "--porcelain", "-z"], operation)).split("\0\0").map(record => record.split("\0"));
+      const branch = `branch refs/heads/daynight/${canonicalId(owner.taskId)}`;
+      const occupied = records.filter(record => record.includes(branch));
+      if (occupied.length === 0) return true;
+      if (occupied.length !== 1) return false;
+      const location = occupied[0]!.find(field => field.startsWith("worktree "))?.slice("worktree ".length);
+      if (location === undefined) return false;
+      const candidates = createWorktreeManifestStore(repository.commonDirectory).list().filter(candidate => candidate.projectId === owner.projectId && candidate.taskId === owner.taskId && candidate.claimId !== owner.claimId && candidate.worktreeId !== owner.worktreeId);
+      for (const candidate of candidates) {
+        const next = { projectId: candidate.projectId, taskId: candidate.taskId, claimId: candidate.claimId, worktreeId: candidate.worktreeId };
+        const observed = await inspectWorktree(project, next, repository, operation, false);
+        if (observed?.leaf != null && observed.registration !== null && await sameWorktreeLocation(observed.binding.worktreePath, location)) return true;
+      }
+      return false;
+    },
     resolveWorktreeBinding: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding | null> => {
       const repository = await requirePrepared(project, operation), manifest = manifestFor(project, owner, repository);
       return manifest === null ? null : bindingForManifest(project.localPath, repository.commonDirectory, manifest);
@@ -563,6 +604,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     removeUnpublishedReservation: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.removeUnpublishedReservation(project, owner, scoped)),
     verifyWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.verifyWorktree(project, owner, scoped)),
     findWorktree: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.findWorktree(project, owner, scoped)),
+    isOriginalWorktreeAbsent: (project: WorkerProject, owner: ResourceOwner, cwd: string, operation: Operation) => tracked(operation, scoped => manager.isOriginalWorktreeAbsent(project, owner, cwd, scoped)),
     resolveWorktreeBinding: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.resolveWorktreeBinding(project, owner, scoped)),
     listWorktreeManifests: (project: WorkerProject, operation: Operation, includeOtherProjects = false) => tracked(operation, scoped => manager.listWorktreeManifests(project, scoped, includeOtherProjects)),
     retireWorktreeManifest: (project: WorkerProject, owner: ResourceOwner, operation: Operation) => tracked(operation, scoped => manager.retireWorktreeManifest(project, owner, scoped)),
