@@ -1,9 +1,10 @@
 import path from "node:path";
+import type { ChildProcess } from "node:child_process";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { afterEach, expect, test } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { resolveToolLaunch } from "../../../src/platform/tool-executables.js";
-import { startCopilotProcess } from "../../../src/commands/controller/providers/copilot-owned-process.js";
+import { copilotDeadline, startCopilotProcess } from "../../../src/commands/controller/providers/copilot-owned-process.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -18,18 +19,25 @@ const fixture = async () => {
   const operation = createOperation();
   try {
     const launch = await resolveToolLaunch({ tool: "copilot", context: "herdr", choice: { kind: "path", path: entry }, cwd: root, environment: process.env, workerNode: node }, operation);
-    return { root, node, entry, receipt, launch };
+    let closed = Promise.resolve();
+    const onSpawn = (child: ChildProcess) => { closed = new Promise<void>(resolve => child.once("close", () => resolve())); };
+    const close = async (runtime: ReturnType<typeof startCopilotProcess>) => {
+      // The owner may settle at exit; fixture deletion also needs closed stdio.
+      try { await runtime.close(); }
+      finally { await copilotDeadline(closed, "Fixture native process close", 5000); }
+    };
+    return { root, node, entry, receipt, launch, onSpawn, close };
   } finally { operation.dispose(); }
 };
 
 test("the shared Copilot owner starts the frozen Node and literal recipe despite a changed PATH", async () => {
   const f = await fixture();
-  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: { ...process.env, PATH: "" }, onSpawn() {} }, () => {});
+  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: { ...process.env, PATH: "" }, onSpawn: f.onSpawn }, () => {});
   try {
     await expect(runtime.ready).resolves.toMatchObject({ port: 12345 });
     expect(runtime.nativeExecutableSha256).toBeNull();
     expect(JSON.parse(await readFile(f.receipt, "utf8"))).toMatchObject({ node: await realpath(f.node), args: ["--headless", "--no-auto-update"] });
-  } finally { await runtime.close(); }
+  } finally { await f.close(runtime); }
 });
 
 test.each([
@@ -41,22 +49,22 @@ test.each([
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
   environment.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT = configured;
   const original = { ...environment }, parent = process.env.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT;
-  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: environment, observeImageRoute: observe, onSpawn() {} }, () => {});
+  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: environment, observeImageRoute: observe, onSpawn: f.onSpawn }, () => {});
   try {
     await runtime.ready;
     expect(JSON.parse(await readFile(f.receipt, "utf8")).routeGate).toBe(expected);
     expect(environment).toEqual(original);
     expect(process.env.COPILOT_ALLOW_GET_PROVIDER_ENDPOINT).toBe(parent);
-  } finally { await runtime.close(); }
+  } finally { await f.close(runtime); }
 });
 
 test.skipIf(process.platform !== "win32").each(["false", "1", ""])("Windows preserves an explicitly mixed-case read gate: %j", async value => {
   const f = await fixture();
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT"));
   environment.Copilot_Allow_Get_Provider_Endpoint = value;
-  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: environment, observeImageRoute: true, onSpawn() {} }, () => {});
+  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, env: environment, observeImageRoute: true, onSpawn: f.onSpawn }, () => {});
   try { await runtime.ready; expect(JSON.parse(await readFile(f.receipt, "utf8")).routeGate).toBe(value); }
-  finally { await runtime.close(); }
+  finally { await f.close(runtime); }
   expect(environment.Copilot_Allow_Get_Provider_Endpoint).toBe(value);
   expect(environment).not.toHaveProperty("COPILOT_ALLOW_GET_PROVIDER_ENDPOINT");
 });
@@ -64,9 +72,9 @@ test.skipIf(process.platform !== "win32").each(["false", "1", ""])("Windows pres
 test("changed frozen Copilot input rejects before any process or receipt is created", async () => {
   const f = await fixture(); await writeFile(f.entry, "throw new Error('replacement');");
   let spawned = false;
-  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, onSpawn() { spawned = true; } }, () => {});
-  await expect(runtime.ready).rejects.toMatchObject({ code: "tool_identity_changed" });
-  await runtime.close();
+  const runtime = startCopilotProcess({ cwd: f.root, toolLaunch: f.launch, onSpawn(child) { spawned = true; f.onSpawn(child); } }, () => {});
+  try { await expect(runtime.ready).rejects.toMatchObject({ code: "tool_identity_changed" }); }
+  finally { await f.close(runtime); }
   expect(spawned).toBe(false);
   await expect(readFile(f.receipt)).rejects.toMatchObject({ code: "ENOENT" });
 });
