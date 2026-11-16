@@ -74,3 +74,24 @@ type PersonalTeamFacts struct {
 	MemberCount     int64
 	OwnerAdminCount int64
 }
+
+// PreviewSSOWriter runs the complete operation in one transaction. A result
+// from the callback is usable only when the completion reports committed.
+type PreviewSSOWriter interface {
+	WritePreviewSSO(context.Context, func(PreviewSSODAO) error) (Completion, error)
+}
+
+// PreviewSSODAO binds SSO record and existing session changes to one scope.
+// Invalid, expired, consumed and revoked records return model.ErrNotFound.
+// Methods locking both resources lock the login before the session.
+type PreviewSSODAO interface {
+	CleanupPreviewSSO(context.Context, time.Time) error
+	InsertPreviewSSO(context.Context, model.PreviewSSOLogin) error
+	StartPreviewSSO(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
+	// LockPreviewAuthorization samples issuance time after acquiring both locks.
+	LockPreviewAuthorization(context.Context, string, []byte, model.Principal, time.Time) (time.Time, error)
+	SetPreviewAuthorization(context.Context, string, model.Principal, []byte, time.Time) error
+	RedeemPreviewSSO(context.Context, []byte, []byte, []byte, time.Time) (model.PreviewSSOLogin, model.Session, error)
+	CompletePreviewSSO(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error)
+	AuthenticatePreview(context.Context, []byte, time.Time) (model.Principal, time.Time, error)
+}

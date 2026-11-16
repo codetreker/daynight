@@ -24,7 +24,8 @@ Login
 consumption completes before the upstream request; user, Personal Team and
 session writes share a local transaction. Transaction completion failures take
 precedence over staged business refusals and an uncommitted secret is not
-returned.
+returned. The [preview SSO identity decision](2026-11-16-preview-sso-identity.md)
+applies the same boundaries to the preview credential exchange.
 
 `core/query` owns the independent list and scoped-project cursor codecs;
 `core/model` owns shared value validation and `utils/secret` owns secret

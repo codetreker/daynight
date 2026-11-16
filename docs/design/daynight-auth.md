@@ -360,6 +360,14 @@ GET/HEAD `/api/v1/me` 继续使用原 read-committed 读取、完整 DTO 和 ETa
 后续原生 UniAuth 登录仍可用非 null 上游姓名与头像覆盖本地两字段；API OAuth 使用同一本人更新用例。
 [用户初始化与资料更新决策](../../.agents/notes/implemented/feature/2026-11-12-user-profile-patch.md)记录事务与稀疏更新的取舍。
 
+### 预览 SSO 身份模块
+
+Identity 模块提供独立的预览 SSO 操作，供 HTTP 接入使用；当前主站登录和附件路由仍使用原有流程。短期登录记录保存已校验的原始返回目标和 state、code 摘要。初始化 state、签发一次性 code、兑换、完成和过期清理均由模块处理。返回目标校验独立于 UniAuth 的 returnPath 校验，允许受约束的主站完成页和 Task 预览附件地址，同时保留原始编码与 query；原登录目标仍受原有 4096-byte 限制。
+
+兑换在同一事务中消费 code、锁定并检查来源 session，并替换该 session 的 preview 凭据摘要；只有确认提交后才向调用者返回明文凭据。完成操作要求凭据属于记录中的原 session，取回目标并删除记录。预览认证通过独立摘要查找同一 session，沿用其用户、到期和注销语义。事务失败或提交结果未知不交付凭据，也不自动重放。再次 SSO 会替换该 session 的预览凭据，并发或账号切换可能使浏览器持有失效凭据。
+
+`service/identity.NewPreviewSSO` 接收事务 writer、主站 origin、预览 base origin 和主站 callback URL。`Create` 接收绝对返回 URL 并返回记录；`Start` 接收记录 ID 并返回 state 和期限；`Authorize` 接收 ID、state 和主站 session principal 并返回 code 和期限；`Redeem` 接收 code、state 和浏览器绑定值，返回记录 ID、预览凭据和原 session 期限；`Complete` 接收 ID 和预览凭据并返回原目标；`Authenticate` 接收预览凭据并返回 session principal 和期限。无效、过期、已消费或撤销的凭据按 `unauthenticated` 拒绝，目标校验失败为 `invalid_input`；存储、取消和事务完成错误保留原因。调用者只能在成功结果中使用秘密，不得重放未知结果的兑换。
+
 ### 主站 session 与 PAT
 
 秘密至少 32 随机字节，仅持久化 SHA-256 摘要。生产会话 Cookie 为
@@ -655,7 +663,8 @@ panic/abort 保持原中止语义，abort 另有安全请求日志。
 |---|---|
 | users | 本地 UUID；唯一 uniauth_id，Microsoft 使用 `msft:<oid>@<tid>`，其他身份键保持原值；可空 email/email_verified/name/avatar_url；时间。 |
 | login_transactions | 事务 ID、state_hash、browser_binding_hash、provider、return_path、expires_at。 |
-| sessions | ID、唯一 token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
+| sessions | ID、唯一 token_hash、可空且非空值唯一的 preview_token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
+| preview_sso_logins | ID、return_url、expires_at，及可空 state_hash、code_hash、session_id；非空 code_hash 唯一，按 expires_at 清理。 |
 | personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at 与 last_used_at；expires_at 为 null 表示永不过期，last_used_at 为 null 表示无已记录使用，撤销删除。 |
 | device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
 | device_authorization_limits | bucket_hash、attempts、expires_at；创建与短码查询在不同副本共享限制，到期窗口可清理。 |

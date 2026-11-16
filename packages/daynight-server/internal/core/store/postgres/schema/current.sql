@@ -1,4 +1,4 @@
--- Schema snapshot version: 74
+-- Schema snapshot version: 75
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"
@@ -377,6 +377,15 @@ CREATE TABLE "personal_access_tokens" (
     CONSTRAINT "personal_access_tokens_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "personal_access_tokens_name_check" CHECK (((("char_length"("name") >= 1) AND ("char_length"("name") <= 100)) AND ("length"("btrim"("name")) > 0))),
     CONSTRAINT "personal_access_tokens_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
+);
+
+CREATE TABLE "preview_sso_logins" (
+    "id" "uuid" NOT NULL,
+    "return_url" "text" NOT NULL,
+    "expires_at" timestamp with time zone NOT NULL,
+    "state_hash" "bytea",
+    "code_hash" "bytea",
+    "session_id" "uuid"
 );
 
 CREATE TABLE "private_transfer_ledger" (
@@ -806,6 +815,7 @@ CREATE TABLE "sessions" (
     "token_hash" "bytea" NOT NULL,
     "created_at" timestamp with time zone NOT NULL,
     "expires_at" timestamp with time zone NOT NULL,
+    "preview_token_hash" "bytea",
     CONSTRAINT "sessions_check" CHECK (("expires_at" > "created_at")),
     CONSTRAINT "sessions_token_hash_check" CHECK (("octet_length"("token_hash") = 32))
 );
@@ -1528,6 +1538,9 @@ ALTER TABLE ONLY "personal_access_tokens"
 ALTER TABLE ONLY "personal_access_tokens"
     ADD CONSTRAINT "personal_access_tokens_token_hash_key" UNIQUE ("token_hash");
 
+ALTER TABLE ONLY "preview_sso_logins"
+    ADD CONSTRAINT "preview_sso_logins_pkey" PRIMARY KEY ("id");
+
 ALTER TABLE ONLY "private_transfer_ledger"
     ADD CONSTRAINT "private_transfer_ledger_pkey" PRIMARY KEY ("singleton");
 
@@ -1839,6 +1852,10 @@ CREATE INDEX "personal_access_tokens_expiry" ON "personal_access_tokens" USING "
 
 CREATE INDEX "personal_access_tokens_user" ON "personal_access_tokens" USING "btree" ("user_id", "created_at", "id");
 
+CREATE UNIQUE INDEX "preview_sso_logins_code_hash" ON "preview_sso_logins" USING "btree" ("code_hash") WHERE ("code_hash" IS NOT NULL);
+
+CREATE INDEX "preview_sso_logins_expiry" ON "preview_sso_logins" USING "btree" ("expires_at");
+
 CREATE INDEX "private_transfers_cleanup_pending" ON "private_transfers" USING "btree" ("created_at") WHERE ("state" = 'cleanup_pending'::"text");
 
 CREATE INDEX "private_transfers_expiry" ON "private_transfers" USING "btree" ("expires_at") WHERE ("state" <> 'closed'::"text");
@@ -1884,6 +1901,8 @@ CREATE INDEX "session_operations_terminal_pending" ON "session_operations" USING
 CREATE INDEX "session_resource_leases_owner" ON "session_resource_leases" USING "btree" ("owner_id", "kind");
 
 CREATE INDEX "sessions_expiry" ON "sessions" USING "btree" ("expires_at");
+
+CREATE UNIQUE INDEX "sessions_preview_token_hash" ON "sessions" USING "btree" ("preview_token_hash") WHERE ("preview_token_hash" IS NOT NULL);
 
 CREATE INDEX "task_dependencies_predecessor" ON "task_dependencies" USING "btree" ("project_id", "depends_on_task_id", "task_id");
 

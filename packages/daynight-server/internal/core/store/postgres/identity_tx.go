@@ -28,3 +28,9 @@ func (s *Store) WriteIdentity(ctx context.Context, operation func(store.Identity
 	}
 	return store.Completion{Outcome: outcome}, pg.AuthQueryError("identity operation", err)
 }
+
+func (s *Store) WritePreviewSSO(ctx context.Context, operation func(store.PreviewSSODAO) error) (store.Completion, error) {
+	return s.WriteIdentity(ctx, func(scope store.IdentityScope) error {
+		return operation(scope.IdentityDAO().(store.PreviewSSODAO))
+	})
+}
