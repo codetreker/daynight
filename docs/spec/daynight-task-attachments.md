@@ -215,9 +215,18 @@ Esc、Tab 操作
 | HTML | 普通 iframe，固定预览路径，支持其相对 CSS、JS、图片及正常脚本交互。 |
 | 其他类型 | 文件信息和下载。 |
 
-图片使用原生图片加载及错误重试；HTML/PDF 在原生 iframe 请求前检查 HEAD 可用性，
-失败明确展示并可重试，不读取 HEAD 的 JSON body。原生 frame 负责后续正常资源
-请求；HEAD 成功不能作为实际 frame 内容已绘制的验收证明。
+Task/Goal 描述及 Markdown 附件中的附件相对图片在 404 或网络加载失败时，须在
+该图片处展示清楚的当前语言错误与普通“重试”入口。重试只请求该图片原有 URL，
+保留编码、目录及 query/fragment 语义，不重读 Markdown 正文或附件清单，不重置
+文件输入、上传草稿、选择、frame 或阅读滚动。是否属于附件图片由原始引用及
+root/document 基准判定；外部、协议相对、根相对等原生图片 URL 保持既有行为。
+远程操作暂停时不派发未加载或新图片请求，禁用重试并保留已加载图片；图片来源或
+重试请求切换后，旧 onLoad/onError 不能覆盖新图片的状态。错误和重试在长内容及
+320px 窄屏内保持可见、可操作，不产生页面级横向溢出。
+
+所选图片预览使用原生图片加载及错误重试；HTML/PDF 在原生 iframe 请求前检查 HEAD
+可用性，失败明确展示并可重试，不读取 HEAD 的 JSON body。原生 frame 负责后续正常
+资源请求；HEAD 成功不能作为实际 frame 内容已绘制的验收证明。
 
 预览入口为 `/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}`，
 不增加专用预览 token、预览会话、子域名、端口或 Service Worker。HTML 被视为

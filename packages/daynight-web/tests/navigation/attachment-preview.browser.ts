@@ -91,6 +91,70 @@ async function checkDuringForeground(page: Page, state: Awaited<ReturnType<typeo
   } finally { state.holdAccess = null; gate.resolve(); }
 }
 
+test('Markdown image retry preserves attachment drafts, selected document and retained HTML frame', async ({ page }) => {
+  const state = await install(page);
+  const document = '# Document image\n\n' + 'Earlier reading paragraph.\n\n'.repeat(30) + '## Image recovery anchor\n\n![Document attachment](images/failed%20image.svg?view=one%2Ftwo#diagram)\n\n' + Array.from({ length: 60 }, (_, index) => `Retained paragraph ${index}.`).join('\n\n');
+  state.files.push({ path: 'docs/reading.md', contentType: 'text/markdown', sizeBytes: document.length, createdAt: time, updatedAt: time });
+  let documentReads = 0;
+  await page.route('**/attachments/files/docs/reading.md', route => { documentReads++; return route.fulfill({ contentType: 'text/markdown', body: document, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } }); });
+  const images: string[] = [];
+  const retryGate = Promise.withResolvers<void>();
+  await page.route('**/preview/docs/images/failed%20image.svg?view=one%2Ftwo', async route => {
+    images.push(route.request().url());
+    if (images.length > 1) await retryGate.promise;
+    return route.fulfill({ status: images.length === 1 ? 404 : 200, contentType: 'image/svg+xml', body: svg });
+  });
+  await page.goto(`/projects/${projectId}/tasks/${taskId}/attachments/interactive.html`);
+  const attachments = page.locator('.task-attachments');
+  const frame = attachments.locator('iframe');
+  const counter = frame.contentFrame().locator('#counter');
+  await counter.click(); await expect(counter).toHaveText('1');
+  const frameHandle = await frame.elementHandle();
+  await frame.contentFrame().locator('html').evaluate(element => { element.scrollTop = 500; });
+  const frameScroll = await frame.contentFrame().locator('html').evaluate(element => element.scrollTop);
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  const input = attachments.locator('input[type=file]');
+  await input.setInputFiles({ name: 'unsent.txt', mimeType: 'text/plain', buffer: Buffer.from('Unsent draft') });
+  const inputHandle = await input.elementHandle();
+  await attachments.getByRole('textbox', { name: 'Target relative path' }).fill('drafts/unsent.txt');
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  await attachments.locator('.attachment-tree summary').filter({ hasText: 'docs' }).click();
+  await attachments.getByRole('button', { name: /^reading\.md/ }).last().click();
+  const reader = attachments.locator('.attachment-markdown').filter({ has: page.getByRole('heading', { name: 'Document image', exact: true }) });
+  const error = reader.getByRole('alert');
+  await expect(error).toContainText('Unable to load the attachment image');
+  const before = [...state.resources];
+  const reads = documentReads;
+  await error.scrollIntoViewIfNeeded();
+  const readingPosition = () => reader.getByRole('heading', { name: 'Image recovery anchor', exact: true }).evaluate(element => ({ top: element.closest('.attachment-preview-body')!.scrollTop, anchor: element.getBoundingClientRect().top }));
+  const position = await readingPosition();
+  expect(position.top).toBeGreaterThan(0);
+  try {
+    await error.getByRole('button', { name: 'Retry image', exact: true }).click();
+    await expect.poll(() => images.length).toBe(2);
+    await expect(error).toHaveCount(0);
+    expect(await readingPosition()).toEqual(position);
+  } finally { retryGate.resolve(); }
+  const image = reader.getByRole('img', { name: 'Document attachment', exact: true });
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(200);
+  expect(await readingPosition()).toEqual(position);
+  await expect(error).toHaveCount(0);
+  await expect(attachments.locator('.attachment-preview-header h5')).toHaveText('docs/reading.md');
+  expect(images).toHaveLength(2); expect(images[0]).toBe(images[1]);
+  expect(state.resources).toEqual(before); expect(documentReads).toBe(reads);
+  expect(await inputHandle!.evaluate(element => element.isConnected)).toBe(true);
+  expect(await input.evaluate((element: HTMLInputElement) => element.files?.[0]?.name)).toBe('unsent.txt');
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  await expect(attachments.getByRole('textbox', { name: 'Target relative path' })).toHaveValue('drafts/unsent.txt');
+  await attachments.locator('.attachment-upload-disclosure summary').click();
+  await attachments.getByRole('button', { name: /^interactive\.html/ }).click();
+  expect(await frameHandle!.evaluate(element => element.isConnected)).toBe(true);
+  await expect(counter).toHaveText('1');
+  expect(await frame.contentFrame().locator('html').evaluate(element => element.scrollTop)).toBe(frameScroll);
+  expect(state.writes).toEqual([]);
+  await frameHandle!.dispose(); await inputHandle!.dispose();
+});
+
 for (const locale of ['en', 'zh-CN'] as const) for (const viewport of [{ width: 1440, height: 800 }, { width: 320, height: 800 }, { width: 844, height: 390 }]) for (const claimed of [false, true]) {
   test(`attachment timestamps fit ${viewport.width}x${viewport.height} in ${locale}${claimed ? ' with claim' : ''}`, async ({ page }) => {
     await page.setViewportSize(viewport);

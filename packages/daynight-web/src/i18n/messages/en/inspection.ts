@@ -182,6 +182,7 @@ export const inspection: InspectionMessages = {
     fileActions: ({ path }) => `More actions: ${path}`, deleteTitle: "Delete attachment?", deleteConfirmation: "Delete this attachment? This action cannot be undone.", cancelDelete: "Cancel", confirmDelete: "Delete attachment", previewLoading: "Loading preview…",
     previewLoadError: "Unable to load the file preview. Try again or download the file.",
     previewReadError: "Unable to read the file preview. Try again or download the file.", retryPreview: "Retry preview",
+    markdownImageLoadError: "Unable to load the attachment image. Try again.", retryMarkdownImage: "Retry image",
     frameTitle: ({ kind, path }) => `${kind} preview: ${path}`, unsupportedPreview: "A preview is not available for this file. Download it to open it.",
   },
 };

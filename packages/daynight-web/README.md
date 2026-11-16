@@ -2197,8 +2197,19 @@ source, lifecycle and narrow-layout behavior. Raw HTML remains escaped. Relative
 images and links resolve
 from the Markdown file's directory to the task preview route; standalone `#fragment`
 links remain on the rendered document. Paths that escape the task root are
-rejected. Text, JSON and source previews preserve text and newlines. Images use
-native image loading with error/retry feedback; PDF and HTML use native iframes.
+rejected. In Task and Goal descriptions and Markdown attachments, an attachment-relative
+image that fails to load displays a localized error and Retry control. Each image
+owns its failure and retry attempt; Retry requests that image's unchanged URL,
+including its query and fragment, without rereading the Markdown or attachment
+inventory or resetting drafts, file input, selection, frames or reading position.
+Classification uses the original Markdown reference, so external, protocol-relative,
+root-relative and other native image URLs retain native behavior. Remote pause
+blocks pending/new image requests and retry while preserving loaded images; late
+events from a replaced source or attempt cannot update its replacement. The
+[Markdown image recovery decision](../../.agents/notes/implemented/feature/2026-11-16-markdown-attachment-image-retry.md)
+records ownership and classification trade-offs. Text, JSON and source previews
+preserve text and newlines. Selected image previews use native image loading with
+error/retry feedback; PDF and HTML use native iframes.
 HTML/PDF first check preview availability with HEAD and never decode a HEAD error
 as a JSON body. The frame then performs normal resource requests. HEAD success
 does not prove that native content has rendered; integrated acceptance must

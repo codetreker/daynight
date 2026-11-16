@@ -471,6 +471,19 @@ HTML 继续遵循普通同源 iframe 的执行模型，不提供独立的脚本�
 [阅读设计](daynight-task-inspection.md#markdown-与附件链接)，决策见
 [Markdown 描述决策](../../.agents/notes/archived/architecture/2026-10-22-task-description-markdown.md)。
 
+Task/Goal 描述和 Markdown 附件共享同一个附件图片 renderer。调用方提供实际
+root/document 基准；渲染入口保留 URL 转换前的原始引用，并沿用
+`resolveAttachmentReference()` 识别相对附件图片，不能通过转换后的 URL 前缀推断来源。
+每张附件图片持有自身
+加载、错误和重试身份，失败时显示当前语言错误与普通重试按钮；重试只重新挂载
+该图片的请求，继续使用原 URL，保留 query/fragment，不改变正文、清单或上层
+预览身份。原生 URL 图片继续使用原生行为。暂停沿用附件控制器的远程准入状态，
+阻止未加载或新图片建立源和执行重试，保留已加载图片；来源或请求代次切换后，
+旧事件不能更新替换后的图片。局部状态不重置文件输入、草稿、选择、frame 或
+阅读滚动，错误文案和按钮遵守 Markdown 的窄屏尺寸链。
+[附件图片重试决策](../../.agents/notes/implemented/feature/2026-11-16-markdown-attachment-image-retry.md)
+保存请求所有权和原始引用分类的取舍。
+
 HTML 入口是固定同源 URL，例如：
 
 ```text
