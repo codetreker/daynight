@@ -148,15 +148,6 @@ func RegisterInvitationTools(e *Entry, identity personalTeamResolver, teams invi
 	}
 	a := &invitationAdapter{identity, teams, projects, origin}
 	for i := range tools {
-		output := invitationOutputSchema
-		if tools[i].Name == "team_invitation_list" {
-			output = invitationPageOutputSchema
-		}
-		var schema map[string]any
-		if err := json.Unmarshal([]byte(output), &schema); err != nil {
-			return err
-		}
-		tools[i].OutputSchema = schema
 		var handler func(context.Context, RequestActor, invitationInput) (ToolResult, error)
 		switch tools[i].Name {
 		case "team_invitation_create":

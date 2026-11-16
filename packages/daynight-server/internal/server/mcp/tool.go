@@ -97,58 +97,6 @@ func validateJSON(schema *jsonschema.Schema, raw []byte) error {
 	return schema.Validate(v)
 }
 
-// acceptsErrorEnvelope proves compatibility for a deliberately bounded subset
-// of JSON Schema. Unknown constraints are rejected: testing examples cannot
-// prove that all error codes, messages, phases and references remain valid.
-// The supported oneOf shape is the shared tools.json success/error contract.
-func acceptsErrorEnvelope(value any) bool {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return false
-	}
-	var root map[string]any
-	if json.Unmarshal(raw, &root) != nil || root == nil || !onlySchemaKeys(root, "type", "properties", "required", "additionalProperties", "oneOf") {
-		return false
-	}
-	if root["type"] != "object" || !objectPropertySchemas(root) {
-		return false
-	}
-	if !requiredSubset(root["required"], "error") {
-		return false
-	}
-	properties, ok := schemaProperties(root["properties"])
-	if !ok {
-		return false
-	}
-	errorSchema, hasError := properties["error"]
-	if hasError {
-		if !acceptsErrorObject(errorSchema) {
-			return false
-		}
-	} else if extra, exists := root["additionalProperties"]; exists && !acceptsAny(extra) {
-		return false
-	}
-	if branches, exists := root["oneOf"]; exists && !commonEnvelopeBranches(branches) {
-		return false
-	}
-	return true
-}
-
-// Annotation keywords do not change validation. All other unlisted keywords
-// are refused instead of guessing at their interaction with the envelope.
-func onlySchemaKeys(schema map[string]any, permitted ...string) bool {
-	allowed := map[string]bool{"title": true, "description": true, "$comment": true, "default": true, "examples": true, "deprecated": true, "readOnly": true, "writeOnly": true}
-	for _, key := range permitted {
-		allowed[key] = true
-	}
-	for key := range schema {
-		if !allowed[key] {
-			return false
-		}
-	}
-	return true
-}
-
 func schemaProperties(value any) (map[string]any, bool) {
 	if value == nil {
 		return map[string]any{}, true
@@ -172,154 +120,8 @@ func objectPropertySchemas(root map[string]any) bool {
 	return true
 }
 
-func requiredSubset(value any, guaranteed ...string) bool {
-	if value == nil {
-		return true
-	}
-	values, ok := value.([]any)
-	if !ok {
-		return false
-	}
-	allowed := make(map[string]bool, len(guaranteed))
-	for _, key := range guaranteed {
-		allowed[key] = true
-	}
-	for _, v := range values {
-		key, ok := v.(string)
-		if !ok || !allowed[key] {
-			return false
-		}
-	}
-	return true
-}
-
-func acceptsAny(value any) bool {
-	if b, ok := value.(bool); ok {
-		return b
-	}
-	s, ok := value.(map[string]any)
-	return ok && onlySchemaKeys(s)
-}
-
-func acceptsType(value any, kind string) bool {
-	if acceptsAny(value) {
-		return true
-	}
-	s, ok := value.(map[string]any)
-	return ok && onlySchemaKeys(s, "type") && s["type"] == kind
-}
-
-func acceptsOutcome(value any) bool {
-	if acceptsType(value, "string") {
-		return true
-	}
-	s, ok := value.(map[string]any)
-	if !ok || !onlySchemaKeys(s, "enum", "type") {
-		return false
-	}
-	if typ, exists := s["type"]; exists && typ != "string" {
-		return false
-	}
-	values, ok := s["enum"].([]any)
-	if !ok {
-		return false
-	}
-	needed := map[string]bool{"confirmed": false, "not_committed": false, "unknown": false}
-	for _, value := range values {
-		if text, ok := value.(string); ok {
-			if _, present := needed[text]; present {
-				needed[text] = true
-			}
-		}
-	}
-	return needed["confirmed"] && needed["not_committed"] && needed["unknown"]
-}
-
-func acceptsErrorObject(value any) bool {
-	if acceptsAny(value) {
-		return true
-	}
-	s, ok := value.(map[string]any)
-	if !ok || !onlySchemaKeys(s, "type", "properties", "required", "additionalProperties") {
-		return false
-	}
-	if typ, exists := s["type"]; exists && typ != "object" {
-		return false
-	}
-	if !requiredSubset(s["required"], "code", "message", "requestId") {
-		return false
-	}
-	properties, ok := schemaProperties(s["properties"])
-	if !ok {
-		return false
-	}
-	for _, field := range []string{"code", "message", "requestId", "writeOutcome", "phase", "refs"} {
-		property, present := properties[field]
-		if !present {
-			if extra, exists := s["additionalProperties"]; exists && !acceptsAny(extra) {
-				return false
-			}
-			continue
-		}
-		switch field {
-		case "writeOutcome":
-			if !acceptsOutcome(property) {
-				return false
-			}
-		case "refs":
-			if !acceptsType(property, "object") {
-				return false
-			}
-		default:
-			if !acceptsType(property, "string") {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func commonEnvelopeBranches(value any) bool {
-	branches, ok := value.([]any)
-	if !ok || len(branches) != 2 {
-		return false
-	}
-	seenSuccess, seenError := false, false
-	for _, branch := range branches {
-		s, ok := branch.(map[string]any)
-		if !ok || !onlySchemaKeys(s, "required", "not") {
-			return false
-		}
-		not, ok := s["not"].(map[string]any)
-		if !ok || !onlySchemaKeys(not, "required") {
-			return false
-		}
-		switch {
-		case requiredExactly(s["required"], "data", "meta") && requiredExactly(not["required"], "error"):
-			seenSuccess = true
-		case requiredExactly(s["required"], "error") && requiredExactly(not["required"], "data"):
-			seenError = true
-		default:
-			return false
-		}
-	}
-	return seenSuccess && seenError
-}
-
-func requiredExactly(value any, keys ...string) bool {
-	values, ok := value.([]any)
-	if !ok || len(values) != len(keys) || !requiredSubset(value, keys...) {
-		return false
-	}
-	seen := make(map[string]bool, len(values))
-	for _, value := range values {
-		seen[value.(string)] = true
-	}
-	return len(seen) == len(keys)
-}
-
-// RegisterTool validates the published input and internal result schemas before a
-// tool becomes discoverable. Class must describe the largest internal materialization.
+// RegisterTool validates the input schema before a tool becomes discoverable.
+// Class must describe the largest internal materialization.
 func (e *Entry) RegisterTool(tool *sdk.Tool, class BudgetClass, handler ToolHandler) error {
 	if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
 		return errors.New("invalid MCP tool registration")
@@ -338,7 +140,7 @@ func (e *Entry) registerReadTool(tool *sdk.Tool, budget func(json.RawMessage) Bu
 }
 
 func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessage) BudgetClass, handler ToolHandler, inferWriteOutcome, admitOutput bool) error {
-	if definition == nil || definition.Name == "" || definition.InputSchema == nil || definition.OutputSchema == nil || handler == nil || budget == nil {
+	if definition == nil || definition.Name == "" || definition.InputSchema == nil || handler == nil || budget == nil {
 		return errors.New("invalid MCP tool registration")
 	}
 	input, err := resolveSchema(definition.InputSchema)
@@ -351,15 +153,7 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 	if inputRoot["type"] != "object" || !objectPropertySchemas(inputRoot) {
 		return errors.New("input schema must have object root and object property schemas")
 	}
-	output, err := resolveSchema(definition.OutputSchema)
-	if err != nil {
-		return fmt.Errorf("output schema: %w", err)
-	}
-	if !acceptsErrorEnvelope(definition.OutputSchema) {
-		return errors.New("output schema must accept the common error envelope")
-	}
-	// Publish a copy so discovery omits the result schema while invocation keeps
-	// the compiled internal contract and the original definition stays intact.
+	// Discovery never publishes an output schema.
 	published := *definition
 	published.OutputSchema = nil
 	e.server.AddTool(&published, func(sdkctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
@@ -398,11 +192,11 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 			return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "arguments must be an object"}
 		}
 		if err := validateJSON(input, raw); err != nil {
-			return e.errorResult(output, actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
+			return e.errorResult(actor, envelopeError{Code: "invalid_input", Message: "Tool arguments do not match the input schema.", RequestID: actor.RequestID}), nil
 		}
 		class := budget(raw)
 		if class != BudgetControl && class != BudgetLarge && class != BudgetContent {
-			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
+			return e.errorResult(actor, envelopeError{Code: "internal_error", Message: "The tool resource budget could not be selected.", RequestID: actor.RequestID}), nil
 		}
 		release, err := actor.Budget.Acquire(ctx, class)
 		if err != nil {
@@ -411,7 +205,7 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 				cause = "resource_busy"
 			}
 			e.logger.ErrorContext(ctx, "MCP tool admission failed", "type", "operation_error", "component", "mcp", "operation", definition.Name, "phase", "tool_admission", "cause", cause, "error_code", "resource_busy", "request_id", actor.RequestID)
-			return e.errorResult(output, actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
+			return e.errorResult(actor, envelopeError{Code: "resource_busy", Message: "The tool resource budget is unavailable.", RequestID: actor.RequestID}), nil
 		}
 		scope.hold(release)
 		if class == BudgetControl {
@@ -461,7 +255,7 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 				cause = "resource_busy"
 			}
 			logger.ErrorContext(ctx, "MCP tool failed", "type", "operation_error", "component", "mcp", "operation", definition.Name, "phase", "tool_call", "cause", cause, "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome, "cleanup_failed", facts.CleanupFailed)
-			return e.errorResult(output, actor, failure), nil
+			return e.errorResult(actor, failure), nil
 		}
 		value := envelope{Data: result.Data, Meta: &envelopeMeta{RequestID: actor.RequestID, Outcome: result.Outcome}}
 		if result.SuccessMetadata {
@@ -481,9 +275,7 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 		} else {
 			encoded, err = json.Marshal(value)
 		}
-		if err == nil && admitOutput && len(encoded) <= 128<<20 {
-			err = validateJSON(output, encoded)
-		} else if err == nil && admitOutput {
+		if err == nil && admitOutput && len(encoded) > 128<<20 {
 			err = errors.New("encoded output exceeds limit")
 		}
 		if err != nil {
@@ -491,29 +283,25 @@ func (e *Entry) registerToolFor(definition *sdk.Tool, budget func(json.RawMessag
 				result.WriteOutcome = "confirmed"
 			}
 			logger.ErrorContext(ctx, "MCP output construction failed", "type", "operation_error", "component", "mcp", "operation", definition.Name, "phase", "output", "cause", "output_invalid", "error_code", "internal_error", "request_id", actor.RequestID, "write_outcome", result.WriteOutcome, "outcome", result.Outcome)
-			return e.errorResult(output, actor, envelopeError{Code: "internal_error", Message: "The tool result could not be constructed.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: "output", Refs: result.Refs}), nil
+			return e.errorResult(actor, envelopeError{Code: "internal_error", Message: "The tool result could not be constructed.", RequestID: actor.RequestID, WriteOutcome: result.WriteOutcome, Phase: "output", Refs: result.Refs}), nil
 		}
 		logger.InfoContext(ctx, "MCP tool completed", "component", "mcp", "operation", definition.Name, "request_id", actor.RequestID, "user_id", actor.Principal.UserID, "credential_id", actor.Principal.CredentialID, "outcome", result.Outcome, "write_outcome", result.WriteOutcome)
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "Completed."}}, StructuredContent: json.RawMessage(encoded)}, nil
 	})
 	return nil
 }
-func (e *Entry) errorResult(output *jsonschema.Schema, actor RequestActor, failure envelopeError) *sdk.CallToolResult {
+func (e *Entry) errorResult(actor RequestActor, failure envelopeError) *sdk.CallToolResult {
 	if failure.WriteOutcome != "" && failure.WriteOutcome != "confirmed" && failure.WriteOutcome != "not_committed" && failure.WriteOutcome != "unknown" {
 		failure.WriteOutcome = ""
 	}
 	encoded, err := json.Marshal(envelope{Error: &failure})
-	if err != nil || validateJSON(output, encoded) != nil {
-		e.logger.ErrorContext(actor.Context, "MCP error output violates schema", "component", "mcp", "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome)
+	if err != nil {
+		e.logger.ErrorContext(actor.Context, "MCP error output encoding failed", "component", "mcp", "request_id", actor.RequestID, "error_code", failure.Code, "write_outcome", failure.WriteOutcome)
 		// References are supplementary and can themselves be malformed; preserve the
 		// request and established completion facts in the fallback envelope.
 		failure.Refs = nil
-		encoded, err = json.Marshal(envelope{Error: &failure})
-		if err != nil || validateJSON(output, encoded) != nil {
-			failure.Code = "internal_error"
-			failure.Message = "The tool result could not be constructed."
-			encoded, _ = json.Marshal(envelope{Error: &failure})
-		}
+		// With refs removed, the envelope contains only encodable strings.
+		encoded, _ = json.Marshal(envelope{Error: &failure})
 	}
 	return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: failure.Message}}, StructuredContent: json.RawMessage(encoded)}
 }

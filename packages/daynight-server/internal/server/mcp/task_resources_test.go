@@ -598,7 +598,7 @@ func TestMCPRejectsUnknownToolBudgetClass(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	tool := simpleTestTool("invalid_budget", testObjectSchema(), standardOutputSchema())
+	tool := simpleTestTool("invalid_budget", testObjectSchema())
 	err = entry.RegisterTool(tool, BudgetClass(255), func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		t.Error("invalid-budget handler invoked")
 		return ToolResult{}, errors.New("invalid-budget handler invoked")

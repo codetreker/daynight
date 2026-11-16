@@ -64,7 +64,9 @@ func TestTagColorWriteEquivalentRESTBodyLimit(t *testing.T) {
 				args["ifVersion"] = "9007199254740993"
 			}
 			result := tagTestCall(t, client, tool, args)
-			if result.IsError || calls != 1 || object(t, structured(t, result)["meta"])["writeOutcome"] != "confirmed" {
+			env := structured(t, result)
+			data, meta := object(t, env["data"]), object(t, env["meta"])
+			if result.IsError || calls != 1 || meta["writeOutcome"] != "confirmed" || meta["phase"] != "commit" || data["id"] != testTargetID || data["projectId"] != testProjectID || data["name"] != "accepted" || data["version"] != "9007199254740993" || data["color"] != "#123456" {
 				t.Fatalf("at limit: %+v calls=%d", structured(t, result), calls)
 			}
 			args["name"] = name + " "
@@ -130,6 +132,5 @@ func TestTagColorInvalidReachesRealServiceWithoutWrite(t *testing.T) {
 		if tc.tool == "tag_update" && object(t, failure["refs"])["tagId"] != testTargetID {
 			t.Fatalf("update refs: %+v", failure)
 		}
-		validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, tc.tool), result)
 	}
 }

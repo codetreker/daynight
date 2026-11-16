@@ -191,7 +191,6 @@ func TestTagToolsDiscoveryAndProtocol(t *testing.T) {
 				if result.IsError {
 					t.Fatalf("%s: %+v", tc.name, structured(t, result))
 				}
-				validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, tc.name), result)
 				env := structured(t, result)
 				data := object(t, env["data"])
 				if tc.name == "tag_list" {
@@ -207,7 +206,7 @@ func TestTagToolsDiscoveryAndProtocol(t *testing.T) {
 					if data["projectId"] != testProjectID || data["tagId"] != testTargetID || data["deleted"] != true {
 						t.Errorf("delete: %+v", data)
 					}
-				} else if data["id"] != testTargetID || data["projectId"] != testProjectID || data["name"] != "backend" || data["version"] != "9007199254740993" || object(t, data["usage"])["tasks"] != float64(2) {
+				} else if data["id"] != testTargetID || data["projectId"] != testProjectID || data["name"] != "backend" || data["version"] != "9007199254740993" || object(t, data["usage"])["tasks"] != float64(2) || object(t, data["usage"])["goals"] != float64(3) || data["createdAt"] != "2026-11-13T01:02:03Z" || data["updatedAt"] != "2026-11-13T01:02:03Z" {
 					t.Errorf("tag: %+v", data)
 				}
 				if tc.name == "tag_create" || tc.name == "tag_rename" || tc.name == "tag_delete" {
@@ -261,19 +260,16 @@ func TestTagToolsInputBoundaryAndCoreName(t *testing.T) {
 	if result.IsError || calls != 1 || object(t, structured(t, result)["data"])["name"] != strings.Repeat("界", 64) {
 		t.Fatalf("padded name was rejected: %+v calls=%d", structured(t, result), calls)
 	}
-	validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, "tag_create"), result)
 	result = tagTestCall(t, client, "tag_rename", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1", "name": padded})
 	if result.IsError || renameCalls != 1 || object(t, structured(t, result)["data"])["name"] != strings.Repeat("界", 64) {
 		t.Fatalf("padded rename: %+v calls=%d", structured(t, result), renameCalls)
 	}
-	validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, "tag_rename"), result)
 	for _, name := range []string{strings.Repeat("x", 65), "bad\x01name"} {
 		before := calls
 		result = tagTestCall(t, client, "tag_create", map[string]any{"projectId": testProjectID, "name": name})
 		if !result.IsError || calls != before+1 || object(t, structured(t, result)["error"])["code"] != "invalid_tag_name" {
 			t.Fatalf("invalid core name: %+v calls=%d", structured(t, result), calls)
 		}
-		validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, "tag_create"), result)
 	}
 	for _, tc := range []struct {
 		name string
@@ -342,7 +338,6 @@ func TestTagToolsFailuresAndCompletion(t *testing.T) {
 			if failure["code"] != tc.code || failure["writeOutcome"] != tc.wantOutcome || failure["phase"] != tc.phase || object(t, failure["refs"])["tagId"] != testTargetID {
 				t.Fatalf("completion: %+v", failure)
 			}
-			validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, "tag_delete"), result)
 		})
 	}
 	for _, code := range []string{"catalog_changed", "tag_not_found", "forbidden"} {
@@ -362,7 +357,6 @@ func TestTagToolsFailuresAndCompletion(t *testing.T) {
 			if !result.IsError || calls != 1 || failure["code"] != code || failure["writeOutcome"] != nil {
 				t.Fatalf("list refusal: %+v calls=%d", failure, calls)
 			}
-			validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, "tag_list"), result)
 		})
 	}
 }
@@ -539,11 +533,10 @@ func TestTagColorToolsProtocol(t *testing.T) {
 		if result.IsError {
 			t.Fatalf("%s: %+v", tc.name, structured(t, result))
 		}
-		validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, tc.name), result)
 		env := structured(t, result)
 		data := object(t, env["data"])
 		meta := object(t, env["meta"])
-		if data["name"] != tc.wantName || data["color"] != "#ABCDEF" || data["version"] != "9007199254740993" || meta["writeOutcome"] != "confirmed" || object(t, meta["refs"])["tagId"] != testTargetID {
+		if data["id"] != testTargetID || data["projectId"] != testProjectID || data["name"] != tc.wantName || data["color"] != "#ABCDEF" || data["version"] != "9007199254740993" || object(t, data["usage"])["tasks"] != float64(2) || object(t, data["usage"])["goals"] != float64(3) || meta["phase"] != "commit" || meta["writeOutcome"] != "confirmed" || object(t, meta["refs"])["tagId"] != testTargetID {
 			t.Fatalf("%s receipt: %+v", tc.name, env)
 		}
 	}
@@ -599,7 +592,6 @@ func TestTagUpdateCompletionFacts(t *testing.T) {
 			if !result.IsError || calls != 1 || failure["code"] != tc.code || failure["writeOutcome"] != tc.want || failure["phase"] != tc.phase || object(t, failure["refs"])["tagId"] != testTargetID {
 				t.Fatalf("completion/replay: %+v calls=%d", failure, calls)
 			}
-			validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, "tag_update"), result)
 		})
 	}
 }

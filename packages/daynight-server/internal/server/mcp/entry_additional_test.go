@@ -34,8 +34,8 @@ func additionalEntry(t *testing.T, logger *slog.Logger) *Entry {
 	return e
 }
 
-func simpleTestTool(name string, input, output any) *sdk.Tool {
-	return &sdk.Tool{Name: name, Description: "Test only", InputSchema: input, OutputSchema: output}
+func simpleTestTool(name string, input any) *sdk.Tool {
+	return &sdk.Tool{Name: name, Description: "Test only", InputSchema: input}
 }
 func testObjectSchema() map[string]any { return map[string]any{"type": "object"} }
 
@@ -43,7 +43,7 @@ func TestMCPExactJSONSchemaNumberBoundary(t *testing.T) {
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var invoked atomic.Int64
 	input := map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "number", "maximum": 100}}, "required": []string{"value"}}
-	err := e.RegisterTool(simpleTestTool("number", input, testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(simpleTestTool("number", input), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		invoked.Add(1)
 		return ToolResult{Data: map[string]any{"valid": true}}, nil
 	})
@@ -120,7 +120,7 @@ func TestMCPResponseWriteFailureLogsCompletionAndDelivery(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	e := additionalEntry(t, logger)
-	err := e.RegisterTool(simpleTestTool("write", testObjectSchema(), testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(simpleTestTool("write", testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		return ToolResult{Data: map[string]any{"id": "created"}, Outcome: "changed", WriteOutcome: "confirmed"}, nil
 	})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestMCPOutputEncodingFailurePreservesChangedCompletion(t *testing.T) {
 func testMCPOutputEncodingFailurePreservesChangedCompletion(t *testing.T, version string) {
 	var calls atomic.Int32
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	err := e.RegisterTool(simpleTestTool("changed", testObjectSchema(), testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(simpleTestTool("changed", testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		calls.Add(1)
 		return ToolResult{Data: make(chan int), Outcome: "changed", Refs: map[string]any{"id": "original"}}, nil
 	})
@@ -202,7 +202,7 @@ func TestMCPOutputFailureWithUnencodableRefsPreservesCompletion(t *testing.T) {
 func testMCPOutputFailureWithUnencodableRefsPreservesCompletion(t *testing.T, version string) {
 	var calls atomic.Int32
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	err := e.RegisterTool(simpleTestTool("bad_refs", testObjectSchema(), testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(simpleTestTool("bad_refs", testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		calls.Add(1)
 		return ToolResult{Data: make(chan int), Outcome: "changed", Refs: map[string]any{"id": make(chan int)}}, nil
 	})
@@ -231,101 +231,9 @@ func testMCPOutputFailureWithUnencodableRefsPreservesCompletion(t *testing.T, ve
 	}
 }
 
-func TestMCPRejectsOutputSchemaWithoutCommonErrorEnvelope(t *testing.T) {
+func TestMCPPreservesBusinessErrors(t *testing.T) {
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	schemas := []any{
-		map[string]any{"type": "object", "properties": map[string]any{"data": map[string]any{"type": "object"}}, "required": []string{"data"}, "additionalProperties": false},
-		map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "object", "properties": map[string]any{"code": map[string]any{"const": "internal_error"}}, "required": []string{"code"}}}, "required": []string{"error"}},
-	}
-	for i, schema := range schemas {
-		err := e.RegisterTool(simpleTestTool("bad_output_schema", testObjectSchema(), schema), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) { return ToolResult{}, nil })
-		if err == nil {
-			t.Errorf("accepted output schema %d excluding a common error envelope", i)
-		}
-	}
-	server := httptest.NewServer(httpx.RequestLogging(slog.New(slog.NewTextHandler(io.Discard, nil)), e))
-	t.Cleanup(server.Close)
-	fixture := &entryFixture{entry: e, server: server}
-	c := fixture.client(t, "2026-07-28", "alice")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	list, err := c.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Tools) != 0 {
-		t.Fatalf("invalid tool discoverable: %#v", list.Tools)
-	}
-}
-
-func standardOutputSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"data": map[string]any{"type": "object"},
-			"meta": map[string]any{"type": "object"},
-			"error": map[string]any{"type": "object", "properties": map[string]any{
-				"code": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"},
-				"requestId": map[string]any{"type": "string"}, "writeOutcome": map[string]any{"enum": []any{"confirmed", "not_committed", "unknown"}},
-				"phase": map[string]any{"type": "string"}, "refs": map[string]any{"type": "object"},
-			}, "required": []any{"code", "message", "requestId"}},
-		},
-		"oneOf": []any{
-			map[string]any{"required": []any{"data", "meta"}, "not": map[string]any{"required": []any{"error"}}},
-			map[string]any{"required": []any{"error"}, "not": map[string]any{"required": []any{"data"}}},
-		},
-	}
-}
-
-func TestMCPRejectsUnprovenErrorSchemaConstraints(t *testing.T) {
-	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	for _, tc := range []struct {
-		name   string
-		change func(map[string]any, map[string]any, map[string]any)
-	}{
-		{"limited codes", func(_, _ map[string]any, fields map[string]any) {
-			fields["code"] = map[string]any{"enum": []any{"invalid_input", "forbidden", "message_outcome_unknown", "internal_error"}}
-		}},
-		{"limited message", func(_, _ map[string]any, fields map[string]any) {
-			fields["message"] = map[string]any{"type": "string", "maxLength": 40}
-		}},
-		{"limited phase", func(_, _ map[string]any, fields map[string]any) {
-			fields["phase"] = map[string]any{"type": "string", "pattern": "^output$"}
-		}},
-		{"limited refs", func(_, _ map[string]any, fields map[string]any) {
-			fields["refs"] = map[string]any{"type": "object", "additionalProperties": false}
-		}},
-		{"limited outcome", func(_, _ map[string]any, fields map[string]any) {
-			fields["writeOutcome"] = map[string]any{"enum": []any{"confirmed", "unknown"}}
-		}},
-		{"requires refs", func(_, failure map[string]any, _ map[string]any) {
-			failure["required"] = []any{"code", "message", "requestId", "refs"}
-		}},
-		{"root conditional", func(root, _ map[string]any, _ map[string]any) {
-			root["if"] = map[string]any{"required": []any{"error"}}
-			root["then"] = false
-		}},
-		{"root property limit", func(root, _ map[string]any, _ map[string]any) { root["maxProperties"] = 0 }},
-		{"extra error branch", func(root, _ map[string]any, _ map[string]any) {
-			root["oneOf"] = append(root["oneOf"].([]any), map[string]any{"required": []any{"error"}})
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			schema := standardOutputSchema()
-			failure := schema["properties"].(map[string]any)["error"].(map[string]any)
-			fields := failure["properties"].(map[string]any)
-			tc.change(schema, failure, fields)
-			err := e.RegisterTool(simpleTestTool("rejected", testObjectSchema(), schema), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) { return ToolResult{}, nil })
-			if err == nil {
-				t.Fatal("accepted output schema with unproven error coverage")
-			}
-		})
-	}
-}
-
-func TestMCPCommonOutputSchemaPreservesOtherBusinessErrors(t *testing.T) {
-	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	err := e.RegisterTool(simpleTestTool("conflict", testObjectSchema(), standardOutputSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(simpleTestTool("conflict", testObjectSchema()), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		return ToolResult{WriteOutcome: "not_committed", Refs: map[string]any{"nested": map[string]any{"id": "original"}}}, &model.Fault{Code: "version_conflict", Message: "Version differs."}
 	})
 	if err != nil {
@@ -391,12 +299,11 @@ func TestMCPHTTPPublicHostViaLoopback(t *testing.T) {
 	}
 }
 
-func TestMCPHTTPValidatesUUIDAndDateTimeFormats(t *testing.T) {
+func TestMCPHTTPValidatesInputUUIDAndPreservesOutput(t *testing.T) {
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var invoked atomic.Int64
 	input := map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string", "format": "uuid"}}, "required": []string{"id"}}
-	output := map[string]any{"type": "object", "properties": map[string]any{"data": map[string]any{"type": "object", "properties": map[string]any{"createdAt": map[string]any{"type": "string", "format": "date-time"}}, "required": []string{"createdAt"}}}}
-	err := e.RegisterTool(simpleTestTool("formats", input, output), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(simpleTestTool("formats", input), BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		invoked.Add(1)
 		return ToolResult{Data: map[string]any{"createdAt": "not-a-date"}, Outcome: "changed"}, nil
 	})
@@ -423,12 +330,8 @@ func TestMCPHTTPValidatesUUIDAndDateTimeFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.IsError {
-		t.Fatalf("invalid date-time output accepted: %#v", r)
-	}
-	failure := object(t, structured(t, r)["error"])
-	if failure["code"] != "internal_error" || failure["requestId"] != "test-request" || failure["phase"] != "output" || failure["writeOutcome"] != "confirmed" {
-		t.Fatalf("invalid output failure %#v", failure)
+	if r.IsError || object(t, structured(t, r)["data"])["createdAt"] != "not-a-date" {
+		t.Fatalf("output changed: %#v", r)
 	}
 	if invoked.Load() != 1 {
 		t.Fatalf("handler invoked %d times", invoked.Load())
@@ -438,7 +341,7 @@ func TestMCPHTTPValidatesUUIDAndDateTimeFormats(t *testing.T) {
 func TestMCPHTTPUnpairedSurrogateReachesRawHandler(t *testing.T) {
 	e := additionalEntry(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	observed := make(chan json.RawMessage, 1)
-	err := e.RegisterTool(simpleTestTool("unicode_probe", testObjectSchema(), testObjectSchema()), BudgetControl, func(_ context.Context, _ RequestActor, raw json.RawMessage) (ToolResult, error) {
+	err := e.RegisterTool(simpleTestTool("unicode_probe", testObjectSchema()), BudgetControl, func(_ context.Context, _ RequestActor, raw json.RawMessage) (ToolResult, error) {
 		observed <- append(json.RawMessage(nil), raw...)
 		return ToolResult{Data: map[string]any{"ok": true}}, nil
 	})
@@ -491,7 +394,7 @@ func TestMCPHTTPTypedToolUnicodeAndDecode(t *testing.T) {
 	var invoked atomic.Int64
 	observed := make(chan input, 1)
 	schema := map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "number"}, "properties": map[string]any{"type": "object"}}, "required": []string{"name", "count", "properties"}}
-	err := RegisterTypedTool(e, simpleTestTool("typed", schema, testObjectSchema()), BudgetControl, func(_ context.Context, _ RequestActor, v input) (ToolResult, error) {
+	err := RegisterTypedTool(e, simpleTestTool("typed", schema), BudgetControl, func(_ context.Context, _ RequestActor, v input) (ToolResult, error) {
 		invoked.Add(1)
 		observed <- v
 		return ToolResult{Data: map[string]any{"ok": true}}, nil
@@ -576,27 +479,26 @@ func TestMCPReadResultsTrustProjectionAndPreserveEncodingErrors(t *testing.T) {
 func testMCPReadResultsTrustProjectionAndPreserveEncodingErrors(t *testing.T, version string) {
 	f := newEntryFixture(t)
 	var calls atomic.Int32
-	output := map[string]any{"type": "object", "properties": map[string]any{"data": map[string]any{"type": "string"}}}
 	projection := func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		calls.Add(1)
 		return ToolResult{Data: map[string]any{"value": 3}, Outcome: "changed", WriteOutcome: "confirmed"}, nil
 	}
-	if err := f.entry.RegisterTool(simpleTestTool("write_projection", testObjectSchema(), output), BudgetControl, projection); err != nil {
+	if err := f.entry.RegisterTool(simpleTestTool("write_projection", testObjectSchema()), BudgetControl, projection); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.entry.registerReadTool(simpleTestTool("read_projection", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	if err := f.entry.registerReadTool(simpleTestTool("read_projection", testObjectSchema()), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		calls.Add(1)
 		return ToolResult{Data: map[string]any{"value": 3}}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.entry.registerReadTool(simpleTestTool("read_encoding", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	if err := f.entry.registerReadTool(simpleTestTool("read_encoding", testObjectSchema()), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		calls.Add(1)
 		return ToolResult{Data: make(chan int)}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.entry.registerToolFor(simpleTestTool("transfer_projection", testObjectSchema(), output), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
+	if err := f.entry.registerToolFor(simpleTestTool("transfer_projection", testObjectSchema()), func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		calls.Add(1)
 		return ToolResult{Data: map[string]any{"value": 3}}, nil
 	}, false, true); err != nil {
@@ -607,7 +509,7 @@ func testMCPReadResultsTrustProjectionAndPreserveEncodingErrors(t *testing.T, ve
 		name    string
 		failure bool
 		outcome string
-	}{{"read_projection", false, ""}, {"write_projection", true, "confirmed"}, {"read_encoding", true, ""}, {"transfer_projection", true, ""}} {
+	}{{"read_projection", false, ""}, {"write_projection", false, ""}, {"read_encoding", true, ""}, {"transfer_projection", false, ""}} {
 		before := calls.Load()
 		result, err := client.CallTool(t.Context(), &sdk.CallToolParams{Name: tc.name, Arguments: map[string]any{}})
 		if calls.Load()-before != 1 {

@@ -14,7 +14,7 @@ func TestReadObservationMetadataPreservesPartialResults(t *testing.T) {
 		t.Run(map[bool]string{false: "complete", true: "partial"}[partial], func(t *testing.T) {
 			f := newEntryFixture(t)
 			stamp := time.Date(2026, 11, 10, 1, 2, 3, 0, time.UTC)
-			tool := &sdk.Tool{Name: "observed_read", InputSchema: map[string]any{"type": "object", "additionalProperties": false}, OutputSchema: map[string]any{"type": "object"}}
+			tool := &sdk.Tool{Name: "observed_read", InputSchema: map[string]any{"type": "object", "additionalProperties": false}}
 			err := f.entry.registerReadTool(tool, func(json.RawMessage) BudgetClass { return BudgetControl }, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 				return ToolResult{Data: map[string]any{"items": []string{"retained-task"}}, Observation: &ReadObservation{ObservedAt: stamp, Partial: partial}, Refs: map[string]any{"projectId": testProjectID}}, nil
 			})
@@ -40,7 +40,7 @@ func TestReadObservationMetadataPreservesPartialResults(t *testing.T) {
 
 func TestSessionCompletionMetadataDoesNotReplaceNativeState(t *testing.T) {
 	f := newEntryFixture(t)
-	tool := &sdk.Tool{Name: "session_receipt", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"}}
+	tool := &sdk.Tool{Name: "session_receipt", InputSchema: map[string]any{"type": "object"}}
 	err := f.entry.RegisterTool(tool, BudgetControl, func(context.Context, RequestActor, json.RawMessage) (ToolResult, error) {
 		return ToolResult{SuccessMetadata: true, Data: map[string]any{"operation": map[string]any{"state": "accepted"}}, WriteOutcome: "confirmed", Phase: "commit", Refs: map[string]any{"operationId": "original"}}, nil
 	})
