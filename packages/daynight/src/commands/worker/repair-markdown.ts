@@ -21,6 +21,12 @@ import { createWorktreeManifestStore } from "./worktrees/manifest.js";
 import { retainedWorktreePathInScope, sameWorktreeLocation } from "./worktrees/paths.js";
 
 export type WorkerMarkdownRepairTarget = { projectId: string; taskId: string; claimId: string; sessionId: string; worktreeId: string };
+const repairNextAction = (code: string): string => {
+  if (["projection_input_incomplete", "projection_identity_ambiguous", "projection_input_missing", "repair_plan_changed"].includes(code)) return "Keep the original journal and native history for source recovery; this command cannot reconstruct missing or ambiguous input. Do not remove failure markers.";
+  if (["source_forbidden", "policy_restricted", "context_unavailable"].includes(code)) return "Keep the original resources and inspect the original worktree context. This command cannot fetch external images or bypass source policy.";
+  if (code.startsWith("analysis_")) return "Keep the original input and inspect its retained analysis diagnostics before retrying; do not treat an unsuccessful analysis as an empty image list.";
+  return "Restore the reported original source or context, then rerun this exact command. Original failed entries remain retained.";
+};
 
 /** A terminal execution's storage permit is independent of the running Worker's scheduling lock. */
 export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget, context: CliContext): Promise<void> => {
@@ -75,7 +81,7 @@ export const runWorkerMarkdownRepair = async (target: WorkerMarkdownRepairTarget
     await verify();
     const started = existsSync(`${journalPath}.archive-intent-${ticket.executionGeneration}.json`) || existsSync(`${journalPath}.archive-receipt-${ticket.executionGeneration}.json`);
     const repair = started ? { repaired: [], failures: [] } : await repairStoppedMarkdownProjections({ journalPath, ticket, stateDirectory: paths.stateDirectory, signal: operation.signal, resolveImage: resolveStoppedMarkdownImage, beforeWrite: verify });
-    if (repair.failures.length) return { kind: "known-session-operation", output: `${JSON.stringify({ ...target, ...repair, archive: "not-started", nextAction: "Restore the reported original source or context, then rerun this exact command. Original failed entries remain retained." })}\n`, exitCode: 1, failureText: () => "Markdown repair results could not be printed; inspect the same original execution before retrying." };
+    if (repair.failures.length) return { kind: "known-session-operation", output: `${JSON.stringify({ ...target, ...repair, failures: repair.failures.map(item => ({ ...item, nextAction: repairNextAction(item.code) })), archive: "not-started" })}\n`, exitCode: 1, failureText: () => "Markdown repair results could not be printed; inspect the same original execution before retrying." };
     await verify();
     const archive = await uploadStoppedControllerArchive({ journalPath, ticket, serverToken: serverConfiguration.serverToken!, stateDirectory: paths.stateDirectory, signal: operation.signal });
     return { kind: "known-session-operation", output: `${JSON.stringify({ ...target, ...repair, archive, cleanup: "owned-by-worker" })}\n`, exitCode: 0, failureText: () => "Archive result output failed; reconcile the original archive receipt before retrying." };

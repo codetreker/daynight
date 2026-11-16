@@ -139,12 +139,14 @@ export async function repairStoppedMarkdownProjections(options: {
       const parsed = await projector.complete(prepared.state);
       signal.throwIfAborted();
       if (parsed.failed || parsed.pending) {
+        const reason = parsed.state.parts.find(part => part.status === "failed")?.failureReason;
+        const code = reason && ["invalid_input", "startup_timeout", "parse_timeout", "worker_failure", "node_limit", "invalid_range", "parse_failed"].includes(reason) ? `analysis_${reason}` : "analysis_failed";
         await options.beforeWrite?.();
         local(db => {
           unchanged(db);
-          save(db, `stopped_markdown_failure:${entryId}`, { ticketHash, originalStateHash: controllerPayloadHash(captured.state), originalEntryHash: controllerPayloadHash(captured.entry), code: "analysis_failed", reasons: parsed.state.parts.filter(part => part.status === "failed").map(part => ({ partId: part.partId, reason: part.failureReason ?? "parse_failed" })) });
+          save(db, `stopped_markdown_failure:${entryId}`, { ticketHash, originalStateHash: controllerPayloadHash(captured.state), originalEntryHash: controllerPayloadHash(captured.entry), code, reasons: parsed.state.parts.filter(part => part.status === "failed").map(part => ({ partId: part.partId, reason: part.failureReason ?? "parse_failed" })) });
         });
-        failure("analysis_failed");
+        failure(code);
       }
       if (captured.old) {
         if (!same(comparableAnalysis(captured.old.parsedState, captured.adopted), comparableAnalysis(parsed.state, captured.adopted))) failure("repair_plan_changed");

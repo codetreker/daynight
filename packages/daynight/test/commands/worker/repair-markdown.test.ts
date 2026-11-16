@@ -106,10 +106,10 @@ test("a branch change after repair prevents archive upload", async () => {
   await expect(runWorkerMarkdownRepair(f.target, f.context)).rejects.toThrow("actual worktree"); expect(mocks.upload).not.toHaveBeenCalled();
 });
 
-test("reports retained repair failures with an actionable result and never archives", async () => {
+test.each([["source_not_found", "Restore"], ["projection_identity_ambiguous", "cannot reconstruct"], ["source_forbidden", "cannot fetch external"]])("reports retained %s failures with an actionable result and never archives", async (code, action) => {
   const f = await fixture();
-  mocks.repair.mockResolvedValue({ repaired: [], failures: [{ entryId: "entry", code: "source_not_found" }] });
+  mocks.repair.mockResolvedValue({ repaired: [], failures: [{ entryId: "entry", code: code! }] });
   await runWorkerMarkdownRepair(f.target, f.context);
   expect(mocks.upload).not.toHaveBeenCalled(); expect(f.output()).toMatchObject({ exitCode: 1 });
-  expect(JSON.parse(f.output()!.output)).toMatchObject({ ...f.target, archive: "not-started", failures: [{ code: "source_not_found" }], nextAction: expect.stringContaining("Restore") });
+  expect(JSON.parse(f.output()!.output)).toMatchObject({ ...f.target, archive: "not-started", failures: [{ code, nextAction: expect.stringContaining(action!) }] });
 });

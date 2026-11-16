@@ -172,7 +172,11 @@ test("repair retains native slots committed after an adopted failure carrier", a
   expect(projector.retryFailed(repaired.state).entry).toEqual(repaired.entry);
 });
 
-test.each(["hash", "incomplete", "truncated", "ambiguous", "identity", "index", "pending"])("repair refuses %s changes without mutating the original projection", async corruption => {
+test.each([
+  ["hash", "projection_input_changed"], ["incomplete", "projection_input_incomplete"], ["truncated", "projection_input_incomplete"],
+  ["ambiguous", "projection_identity_ambiguous"], ["identity", "projection_input_changed"], ["index", "projection_input_missing"],
+  ["pending", "projection_input_changed"], ["removed-index", "projection_input_missing"], ["duplicate", "projection_identity_ambiguous"],
+])("repair refuses %s changes without mutating the original projection", async (corruption, code) => {
   const projector = createMarkdownImageProjector({ parse: async () => { throw new Error("controlled"); } });
   const failed = await projector.complete(projector.prepare(entry("body"), meta(), null).state);
   const changed = JSON.parse(JSON.stringify(failed.state));
@@ -183,7 +187,9 @@ test.each(["hash", "incomplete", "truncated", "ambiguous", "identity", "index", 
   if (corruption === "identity") changed.entryId = randomUUID();
   if (corruption === "index") changed.parts[0].inputIndex = 2;
   if (corruption === "pending") changed.pending = true;
+  if (corruption === "removed-index") changed.parts[0].inputIndex = null;
+  if (corruption === "duplicate") changed.parts.push(structuredClone(changed.parts[0]));
   const original = JSON.stringify(changed);
-  expect(() => projector.retryFailed(changed)).toThrow();
+  expect(() => projector.retryFailed(changed)).toThrowError(expect.objectContaining({ code }));
   expect(JSON.stringify(changed)).toBe(original);
 });

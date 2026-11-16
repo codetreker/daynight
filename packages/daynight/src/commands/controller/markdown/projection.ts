@@ -196,20 +196,25 @@ export function createMarkdownImageProjector(options: { parse?: (text: string) =
   };
   /** Prepare only the original complete failed bodies. Persist before parsing; the caller owns stopped-writer admission and CAS. */
   const retryFailed = (input: MarkdownProjectionState): MarkdownProjectionResult => {
-    if (input.schemaVersion !== 1 || input.entryId !== input.input.entryId || !input.token || input.pending !== input.parts.some(part => part.status === "pending")) throw new Error("Markdown repair requires an unchanged original projection.");
+    const refuse = (code: "projection_input_changed" | "projection_input_missing" | "projection_input_incomplete" | "projection_identity_ambiguous", message: string): never => { throw Object.assign(new Error(message), { code }); };
+    if (input.schemaVersion !== 1 || input.entryId !== input.input.entryId || !input.token || input.pending !== input.parts.some(part => part.status === "pending")) refuse("projection_input_changed", "Markdown repair requires an unchanged original projection.");
     const keys = new Set<string>(), ids = new Set<string>(), indices = new Set<number>();
     for (const part of input.parts) {
-      if (!part.sourceKey || !part.partId || !part.contextKey || keys.has(part.sourceKey) || ids.has(part.partId) || !/^[1-9][0-9]*$/.test(part.revision)) throw new Error("Markdown repair requires trusted unique block identities.");
+      if (!part.sourceKey || !part.partId || !part.contextKey || keys.has(part.sourceKey) || ids.has(part.partId) || !/^[1-9][0-9]*$/.test(part.revision)) refuse("projection_identity_ambiguous", "Markdown repair requires trusted unique block identities.");
       keys.add(part.sourceKey); ids.add(part.partId);
       if (part.inputIndex === null) {
-        if (part.status !== "removed") throw new Error("Markdown repair lost its original body.");
+        if (part.status !== "removed") refuse("projection_input_missing", "Markdown repair lost its original body.");
         continue;
       }
-      if (!Number.isSafeInteger(part.inputIndex) || part.inputIndex < 0 || indices.has(part.inputIndex)) throw new Error("Markdown repair requires trusted unique block identities.");
+      if (!Number.isSafeInteger(part.inputIndex) || part.inputIndex < 0 || indices.has(part.inputIndex)) refuse("projection_identity_ambiguous", "Markdown repair requires trusted unique block identities.");
       indices.add(part.inputIndex);
+      if (content(input.input)?.[part.inputIndex]?.type !== "text") refuse("projection_input_missing", "Invalid Markdown projection input.");
       const text = sourceText(input, part);
-      if (sha(text) !== part.textSha256 || Buffer.byteLength(text) > 1_048_576) throw new Error("Markdown repair source differs from its original hash.");
-      if (["failed", "pending", "streaming"].includes(part.status) && (!part.complete || part.truncated || part.format !== "markdown" || part.sourceKey === `${input.entryId}:projection-unavailable`)) throw new Error("Markdown repair requires complete unambiguous original input.");
+      if (sha(text) !== part.textSha256 || Buffer.byteLength(text) > 1_048_576) refuse("projection_input_changed", "Markdown repair source differs from its original hash.");
+      if (["failed", "pending", "streaming"].includes(part.status)) {
+        if (!part.complete || part.truncated) refuse("projection_input_incomplete", "Markdown repair requires complete unambiguous original input.");
+        if (part.format !== "markdown" || part.sourceKey === `${input.entryId}:projection-unavailable`) refuse("projection_identity_ambiguous", "Markdown repair requires complete unambiguous original input.");
+      }
     }
     if (!input.parts.some(part => part.status === "failed")) return result(input);
     const parts = input.parts.map(part => {

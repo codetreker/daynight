@@ -8,6 +8,7 @@ import * as processProof from "../../../src/commands/controller/process-proof.js
 import type { ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { createMarkdownImageProjector } from "../../../src/commands/controller/markdown/projection.js";
+import { MarkdownAnalysisError } from "../../../src/commands/controller/markdown/parser.js";
 import { repairStoppedMarkdownProjections, type StoppedMarkdownImageResolver } from "../../../src/commands/controller/stopped-markdown-repair.js";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import { archiveTestReceiver } from "./archive-test-transport.js";
@@ -75,11 +76,16 @@ test("repairs complete failed Markdown without images, retains original evidence
   expect(f.inspect().execution).toMatchObject({ ...before.execution, through: "2", ack: "2" });
 });
 
-test("a failed second analysis preserves all original projection, timeline and transport bytes", async () => {
+test.each(["startup_timeout", "parse_timeout", "node_limit", "parse_failed"] as const)("a second analysis with %s preserves original bytes and reports the retained reason", async reason => {
   const f = await fixture(), before = f.inspect();
-  const projector = createMarkdownImageProjector({ parse: async () => { throw new Error("unavailable parser"); } });
-  expect(await repairStoppedMarkdownProjections({ ...f, projector })).toEqual({ repaired: [], failures: [{ entryId: f.entryId, code: "analysis_failed" }] });
+  const projector = createMarkdownImageProjector({ parse: async () => { throw reason === "parse_failed" ? new Error("unavailable parser") : new MarkdownAnalysisError(reason); } });
+  expect(await repairStoppedMarkdownProjections({ ...f, projector })).toEqual({ repaired: [], failures: [{ entryId: f.entryId, code: `analysis_${reason}` }] });
   expect(f.inspect()).toEqual(before);
+  const db = new Database(f.journalPath, { readonly: true });
+  try {
+    const diagnostic = JSON.parse((db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`stopped_markdown_failure:${f.entryId}`) as { value: string }).value);
+    expect(diagnostic).toMatchObject({ code: `analysis_${reason}`, reasons: [{ reason }], originalStateHash: controllerPayloadHash(before.state), originalEntryHash: controllerPayloadHash(before.entry) });
+  } finally { db.close(); }
 });
 
 test.each(["active", "claim", "manifest", "archive-intent"])("rejects %s before repairing any entry", async kind => {
