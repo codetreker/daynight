@@ -18,8 +18,12 @@ list focus origin while its old snapshot and detail retire. A distinct snapshot
 with a successful online read receipt must still identify the same Goal before
 the graph can reopen. Recovery replaces the current reading selection, clears
 the old detail and preserves the original section and category. It applies only
-while the original navigation entry remains current and no other graph or detail
-has been selected. Access revocation and identity changes cancel recovery.
+while the reader has continuously remained at the original navigation entry and
+no other graph or detail has been selected. `ProjectPage` observes committed
+`BrowserNavigation` location changes and permanently cancels this recovery on
+the first admitted departure. Returning to the original entry with Back does not
+restore eligibility; cancelled or refused navigation does not cancel recovery.
+Access revocation and identity changes cancel recovery.
 
 An empty Goal remains a valid graph resource; an absent Goal does not. The new
 canvas uses the admitted snapshot, so this recovery does not preserve old
@@ -48,8 +52,10 @@ of the deleted member and its dependency component.
 
 Deleting a member returns readers to the same Goal graph after fresh admission;
 deleting the last member produces its empty state. A failed fresh synchronization
-cannot qualify recovery with the retired snapshot, and later user navigation
-cannot be overwritten by delayed recovery. The graph can remount while the new
+cannot qualify recovery with the retired snapshot. Tracking the first committed
+departure prevents delayed recovery from reopening the graph after a leave-and-Back
+round trip; checking only the entry ID when the snapshot arrives cannot detect
+that intervening navigation. The graph can remount while the new
 epoch is confirmed, so this decision preserves navigation context rather than
 continuous rendering of retired content. Existing synchronization and focus
 owners provide the recovery without a new API or stored history format.

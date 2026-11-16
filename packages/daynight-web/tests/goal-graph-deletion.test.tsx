@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, deleteTask, getTask, getTaskSync } from '../src/api/client';
 import { getProject } from '../src/api/project-settings';
 import { getProjectAccess } from '../src/api/auth';
+import { browserNavigation } from '../src/app/navigation';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import type { TaskDetail } from '../src/api/types';
@@ -127,6 +128,23 @@ describe('Goal graph reading after task deletion', () => {
     await waitFor(() => expect(scope.getAuthorizedProject(projectId)?.summaries.has(firstId)).toBe(false));
     expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('does not recover a Goal graph after leaving and returning to its original history entry', async () => {
+    const graph = await openGraph();
+    pendingSnapshot = Promise.withResolvers();
+    await deleteFirst(graph);
+    await waitFor(() => expect(pendingSnapshotStarted).toBe(true));
+    const originalEntry = browserNavigation().snapshot().entryId;
+    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+    expect(browserNavigation().snapshot().entryId).not.toBe(originalEntry);
+    act(() => window.history.back());
+    await waitFor(() => expect(browserNavigation().snapshot().entryId).toBe(originalEntry));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () => { pendingSnapshot!.resolve(syncResult({})); });
+    await waitFor(() => expect(scope.getAuthorizedProject(projectId)?.summaries.has(firstId)).toBe(false));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('tab', { name: /^Goals?$/ })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('drops pending graph recovery when Project access is revoked', async () => {

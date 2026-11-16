@@ -144,6 +144,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       originalTrigger.current = null; pausedOrigin.current = null; closedDetail.current = null;
     }
   }), [viewer, projectId]);
+  useLayoutEffect(() => {
+    const navigation = browserNavigation();
+    return navigation.subscribe(() => {
+      const goal = pendingRetirement.current?.goal;
+      if (goal == null || navigation.snapshot().entryId === goal.entryId) return;
+      pendingRetirement.current = null;
+      restoreRequested.current = false;
+      listOrigin.current = null; lastGraphResource.current = null; closedDetail.current = null;
+    });
+  }, []);
   const suppressRestore = useRef(false);
   if (previousDetail.current !== null && detailSelection === null) {
     closedDetail.current = previousDetail.current;
