@@ -17,6 +17,51 @@ const chained = detailFixture(projectId, id(14), { title: 'Chain child', parentI
 const time = '2026-10-22T10:00:00Z';
 const taskRow = (link: Locator) => link.locator('..').locator('..').locator('..');
 
+for (const width of [320, 390, 1280]) for (const locale of ['en', 'zh-CN'] as const) test(`project status choices persist and remain usable at ${width}px in ${locale}`, async ({ page }) => {
+  const state = await install(page, locale);
+  const completed = detailFixture(projectId, id(51), { title: 'Completed standalone', status: 'done', completedAt: time, ready: false });
+  const excluded = detailFixture(projectId, id(50), { title: 'Cancelled standalone', status: 'cancelled', cancelledAt: time, ready: false });
+  state.tasks = [...state.tasks, completed, excluded];
+  await page.setViewportSize({ width, height: 800 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-standalone').click();
+  const root = page.locator('.task-status-multifilter');
+  const trigger = root.locator('.task-status-filter-trigger');
+  const all = root.getByRole('checkbox', { name: locale === 'en' ? 'All statuses' : '全部状态', exact: true });
+  const todo = root.getByRole('checkbox', { name: locale === 'en' ? 'To do' : '待办', exact: true });
+  const done = root.getByRole('checkbox', { name: locale === 'en' ? 'Done' : '已完成', exact: true });
+  await trigger.click(); await expect(all).toBeChecked();
+  await all.uncheck(); await todo.check(); await done.check();
+  await expect(all).toHaveJSProperty('indeterminate', true);
+  await expect(trigger).toContainText(locale === 'en' ? '2 selected' : '已选 2 项');
+  await expect(page.locator(`#standalone-task-${standalone.id}`)).toBeVisible();
+  await expect(page.locator(`#standalone-task-${completed.id}`)).toBeVisible();
+  await expect(page.locator(`#standalone-task-${excluded.id}`)).toHaveCount(0);
+  const panel = root.locator('.task-status-filter-panel');
+  const bounds = await panel.boundingBox();
+  expect(bounds).not.toBeNull(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width + 1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  await done.focus();
+  const response = page.waitForResponse(item => new URL(item.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && item.status() === 200);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await response;
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true'); await expect(done).toBeFocused(); await expect(done).toBeChecked();
+  await page.keyboard.press('Escape'); await expect(trigger).toBeFocused(); await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await page.reload();
+  await expect(trigger).toContainText(locale === 'en' ? '2 selected' : '已选 2 项');
+  await expect(page.locator(`#standalone-task-${standalone.id}`)).toBeVisible();
+  await expect(page.locator(`#standalone-task-${completed.id}`)).toBeVisible();
+  await expect(page.locator(`#standalone-task-${excluded.id}`)).toHaveCount(0);
+  await trigger.click(); await todo.uncheck(); await done.uncheck();
+  await expect(trigger).toContainText(locale === 'en' ? 'No statuses selected' : '未选择状态');
+  await expect(page.locator(`#standalone-task-${standalone.id}`)).toHaveCount(0);
+  await page.reload(); await expect(trigger).toContainText(locale === 'en' ? 'No statuses selected' : '未选择状态');
+  await trigger.click(); await all.check();
+  await expect(page.locator(`#standalone-task-${excluded.id}`)).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
 async function install(page: Page, locale: 'en' | 'zh-CN') {
   const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, failCatalog: false, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
@@ -512,22 +557,36 @@ for (const locale of ['en', 'zh-CN'] as const) test(`native match radios support
   expect(state.writes).toEqual([]);
 });
 
-test('an external native select owns its first Escape while the filter stays open', async ({ page }) => {
+test('opening the status filter dismisses the tag filter and Escape restores status focus', async ({ page }) => {
   const state = await install(page, 'en');
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
   const toolbar = page.locator('.project-tasks .task-list-filters:visible');
-  const filter = toolbar.locator('.tag-filter').first(), trigger = filter.locator('summary');
-  await trigger.click(); await expect(filter.getByLabel('Goal label')).toBeVisible();
-  const select = toolbar.locator('.task-status-filter select');
-  await select.focus(); await expect(select).toBeFocused();
-  await page.keyboard.press('Space');
-  await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(true);
+  const filter = toolbar.locator('.tag-filter').first();
+  await filter.locator('summary').click(); await expect(filter.getByLabel('Goal label')).toBeVisible();
+  const status = toolbar.locator('.task-status-filter-trigger');
+  await status.click();
+  await expect(filter).not.toHaveAttribute('open', '');
+  await expect(status).toHaveAttribute('aria-expanded', 'true');
   await page.keyboard.press('Escape');
-  await expect.poll(() => select.evaluate(element => element.matches(':open'))).toBe(false);
-  await expect(filter).toHaveAttribute('open', ''); await expect(select).toBeFocused();
-  await page.keyboard.press('Escape');
-  await expect(filter).not.toHaveAttribute('open', ''); await expect(trigger).toBeFocused();
+  await expect(status).toHaveAttribute('aria-expanded', 'false'); await expect(status).toBeFocused();
+  expect(state.writes).toEqual([]);
+});
+
+test('keyboard opening either filter dismisses the other and Escape restores its trigger', async ({ page }) => {
+  const state = await install(page, 'en');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const toolbar = page.locator('.project-tasks .task-list-filters:visible');
+  const tag = toolbar.locator('.tag-filter').first(), tagTrigger = tag.locator('summary');
+  const status = toolbar.locator('.task-status-filter-trigger');
+  await tagTrigger.focus(); await page.keyboard.press('Enter');
+  await expect(tag).toHaveAttribute('open', '');
+  await status.focus(); await page.keyboard.press('Enter');
+  await expect(tag).not.toHaveAttribute('open', ''); await expect(status).toHaveAttribute('aria-expanded', 'true');
+  await tagTrigger.focus(); await page.keyboard.press('Enter');
+  await expect(status).toHaveAttribute('aria-expanded', 'false'); await expect(tag).toHaveAttribute('open', '');
+  await page.keyboard.press('Escape'); await expect(tag).not.toHaveAttribute('open', ''); await expect(tagTrigger).toBeFocused();
   expect(state.writes).toEqual([]);
 });
 
@@ -713,7 +772,7 @@ for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] 
     expect(Math.abs(geometry.center)).toBeLessThanOrEqual(1);
     expect(geometry.arrows).toBe(1); expect(geometry.appearance).toBe('none');
   };
-  await checkSelect(status);
+  await expect(status.locator('.task-status-filter-trigger')).toBeVisible();
   const main = toolbar.locator('.tag-filter').nth(0);
   const filter = toolbar.locator('.tag-filter').nth(1);
   expect(await status.evaluate(element => element.nextElementSibling?.className)).toBe('tag-filter-wrap');

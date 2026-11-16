@@ -21,18 +21,13 @@ user, and choosing all saves the unrestricted selection. Invalid stored values
 fall back to all. Storage failures leave the current session usable and show a
 localized preference error without claiming an unsuccessful save. Overview
 navigation persists an assignee condition it changes to reveal its target.
-Status remains in memory for the project visit, defaults to all, and can select
-`proposed`, `todo`, `in_progress`, `done` or `cancelled`; all history remains available. A standalone task must itself satisfy both
+The [multi-status preference decision](2026-11-16-project-status-multiselect.md) replaces the original in-memory single status selection with a persisted set. A standalone task must itself satisfy both
 conditions. A chain remains visible when one ordinary-component member satisfies
 both; its actual representative and all ordinary members remain visible even
 when they do not match. External prerequisites supply graph context but are not
 members for matching. Filtering precedes pagination, and changing either
 condition resets both task lists to their first page. Overview navigation adjusts
 conditions that hide its target.
-
-The status control keeps its native select and label, but replaces the browser's
-arrow with the same symmetric SVG shape used by the adjacent assignee picker.
-The icon does not intercept pointer input and the select reserves space for it.
 
 The full index continues to own chain progress, readiness, dependencies,
 overview statistics and graph context. The [assignee-scoped tab count decision](../bug-fix/2026-11-13-assignee-scoped-tab-counts.md)

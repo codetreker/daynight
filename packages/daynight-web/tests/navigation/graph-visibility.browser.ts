@@ -1,3 +1,4 @@
+import { selectStatus, statusButton, statusSummary } from './status-filter';
 import { expect, test, type Page } from '@playwright/test';
 import { detailFixture, graphFixture } from '../helpers/taskDetail';
 import { directAccessFixture, taskSyncFixture, taskSyncQuery, taskSyncEpoch, TEST_PROFILE_VERSION, TEST_VIEWER_ID } from '../helpers/taskSync';
@@ -129,7 +130,7 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await page.setViewportSize({ width: 1440, height: 600 });
   await page.goto(`/projects/${projectId}`);
   await page.locator('#project-section-tab-tasks').click();
-  await page.getByRole('combobox', { name: 'Status', exact: true }).selectOption(status);
+  await selectStatus(page, status);
   if (assignee === 'Unassigned') {
     await page.getByRole('button', { name: 'Assignee: Everyone', exact: true }).click();
     await page.getByRole('option', { name: 'Unassigned', exact: true }).click();
@@ -142,15 +143,15 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await page.evaluate(source => {
     const list = document.getElementById('project-chain-list')!, rows = [...list.querySelectorAll('.root-toggle')];
     const pagination = list.querySelector('.list-pagination'), pageText = pagination!.textContent;
-    const status = document.querySelector<HTMLSelectElement>('.task-status-filter select')!;
+    const status = document.querySelector<HTMLButtonElement>('.task-status-multifilter .task-status-filter-trigger')!;
     const assignee = document.querySelector('.task-assignee-filter .assignee-trigger')!, assigneeName = assignee.getAttribute('aria-label');
-    const statusValue = status.value, original = document.getElementById(`task-root-${source}`)!, top = scrollY;
+    const statusValue = status.getAttribute('aria-label'), original = document.getElementById(`task-root-${source}`)!, top = scrollY;
     const violations: string[] = [];
     const check = () => {
       const current = [...list.querySelectorAll('.root-toggle')];
       if (current.length !== rows.length || current.some((row, position) => row !== rows[position])) violations.push('list rows changed');
       if (list.querySelector('.list-pagination') !== pagination || pagination!.textContent !== pageText) violations.push('pagination changed');
-      if (status.value !== statusValue || assignee.getAttribute('aria-label') !== assigneeName) violations.push('filters changed');
+      if (status.getAttribute('aria-label') !== statusValue || assignee.getAttribute('aria-label') !== assigneeName) violations.push('filters changed');
       if (original.getAttribute('aria-expanded') !== 'true') violations.push('disclosure changed');
       if (scrollY !== top) violations.push('scroll changed');
     };
@@ -180,7 +181,7 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await page.locator('.task-chain-close').click();
   await expect(trigger).toBeFocused(); expect(await stable()).toEqual([]);
   await expect(original).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.getByRole('combobox', { name: 'Status', exact: true })).toHaveValue(status);
+  await expect(statusButton(page)).toHaveText(statusSummary(status));
   await expect(page.getByRole('button', { name: `Assignee: ${assignee}`, exact: true })).toBeVisible();
   await expect(page.locator('#project-chain-list .list-pagination-page')).toHaveText(`Page 2 of ${status === 'all' && assignee === 'Everyone' ? 3 : 2}`);
   await page.evaluate(() => { (Reflect.get(window, Symbol.for('external-navigation-state')) as { finish: () => void }).finish(); });
@@ -194,7 +195,7 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await expect(trigger).toBeFocused();
   expect(await page.evaluate(() => scrollY)).toBe(320);
   await expect(original).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.getByRole('combobox', { name: 'Status', exact: true })).toHaveValue(status);
+  await expect(statusButton(page)).toHaveText(statusSummary(status));
   await expect(page.getByRole('button', { name: `Assignee: ${assignee}`, exact: true })).toBeVisible();
   await expect(page.locator('#project-chain-list .list-pagination-page')).toHaveText(`Page 2 of ${status === 'all' && assignee === 'Everyone' ? 3 : 2}`);
 });

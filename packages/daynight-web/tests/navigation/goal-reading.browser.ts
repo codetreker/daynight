@@ -1,3 +1,4 @@
+import { selectStatus, statusButton } from './status-filter';
 import { expectTextContrast, roleColors } from './color-roles';
 import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
@@ -1260,7 +1261,7 @@ test('returning from two goals restores the original unassigned chain view', asy
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Task chains/ }).click();
-  const status = page.getByRole('combobox', { name: 'Status', exact: true }); await status.selectOption('todo');
+  await selectStatus(page, 'todo'); const status = statusButton(page);
   const row = page.locator(`[data-chain-id="${outsideId}"]`);
   const disclosure = row.locator('.root-toggle'); await disclosure.click();
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
@@ -1285,7 +1286,7 @@ test('returning from two goals restores the original unassigned chain view', asy
   await expect(otherGoal).toHaveCount(0); await expect(originalGraph).toBeVisible(); await expect(originalTarget).toBeFocused();
   await page.keyboard.press('Escape'); await expect(originalGraph).toHaveCount(0);
   await expect(open).toBeFocused(); await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
-  await expect(status).toHaveValue('todo');
+  await expect(status).toHaveText('To do');
   expect(await page.evaluate(() => window.scrollY)).toBe(scroll);
 });
 
@@ -2475,7 +2476,7 @@ test('Goal list graph restores visible focus when its source Goal is filtered ou
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: 'Task list', exact: true }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
-  await page.getByRole('combobox', { name: 'Status' }).selectOption('todo');
+  await selectStatus(page, 'todo');
   const source = page.locator(`[data-goal-id="${goalId}"]`);
   await source.locator('.goal-list-toggle').click();
   await source.locator(`#project-goal-graph-${goalId}`).click();
@@ -2487,7 +2488,7 @@ test('Goal list graph restores visible focus when its source Goal is filtered ou
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(page.locator('#project-goal-list')).toBeFocused();
-  await expect(page.getByRole('combobox', { name: 'Status' })).toHaveValue('todo');
+  await expect(statusButton(page)).toHaveText('To do');
   await expect(page.locator(`[data-goal-id="${otherGoalId}"]`)).toBeVisible();
 });
 
