@@ -26,7 +26,7 @@ func (r *run) poll(ctx context.Context) error {
 		return r.pollFailure(ctx, err)
 	}
 	r.log.InfoContext(ctx, "github open traversal", "phase", "fetch")
-	err = r.e.remote.ListOpen(ctx, *r.connection.InstallationID, owner, name, func(page []githubpr.Observation) error {
+	err = r.remote.ListOpen(ctx, *r.connection.InstallationID, owner, name, func(page []githubpr.Observation) error {
 		for start := 0; start < len(page); start += core.PublishLimit {
 			end := min(start+core.PublishLimit, len(page))
 			for _, o := range page[start:end] {
@@ -69,7 +69,7 @@ func (r *run) poll(ctx context.Context) error {
 			break
 		}
 		for _, n := range numbers {
-			o, e := r.e.remote.PullRequest(ctx, *r.connection.InstallationID, owner, name, n)
+			o, e := r.remote.PullRequest(ctx, *r.connection.InstallationID, owner, name, n)
 			if e != nil {
 				if accessErr := r.confirmPRFailure(ctx, e); accessErr != nil {
 					return accessErr
@@ -110,7 +110,7 @@ func (r *run) publish(ctx context.Context, obs []githubpr.Observation, pollID *s
 		}
 		items = append(items, p)
 	}
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		if _, e := d.Connection(c); e != nil {
 			return e
 		}
@@ -131,7 +131,7 @@ func (r *run) publish(ctx context.Context, obs []githubpr.Observation, pollID *s
 }
 func (r *run) unseen(ctx context.Context, after int64) ([]int64, error) {
 	var numbers []int64
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		var ok bool
 		var e error
 		numbers, ok, e = d.UnseenActive(c, r.lease, r.lease.Token, after, 100)

@@ -13,7 +13,7 @@ import (
 
 func (r *run) pending(ctx context.Context, limit int) ([]store.GitHubPendingPR, error) {
 	var hints []store.GitHubPendingPR
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		if _, e := d.Connection(c); e != nil {
 			return e
 		}
@@ -40,7 +40,7 @@ func (r *run) hints(ctx context.Context) error {
 		if fatal(err) {
 			return err
 		}
-		c, e := r.tx(ctx, func(ctx context.Context, d store.GitHubWriteDAO) error {
+		c, e := r.tx(ctx, func(ctx context.Context, d store.GitHubWorkDAO) error {
 			if _, e := d.Connection(ctx); e != nil {
 				return e
 			}
@@ -92,7 +92,7 @@ func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name str
 	if err := r.runtime(ctx, func(w *store.GitHubRuntimeWrite, _ githubpr.Connection, now time.Time) { core.WebhookAttempt(w, now) }); err != nil {
 		return err
 	}
-	o, err := r.e.remote.PullRequest(ctx, *r.connection.InstallationID, owner, name, h.Number)
+	o, err := r.remote.PullRequest(ctx, *r.connection.InstallationID, owner, name, h.Number)
 	if err == nil && o.Number != h.Number {
 		err = errors.New("github pull request number mismatch")
 	}
@@ -113,7 +113,7 @@ func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name str
 	if o.State != "open" {
 		c, cancel := context.WithTimeout(ctx, core.OperationTimeout)
 		defer cancel()
-		err = r.e.db.ReadSnapshot(c, func(s store.SnapshotScope) error {
+		err = r.snapshot.ReadSnapshot(c, func(s store.SnapshotScope) error {
 			_, e := s.GitHubDAO().PullRequest(c, r.project, h.Number)
 			if errors.Is(e, model.ErrNotFound) {
 				known = false
@@ -125,7 +125,7 @@ func (r *run) hint(ctx context.Context, h store.GitHubPendingPR, owner, name str
 			return errors.Join(errTransaction, err)
 		}
 	}
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		_, e := d.Connection(c)
 		if e != nil {
 			return e
@@ -170,7 +170,7 @@ func (r *run) hintFailure(ctx context.Context, h store.GitHubPendingPR, cause er
 	if fatal(cause) {
 		return cause
 	}
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		conn, e := d.Connection(c)
 		if e != nil {
 			return e

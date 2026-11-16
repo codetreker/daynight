@@ -19,7 +19,7 @@ func (r *run) repository(ctx context.Context) (githubpr.RepositoryObservation, e
 	if c.RepositoryFullName != nil {
 		owner, name, e := core.RepositoryParts(*c.RepositoryFullName)
 		if e == nil {
-			repo, err := r.e.remote.VerifyAccess(ctx, id, owner, name)
+			repo, err := r.remote.VerifyAccess(ctx, id, owner, name)
 			if err == nil && repo.ID == repoID {
 				return repo, nil
 			}
@@ -31,7 +31,7 @@ func (r *run) repository(ctx context.Context) (githubpr.RepositoryObservation, e
 			}
 		}
 	}
-	repo, err := r.e.remote.ResolveRepository(ctx, id, repoID)
+	repo, err := r.remote.ResolveRepository(ctx, id, repoID)
 	if err != nil {
 		return repo, err
 	}
@@ -42,7 +42,7 @@ func (r *run) repository(ctx context.Context) (githubpr.RepositoryObservation, e
 	if err != nil {
 		return repo, err
 	}
-	verified, err := r.e.remote.VerifyAccess(ctx, id, owner, name)
+	verified, err := r.remote.VerifyAccess(ctx, id, owner, name)
 	if err != nil {
 		return repo, err
 	}
@@ -53,7 +53,7 @@ func (r *run) repository(ctx context.Context) (githubpr.RepositoryObservation, e
 }
 func (r *run) publishRepository(ctx context.Context, repo githubpr.RepositoryObservation) error {
 	r.log.InfoContext(ctx, "github repository observation", "phase", "publish")
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		login := ""
 		if r.connection.InstallationAccountLogin != nil {
 			login = *r.connection.InstallationAccountLogin
@@ -76,7 +76,7 @@ func (r *run) access(ctx context.Context) error {
 	if err = r.publishRepository(ctx, repo); err != nil {
 		return err
 	}
-	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWriteDAO) error {
+	c, e := r.tx(ctx, func(c context.Context, d store.GitHubWorkDAO) error {
 		conn, e := d.Connection(c)
 		if e != nil {
 			return e
@@ -116,7 +116,7 @@ func (r *run) accessFailure(ctx context.Context, cause error) error {
 	reason, permanent := "permission_denied", false
 	if confirmed {
 		// Only the App installation endpoint can confirm deletion or suspension.
-		status, err := r.e.remote.Installation(ctx, *r.connection.InstallationID)
+		status, err := r.remote.Installation(ctx, *r.connection.InstallationID)
 		if err != nil {
 			if fatal(err) {
 				return err
@@ -142,7 +142,7 @@ func reasonIf(confirmed bool, reason string) string {
 	return ""
 }
 func (r *run) recordAccessFailure(ctx context.Context, cause error, reason string, permanent bool) error {
-	c, err := r.tx(ctx, func(ctx context.Context, d store.GitHubWriteDAO) error {
+	c, err := r.tx(ctx, func(ctx context.Context, d store.GitHubWorkDAO) error {
 		conn, err := d.Connection(ctx)
 		if err != nil {
 			return err
