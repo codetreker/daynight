@@ -1429,7 +1429,7 @@ include all translated components under the existing coverage gate.
 internal state styles for both icon-only and text actions. Its CSS is imported
 by the component. Consumers provide localized labels, actions and external
 layout, while retaining clipboard writes, admission, pending and feedback
-lifecycles. `ValueCopyButton` serves Task rows and Task/Goal details; other
+lifecycles. `ValueCopyButton` serves Task and Goal rows and Task/Goal details; other
 features retain their own asynchronous flows. See the [UI principles](../../docs/ui-design.md#share-copy-button-presentation)
 for geometry, focus and disabled presentation.
 
@@ -1776,7 +1776,10 @@ uses a 20px decorative target with 8px gaps around it. The disclosure button
 retains a separate 22px-wide hit area, and wrapped progress aligns with the title.
 The disclosure button and non-interactive header content toggle a flat list of
 all direct ordinary children. The title and separate Goal details and graph
-buttons open their readers without changing the disclosure. The Goal
+buttons open their readers without changing the disclosure. The full Goal ID is
+selectable beside the title, with an independent localized copy button and inline
+success or failure feedback. Selecting or copying it does not toggle the row or
+open a reader; the value remains available in read-only and empty Goals. The Goal
 disclosure starts closed. The card owns its rounded outline and clips its contents;
 the heading meets the neutral expanded area at a single divider, and the final
 visible child meets the inner bottom edge without the shared chain-list padding.
