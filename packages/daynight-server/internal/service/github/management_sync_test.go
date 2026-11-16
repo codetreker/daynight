@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestProjectAppManagerSettingsContextAndCompletion(t *testing.T) {
 				return store.Completion{Outcome: tc.outcome}, errors.Join(work(dao), tc.completion)
 			}}
 			ctx := requestid.With(context.Background(), "sync-context")
-			_, err := NewProjectAppManager(db, nil).Settings(ctx, mgmtPrincipal, mgmtProject, 1, 10)
+			_, err := NewProjectAppManager(db, nil, slog.Default()).Settings(ctx, mgmtPrincipal, mgmtProject, 1, 10)
 			wantSaves := 1
 			if tc.refused {
 				wantSaves = 0
@@ -113,7 +114,7 @@ func TestProjectAppManagerSyncCarriesContextAndReportsOutcome(t *testing.T) {
 				return store.Completion{Outcome: outcome}, err
 			}}
 			ctx := requestid.With(context.Background(), "sync-context")
-			result, err := NewProjectAppManager(db, nil).Sync(ctx, mgmtPrincipal, mgmtProject, 1, true)
+			result, err := NewProjectAppManager(db, nil, slog.Default()).Sync(ctx, mgmtPrincipal, mgmtProject, 1, true)
 			if writes != 1 || saves != 1 {
 				t.Fatalf("writes=%d saves=%d err=%v", writes, saves, err)
 			}
@@ -167,7 +168,7 @@ func TestProjectAppManagerRechecksAuthorizationAfterProof(t *testing.T) {
 			provider := projectAppAcquireFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
 				return client, func() { releases++ }, nil
 			})
-			_, err := NewProjectAppManager(db, provider).Connect(t.Context(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
+			_, err := NewProjectAppManager(db, provider, slog.Default()).Connect(t.Context(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
 			assertManagementCode(t, err, scenario.code)
 			if reads != 1 || writes != 1 || releases != 1 {
 				t.Fatalf("reads=%d writes=%d releases=%d", reads, writes, releases)

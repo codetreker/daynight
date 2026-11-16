@@ -70,7 +70,7 @@ func (a *App) assembleGitHub(db store.Transactions, logger *slog.Logger) error {
 	a.GitHubConfig = githubservice.NewConfigManager(backend)
 	a.GitHubAdmins = githubservice.NewAdminManager(backend)
 	a.GitHubGrants = githubservice.NewGrantManager(backend, backend)
-	a.GitHubProject = githubservice.NewProjectAppManager(backend, provider)
+	a.GitHubProject = githubservice.NewProjectAppManager(backend, provider, logger)
 	a.GitHubWebhook = receiver
 	g := &githubRuntime{runner: runner, provider: provider, logger: logger}
 	a.githubRuntime = g
