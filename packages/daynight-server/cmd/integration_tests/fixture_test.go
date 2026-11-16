@@ -111,6 +111,7 @@ type fixture struct {
 	databaseURL  string
 	s2sSharedKey string
 	process      *serverProcess
+	restart      func(func())
 }
 
 func verifyServerBuild(t *testing.T) string {
@@ -309,9 +310,6 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 		"task_sync": map[string]any{"overlap": "10s"},
 		"webhook":   map[string]any{"enabled": true},
 	}
-	if github != nil {
-		configuration["github"] = map[string]any{"enabled": true, "app_id": 13, "private_key_file": github.privateKey, "webhook_secret": "integration-only-secret"}
-	}
 	if imageDecoder {
 		dir, node := os.Getenv("DAYNIGHT_INTEGRATION_IMAGE_DECODER_DIR"), os.Getenv("DAYNIGHT_INTEGRATION_NODE_PATH")
 		if !filepath.IsAbs(dir) || !filepath.IsAbs(node) {
@@ -405,6 +403,64 @@ func newFixtureConfigured(t *testing.T, imageDecoder bool, github *githubFixture
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	t.Cleanup(transport.CloseIdleConnections)
 	f := &fixture{context: ctx, origin: origin, databaseURL: parsed.String(), s2sSharedKey: s2sSharedKey, process: process, client: &http.Client{Timeout: 5 * time.Second, Transport: tokenTransport{token: token, next: transport}}}
+	f.restart = func(prepare func()) {
+		t.Helper()
+		process.stop(t)
+		f.client.CloseIdleConnections()
+		readyClient.CloseIdleConnections()
+		if !stopped() || process.waitErr != nil {
+			t.Fatal("original integration Server did not stop cleanly before restart")
+		}
+		prepare()
+		restarted := exec.Command(binary, "--root", root)
+		restarted.Env = command.Env
+		next := &serverProcess{command: restarted, exited: make(chan struct{}), logs: &processLog{}}
+		restarted.Stdout, restarted.Stderr = next.logs, next.logs
+		if err := restarted.Start(); err != nil {
+			t.Fatal(err)
+		}
+		process = next
+		f.process = next
+		go func() { next.waitErr = restarted.Wait(); close(next.exited) }()
+		identity, err := identifyProcess(restarted.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resources.Server = &identity
+		if err := writeResources(); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.NewTimer(15 * time.Second)
+		defer deadline.Stop()
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/readyz", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := readyClient.Do(request)
+			if err == nil {
+				_, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+				closeErr := response.Body.Close()
+				if err := errors.Join(readErr, closeErr); err != nil {
+					t.Fatal(err)
+				}
+				if response.StatusCode == http.StatusOK {
+					return
+				}
+			}
+			select {
+			case <-next.exited:
+				t.Fatalf("restarted integration Server stopped: %v\n%s", next.waitErr, next.logs.String())
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-deadline.C:
+				t.Fatalf("restarted integration Server did not become ready\n%s", next.logs.String())
+			case <-ticker.C:
+			}
+		}
+	}
 	response, body := f.request(t, http.MethodGet, "/api/v1/projects", "", nil, http.StatusOK)
 	var page api.ProjectPage
 	if err := json.Unmarshal(body, &page); err != nil {

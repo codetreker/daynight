@@ -7,18 +7,19 @@ import { navigate, parseAuthRoute, type AuthRoute } from "../../app/router";
 import type { TaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { TeamSettingsPanel } from "./TeamManagement";
 import { TeamMembersPanel } from "./TeamMembersPanel";
+import { TeamGitHubApps } from "./TeamGitHubApps";
 import { useTeamMessages } from "./messages";
 import { useTeams } from "./TeamsProvider";
 import { useCurrentTeamPreference } from "./useTeamPreference";
 
-type Section = "general" | "members";
+type Section = "general" | "members" | "github";
 type Owner = {
   readonly id: string;
   readonly host: HTMLDivElement;
   team: TeamRef;
   section: Section;
   readonly opened: Record<Section, boolean>;
-  readonly guarded: Record<Section, boolean>;
+  readonly guarded: Record<"general" | "members", boolean>;
   departed: bigint | null;
 };
 type Props = {
@@ -38,7 +39,7 @@ type Props = {
   readonly onMemberStart: (id: string) => void;
 };
 
-export const isTeamSettingsRoute = (route: AuthRoute, teamId?: string) => (route.kind === "teamSettings" || route.kind === "teamMembers") && (teamId === undefined || route.teamId === teamId);
+export const isTeamSettingsRoute = (route: AuthRoute, teamId?: string) => (route.kind === "teamSettings" || route.kind === "teamMembers" || route.kind === "teamGitHubApps") && (teamId === undefined || route.teamId === teamId);
 const onCurrentTeam = (teamId: string) => isTeamSettingsRoute(parseAuthRoute(window.location.pathname, window.location.search), teamId);
 const followSection = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -75,14 +76,14 @@ export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identit
   // Stable hosts keep dispatched operations alive when standalone navigation detaches the workspace.
   const owners = useRef<Owner[]>([]);
   const [, updateOwners] = useState(0);
-  const teamId = route.kind === "teamSettings" || route.kind === "teamMembers" ? route.teamId : null;
-  const section: Section = route.kind === "teamMembers" ? "members" : "general";
+  const teamId = route.kind === "teamSettings" || route.kind === "teamMembers" || route.kind === "teamGitHubApps" ? route.teamId : null;
+  const section: Section = route.kind === "teamMembers" ? "members" : route.kind === "teamGitHubApps" ? "github" : "general";
   owners.current = owners.current.filter(owner => owner.id === teamId || owner.guarded.general || owner.guarded.members || owner.departed !== null);
   const ready = teamId !== null && teams.detail.id === teamId && !blocked && (teams.detail.status === "ready" || teams.detail.status === "error" && owners.current.some(owner => owner.id === teamId) && guardedTeam(teamId));
   if (ready && teamId !== null) {
     let owner = owners.current.find(owner => owner.id === teamId);
     if (owner === undefined && teams.detail.team !== undefined) {
-      owner = { id: teamId, host: document.createElement("div"), team: teams.detail.team, section, opened: { general: false, members: false }, guarded: { general: false, members: false }, departed: null };
+      owner = { id: teamId, host: document.createElement("div"), team: teams.detail.team, section, opened: { general: false, members: false, github: false }, guarded: { general: false, members: false }, departed: null };
       owners.current.push(owner);
     }
     if (owner !== undefined) {
@@ -96,7 +97,7 @@ export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identit
     for (const child of [...slot.children]) if (!owners.current.some(owner => owner.host === child)) child.remove();
     for (const owner of owners.current) if (owner.host.parentNode !== slot) slot.appendChild(owner.host);
   });
-  const guard = (owner: Owner, source: Section, value: boolean) => {
+  const guard = (owner: Owner, source: "general" | "members", value: boolean) => {
     setTeamGuard(owner.id, source === "general" ? "settings" : "members", value || source === "members" && owner.departed !== null);
     if (owner.guarded[source] === value) return;
     owner.guarded[source] = value;
@@ -121,15 +122,18 @@ export const TeamSettingsWorkspace = ({ route, user, admission, blocked, identit
     const visible = onRoute && ready && workspaceVisible;
     const generalActive = visible && owner.section === "general";
     const membersActive = visible && owner.section === "members";
+    const githubActive = visible && owner.section === "github";
     const denied = owner.departed !== null || preferenceDenied && teams.detail.id === owner.id;
     return createPortal(<div hidden={!visible} inert={!visible}>
       <div className="page-heading"><div><div className="eyebrow">TEAM SETTINGS</div><h1 tabIndex={-1}>{m.settings}</h1><p className="team-settings-context">{owner.team.kind === "personal" ? m.personal : owner.team.name}</p></div></div>
       <nav className="project-management-nav team-settings-nav" aria-label={m.settings}>
         <a className="button" href={`/teams/${owner.id}/settings`} onClick={followSection} aria-current={owner.section === "general" ? "page" : undefined}>{m.general}</a>
         <a className="button" href={`/teams/${owner.id}/members`} onClick={followSection} aria-current={owner.section === "members" ? "page" : undefined}>{m.membersAndInvitations}</a>
+        <a className="button" href={`/teams/${owner.id}/github-apps`} onClick={followSection} aria-current={owner.section === "github" ? "page" : undefined}>GitHub Apps</a>
       </nav>
       {owner.departed !== null && <DepartureStatus id={owner.id} version={owner.departed} admission={admission} active={visible && !identityChecking} confirmedTeam={confirmedTeam} onIdentityMismatch={onIdentityMismatch} onRejoined={team => { teams.acceptTeam(team); if (onCurrentTeam(owner.id)) teams.refreshDetail(); }} onConfirmed={() => { owner.departed = null; setTeamGuard(owner.id, "members", owner.guarded.members); updateOwners(previous => previous + 1); }} />}
       {owner.opened.general && <div hidden={!generalActive} inert={!generalActive}><TeamSettingsPanel teamId={owner.id} active={generalActive && owner.departed === null} admissionBlocked={identityChecking} preferenceDenied={denied} confirmedTeam={confirmedTeam} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "general", value)} onDeleted={finish => { onDeletedResult(owner.id); departed(owner.id, finish); }} onUnavailable={() => owner.departed !== null ? "changed" : unavailable(owner.id)} onUpdated={team => { onNameSaved(team.id); teams.acceptTeam(team); teams.refreshList(); }} /></div>}
+      {owner.opened.github && <div hidden={!githubActive} inert={!githubActive}><TeamGitHubApps teamId={owner.id} active={githubActive} admissionBlocked={identityChecking} preferenceDenied={denied} admission={admission} onIdentityMismatch={onIdentityMismatch} /></div>}
       {owner.opened.members && <div hidden={!membersActive} inert={!membersActive}><TeamMembersPanel teamId={owner.id} active={membersActive} admissionBlocked={identityChecking} preferenceDenied={denied} confirmedTeam={confirmedTeam} onRoute={onRoute} admission={admission} onIdentityMismatch={onIdentityMismatch} onGuardChange={value => guard(owner, "members", value)} onUnavailable={() => owner.departed !== null ? "changed" : unavailable(owner.id)} onStart={() => onMemberStart(owner.id)} onChanged={confirmed => { if (confirmed) onMemberResult(owner.id, "changed"); if (onCurrentTeam(owner.id)) teams.refreshDetail(); teams.refreshList(); }} onLeft={(unchangedContext, version) => { onMemberResult(owner.id, "left"); if (unchangedContext) departed(owner.id); else { owner.departed = version; setTeamGuard(owner.id, "members", true); updateOwners(previous => previous + 1); teams.refreshList(); } }} /></div>}
     </div>, owner.host, owner.id);
   });

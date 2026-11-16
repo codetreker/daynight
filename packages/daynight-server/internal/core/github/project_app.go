@@ -84,7 +84,10 @@ func SelectProjectApp(ctx context.Context, dao store.GitHubProjectAppReadDAO, f 
 }
 
 func ProjectAppStatusFrom(ctx context.Context, dao store.GitHubProjectAppReadDAO, f store.GitHubProjectAppFacts) (ProjectAppStatus, error) {
-	out := ProjectAppStatus{Status: Status{Connection: f.Connection, ServiceAvailable: true}, CanManageConnection: f.Access.TeamRole != nil && *f.Access.TeamRole == model.ProjectAdmin, GrantID: f.GrantID}
+	out := ProjectAppStatus{Status: Status{Connection: f.Connection, ServiceAvailable: true}, CanManageConnection: f.Access.TeamRole != nil && *f.Access.TeamRole == model.ProjectAdmin}
+	if out.CanManageConnection {
+		out.GrantID = f.GrantID
+	}
 	if f.AppResourceID == nil {
 		if f.GrantID != nil || f.CredentialVersion != nil || f.Connection.Enabled {
 			return out, fmt.Errorf("project App connection identity is incomplete")

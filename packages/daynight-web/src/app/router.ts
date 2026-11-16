@@ -56,7 +56,7 @@ export type Route =
 
 export type ProtectedRoute = Route
   | WebhookRoute
-  | { readonly kind: "team" | "teamSettings" | "teamMembers"; readonly teamId: string }
+  | { readonly kind: "team" | "teamSettings" | "teamMembers" | "teamGitHubApps"; readonly teamId: string }
   | { readonly kind: "sharedProjects" | "myTasks" }
   | { readonly kind: "bots" }
   | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals"; readonly recordId?: string; readonly eventId?: string }
@@ -112,9 +112,9 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/webhooks") return webhookRoute(search);
   if (pathname === "/my-tasks") return { kind: "myTasks" };
   if (pathname === "/shared-projects") return { kind: "sharedProjects" };
-  const team = /^\/teams\/([^/]+)(\/(?:settings|members))?$/.exec(pathname);
+  const team = /^\/teams\/([^/]+)(\/(?:settings|members|github-apps))?$/.exec(pathname);
   if (team !== null) {
-    try { const teamId = canonicalId(decodeURIComponent(team[1]!)); return teamId === null ? { kind: "notFound" } : { kind: team[2] === undefined ? "team" : team[2] === "/settings" ? "teamSettings" : "teamMembers", teamId }; }
+    try { const teamId = canonicalId(decodeURIComponent(team[1]!)); return teamId === null ? { kind: "notFound" } : { kind: team[2] === undefined ? "team" : team[2] === "/settings" ? "teamSettings" : team[2] === "/members" ? "teamMembers" : "teamGitHubApps", teamId }; }
     catch { return { kind: "notFound" }; }
   }
   if (pathname === "/bots") return { kind: "bots" };

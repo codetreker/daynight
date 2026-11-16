@@ -4,9 +4,9 @@ GitHub 连接和 PR 观测是 Project 的独立资源，不改变 Project 设置
 
 ## 身份与状态
 
-`project_github` 以 Project ID 为主键，保存连接配置及同步事实。缺失行表示虚拟未连接资源：`version=1`、`generation=0`、`revision=0`、`enabled=false`、`sync_enabled=false`、轮询间隔为 5 分钟、访问状态为 `unknown`，其余可空事实为空。读取不会创建行。`enabled` 表示连接，`sync_enabled` 表示独立的同步意愿；现有 Core 的准入仍要求开启同步前已连接；存储不再以 CHECK 把同步意愿与连接绑定。首次实际管理写入在 live Project 写事务内创建版本 2；配置变更推进 version，连接、重连、断开和同步开关的实际变化推进 generation，对外可见状态或 PR 观测提交推进 revision。三者分别保护管理配置、运行代次和读取新鲜度，不能互相代替。
+`project_github` 以 Project ID 为主键，保存连接配置及同步事实。缺失行表示虚拟未连接资源：`version=1`、`generation=0`、`revision=0`、`enabled=false`、`sync_enabled=false`、轮询间隔为 5 分钟、访问状态为 `unknown`，其余可空事实为空。读取不会创建行。`enabled` 表示连接，`sync_enabled` 表示独立的同步意愿；开启同步需要连接，但升级保留的意愿可以暂时没有连接。首次实际管理写入在 live Project 写事务内创建版本 2；配置变更推进 version，连接、重连、断开和同步开关的实际变化推进 generation，对外可见状态或 PR 观测提交推进 revision。三者分别保护管理配置、运行代次和读取新鲜度，不能互相代替。
 
-App、installation 和仓库使用稳定数值身份；名称仅用于展示，仓库可见性未知时为 null。领取及其期限、种类可为空。管理写先在 Project 锁作用域内读取并锁定既有 GitHub 行，再根据该事实决定并执行明确字段与预期条件的写入；这样广播对同一行的更新不会被陈旧决定覆盖。缺失行由 Project 锁保护首次管理写入，而广播只匹配已启用的行。数据访问层不决定业务状态转换。提交结果沿用 `committed`、`not_committed` 和 `unknown`；未知结果不能当作回滚或自动重放。
+连接保存本地 App UUID、授权 UUID、凭据版本以及 GitHub App、installation 和仓库的稳定数值身份；名称仅用于展示，仓库可见性未知时为 null。领取及其期限、种类可为空。管理写先在 Project 锁作用域内读取并锁定既有 GitHub 行，再根据该事实决定并执行明确字段与预期条件的写入；这样广播对同一行的更新不会被陈旧决定覆盖。缺失行由 Project 锁保护首次管理写入，而广播只匹配已启用的行。数据访问层不决定业务状态转换。提交结果沿用 `committed`、`not_committed` 和 `unknown`；未知结果不能当作回滚或自动重放。
 
 `project_pull_requests` 以 Project ID 和 PR number 唯一标识记录。作者、head 仓库及其 ref 可以缺失；不能用 base 仓库或其他身份补齐。description 保留原始 Markdown，空字符串和 null 不合并。GitHub 时间与本地观测时间分别保存。列表摘要不读取 description，详情读取完整正文。
 
@@ -18,12 +18,12 @@ Project 权限、连接状态、计数及列表或详情可在同一只读 Repea
 
 `project_github_pending_prs` 以 Project ID 和 PR number 标识待刷新项；新提示替换 request ID，完成时只删除捕获的同一 request ID。运行代次变化清除旧提示、领取和 access hint。关闭同步清除调度期限，保留 `not_before`、绑定、PR 及历史尝试、成功和错误事实。
 
-候选查询有界返回已连接、同步开启且到期的 Project，实际领取、续持、观测发布和完成均在 live Project 写事务内执行。领取校验连接、同步开关及已有期限；续持和发布校验同步开关、原 token、generation 与数据库时间。数据库只保存调用方指定的状态和时间，不决定重试或同步成功。完整轮询以 `seen_poll_id` 标记观测，并有界查询未见的 active 编号；缺席本身不会改变 PR 状态。
+候选查询有界返回已连接、同步开启且到期的 Project，实际领取、续持、观测发布和完成均在 App-aware 工作事务内执行。各操作核对活 Project、App、凭据版本、原 grant、owner Team 与 ownership version；领取另校验连接、同步开关及已有期限，续持和发布另校验原 token、generation 与数据库时间。数据库只保存调用方指定的状态和时间，不决定重试或同步成功。完整轮询以 `seen_poll_id` 标记观测，并有界查询未见的 active 编号；缺席本身不会改变 PR 状态。
 
-广播事务先按 App、installation、仓库及同步开关条件锁定 GitHub 行，更新时再次检查开关，再写待处理项，不反向取得 Project 锁。关闭期间不积累提示或推进接收时间。管理写、发布及删除遵循 Project → GitHub → pending 的顺序；删除在同一更新中关闭连接与同步，使领取和计划失效并清除提示。事务失败回滚全部操作，提交结果未知仍按未知处理。授权决策、调度和实际远端读取由各自的业务组件承担。
+Webhook 提示事务按活 App、当前授权及连接身份锁定并重新检查候选，不反向取得 Project 锁。关闭期间不积累提示或推进接收时间。项目连接、执行与清退的锁顺序和权限分别由[项目连接](github-app-project-connection.md)、[执行](github-app-execution.md)和[资源清退](github-app-resource-retirement.md)拥有。事务失败回滚全部操作，提交结果未知仍按未知处理。
 
 ## 迁移
 
 迁移 `073_project_github_sync.sql` 为已有行设置默认关闭，推进 version、generation 和 revision，清除调度、领取、access hint 与 pending PR；绑定、PR、历史事实和 `not_before` 保留。缺失行不补建。溢出或数据库错误使迁移失败。升级须先停止并 drain 全部旧服务副本，完成迁移和替换后再启动；旧代码不识别同步开关，不能与新版混跑。
 
-迁移 `076_github_apps.sql` 为独立 App、管理员、邀请和 Team 授权准备存储，并增加连接授权字段；它删除同步意愿依赖连接的 CHECK，但不修改既有连接、领取、同步意愿或 PR。现有公开连接与执行路径继续使用原有准入，独立 App 尚未接入生产路由或运行时。独立资源的存储与证明见 [独立 GitHub App 登记](github-app-registration.md)。
+迁移 `076_github_apps.sql` 为独立 App、管理员、邀请和 Team 授权准备存储，并增加连接授权字段；它删除同步意愿依赖连接的 CHECK，但不修改既有连接、领取、同步意愿或 PR。迁移 `077_github_app_cutover.sql` 将旧连接转换为未连接状态，清除活动 App、installation、授权、领取、提示和日程，推进 version、generation 和 revision，保留同步意愿、仓库与 PR。溢出使数据和迁移账本一起回滚；缺失行不补建。应用 077 前须停止并 drain 所有旧副本，不得混跑；二进制回滚须恢复匹配的数据库备份。独立资源的存储与证明见 [独立 GitHub App 登记](github-app-registration.md)。

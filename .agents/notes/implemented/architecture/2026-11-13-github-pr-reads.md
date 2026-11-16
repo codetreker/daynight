@@ -8,7 +8,7 @@ Project members need bounded access to retained pull request observations and co
 
 ## Decision
 
-Expose separate Project-scoped status, summary list and detail reads. Each checks Project access in the same repeatable-read snapshot as its persisted facts. The list uses a scoped, validated keyset cursor with an upper number; summary queries exclude description. Deployment availability comes from GitHub configuration, while connection and channel state come from stored facts. The [read design](../../../../docs/design/github-pr-reading.md) owns the public behavior; the [storage decision](2026-11-13-project-github-pr-storage.md) owns persistence.
+Expose separate Project-scoped status, summary list and detail reads. Each checks Project access in the same repeatable-read snapshot as its persisted facts. The list uses a scoped, validated keyset cursor with an upper number; summary queries exclude description. Connection and channel state come from stored facts and current App authorization. The [read design](../../../../docs/design/github-pr-reading.md) owns the public behavior; the [storage decision](2026-11-13-project-github-pr-storage.md) owns persistence.
 
 ## Alternatives
 

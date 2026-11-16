@@ -6,6 +6,8 @@ type Transactions interface {
 	WebhookTransactions
 	ProjectWriter
 	ProjectCreationWriter
+	GitHubProjectLifecycleStore
+	GitHubTeamDeletionStore
 	TeamWriter
 	IdentityWriter
 	PreviewSSOWriter

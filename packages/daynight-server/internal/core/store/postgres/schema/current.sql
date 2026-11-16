@@ -1,4 +1,4 @@
--- Schema snapshot version: 76
+-- Schema snapshot version: 77
 
 CREATE FUNCTION "webhook_policy_no_update"() RETURNS "trigger"
     LANGUAGE "plpgsql"

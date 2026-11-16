@@ -1,5 +1,5 @@
 // GitHub settings has independent route and mutation coverage.
-vi.mock('../src/features/github-integration/GitHubSettings', () => ({ GitHubSettings: () => null }));
+vi.mock('../src/features/github-integration/ProjectGitHubConsumption', () => ({ ProjectGitHubConsumption: () => null }));
 
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';

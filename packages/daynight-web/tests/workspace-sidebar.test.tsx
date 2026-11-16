@@ -55,6 +55,14 @@ describe("workspace sidebar", () => {
     expect(screen.queryByRole("link", { name: "Webhooks" })).toBeNull();
   });
 
+  it("offers Personal Team access to authorized GitHub Apps", () => {
+    const personalId = "00000000-0000-4000-8000-000000000701";
+    render(<Harness selectedTeamId={personalId} visibilityTeamId={personalId} route={{ kind: "teamGitHubApps", teamId: personalId }} />);
+    expect(screen.getByRole("link", { name: "GitHub Apps" })).toHaveAttribute("href", `/teams/${personalId}/github-apps`);
+    expect(screen.getByRole("link", { name: "GitHub Apps" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "Team settings" })).toBeNull();
+  });
+
   it("keeps the account task overview available independently of Team selection", () => {
     render(<Harness selectedTeamId={null} visibilityTeamId={null} route={{ kind: "myTasks" }} />);
     expect(screen.getByRole("link", { name: "In-progress tasks" })).toHaveAttribute("href", "/my-tasks");

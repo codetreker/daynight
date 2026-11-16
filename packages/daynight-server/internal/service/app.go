@@ -38,8 +38,11 @@ import (
 type App struct {
 	*application.Application
 	GitHubRead           *coregithub.Reader
-	GitHubManager        *githubservice.Manager
-	GitHubWebhook        *githubservice.WebhookReceiver
+	GitHubApps           *githubservice.AppManager
+	GitHubConfig         *githubservice.ConfigManager
+	GitHubGrants         *githubservice.GrantManager
+	GitHubProject        *githubservice.ProjectAppManager
+	GitHubWebhook        *githubservice.AppWebhookReceiver
 	Metrics              *prometheus.Registry
 	Web                  *webresources.Resources
 	Ready                func(context.Context) error
@@ -97,8 +100,7 @@ func NewModules(c config.Config, database store.Transactions, ready func(context
 	app := &App{
 		Application:     application.New(database, files, client, c.UniAuth.CallbackURL, preview, c.TaskSync.Overlap, capture...),
 		PreviewSSOError: previewErr,
-		GitHubRead:      coregithub.NewReader(database, c.GitHub.Enabled),
-		GitHubManager:   githubservice.NewManager(database, nil, 0),
+		GitHubRead:      coregithub.NewReader(database, true),
 		Web:             webresources.New(), Ready: ready, closeLock: make(chan struct{}, 1), drainLock: make(chan struct{}, 1),
 	}
 	app.OAuth.SetOrigin(c.Server.PublicOrigin)
@@ -281,7 +283,7 @@ func openApp(ctx context.Context, c config.Config, logger *slog.Logger, open app
 	if err := app.assembleWebhooks(database.Transactions, c.Webhook.Enabled, logger); err != nil {
 		return failOpen(err)
 	}
-	if err := app.assembleGitHub(database.Transactions, c.GitHub, logger); err != nil {
+	if err := app.assembleGitHub(database.Transactions, logger); err != nil {
 		return failOpen(err)
 	}
 	if app.ImageValidationError != nil {
@@ -334,8 +336,10 @@ func (a *App) Close(ctx context.Context) error {
 		}
 	}
 	a.producersStopped = true
-	if a.githubRuntime != nil && a.githubRuntime.client != nil {
-		a.githubRuntime.client.CloseIdleConnections()
+	if a.githubRuntime != nil && a.githubRuntime.provider != nil {
+		if err := a.githubRuntime.provider.Close(ctx); err != nil {
+			return errors.Join(a.closeErr, err)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return errors.Join(a.closeErr, err)

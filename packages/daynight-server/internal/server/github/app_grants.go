@@ -33,8 +33,8 @@ type grantHandler struct {
 	logger     *slog.Logger
 }
 
-// RegisterGrantRoutes installs the independent grant adapter without mounting it
-// on the production server. The caller supplies authentication for each route.
+// RegisterGrantRoutes installs the independent grant adapter. The caller supplies
+// authentication for each route.
 func RegisterGrantRoutes(mux *http.ServeMux, ops GrantOperations, auth RouteAuthentication, logger *slog.Logger) {
 	h := &grantHandler{operations: ops, logger: logger}
 	base := "/api/v1/github/apps/{id}"
