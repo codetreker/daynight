@@ -77,7 +77,8 @@ func TestProjectAppHTTPProjectsConnectedIdentityByTeamRole(t *testing.T) {
 				AppResourceID: pointer(appID), GrantID: pointer(projectAppGrant), CredentialVersion: pointer(int64(3)),
 			}}
 			mux := http.NewServeMux()
-			RegisterProjectAppRoutes(mux, service.NewProjectAppManager(db, nil), projectionAuth{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			RegisterProjectAppRoutes(mux, service.NewProjectAppManager(db, nil, logger), projectionAuth{}, logger)
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/projects/"+projectID+"/github", nil))
 			var body map[string]any

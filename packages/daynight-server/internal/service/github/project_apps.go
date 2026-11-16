@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
@@ -21,10 +22,11 @@ type projectAppClientProvider interface {
 type ProjectAppManager struct {
 	db       store.GitHubProjectAppStore
 	provider projectAppClientProvider
+	logger   *slog.Logger
 }
 
-func NewProjectAppManager(db store.GitHubProjectAppStore, provider projectAppClientProvider) *ProjectAppManager {
-	return &ProjectAppManager{db: db, provider: provider}
+func NewProjectAppManager(db store.GitHubProjectAppStore, provider projectAppClientProvider, logger *slog.Logger) *ProjectAppManager {
+	return &ProjectAppManager{db: db, provider: provider, logger: logger}
 }
 
 func (m *ProjectAppManager) read(ctx context.Context, p model.Principal, id string, work func(store.GitHubProjectAppReadDAO, store.GitHubProjectAppFacts) error) error {
@@ -173,12 +175,17 @@ func (m *ProjectAppManager) write(ctx context.Context, p model.Principal, id, ac
 		return core.ProjectAppStatus{}, err
 	}
 	var out core.ProjectAppStatus
+	observation := &projectAppObservation{}
+	var callbackSucceeded bool
 	c, err := m.db.WriteGitHubProjectApp(ctx, id, p.UserID, in.AppResourceID, func(dao store.GitHubProjectAppWriteDAO) error {
 		var e error
-		out, e = core.ManageProjectApp(ctx, dao, p, action, in, minutes, enabled, repo, candidate)
+		out, e = core.ManageProjectApp(ctx, &observedProjectAppDAO{GitHubProjectAppWriteDAO: dao, observation: observation}, p, action, in, minutes, enabled, repo, candidate)
+		callbackSucceeded = e == nil
 		return e
 	})
-	if err = grantCompletion(c, err); err != nil {
+	err = grantCompletion(c, err)
+	m.logProjectAppWrite(ctx, p, id, action, c, err, observation, out, callbackSucceeded)
+	if err != nil {
 		return core.ProjectAppStatus{}, err
 	}
 	return out, nil

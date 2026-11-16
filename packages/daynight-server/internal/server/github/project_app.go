@@ -44,15 +44,34 @@ func RegisterProjectAppRoutes(mux *http.ServeMux, ops ProjectAppOperations, auth
 	}
 }
 
-func (h *projectAppHandler) run(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, mutate bool, budget time.Duration, op func(*http.Request, string) (any, error)) {
+type projectAppLog struct{ logger *slog.Logger }
+
+func (l *projectAppLog) selection(in core.ProjectAppSelection) {
+	l.logger = l.logger.With("requested_app_resource_id", in.AppResourceID, "requested_grant_id", in.GrantID,
+		"expected_app_version", in.AppVersion, "expected_ownership_version", in.OwnershipVersion)
+}
+
+func (l *projectAppLog) status(value core.ProjectAppStatus) {
+	l.logger = l.logger.With("version", value.Connection.Version, "generation", value.Connection.Generation)
+	if value.App != nil {
+		l.logger = l.logger.With("app_resource_id", value.App.ID, "app_id", value.App.GitHubAppID)
+	}
+	if value.GrantID != nil {
+		l.logger = l.logger.With("grant_id", *value.GrantID)
+	}
+}
+
+func (h *projectAppHandler) run(w http.ResponseWriter, r *http.Request, p model.Principal, phase string, mutate bool, budget time.Duration, op func(*http.Request, string, *projectAppLog) (any, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	ctx, cancel := context.WithTimeoutCause(r.Context(), budget, errAppWriteDeadline)
 	defer cancel()
 	work := r.WithContext(ctx)
 	id, err := pathID(work, "projectId")
+	log := &projectAppLog{logger: h.logger.With("user_id", p.UserID, "operation_phase", phase)}
 	var result any
 	if err == nil {
-		result, err = op(work, id)
+		log.logger = log.logger.With("project_id", id)
+		result, err = op(work, id, log)
 	}
 	r.Body = work.Body
 	if err != nil {
@@ -60,7 +79,7 @@ func (h *projectAppHandler) run(w http.ResponseWriter, r *http.Request, p model.
 			if errors.Is(err, context.DeadlineExceeded) && errors.Is(context.Cause(ctx), errAppWriteDeadline) {
 				err = &httpx.BodyReadError{Cause: err, Status: http.StatusRequestTimeout, Code: "request_timeout", Message: "request body read timed out"}
 			}
-			httpx.WriteBodyError(w, r, h.logger, "github", phase, err)
+			httpx.WriteBodyError(w, r, log.logger, "github", phase, err)
 			return
 		}
 		var management *service.ManagementError
@@ -72,19 +91,19 @@ func (h *projectAppHandler) run(w http.ResponseWriter, r *http.Request, p model.
 		}
 		if code != "" {
 			httpx.CloseUnreadBody(w, r)
-			httpx.LogFailure(h.logger.With("user_id", p.UserID, "project_id", id), r.Context(), "github", phase, err)
+			httpx.LogFailure(log.logger, r.Context(), "github", phase, err)
 			if r.Context().Err() == nil {
-				httpx.WriteJSON(w, r, h.logger, http.StatusConflict, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context())}})
+				httpx.WriteJSON(w, r, log.logger, http.StatusConflict, api.ErrorResponse{Error: api.Error{Code: code, Message: message, RequestID: httpx.RequestID(r.Context())}})
 			}
 			return
 		}
-		(&grantHandler{logger: h.logger}).fail(w, r, phase, err)
+		(&grantHandler{logger: log.logger}).fail(w, r, phase, err)
 		return
 	}
 	if mutate {
-		httpx.WriteMutationJSON(w, r, h.logger, "github", http.StatusOK, result)
+		httpx.WriteMutationJSON(w, r, log.logger, "github", http.StatusOK, result)
 	} else {
-		httpx.WriteJSON(w, r, h.logger, http.StatusOK, result)
+		httpx.WriteJSON(w, r, log.logger, http.StatusOK, result)
 	}
 }
 
@@ -104,7 +123,7 @@ func projectAppResponse(s core.ProjectAppStatus, mutate bool) (api.GitHubProject
 }
 
 func (h *projectAppHandler) status(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "status", false, core.OperationTimeout, func(work *http.Request, id string) (any, error) {
+	h.run(w, r, p, "status", false, core.OperationTimeout, func(work *http.Request, id string, log *projectAppLog) (any, error) {
 		if _, err := query(work); err != nil {
 			return nil, err
 		}
@@ -112,6 +131,7 @@ func (h *projectAppHandler) status(w http.ResponseWriter, r *http.Request, p mod
 		if err != nil {
 			return nil, err
 		}
+		log.status(value)
 		return projectAppResponse(value, false)
 	})
 }
@@ -140,7 +160,7 @@ func projectAppSelection(fields map[string]json.RawMessage) (core.ProjectAppSele
 }
 
 func (h *projectAppHandler) discover(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "discover", false, appWriteBudget, func(work *http.Request, id string) (any, error) {
+	h.run(w, r, p, "discover", false, appWriteBudget, func(work *http.Request, id string, log *projectAppLog) (any, error) {
 		values, err := query(work, "appResourceId", "appVersion", "grantId", "ownershipVersion")
 		if err != nil {
 			return nil, err
@@ -156,6 +176,7 @@ func (h *projectAppHandler) discover(w http.ResponseWriter, r *http.Request, p m
 		if err != nil {
 			return nil, err
 		}
+		log.selection(in)
 		value, err := h.operations.Discover(work.Context(), p, id, in)
 		if err != nil {
 			return nil, err
@@ -173,7 +194,7 @@ func projectAppFields(w http.ResponseWriter, r *http.Request, names ...string) (
 }
 
 func (h *projectAppHandler) connect(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "connect", true, appWriteBudget, func(work *http.Request, id string) (any, error) {
+	h.run(w, r, p, "connect", true, appWriteBudget, func(work *http.Request, id string, log *projectAppLog) (any, error) {
 		fields, err := projectAppFields(w, work, "version", "ownershipVersion", "appResourceId", "appVersion", "grantId", "installationId")
 		if err != nil {
 			return nil, err
@@ -189,16 +210,19 @@ func (h *projectAppHandler) connect(w http.ResponseWriter, r *http.Request, p mo
 		if in.InstallationID, err = decimalField(fields, "installationId"); err != nil {
 			return nil, err
 		}
+		log.selection(selection)
+		log.logger = log.logger.With("expected_version", in.Version)
 		value, err := h.operations.Connect(work.Context(), p, id, in)
 		if err != nil {
 			return nil, err
 		}
+		log.status(value)
 		return projectAppResponse(value, true)
 	})
 }
 
 func (h *projectAppHandler) disconnect(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "disconnect", true, core.OperationTimeout, func(work *http.Request, id string) (any, error) {
+	h.run(w, r, p, "disconnect", true, core.OperationTimeout, func(work *http.Request, id string, log *projectAppLog) (any, error) {
 		fields, err := projectAppFields(w, work, "version", "ownershipVersion")
 		if err != nil {
 			return nil, err
@@ -210,16 +234,18 @@ func (h *projectAppHandler) disconnect(w http.ResponseWriter, r *http.Request, p
 		if in.OwnershipVersion, err = decimalField(fields, "ownershipVersion"); err != nil {
 			return nil, err
 		}
+		log.logger = log.logger.With("expected_version", in.Version, "expected_ownership_version", in.OwnershipVersion)
 		value, err := h.operations.Disconnect(work.Context(), p, id, in)
 		if err != nil {
 			return nil, err
 		}
+		log.status(value)
 		return projectAppResponse(value, true)
 	})
 }
 
 func (h *projectAppHandler) settings(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "settings", true, core.OperationTimeout, func(work *http.Request, id string) (any, error) {
+	h.run(w, r, p, "settings", true, core.OperationTimeout, func(work *http.Request, id string, log *projectAppLog) (any, error) {
 		fields, err := projectAppFields(w, work, "version", "pollIntervalMinutes")
 		if err != nil {
 			return nil, err
@@ -232,16 +258,18 @@ func (h *projectAppHandler) settings(w http.ResponseWriter, r *http.Request, p m
 		if err := json.Unmarshal(fields["pollIntervalMinutes"], &minutes); err != nil || minutes < 1 {
 			return nil, httpx.InvalidInput("pollIntervalMinutes must be a positive 32-bit integer")
 		}
+		log.logger = log.logger.With("expected_version", version)
 		value, err := h.operations.Settings(work.Context(), p, id, version, minutes)
 		if err != nil {
 			return nil, err
 		}
+		log.status(value)
 		return projectAppResponse(value, true)
 	})
 }
 
 func (h *projectAppHandler) sync(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	h.run(w, r, p, "sync_config", true, core.OperationTimeout, func(work *http.Request, id string) (any, error) {
+	h.run(w, r, p, "sync_config", true, core.OperationTimeout, func(work *http.Request, id string, log *projectAppLog) (any, error) {
 		fields, err := projectAppFields(w, work, "version", "syncEnabled")
 		if err != nil {
 			return nil, err
@@ -254,10 +282,12 @@ func (h *projectAppHandler) sync(w http.ResponseWriter, r *http.Request, p model
 		if err := json.Unmarshal(fields["syncEnabled"], &enabled); err != nil || enabled == nil {
 			return nil, httpx.InvalidInput("syncEnabled must be a boolean")
 		}
+		log.logger = log.logger.With("expected_version", version)
 		value, err := h.operations.Sync(work.Context(), p, id, version, *enabled)
 		if err != nil {
 			return nil, err
 		}
+		log.status(value)
 		return projectAppResponse(value, true)
 	})
 }

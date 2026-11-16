@@ -9,3 +9,11 @@
 首次连接保留默认关闭的同步意愿，普通重连保留已保存意愿。显式断开关闭意愿并清除活动 App、grant、凭据和 installation 身份、领取、提示与日程，保留稳定仓库和 PR。开启同步要求当前活 App、当前 owner Team 的精确授权、有效绑定和可用访问状态。原权限和版本先于同值判断。
 
 状态投影增加 `canManageConnection` 和可空的最小 App 身份；连接管理响应携带 grantId，不返回秘密、管理员或其他 Team 的授权。App-aware HTTP adapter 提供项目 GitHub 子资源协议，并由生产 mux 和项目设置使用；运行时与生命周期见[连接运行时](github-connection-runtime.md)。
+
+## 操作关联与事务结果
+
+HTTP 日志使用 `request_id`、`user_id`、规范 `project_id` 和 `operation_phase` 关联请求。已解析的请求条件使用 `requested_`、`expected_` 字段，与经过权限检查的资源事实区分。响应阶段保留 `phase=response`；它的 `write_outcome=unknown` 只表示响应未确认交付，不能改写数据库提交事实。
+
+`ProjectAppManager` 在连接、断开、间隔与同步写作用域返回后，依据原始 `store.Completion` 记录 `component=github`、操作 `phase` 和 `write_outcome=committed|not_committed|unknown`。事务回调中的观察器只采集既有 DAO 调用提供的安全身份，不增加读取或修改业务决定。可取得的 App、外部 App ID、grant、Team、ownership、配置及凭据版本和 generation 关联该操作；断开保留原绑定身份。事务内观察值与已提交结果分别表达，回滚或 unknown 不把拟写入 generation 声称为已提交事实。当前连接投影没有 impactVersion，日志不推算其值。
+
+日志仅选择身份、版本和安全错误分类，不包含仓库或项目正文、私钥、Webhook secret、邀请 token/hash/fragment、原始数据库或远端错误正文。事务结果与 HTTP 响应交付各有所属边界；日志不是可重放凭证，也不能通过后续同值读取证明未知操作的历史结果。该边界的决策见[项目连接事务日志](../../.agents/notes/implemented/bug-fix/2026-11-17-project-app-transaction-logging.md)。

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -172,7 +173,7 @@ func TestProjectAppManagerDiscoveryRechecksAndReleases(t *testing.T) {
 				events = append(events, "acquire")
 				return client, func() { events = append(events, "release") }, nil
 			})
-			out, err := NewProjectAppManager(db, provider).Discover(context.Background(), mgmtPrincipal, mgmtProject, projectAppServiceSelection())
+			out, err := NewProjectAppManager(db, provider, slog.Default()).Discover(context.Background(), mgmtPrincipal, mgmtProject, projectAppServiceSelection())
 			if reads != 2 || !reflect.DeepEqual(events, []string{"read", "acquire", "read", "release"}) {
 				t.Fatalf("events=%v", events)
 			}
@@ -210,7 +211,7 @@ func TestProjectAppManagerPrecheckAndProviderFailure(t *testing.T) {
 				acquires++
 				return nil, nil, cause
 			})
-			_, err := NewProjectAppManager(db, provider).Connect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
+			_, err := NewProjectAppManager(db, provider, slog.Default()).Connect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
 			if err == nil || (mode == "provider" && (acquires != 1 || !errors.Is(err, cause))) || (mode != "provider" && acquires != 0) {
 				t.Fatalf("mode=%s acquire=%d err=%v", mode, acquires, err)
 			}
@@ -264,7 +265,7 @@ func TestProjectAppManagerConnectBoundProofAndCompletion(t *testing.T) {
 			provider := projectAppAcquireFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
 				return client, func() { releases++ }, nil
 			})
-			_, err := NewProjectAppManager(db, provider).Connect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
+			_, err := NewProjectAppManager(db, provider, slog.Default()).Connect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
 			if writes != 1 || saves != 1 || releases != 1 {
 				t.Fatalf("writes=%d saves=%d release=%d err=%v", writes, saves, releases, err)
 			}
@@ -303,7 +304,7 @@ func TestProjectAppManagerLocalOperationsUseBoundScope(t *testing.T) {
 				}
 				return store.Completion{Outcome: store.TransactionCommitted}, work(dao)
 			}}
-			manager := NewProjectAppManager(db, nil)
+			manager := NewProjectAppManager(db, nil, slog.Default())
 			var err error
 			switch op {
 			case "get":
@@ -343,7 +344,7 @@ func TestProjectAppManagerInvalidRequestsHaveNoExternalWork(t *testing.T) {
 				case "installation":
 					in.InstallationID = 0
 				}
-				manager := NewProjectAppManager(projectAppScopeStub{t: t}, nil)
+				manager := NewProjectAppManager(projectAppScopeStub{t: t}, nil, slog.Default())
 				var err error
 				if operation == "discover" {
 					_, err = manager.Discover(context.Background(), principal, id, in.ProjectAppSelection)
@@ -357,7 +358,7 @@ func TestProjectAppManagerInvalidRequestsHaveNoExternalWork(t *testing.T) {
 			})
 		}
 	}
-	_, err := NewProjectAppManager(projectAppScopeStub{t: t}, nil).Disconnect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppDisconnect{Version: 1})
+	_, err := NewProjectAppManager(projectAppScopeStub{t: t}, nil, slog.Default()).Disconnect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppDisconnect{Version: 1})
 	var fault *model.Fault
 	if !errors.As(err, &fault) || fault.Code != "invalid_input" {
 		t.Fatalf("missing ownership condition=%v", err)
@@ -402,7 +403,7 @@ func TestProjectAppManagerDiscoveryFailureDoesNotReturnCandidate(t *testing.T) {
 				}
 				return client, func() { released++ }, nil
 			})
-			out, err := NewProjectAppManager(db, provider).Discover(context.Background(), mgmtPrincipal, mgmtProject, projectAppServiceSelection())
+			out, err := NewProjectAppManager(db, provider, slog.Default()).Discover(context.Background(), mgmtPrincipal, mgmtProject, projectAppServiceSelection())
 			if err == nil || out != (core.InstallationCandidate{}) {
 				t.Fatalf("candidate=%+v err=%v", out, err)
 			}
@@ -455,7 +456,7 @@ func TestProjectAppManagerConnectProofFailureReleasesWithoutWrite(t *testing.T) 
 			provider := projectAppAcquireFunc(func(context.Context, string, int64) (*remote.Client, func(), error) {
 				return client, func() { released++ }, nil
 			})
-			out, err := NewProjectAppManager(db, provider).Connect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
+			out, err := NewProjectAppManager(db, provider, slog.Default()).Connect(context.Background(), mgmtPrincipal, mgmtProject, core.ProjectAppConnect{ProjectAppSelection: projectAppServiceSelection(), Version: 1, InstallationID: 99})
 			if err == nil || out.Connection.ProjectID != "" || released != 1 {
 				t.Fatalf("out=%+v released=%d err=%v", out, released, err)
 			}
