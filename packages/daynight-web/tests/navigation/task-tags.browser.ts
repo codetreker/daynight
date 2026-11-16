@@ -63,7 +63,7 @@ for (const width of [320, 390, 1280]) for (const locale of ['en', 'zh-CN'] as co
 });
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { assigneeName: 'Reader', tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), syncReads: 0, hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, failCatalog: false, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
+  const state = { assigneeName: 'Reader', tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), syncReads: 0, hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, failCatalog: false, missingColors: new Set<string>(), writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -87,7 +87,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path === `${catalogPath}/colors/resolve` && request.method() === 'POST') {
       const body = request.postDataJSON() as { tagIds: string[]; catalogEpoch?: string };
       if (body.catalogEpoch && body.catalogEpoch !== id(999)) return send({ error: { code: 'catalog_changed', message: 'Changed', requestId: 'fixture' } }, 409);
-      return send({ catalogEpoch: id(999), items: body.tagIds.map(tagId => state.tags.some(tag => tag.id === tagId) ? { id: tagId, state: 'found', version: 1, color: state.colors.get(tagId) ?? '#9AA3B2' } : { id: tagId, state: 'missing' }) });
+      return send({ catalogEpoch: id(999), items: body.tagIds.map(tagId => !state.missingColors.has(tagId) && state.tags.some(tag => tag.id === tagId) ? { id: tagId, state: 'found', version: 1, color: state.colors.get(tagId) ?? '#9AA3B2' } : { id: tagId, state: 'missing' }) });
     }
     if (path === `${catalogPath}/resolve` && request.method() === 'POST') {
       const body = request.postDataJSON() as { tagIds: string[] };
@@ -625,6 +625,139 @@ test('keyboard opening either filter dismisses the other and Escape restores its
   await tagTrigger.focus(); await page.keyboard.press('Enter');
   await expect(status).toHaveAttribute('aria-expanded', 'false'); await expect(tag).toHaveAttribute('open', '');
   await page.keyboard.press('Escape'); await expect(tag).not.toHaveAttribute('open', ''); await expect(tagTrigger).toBeFocused();
+  expect(state.writes).toEqual([]);
+});
+
+async function expectFilterClearOfSelection(filter: Locator, side: 'above' | 'below' | 'either') {
+  const selected = filter.locator('..').locator('.tag-filter-selected');
+  const panel = filter.locator('.tag-filter-panel');
+  await expect.poll(async () => {
+    const chips = await selected.boundingBox(), surface = await panel.boundingBox();
+    if (chips === null || surface === null) return false;
+    const below = surface.y >= chips.y + chips.height, above = surface.y + surface.height <= chips.y;
+    return side === 'below' ? below : side === 'above' ? above : below || above;
+  }).toBe(true);
+}
+
+test('selected chips remain reachable as the main filter anchor changes', async ({ page }) => {
+  const state = await install(page, 'en');
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  const wrap = filter.locator('..'), selected = wrap.locator('.tag-filter-selected');
+  await filter.locator('summary').click();
+  await filter.getByLabel('Goal label').check();
+  await filter.getByLabel('Another label').check();
+  await expectFilterClearOfSelection(filter, 'below');
+  const before = (await selected.boundingBox())!;
+  await wrap.evaluate((element: HTMLElement) => { element.style.width = '125px'; });
+  await expect.poll(async () => (await selected.boundingBox())!.height).toBeGreaterThan(before.height);
+  await expectFilterClearOfSelection(filter, 'below');
+  await filter.getByLabel('Child label').check();
+  await expect(selected.locator('.tag-filter-chip')).toHaveCount(3);
+  await expectFilterClearOfSelection(filter, 'below');
+  const remove = selected.getByRole('button', { name: 'Remove Another label' });
+  await remove.click();
+  await expect(filter).not.toHaveAttribute('open', '');
+  await expect(selected.getByRole('button', { name: 'Remove Another label' })).toHaveCount(0);
+  await expect(selected.getByRole('button', { name: 'Remove Goal label' })).toBeVisible();
+  await expect(selected.getByRole('button', { name: 'Remove Child label' })).toBeVisible();
+  await filter.locator('summary').click();
+  await expectFilterClearOfSelection(filter, 'below');
+  // Move the entire anchor without changing its size, then use the scroll listener.
+  await wrap.evaluate((element: HTMLElement) => { element.style.position = 'relative'; element.style.top = '540px'; });
+  await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
+  await expectFilterClearOfSelection(filter, 'above');
+  await selected.getByRole('button', { name: 'Remove Goal label' }).click();
+  await expect(filter).not.toHaveAttribute('open', '');
+  await expect(selected.getByRole('button', { name: 'Remove Child label' })).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
+for (const entry of ['search', 'child'] as const) test(`selected chips remain clickable at the ${entry} filter`, async ({ page }) => {
+  const state = await install(page, 'en');
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  if (entry === 'search') {
+    const search = page.locator('.task-search-form input[type="text"]');
+    await search.fill('goal'); await search.press('Enter');
+  } else await page.locator('#project-task-tab-goals').click();
+  const filter = entry === 'search' ? page.locator('.task-search-filters .tag-filter') : page.locator('.project-tasks .task-list-filters:visible .tag-filter').nth(1);
+  await filter.locator('summary').click();
+  await filter.getByLabel('Goal label').check();
+  await filter.getByLabel('Another label').check();
+  await expectFilterClearOfSelection(filter, 'below');
+  const selected = filter.locator('..').locator('.tag-filter-selected');
+  await selected.getByRole('button', { name: 'Remove Goal label' }).click();
+  await expect(filter).not.toHaveAttribute('open', '');
+  await expect(selected.getByRole('button', { name: 'Remove Goal label' })).toHaveCount(0);
+  await expect(selected.getByRole('button', { name: 'Remove Another label' })).toBeVisible();
+  expect(state.writes.every(write => write === `POST /api/v1/projects/${projectId}/tasks/search`)).toBe(true);
+});
+
+test.describe('touch selected chip', () => {
+  test.use({ hasTouch: true });
+  for (const width of [320, 390]) test(`a selected chip remains reachable at ${width}px`, async ({ page }) => {
+    const state = await install(page, 'en');
+    await page.setViewportSize({ width, height: 1200 });
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').tap();
+    const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+    await filter.locator('summary').tap();
+    await filter.getByLabel('Goal label').check();
+    await expectFilterClearOfSelection(filter, 'either');
+    const remove = filter.locator('..').getByRole('button', { name: 'Remove Goal label' });
+    const box = (await remove.boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+    await remove.tap();
+    await expect(filter).not.toHaveAttribute('open', '');
+    await expect(remove).toHaveCount(0);
+    expect(state.writes).toEqual([]);
+  });
+});
+
+test('selected chip remains clickable when catalog color feedback disappears on dismissal', async ({ page }) => {
+  const state = await install(page, 'en');
+  state.missingColors.add(id(95));
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const filter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  const wrap = filter.locator('..');
+  await filter.locator('summary').click();
+  await filter.getByLabel('Goal label').check();
+  await expect(wrap.getByText('Some tags are unavailable. Refresh to check them.')).toBeVisible();
+  await expectFilterClearOfSelection(filter, 'below');
+  await wrap.getByRole('button', { name: 'Remove Goal label' }).click();
+  await expect(filter).not.toHaveAttribute('open', '');
+  await expect(wrap.getByRole('button', { name: 'Remove Goal label' })).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+});
+
+test('selected chip remains clickable beside a taller child filter when feedback disappears', async ({ page }) => {
+  const state = await install(page, 'en');
+  state.missingColors.add(id(95));
+  await page.setViewportSize({ width: 1280, height: 1200 });
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.locator('#project-task-tab-goals').click();
+  const toolbar = page.locator('.project-tasks .task-list-filters:visible');
+  const main = toolbar.locator('.tag-filter').first(), child = toolbar.locator('.tag-filter').nth(1);
+  const childWrap = child.locator('..'), mainWrap = main.locator('..');
+  await childWrap.evaluate((element: HTMLElement) => { element.style.width = '125px'; });
+  await child.locator('summary').click();
+  for (const name of ['Goal label', 'Another label', 'Child label', 'Root label']) await child.getByLabel(name).check();
+  await main.locator('summary').focus(); await page.keyboard.press('Enter');
+  await main.getByLabel('Goal label').check();
+  await expect(mainWrap.getByText('Some tags are unavailable. Refresh to check them.')).toBeVisible();
+  expect((await childWrap.boundingBox())!.height).toBeGreaterThan((await mainWrap.boundingBox())!.height);
+  await expectFilterClearOfSelection(main, 'below');
+  await mainWrap.getByRole('button', { name: 'Remove Goal label' }).click();
+  await expect(main).not.toHaveAttribute('open', '');
+  await expect(mainWrap.getByRole('button', { name: 'Remove Goal label' })).toHaveCount(0);
+  await expect(childWrap.locator('.tag-filter-chip')).toHaveCount(4);
   expect(state.writes).toEqual([]);
 });
 
