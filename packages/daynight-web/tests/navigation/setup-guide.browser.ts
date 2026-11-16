@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { expectCopyButtonSkin } from './copy-button-assertions';
+import { expectCopyButtonSkin, expectDisabledCopyHover } from './copy-button-assertions';
 
 const origin = `https://${'a'.repeat(55)}.${'b'.repeat(55)}.example.test:4443`;
 
@@ -37,6 +37,20 @@ test('production setup guide remains public and usable across clients, languages
   await expect(page.getByRole('status')).toContainText('Copied.');
   expect((await page.evaluate(() => navigator.clipboard.readText())).replaceAll('\r\n', '\n')).toBe(rendered);
   expect(await page.locator('#cli').boundingBox()).toEqual(cliBefore);
+  await page.evaluate(() => {
+    const state = window as unknown as { clipboard: Clipboard; finishCopy: () => void };
+    state.clipboard = navigator.clipboard;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => new Promise<void>(resolve => { state.finishCopy = resolve; }) } });
+  });
+  await command.getByRole('button').click();
+  const pendingButtons = page.locator('.setup-command .copy-button');
+  for (const button of await pendingButtons.all()) await expect(button).toBeDisabled();
+  await expectDisabledCopyHover(page, command.getByRole('button'));
+  await page.evaluate(() => {
+    const state = window as unknown as { clipboard: Clipboard; finishCopy: () => void };
+    state.finishCopy(); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: state.clipboard });
+  });
+  await expect(command.getByRole('button')).toBeEnabled();
   await page.locator('a[href="#mcp"]').click();
   await expect(page).toHaveURL(/#mcp$/);
   await page.evaluate(() => { window.dispatchEvent(new Event('blur')); document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus')); });

@@ -481,7 +481,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 1280]) 
 });
 
 
-for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 390, 320]) {
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 390, 320]) {
   test(`shared row keeps ID selection and clipboard separate from navigation at ${width}px in ${locale}`, async ({ page, context }) => {
     const title = 'A long complete task title 长标题 '.repeat(5);
     await install(page, false, false, title);
