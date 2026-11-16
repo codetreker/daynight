@@ -15,7 +15,8 @@ must continue to respect independent filter conditions and other overlays.
 A task-tags local lifecycle composes the existing controlled filter with its
 root, trigger, panel and search elements. It retains the
 [dismissal decision](../bug-fix/2026-11-16-tag-filter-dismissal.md), handles
-opening focus only on an interactive transition, and observes geometry without
+opening focus only on an interactive transition within the mounted instance,
+so remounting an already-open controller preserves external focus. It observes geometry without
 replacing the content or starting another data lifecycle. The
 [Web design](../../../../docs/design/daynight-web.md) owns the current interface
 and event boundaries.

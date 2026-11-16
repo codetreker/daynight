@@ -523,6 +523,40 @@ test('capture-phase outside dismissal preserves the target action even when prop
   expect(state.writes).toEqual([]);
 });
 
+test('switching from task search preserves focus and an open tag filter without refocusing its search', async ({ page }) => {
+  const state = await install(page, 'en');
+  await page.goto(`/projects/${projectId}`);
+  await page.locator('#project-section-tab-tasks').click();
+  const taskSearch = page.locator('.task-search-form input[type="text"]');
+  await taskSearch.fill('goal'); await taskSearch.press('Enter');
+  const searchFilter = page.locator('.task-search-filters .tag-filter');
+  await searchFilter.locator('summary').click();
+  const tagSearch = searchFilter.locator('input[type="search"]');
+  await expect(tagSearch).toBeFocused(); await tagSearch.fill('Goal');
+  await searchFilter.getByLabel('Goal label').check();
+  await tagSearch.focus();
+  for (let count = 0; count < 12 && !await taskSearch.evaluate(element => element === document.activeElement); count++) await page.keyboard.press('Shift+Tab');
+  await expect(taskSearch).toBeFocused(); await expect(searchFilter).toHaveAttribute('open', '');
+  await taskSearch.press('ControlOrMeta+A'); await taskSearch.press('Backspace');
+  await expect(taskSearch).toHaveValue(''); await expect(taskSearch).toBeFocused();
+  const listFilter = page.locator('.project-tasks .task-list-filters:visible .tag-filter').first();
+  await expect(listFilter).toHaveAttribute('open', '');
+  const listSearch = listFilter.locator('input[type="search"]');
+  await expect(listSearch).toHaveValue('Goal'); await expect(listFilter.getByLabel('Goal label')).toBeChecked();
+  await expect(taskSearch).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(listFilter).not.toHaveAttribute('open', '');
+  await listFilter.locator('summary').click();
+  await expect(listSearch).toBeFocused(); await expect(listSearch).toHaveValue('Goal');
+  await expect(listFilter.getByLabel('Goal label')).toBeChecked();
+  for (let count = 0; count < 16 && !await taskSearch.evaluate(element => element === document.activeElement); count++) await page.keyboard.press('Shift+Tab');
+  await expect(taskSearch).toBeFocused(); await expect(listFilter).toHaveAttribute('open', '');
+  await taskSearch.fill('another'); await taskSearch.press('Enter');
+  await expect(searchFilter).toHaveAttribute('open', ''); await expect(taskSearch).toBeFocused();
+  await expect(tagSearch).toHaveValue('Goal'); await expect(searchFilter.getByLabel('Goal label')).toBeChecked();
+  await expect(taskSearch).toBeFocused();
+  expect(state.writes.every(write => write === `POST /api/v1/projects/${projectId}/tasks/search`)).toBe(true);
+});
+
 test.describe('touch filter dismissal', () => {
   test.use({ hasTouch: true });
   test('tapping outside closes the panel and activates the target', async ({ page }) => {

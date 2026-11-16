@@ -19,8 +19,11 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
   const triggerRef = useRef<HTMLElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const previousOpen = useRef(open);
 
   useLayoutEffect(() => {
+    const opening = open && !previousOpen.current;
+    previousOpen.current = open;
     const root = rootRef.current;
     const panel = panelRef.current;
     if (!open || root === null || panel === null) return;
@@ -50,7 +53,7 @@ export const useTagFilterPopover = (open: boolean, setOpen: (open: boolean) => v
     doc.addEventListener(filterOpened, competing);
     if (interactive(root)) {
       doc.dispatchEvent(new CustomEvent(filterOpened, { detail: root }));
-      if (searchRef.current !== null && interactive(searchRef.current)) searchRef.current.focus();
+      if (opening && searchRef.current !== null && interactive(searchRef.current)) searchRef.current.focus();
     }
     doc.addEventListener('pointerdown', pointerdown, true);
     doc.addEventListener('keydown', keydown);
