@@ -19,6 +19,14 @@ Worker report before editing. The same CAS, submitted snapshot, unknown-result
 query and navigation protection own all configuration fields. A lost capability
 does not erase a retained draft or authorize a hidden tool write.
 
+The software heading links directly to the same Worker's tool path section through
+existing tab navigation. A one-shot request belongs to the account, Worker and
+active configuration visit. The actual fields consume it after asynchronous
+loading by opening their native details, focusing the summary and scrolling it
+into view. Leaving configuration or changing identity retires an outstanding
+request. Manual expansion remains uncontrolled, so ordinary refresh cannot
+reopen a section the user closed. Existing editors and drafts remain mounted.
+
 Recovery of an unknown legacy save compares each omitted tool against the
 original baseline, the local draft and the current observed target. Untouched
 paths adopt the current target; unsent edits survive, and divergent concurrent
@@ -50,6 +58,12 @@ the interaction requirements; the [Web design](../../../../docs/design/daynight-
 owns data flow and preservation behavior.
 
 ## Alternatives
+
+**Scroll from the shortcut click handler.** On the first visit the configuration
+fields do not exist until their independent read finishes. Letting the mounted
+fields consume a scoped request handles that delay without polling the DOM or
+replaying navigation on later refreshes. A persistent forced-open state would
+override the user's subsequent collapse.
 
 **Save tool paths separately.** A second write flow would need another revision,
 unknown-result ledger and navigation owner, while the service already stores a
