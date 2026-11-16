@@ -36,6 +36,39 @@ describe('GitHub App Team access', () => {
     fireEvent.click(confirm); await screen.findByText('Team access granted.');
     expect(mocks.preview.mock.calls[0]![1]).toBe(teamId); expect(mocks.create.mock.calls[0]![1]).toMatchObject({ version, teamId, teamVersion: version }); expect(mocks.create.mock.calls[0]![1].id).toMatch(/^[a-f0-9-]{36}$/); expect(onResult).toHaveBeenCalledWith('granted');
   });
+  it.each(['grant', 'revoke'] as const)('retains the %s receipt after closing while publication is pending', async kind => {
+    const pending = deferred<void>(); let hold = false;
+    scope = { ...scope, ready: async (signal: AbortSignal) => { signal.throwIfAborted(); if (hold) await pending.promise; signal.throwIfAborted(); } } as TaskCacheScope;
+    mocks.create.mockImplementation(async (_app, input, _signal, access) => { access.onDispatch(); hold = true; return { ...grant, id: input.id }; });
+    mocks.revoke.mockImplementation(async (_app, id, _input, _signal, access) => { access.onDispatch(); hold = true; return { appId, grantId: id, revoked: true }; });
+    render(subject());
+    if (kind === 'grant') { await openAuthorization(); const dialog = screen.getByRole('dialog'); fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' }); fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); }
+    else { fireEvent.click(await screen.findByRole('button', { name: 'Revoke access' })); const dialog = screen.getByRole('dialog'); fireEvent.click(await within(dialog).findByRole('button', { name: 'Revoke access and disconnect' })); }
+    const dialog = screen.getByRole('dialog'); await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Authorize Team' })).toBeDisabled(); hold = false; await act(async () => pending.resolve());
+    expect(await screen.findByText(kind === 'grant' ? 'Team access granted.' : /Team access revoked and affected connections stopped/)).toBeVisible(); expect(onResult).toHaveBeenCalledOnce();
+  });
+  it.each(['inactive', 'denied'] as const)('reports a delayed confirmation after the component becomes %s', async mode => {
+    const pending = deferred<void>(); let hold = false;
+    scope = { ...scope, ready: async (signal: AbortSignal) => { signal.throwIfAborted(); if (hold) await pending.promise; signal.throwIfAborted(); } } as TaskCacheScope;
+    mocks.create.mockImplementation(async (_app, input, _signal, access) => { access.onDispatch(); hold = true; return { ...grant, id: input.id }; });
+    const view = render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled());
+    view.rerender(subject(mode === 'inactive' ? { active: false } : { active: false, accessDenied: true }));
+    hold = false; await act(async () => pending.resolve()); expect(onResult).toHaveBeenCalledOnce(); expect(onResult).toHaveBeenCalledWith('granted'); expect(screen.queryByText('Team access granted.')).toBeNull();
+  });
+  it('keeps publication failure and retry available after closing the dialog', async () => {
+    let fail = false; const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    scope = { ...scope, ready: async (signal: AbortSignal) => { signal.throwIfAborted(); if (fail) throw new Error('admission unavailable'); } } as TaskCacheScope;
+    mocks.create.mockImplementation(async (_app, input, _signal, access) => { access.onDispatch(); fail = true; return { ...grant, id: input.id }; });
+    render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Team ID'), { target: { value: teamId } }); fireEvent.click(within(dialog).getByRole('button', { name: 'Verify Team' })); await within(dialog).findByText('Personal Team', { selector: 'strong' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Grant access' })); await within(dialog).findByText('The operation succeeded, but its result could not be displayed.');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })); expect(screen.getByText('The operation succeeded, but its result could not be displayed.')).toBeVisible();
+    fail = false; fireEvent.click(screen.getByRole('button', { name: 'Retry showing result' })); expect(await screen.findByText('Team access granted.')).toBeVisible(); expect(mocks.create).toHaveBeenCalledOnce(); log.mockRestore();
+  });
   it('invalidates a preview immediately on input revision and ignores the late response', async () => {
     const pending = deferred<typeof preview>(); mocks.preview.mockReturnValue(pending.promise);
     render(subject()); await openAuthorization(); const dialog = screen.getByRole('dialog'), field = within(dialog).getByLabelText('Team ID');

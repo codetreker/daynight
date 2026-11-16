@@ -172,3 +172,29 @@ for (const mode of ['unknown', 'conflict'] as const) {
     expect(state.writes).toHaveLength(writes);
   });
 }
+
+for (const action of ['grant', 'revoke'] as const) {
+  test(`confirmed ${action} remains visible after closing while its receipt awaits identity admission`, async ({ page }) => {
+    const state = await install(page); await page.goto('/tests/navigation/github-app-team-grants-focus.html');
+    if (action === 'grant') {
+      await page.getByRole('button', { name: 'Authorize Team' }).click(); const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('Team ID').fill(targetId); await dialog.getByRole('button', { name: 'Verify Team' }).click(); await expect(dialog.getByText('Engineering', { exact: true })).toBeVisible();
+    } else await page.getByRole('button', { name: 'Revoke access' }).click();
+    const dialog = page.getByRole('dialog'), gate = Promise.withResolvers<void>(); state.writeGate = gate.promise;
+    try {
+      const confirm = dialog.getByRole('button', { name: action === 'grant' ? 'Grant access' : 'Revoke access and disconnect' });
+      await confirm.click(); await expect.poll(() => state.writes.length).toBe(1);
+      await page.evaluate(() => dispatchEvent(new CustomEvent('test-publication-blocked', { detail: true })));
+      const response = page.waitForResponse(item => item.request().method() === 'POST' && (action === 'grant' ? new URL(item.url()).pathname.endsWith('/team-grants') : new URL(item.url()).pathname.endsWith('/revoke')));
+      gate.resolve(); state.writeGate = null; await (await response).finished();
+      await expect(confirm).toBeVisible(); await expect(confirm).toBeDisabled();
+      await dialog.getByRole('button', { name: 'Cancel' }).click(); await expect(dialog).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Authorize Team' })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Revoke access' })).toBeDisabled(); expect(state.writes).toHaveLength(1);
+      await page.evaluate(() => dispatchEvent(new CustomEvent('test-publication-blocked', { detail: false })));
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByText(action === 'grant' ? 'Team access granted.' : 'Team access revoked and affected connections stopped. Existing PRs are retained.')).toBeVisible();
+      expect(state.writes).toHaveLength(1);
+    } finally { gate.resolve(); await page.evaluate(() => dispatchEvent(new CustomEvent('test-publication-blocked', { detail: false }))); }
+  });
+}
