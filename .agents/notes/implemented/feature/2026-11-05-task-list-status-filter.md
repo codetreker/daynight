@@ -21,12 +21,13 @@ user, and choosing all saves the unrestricted selection. Invalid stored values
 fall back to all. Storage failures leave the current session usable and show a
 localized preference error without claiming an unsuccessful save. Overview
 navigation persists an assignee condition it changes to reveal its target.
-The [multi-status preference decision](2026-11-16-project-status-multiselect.md) replaces the original in-memory single status selection with a persisted set. A standalone task must itself satisfy both
-conditions. A chain remains visible when one ordinary-component member satisfies
-both; its actual representative and all ordinary members remain visible even
+The [multi-status preference decision](2026-11-16-project-status-multiselect.md)
+replaces the original in-memory single status selection with a persisted set.
+A standalone task must itself satisfy the combined conditions. A chain remains
+visible when one in-scope ordinary member satisfies them; its actual representative and all ordinary members remain visible even
 when they do not match. External prerequisites supply graph context but are not
 members for matching. Filtering precedes pagination, and changing either
-condition resets both task lists to their first page. Overview navigation adjusts
+condition resets all three task lists to their first page. Overview navigation adjusts
 conditions that hide its target.
 
 The full index continues to own chain progress, readiness, dependencies,
@@ -59,13 +60,13 @@ complete component as one top-level item preserves those facts while allowing
 matching tasks to determine visibility.
 
 **Keep the browser's native arrow.** Its rendering differs from the adjacent
-picker and can appear skewed; a fixed icon provides consistent geometry while
-retaining the native control's selection and keyboard behavior.
+picker and could appear skewed; the fixed icon gave consistent geometry while
+retaining the native control's selection and keyboard behavior at the time.
 
 ## Consequences
 
 A matching chain can display members with different statuses and assignees;
-its aggregate status need not match the selected individual status. All-history
+its aggregate status need not match any selected individual status. All-history
 browsing can produce larger filtered sequences, but top-level pagination still
 bounds the displayed page. A single expanded chain remains unbounded by page
 size. Filters do not change synchronization, task data or access permissions,
