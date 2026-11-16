@@ -24,7 +24,10 @@ The explicit recovery command verifies a retained completed Web journal against
 the original principal, Worker, terminal claim, Git binding, stopped Controller
 and native execution, and confirmed archive representation. Default invocation
 previews; confirmation repeats the checks and removes only the clean, preserved
-worktree without force. The original branch, journals and archive remain. The
+worktree without force. Index hints that can hide modified files are rejected:
+Git status and non-forced worktree removal both trust those hints. Recovery does
+not clear the user's flags to manufacture a clean result. The original branch,
+journals and archive remain. The
 [Worker specification](../../../../docs/spec/daynight-worker.md#w-10agent-完成与资源清理)
 and [design](../../../../docs/design/daynight-worker.md#遗留资源核验) own the
 command's guarantees and refusal conditions.

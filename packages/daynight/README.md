@@ -3379,7 +3379,8 @@ authenticated owner, terminal claim, unique physical Git binding, native stop an
 ready archive receipt. A second invocation with `--confirm` repeats those checks
 and removes the clean worktree without force, preserving its branch and journals.
 Optional `--worktree-id` adds an exact identity check; omission reads the original
-journal. Modified, untracked or ignored files, commits without an observed remote
+journal. Modified, untracked or ignored files, index flags that hide changes,
+commits without an observed remote
 reference, missing evidence and successor claims all refuse removal. Preserve
 files and commits before making another decision. An unknown deletion result
 requires inspecting the original checkout and manifest before retrying.

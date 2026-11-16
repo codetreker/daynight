@@ -163,7 +163,8 @@ terminal claim, worktree binding, original native stop and ready archive receipt
 before removing the worktree without force and retiring its manifest. It preserves
 the branch and execution journals. Optional `--worktree-id` adds an exact identity
 check; omission reads the original journal and still verifies the unique Git
-binding. Modified, untracked or ignored files and commits with no observed remote
+binding. Modified, untracked or ignored files, index flags that hide changes and
+commits with no observed remote
 reference block removal; preserve those files and commits before making a new
 decision. Unknown removal results require inspecting the original worktree and
 manifest before another attempt.

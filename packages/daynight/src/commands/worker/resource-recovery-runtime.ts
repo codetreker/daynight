@@ -31,13 +31,19 @@ const ordinaryFile = async (file: string): Promise<void> => {
 };
 const currentEvidence = (file: string, format: SqliteFormat): void => {
   const db = new Database(file, { readonly: true, fileMustExist: true });
-  try { assertCurrentSqlite(db, format); }
+  try { db.transaction(() => assertCurrentSqlite(db, format)).deferred(); }
   finally { db.close(); }
 };
 
 /** Git itself repeats its dirty-worktree refusal; recovery never uses --force. */
 export const verifyRecoveryGitContent = async (binding: WorktreeBinding, operation: Operation): Promise<void> => {
   const read = async (args: readonly string[]) => (await runRepositoryGit(binding.worktreePath, args, operation)).stdout.trim();
+  // Status and even non-force worktree removal trust these index hints. Refuse
+  // hidden content instead of clearing the user's flags to manufacture a check.
+  for (const flag of ["-v", "-f"]) {
+    const entries = (await read(["ls-files", flag, "-z"])).split("\0").filter(Boolean);
+    if (entries.some(entry => /^[a-zS] /.test(entry))) throw new Error("Git index flags may hide worktree changes. Preserve and inspect those files and flags before recovery; recovery does not change index flags.");
+  }
   if (await read(["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]) !== "") throw new Error("The worktree contains modified, untracked or ignored files. Preserve them outside this worktree before confirming recovery.");
   const head = await read(["rev-parse", "--verify", "HEAD"]);
   if (await read(["symbolic-ref", "--quiet", "HEAD"]) !== `refs/heads/${binding.branch}`

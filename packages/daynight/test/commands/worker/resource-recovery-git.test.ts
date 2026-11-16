@@ -55,4 +55,16 @@ describe("safe resource recovery Git boundary", () => {
       expect(await readFile(path.join(f.binding.worktreePath, "tracked"), "utf8")).toBe("original\n");
     } finally { f.operation.dispose(); }
   });
+  it.each(["--assume-unchanged", "--skip-worktree"])("preserves hidden tracked edits behind %s without changing index flags", async flag => {
+    const f = await fixture();
+    try {
+      await f.git(f.binding.worktreePath, ["update-index", flag, "tracked"]);
+      await writeFile(path.join(f.binding.worktreePath, "tracked"), "hidden modification\n");
+      expect(await f.git(f.binding.worktreePath, ["status", "--porcelain=v1"])).toBe("");
+      const before = await f.git(f.binding.worktreePath, ["ls-files", "-v", "tracked"]);
+      await expect(removeRecoveryGitWorktree(f.binding, f.operation)).rejects.toThrow(/index|flags/);
+      expect(await readFile(path.join(f.binding.worktreePath, "tracked"), "utf8")).toBe("hidden modification\n");
+      expect(await f.git(f.binding.worktreePath, ["ls-files", "-v", "tracked"])).toBe(before);
+    } finally { f.operation.dispose(); }
+  });
 });
