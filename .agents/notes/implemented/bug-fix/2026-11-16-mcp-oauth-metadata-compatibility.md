@@ -25,8 +25,8 @@ clients retain strict parsing, regardless of whether their ID resembles a URL.
 
 This partially replaces the original matching and uniform capability policy in
 the [public-client decision](../architecture/2026-11-06-mcp-oauth-clients.md).
-Those restrictions originally bounded supported public-client inputs without
-the complete portable documents that expose these compatibility gaps.
+The original decision prioritized trustworthy callback binding and bounded
+public-client inputs; it did not define these portable-document exceptions.
 The [current design](../../../../docs/design/daynight-mcp-oauth.md) owns parser
 composition, errors, network constraints and validation responsibilities.
 

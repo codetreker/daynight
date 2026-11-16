@@ -452,6 +452,7 @@ func TestLocalhostAuthorizationUsesRealClientRules(t *testing.T) {
 				digest := sha256.Sum256([]byte(strings.Repeat("v", 43)))
 				q := url.Values{"client_id": {"local"}, "redirect_uri": {tc.requested}, "response_type": {"code"}, "scope": {core.Scope}, "resource": {f.Origin + "/mcp"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(digest[:])}, "code_challenge_method": {"S256"}}
 				r := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+				r.RemoteAddr = "127.0.0.1:12345"
 				r.Header.Set("Accept", accept)
 				w := httptest.NewRecorder()
 				adapter.Start(w, r)
