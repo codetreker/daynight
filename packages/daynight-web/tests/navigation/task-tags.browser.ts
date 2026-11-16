@@ -27,7 +27,7 @@ for (const width of [320, 390, 1280]) for (const locale of ['en', 'zh-CN'] as co
   await page.locator('#project-section-tab-tasks').click();
   await page.locator('#project-task-tab-standalone').click();
   const root = page.locator('.task-status-multifilter');
-  const trigger = root.locator('.task-status-filter-trigger');
+  const trigger = root.locator(':scope > button');
   const all = root.getByRole('checkbox', { name: locale === 'en' ? 'All statuses' : '全部状态', exact: true });
   const todo = root.getByRole('checkbox', { name: locale === 'en' ? 'To do' : '待办', exact: true });
   const done = root.getByRole('checkbox', { name: locale === 'en' ? 'Done' : '已完成', exact: true });
@@ -63,7 +63,7 @@ for (const width of [320, 390, 1280]) for (const locale of ['en', 'zh-CN'] as co
 });
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
-  const state = { tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), syncReads: 0, hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, failCatalog: false, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
+  const state = { assigneeName: 'Reader', tasks: [goal, standalone, child, root, chained, outsider] as TaskDetail[], tags: [goal, standalone, child, root, outsider].flatMap(item => item.tags), syncReads: 0, hold: false, held: false, release: () => {}, holdDetail: false, heldDetail: false, releaseDetail: () => {}, holdCatalog: false, heldCatalog: false, releaseCatalog: () => {}, failCatalog: false, writes: [] as string[], tagCreates: [] as { name: string; color?: string }[], observedAt: time, colors: new Map([[id(90), '#D85656'], [id(91), '#FFFFFF'], [id(92), '#000000'], [id(93), '#12A4CD'], [id(94), '#9AA3B2'], [id(95), '#00FF00']]) };
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
@@ -76,7 +76,7 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path === '/api/v1/teams') return send({ items: [], nextCursor: null });
     if (path === `/api/v1/teams/${personalId}`) return send({ id: personalId, kind: 'personal', name: null, version: 1, createdAt: time, updatedAt: time, membership: { teamId: personalId, userId: TEST_VIEWER_ID, role: 'admin', version: 1, createdAt: time, updatedAt: time } });
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
-    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: 'Reader', avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
+    if (path === `/api/v1/projects/${projectId}/task-assignees`) return send({ items: [{ userId: TEST_VIEWER_ID, name: state.assigneeName, avatarUrl: null, version: TEST_PROFILE_VERSION, hasProjectAccess: true }], unresolvedUserIds: [] });
     const catalogPath = `/api/v1/projects/${projectId}/tags`;
     if (path === catalogPath && request.method() === 'GET') {
       if (state.holdCatalog) { state.holdCatalog = false; state.heldCatalog = true; await new Promise<void>(resolve => { state.releaseCatalog = resolve; }); state.heldCatalog = false; }
@@ -149,7 +149,7 @@ for (const width of [1100, 600, 320]) for (const locale of ['en', 'zh-CN'] as co
   const actionsWidth = await page.locator('.project-title-actions').evaluate(element => element.getBoundingClientRect().width);
   if (actionsWidth >= taskBox.width + goalBox.width + 8) expect(Math.abs(taskBox.y - goalBox.y)).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-  for (const view of ['standalone', 'chains', 'goals']) {
+  for (const view of ['goals', 'standalone', 'chains']) {
     await page.locator(`#project-task-tab-${view}`).click();
     await expect(entry).toHaveCount(1); await expect(entry).toBeVisible();
   }
@@ -602,7 +602,7 @@ test('opening the status filter dismisses the tag filter and Escape restores sta
   const toolbar = page.locator('.project-tasks .task-list-filters:visible');
   const filter = toolbar.locator('.tag-filter').first();
   await filter.locator('summary').click(); await expect(filter.getByLabel('Goal label')).toBeVisible();
-  const status = toolbar.locator('.task-status-filter-trigger');
+  const status = toolbar.locator('.task-status-multifilter > button');
   await status.click();
   await expect(filter).not.toHaveAttribute('open', '');
   await expect(status).toHaveAttribute('aria-expanded', 'true');
@@ -617,7 +617,7 @@ test('keyboard opening either filter dismisses the other and Escape restores its
   await page.locator('#project-section-tab-tasks').click();
   const toolbar = page.locator('.project-tasks .task-list-filters:visible');
   const tag = toolbar.locator('.tag-filter').first(), tagTrigger = tag.locator('summary');
-  const status = toolbar.locator('.task-status-filter-trigger');
+  const status = toolbar.locator('.task-status-multifilter > button');
   await tagTrigger.focus(); await page.keyboard.press('Enter');
   await expect(tag).toHaveAttribute('open', '');
   await status.focus(); await page.keyboard.press('Enter');
@@ -806,11 +806,11 @@ for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] 
       return { height: control.height, inset: control.right - icon.right, center: (control.top + control.bottom - icon.top - icon.bottom) / 2,
         arrows: element.querySelectorAll('svg').length, appearance: getComputedStyle(select).appearance };
     });
-    expect(geometry.height).toBe(32); expect(geometry.inset).toBeCloseTo(12, 0);
+    expect(geometry.height).toBe(width <= 800 ? 44 : 32); expect(geometry.inset).toBeCloseTo(12, 0);
     expect(Math.abs(geometry.center)).toBeLessThanOrEqual(1);
     expect(geometry.arrows).toBe(1); expect(geometry.appearance).toBe('none');
   };
-  await expect(status.locator('.task-status-filter-trigger')).toBeVisible();
+  await expect(status.locator(':scope > button')).toBeVisible();
   const main = toolbar.locator('.tag-filter').nth(0);
   const filter = toolbar.locator('.tag-filter').nth(1);
   expect(await status.evaluate(element => element.nextElementSibling?.className)).toBe('tag-filter-wrap');
@@ -898,7 +898,7 @@ for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await expect(searchToolbar.locator('.tag-filter')).toHaveCount(1);
   await checkSelect(searchToolbar.locator('.task-status-filter'));
   expect(await searchToolbar.locator('.task-status-filter').evaluate(element => element.nextElementSibling?.className)).toBe('tag-filter-wrap');
-  await expect(page.locator('.tag-filter-trigger').filter({ hasText: locale === 'zh-CN' ? '子 Task' : 'Child task' })).toHaveCount(0);
+  await expect(page.locator('.tag-filter > summary').filter({ hasText: locale === 'zh-CN' ? '子 Task' : 'Child task' })).toHaveCount(0);
   await input.fill('');
   await expect(filter).not.toHaveAttribute('open', '');
   await trigger.focus(); await page.keyboard.press('Enter');
@@ -1148,4 +1148,86 @@ test('the same tag color is consistent across standalone, chain and Goal task ro
   await card.locator('.goal-list-toggle').click();
   expect(await color(card.locator(`#chain-task-goal-${goal.id}-${child.id}`))).toEqual(standaloneColor);
   expect(state.writes).toEqual([]);
+});
+
+
+const filterGeometry = (toolbar: Locator) => toolbar.locator('.task-assignee-filter > button, .task-status-multifilter > button, .task-status-filter select, .tag-filter > summary').evaluateAll(elements => elements.map(element => {
+  const rect = element.getBoundingClientRect(), style = getComputedStyle(element), arrow = element.querySelector('svg')?.getBoundingClientRect();
+  const label = element.querySelector('.select-trigger__label')?.getBoundingClientRect();
+  const count = element.querySelector('.select-trigger__count');
+  return { text: element.textContent, height: rect.height, fontSize: style.fontSize, top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
+    width: rect.width, outlineWidth: style.outlineWidth, outlineColor: style.outlineColor, border: style.borderColor,
+    arrowWidth: arrow?.width, arrowGap: arrow && label ? arrow.left - label.right : null,
+    countHeight: count?.getBoundingClientRect().height, countFont: count ? getComputedStyle(count).fontSize : null };
+}));
+
+for (const locale of ['en', 'zh-CN'] as const) for (const coarse of [false, true]) test(`task filter entries share rendered density in ${locale} with ${coarse ? 'coarse' : 'fine'} pointer`, async ({ browser }, info) => {
+  const context = await browser.newContext({ hasTouch: coarse, viewport: { width: 1280, height: 900 } });
+  try {
+    const page = await context.newPage(), state = await install(page, locale);
+    state.assigneeName = 'LongAssigneeName'.repeat(12);
+    state.tasks = state.tasks.map(task => ({ ...task, assignedTo: TEST_VIEWER_ID }));
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    const toolbar = page.locator('.project-tasks .task-list-filters:visible');
+    const assignee = toolbar.locator('.task-assignee-filter > button');
+    await assignee.click();
+    await page.getByRole('option', { name: state.assigneeName, exact: true }).click();
+    await expect(assignee).toHaveAccessibleName(new RegExp(state.assigneeName));
+    const observations: unknown[] = [];
+    for (const width of [1280, 801, 800, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const enlarged = coarse || width <= 800, expected = { height: enlarged ? 44 : 32, fontSize: enlarged ? '16px' : '11px' };
+      for (const view of ['goals', 'standalone', 'chains']) {
+        await page.locator(`#project-task-tab-${view}`).click();
+        const geometry = await filterGeometry(toolbar);
+        if (width === 1280 && view === 'goals') await info.attach('initial-toolbar-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
+        expect(geometry).toHaveLength(view === 'goals' ? 4 : 3);
+        for (const entry of geometry) {
+          expect(entry).toMatchObject(expected); expect(entry.width).toBeGreaterThanOrEqual(enlarged ? 44 : 1);
+          expect(entry.left).toBeGreaterThanOrEqual(0); expect(entry.right).toBeLessThanOrEqual(width + 1);
+          if (entry.arrowGap !== null) expect(entry.arrowGap).toBeGreaterThanOrEqual(8);
+        }
+        if (width === 1280) for (const entry of geometry) { expect(entry.top).toBe(geometry[0]!.top); expect(entry.bottom).toBe(geometry[0]!.bottom); }
+        observations.push({ width, view, coarse, geometry });
+      }
+      const status = toolbar.locator('.task-status-multifilter > button');
+      await status.click();
+      const panel = toolbar.locator('.task-status-filter-panel'), all = panel.getByRole('checkbox').first();
+      await all.uncheck();
+      for (const count of [0, 1, 2, 5]) {
+        if (count === 1 || count === 2) await panel.getByRole('checkbox').nth(count).check();
+        if (count === 5) await all.check();
+        expect((await filterGeometry(toolbar))[1]).toMatchObject(expected);
+      }
+      await page.keyboard.press('Escape'); await expect(status).toBeFocused();
+      const tag = toolbar.locator('.tag-filter').first(), trigger = tag.locator('summary');
+      await trigger.focus(); await page.keyboard.press('Space');
+      await expect(tag).toHaveAttribute('open', '');
+      for (const count of [0, 1, 2]) {
+        if (count > 0) await tag.locator('.tag-filter-options input').nth(count - 1).check();
+        const entry = (await filterGeometry(toolbar))[2]!;
+        expect(entry).toMatchObject(expected);
+        if (count > 0) expect(entry).toMatchObject({ countHeight: enlarged ? 20 : 18, countFont: enlarged ? '12px' : '10px' });
+      }
+      const tagPanel = tag.locator('.tag-filter-panel');
+      await expect(tagPanel).toHaveCSS('font-size', '14px');
+      const panelBox = await tagPanel.boundingBox();
+      expect(panelBox!.x).toBeGreaterThanOrEqual(0); expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(width + 1);
+      await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
+      expect((await filterGeometry(toolbar))[2]).toMatchObject({ outlineWidth: '3px', outlineColor: 'rgb(52, 64, 84)' });
+      const remove = toolbar.locator('.tag-filter-selected button');
+      while (await remove.count()) await remove.first().click();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      if (width === 1280 || width === 320) await info.attach(`${locale}-${coarse ? 'coarse' : 'fine'}-${width}`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+    }
+    const search = page.locator('.task-search-form input[type="text"]');
+    await search.fill('goal'); await search.press('Enter');
+    const searchToolbar = page.locator('.task-search-filters');
+    const geometry = await filterGeometry(searchToolbar);
+    expect(geometry).toHaveLength(3);
+    for (const entry of geometry) expect(entry).toMatchObject({ height: 44, fontSize: '16px' });
+    expect(state.writes).toEqual([`POST /api/v1/projects/${projectId}/tasks/search`]);
+    await info.attach('production-filter-geometry', { body: JSON.stringify(observations), contentType: 'application/json' });
+  } finally { await context.close(); }
 });

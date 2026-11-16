@@ -31,8 +31,7 @@
 .assignee-menu-state p { margin: 0; }
 .assignee-menu-state .button { margin-top: 5px; font-size: 10px; }
 .task-assignee-filter { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; color: #637087; font-size: 11px; }
-.task-assignee-filter-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.task-assignee-filter .assignee-trigger { height: 31px; max-width: 240px; padding: 7px 9px; font-size: 11px; }
+.task-assignee-filter-trigger-layout { max-width: 240px; }
 .task-detail-status-assignee { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; flex: 0 1 auto; }
 .task-detail-status-assignee > .task-status-picker { flex: none; }
 .task-detail-status-assignee > .task-assignee-field { flex: 0 1 auto; }
@@ -50,6 +49,6 @@
 @media (max-height: 500px) { .assignee-menu-state { min-height: 60px; padding: 12px; } }
 
 .task-list-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; margin-bottom: 12px; }
-.task-status-filter { display: flex; align-items: center; gap: 8px; color: #637087; font-size: 11px; }
+.task-status-filter { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 8px; color: #637087; font-size: 11px; }
 
 .assignee-option[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }

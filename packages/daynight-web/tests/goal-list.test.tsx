@@ -78,7 +78,7 @@ describe('Goal list', () => {
     </TaskExecutionClockProvider></TaskPauseProvider>);
     const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
-    fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+    fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
     await waitFor(() => expect(screen.getByRole('checkbox', { name: 'alpha' })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
     const otherCard = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
@@ -440,7 +440,7 @@ describe('Goal list', () => {
       fireEvent.click(aggregate);
       expect(firstToggle).toHaveAttribute('aria-expanded', 'true');
       expect(openSession).not.toHaveBeenCalled();
-      fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+      fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary > span:first-child' }).closest('summary')!);
       fireEvent.click(screen.getByRole('checkbox', { name: 'Untagged only' }));
       expect(within(firstCard).getByText('No tasks match the filters')).toBeVisible();
       expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');

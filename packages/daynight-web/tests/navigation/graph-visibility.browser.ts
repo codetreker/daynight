@@ -144,8 +144,8 @@ for (const [status, assignee] of [['all', 'Everyone'], ['todo', 'Everyone'], ['a
   await page.evaluate(source => {
     const list = document.getElementById('project-chain-list')!, rows = [...list.querySelectorAll('.root-toggle')];
     const pagination = list.querySelector('.list-pagination'), pageText = pagination!.textContent;
-    const status = document.querySelector<HTMLButtonElement>('.task-status-multifilter .task-status-filter-trigger')!;
-    const assignee = document.querySelector('.task-assignee-filter .assignee-trigger')!, assigneeName = assignee.getAttribute('aria-label');
+    const status = document.querySelector<HTMLButtonElement>('.task-status-multifilter > button')!;
+    const assignee = document.querySelector('.task-assignee-filter > button')!, assigneeName = assignee.getAttribute('aria-label');
     const statusValue = status.getAttribute('aria-label'), original = document.getElementById(`task-root-${source}`)!, top = scrollY;
     const violations: string[] = [];
     const check = () => {

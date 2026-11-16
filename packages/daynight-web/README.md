@@ -1437,7 +1437,10 @@ for geometry, focus and disabled presentation.
 
 Import `NativeSelect` from `src/ui/native-select/NativeSelect.tsx` using a relative
 path. It is the only production owner of native select declarations and imports
-its own CSS, which exclusively owns internal control and arrow presentation. It
+its own CSS, which exclusively owns native internal control and arrow selectors.
+`src/ui/selection-control` owns common density/touch parameters, the decorative
+arrow and the stateless SelectTrigger for real button or summary hosts. Its CSS
+owns common tokens and custom trigger presentation. It
 supports native single-line, size-based list and multiple selection. The [component design](../../docs/design/native-select.md)
 owns its props, geometry, touch modes and popup-helper usage. The
 [UI principles](../../docs/ui-design.md#share-native-selection-presentation)
@@ -1448,7 +1451,13 @@ Pages provide their options, value, labels, constraints, event handlers and real
 width, and explicit focus, pending and touch presentation. Consumer
 `wrapperClassName` accepts statically resolvable string tokens or literal
 combinations. Their CSS may control external width, margins and flex/grid
-placement; internal skin, arrow and touch sizing belong to the common CSS.
+placement; internal skin, arrow and touch sizing belong to the common owners.
+SelectTrigger similarly exposes static `layoutClassName` and element-specific
+refs, events and ARIA while excluding arbitrary className/style. Task Assignee,
+Status and both Tag entries use filter/responsive/task presentation: 32px/11px
+above 800px with a fine pointer, and 44px/16px at smaller widths or coarse pointers.
+Search retains NativeSelect single selection with the same explicit presentation.
+Tag panel typography, positioning and menu state remain feature-owned.
 Keep business confirmation, cancellation, drafts, request timing and errors with
 the consuming feature. The component adds no selection state, placeholder,
 request or Provider dependency.

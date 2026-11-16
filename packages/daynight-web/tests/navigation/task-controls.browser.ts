@@ -597,7 +597,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     await expect(goalTab.locator('.graph-count-pill')).toHaveText('0');
     await expect(standaloneTab.locator('.graph-count-pill')).toHaveAttribute('title', locale === 'en' ? 'Unfinished task count' : '未完成任务数');
     await expect(chainTab.locator('.graph-count-pill')).toHaveAttribute('title', locale === 'en' ? 'Unfinished task chain count' : '未完成任务链数');
-    const filter = page.locator('.task-assignee-filter .assignee-trigger');
+    const filter = page.locator('.task-assignee-filter > button');
     const status = statusButton(page);
     await expect.poll(() => status.evaluate(select => {
       const owner = document.querySelector('.task-assignee-filter')!.getBoundingClientRect(); const box = select.getBoundingClientRect();

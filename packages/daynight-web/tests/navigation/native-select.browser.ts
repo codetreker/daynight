@@ -193,3 +193,60 @@ test('remains usable at actual 200% browser page zoom', async ({ playwright }, i
     } finally { await context.close(); }
   } finally { await rm(profile, { recursive: true, force: true }); }
 });
+
+const triggerMetrics = (trigger: Locator) => trigger.evaluate(element => {
+  const rect = element.getBoundingClientRect(), style = getComputedStyle(element), arrow = element.querySelector('svg')!.getBoundingClientRect();
+  return { height: rect.height, fontSize: style.fontSize, border: style.borderColor, background: style.backgroundColor, color: style.color,
+    outline: style.outlineColor, outlineWidth: style.outlineWidth, arrowWidth: arrow.width, arrowHeight: arrow.height,
+    arrowCenter: Math.abs((arrow.top + arrow.bottom - rect.top - rect.bottom) / 2), arrowCount: element.querySelectorAll('svg').length };
+});
+
+test('shares trigger presentation across densities, native disabled states and either feature import order', async ({ page }, info) => {
+  await page.goto(fixture);
+  const observations: unknown[] = [];
+  for (const order of ['common-first', 'common-last'] as const) {
+    await page.evaluate(order => {
+      document.querySelectorAll('style[data-order-probe]').forEach(element => element.remove());
+      const { common, features } = window.selectionFixtureStyles;
+      for (const source of order === 'common-first' ? [common, features] : [features, common]) {
+        const style = document.createElement('style'); style.dataset.orderProbe = order; style.textContent = source; document.head.append(style);
+      }
+    }, order);
+    for (const [density, height, fontSize] of [['compact', 24, '10px'], ['filter', 32, '11px'], ['form', 38, '12px']] as const) {
+      for (const state of ['normal', 'expanded', 'pending', 'invalid', 'disabled', 'fieldset']) {
+        const control = page.getByTestId(`trigger-${density}-${state}`), actual = await triggerMetrics(control);
+        expect(actual).toMatchObject({ height, fontSize, arrowWidth: 10, arrowHeight: 10, arrowCount: 1 });
+        expect(actual.arrowCenter).toBeLessThanOrEqual(1);
+        if (state === 'expanded') expect(actual).toMatchObject({ background: 'rgb(238, 241, 248)', border: 'rgb(82, 100, 155)' });
+        if (state === 'pending') expect(actual.border).toBe('rgb(212, 160, 74)');
+        if (state === 'invalid') expect(actual.border).toBe('rgb(223, 157, 150)');
+        if (state === 'disabled' || state === 'fieldset') await expect(control).toBeDisabled();
+        observations.push({ order, density, state, ...actual });
+      }
+    }
+    const hover = page.getByTestId('trigger-filter-normal');
+    await hover.hover(); expect((await triggerMetrics(hover)).background).toBe('rgb(240, 243, 247)');
+    await page.mouse.move(0, 0);
+    const summary = page.getByTestId('trigger-summary');
+    await summary.focus();
+    expect(await triggerMetrics(summary)).toMatchObject({ height: 32, fontSize: '11px', outlineWidth: '3px', outline: 'rgb(52, 64, 84)' });
+    await page.keyboard.press('Enter'); await expect(summary.locator('..')).toHaveAttribute('open', '');
+    await page.keyboard.press('Space'); await expect(summary.locator('..')).not.toHaveAttribute('open', '');
+  }
+  for (const width of [801, 800, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await triggerMetrics(page.getByTestId('trigger-responsive'))).toMatchObject({ height: width <= 800 ? 44 : 32, fontSize: width <= 800 ? '16px' : '11px' });
+    expect(await triggerMetrics(page.getByTestId('trigger-container'))).toMatchObject({ height: 44, fontSize: '11px' });
+  }
+  await info.attach('shared-trigger-matrix', { body: JSON.stringify(observations), contentType: 'application/json' });
+});
+
+test('retains shared trigger focus and disabled contrast in forced colors', async ({ page }) => {
+  await page.emulateMedia({ forcedColors: 'active' }); await page.goto(fixture);
+  const normal = page.getByTestId('trigger-filter-normal'); await normal.focus();
+  expect((await triggerMetrics(normal)).outlineWidth).toBe('3px');
+  for (const state of ['normal', 'pending', 'invalid', 'disabled', 'fieldset']) {
+    const actual = await triggerMetrics(page.getByTestId(`trigger-filter-${state}`));
+    expect(actual.color).not.toBe(actual.background); expect(actual.border).not.toBe('rgba(0, 0, 0, 0)');
+  }
+});

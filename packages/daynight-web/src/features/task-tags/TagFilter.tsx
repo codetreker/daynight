@@ -3,6 +3,7 @@ import { ApiError, isAbortError } from '../../api/client';
 import { resolveProjectTags } from '../../api/task-tags';
 import type { TaskTag } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { SelectTrigger } from '../../ui/selection-control/SelectTrigger';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useProjectTags } from './useProjectTags';
 import { TagColorChip, TagColorFeedback } from './TagColor';
@@ -122,7 +123,7 @@ export const TagFilter = ({ controller, child = false, onManage }: { readonly co
   const page = catalog.query === controller.query ? catalog.page : null;
   return <div className="tag-filter-wrap">
     <details ref={popover.rootRef} className="tag-filter" open={controller.open} onToggle={event => controller.setOpen(event.currentTarget.open)} onKeyDown={popover.onKeyDown}>
-      <summary ref={popover.triggerRef} className="tag-filter-trigger" onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}{count > 0 && <> <span className="tag-filter-count">{count}</span></>}<span className="tag-filter-chevron" aria-hidden="true">⌄</span></summary>
+      <SelectTrigger as="summary" ref={popover.triggerRef} density="filter" touchMode="responsive" focusTone="task" aria-expanded={controller.open} aria-invalid={controller.invalid || controller.error !== null || undefined} pending={controller.open && page === null && catalog.error === null} count={count} onClick={event => { event.preventDefault(); controller.setOpen(!controller.open); }}>{title}</SelectTrigger>
       <div ref={popover.panelRef} className="tag-filter-panel">
         <div className="tag-filter-head"><strong>{title}</strong><button className="tag-filter-text" type="button" disabled={count === 0} onClick={clear}>{m.clear}</button></div>
         <div className="tag-filter-search">

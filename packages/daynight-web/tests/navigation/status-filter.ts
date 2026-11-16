@@ -7,7 +7,7 @@ const labels = {
 type Status = keyof typeof labels.en;
 
 export const statusSummary = (status: Status, locale: keyof typeof labels = 'en') => labels[locale][status];
-export const statusButton = (page: Page) => page.locator('.task-status-multifilter .task-status-filter-trigger');
+export const statusButton = (page: Page) => page.locator('.task-status-multifilter > button');
 
 export const selectStatus = async (page: Page, status: Status, locale: keyof typeof labels = 'en') => {
   const root = page.locator('.task-status-multifilter');

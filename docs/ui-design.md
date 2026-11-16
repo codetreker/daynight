@@ -167,14 +167,19 @@ multiple selection controls. The common component owns the native element,
 decorative arrow, text clearance, font, border, background, density, focus,
 disabled, invalid, pending and touch presentation. A page chooses the public
 variant and supplies options, values, labels, constraints, events and real refs.
-Search pickers, navigation menus and action menus retain their own semantics.
+Custom selection menus can use `SelectTrigger` from `ui/selection-control` for
+a real button or a direct details summary. It shares density, touch parameters
+and a decorative arrow with NativeSelect; each menu retains its own semantics,
+selection, positioning and focus-restoration lifecycle. The shared parameter
+stylesheet owns common presentation tokens and custom trigger skin; native CSS
+continues to own native internal selectors.
 
 Consumer classes may set external width, margins and flex/grid placement through
-`wrapperClassName`, using statically resolvable string tokens or literal
-combinations. They must not restyle the internal control, add a second arrow,
+`wrapperClassName` or SelectTrigger's `layoutClassName`, using statically resolvable
+string tokens or literal combinations. They must not restyle the control, add a second arrow,
 restore native single-line appearance or override common touch sizing. The common
-component is the only production owner of native select declarations; its CSS is
-the only owner of internal control and arrow presentation. Generic field and
+component is the only production owner of native select declarations; native CSS is
+the only owner of native internal control and arrow presentation. Generic field and
 focus rules for input/textarea must not include select branches.
 
 The [ownership check](design/native-select.md#所有权检查) runs in the Web harness,
@@ -187,6 +192,12 @@ component imports its own CSS so public and authentication entries have the same
 appearance without requiring the workspace shell.
 
 Use the common compact, filter and form densities rather than per-page heights.
+Task toolbar Assignee, Status, Tag and Child task tag entries explicitly choose
+filter density, responsive touch sizing and task focus. At widths above 800px with
+a fine pointer they use 32px height and 11px text; at 800px or below, or with a
+coarse pointer, they use 44px height and 16px text with at least 44px hit width.
+Widths follow content and narrow toolbars wrap naturally, keeping labels and
+counts readable. Tag panel typography remains independent of trigger density.
 Opt into responsive or named-container touch sizing where the interface calls
 for it; ordinary compact controls do not enlarge automatically. Native
 `:disabled`, including fieldset inheritance, remains the source of disabled

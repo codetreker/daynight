@@ -1,5 +1,6 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
+import { SelectTrigger } from '../../ui/selection-control/SelectTrigger';
 import type { ProjectPerson } from '../../api/auth-types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useProjectAssigneeCatalogue } from '../task-assignees/TaskAssignees';
@@ -7,11 +8,12 @@ import { AssigneeAvatar, personName } from './TaskAssigneeIdentity';
 import type { AssigneePeopleSnapshot } from '../task-assignees/TaskAssignees';
 
 type Choice = { readonly value: string; readonly label: string; readonly person?: ProjectPerson };
-export const AssigneePicker = ({ projectId, label, children, value, choices, disabled = false, resetKey, owner, triggerLabel, includeFormer = false, directCatalogue, selectionBlocked = false, onSelect }: {
+export const AssigneePicker = ({ projectId, label, children, value, choices, disabled = false, resetKey, owner, triggerLabel, standardFilterTrigger = false, includeFormer = false, directCatalogue, selectionBlocked = false, onSelect }: {
   readonly projectId: string;
   readonly taskId?: string;
   readonly label: string;
   readonly triggerLabel?: string;
+  readonly standardFilterTrigger?: boolean;
   readonly includeFormer?: boolean;
   readonly directCatalogue?: AssigneePeopleSnapshot & { readonly open: () => void; readonly retry: () => void };
   readonly children: ReactNode;
@@ -68,6 +70,7 @@ export const AssigneePicker = ({ projectId, label, children, value, choices, dis
     document.addEventListener('fullscreenchange', position);
     const observer = new ResizeObserver(position);
     observer.observe(menu.current!);
+    observer.observe(trigger.current!);
     return () => { cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener('resize', position); document.removeEventListener('scroll', position, true); document.removeEventListener('fullscreenchange', position); };
   }, [open]);
   useEffect(() => {
@@ -110,9 +113,12 @@ export const AssigneePicker = ({ projectId, label, children, value, choices, dis
         <span className="assignee-option-name">{choice.label}{choice.person?.hasProjectAccess === false && <span className="assignee-former">{m.formerMember}</span>}</span><span className="assignee-check" aria-hidden="true">{choice.value === value ? '✓' : ''}</span>
       </button>)}</div>}
   </div> : null;
+  const toggle = () => open ? close(false) : show();
+  const onTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(); } };
   return <>
-    <button className="assignee-trigger" ref={trigger} type="button" aria-label={triggerLabel ?? label} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined} disabled={disabled}
-      onClick={() => open ? close(false) : show()} onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(); } }}>{children}<svg className="assignee-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></button>
+    {standardFilterTrigger
+      ? <SelectTrigger ref={trigger} aria-label={triggerLabel ?? label} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined} disabled={disabled} onClick={toggle} onKeyDown={onTriggerKeyDown} density="filter" touchMode="responsive" focusTone="task" layoutClassName="task-assignee-filter-trigger-layout" pending={open && catalogue.status === 'loading'} aria-invalid={catalogue.status === 'error' || undefined}>{children}</SelectTrigger>
+      : <button ref={trigger} type="button" aria-label={triggerLabel ?? label} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? menuId : undefined} disabled={disabled} onClick={toggle} onKeyDown={onTriggerKeyDown} className="assignee-trigger">{children}<svg className="assignee-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></button>}
     {popup !== null && (owner?.current == null ? popup : createPortal(popup, owner.current))}
   </>;
 };

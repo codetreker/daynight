@@ -37,7 +37,7 @@ const install = async (page: Page) => {
 // empty interval separating it from text even when the selected label is long.
 const paintedArrow = async (page: Page, select: Locator) => {
   const wrapper = select.locator('..');
-  await expect(wrapper).toHaveClass('native-select');
+  await expect(wrapper).toContainClass('native-select selection-control');
   await expect(wrapper).toHaveAttribute('data-density', 'form');
   await expect(wrapper).toHaveAttribute('data-layout', 'fill');
   const geometry = await wrapper.evaluate(element => {
