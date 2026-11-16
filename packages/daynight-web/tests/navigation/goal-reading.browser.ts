@@ -1,5 +1,6 @@
 import { selectStatus, statusButton } from './status-filter';
 import { expectTextContrast, roleColors } from './color-roles';
+import { expectCopyButtonSkin } from './copy-button-assertions';
 import { expect, test, type Locator, type Page, type Request } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { checkDependencyGeometry } from '../helpers/dependency-geometry';
@@ -378,6 +379,7 @@ async function copyGoalId(page: Page, locale: 'en' | 'zh-CN', keyboard = false) 
   const button = field.getByRole('button', { name: locale === 'zh-CN' ? '复制 Goal ID' : 'Copy Goal ID', exact: true });
   await expect(button).toHaveAttribute('title', locale === 'zh-CN' ? '复制 Goal ID' : 'Copy Goal ID');
   await button.scrollIntoViewIfNeeded();
+  await expectCopyButtonSkin(page, button);
   const before = await aside.boundingBox();
   expect(await field.locator('dd > span').evaluate(element => {
     const selection = window.getSelection()!;

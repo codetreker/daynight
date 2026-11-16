@@ -46,6 +46,8 @@ describe("daily setup guide", () => {
     const buttons = within(screen.getByRole("list", { name: "使用步骤" })).getAllByRole("button", { name: /^复制：/ });
     const commands = [installCommand, "daynight login", projectCommand, "daynight skill install", example];
     for (const [index, button] of buttons.entries()) {
+      expect(button).toHaveClass("copy-button"); expect(button).toHaveAttribute("type", "button");
+      expect(button.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
       await act(async () => fireEvent.click(button));
       expect(writeText).toHaveBeenLastCalledWith(commands[index]);
       expect(screen.getByRole("status")).toHaveTextContent("已复制。");

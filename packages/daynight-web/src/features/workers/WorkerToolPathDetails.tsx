@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { WorkerConfigurationResource } from '../../api/worker-configuration';
 import type { Tool, ToolContext, ToolPathActual, ToolPathChoice, ToolPathObservation, ToolPathTelemetry } from '../../api/worker-tool-paths';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { CopyButton } from '../../ui/copy-button/CopyButton';
 import { WorkerTimestamp } from './presentation';
 import { toolPathApplicationState, toolPathContexts, type ToolPathApplicationState } from './tool-path-presentation';
 import './tool-paths.css';
@@ -16,7 +17,7 @@ const PathValue = ({ label, value }: { readonly label: string; readonly value: s
     catch { setCopy({ value, state: 'failed' }); }
   };
   return <details className="worker-tool-path-value"><summary>{label}</summary><div className="worker-tool-path-content">
-    <code>{value}</code><button className="button quiet" type="button" aria-label={m.copyPath({ label })} onClick={() => void copyPath()}>{copy?.value === value && copy.state === 'copied' ? m.copied : m.copy}</button>
+    <code>{value}</code><CopyButton label={m.copyPath({ label })} onClick={() => void copyPath()}>{copy?.value === value && copy.state === 'copied' ? m.copied : m.copy}</CopyButton>
     {copy?.value === value && copy.state === 'failed' && <p className="worker-tool-error" role="status">{m.copyFailed}</p>}
   </div></details>;
 };

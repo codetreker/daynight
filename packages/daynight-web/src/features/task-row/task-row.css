@@ -4,10 +4,9 @@
 .task-row-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
 .task-row-title { color: var(--task-title); font-size: 13px; font-weight: 650; line-height: 1.5; overflow-wrap: anywhere; min-width: 0; text-decoration: none; }
 .task-row-title:hover { text-decoration: underline; }
-.task-row-title:focus-visible, .task-copy-button:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 2px; }
+.task-row-title:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 2px; }
 .task-row-id-group { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; max-width: 100%; min-width: 0; }
 .task-row-id { font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; color: var(--task-helper); cursor: text; user-select: text; }
-.task-copy-button { width: 26px; height: 26px; padding: 0; flex: none; }
 .task-row-copy-feedback { font-size: 11px; color: var(--task-helper); overflow-wrap: anywhere; }
 .task-row-copy-error { color: var(--task-attention-ink); }
 .task-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 8px; margin-top: 2px; color: var(--task-helper); font-size: 11px; line-height: 1.5; min-width: 0; }

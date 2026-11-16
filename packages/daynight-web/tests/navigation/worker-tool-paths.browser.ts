@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { expectCopyButtonSkin } from './copy-button-assertions';
 import { WORKER_TIME, workerDetail } from '../helpers/workers';
 import { deferredRead, installTools, observedConfiguration, openToolConfiguration, pathChoice, reportedDetail, targetWorker, toolActual, toolObservation, toolPaths, toolReport } from './worker-tool-paths-fixture';
 
@@ -271,6 +272,7 @@ for (const width of [1440, 390, 320]) for (const locale of ['zh-CN', 'en'] as co
     const entry = codex.locator('[data-selection-role="actual"] .worker-tool-path-value').first();
     await entry.locator('summary').focus(); await page.keyboard.press('Enter');
     await expect(entry.locator('code')).toHaveText(long);
+    await expectCopyButtonSkin(page, entry.locator('button'), true);
     await entry.locator('button').click();
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(long);
     await noOverflow(page);

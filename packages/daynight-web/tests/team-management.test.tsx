@@ -290,6 +290,8 @@ describe("Team ID copy", () => {
     settings();
     const copy = await screen.findByRole("button", { name: "Copy Team ID" });
     expect(copy).toHaveAttribute("title", "Copy Team ID");
+    expect(copy).toHaveClass("copy-button"); expect(copy).not.toHaveClass("button");
+    expect(copy).toHaveAttribute("type", "button");
     expect(copy.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByText(teamId)).toBeInTheDocument();
     fireEvent.click(copy);

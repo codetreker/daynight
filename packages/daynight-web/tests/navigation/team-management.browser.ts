@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { expectCopyButtonSkin, expectDisabledCopyHover } from './copy-button-assertions';
 
 const userId = '00000000-0000-4000-8000-000000000001';
 const personalId = '00000000-0000-4000-8000-000000000011';
@@ -48,7 +49,7 @@ test('copies the displayed Team ID with accessible feedback and responsive layou
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   for (const role of ['admin', 'member'] as const) {
     api.role = role;
-    for (const width of [1280, 320]) {
+    for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
       await page.goto(`/teams/${teamId}/settings`);
       for (const [locale, label] of [['en', 'Copy Team ID'], ['zh-CN', '复制 Team ID']] as const) {
@@ -63,6 +64,7 @@ test('copies the displayed Team ID with accessible feedback and responsive layou
         expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(width);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         if (Math.abs(textBox.y - buttonBox.y) < 10) expect(Math.abs(textBox.y + textBox.height / 2 - buttonBox.y - buttonBox.height / 2)).toBeLessThanOrEqual(1);
+        await expectCopyButtonSkin(page, button);
         await button.focus(); await expect(button).toBeFocused();
         expect(await button.evaluate(el => getComputedStyle(el).outlineStyle)).not.toBe('none');
         await page.keyboard.press(locale === 'en' ? 'Enter' : 'Space');
@@ -90,6 +92,7 @@ test('copy errors and a pending write retain keyboard focus and permit retry', a
   await page.getByRole('button', { name: 'Edit', exact: true }).focus();
   await page.keyboard.press('Tab'); await expect(button).toBeFocused();
   await page.keyboard.press('Enter'); await expect(button).toHaveAttribute('aria-disabled', 'true');
+  await expectDisabledCopyHover(page, button);
   await expect(button).toBeFocused(); await page.keyboard.press('Space');
   expect(await page.evaluate(() => (window as unknown as { copyCalls: number }).copyCalls)).toBe(1);
   await page.evaluate(() => (window as unknown as { finishCopy: () => void }).finishCopy());

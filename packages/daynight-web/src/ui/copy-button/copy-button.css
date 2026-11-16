@@ -1,0 +1,26 @@
+.copy-button {
+  appearance: none;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  vertical-align: middle;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+  color: #172132;
+  gap: 7px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.copy-button:hover:not(:disabled):not([aria-disabled="true"]) { background: #fff; border-color: #dce0e8; }
+.copy-button:focus-visible { outline: 3px solid #344054; outline-offset: 2px; }
+.copy-button:disabled, .copy-button[aria-disabled="true"] { opacity: .55; cursor: default; }
+.copy-button--labelled { width: auto; height: auto; min-height: 32px; padding: 8px 13px; font-size: 12px; white-space: nowrap; }
+@media (max-width: 600px) { .copy-button--labelled { min-height: 36px; } }

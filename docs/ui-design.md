@@ -141,6 +141,25 @@ When context does not explain why a control is disabled, its reason may be
 presented on demand near the control. Hover explanations must also be available
 through keyboard focus.
 
+## Share copy button presentation
+
+Use the shared copy button for icon-only and text copy actions. Its decorative
+16px overlapping-squares icon stays visible; the icon-only control is 26px
+square with a reserved 1px transparent border. The default background and border
+are transparent and there is no shadow. Enabled hover uses a white background
+and `#dce0e8` border without moving adjacent content. Keyboard `:focus-visible`
+uses a 3px `#344054` outline with a 2px offset, visible on both white and
+selected backgrounds. Disabled and `aria-disabled="true"` controls do not show
+the enabled hover treatment. Preserve touch reachability and existing disabled
+semantics, including focusable `aria-disabled` controls.
+
+The shared component owns the native button, icon and internal state styling;
+consumers supply localized accessible names and titles, actions, and external
+placement, width and spacing. Text actions retain visible text and success
+wording. Do not apply the generic `.button` skin or consumer overrides to the
+shared internal presentation. Clipboard writes, admission, pending guards,
+feedback and late-result isolation remain with each consuming feature.
+
 ## Share native selection presentation
 
 Use [NativeSelect](design/native-select.md) for native single-line, list and
