@@ -310,7 +310,7 @@ def scenarios():
         ("short worker run", "dn worker ru\t", ["worker", "run"]),
         ("worker attach", "daynight worker at\t", ["worker", "attach"]),
         ("short worker attach", "dn worker at\t", ["worker", "attach"]),
-        ("worker repository group", "daynight worker rep\t", ["worker", "repo"]),
+        ("worker repository group", "daynight worker repo\t", ["worker", "repo"]),
         ("worker repository list", "daynight worker repo li\t", ["worker", "repo", "list"]),
         ("worker repository add", "dn worker repo ad\t", ["worker", "repo", "add"]),
         ("worker repository remove", "daynight worker repo rem\t", ["worker", "repo", "remove"]),
@@ -666,6 +666,7 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             print(f"PASS {label}: {name}", flush=True)
         for name, line, candidates in [
             ("ambiguous root tag and task prefix", "daynight ta", ["tag", "task"]),
+            ("ambiguous worker repository prefix", "daynight worker rep", ["repo", "repair-markdown"]),
             ("empty root prefix", "daynight ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
             ("empty short root prefix", "dn ", ["login", "logout", "review", "worker", "update", "completion", "project", "task", "team"]),
             ("empty review prefix", "daynight review ", ["run", "list", "ls", "add-repo"]),
@@ -700,13 +701,13 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             ("empty setup shell choice", "daynight completion setup --shell ", ["bash", "zsh"]),
         ]:
             actual, cursor, output = shell.complete(line + "\t\t")
-            if name == "ambiguous root tag and task prefix":
+            if name in ["ambiguous root tag and task prefix", "ambiguous worker repository prefix"]:
                 display = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
                 missing = [candidate for candidate in candidates if re.search(r"(?<![\w/-])" + re.escape(candidate) + r"(?![\w/-])", display) is None]
             else:
                 missing = [candidate for candidate in candidates if candidate not in output]
             removed_setup = name in ["empty root prefix", "empty short root prefix"] and re.search(r"(?<![\w-])setup(?![\w-])", output) is not None
-            ambiguous_changed = name == "ambiguous root tag and task prefix" and (actual != line or cursor != len(line))
+            ambiguous_changed = name in ["ambiguous root tag and task prefix", "ambiguous worker repository prefix"] and (actual != line or cursor != len(line))
             receipt["scenarios"].append({"name": name, "line": actual, "cursor": cursor, "passed": not missing and not removed_setup and not ambiguous_changed})
             shell.clear()
             if ambiguous_changed:
