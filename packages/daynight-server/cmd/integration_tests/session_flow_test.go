@@ -72,122 +72,126 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 		t.Fatalf("controller grant identity differs: session=%s claim=%s generation=%s", grant.SessionID, grant.ClaimID, grant.ExecutionGeneration)
 	}
 
-	controller := sessionFlowDial(t, f, "/api/v1/controller-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + grant.Token}}})
-	sourceEpoch := uuid.NewString()
-	sessionFlowWrite(t, f, controller, sp.ControllerMessage{
-		Type: "hello", Protocol: sp.Protocol, ControllerFence: registered.ControllerFence,
-		SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID,
-		ControllerInstanceID: registration.ControllerInstanceID, Provider: registration.Provider,
-		SourceEpoch: sourceEpoch, LastAckedSourceSeq: "0",
-	})
-	welcome := sessionFlowRead(t, f, controller)
-	sessionFlowKind(t, welcome, "welcome")
-	connected, err := sp.DecodeSnapshot(welcome["session"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if connected.Fence != registered.Fence || connected.ConnectionEpoch == "0" || connected.ConnectionState != "synchronizing" {
-		t.Fatalf("controller welcome differs: %+v", connected)
-	}
-	nativeID := "api-native-" + uuid.NewString()
-	state := sp.State{NativeSessionID: &nativeID, InitialInputState: connected.InitialInputState, Synchronized: true, Activity: "initializing"}
-	sessionFlowWrite(t, f, controller, sp.ControllerMessage{
-		Type: "sync_state", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence,
-		State: &state, PendingInteractions: []sp.TimelineEntry{},
-	})
-	sync := sessionFlowRead(t, f, controller)
-	sessionFlowKind(t, sync, "sync_ack")
-
-	current := requestJSON[struct {
-		Status  string      `json:"status"`
-		Session sp.Snapshot `json:"session"`
-	}](t, f, http.MethodGet, base+"/current", nil, http.StatusOK)
-	if current.Status != "registered" || current.Session.ControllerFence != connected.ControllerFence || !current.Session.Synchronized || current.Session.ConnectionState != "connected" || current.Session.Identity.NativeSessionID == nil || *current.Session.Identity.NativeSessionID != nativeID {
-		t.Fatalf("current Session readback differs: %+v", current)
-	}
-	browser := sessionFlowDial(t, f, base+"/"+registered.SessionID+"/channel", &websocket.DialOptions{HTTPClient: f.client})
-	initial := sessionFlowRead(t, f, browser)
-	sessionFlowKind(t, initial, "snapshot")
-	projection, err := sp.DecodeSnapshot(initial["snapshot"])
-	if err != nil || projection.ControllerFence != current.Session.ControllerFence || !projection.Synchronized || projection.Identity.NativeSessionID == nil || *projection.Identity.NativeSessionID != nativeID {
-		t.Fatalf("browser Session snapshot differs: snapshot=%+v error=%v", projection, err)
-	}
-	var browserUserID, cursor string
-	if err := json.Unmarshal(initial["userId"], &browserUserID); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(initial["cursor"], &cursor); err != nil || cursor == "" || browserUserID != f.userID {
-		t.Fatalf("browser owner/cursor differs: user=%s cursor=%s error=%v", browserUserID, cursor, err)
-	}
-	application := sessionFlowDial(t, f, base+"/"+registered.SessionID+"/channel", &websocket.DialOptions{
-		HTTPHeader:   http.Header{"Origin": {"https://client.example"}},
-		Subprotocols: []string{sp.Protocol, "daynight.authorization." + sessionFlowAPIAccess(t, f)},
-	})
-	applicationInitial := sessionFlowRead(t, f, application)
-	sessionFlowKind(t, applicationInitial, "snapshot")
-	applicationProjection, err := sp.DecodeSnapshot(applicationInitial["snapshot"])
-	var applicationUser string
-	if err := json.Unmarshal(applicationInitial["userId"], &applicationUser); err != nil {
-		t.Fatal(err)
-	}
-	if err != nil || applicationProjection.ControllerFence != connected.ControllerFence || applicationUser != f.userID || application.Subprotocol() != sp.Protocol {
-		t.Fatalf("application Session identity differs: snapshot=%+v error=%v", applicationProjection, err)
-	}
-
-	entryID := uuid.NewString()
-	content, err := json.Marshal([]map[string]string{{"type": "text", "text": "Native Session API content"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry := sp.TimelineEntry{EntryID: entryID, Revision: "1", Kind: "assistant_message", Data: map[string]json.RawMessage{"content": content}}
-	payload, err := json.Marshal(entry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	batchID := uuid.NewString()
-	sessionFlowWrite(t, f, controller, sp.ControllerMessage{
-		Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence,
-		SourceEpoch: sourceEpoch, BatchID: batchID,
-		Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: payload}},
-	})
-	ack := sessionFlowRead(t, f, controller)
-	sessionFlowKind(t, ack, "events_ack")
-	var acknowledgedBatch, acknowledgedSequence string
-	if err := json.Unmarshal(ack["batchId"], &acknowledgedBatch); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(ack["lastAckedSourceSeq"], &acknowledgedSequence); err != nil || acknowledgedBatch != batchID || acknowledgedSequence != "1" {
-		t.Fatalf("source acknowledgement differs: batch=%s sequence=%s error=%v", acknowledgedBatch, acknowledgedSequence, err)
-	}
-	for _, viewer := range []*websocket.Conn{browser, application} {
-		found := false
-		for range 8 {
-			frame := sessionFlowRead(t, f, viewer)
-			var kind string
-			if err := json.Unmarshal(frame["type"], &kind); err != nil {
-				t.Fatal(err)
-			}
-			if kind == "snapshot" {
-				continue
-			}
-			sessionFlowKind(t, frame, "event")
-			event, err := sp.DecodeEvent(frame["event"])
-			if err != nil || event.Fence != registered.Fence || event.ConnectionEpoch != connected.ConnectionEpoch {
-				t.Fatalf("browser event identity differs: event=%+v error=%v", event, err)
-			}
-			if event.Kind == "snapshot" {
-				continue
-			}
-			actual, err := sp.DecodeTimeline(event.Payload)
-			if err != nil || event.Kind != "timeline_upsert" || actual.EntryID != entryID || actual.EntrySeq != "1" || actual.Revision != entry.Revision || actual.Kind != entry.Kind || !bytes.Equal(actual.Data["content"], content) {
-				t.Fatalf("browser timeline content differs: event=%+v entry=%+v error=%v", event, actual, err)
-			}
-			found = true
-			break
+	if !t.Run("live_channels", func(t *testing.T) {
+		controller := sessionFlowDial(t, f, "/api/v1/controller-channel", &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + grant.Token}}})
+		sourceEpoch := uuid.NewString()
+		sessionFlowWrite(t, f, controller, sp.ControllerMessage{
+			Type: "hello", Protocol: sp.Protocol, ControllerFence: registered.ControllerFence,
+			SchemaVersion: 1, ProjectionVersion: 1, ControllerID: registration.ControllerID,
+			ControllerInstanceID: registration.ControllerInstanceID, Provider: registration.Provider,
+			SourceEpoch: sourceEpoch, LastAckedSourceSeq: "0",
+		})
+		welcome := sessionFlowRead(t, f, controller)
+		sessionFlowKind(t, welcome, "welcome")
+		connected, err := sp.DecodeSnapshot(welcome["session"])
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !found {
-			t.Fatal("browser did not receive the controller's timeline entry")
+		if connected.Fence != registered.Fence || connected.ConnectionEpoch == "0" || connected.ConnectionState != "synchronizing" {
+			t.Fatalf("controller welcome differs: %+v", connected)
 		}
+		nativeID := "api-native-" + uuid.NewString()
+		state := sp.State{NativeSessionID: &nativeID, InitialInputState: connected.InitialInputState, Synchronized: true, Activity: "initializing"}
+		sessionFlowWrite(t, f, controller, sp.ControllerMessage{
+			Type: "sync_state", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence,
+			State: &state, PendingInteractions: []sp.TimelineEntry{},
+		})
+		sync := sessionFlowRead(t, f, controller)
+		sessionFlowKind(t, sync, "sync_ack")
+
+		current := requestJSON[struct {
+			Status  string      `json:"status"`
+			Session sp.Snapshot `json:"session"`
+		}](t, f, http.MethodGet, base+"/current", nil, http.StatusOK)
+		if current.Status != "registered" || current.Session.ControllerFence != connected.ControllerFence || !current.Session.Synchronized || current.Session.ConnectionState != "connected" || current.Session.Identity.NativeSessionID == nil || *current.Session.Identity.NativeSessionID != nativeID {
+			t.Fatalf("current Session readback differs: %+v", current)
+		}
+		browser := sessionFlowDial(t, f, base+"/"+registered.SessionID+"/channel", &websocket.DialOptions{HTTPClient: f.client})
+		initial := sessionFlowRead(t, f, browser)
+		sessionFlowKind(t, initial, "snapshot")
+		projection, err := sp.DecodeSnapshot(initial["snapshot"])
+		if err != nil || projection.ControllerFence != current.Session.ControllerFence || !projection.Synchronized || projection.Identity.NativeSessionID == nil || *projection.Identity.NativeSessionID != nativeID {
+			t.Fatalf("browser Session snapshot differs: snapshot=%+v error=%v", projection, err)
+		}
+		var browserUserID, cursor string
+		if err := json.Unmarshal(initial["userId"], &browserUserID); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(initial["cursor"], &cursor); err != nil || cursor == "" || browserUserID != f.userID {
+			t.Fatalf("browser owner/cursor differs: user=%s cursor=%s error=%v", browserUserID, cursor, err)
+		}
+		application := sessionFlowDial(t, f, base+"/"+registered.SessionID+"/channel", &websocket.DialOptions{
+			HTTPHeader:   http.Header{"Origin": {"https://client.example"}},
+			Subprotocols: []string{sp.Protocol, "daynight.authorization." + sessionFlowAPIAccess(t, f)},
+		})
+		applicationInitial := sessionFlowRead(t, f, application)
+		sessionFlowKind(t, applicationInitial, "snapshot")
+		applicationProjection, err := sp.DecodeSnapshot(applicationInitial["snapshot"])
+		var applicationUser string
+		if err := json.Unmarshal(applicationInitial["userId"], &applicationUser); err != nil {
+			t.Fatal(err)
+		}
+		if err != nil || applicationProjection.ControllerFence != connected.ControllerFence || applicationUser != f.userID || application.Subprotocol() != sp.Protocol {
+			t.Fatalf("application Session identity differs: snapshot=%+v error=%v", applicationProjection, err)
+		}
+
+		entryID := uuid.NewString()
+		content, err := json.Marshal([]map[string]string{{"type": "text", "text": "Native Session API content"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := sp.TimelineEntry{EntryID: entryID, Revision: "1", Kind: "assistant_message", Data: map[string]json.RawMessage{"content": content}}
+		payload, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batchID := uuid.NewString()
+		sessionFlowWrite(t, f, controller, sp.ControllerMessage{
+			Type: "events", Protocol: sp.Protocol, ControllerFence: connected.ControllerFence,
+			SourceEpoch: sourceEpoch, BatchID: batchID,
+			Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: payload}},
+		})
+		ack := sessionFlowRead(t, f, controller)
+		sessionFlowKind(t, ack, "events_ack")
+		var acknowledgedBatch, acknowledgedSequence string
+		if err := json.Unmarshal(ack["batchId"], &acknowledgedBatch); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(ack["lastAckedSourceSeq"], &acknowledgedSequence); err != nil || acknowledgedBatch != batchID || acknowledgedSequence != "1" {
+			t.Fatalf("source acknowledgement differs: batch=%s sequence=%s error=%v", acknowledgedBatch, acknowledgedSequence, err)
+		}
+		for _, viewer := range []*websocket.Conn{browser, application} {
+			found := false
+			for range 8 {
+				frame := sessionFlowRead(t, f, viewer)
+				var kind string
+				if err := json.Unmarshal(frame["type"], &kind); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "snapshot" {
+					continue
+				}
+				sessionFlowKind(t, frame, "event")
+				event, err := sp.DecodeEvent(frame["event"])
+				if err != nil || event.Fence != registered.Fence || event.ConnectionEpoch != connected.ConnectionEpoch {
+					t.Fatalf("browser event identity differs: event=%+v error=%v", event, err)
+				}
+				if event.Kind == "snapshot" {
+					continue
+				}
+				actual, err := sp.DecodeTimeline(event.Payload)
+				if err != nil || event.Kind != "timeline_upsert" || actual.EntryID != entryID || actual.EntrySeq != "1" || actual.Revision != entry.Revision || actual.Kind != entry.Kind || !bytes.Equal(actual.Data["content"], content) {
+					t.Fatalf("browser timeline content differs: event=%+v entry=%+v error=%v", event, actual, err)
+				}
+				found = true
+				break
+			}
+			if !found {
+				t.Fatal("browser did not receive the controller's timeline entry")
+			}
+		}
+	}) {
+		return
 	}
 	sessionDirectImageFlow(t, f)
 	sessionSyncReopenedFlow(t, f, project, claimed, registered.SessionID, claimID)
