@@ -173,17 +173,27 @@ test("v7 migration preserves exact native unknown state and legacy source bytes"
   expect(await readFile(f.filename, "utf8")).toBe(f.original);
 });
 
-test.each(["ahead", "missing", "unindexed", "missing-manifest"] as const)("v7 %s source fails closed without changing native unknown state", async variant => {
-  const f = await legacyFixture();
-  if (variant === "ahead") await writeFile(f.filename, JSON.stringify({ ...f.entry, revision: "2", text: "uncommitted" }));
+test.each(["ahead", "missing", "unindexed", "missing-manifest"] as const)("v7 %s maps indexed bytes while retaining native unknown state", async variant => {
+  const f = await legacyFixture(), manifest = path.join(`${f.file}.pending-content`, "manifest.json");
+  const ahead = JSON.stringify({ ...f.entry, revision: "2", text: "uncommitted" });
+  const orphan = path.join(path.dirname(f.filename), `${"a".repeat(64)}.json`);
+  const orphanBody = JSON.stringify({ ...f.entry, entryId: randomUUID(), entrySeq: "2" });
+  if (variant === "ahead") await writeFile(f.filename, ahead);
   if (variant === "missing") await rm(f.filename);
-  if (variant === "missing-manifest") await rm(path.join(`${f.file}.pending-content`, "manifest.json"));
-  if (variant === "unindexed") await writeFile(path.join(path.dirname(f.filename), `${"a".repeat(64)}.json`), JSON.stringify({ ...f.entry, entryId: randomUUID(), entrySeq: "2" }));
-  expect(() => openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {} })).toThrow("migration-failed");
-  const db = new Database(f.file, { readonly: true }); connections.push(db);
-  expect(db.pragma("user_version", { simple: true })).toBe(7);
+  if (variant === "missing-manifest") await rm(manifest);
+  if (variant === "unindexed") await writeFile(orphan, orphanBody);
+  const db = openControllerTestDatabase({ file: f.file, allowCreate: false, onMigration: () => {} }); connections.push(db);
+  expect(db.pragma("user_version", { simple: true })).toBe(12);
   expect(db.prepare("SELECT value FROM image_runtime_state WHERE key='native_provider:original'").get()).toEqual({ value: f.state });
   expect(db.prepare("SELECT value FROM operations WHERE id='original'").get()).toEqual({ value: f.operation });
+  const rows = db.prepare("SELECT id,CAST(revision AS TEXT) AS revision,CAST(entry_seq AS TEXT) AS entry_seq,value,content_hash,byte_length FROM timeline_entries").all();
+  const body = variant === "ahead" ? ahead : f.original;
+  expect(rows).toEqual(variant === "missing" ? [] : [{ id: f.entry.entryId, revision: f.entry.revision, entry_seq: f.entry.entrySeq, value: body, content_hash: controllerPayloadHash(f.entry), byte_length: Buffer.byteLength(body) }]);
+  expect(db.prepare("SELECT entry_count,byte_length FROM timeline_totals").get()).toEqual({ entry_count: rows.length, byte_length: variant === "missing" ? 0 : Buffer.byteLength(body) });
+  if (variant === "missing") await expect(readFile(f.filename)).rejects.toMatchObject({ code: "ENOENT" });
+  else expect(await readFile(f.filename, "utf8")).toBe(body);
+  if (variant === "unindexed") expect(await readFile(orphan, "utf8")).toBe(orphanBody);
+  if (variant === "missing-manifest") await expect(readFile(manifest)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("v7 conversion remains committed after a subsequent transaction rolls back", async () => {

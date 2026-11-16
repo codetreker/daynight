@@ -1,98 +1,135 @@
 import type Database from "better-sqlite3";
-import { canonicalImageJson, imageId, parseStoredDirectCaptureSubmission, parseStoredImageCaptureRequest, parseStoredImagePart, parseStoredValidatedImage, type DirectCaptureSubmission, type ImageCaptureRequest, type ImageError, type ImagePart, type ImageUnavailablePart, type ValidatedImage } from "../../../session/image-values.js";
-import type { NativeImageProjectionState } from "./native-publication-types.js";
-import type { MarkdownCaptureRecord } from "../markdown/coordinator.js";
 
-type LegacyNativeState = {
-  request: ImageCaptureRequest; index: number; waitingForSource: boolean;
-  phase: "new" | "query" | "reserved" | "commit" | "failure" | "settled";
-  unknownAction: "register" | "commit" | "failure" | null;
-  part: ImagePart | ImageUnavailablePart; validated: ValidatedImage | null;
-};
-type CaptureOwner = { request: ImageCaptureRequest; attemptId: string };
-type LegacyMarkdownRecord = MarkdownCaptureRecord & {
-  observeOnly?: boolean;
-  retryControl?: { attemptId: string; after: number } & ({ action: "failure"; error: ImageError } | { action: "commit"; validated: ValidatedImage });
+type ObjectValue = Record<string, unknown>;
+const object = (value: unknown): ObjectValue | null => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : null;
+const has = (value: ObjectValue, key: string): boolean => Object.hasOwn(value, key);
+const invalid = Symbol("invalid JSON"), missing = Symbol("missing companion");
+const parse = (value: string): unknown => {
+  try { return JSON.parse(value) as unknown; }
+  catch (error) { if (error instanceof SyntaxError) return invalid; throw error; }
 };
 
-/** Upgrade retained capture facts in the journal transaction, without source IO. */
+/** Upgrade only the changed capture fields in the journal transaction, without source IO. */
 export const migrateDirectCaptureState = (db: Database.Database, sql: string): undefined => {
-  const owner = (request: ImageCaptureRequest): CaptureOwner => {
+  const owner = (request: ObjectValue): { request: ObjectValue; attemptId: unknown } | null => {
+    if (typeof request.captureId !== "string" || !has(request, "attemptId")) return null;
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`capture:${request.captureId}`) as { value: string } | undefined;
     if (!row) return { request, attemptId: request.attemptId };
-    const capture = JSON.parse(row.value) as CaptureOwner;
-    const original = parseStoredImageCaptureRequest(capture.request);
-    imageId(capture.attemptId);
-    if (canonicalImageJson({ ...request, attemptId: original.attemptId }) !== canonicalImageJson(original)) throw new Error("Legacy capture owner conflicts with its original request.");
+    const capture = object(parse(row.value));
+    const original = capture && object(capture.request);
+    if (!capture || !original || !has(capture, "attemptId")) return null;
     return { request: original, attemptId: capture.attemptId };
   };
-  const sealed = (captureId: string, attemptId: string): ValidatedImage | null => {
-    const row = db.prepare("SELECT validated FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`) as { validated: string } | undefined;
-    return row ? parseStoredValidatedImage(JSON.parse(row.validated)) : null;
+  const sealed = (request: ObjectValue): unknown => {
+    const row = db.prepare("SELECT validated FROM image_captures WHERE capture_id=?").get(`${request.captureId}:${request.attemptId}`) as { validated: string } | undefined;
+    return row ? parse(row.validated) : missing;
   };
-  const submission = (capture: CaptureOwner, outcome: DirectCaptureSubmission["outcome"]): DirectCaptureSubmission => parseStoredDirectCaptureSubmission({ ...capture, outcome });
-  const native = (value: unknown): NativeImageProjectionState => {
-    const old = value as LegacyNativeState, request = parseStoredImageCaptureRequest(old.request), capture = owner(request), part = parseStoredImagePart(old.part);
-    if (!["new", "query", "reserved", "commit", "failure", "settled"].includes(old.phase) || !Number.isSafeInteger(old.index) || old.index < 0 || typeof old.waitingForSource !== "boolean" || old.waitingForSource && old.phase !== "new") throw new Error("Legacy native capture state is invalid.");
-    let frozen: DirectCaptureSubmission | null = null;
+  const native = (value: unknown): ObjectValue | null => {
+    const old = object(value), request = old && object(old.request);
+    if (!old || !request || typeof old.phase !== "string" || !["new", "query", "reserved", "commit", "failure", "settled"].includes(old.phase)) return null;
+    // An already mapped state needs no companion lookup or rewrite.
+    if (!has(old, "unknownAction") && !has(old, "validated") && has(old, "attemptId") && has(old, "submission")) return old;
+    const capture = owner(request);
+    if (!capture) return null;
+    let frozen: ObjectValue | null = null;
     if (capture.attemptId === request.attemptId && old.phase !== "new" && old.phase !== "settled") {
+      if (old.phase !== "failure" && ![null, "register", "commit", "failure"].includes(old.unknownAction as string | null)) return null;
+      let outcome: ObjectValue | null = null;
       if (old.phase === "failure" || old.unknownAction === "failure") {
-        if (part.type !== "image_unavailable") throw new Error("Legacy native failure has no original error.");
-        frozen = submission(capture, { kind: "failed", error: part.error });
-      } else if (request.locator.kind === "resource") frozen = submission(capture, { kind: "resource" });
-      else {
-        const validated = old.validated === null ? sealed(request.captureId, request.attemptId) : parseStoredValidatedImage(old.validated);
-        if (validated) frozen = submission(capture, { kind: "validated", validated });
+        const part = object(old.part);
+        if (!part || !has(part, "error")) return null;
+        outcome = { kind: "failed", error: part.error };
+      } else {
+        const locator = object(request.locator);
+        if (!locator || !has(locator, "kind")) return null;
+        if (locator.kind === "resource") outcome = { kind: "resource" };
+        else {
+          if (!has(old, "validated")) return null;
+          const validated = old.validated === null ? sealed(request) : old.validated;
+          if (validated === invalid || validated === null || (validated === missing && (old.phase === "commit" || old.unknownAction === "commit"))) return null;
+          if (validated !== missing) outcome = { kind: "validated", validated };
+        }
       }
+      if (outcome) frozen = { ...capture, outcome };
     }
-    const phase: NativeImageProjectionState["phase"] = old.phase === "settled" ? "settled"
+    const phase = old.phase === "settled" ? "settled"
       : capture.attemptId !== request.attemptId || old.phase === "query" ? "query"
         : frozen ? "submit" : old.phase === "new" ? "new" : "preparing";
     const resumeReserved = phase === "query" && capture.attemptId === request.attemptId
-      ? frozen ? "submission" as const : old.unknownAction === "register" ? "source" as const : undefined
+      ? frozen ? "submission" : old.unknownAction === "register" ? "source" : undefined
       : undefined;
-    return { request: capture.request, attemptId: capture.attemptId, index: old.index, waitingForSource: old.waitingForSource, phase, part, submission: frozen, ...(resumeReserved ? { resumeReserved } : {}) };
+    const { unknownAction: _unknownAction, validated: _validated, ...rest } = old;
+    return { ...rest, request: capture.request, attemptId: capture.attemptId, phase, submission: frozen, ...(resumeReserved ? { resumeReserved } : {}) };
   };
-  const update = (key: string, value: unknown): void => {
-    const encoded = JSON.stringify(value);
-    db.prepare("UPDATE image_runtime_state SET value=? WHERE key=?").run(encoded, key);
-  };
-  const rows = db.prepare("SELECT key,value FROM image_runtime_state WHERE key GLOB 'native_provider:image-slot:*' OR key GLOB 'markdown:source:*' ORDER BY key").all() as { key: string; value: string }[];
-  for (const row of rows) {
-    if (row.key.startsWith("native_provider:")) { update(row.key, native(JSON.parse(row.value))); continue; }
-    const old = JSON.parse(row.value) as LegacyMarkdownRecord;
+  const markdown = (value: unknown): ObjectValue | null => {
+    const old = object(value);
+    if (!old) return null;
+    if (!has(old, "retryControl") && !has(old, "observeOnly") && has(old, "submission")) return old;
     const { retryControl, observeOnly, ...record } = old;
-    if (!record.request || record.phase === "settled") { update(row.key, record); continue; }
-    const request = parseStoredImageCaptureRequest(record.request), capture = owner(request);
-    let outcome: DirectCaptureSubmission["outcome"] | null = null;
+    if (!record.request || record.phase === "settled") return record;
+    const request = object(record.request);
+    if (!request || typeof record.phase !== "string") return null;
+    const capture = owner(request);
+    if (!capture) return null;
+    const retry = retryControl == null ? null : object(retryControl);
+    if (retryControl != null && (!retry || (retry.action !== "failure" && retry.action !== "commit"))) return null;
+    let outcome: ObjectValue | null = null;
     if (capture.attemptId === request.attemptId) {
-      if (retryControl?.action === "failure") outcome = { kind: "failed", error: retryControl.error };
-      else if (retryControl?.action === "commit") outcome = { kind: "validated", validated: retryControl.validated };
-      else if (record.error && record.phase !== "waiting") outcome = { kind: "failed", error: record.error };
-      else if (record.phase === "unknown" && request.locator.kind === "resource") outcome = { kind: "resource" };
-      else if (record.phase === "validated" || record.phase === "unknown" && observeOnly) {
-        const validated = sealed(request.captureId, request.attemptId);
-        if (validated && record.sourceAdmission?.attemptId === request.attemptId && canonicalImageJson(record.sourceAdmission.validated) === canonicalImageJson(validated)) outcome = { kind: "validated", validated };
+      if (retry?.action === "failure") {
+        if (!has(retry, "error")) return null;
+        outcome = { kind: "failed", error: retry.error };
+      } else if (retry?.action === "commit") {
+        if (!has(retry, "validated")) return null;
+        outcome = { kind: "validated", validated: retry.validated };
+      } else if (record.error && record.phase !== "waiting") outcome = { kind: "failed", error: record.error };
+      else if (record.phase === "unknown" || record.phase === "validated") {
+        const locator = record.phase === "unknown" ? object(request.locator) : null;
+        if (record.phase === "unknown" && (!locator || !has(locator, "kind"))) return null;
+        if (locator?.kind === "resource") outcome = { kind: "resource" };
+        else if (record.phase === "validated" || observeOnly) {
+          const validated = sealed(request);
+          if (validated === invalid || validated === null || (validated === missing && record.phase === "validated")) return null;
+          if (validated !== missing) outcome = { kind: "validated", validated };
+        }
       }
     }
     if (outcome) {
-      record.submission = submission({ request: capture.request, attemptId: request.attemptId }, outcome);
+      if (retry && (typeof retry.after !== "number" || typeof record.cooldownUntil !== "number")) return null;
+      record.submission = { request: capture.request, attemptId: request.attemptId, outcome };
       record.dispatchPending = !!retryControl || record.phase === "validated";
       if (!record.dispatchPending) record.resumeReserved = "submission";
       record.phase = "unknown";
-      if (retryControl) record.cooldownUntil = Math.max(record.cooldownUntil, retryControl.after);
+      if (retry) record.cooldownUntil = Math.max(record.cooldownUntil as number, retry.after as number);
     } else if (record.phase === "unknown" || record.awaitingRetry || capture.attemptId !== request.attemptId) {
       if (!record.started && !record.awaitingRetry && !observeOnly && capture.attemptId === request.attemptId) record.resumeReserved = "source";
       record.awaitingRetry = true; record.phase = "unknown";
     }
-    update(row.key, record);
+    return record;
+  };
+  const update = (key: string, original: unknown, mapped: ObjectValue | null): void => {
+    if (!mapped || JSON.stringify(mapped) === JSON.stringify(original)) return;
+    db.prepare("UPDATE image_runtime_state SET value=? WHERE key=?").run(JSON.stringify(mapped), key);
+  };
+  const rows = db.prepare("SELECT key,value FROM image_runtime_state WHERE key GLOB 'native_provider:image-slot:*' OR key GLOB 'markdown:source:*' ORDER BY key").all() as { key: string; value: string }[];
+  for (const row of rows) {
+    const value = parse(row.value);
+    if (value === invalid) continue;
+    update(row.key, value, row.key.startsWith("native_provider:") ? native(value) : markdown(value));
   }
   const publications = db.prepare("SELECT operation_id,value FROM native_input_publications").all() as { operation_id: string; value: string }[];
   for (const row of publications) {
-    const value = JSON.parse(row.value) as { slots: { state: unknown }[] };
-    value.slots = value.slots.map(slot => ({ ...slot, state: native(slot.state) }));
-    const encoded = JSON.stringify(value);
-    db.prepare("UPDATE native_input_publications SET value=? WHERE operation_id=?").run(encoded, row.operation_id);
+    const value = object(parse(row.value));
+    if (!value || !Array.isArray(value.slots)) continue;
+    let changed = false;
+    const slots = value.slots.map((item: unknown) => {
+      const slot = object(item);
+      if (!slot || !has(slot, "state")) return item;
+      const state = native(slot.state);
+      if (!state || JSON.stringify(state) === JSON.stringify(slot.state)) return item;
+      changed = true;
+      return { ...slot, state };
+    });
+    if (changed) db.prepare("UPDATE native_input_publications SET value=? WHERE operation_id=?").run(JSON.stringify({ ...value, slots }), row.operation_id);
   }
   db.exec(sql);
 };

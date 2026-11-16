@@ -9,7 +9,7 @@ Controller journal 的唯一编号序列为 `001`–`012`，当前格式为 v12�
 | `content/timeline-store.ts` | 当前正文、序号、分页、完整同步遍历与当前统计 |
 | `content/resource-files.ts` | 原路径下的资源 descriptor、blob、pin、lease 与文件预算 |
 | `content/session-content.ts` | SQL 正文与资源组合；释放前核对正文与原生输入图片引用 |
-| `content/migration.ts` | 历史来源验证与 canonical 010 的原子导入 |
+| `content/migration.ts` | 按已提交来源执行必要文件映射与 canonical 010 的原子导入 |
 | `content/maintenance.ts` | 旧读者屏障、正文退休、压缩与实际预留结算 |
 | `storage-preparation.ts` | 原 permit 下的纯格式升级、stopped-maintenance 与 writer 角色准备 |
 | `storage-capacity.ts`、`media/metadata-budget.ts` | 真实占用、共享账本绝对预留与普通维护准入 |
@@ -36,9 +36,11 @@ Controller journal 的唯一编号序列为 `001`–`012`，当前格式为 v12�
 
 canonical 010 沿原迁移链处理 v1–9。旧 writer 准入继续由 `assertJournalMigrationAllowed` 和原存储 permit 负责。原 execution、Session、claim、generation、native 身份、未决 operation、outbox、图片关联、`input_message_origins` 和原停止证据均保留。upgrade-only 可保留 stopping、paused 或 `nativeStopped=false`；导入不制造 stopped。
 
-v2–5 的 SQL 正文和资源先按原合同耐久导出；v6–7 仍核对文件与索引完全一致；v1 保留历史不完整标记。v8–9 只读取已提交 `content_index` 指针，不从目录选择更新候选。打开源前后检查私有普通文件身份，并核对长度、SHA-256、entry id、seq、revision 和内容 hash。没有原 execution 的非空 pending 源拒绝导入。
+v2–5 的 SQL projection 和资源按原键导出：projection 使用 rowid 作为 entrySeq，按目标字段序列生成正文及其 hash；资源 bytes 直接复制。必要文件先耐久发布，再删除旧 SQL 容器。v6–7 只按旧索引读取文件，v8 复制已索引 bytes 并从实际输出生成指针的 hash 和长度；未引用文件不参与转换。v1 保留历史不完整标记。
 
-先在原事务中完整核对并捕获已提交指针元数据，不缓存正文；再执行包含旧索引删除的完整 DDL，按捕获指针重新核对原文件并逐项保存。DDL、总量核对、设置 `legacy_timeline_cleanup_pending=1` 与后续编号步骤及最终 `user_version` 处于同一个 immediate 事务。任何导入或提交失败均保留真实事务结果与原文件；SQL 回滚不会提前删除唯一文件源。导入后可以读取 SQL 正文，旧正文文件由独立的停止维护阶段退休。
+v10 在删除旧索引前捕获已提交指针，读取对应文件，仅从正文取得必填 kind，按指针携带 id、seq、revision 和 hash 写入目标 SQL。新 totals 来自实际写入的行和 UTF-8 bytes。无法构造目标的最小项跳过；不校验消息内容或关联，不修复外部 descriptor、manifest、pins 或原文件。必要文件缺失只影响相应项，实际 SQL、权限、设备、写入和提交错误继续传播。SQL 回滚后从保留的旧来源重试，输出使用既有耐久、可重入发布规则。
+
+旧索引删除、实际目标行与 totals、`legacy_timeline_cleanup_pending=1`、后续编号步骤及最终 `user_version` 处于同一个 immediate 事务。导入后旧正文文件由独立的停止维护阶段退休；升级不保证原有坏值能被普通业务读者接受。
 
 ## 峰值预留与停止维护
 
@@ -54,7 +56,7 @@ v2–5 的 SQL 正文和资源先按原合同耐久导出；v6–7 仍核对文�
 4. 核对真实 DB/WAL/SHM、旧正文残留、当前正文与 totals，提交清除 pending，并读回实际提交状态。
 5. 按真实占用结算维护预留，恢复普通物理准入，全部成功才返回 pending=false。
 
-退休仅覆盖私有 Session-bound 根下识别出的 UUID 候选、旧 timeline 与已确认迁移备份中的 timeline。资源、blob、pin 和原生资料保留。未知文件、symlink 或身份冲突会暴露错误并保留现场；已退休文件的缺失可在重入时确认。共享 `index.json` 仍由 `resource-files.ts` 统一读写，Session 绑定、descriptor、blob、pin 和 lease 均不随正文索引退休而改变。索引发布失败时不删除正文；索引已发布而删除中断时，SQL 正文继续可读，重入仍重新耐久发布空旧正文清单，确认之前 rename 后的目录刷盘结果，再完成文件退休。
+退休仅覆盖私有 Session-bound 根下识别出的 UUID 候选、旧 timeline 与已确认迁移备份中的 timeline。旧导出中断留下的有效 `prepared` 备份及其 marker、无 marker 的空备份目录，以及文件发布中断留下的具名临时文件保留原样，不作为已完成备份退休；它们的实际占用仍参与容量计量。资源、blob、pin 和原生资料保留。未知文件、symlink 或身份冲突会暴露错误并保留现场；已退休文件的缺失可在重入时确认。共享 `index.json` 仍由 `resource-files.ts` 统一读写，Session 绑定、descriptor、blob、pin 和 lease 均不随正文索引退休而改变。索引发布失败时不删除正文；索引已发布而删除中断时，SQL 正文继续可读，重入仍重新耐久发布空旧正文清单，确认之前 rename 后的目录刷盘结果，再完成文件退休。
 
 当前格式读者可能在屏障之后建立自己的 SQL 快照，并在构造资源拥有者时读到发布前的旧文件清单。若旧 timeline 引用的文件在检查时消失，仅允许在索引原始字节确实已改变时重读一次，并完整核对新清单仍引用的全部文件；未改变的索引、仍被引用的缺失文件或无效清单继续报错。资源清单不缓存旧正文引用；后续资源写入只发布空 `entries`，删除回滚读取当前已发布清单，不恢复构造时的旧引用。
 

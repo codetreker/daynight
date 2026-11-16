@@ -11,7 +11,7 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Review 状态 | `~/.daynight/state.sqlite` | 当前 2，保留已有 1→2 转换 |
 | Worker 认领索引与清理调度 | `~/.daynight/worker/state.sqlite` | 当前 12，版本 5 保留原行升级，6→7 移除清理通知步骤字段，版本 12 冻结 claim 原生配置，旧详细库 1–4 明确拒绝 |
 | Web 执行状态 | `~/.daynight/worker/web-executions.sqlite` | 当前 3，1→2 移除 cleanup 的重复字段；2→3 新增独立编排阻塞表 |
-| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 10，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针和 9 输入来源，10 将已提交当前正文与统计迁入 SQL |
+| Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 12，保留 1→5 转换、5→6 正文导出、7 图片账本、8 不可变内容指针、9 输入来源、10 正文与统计、11 outbox 统计和 12 capture state 转换 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1 |
 
 上述五个业务库的 `user_version=0` 统一表示重置：通过既有业务准入后，丢弃该文件内原有用户 schema 和数据，再从本库基线及按文件名排序的全部后续升级重建。此规则包含已有空文件和任意无版本表，不检查其是否匹配历史 schema，也不解析旧 JSON 来决定是否保留。查询访问已有版本 0 文件时同样执行重置并返回重建后的结果。
@@ -28,9 +28,9 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 
 一次打开所需的重置、基线建库和连续迁移在同一 `BEGIN IMMEDIATE` 事务中完成，SQL 结构、数据和 `user_version` 一起提交或回滚。重置不得删除或替换数据库文件。迁移失败或进程中断后，重新打开只接受完整旧格式或完整目标格式；修复实际原因后可再次打开。格式转换在业务准入和初始化前独立提交；业务拒绝或回滚不能撤销已提交的转换。业务事务须重新检查当前格式，业务结果与转换结果分别报告。各数据库分别保证原子性，不承诺跨文件事务；Worker 所需任一库打开失败时不启动协调业务。
 
-Review v2 不为接入公共机制额外提高版本或改写记录；journal v6 的版本变化来自会话正文转文件归档，原非零历史必须先可靠导出再删除正文表。Worker 9→10 仅从可访问的 `intent.registration.controllerInstanceId` 映射控制器身份，并设置原有 execution recovery 字段。Web 的清理记录自 v2 起只保留 kind、startedAt、deadline；原生操作身份仍由执行记录持有，回执从 Controller journal 读取。1→2 迁移只移除原定的旧重复字段，保留其余业务记录，不在当前代码兼容旧清理步骤表示。两步映射遇到无效 JSON、不可操作容器或必要来源字段缺失时保留原字符串并继续其他行；没有字段变化的行也保留原字符串。升级不据此修复关联或验证完整业务记录。Web 2→3 新增编排阻塞表并保留原执行记录，已升级的库拒绝旧二进制访问。版本 0 重置不成为非零版本的历史数据清洗路径。
+Review v2 不为接入公共机制额外提高版本或改写记录；journal v6 的版本变化来自会话正文转文件归档，可映射的原非零历史必须先可靠导出再删除正文表。Worker 9→10 仅从可访问的 `intent.registration.controllerInstanceId` 映射控制器身份，并设置原有 execution recovery 字段。Web 的清理记录自 v2 起只保留 kind、startedAt、deadline；原生操作身份仍由执行记录持有，回执从 Controller journal 读取。1→2 迁移只移除原定的旧重复字段，保留其余业务记录，不在当前代码兼容旧清理步骤表示。两步映射遇到无效 JSON、不可操作容器或必要来源字段缺失时保留原字符串并继续其他行；没有字段变化的行也保留原字符串。升级不据此修复关联或验证完整业务记录。Web 2→3 新增编排阻塞表并保留原执行记录，已升级的库拒绝旧二进制访问。版本 0 重置不成为非零版本的历史数据清洗路径。
 
-Controller v10 必须从已验证的历史来源导入当前正文；v8–9 只能采用已提交指针，不收养目录中的较新候选。正文、totals、旧索引删除、cleanup pending 和版本同事务转换，原 operation、来源、native 身份及停止证据保留。导入后旧文件仍受 reader barrier 保护；只有完整停止维护、后置 checkpoint、真实占用核对与预留结算完成，才允许下一 writer。upgrade-only 可以读取已导入历史并保留 pending，不得制造 stopped。当前格式的普通正文生产者和消费者必须统一使用 SQL，旧解码器仅服务编号迁移。
+Controller v6、v8 和 v10 仅从 SQL 行或已提交索引指定的来源执行必要映射，不扫描或采用未引用文件，不验证消息完整性、hash、身份或资源关联。目标不能表示或必要来源缺失时，仅丢弃相应最小项，其他项继续；外部文件不因坏值删除或修复。v12 仅映射 capture state 的变化字段，无法映射的 state 保留原值，receipt 和图片关联不修复。正文、实际输出的 totals、旧索引删除、cleanup pending 和版本同事务转换，原 operation、来源、native 身份及停止证据保留。导入后旧文件仍受 reader barrier 保护；只有完整停止维护、后置 checkpoint、真实占用核对与预留结算完成，才允许下一 writer。upgrade-only 保留 pending，不得制造 stopped。当前格式的普通正文生产者和消费者必须统一使用 SQL，旧解码器仅服务编号迁移。
 
 独立 Herdr lifecycle 库保留自身的无版本拒绝与严格来源 schema/version 边界。其格式 3 升级只为两张表的可操作旧 run 映射 `nativeLaunch`，不校验完整 lifecycle/Session、SQL identity/version 对应或 retirement 关系；无法操作的 JSON 或 run 保持原值，其余独立项继续。未映射的 JSON token 和重复键必须保留，不能因整行重新序列化消除原有冲突或将原数值改成 null。转换不执行 8 MiB 等普通容量政策。有效超 8 MiB 存量映射结果须能重开和只读 attach；普通新增写入的 8 MiB 限制和现有业务读取校验保持。具体映射由 [Herdr 生命周期设计](../design/herdr-worker-lifecycle.md#身份与存储)拥有，真实 SQL、IO 或提交错误保持失败或未知。
 
@@ -50,7 +50,7 @@ Controller v10 必须从已验证的历史来源导入当前正文；v8–9 只�
 
 ## 失败与可观察结果
 
-不支持的非零版本或来源、必要结构缺失和无效数据必须明确失败，保留数据；Worker 9→10 和 Web 1→2 的局部 JSON 无法映射时按上述规则保留原值。程序不降级或猜测修复，SQL、JSON、权限、磁盘、锁等待、提交、回滚及关闭失败保留实际原因和错误链。非空版本 0 重置可在 BEGIN 前临时关闭连接外键，每次实际重置都必须在提交前通过 `foreign_key_check`，成功提交后在返回连接前恢复及核实原设置；空版本 0 初始化和非零迁移保持原设置。已提交的事务不因后续外键设置恢复、诊断或关闭失败而变为回滚，也不能因此重跑迁移；外键恢复失败作为清理错误报告已提交结果并关闭连接。
+不支持的非零版本或来源、必要结构缺失必须明确失败，保留数据；Controller、Worker 9→10 和 Web 1→2 的局部值无法映射时按上述规则处理。程序不降级或猜测修复，实际 SQL、权限、磁盘、锁等待、提交、回滚及关闭失败保留实际原因和错误链。非空版本 0 重置可在 BEGIN 前临时关闭连接外键，每次实际重置都必须在提交前通过 `foreign_key_check`，成功提交后在返回连接前恢复及核实原设置；空版本 0 初始化和非零迁移保持原设置。已提交的事务不因后续外键设置恢复、诊断或关闭失败而变为回滚，也不能因此重跑迁移；外键恢复失败作为清理错误报告已提交结果并关闭连接。
 
 Resume lease 申请只有成功返回后才能用于启动新的原生执行。格式转换及其完成诊断先于独立业务事务中的查重和 INSERT。业务 COMMIT 正常返回才确认取得租约；随后 inventory 失败按本次 native_key+nonce 精确释放。业务提交结果未知时保留可能持久化的 nonce，不以格式提交结果代替业务提交结果。
 
