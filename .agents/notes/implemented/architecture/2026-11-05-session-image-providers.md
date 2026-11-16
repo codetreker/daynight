@@ -121,11 +121,13 @@ with one committed current body row and preserves the same guarantee. The Provid
 current committed view rather than replaying an older entry draft.
 
 Provider aliases, cursors and occurrence state use the existing bounded metadata
-store. Wire spools charge actual bytes to the shared media ledger and retain their
-charge until readers stop and removal is durable. Transcript index writers retain
-a process-bound reservation across crashes; recovery must prove that the original
-writer stopped before admitting another writer. None of these private adapters
-creates an independent upload or public resource protocol.
+store. Wire spools include actual and unwritten bytes in free-space checks and
+retain their files until readers stop and removal is durable. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes the shared cumulative media accounting. Transcript index writers
+retain a process-bound reservation across crashes; recovery must prove that the
+original writer stopped before admitting another writer. None of these private
+adapters creates an independent upload or public resource protocol.
 
 An image modality in a model catalog does not prove geometry. Codex binds the
 actual thread backend before applying a profile; Copilot combines its model

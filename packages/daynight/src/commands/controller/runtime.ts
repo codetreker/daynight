@@ -82,7 +82,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   if (ticket.provider !== options.provider || await realpath(ticket.cwd) !== await realpath(process.cwd())) throw new Error("Controller launch provider or working directory mismatch.");
   if (bootstrapSignal.aborted) return;
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
-  const journalFile = path.join(directory, "journal.sqlite"), stateDirectory = resolveConfigurationPaths(options.homeDirectory).stateDirectory;
+  const journalFile = path.join(directory, "journal.sqlite");
   let storagePermit: ControllerStoragePermit | undefined;
   let observedAt: number | undefined;
   while (!bootstrapSignal.aborted) {
@@ -90,7 +90,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
     catch (error) { if (!isControllerStorageLockHeld(error)) throw error; }
     if (storagePermit !== undefined) {
       let prepared;
-      try { prepared = prepareControllerStorage({ journalFile, stateDirectory, mode: "writer", ticket }, storagePermit); }
+      try { prepared = prepareControllerStorage({ journalFile, mode: "writer", ticket }, storagePermit); }
       catch (error) {
         diagnostic(error);
         if (!controllerStorageConnectionIsOpen(error)) {
@@ -120,7 +120,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   const controllerProcess = await captureControllerProcessProof(ticket.launchId);
   if (bootstrapSignal.aborted) return;
   let journal: ReturnType<typeof openControllerLifecycleStore>;
-  try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true, mediaStateDirectory: stateDirectory }); }
+  try { journal = openControllerLifecycleStore(journalFile, ticket, { storagePermit, controllerProcess, contentOwnedLocally: true }); }
   catch (error) { diagnostic(error); journalClosed = !controllerStorageConnectionIsOpen(error); throw error; }
   journalClosed = false; mediaClosed = false;
   own(() => { journal.close(); journalClosed = true; });

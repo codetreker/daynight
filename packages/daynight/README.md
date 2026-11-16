@@ -3204,16 +3204,17 @@ queue. Version 11 initializes the total once from old encoded text during the
 original migration transaction, independent of the SQLite file encoding.
 
 Version 10 imports only committed historical body pointers and preserves the
-original execution, native identity, operations and message origins. Upgrade-only
-reads retain stopping evidence and pending cleanup; they do not prove native
-termination. Proven stopped maintenance completes the reader checkpoint barrier,
-legacy body retirement, in-place VACUUM, post-checkpoint file verification and
-actual reservation settlement before the next writer starts. Busy readers or
-physical capacity refusal keep the original history and report maintenance
-waiting. Current timeline JSON remains limited to 64 MiB and 100000 entries;
-normal physical admission still applies independently. The
-[SQL content design](../../docs/design/session-sqlite-content.md) defines these
-storage and recovery boundaries.
+original execution, native identity, operations and message origins.
+Upgrade-only reads retain stopping evidence and pending cleanup; they do not
+prove native termination. Proven stopped maintenance completes the reader
+checkpoint barrier, legacy body retirement, in-place VACUUM, post-checkpoint
+file verification and ordinary metadata and free-space admission before the next
+writer starts. Busy readers or physical capacity refusal keep the original
+history and report maintenance waiting. Current timeline JSON remains limited to
+64 MiB and 100000 entries; normal physical admission still applies
+independently. The [SQL content
+design](../../docs/design/session-sqlite-content.md) defines these storage and
+recovery boundaries.
 
 Initial launch preflight uses the frozen ticket before spawn. The child prepares
 under its own permit and commits its generation and original Controller proof in

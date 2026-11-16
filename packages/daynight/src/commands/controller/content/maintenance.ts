@@ -10,9 +10,9 @@ import { currentSqliteVersion, inspectSqlite } from "../../../platform/sqlite-fo
 import { parseStoredTimelineEntry } from "../../../session/protocol.js";
 import { controllerJournalFormat, type JournalMigrationContext } from "../journal-format.js";
 import { preflightPendingTimeline } from "../pending-content.js";
-import { CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES, controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
+import { CONTROLLER_SETTLEMENT_BYTES, controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
 import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
-import { controllerStorageMediaUsage, assertControllerStorageCapacity, isControllerStorageCapacityError, reserveControllerStoragePeak } from "../storage-capacity.js";
+import { controllerStorageMediaUsage, assertControllerStorageCapacity, isControllerStorageCapacityError, assertControllerStorageFreeSpace } from "../storage-capacity.js";
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
 import { assertControllerStorageRole, controllerStorageExecutionRow, controllerTimelineCleanupPending, observeControllerStorage, reportControllerStorageEvent, type ControllerStorageObservation, type ControllerStoragePreparation, type ControllerStorageRequest } from "../storage-preparation.js";
 import { openTimelineStore } from "./timeline-store.js";
@@ -29,35 +29,26 @@ const size = (file: string): number => {
   try { const stat = lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Controller maintenance source is not a private regular file."); return stat.size; }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0; throw error; }
 };
-const originalExecutionId = (db: Database.Database, expected?: string): string | undefined => {
-  const row = controllerStorageExecutionRow(db);
-  if (row === undefined) return expected;
-  const snapshot = JSON.parse(row.snapshot) as { executionId?: unknown };
-  if (typeof snapshot.executionId !== "string" || canonicalId(snapshot.executionId) !== snapshot.executionId || expected !== undefined && expected !== snapshot.executionId) throw new Error("Controller timeline reservation belongs to another execution.");
-  return snapshot.executionId;
-};
-
 export type TimelineMaintenanceReservation = JournalMigrationContext & {
-  refresh(additionalBytes?: number): number;
+  refresh(additionalBytes?: number): void;
   assertReservedWrite(additionalBytes: number): void;
   settleNormalAdmission(): void;
 };
 /** Maintenance accounts for retained sources and remaining work before compaction. */
 export const createTimelineMaintenanceReservation = (db: Database.Database, options: {
-  journalFile: string; stateDirectory: string; storagePermit: ControllerStoragePermit; executionId?: string; deadline?: number;
+  journalFile: string; storagePermit: ControllerStoragePermit; deadline?: number;
 }): TimelineMaintenanceReservation => {
-  const { journalFile, stateDirectory, storagePermit, deadline } = options;
-  let reservedPeak = 0, maximumWrite = 0;
+  const { journalFile, storagePermit, deadline } = options;
+  let admitted = false, maximumWrite = 0;
   const assertContext = (): void => {
     assertControllerStoragePermit(storagePermit, journalFile);
     timeout(deadline);
-    if (!db.memory && db.name !== journalFile || !path.isAbsolute(stateDirectory)) throw new Error("Controller timeline reservation context is invalid.");
+    if (!db.memory && db.name !== journalFile) throw new Error("Controller timeline reservation context is invalid.");
   };
-  const refresh = (additionalBytes = 0): number => {
+  const refresh = (additionalBytes = 0): void => {
     assertContext();
     if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) throw new TypeError("Controller timeline growth must be a nonnegative safe integer.");
-    const executionId = originalExecutionId(db, options.executionId);
-    const metadata = controllerMetadataBudget(journalFile, db).bytes(), media = controllerStorageMediaUsage(journalFile, db);
+    const media = controllerStorageMediaUsage(journalFile, db);
     let bodyBytes = 0, entryCount = 0, exportBytes = 0, largestWrite = 65536;
     if (hasTable(db, "projection")) {
       let serializedTimelineBytes = Buffer.byteLength('{"entries":[]}');
@@ -97,16 +88,14 @@ export const createTimelineMaintenanceReservation = (db: Database.Database, opti
     const importedGrowth = bodyBytes * 2 + entryCount * 256 + 65536;
     const projectedDatabase = Math.max(physical.databaseBytes, Number(db.pragma("page_count", { simple: true })) * Number(db.pragma("page_size", { simple: true }))) + importedGrowth;
     const growth = exportBytes + importedGrowth + projectedDatabase * 2 + Math.max(largestWrite, additionalBytes) + CONTROLLER_SETTLEMENT_BYTES;
-    const absolute = Math.max(reservedPeak, media.reservedBytes + Math.max(CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES, metadata + growth));
-    if (!Number.isSafeInteger(absolute)) throw new Error("Controller timeline peak exceeds the supported byte count.");
-    if (!db.memory) reserveControllerStoragePeak(journalFile, stateDirectory, executionId, absolute, growth + Math.max(0, media.reservedBytes - media.actualBytes), deadline);
-    reservedPeak = absolute; maximumWrite = Math.max(maximumWrite, largestWrite, additionalBytes);
-    return absolute;
+    if (!Number.isSafeInteger(growth)) throw new Error("Controller timeline peak exceeds the supported byte count.");
+    if (!db.memory) assertControllerStorageFreeSpace(journalFile, growth + Math.max(0, media.reservedBytes - media.actualBytes));
+    admitted = true; maximumWrite = Math.max(maximumWrite, largestWrite, additionalBytes);
   };
   const assertReservedWrite = (additionalBytes: number): void => {
     assertContext();
     if (!Number.isSafeInteger(additionalBytes) || additionalBytes < 0) throw new TypeError("Controller timeline growth must be a nonnegative safe integer.");
-    if (reservedPeak === 0) refresh(additionalBytes);
+    if (!admitted) refresh(additionalBytes);
     else if (additionalBytes > maximumWrite) throw new Error("Controller timeline write exceeds its admitted maintenance peak.");
   };
   const reservation: TimelineMaintenanceReservation = {
@@ -114,8 +103,8 @@ export const createTimelineMaintenanceReservation = (db: Database.Database, opti
     refresh,
     assertReservedWrite,
     settleNormalAdmission: () => {
-      assertControllerStoragePermit(storagePermit, journalFile);
-      assertControllerStorageCapacity(journalFile, db, stateDirectory, originalExecutionId(db, options.executionId), 0, deadline);
+      assertContext();
+      assertControllerStorageCapacity(journalFile, db);
     },
   };
   return reservation;
@@ -288,7 +277,7 @@ export const maintainControllerTimeline = (options: {
   }
   if (db.pragma("journal_mode", { simple: true }) !== "wal") throw new Error("Controller timeline maintenance requires its original WAL journal.");
   db.pragma("synchronous = FULL"); db.pragma("wal_autocheckpoint = 1000");
-  const reservation = options.reservation ?? createTimelineMaintenanceReservation(db, { ...request, storagePermit, ...(snapshot === null ? {} : { executionId: snapshot.executionId }) });
+  const reservation = options.reservation ?? createTimelineMaintenanceReservation(db, { ...request, storagePermit });
   const started = Date.now(), migrationId = randomUUID();
   const report = (phase: string, kind: SqliteMigrationEvent["kind"], metrics: Record<string, number | string | boolean> = {}, outcome: SqliteOutcome = "committed", cause?: unknown): void => {
     const event: SqliteMigrationEvent = { migrationId, database: controllerJournalFormat.name, file: request.journalFile, kind, phase, fromVersion: currentVersion, toVersion: currentVersion, durationMs: Date.now() - started, outcome, storage: metrics, ...(cause === undefined ? {} : { error: serializeSqliteError(cause) }) };

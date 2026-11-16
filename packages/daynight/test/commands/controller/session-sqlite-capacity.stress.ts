@@ -36,10 +36,10 @@ const fixture = () => {
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", projectId: randomUUID(), taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), userId: randomUUID(), provider: "codex", cwd: root, nativeHome: path.join(root, "native"), configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialOperationId: randomUUID(), initialPrompt: "generated storage acceptance", resumeNativeSessionId: null, credentialFile: path.join(root, "grant.json"), ipcEndpoint: path.join(root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const permit = acquireControllerStoragePermit(file);
   const owned = { root, close: (): void => permit.release() }; fixtures.push(owned);
-  expect(prepareControllerStorage({ journalFile: file, stateDirectory: root, mode: "writer", ticket }, permit, () => {})).toMatchObject({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
+  expect(prepareControllerStorage({ journalFile: file, mode: "writer", ticket }, permit, () => {})).toMatchObject({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
   const db = new Database(file);
   owned.close = (): void => { if (db.open) db.close(); permit.release(); };
-  const journal = openControllerLifecycleStore(file, ticket, { database: db, storagePermit: permit, mediaStateDirectory: root, contentOwnedLocally: true, onMigration: () => {} });
+  const journal = openControllerLifecycleStore(file, ticket, { database: db, storagePermit: permit, contentOwnedLocally: true, onMigration: () => {} });
   expect(db.pragma("user_version", { simple: true })).toBe(10); expect(db.pragma("journal_mode", { simple: true })).toBe("wal"); expect(db.pragma("synchronous", { simple: true })).toBe(2); expect(db.pragma("wal_autocheckpoint", { simple: true })).toBe(1000);
   let closed = false, publications = 0, acknowledgements = 0, peakBytes = 0, peakMetadataBytes = 0, peakOutboxBytes = 0;
   let maximumAcknowledgementBatch = 1;

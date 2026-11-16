@@ -1,16 +1,16 @@
 import type Database from "better-sqlite3";
 import { openSqliteDatabase, type OpenSqliteOptions } from "../../src/platform/sqlite-access.js";
 import { acquireControllerStoragePermit, controllerStorageConnectionIsOpen, type ControllerStoragePermit } from "../../src/commands/controller/storage-lock.js";
-import { controllerJournalStateDirectory, controllerJournalWriteOptions } from "../../src/commands/controller/storage-preparation.js";
+import { controllerJournalWriteOptions } from "../../src/commands/controller/storage-preparation.js";
 
 const permits = new WeakMap<Database.Database, ControllerStoragePermit>();
-type ControllerTestDatabaseOptions = Omit<OpenSqliteOptions, "file" | "format"> & { file: string; stateDirectory?: string };
+type ControllerTestDatabaseOptions = Omit<OpenSqliteOptions, "file" | "format"> & { file: string };
 
 export const openControllerTestDatabase = (options: ControllerTestDatabaseOptions): Database.Database => {
-  const { file, stateDirectory = controllerJournalStateDirectory(file), ...databaseOptions } = options;
+  const { file, ...databaseOptions } = options;
   const permit = acquireControllerStoragePermit(file, undefined, { fileMustExist: !options.allowCreate });
   try {
-    const db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit, stateDirectory), ...databaseOptions });
+    const db = openSqliteDatabase({ ...controllerJournalWriteOptions(file, permit), ...databaseOptions });
     permits.set(db, permit);
     return db;
   } catch (failure) {

@@ -26,7 +26,7 @@ const stageStoppedFixture = (store: ReturnType<typeof openControllerLifecycleSto
 const commitStoppedFixture = async (file: string, ticket: ControllerLaunchTicket): Promise<void> => {
   if (process.platform !== "win32") return;
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  try { await recordStoppedControllerGeneration(file, ticket, { stateDirectory: path.dirname(file), jobLease: {} as ControllerJobLease }); } finally { confirm.mockRestore(); }
+  try { await recordStoppedControllerGeneration(file, ticket, { jobLease: {} as ControllerJobLease }); } finally { confirm.mockRestore(); }
 };
 afterEach(async () => { Object.defineProperty(process, "platform", platform); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {

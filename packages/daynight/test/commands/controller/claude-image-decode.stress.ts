@@ -4,14 +4,12 @@ import { createHash, randomFillSync, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, mkdtemp, open, readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import Database from "better-sqlite3";
 import sharp from "sharp";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { ImageCaptureRequest, ValidatedImage } from "../../../src/session/image-values.js";
 const { openClaudeTranscriptHelper } = await import(new URL("../../../dist/commands/controller/providers/claude-transcript-helper.js", import.meta.url).href) as typeof import("../../../src/commands/controller/providers/claude-transcript-helper.js");
 const { openControllerLifecycleStore } = await import(new URL("../../../dist/commands/controller/lifecycle-store.js", import.meta.url).href) as typeof import("../../../src/commands/controller/lifecycle-store.js");
 const { createImageDecoder } = await import(new URL("../../../dist/commands/controller/media/image-decoder.js", import.meta.url).href) as typeof import("../../../src/commands/controller/media/image-decoder.js");
-const { releaseControllerMediaBudget } = await import(new URL("../../../dist/commands/controller/media/budget-ledger.js", import.meta.url).href) as typeof import("../../../src/commands/controller/media/budget-ledger.js");
 
 test("valid large Claude history originals survive bounded helper reads, public staging and complete isolated decoding", async () => {
   await mkdir(".tmp", { recursive: true }); const root = await mkdtemp(path.resolve(".tmp/claude-valid-decode-"));
@@ -22,7 +20,7 @@ test("valid large Claude history originals survive bounded helper reads, public 
   const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: randomUUID(), executionId, controllerId: randomUUID(), controllerInstanceId: randomUUID(), sessionId: randomUUID(), executionGeneration: "1", serverOrigin: "https://daynight.example", testExecutionId: randomUUID(), ownerUserId: randomUUID(), provider: "claude", cwd, nativeHome, configuration: { agent: "claude", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, initialInput: "none", initialOperationId: randomUUID(), initialPrompt: "", resumeNativeSessionId: null, credentialFile: path.join(root, "grant.json"), ipcEndpoint: path.join(root, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
   const manifest = JSON.parse(await readFile("dist/commands/controller/media/image-validation-manifest.json", "utf8"));
   const decoderPeaks: number[] = [], decoder = createImageDecoder({ runtimePath: process.execPath, helperPath: path.resolve("dist/commands/controller/media/image-validation-helper.js"), enginePath: path.resolve("dist/commands/controller/media/image-validation.js"), buildId: manifest.buildId, helperSha256: manifest.helperSha256, engineSha256: manifest.engineSha256, onPeakRss: bytes => decoderPeaks.push(bytes) });
-  const options = { imageDecoder: decoder, mediaStateDirectory: stateDirectory }, captures: { request: ImageCaptureRequest; validated: ValidatedImage }[] = [];
+  const options = { imageDecoder: decoder }, captures: { request: ImageCaptureRequest; validated: ValidatedImage }[] = [];
   let journal = openControllerLifecycleStore(file, ticket, options), reader: Awaited<ReturnType<typeof openClaudeTranscriptHelper>> | undefined, child: ChildProcess | undefined, maxChunk = 0, transferred = 0;
   try {
     journal.patchSnapshot({ nativeSessionId });
@@ -78,9 +76,6 @@ test("valid large Claude history originals survive bounded helper reads, public 
     process.stdout.write(JSON.stringify({ evidence: "controlled Claude transcript, real bounded helper, real journal/public stage and isolated complete decoder; no real model or service commit", encodedBytes, transferred, maxChunk, originals: expected, decoderPeakRssBytes: Math.max(...decoderPeaks), sourceRemovedBeforeJournalReopen: true, captureCopiesReadableAfterReopen: captures.length }) + "\n");
   } finally {
     await reader?.close(); await journal.stopMedia(); journal.close(); await rm(executionDirectory, { recursive: true, force: true });
-    releaseControllerMediaBudget(stateDirectory, executionId, executionDirectory);
-    const ledgerFile = path.join(stateDirectory, "controller", "media", "budget.sqlite");
-    if (existsSync(ledgerFile)) { const ledger = new Database(ledgerFile, { readonly: true }); try { expect(ledger.prepare("SELECT COUNT(*) AS count FROM allocations WHERE execution_id=?").get(executionId)).toEqual({ count: 0 }); } finally { ledger.close(); } }
     await rm(root, { recursive: true, force: true });
   }
 }, 120_000);

@@ -29,7 +29,7 @@ permit; current-format reads require neither. The [capacity-free conversion deci
 body rows while preserving message origins. The
 [SQL content components](2026-11-12-session-sqlite-content-components.md) reuse the
 permit and role owners for historical import and stopped maintenance; pending
-cleanup, actual physical admission and settlement finish before a new writer
+cleanup and ordinary metadata/free-space admission finish before a new writer
 commits its generation. The
 [protocol design](../../../../docs/design/task-session-protocol.md#controller-与原生会话)
 owns the role, capacity and failure contracts.
@@ -78,7 +78,11 @@ intent survives lock and capacity waiting without another spawn or recovery
 budget consumption. Process-state uncertainty, unknown transactions and failed
 handle closure remain visible and retain the evidence needed for recovery.
 
-Local ownership adds short gate operations around writable phases; maintenance and ordinary writes retain their capacity admission. It does not change public
-Session protocols, image resource ownership or native input deduplication.
-Body format and retirement belong to the SQL content owner. The permit governs cooperating local code; it does
-not authenticate stored data against a malicious local writer.
+Local ownership adds short gate operations around writable phases; maintenance
+and ordinary writes retain metadata and free-space admission. The [media ledger
+removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
+supersedes cumulative media reservations without changing permit ownership. It
+does not change public Session protocols, image resource ownership or native
+input deduplication. Body format and retirement belong to the SQL content owner.
+The permit governs cooperating local code; it does not authenticate stored data
+against a malicious local writer.

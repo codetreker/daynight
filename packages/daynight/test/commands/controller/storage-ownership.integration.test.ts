@@ -20,8 +20,7 @@ import type { ControllerJobLease } from "../../../src/commands/controller/window
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
-import { ControllerMediaBudgetError } from "../../../src/commands/controller/media/budget-ledger.js";
-import * as capacity from "../../../src/commands/controller/storage-capacity.js";
+import { ControllerStorageFreeSpaceError } from "../../../src/commands/controller/storage-capacity.js";
 
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 
@@ -38,13 +37,43 @@ const stoppedSnapshot = (ticket: ControllerLaunchTicket) => ({ executionId: tick
 const initialize = (f: Awaited<ReturnType<typeof fixture>>, snapshot?: ReturnType<typeof stoppedSnapshot>, owner: number | null = null) => {
   const permit = acquireControllerStoragePermit(f.file);
   try {
-    expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit, () => {})).toMatchObject({ kind: "prepared", snapshot: null });
+    expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit, () => {})).toMatchObject({ kind: "prepared", snapshot: null });
     openResourceFiles(f.file, f.ticket.sessionId);
     const db = new Database(f.file);
     try { if (snapshot !== undefined) db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(f.ticket), owner, JSON.stringify(snapshot)); }
     finally { db.close(); }
   } finally { permit.release(); }
 };
+
+test.each(["absent", "overcommitted", "unreadable"] as const)("writer storage preparation ignores an %s retired ledger and media above the old execution ceiling", async ledgerState => {
+  const f = await fixture(), ledgerFile = path.join(f.root, "controller", "media", "budget.sqlite");
+  await mkdir(path.dirname(ledgerFile), { recursive: true, mode: 0o700 });
+  if (ledgerState === "overcommitted") {
+    const ledger = new Database(ledgerFile);
+    try {
+      ledger.exec("CREATE TABLE allocations(execution_id TEXT PRIMARY KEY,reserved_bytes INTEGER NOT NULL CHECK(reserved_bytes>=0))");
+      ledger.prepare("INSERT INTO allocations VALUES(?,?)").run(f.ticket.executionId, 2_306_867_201);
+      ledger.prepare("INSERT INTO allocations VALUES(?,?)").run(randomUUID(), 8_589_934_593);
+    } finally { ledger.close(); }
+  } else if (ledgerState === "unreadable") await mkdir(ledgerFile);
+  const originalLedger = ledgerState === "overcommitted" ? await readFile(ledgerFile) : null;
+  const retained = path.join(`${f.file}.media-staging`, "retained.bin");
+  await mkdir(path.dirname(retained), { mode: 0o700 }); await writeFile(retained, "retained source", { mode: 0o600 });
+  const lstat = fs.lstatSync;
+  vi.spyOn(fs, "lstatSync").mockImplementation((...args: Parameters<typeof fs.lstatSync>) => {
+    const value = lstat(...args);
+    // Admission sees a retained file beyond the old limit without a GiB allocation.
+    return value === undefined || args[0] !== retained ? value : new Proxy(value, { get: (target, key) => key === "size" ? typeof value.size === "bigint" ? 2_306_867_201n : 2_306_867_201 : Reflect.get(target, key) });
+  });
+  initialize(f);
+  const permit = acquireControllerStoragePermit(f.file);
+  try { expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit, () => {})).toMatchObject({ kind: "prepared", snapshot: null }); }
+  finally { permit.release(); }
+  expect(await readFile(retained, "utf8")).toBe("retained source");
+  if (originalLedger) expect(await readFile(ledgerFile)).toEqual(originalLedger);
+  else if (ledgerState === "absent") await expect(stat(ledgerFile)).rejects.toMatchObject({ code: "ENOENT" });
+  else expect((await stat(ledgerFile)).isDirectory()).toBe(true);
+});
 
 const createV10 = (f: Awaited<ReturnType<typeof fixture>>, snapshot: ReturnType<typeof stoppedSnapshot>, cleanup: 0 | 1, owner: number | null = null) => {
   const db = new Database(f.file);
@@ -62,7 +91,7 @@ test("writer admission rejects a generation after committing the v10 conversion"
   try { original.prepare("INSERT INTO outbox(sequence,value) VALUES(1,?)").run(event); } finally { original.close(); }
   const permit = acquireControllerStoragePermit(f.file);
   try {
-    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: { ...f.ticket, executionGeneration: "3", resumeNativeSessionId: snapshot.nativeSessionId } }, permit, () => {})).toThrow("exact stopped predecessor");
+    expect(() => prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: { ...f.ticket, executionGeneration: "3", resumeNativeSessionId: snapshot.nativeSessionId } }, permit, () => {})).toThrow("exact stopped predecessor");
   } finally { permit.release(); }
   const check = new Database(f.file, { readonly: true });
   try {
@@ -86,7 +115,7 @@ test("writer admission retains a changed format error and closes the transaction
   });
   try {
     let failure: unknown;
-    try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit, () => {}); } catch (error) { failure = error; }
+    try { prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit, () => {}); } catch (error) { failure = error; }
     expect(immediate).toBe(2);
     expect(failure).toMatchObject({ kind: "unsupported-version", outcome: "rolled-back", connectionClosed: true, context: { phase: "storage-admission" }, cause: expect.objectContaining({ kind: "unsupported-version", context: expect.objectContaining({ phase: "assert-current" }) }) });
     expect(subject?.open).toBe(false);
@@ -108,7 +137,7 @@ test("invalid admission snapshot keeps parser cause without exposing its content
   });
   try {
     let failure: unknown;
-    try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit, () => {}); } catch (error) { failure = error; }
+    try { prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit, () => {}); } catch (error) { failure = error; }
     expect(failure).toMatchObject({ kind: "operation-failed", outcome: "rolled-back", connectionClosed: true, cause: expect.any(SyntaxError) });
     expect((failure as Error).message).not.toContain(secret);
     expect(JSON.stringify(serializeSqliteError(failure))).not.toContain(secret);
@@ -149,7 +178,7 @@ test("v10 pure upgrade does not parse the business snapshot or open a resource f
   } finally { permit.release(); }
 });
 
-test.each(["execution", "shared", "free-space"] as const)("pure upgrade ignores insufficient %s capacity when actual writes succeed", async kind => {
+test.each(["shared", "free-space"] as const)("pure upgrade ignores insufficient %s capacity when actual writes succeed", async kind => {
   const f = await fixture(), snapshot = stoppedSnapshot(f.ticket);
   createV10(f, snapshot, 0);
   const ledgerDirectory = path.join(f.root, "controller", "media");
@@ -161,14 +190,12 @@ test.each(["execution", "shared", "free-space"] as const)("pure upgrade ignores 
       ledger.prepare("INSERT INTO allocations VALUES(?,?)").run(randomUUID(), 8_589_934_592);
     } finally { ledger.close(); }
   }
-  const execution = kind === "execution" ? vi.spyOn(capacity, "reserveControllerStoragePeak").mockImplementation(() => { throw new ControllerMediaBudgetError("execution"); }) : undefined;
   const disk = kind === "free-space" ? vi.spyOn(fs, "statfsSync").mockImplementation(() => ({ bavail: 0n, bsize: 4096n }) as never) : undefined;
   const permit = acquireControllerStoragePermit(f.file);
   try {
     expect(upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toEqual({ version: currentSqliteVersion(controllerJournalFormat), legacyTimelineCleanupPending: false });
     expect(readControllerSnapshot(f.file, permit)).toEqual(snapshot);
     if (disk) expect(disk).not.toHaveBeenCalled();
-    if (execution) expect(execution).not.toHaveBeenCalled();
   } finally { permit.release(); }
   if (kind === "shared") {
     const check = new Database(path.join(ledgerDirectory, "budget.sqlite"), { readonly: true });
@@ -180,7 +207,7 @@ test("stop recording upgrades v10 without capacity admission before observing an
   const f = await fixture(), snapshot = { ...stoppedSnapshot(f.ticket), lifecycle: "stopping", nativeStopped: false, stoppedAt: null, controllerProcess: { pid: 123, parentPid: 12, processGroupId: process.platform === "win32" ? null : 123, startedAt: "original", commandHash: "a".repeat(64), ...(process.platform === "win32" ? { jobObjectName: `Local\\Daynight-${f.ticket.launchId}` } : {}) } };
   createV10(f, snapshot as unknown as ReturnType<typeof stoppedSnapshot>, 1);
   vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
-  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { stateDirectory: f.root, ...(process.platform === "win32" ? { jobLease: {} as ControllerJobLease } : {}) });
+  const stopped = await recordStoppedControllerGeneration(f.file, f.ticket, { ...(process.platform === "win32" ? { jobLease: {} as ControllerJobLease } : {}) });
   expect(stopped).toMatchObject({ executionId: f.ticket.executionId, lifecycle: "stopped", nativeStopped: true });
   expect(readControllerSnapshot(f.file)).toEqual(stopped);
   const db = new Database(f.file, { readonly: true });
@@ -243,7 +270,7 @@ test("a fresh writer is prepared without committing a generation and accepts a s
   const f = await fixture(), permit = acquireControllerStoragePermit(f.file);
   try {
     const ticket = { ...f.ticket, resumeNativeSessionId: randomUUID() };
-    expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket }, permit, () => {})).toEqual({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
+    expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket }, permit, () => {})).toEqual({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
     const db = new Database(f.file, { readonly: true });
     try { expect(db.prepare("SELECT COUNT(*) AS count FROM execution").get()).toEqual({ count: 0 }); expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); }
     finally { db.close(); }
@@ -255,7 +282,7 @@ test("an empty execution cannot admit a later-generation writer", async () => {
   const f = await fixture(), permit = acquireControllerStoragePermit(f.file);
   try {
     let failure: unknown;
-    try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: { ...f.ticket, executionGeneration: "2" } }, permit, () => {}); } catch (error) { failure = error; }
+    try { prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: { ...f.ticket, executionGeneration: "2" } }, permit, () => {}); } catch (error) { failure = error; }
     expect(failure).toMatchObject({ message: "Controller storage requires the original first-generation ticket or stopped predecessor." });
     const db = new Database(f.file, { readonly: true }); try { expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); expect(db.prepare("SELECT count(*) AS total FROM execution").get()).toEqual({ total: 0 }); } finally { db.close(); }
   } finally { permit.release(); }
@@ -267,7 +294,7 @@ test("upgrade-only preserves a stopping snapshot while maintenance refuses unpro
   const permit = acquireControllerStoragePermit(f.file);
   try {
     expect(upgradeControllerJournal(f.file, permit)).toEqual({ version: currentSqliteVersion(controllerJournalFormat), legacyTimelineCleanupPending: false });
-    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toThrow("Controller storage maintenance requires the original stopped generation.");
+    expect(() => prepareControllerStorage({ journalFile: f.file, mode: "stopped-maintenance", ticket: f.ticket }, permit)).toThrow("Controller storage maintenance requires the original stopped generation.");
     const db = new Database(f.file, { readonly: true }); try { expect(JSON.parse((db.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot)).toEqual(snapshot); } finally { db.close(); }
   } finally { permit.release(); }
 });
@@ -277,10 +304,10 @@ test.skipIf(process.platform === "win32")("writer preparation accepts only the e
   const permit = acquireControllerStoragePermit(f.file);
   const next = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: snapshot.nativeSessionId };
   try {
-    expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: next }, permit)).toMatchObject({ kind: "prepared", snapshot });
-    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: { ...next, executionGeneration: "3" } }, permit)).toThrow();
-    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: { ...next, resumeNativeSessionId: randomUUID() } }, permit)).toThrow();
-    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit)).toThrow();
+    expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: next }, permit)).toMatchObject({ kind: "prepared", snapshot });
+    expect(() => prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: { ...next, executionGeneration: "3" } }, permit)).toThrow();
+    expect(() => prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: { ...next, resumeNativeSessionId: randomUUID() } }, permit)).toThrow();
+    expect(() => prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit)).toThrow();
   } finally { permit.release(); }
 });
 
@@ -296,17 +323,13 @@ test("only typed capacity refusal becomes a waiting result and closes the local 
   const f = await fixture(); initialize(f);
   const permit = acquireControllerStoragePermit(f.file);
   try {
-    // The persistent file uses actual stat bytes; a typed ledger refusal tests
-    // admission without allocating a large physical fixture.
-    const ledgerFile = path.join(f.root, "controller", "media", "budget.sqlite"), ledger = new Database(ledgerFile);
-    try { ledger.prepare("INSERT INTO allocations VALUES(?,?)").run(randomUUID(), 8_589_934_592); }
-    finally { ledger.close(); }
-    const result = prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit);
+    vi.spyOn(fs, "statfsSync").mockImplementation(() => ({ bavail: 0n, bsize: 4096n }) as never);
+    const result = prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit);
     expect(result).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
     if (result.kind === "waiting") {
       let cause: unknown = result.cause;
       while (cause instanceof Error && cause.cause !== undefined) cause = cause.cause;
-      expect(cause).toBeInstanceOf(ControllerMediaBudgetError);
+      expect(cause).toBeInstanceOf(ControllerStorageFreeSpaceError);
       expect(controllerStorageConnectionIsOpen(result.cause)).toBe(false);
     }
   } finally { permit.release(); }
@@ -339,7 +362,7 @@ test("a deadline crossed after schema commit preserves the conversion and closes
   vi.spyOn(Database.prototype, "close").mockImplementation(function (this: Database.Database) { const result = close.call(this); if (committed && this.name === f.file) closed = true; return result; });
   try {
     let failure: unknown;
-    try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket, deadline }, permit, event => { if (event.kind === "completed") { committed = event.outcome === "committed"; clock.mockReturnValue(deadline); } }); }
+    try { prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket, deadline }, permit, event => { if (event.kind === "completed") { committed = event.outcome === "committed"; clock.mockReturnValue(deadline); } }); }
     catch (error) { failure = error; }
     expect(failure).toMatchObject({ message: "Controller storage preparation exceeded its deadline." });
     expect(committed).toBe(true); expect(closed).toBe(true);
@@ -461,7 +484,7 @@ test.each(versionZeroPreparationCases)("$mode resets version zero $variant after
   const f = await fixture(); versionZeroSource(f.file, variant, owner);
   const permit = acquireControllerStoragePermit(f.file, undefined, { fileMustExist: true });
   try {
-    if (mode === "writer") expect(prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode, ticket: f.ticket }, permit, () => {})).toEqual({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
+    if (mode === "writer") expect(prepareControllerStorage({ journalFile: f.file, mode, ticket: f.ticket }, permit, () => {})).toEqual({ kind: "prepared", snapshot: null, legacyTimelineCleanupPending: false });
     else expect(upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toEqual({ version: currentSqliteVersion(controllerJournalFormat), legacyTimelineCleanupPending: false });
     const db = new Database(f.file, { readonly: true });
     try {
@@ -491,7 +514,7 @@ test.each(unsafeVersionZeroCases)("$mode retains version zero $variant owner evi
   try {
     let failure: unknown;
     try {
-      if (mode === "writer") prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode, ticket: f.ticket }, permit, () => {});
+      if (mode === "writer") prepareControllerStorage({ journalFile: f.file, mode, ticket: f.ticket }, permit, () => {});
       else upgradeControllerJournal(f.file, permit, { onMigration: () => {} });
     } catch (error) { failure = error; }
     expect(failure).toMatchObject({ kind: "upgrade-blocked", outcome: "rolled-back", connectionClosed: true });
@@ -515,7 +538,7 @@ test("version zero writer reset rolls back when retained pending content has no 
   const permit = acquireControllerStoragePermit(f.file, undefined, { fileMustExist: true });
   try {
     let failure: unknown;
-    try { prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "writer", ticket: f.ticket }, permit, () => {}); } catch (error) { failure = error; }
+    try { prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit, () => {}); } catch (error) { failure = error; }
     expect(failure).toMatchObject({ kind: "migration-failed", outcome: "rolled-back", connectionClosed: true, cause: { cause: { message: "Pending archive source has no original controller execution." } } });
     const db = new Database(f.file, { readonly: true });
     try {
@@ -557,7 +580,7 @@ test("automatic v9 reading uses its original peak reservation above normal metad
   await expect(stat(path.join(f.root, "storage.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   const permit = acquireControllerStoragePermit(f.file);
   try {
-    expect(() => prepareControllerStorage({ journalFile: f.file, stateDirectory: f.root, mode: "stopped-maintenance", ticket: f.ticket }, permit, () => {})).toThrow("Controller storage maintenance requires the original stopped generation.");
+    expect(() => prepareControllerStorage({ journalFile: f.file, mode: "stopped-maintenance", ticket: f.ticket }, permit, () => {})).toThrow("Controller storage maintenance requires the original stopped generation.");
     const current = new Database(f.file, { readonly: true });
     try { expect(current.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); expect(current.prepare("SELECT legacy_timeline_cleanup_pending AS pending FROM execution").get()).toEqual({ pending: 1 }); }
     finally { current.close(); }

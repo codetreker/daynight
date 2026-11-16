@@ -95,7 +95,7 @@ const waitForArchiveRetry = async (ms: number, signal: AbortSignal): Promise<voi
   });
 };
 
-export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; stateDirectory?: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
+export const uploadStoppedControllerArchive = async (options: { journalPath: string; ticket: ControllerLaunchTicket; serverToken: string; request?: typeof fetch; signal?: AbortSignal }): Promise<SessionArchiveStatus> => {
   const { ticket, journalPath } = options;
   const fence = { sessionId: ticket.sessionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration };
   const identity = { fence, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId };
@@ -137,7 +137,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
     const current = new Database(journalPath, { readonly: true, fileMustExist: true });
     return withClosedJournal(current, () => current.transaction(() => { assertOriginal(current); assertJournalMigrationAllowed(current, inspectSqlite(current, controllerJournalFormat)); return inspect(current); }).deferred());
   };
-  const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, stateDirectory: options.stateDirectory ?? path.dirname(journalPath), assertOriginal }, action);
+  const local = <T>(action: (db: Database.Database) => T): T => withStoppedControllerStorage({ journalPath, ticket, assertOriginal }, action);
   const localFiles = <T>(action: () => T): T => {
     const permit = acquireControllerStoragePermit(journalPath);
     let value: T | undefined, failure: unknown, failed = false;
@@ -226,7 +226,7 @@ export const uploadStoppedControllerArchive = async (options: { journalPath: str
   if (existing.state === "ready" && (existing.schemaVersion !== 3 || !existsSync(intentPath))) throw new Error("Server archive has no confirmed original source or upload intent.");
   if (frozen.source.sourceThrough !== frozen.source.acknowledgedThrough) {
     // The durable batch identity and bytes survive retries, including reconciliation after response loss.
-    await replayStoppedControllerHistory({ journalPath, ticket, ...(options.stateDirectory === undefined ? {} : { stateDirectory: options.stateDirectory }), signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
+    await replayStoppedControllerHistory({ journalPath, ticket, signal: roundSignal, send: async (batch, signal) => await call("POST", "/source-tail", true, JSON.stringify({ ...identity, ...batch }), {}, signal) as StoppedSourceTailReceipt });
   }
   assertFrozen();
   // Only identity-preserving preparation is replayable; reset requests need their own policy.

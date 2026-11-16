@@ -35,7 +35,7 @@ const exists = async (filename: string): Promise<boolean> => {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 };
 const journal = openControllerLifecycleStore(path.join(input.directory, "journal.sqlite"), ticket, {
-  contentOwnedLocally: true, mediaStateDirectory: resolveConfigurationPaths(input.home).stateDirectory,
+  contentOwnedLocally: true,
 });
 // This identifier binds controlled Markdown input; no native model is invoked.
 const controlledNativeSessionId = randomUUID();

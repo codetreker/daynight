@@ -10,9 +10,9 @@ Controller journal 的唯一编号序列为 `001`–`012`，当前格式为 v12�
 | `content/resource-files.ts` | 原路径下的资源 descriptor、blob、pin、lease 与文件预算 |
 | `content/session-content.ts` | SQL 正文与资源组合；释放前核对正文与原生输入图片引用 |
 | `content/migration.ts` | 按已提交来源执行必要文件映射与 canonical 010 的原子导入 |
-| `content/maintenance.ts` | 旧读者屏障、正文退休、压缩与实际预留结算 |
+| `content/maintenance.ts` | 旧读者屏障、正文退休、压缩与普通准入复核 |
 | `storage-preparation.ts` | 原 permit 下的纯格式升级、stopped-maintenance 与 writer 角色准备 |
-| `storage-capacity.ts`、`media/metadata-budget.ts` | 真实占用、共享账本绝对预留与普通维护准入 |
+| `storage-capacity.ts`、`media/metadata-budget.ts` | 真实占用、未落盘字节、元数据与空闲空间准入 |
 
 `sqlite/journal/010-timeline-content.sql` 是正文表、统计表、cleanup 标记与旧索引删除的唯一完整 DDL。`loadSqliteSequence` 从同一 canonical 目录发现全部步骤；journal 格式拥有者据此生成完整 schema snapshots、验证版本并执行转换。构建按原 SQL 目录复制到相同的 dist 相对路径，没有暂存副本、隔离格式工厂或运行时版本选择开关。已发布 `009-message-origins.sql` 及其来源关系保持原样。
 
@@ -42,11 +42,11 @@ v10 在删除旧索引前捕获已提交指针，读取对应文件，仅从正�
 
 旧索引删除、实际目标行与 totals、`legacy_timeline_cleanup_pending=1`、后续编号步骤及最终 `user_version` 处于同一个 immediate 事务。导入后旧正文文件由独立的停止维护阶段退休；升级不保证原有坏值能被普通业务读者接受。
 
-## 峰值预留与停止维护
+## 空间检查与停止维护
 
-原 `ControllerStoragePermit` 贯穿本机格式转换和维护。编号步骤及历史文件导出、导入复用真实 SQL 和文件发布操作，不申请预算、估算峰值或按普通条数、字节与剩余空间规则拒绝存量数据。纯 `upgradeControllerJournal` 只返回实际版本和 cleanup 标记，不读取业务 snapshot，也不执行维护预留或普通准入；实际 SQL 和文件错误仍然传播。停止观察可先完成纯升级，再按原身份读取状态。
+原 `ControllerStoragePermit` 贯穿本机格式转换和维护。编号步骤及历史文件导出、导入复用真实 SQL 和文件发布操作，不申请预算、估算峰值或按普通条数、字节与剩余空间规则拒绝存量数据。纯 `upgradeControllerJournal` 只返回实际版本和 cleanup 标记，不读取业务 snapshot，也不执行维护空间检查或普通准入；实际 SQL 和文件错误仍然传播。停止观察可先完成纯升级，再按原身份读取状态。
 
-停止维护与普通新增写入仍执行容量准入。控制元数据 128 MiB 和 8 MiB 结算余量之外，已提交 timeline 字节及匹配 active history 同步原身份、路径和长度的完整文件按实际字节提供额外空间；未登记或不匹配的孤儿文件不豁免。正文增长及冻结副本前按 8 MiB 档位登记峰值。账本 `reserve(bytes)` 替换原 execution 的绝对预留；重入按实际残留和剩余工作重算，不累计退款。
+停止维护与普通新增写入仍执行容量准入。控制元数据 128 MiB 和 8 MiB 结算余量之外，已提交 timeline 字节及匹配 active history 同步原身份、路径和长度的完整文件按实际字节提供额外空间；未登记或不匹配的孤儿文件不豁免。正文增长及冻结副本前检查新增磁盘空间。媒体没有每 execution 或 stateDirectory 的累计额度，也没有跨进程预留与返额；重入按实际残留、未落盘字节和剩余工作重新检查空闲空间。
 
 停止维护要求原 ticket、generation、instance、持久 stopped/nativeStopped 证据及无活跃 writer。顺序为：
 
@@ -54,17 +54,17 @@ v10 在删除旧索引前捕获已提交指针，读取对应文件，仅从正�
 2. 只有 checkpoint 明确成功后，由资源索引拥有者耐久发布 `index.json.entries=[]`，保留其完整 `resources` 清单，再退休已识别的旧正文并持久化相应目录。
 3. 完成 VACUUM 前 TRUNCATE，执行事务外的原地 VACUUM，再完成后置有界 TRUNCATE。
 4. 核对真实 DB/WAL/SHM、旧正文残留、当前正文与 totals，提交清除 pending，并读回实际提交状态。
-5. 按真实占用结算维护预留，恢复普通物理准入，全部成功才返回 pending=false。
+5. 按真实占用复核普通元数据与空闲空间准入，全部成功才返回 pending=false。
 
 退休仅覆盖私有 Session-bound 根下识别出的 UUID 候选、旧 timeline 与已确认迁移备份中的 timeline。旧导出中断留下的有效 `prepared` 备份及其 marker、无 marker 的空备份目录，以及文件发布中断留下的具名临时文件保留原样，不作为已完成备份退休；它们的实际占用仍参与容量计量。资源、blob、pin 和原生资料保留。未知文件、symlink 或身份冲突会暴露错误并保留现场；已退休文件的缺失可在重入时确认。共享 `index.json` 仍由 `resource-files.ts` 统一读写，Session 绑定、descriptor、blob、pin 和 lease 均不随正文索引退休而改变。索引发布失败时不删除正文；索引已发布而删除中断时，SQL 正文继续可读，重入仍重新耐久发布空旧正文清单，确认之前 rename 后的目录刷盘结果，再完成文件退休。
 
 当前格式读者可能在屏障之后建立自己的 SQL 快照，并在构造资源拥有者时读到发布前的旧文件清单。若旧 timeline 引用的文件在检查时消失，仅允许在索引原始字节确实已改变时重读一次，并完整核对新清单仍引用的全部文件；未改变的索引、仍被引用的缺失文件或无效清单继续报错。资源清单不缓存旧正文引用；后续资源写入只发布空 `entries`，删除回滚读取当前已发布清单，不恢复构造时的旧引用。
 
-`deadline` 在阶段前后检查，SQLite busy timeout 约束锁等待；同步原生 VACUUM 不能被 JavaScript timer 强制中断。VACUUM 返回后若期限已过，保留真实已提交阶段、pending 与后续维护所需预留，再由同一入口重入。
+`deadline` 在阶段前后检查，SQLite busy timeout 约束锁等待；同步原生 VACUUM 不能被 JavaScript timer 强制中断。VACUUM 返回后若期限已过，保留真实已提交阶段、pending 与后续维护材料，再由同一入口重入。
 
-checkpoint busy 返回 `waiting/reader_busy`，保留 pending、原文件与必要预留。只有明确 checkpoint busy 或容量拥有者的类型化拒绝可转成 waiting；I/O、身份、格式、未知提交和清理错误继续传播。VACUUM 成功、page_count 下降、空闲连接存在或关闭一个连接均不能证明主库已经缩小，后置 checkpoint 与真实文件核对不可省略。
+checkpoint busy 返回 `waiting/reader_busy`，保留 pending 与原文件。只有明确 checkpoint busy 或容量拥有者的类型化拒绝可转成 waiting；I/O、身份、格式、未知提交和清理错误继续传播。VACUUM 成功、page_count 下降、空闲连接存在或关闭一个连接均不能证明主库已经缩小，后置 checkpoint 与真实文件核对不可省略。
 
-停止维护预留包含实际保留源和 VACUUM 最多原 DB 两倍额外空间。VACUUM 在原连接同步执行；执行期间将 `SQLITE_TMPDIR`、`TMPDIR`、`TEMP`、`TMP` 临时指向同卷私有维护目录，返回或失败后在 finally 精确恢复每个变量原先的存在性与值。目录先核对身份、权限、可写性和同卷关系，临时文件按峰值与卷空闲条件计费。内置 Unix/Windows VFS 每次生成临时文件名时重新读取相应目录；本机 SQLite 调用都在同一 JavaScript 线程同步执行，现有 Markdown worker 不使用 SQLite。此边界不适用于未来并行 SQLite 线程，依据与备选机制由 [维护决策](../../.agents/notes/implemented/architecture/2026-11-12-session-sqlite-content-components.md)记录。维护失败不把已提交的导入或压缩报告为回滚；清 pending 提交结果未知时，持锁读取真实数据库与文件后再决定收尾。普通停止结算保留 128 MiB 加 8 MiB settlement；下一 writer 仍须满足普通准入。
+停止维护的空闲空间检查包含实际保留源中未落盘的字节和 VACUUM 最多原 DB 两倍额外空间。VACUUM 在原连接同步执行；执行期间将 `SQLITE_TMPDIR`、`TMPDIR`、`TEMP`、`TMP` 临时指向同卷私有维护目录，返回或失败后在 finally 精确恢复每个变量原先的存在性与值。目录先核对身份、权限、可写性和同卷关系，临时文件的新增空间纳入峰值与卷空闲检查。内置 Unix/Windows VFS 每次生成临时文件名时重新读取相应目录；本机 SQLite 调用都在同一 JavaScript 线程同步执行，现有 Markdown worker 不使用 SQLite。此边界不适用于未来并行 SQLite 线程，依据与备选机制由 [维护决策](../../.agents/notes/implemented/architecture/2026-11-12-session-sqlite-content-components.md)记录。维护失败不把已提交的导入或压缩报告为回滚；清 pending 提交结果未知时，持锁读取真实数据库与文件后再决定收尾。普通停止结算保留 128 MiB 加 8 MiB settlement；下一 writer 仍须满足普通准入。
 
 ## 同步、归档与连接关闭
 

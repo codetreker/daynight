@@ -16,7 +16,7 @@ afterEach(async () => { vi.restoreAllMocks(); Object.defineProperty(process, "pl
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 const fixturePlatforms = process.platform === "win32" ? ["host"] : ["host", "win32"];
 const selectFixturePlatform = (value: string): void => { if (value === "win32") Object.defineProperty(process, "platform", { ...platform, value: "win32" }); };
-const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket, stateDirectory: string): Promise<void> => {
+const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunchTicket): Promise<void> => {
   if (process.platform !== "win32") return;
   const db = new Database(journalPath);
   try {
@@ -27,7 +27,7 @@ const completeFixtureStop = async (journalPath: string, ticket: ControllerLaunch
   const jobLease = {} as ControllerJobLease;
   const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockResolvedValue(true);
   try {
-    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { stateDirectory, jobLease });
+    const stopped = await recordStoppedControllerGeneration(journalPath, ticket, { jobLease });
     expect(confirm).toHaveBeenCalledExactlyOnceWith(stopped.controllerProcess, stopped.nativeProcesses, undefined, jobLease);
     expect(stopped.windowsJobStopProof).toMatchObject({ version: 1 });
   } finally { confirm.mockRestore(); }
@@ -40,7 +40,7 @@ const fixture = async (count = 3, text = "durable", floor = false) => {
   for (let i = 0; i < count; i++) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text }] });
   store.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } }); store.markDispatching(ticket.initialOperationId); store.recordOperation(ticket.initialOperationId, "unknown");
   store.patchSnapshot({ lifecycle: "stopped", nativeStopped: true, stoppedAt: new Date().toISOString() }); store.close();
-  await completeFixtureStop(journalPath, ticket, home);
+  await completeFixtureStop(journalPath, ticket);
   const read = () => { const db = new Database(journalPath, { readonly: true }); try { return { state: db.prepare("SELECT snapshot,ticket_hash,owner_pid,last_sequence,last_acknowledged,source_floor FROM execution").get(), operation: db.prepare("SELECT value FROM operations").get(), outbox: db.prepare("SELECT count(*) AS total FROM outbox").get(), batch: db.prepare("SELECT value FROM image_runtime_state WHERE key='stopped_source_tail'").get() }; } finally { db.close(); } };
   return { journalPath, ticket, read };
 };

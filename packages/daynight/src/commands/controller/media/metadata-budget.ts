@@ -90,13 +90,9 @@ export const controllerMetadataBudget = (file: string, db: Database.Database) =>
     if (!Number.isSafeInteger(contentGrowth) || contentGrowth < 0 || contentGrowth > SESSION_ARCHIVE_HISTORY_MAX_BYTES) throw new Error("Controller content growth is invalid.");
     return CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES + contentBytes() + contentGrowth;
   };
-  const reservationCeiling = (contentGrowth = 0): number => {
-    const base = CONTROLLER_METADATA_BYTES + CONTROLLER_SETTLEMENT_BYTES;
-    return base + Math.ceil((ceiling(contentGrowth) - base) / (8 * 1048576)) * (8 * 1048576);
-  };
   const assert = (additional = 0, settlement = false, contentGrowth = 0): void => {
     if (!Number.isSafeInteger(additional) || additional < 0 || contentGrowth > additional) throw new Error("Controller metadata budget exceeded.");
     if (bytes() + additional > ceiling(contentGrowth) - (settlement ? 0 : CONTROLLER_SETTLEMENT_BYTES)) throw new ControllerMetadataBudgetError();
   };
-  return { bytes, assert, ceiling, reservationCeiling, nativeIndexBytes };
+  return { bytes, assert, ceiling, nativeIndexBytes };
 };
