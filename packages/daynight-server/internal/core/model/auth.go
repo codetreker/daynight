@@ -51,11 +51,12 @@ type LoginTransaction struct {
 }
 
 type Session struct {
-	ID        string
-	UserID    string
-	TokenHash []byte
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	ID               string
+	UserID           string
+	TokenHash        []byte
+	PreviewTokenHash []byte
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
 }
 
 type PersonalAccessToken struct {
@@ -66,4 +67,14 @@ type PersonalAccessToken struct {
 	CreatedAt  time.Time
 	ExpiresAt  *time.Time
 	LastUsedAt *time.Time
+}
+
+// PreviewSSOLogin stores only hashes of transient SSO secrets.
+type PreviewSSOLogin struct {
+	ID        string
+	ReturnURL string
+	StateHash []byte
+	CodeHash  []byte
+	SessionID string
+	ExpiresAt time.Time
 }
