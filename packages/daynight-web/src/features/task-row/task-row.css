@@ -1,5 +1,5 @@
 .task-row-item { min-width: 0; }
-.task-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 15px; border: 1px solid var(--row-border); border-radius: 8px; cursor: pointer; }
+.task-row { --task-row-inline-padding: 15px; display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px var(--task-row-inline-padding); border: 1px solid var(--row-border); border-radius: 8px; cursor: pointer; }
 .task-row-content { flex: 1; min-width: 0; }
 .task-row-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; min-width: 0; }
 .task-row-title { color: var(--task-title); font-size: 13px; font-weight: 650; line-height: 1.5; overflow-wrap: anywhere; min-width: 0; text-decoration: none; }
@@ -21,9 +21,9 @@
 .task-row .task-row-status { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .task-row-status .project-session-status { position: static; }
 .goal-task-list > .task-row-item + .task-row-item { border-top: 0; }
-.goal-task-list .task-row { border-radius: 0; }
+.goal-task-list .task-row { padding-inline-start: calc(var(--task-row-inline-padding) + var(--member-content-indent)); border-radius: 0; }
 @media (max-width: 650px) {
-  .task-row { flex-wrap: wrap; align-items: flex-start; padding: 9px 11px; gap: 6px; }
+  .task-row { --task-row-inline-padding: 11px; flex-wrap: wrap; align-items: flex-start; padding-block: 9px; gap: 6px; }
   .task-row-content, .task-row .task-row-status { flex-basis: 100%; }
   .task-row .task-row-status { justify-content: flex-start; }
 }

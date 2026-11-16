@@ -46,6 +46,8 @@ from a Step. See [content ownership](task-content.md#task-steps-and-session-cont
 
 ## Completion conditions
 
+Requirements-discussion and research Tasks are nonterminal in the work chain by default. They require registered and verified successors before completion, unless the user explicitly confirms that the current result ends the work.
+
 | Task type | Completion conditions |
 | --- | --- |
 | Goal discussion | The user confirms the current material, and the corresponding Goal stage requirements are met; generic PR rules cannot replace or add confirmation requirements. |
