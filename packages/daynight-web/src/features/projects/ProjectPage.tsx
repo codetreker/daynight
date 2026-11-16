@@ -123,7 +123,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const restoreRequested = useRef(false);
   const previousDetail = useRef(detailSelection);
   const closedDetail = useRef(detailSelection);
-  const pendingRetirement = useRef<{ summaryId: string | null } | null>(null);
+  const pendingRetirement = useRef<{
+    summaryId: string | null;
+    snapshot: GraphSnapshot | null;
+    goal: { id: string; section: ProjectSection; view: TaskView; entryId: string | null } | null;
+  } | null>(null);
+  const currentSnapshot = useRef(graph.snapshot);
+  currentSnapshot.current = graph.snapshot;
   const currentSelection = useRef(selection);
   currentSelection.current = selection;
   useLayoutEffect(() => viewer.subscribe((event) => {
@@ -131,10 +137,24 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (event.accessRevoked) { pendingRetirement.current = null; return; }
     if (event.historyChanged && (currentSelection.current.detail !== null || currentSelection.current.projectGraphWitness !== null)) {
       const detail = currentSelection.current.detail;
-      pendingRetirement.current = { summaryId: detail?.source === "summary" ? detail.id : null };
-      listOrigin.current = null; originalTrigger.current = null; pausedOrigin.current = null; lastGraphResource.current = null; closedDetail.current = null;
+      const target = openGraph.current;
+      const goal = target?.kind === "goal" ? { id: target.goalId, section: currentSelection.current.section,
+        view: currentSelection.current.view, entryId: browserNavigation().snapshot().entryId } : null;
+      pendingRetirement.current = { summaryId: detail?.source === "summary" ? detail.id : null, snapshot: currentSnapshot.current, goal };
+      if (goal === null) { listOrigin.current = null; lastGraphResource.current = null; }
+      originalTrigger.current = null; pausedOrigin.current = null; closedDetail.current = null;
     }
   }), [viewer, projectId]);
+  useLayoutEffect(() => {
+    const navigation = browserNavigation();
+    return navigation.subscribe(() => {
+      const goal = pendingRetirement.current?.goal;
+      if (goal == null || navigation.snapshot().entryId === goal.entryId) return;
+      pendingRetirement.current = null;
+      restoreRequested.current = false;
+      listOrigin.current = null; lastGraphResource.current = null; closedDetail.current = null;
+    });
+  }, []);
   const suppressRestore = useRef(false);
   if (previousDetail.current !== null && detailSelection === null) {
     closedDetail.current = previousDetail.current;
@@ -360,12 +380,20 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [restoreFocus]);
   useEffect(() => {
     const retired = pendingRetirement.current;
-    if (retired === null || snapshot === null) return;
+    if (retired === null || snapshot === null || snapshot === retired.snapshot || snapshot.receivedAt === null) return;
     pendingRetirement.current = null;
     if (retired.summaryId !== null && !snapshot.summaries.has(retired.summaryId)) setNotice({ kind: "selected-task-removed" });
+    const goal = retired.goal;
+    if (goal !== null && browserNavigation().snapshot().entryId === goal.entryId &&
+      selection.projectGraphWitness === null && selection.detail === null &&
+      resolveProjectGraphTarget(goal.id, snapshot.index, snapshot.summaries)?.kind === "goal") {
+      restoreRequested.current = false;
+      history.select({ section: goal.section, view: goal.view, projectGraphWitness: goal.id, detail: null }, true);
+      return;
+    }
     restoreRequested.current = true;
     restoreFocus();
-  }, [snapshot, restoreFocus]);
+  }, [snapshot, selection, history.select, restoreFocus]);
 
   const selectView = useCallback((view: TaskView) => {
     if (view === activeView) return;

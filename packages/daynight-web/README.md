@@ -380,9 +380,14 @@ Pending, refusal, unknown-result, reconciliation, read and freshness notices use
 the shared floating notification layer. Permission and platform controls explain their lock reason
 through hover and keyboard-focus tooltips. Dismissing a bubble changes only
 presentation; reopening a detail with an already confirmed result does not replay it.
-Standalone rows and graph nodes show each task's permission without turning a
-root value into a chain aggregate. Full task and graph decoders require an
-explicit boolean `allowAgents`; missing, null and nonboolean values fail.
+The shared permission badge appears on ordinary Task rows and graph nodes only
+when their own `allowAgents` is true; false leaves no badge or placeholder.
+Ordinary rows use the full localized label, while compact graph nodes use a short
+label with the full accessible name and tooltip. The badge uses the done-green
+background, border and text tokens and does not indicate a claim, activity or
+completion. Chain summaries do not aggregate a root value. Full task and graph
+decoders require an explicit boolean `allowAgents`; missing, null and nonboolean
+values fail.
 Task/graph resources require nullable requiredPlatform (null/windows/linux/macos),
 with no missing-key fallback. Rows and nodes retain read-only platform badges.
 The detail combines platform display and editing in one select in the left
@@ -1589,7 +1594,7 @@ completion filters do not change membership. All edges still participate in
 execution consistency and full prerequisite inspection.
 
 Standalone rows are compact native detail triggers with title, individual
-status, ID, creation time, automation permission and known execution timing. The
+status, ID, creation time, enabled automation permission and known execution timing. The
 clock and duration follow creation time in the same wrapping information line. An
 unsatisfied prerequisite produces an explicit Blocked / 被阻塞 badge; done and
 cancelled prerequisites are satisfied. A chain row

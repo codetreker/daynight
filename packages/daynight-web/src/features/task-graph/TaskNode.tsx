@@ -64,7 +64,7 @@ const ExpansionControl = ({ direction, expansion, onExpand, onFocus }: { directi
 };
 
 export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
-  const { messages: { graph: m, common, inspection: { pause } } } = useI18n();
+  const { messages: { graph: m, common, automation, inspection: { pause } } } = useI18n();
   const { setCenter, getViewport } = useReactFlow();
   const inspection = useTaskInspectionState(data.task.id);
   const paused = useTaskPaused(data.task.id);
@@ -112,7 +112,7 @@ export const TaskNode = memo(({ data }: NodeProps<TaskFlowNode>) => {
   return (
     <div className={`task-node${actions.kind === 'goal' ? ' task-node-goal' : ''} task-node-${data.task.status} task-node-${inspection}${data.kind === 'external' ? ' task-node-external' : ''}${execution?.overdue ? ' task-node-stuck' : ''}${paused ? ' task-node-paused' : ''} nodrag nopan`} data-task-status={data.task.status} data-inspection={inspection} style={{ pointerEvents: 'auto' }}>
       <button type="button" ref={body} className="task-node-body nodrag nopan"
-        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${data.ownerLabel == null ? '' : `, ${data.ownerLabel}`}${paused ? `, ${pause.label}` : ''}${m.inspectionSuffix[inspection]}`}
+        aria-label={`${m.nodeLabel({ title, status: common.status[data.task.status], blocked: data.task.blockedBy.length > 0, external: data.kind === 'external' })}${data.ownerLabel == null ? '' : `, ${data.ownerLabel}`}${paused ? `, ${pause.label}` : ''}${data.task.allowAgents ? `, ${automation.label}` : ''}${m.inspectionSuffix[inspection]}`}
         aria-describedby={execution === null ? undefined : descriptionId}
         aria-pressed={inspection === 'selected'} onClick={inspect} onFocus={revealOnFocus}>
         <TaskNodeContent task={data.task} kind={data.kind} ownerLabel={data.ownerLabel ?? null} execution={execution} />

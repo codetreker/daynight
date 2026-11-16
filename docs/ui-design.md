@@ -1,9 +1,10 @@
 # UI Design
 
 These principles apply when designing, adding, modifying, or reviewing UI.
-This document owns the semantic color roles, exact palette, and their visual
-hierarchy. Product specifications and design documents own the behavior of
-specific interfaces and reference these rules for their colors.
+This document owns the general UI principles, including data-update continuity,
+semantic color roles, exact palette, and their visual hierarchy. Product
+specifications and design documents own the behavior of specific interfaces
+and reference these rules.
 
 ## Semantic color roles
 
@@ -63,11 +64,12 @@ use `attention`, retaining their distinct text and aggregation priority; a
 warning name, disconnection, or stopped Session alone does not establish failure.
 
 A green online dot expresses runtime availability. Its adjacent header label
-uses neutral helper text; actual work has its separate activity marker. Automatic
-execution permission uses a neutral outlined label with explicit on/off text:
-background `#FAFBFC`, border `#D5DCE5`, and foreground `#526174`. Permission does not
-establish acquisition or activity. Existing checked-switch brand colors remain
-control selection cues.
+uses neutral helper text; actual work has its separate activity marker. Ordinary
+Task rows and graph nodes show an automatic execution permission label only when
+`allowAgents=true`, using background `#EAF6EF`, border `#B9D9C5`, and foreground
+`#256A48`. The compact graph label retains the full accessible name and tooltip.
+Permission does not establish acquisition, activity, or completion. Existing
+checked-switch brand colors remain control selection cues.
 
 ### Progress and interaction hierarchy
 
@@ -198,8 +200,9 @@ the interface that has already been displayed.
   of the check must leave the displayed interface and interaction state
   unchanged. Preserving only the final state is insufficient: the interface
   must remain stable throughout the wait and recovery reads.
-- Actual data changes may update the affected content. Confirmed account
-  changes, session expiry, and access revocation must still trigger the
+- Actual data changes update the affected content under the
+  [continuity rule](#preserve-interface-continuity-when-data-changes). Confirmed
+  account changes, session expiry, and access revocation must still trigger the
   required isolation and cleanup. Actual failures must remain visible and
   recoverable under the applicable error policy.
 - An explicit refresh may show the progress of that operation. Navigating to
@@ -209,6 +212,31 @@ the interface that has already been displayed.
 Keeping existing content visible does not grant request, publication, or
 mutation permission. Existing authentication and authorization gates remain
 enforced while a check is pending.
+
+## Preserve interface continuity when data changes
+
+When data is added, modified, or deleted, incrementally update the affected
+content and related information in the current interface. Preserve interaction
+state that remains valid, including unrelated selections, expansion, scroll
+positions, focus, drafts, and graph viewports. A local change must not refresh
+the entire page, close or reopen its view, replace the whole view with a
+loading placeholder, or reset unrelated state. Continuity must hold throughout
+the update; restoring state after an interruption is insufficient.
+
+When a change invalidates interaction state, clear only the invalid part and
+make necessary layout adjustments. An adjustment alone does not authorize a
+viewport reset. For example, deleting a Task from a dependency graph removes its
+node and associated edges and updates affected information while the graph
+remains open, retaining zoom, pan, and other valid interaction state.
+
+Incremental update constrains what the user sees, not the internal method:
+background full-data fetches, internal recalculation, and framework rerenders are
+allowed when they do not cause these visible interruptions. A deleted member,
+missing original entry, or missing original locating Task alone does not prove
+the containing view's resource is invalid. Actual resource deletion, identity
+loss, and access revocation still require their existing security cleanup;
+explicit navigation, closing, and layout actions follow their own interaction
+rules. Actual errors remain visible and recoverable.
 
 ## Keep global language selection at page level
 

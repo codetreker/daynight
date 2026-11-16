@@ -33,7 +33,11 @@ The composer exposes its actual activity as a presentation attribute only while
 the snapshot is connected and synchronized. Working and waiting for input map to
 different roles. Timer eligibility, interruption, state inference and protocol
 fields keep their existing responsibilities. Online health remains a separate
-green dot, and automatic execution permission remains a neutral labeled policy.
+green dot. The original decision used a neutral on/off label for automatic
+execution permission to distinguish policy from activity and completion. The
+[permission badge decision](2026-11-16-enabled-automation-permission-badge.md)
+partially supersedes that presentation: only enabled permission is labeled, in
+green, while its meaning remains independent of activity and completion.
 
 ## Alternatives
 
