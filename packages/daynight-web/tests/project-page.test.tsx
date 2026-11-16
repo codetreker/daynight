@@ -181,7 +181,9 @@ describe("project dashboard", () => {
     fireEvent.change(input, { target: { value: "query" } }); fireEvent.submit(input.closest("form")!);
     await waitFor(() => expect(searchTasks).toHaveBeenCalledWith(projectId, "query", expect.objectContaining({ type: "task", tagIds: [E], tagMatch: "all" }), null, expect.anything(), expect.anything(), expect.anything()));
     expect(chainCount()).toHaveTextContent(/^2$/);
-    const searchFilter = screen.getByText("标签筛选 (1)", { selector: "summary" });
+    const searchFilter = document.querySelector(".task-search-filters .tag-filter-trigger")!;
+    expect(searchFilter).toHaveTextContent("标签筛选");
+    expect(searchFilter.querySelector(".tag-filter-count")).toHaveTextContent("1");
     expect(searchFilter.parentElement?.parentElement?.previousElementSibling).toHaveClass("task-status-filter");
     expect(document.querySelectorAll(".tag-filter")).toHaveLength(1);
     fireEvent.click(searchForm().getByRole("button", { name: "清空搜索" }));

@@ -48,45 +48,53 @@ it('matches only the selected IDs and implements all, any and untagged', () => {
 it('keeps the picker open and query while choosing tags, switches modes and clears only tags', async () => {
   setup(); fireEvent.click(screen.getByText('Tag filter', { selector: 'summary' }));
   const picker = screen.getByText('Tag filter', { selector: 'summary' }).closest('details')!;
+  const all = within(picker).getByRole('radio', { name: 'All selected' });
+  const any = within(picker).getByRole('radio', { name: 'Any selected' });
+  expect(all).toBeChecked(); expect(all).toBeDisabled(); expect(any).toBeDisabled();
+  expect(within(picker).getByRole('group', { name: 'Match' })).toHaveAccessibleDescription('Choose at least two tags to change matching');
+  expect(within(picker).getByRole('button', { name: 'Clear filter' })).toBeDisabled();
   fireEvent.click(within(picker).getByLabelText('bug'));
+  expect(any).toBeDisabled();
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
-  fireEvent.change(within(picker).getByLabelText('Tag filter: AND / OR'), { target: { value: 'any' } });
-  fireEvent.change(within(picker).getByLabelText('Tag filter: Search tags'), { target: { value: 'back' } });
+  fireEvent.change(within(picker).getByLabelText('Tag filter: Find tags'), { target: { value: 'back' } });
   fireEvent.click(within(picker).getByLabelText('backend'));
+  expect(any).toBeEnabled(); fireEvent.click(any); expect(any).toBeChecked();
   expect(picker).toHaveAttribute('open');
-  expect(within(picker).getByLabelText('Tag filter: Search tags')).toHaveValue('back');
+  expect(within(picker).getByLabelText('Tag filter: Find tags')).toHaveValue('back');
   expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["a","b"]');
-  fireEvent.click(within(picker).getByLabelText('No tags'));
+  fireEvent.click(within(picker).getByRole('button', { name: 'Clear tag search' }));
+  expect(within(picker).getByLabelText('Tag filter: Find tags')).toHaveValue('');
+  expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":["a","b"]');
+  fireEvent.change(within(picker).getByLabelText('Tag filter: Find tags'), { target: { value: 'back' } });
+  fireEvent.click(within(picker).getByLabelText('Untagged only'));
   expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":[]');
   expect(screen.getByTestId('value')).toHaveTextContent('"untagged":true');
+  expect(any).toBeChecked(); expect(any).toBeDisabled();
+  expect(within(picker).getByRole('group', { name: 'Match' })).toHaveAccessibleDescription('Matching does not apply to untagged items');
   fireEvent.click(within(picker).getByLabelText('backend'));
   expect(screen.getByTestId('value')).toHaveTextContent('"untagged":false');
-  fireEvent.click(within(picker).getByRole('button', { name: 'Clear' }));
+  expect(any).toBeChecked(); expect(any).toBeDisabled();
+  fireEvent.click(within(picker).getByRole('button', { name: 'Clear filter' }));
   expect(screen.getByTestId('value')).toHaveTextContent('"tagIds":[]');
   expect(screen.getByTestId('value')).toHaveTextContent('"tagMatch":"any"');
+  expect(within(picker).getByLabelText('Tag filter: Find tags')).toHaveValue('back');
 });
 
-it('preserves the panel for prevented, composing and open native popup Escape events', () => {
+it('preserves the panel for prevented and composing Escape events', () => {
   setup();
   const summary = screen.getByText('Tag filter', { selector: 'summary' });
   fireEvent.click(summary);
   const picker = summary.closest('details')!;
-  const select = within(picker).getByLabelText('Tag filter: AND / OR');
+  const search = within(picker).getByLabelText('Tag filter: Find tags');
   const composing = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true });
-  fireEvent(select, composing);
+  fireEvent(search, composing);
   expect(picker).toHaveAttribute('open');
-  fireEvent.keyDown(select, { key: 'Escape', keyCode: 229 });
+  fireEvent.keyDown(search, { key: 'Escape', keyCode: 229 });
   expect(picker).toHaveAttribute('open');
   const prevented = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-  prevented.preventDefault(); fireEvent(select, prevented);
+  prevented.preventDefault(); fireEvent(search, prevented);
   expect(picker).toHaveAttribute('open');
-  const matches = vi.spyOn(select, 'matches').mockReturnValue(true);
-  const popup = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-  fireEvent(select, popup);
-  expect(popup.defaultPrevented).toBe(false);
-  expect(picker).toHaveAttribute('open');
-  matches.mockRestore();
-  fireEvent.keyDown(select, { key: 'Escape' });
+  fireEvent.keyDown(search, { key: 'Escape' });
   expect(picker).not.toHaveAttribute('open');
   expect(summary).toHaveFocus();
 });
@@ -97,9 +105,10 @@ it('closes on an outside pointer without consuming it and retains the filter whe
   const picker = summary.closest('details')!;
   fireEvent.click(summary);
   fireEvent.click(within(picker).getByLabelText('bug'));
-  fireEvent.change(within(picker).getByLabelText('Tag filter: AND / OR'), { target: { value: 'any' } });
-  fireEvent.change(within(picker).getByLabelText('Tag filter: Search tags'), { target: { value: 'bug' } });
-  fireEvent.pointerDown(within(picker).getByLabelText('Tag filter: Search tags'));
+  fireEvent.click(within(picker).getByLabelText('backend'));
+  fireEvent.click(within(picker).getByRole('radio', { name: 'Any selected' }));
+  fireEvent.change(within(picker).getByLabelText('Tag filter: Find tags'), { target: { value: 'bug' } });
+  fireEvent.pointerDown(within(picker).getByLabelText('Tag filter: Find tags'));
   expect(picker).toHaveAttribute('open');
   const outside = screen.getByRole('button', { name: 'Server invalid' });
   outside.focus();
@@ -109,9 +118,9 @@ it('closes on an outside pointer without consuming it and retains the filter whe
   expect(outside).toHaveFocus();
   expect(picker).not.toHaveAttribute('open');
   fireEvent.click(summary);
-  expect(within(picker).getByLabelText('Tag filter: Search tags')).toHaveValue('bug');
+  expect(within(picker).getByLabelText('Tag filter: Find tags')).toHaveValue('bug');
   expect(within(picker).getByLabelText('bug')).toBeChecked();
-  expect(within(picker).getByLabelText('Tag filter: AND / OR')).toHaveValue('any');
+  expect(within(picker).getByRole('radio', { name: 'Any selected' })).toBeChecked();
   await waitFor(() => expect(resolveProjectTags).toHaveBeenCalled());
 });
 
@@ -119,7 +128,8 @@ it('keeps the panel open for paging and clearing controls', () => {
   data.page.nextCursor = 'next'; setup();
   const summary = screen.getByText('Tag filter', { selector: 'summary' });
   const picker = summary.closest('details')!; fireEvent.click(summary);
-  for (const name of ['Next', 'First page', 'Clear']) {
+  fireEvent.click(within(picker).getByLabelText('bug'));
+  for (const name of ['Next', 'First page', 'Clear filter']) {
     const button = within(picker).getByRole('button', { name });
     fireEvent.pointerDown(button); fireEvent.click(button);
     expect(picker).toHaveAttribute('open');
@@ -178,7 +188,7 @@ it('focuses search only on an interactive opening and ignores hidden pointer eve
   const picker = summary.closest('details')!;
   const outside = screen.getByRole('button', { name: 'Outside' });
   fireEvent.click(summary);
-  const search = within(picker).getByLabelText('Tag filter: Search tags');
+  const search = within(picker).getByLabelText('Tag filter: Find tags');
   expect(search).toHaveFocus();
   outside.focus(); view.rerender(content(false));
   expect(outside).toHaveFocus(); expect(picker).toHaveAttribute('open');
@@ -228,17 +238,17 @@ it('opens only one of two filters while retaining their independent conditions a
   const main = mainSummary.closest('details')!, child = childSummary.closest('details')!;
   fireEvent.click(mainSummary);
   fireEvent.click(within(main).getByLabelText('bug'));
-  fireEvent.change(within(main).getByLabelText('Tag filter: Search tags'), { target: { value: 'bug' } });
+  fireEvent.change(within(main).getByLabelText('Tag filter: Find tags'), { target: { value: 'bug' } });
   fireEvent.click(childSummary);
   expect(main).not.toHaveAttribute('open'); expect(child).toHaveAttribute('open');
   fireEvent.click(within(child).getByLabelText('backend'));
-  fireEvent.change(within(child).getByLabelText('Child task tag filter: Search tags'), { target: { value: 'back' } });
+  fireEvent.change(within(child).getByLabelText('Child task tag filter: Find tags'), { target: { value: 'back' } });
   fireEvent.click(mainSummary);
   expect(child).not.toHaveAttribute('open'); expect(main).toHaveAttribute('open');
-  expect(within(main).getByLabelText('Tag filter: Search tags')).toHaveValue('bug');
+  expect(within(main).getByLabelText('Tag filter: Find tags')).toHaveValue('bug');
   expect(within(main).getByLabelText('bug')).toBeChecked();
   fireEvent.click(childSummary);
-  expect(within(child).getByLabelText('Child task tag filter: Search tags')).toHaveValue('back');
+  expect(within(child).getByLabelText('Child task tag filter: Find tags')).toHaveValue('back');
   expect(within(child).getByLabelText('backend')).toBeChecked();
 });
 
