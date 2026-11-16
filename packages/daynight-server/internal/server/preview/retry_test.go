@@ -64,6 +64,43 @@ func TestRecoveryLinksRequireExplicitNavigationAndSourceSession(t *testing.T) {
 	}
 }
 
+func TestAuthorizeLoginRetryResumesOriginalRequest(t *testing.T) {
+	const record = "7003942b-a024-4088-b7d9-2bfe545fc80e"
+	state := secret.Random("")
+	principal := model.Principal{Kind: model.SessionCredential, UserID: "user", CredentialID: "session"}
+	authorizations := 0
+	ops := &operations{authorize: func(_ context.Context, id, actualState string, got model.Principal) (identity.PreviewSSOAuthorization, error) {
+		authorizations++
+		if id != record || actualState != state || got != principal {
+			t.Fatal("incorrect authorization arguments")
+		}
+		return identity.PreviewSSOAuthorization{Code: "code"}, nil
+	}}
+	h, _, handler := fixture(t, ops, false)
+	loggedIn := false
+	h.authenticate = func(*http.Request) (model.Principal, error) {
+		if !loggedIn {
+			return model.Principal{}, model.Unauthenticated(nil)
+		}
+		return principal, nil
+	}
+	query := url.Values{"login": {record}, "state": {state}}.Encode()
+	path := AuthorizePath + "?" + query
+	w := request(handler, "GET", "http://daynight.test"+path)
+	if w.Code != 401 || authorizations != 0 || !strings.Contains(w.Body.String(), `id="retry-sso"`) || !strings.Contains(w.Body.String(), "login="+record+"&amp;state="+state) {
+		t.Fatalf("failed authorization = %d %q calls=%d", w.Code, w.Body, authorizations)
+	}
+	hash := sha256.Sum256([]byte(preserveRetryFragment))
+	if !strings.Contains(w.Body.String(), "<script>"+preserveRetryFragment+"</script>") || !strings.Contains(w.Header().Get("Content-Security-Policy"), "'sha256-"+base64.StdEncoding.EncodeToString(hash[:])+"'") {
+		t.Fatal("retry behavior was not delivered under its CSP")
+	}
+	loggedIn = true
+	w = request(handler, "GET", "http://daynight.test"+path)
+	if w.Code != 303 || authorizations != 1 || w.Header().Get("Location") != "http://preview.daynight.test"+CallbackPath+"?"+(url.Values{"code": {"code"}, "state": {state}}).Encode() {
+		t.Fatalf("retried authorization = %d %v calls=%d", w.Code, w.Header(), authorizations)
+	}
+}
+
 func TestStartFailureRetainsExplicitOriginalLoginRetry(t *testing.T) {
 	const record = "7003942b-a024-4088-b7d9-2bfe545fc80e"
 	state := secret.Random("")
