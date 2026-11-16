@@ -200,21 +200,18 @@ Markdown 引用反馈绑定其所属的语义任务/页签/文件选择；首次
 结果，同路径更新仍使用既有 revision 与 `updatedAt` 重读规则。
 
 公开 skill 源为 `packages/daynight/src/commands/skill/skills/using-daynight/`。
-公共手册说明 Markdown 与引用；仓库创建、handoff、执行和 Goal 指引共用 task-content 标准；任务定义、成果及
-session 方法与过程的内容归属由 [Agent skill 设计](daynight-agent-skill.md#文档职责与任务资料)
-拥有，阅读层不维护另一套栏目或强制证据位置。description 明确当前责任与资料入口，
-未指定附件交付时正文完整无需主附件；Goal 需求阶段的完整 `spec.md` 和 managed 必需
-附件不能由正文替代。Goal 持有共享需求、设计和整体验收，阶段 task 保留生产责任、Goal ID 和路径；架构 description 直接注明
-需求生产 task ID、Goal ID、spec 路径及适用原型，并实际读取已确认内容。
+公共手册拥有 description 与附件的写法、Markdown 与引用规则；仓库创建、handoff、执行和 Goal 指引共用 task-content 标准。
+任务定义、成果及 session 方法与过程的内容归属由 [Agent skill 设计](daynight-agent-skill.md#文档职责与任务资料)
+拥有，阅读层不维护另一套栏目或强制证据位置。Goal 需求阶段的完整 `spec.md` 和 managed 必需附件仍须交付。
+Goal 持有共享需求、设计和整体验收，阶段 task 保留生产责任、Goal ID 和准确资料入口；阶段来源与完整交付索引遵守
+[Goal 资料所有权机制](daynight-goal-workflow.md#任务身份与资料所有权)。
 
-每个 Goal 交付正文直接列出架构生产任务 ID、共享资料拥有者 Goal ID 及各必需来源：来源 description 全文或适用
-章节、真实附件完整路径，或保留所属架构任务身份的不可变仓库引用。正文来源通过
-`task show` 读取，间接后继同样保留入口；登记时核验，实施前读取所列输入。资料引用
-不新增执行依赖，也不复制整套共享材料。真实资源确认上传后才加入引用，链接按实际
+交付任务自己的材料保留完整来源索引，可由自有 brief 附件提供，description 定位该入口。
+间接后继也保留自身入口；登记时核验生产任务、共享资料拥有者和实际来源，实施前读取所列输入。
+资料引用不新增执行依赖，也不复制整套共享材料。真实资源确认上传后才加入引用，链接按实际
 所有权和根/文档路径解析。依赖、PR 属性、Goal 阶段、创建/实现/合并权限继续独立；
 创建默认 proposed，内部已确认任务可显式选择 todo，登记不执行，精确版本 set-status 不授予额外实现或交付权限。
-交付验证检查实际 npm bundle 及隔离安装夹具，
-安装目录通过正常重新安装更新。机制取舍见
+交付验证检查实际 npm bundle 及隔离安装夹具，安装目录通过正常重新安装更新。机制取舍见
 [Markdown 描述决策](../../.agents/notes/archived/architecture/2026-10-22-task-description-markdown.md)。
 
 ## Mermaid 图表

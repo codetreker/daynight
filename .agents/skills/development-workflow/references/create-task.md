@@ -14,7 +14,7 @@ After an interruption, verify existing resources before creating anything again.
 
 ## Prepare content
 
-Write an outcome-oriented title and a task-specific Markdown description that meet the content standard and current stage requirements. Prepare each delivery task's problem, selected solution, detailed design, ordered implementation steps and acceptance criteria under [definitions and results](task-content.md#definitions-and-results). For each Goal delivery task, also prepare its [delivery task brief](goal.md#delivery-task-brief), including its contribution to the Goal.
+Prepare an outcome-oriented title and task material that meet the content standard and current stage requirements. Prepare each delivery task's problem, selected solution, detailed design, ordered implementation steps and acceptance criteria under [definitions and results](task-content.md#definitions-and-results). For each Goal delivery task, also prepare its [delivery task brief](goal.md#delivery-task-brief), including its contribution to the Goal.
 Registration and handoff remain separate operations; incomplete task definition prevents passing the [delivery handoff threshold](task-content.md#content-sufficiency).
 Genuinely required sources must be readable, and future outputs must be explicitly assigned to prerequisite tasks.
 Keep shared inputs in their owning resource; a Goal owns its shared requirements, architecture and whole-Goal acceptance. Do not copy the full set of material.

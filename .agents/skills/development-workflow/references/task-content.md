@@ -1,12 +1,13 @@
 # Task content standard
 
 Applies to creation, breakdown, handoff, and execution.
-Descriptions and their actual references should let an independent reader understand the task without the original chat, private worktrees, or temporary files.
+Task material and its actual references should let an independent reader understand the task without the original chat, private worktrees, or temporary files.
 Follow the target repository's documentation and language rules.
+The product [materials manual](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md) owns description and attachment usage; this standard defines required task content.
 
 ## Task, Thread and Session boundary
 
-Task and Goal descriptions and attachments store effective requirements, solutions and formal results. For a Goal, shared requirements, architecture, breakdowns, overall decisions, results, progress and whole-Goal acceptance belong to the Goal, regardless of the producer; producing Tasks identify the Goal ID and exact paths. Task-specific work, results and evidence remain with their Tasks. Follow the product [material ownership rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#goal-outcomes-and-progress) when synchronizing conclusions and progress.
+Task and Goal material stores effective requirements, solutions and formal results. For a Goal, shared requirements, architecture, breakdowns, overall decisions, results, progress and whole-Goal acceptance belong to the Goal, regardless of the producer; producing Tasks identify the Goal ID and exact paths. Task-specific work, results and evidence remain with their Tasks. Follow the product [material ownership rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#goal-outcomes-and-progress) when synchronizing conclusions and progress.
 Thread stores durable participant discussion; Session stores execution content, tool activity and operating context.
 Apply these responsibilities to descriptions, attachments and referenced material.
 Use [Thread commands](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/materials.md#threads) to read, post and reply without changing task metadata or triggering execution.
@@ -28,7 +29,7 @@ Operational authorization still constrains current behavior, but does not become
 
 A Step is a durable, ordered record of work within one Task. Its description can
 hold that work's objective, completion conditions, result and references to its
-materials. The Task description and attachments remain the owners of the overall
+materials. The Task material remains the owner of the overall
 requirements and formal deliverables; a Step may reference them. Steps persist
 across Sessions and can be empty; do not infer them from Task descriptions,
 Session todos or execution logs.
@@ -40,7 +41,7 @@ own how Steps are divided and maintained; see [task execution](task-execution.md
 
 ## Definitions and results
 
-The description and readable references together provide the following information, without mandatory headings or empty templates:
+The Task's own material and readable references together provide the following information, without mandatory headings or empty templates:
 
 | Information | Content |
 | --- | --- |
@@ -53,13 +54,12 @@ The description and readable references together provide the following informati
 | Deliverables and contracts | Outputs, read locations, and semantics needed by producers and consumers; state when there is no exchange between tasks. |
 | Acceptance criteria | Observable success, failure and relevant boundary behavior, verification methods and expected results, applicable thresholds, and human confirmation points. |
 
-The description must identify this task's specific work and where to find its sources.
+The Task's own material must identify its specific work and where to find its sources.
 Provide the detail the actual work needs without inventing interfaces or empty sections. The selected solution, detailed design and implementation steps must define the delivery task's own work, even when shared detail comes from referenced sources.
 These content requirements do not mandate a separate plan file, line-by-line code instructions, or Task Steps resources.
-When attachment delivery is not specified, complete inline content needs no primary attachment; references or a mix of inline content and references are also valid.
 Do not duplicate complete documents.
-The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment on the Goal, produced by the requirements Task, even when its description is complete. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
-The [complete delivery standard](delivery.md#worker-delivery-results) governs managed tasks' attachment and separate review-file requirements; the general inline-content rule cannot waive them.
+The [Goal protocol](goal.md#complete-requirements-spec) requires a complete `spec.md` attachment on the Goal, produced by the requirements Task. Every Goal delivery task additionally requires the [task-specific delivery brief](goal.md#delivery-task-brief); the general content categories do not waive its implementation approach.
+The [complete delivery standard](delivery.md#worker-delivery-results) governs managed tasks' attachment and separate review-file requirements; these content categories do not waive them.
 Generic questions, unexplained links, unreadable sources, or "see the previous discussion" are insufficient.
 
 Save stage results promptly: current reviewable artifacts, accepted content and its effective status, actual deliverables, acceptance conclusions, and important limitations.

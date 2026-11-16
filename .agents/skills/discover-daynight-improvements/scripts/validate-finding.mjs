@@ -50,9 +50,9 @@ function decodeText(bytes) {
   catch { return undefined; }
 }
 
-// Package descriptions use inline links or single-line reference definitions.
+// Package Markdown uses inline links or single-line reference definitions.
 // This is deliberately not a general Markdown renderer.
-export function descriptionLinks(markdown) {
+export const markdownAttachmentLinks = (markdown, documentPath = null) => {
   let fence;
   const prose = markdown.split("\n").map((line) => {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
@@ -127,11 +127,20 @@ export function descriptionLinks(markdown) {
         check(!decoded.includes("/"), "Encoded path separators are not attachment segments.");
         return decoded;
       });
-      return relativeFile(segments.join("/"));
+      if (documentPath === null) return relativeFile(segments.join("/"));
+      const parts = relativeFile(documentPath).split("/").slice(0, -1);
+      for (const segment of segments) {
+        if (segment === ".") continue;
+        if (segment === "..") {
+          check(parts.length > 0, "Attachment link escapes the task root.");
+          parts.pop();
+        } else parts.push(relativeFile(segment));
+      }
+      return relativeFile(parts.join("/"));
     }
     catch (error) { throw new Error(`Invalid attachment link ${link}: ${error.message}`); }
   });
-}
+};
 
 export async function validateFinding(manifestPath, { forbid = [] } = {}) {
   check(Array.isArray(forbid) && forbid.every((value) => typeof value === "string" && value.trim().length > 0), "Each forbidden value must be a nonempty string.");
@@ -176,9 +185,13 @@ export async function validateFinding(manifestPath, { forbid = [] } = {}) {
     if (!contents.has(artifact)) contents.set(artifact, await regularFile(root, artifact));
   }
 
-  for (const link of descriptionLinks(contents.get(manifest.description).toString("utf8"))) {
-    // The file supplies an inline task description; its links use the task attachment root.
-    check(contents.has(link), `Description attachment link is not in the file inventory: ${link}`);
+  for (const [relative, bytes] of contents) {
+    if (relative !== manifest.description && !/\.(?:md|markdown)$/i.test(relative)) continue;
+    const documentPath = relative === manifest.description ? null : relative;
+    for (const link of markdownAttachmentLinks(bytes.toString("utf8"), documentPath)) {
+      check(contents.has(link) && link !== manifestName && link !== manifest.description,
+        `Markdown attachment link from ${relative} is not in the attachment inventory: ${link}`);
+    }
   }
 
   let privacyScan = null;
