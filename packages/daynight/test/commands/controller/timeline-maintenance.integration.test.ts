@@ -113,7 +113,7 @@ test.each(["text", "list"] as const)("stopped maintenance retires migrated overs
     expect(store.get(entry.entryId)).toEqual(entry);
     expect(marker(db)).toBe(0);
     expect(fs.readdirSync(path.join(`${f.file}.pending-content`, "timeline"))).toEqual([]);
-    expect(fs.readdirSync(path.join(`${f.file}.pending-content`, "legacy-sql"))).toEqual([]);
+    expect(fs.existsSync(path.join(`${f.file}.pending-content`, "legacy-sql"))).toBe(false);
     const incoming = { ...entry, entryId: randomUUID(), entrySeq: "2" };
     expect(() => db.transaction(() => store.save(incoming)).immediate()).toThrow();
     expect(store.get(incoming.entryId)).toBeUndefined();

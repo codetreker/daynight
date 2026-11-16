@@ -77,11 +77,154 @@ test("migration keeps unknown Markdown registration observation-only without reo
   expect(f.read(key)).not.toHaveProperty("submission");
 });
 
-test("a corrupt retained capture rolls back every earlier migration rewrite", () => {
-  const f = fixture(); f.write("native_provider:image-slot:a", f.old); f.write("native_provider:image-slot:b", { ...f.old, request: { ...f.request, captureId: "invalid" } });
-  expect(f.migrate).toThrow(); expect(f.read("native_provider:image-slot:a")).toEqual(f.old);
+test("v12 maps independent states without auditing receipts, identities or image associations", () => {
+  const f = fixture();
+  const good = { ...f.old, phase: "query", unknownAction: "failure", part: { type: "unexpected", error: { malformed: true } }, unrelated: { arbitrary: true } };
+  const bad = { ...f.old, request: null };
+  const ownerRequest = { ...f.request, captureId: "different", arbitrary: true };
+  f.write(`capture:${f.request.captureId}`, { request: ownerRequest, attemptId: f.request.attemptId, receipt: "bad" });
+  f.write("native_provider:image-slot:a", good);
+  f.write("native_provider:image-slot:b", bad);
+  f.write("native_provider:image-slot:c", good);
+  const operation = randomUUID();
+  const receipt = { invalid: "receipt", imageId: "unrelated" };
+  f.db.prepare("INSERT INTO native_input_publications VALUES(?,?,?,?,?,?)").run(operation, "codex", "native", "message", "bad-hash", JSON.stringify({ receipt, slots: [{ state: good }, { state: bad }, { state: good }] }));
+  f.db.prepare("INSERT INTO native_input_publication_images VALUES(?,?,?,?)").run(operation, "unrelated-image", "unrelated-resource", 99);
+  f.migrate();
+  const a = f.read("native_provider:image-slot:a"), c = f.read("native_provider:image-slot:c");
+  expect(a).toEqual(c);
+  expect(a).toMatchObject({ request: ownerRequest, phase: "query", part: good.part, unrelated: good.unrelated, submission: { outcome: { kind: "failed", error: good.part.error } } });
+  expect(f.read("native_provider:image-slot:b")).toEqual(bad);
+  const publication = JSON.parse((f.db.prepare("SELECT value FROM native_input_publications").get() as { value: string }).value);
+  expect(publication.receipt).toEqual(receipt);
+  expect(publication.slots.map((slot: { state: unknown }) => slot.state)).toEqual([a, bad, c]);
+  expect(f.db.prepare("SELECT * FROM native_input_publication_images").all()).toEqual([{ operation_id: operation, image_id: "unrelated-image", resource_id: "unrelated-resource", part_index: 99 }]);
 });
 
+test("v12 preserves unparseable companions and unchanged raw containers without updating them", () => {
+  const f = fixture(), badOwner = { ...f.request, captureId: randomUUID() }, badSealed = { ...f.request, captureId: randomUUID() };
+  const good = { ...f.old, phase: "query", unknownAction: "register" };
+  f.write("native_provider:image-slot:a", good);
+  f.write("native_provider:image-slot:b", { ...f.old, request: badOwner });
+  f.write("native_provider:image-slot:c", { ...f.old, request: badSealed, phase: "commit" });
+  f.write("native_provider:image-slot:d", good);
+  f.db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(`capture:${badOwner.captureId}`, "{broken");
+  f.db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(`${badSealed.captureId}:${badSealed.attemptId}`, "bad-image", "bad-file", "{broken");
+  f.db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run("markdown:source:bad", "  {broken");
+  f.db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run("markdown:source:unchanged", ' { "request": null, "extra": true } ');
+  f.db.prepare("INSERT INTO native_input_publications VALUES(?,?,?,?,?,?)").run(randomUUID(), "codex", "native", "message", "hash", ' { "receipt": "bad", "slots": 7 } ');
+  f.db.exec(`CREATE TRIGGER forbid_unchanged BEFORE UPDATE ON image_runtime_state WHEN OLD.key IN ('markdown:source:bad', 'markdown:source:unchanged', 'native_provider:image-slot:b', 'native_provider:image-slot:c') BEGIN SELECT RAISE(ABORT, 'unexpected rewrite'); END`);
+  f.db.exec(`CREATE TRIGGER forbid_publication BEFORE UPDATE ON native_input_publications BEGIN SELECT RAISE(ABORT, 'unexpected publication rewrite'); END`);
+  f.migrate();
+  expect(f.read("native_provider:image-slot:a")).toMatchObject({ phase: "query", resumeReserved: "source" });
+  expect(f.read("native_provider:image-slot:d")).toEqual(f.read("native_provider:image-slot:a"));
+  expect(f.read("native_provider:image-slot:b")).toEqual({ ...f.old, request: badOwner });
+  expect(f.read("native_provider:image-slot:c")).toEqual({ ...f.old, request: badSealed, phase: "commit" });
+  expect((f.db.prepare("SELECT value FROM image_runtime_state WHERE key='markdown:source:bad'").get() as { value: string }).value).toBe("  {broken");
+  expect((f.db.prepare("SELECT value FROM image_runtime_state WHERE key='markdown:source:unchanged'").get() as { value: string }).value).toBe(' { "request": null, "extra": true } ');
+  expect((f.db.prepare("SELECT value FROM native_input_publications").get() as { value: string }).value).toBe(' { "receipt": "bad", "slots": 7 } ');
+});
+
+test("v12 keeps an observation-only Markdown state without sealed data in query", () => {
+  const f = fixture(), key = "markdown:source:observation";
+  f.write(key, { request: f.request, phase: "unknown", observeOnly: true, started: false, awaitingRetry: false });
+  f.migrate();
+  expect(f.read(key)).toMatchObject({ request: f.request, phase: "unknown", awaitingRetry: true, started: false });
+  expect(f.read(key)).not.toHaveProperty("submission");
+  expect(f.read(key)).not.toHaveProperty("resumeReserved");
+  expect(f.read(key)).not.toHaveProperty("observeOnly");
+});
+
+test("v12 preserves states when a required sealed companion is absent", () => {
+  const f = fixture();
+  const native = { ...f.old, phase: "query", unknownAction: "commit", validated: null };
+  const markdown = { request: f.request, phase: "validated", observeOnly: true, sourceAdmission: null };
+  f.write("native_provider:image-slot:missing", native);
+  f.write("markdown:source:missing", markdown);
+  f.migrate();
+  expect(f.read("native_provider:image-slot:missing")).toEqual(native);
+  expect(f.read("markdown:source:missing")).toEqual(markdown);
+});
+
+test.each([undefined, "unrecognized"])("v12 preserves native state when its needed action is unavailable", unknownAction => {
+  const f = fixture(), key = "native_provider:image-slot:action";
+  const old = { ...f.old, phase: "query", unknownAction };
+  const raw = ` ${JSON.stringify(old)} `;
+  f.db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(key, raw);
+  f.db.exec(`CREATE TRIGGER forbid_action_update BEFORE UPDATE ON image_runtime_state WHEN OLD.key='${key}' BEGIN SELECT RAISE(ABORT, 'unexpected rewrite'); END`);
+  f.migrate();
+  expect((f.db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string }).value).toBe(raw);
+});
+
+test.each(["commit", "failure"] as const)("v12 preserves native %s when its required outcome is unavailable", action => {
+  const f = fixture(), key = "native_provider:image-slot:outcome";
+  const old = action === "commit"
+    ? { ...f.old, phase: "query", unknownAction: action, validated: undefined }
+    : { ...f.old, phase: "query", unknownAction: action, part: { type: "image_unavailable" } };
+  const raw = ` ${JSON.stringify(old)} `;
+  f.db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(key, raw);
+  f.migrate();
+  expect((f.db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string }).value).toBe(raw);
+});
+
+test.each([{}, { action: "unrecognized" }])("v12 preserves Markdown state when retry action is unavailable", retryControl => {
+  const f = fixture(), key = "markdown:source:retry";
+  const old = { request: f.request, phase: "unknown", started: false, awaitingRetry: false, observeOnly: false, retryControl, receipt: "bad" };
+  const raw = ` ${JSON.stringify(old)} `;
+  f.db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(key, raw);
+  f.db.exec(`CREATE TRIGGER forbid_retry_update BEFORE UPDATE ON image_runtime_state WHEN OLD.key='${key}' BEGIN SELECT RAISE(ABORT, 'unexpected rewrite'); END`);
+  f.migrate();
+  expect((f.db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key) as { value: string }).value).toBe(raw);
+});
+
+test("v12 carries sealed Markdown data without checking source admission and rolls back actual SQL failures", () => {
+  const f = fixture(), nativeKey = "native_provider:image-slot:a", markdownKey = "markdown:source:b";
+  f.write(nativeKey, f.old);
+  const markdown = { request: f.request, phase: "validated", sourceAdmission: { validated: "different", attemptId: "different" }, receipt: "bad" };
+  f.write(markdownKey, markdown);
+  f.db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(`${f.request.captureId}:${f.request.attemptId}`, "unrelated", "unrelated", JSON.stringify(f.validated));
+  f.db.exec(`CREATE TRIGGER fail_update BEFORE UPDATE ON image_runtime_state WHEN OLD.key='${nativeKey}' BEGIN SELECT RAISE(ABORT, 'real write failure'); END`);
+  expect(f.migrate).toThrow("real write failure");
+  expect(f.read(markdownKey)).toEqual(markdown);
+  expect(f.read(nativeKey)).toEqual(f.old);
+  f.db.exec("DROP TRIGGER fail_update");
+  f.migrate();
+  expect(f.read(markdownKey)).toMatchObject({ receipt: "bad", sourceAdmission: { validated: "different", attemptId: "different" }, phase: "unknown", submission: { outcome: { kind: "validated", validated: f.validated } } });
+  const once = f.db.prepare("SELECT key,value FROM image_runtime_state ORDER BY key").all();
+  f.migrate();
+  expect(f.db.prepare("SELECT key,value FROM image_runtime_state ORDER BY key").all()).toEqual(once);
+});
+
+
+test("journal upgrade commits independent v12 state mappings for a file-backed v11 database", () => {
+  const f = fixture();
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/capture-migration-upgrade");
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(path.join(base, "case-")); roots.push(root);
+  const file = path.join(root, "journal.sqlite"), db = new Database(file);
+  const good = { ...f.old, phase: "query", unknownAction: "register" }, bad = { ...f.old, request: null };
+  try {
+    for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 11)) db.exec(step.sql);
+    for (const [key, state] of [["a", good], ["b", bad], ["c", good]] as const) db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(`native_provider:image-slot:${key}`, JSON.stringify(state));
+    db.prepare("INSERT INTO native_input_publications VALUES(?,?,?,?,?,?)").run("operation", "codex", "native", "message", "bad", JSON.stringify({ receipt: "bad", slots: [{ state: good }, { state: bad }, { state: good }] }));
+    db.prepare("INSERT INTO native_input_publication_images VALUES(?,?,?,?)").run("operation", "unrelated", "resource", 3);
+    db.pragma("user_version=11");
+  } finally { db.close(); }
+  const permit = acquireControllerStoragePermit(file, undefined, { fileMustExist: true });
+  try { upgradeControllerJournal(file, permit, { onMigration: () => {} }); }
+  finally { permit.release(); }
+  const read = new Database(file, { readonly: true });
+  try {
+    expect(read.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat));
+    const states = (read.prepare("SELECT value FROM image_runtime_state ORDER BY key").all() as { value: string }[]).map(row => JSON.parse(row.value));
+    expect(states[0]).toMatchObject({ phase: "query", resumeReserved: "source" });
+    expect(states[1]).toEqual(bad); expect(states[2]).toEqual(states[0]);
+    const publication = JSON.parse((read.prepare("SELECT value FROM native_input_publications").get() as { value: string }).value);
+    expect(publication.receipt).toBe("bad");
+    expect(publication.slots.map((slot: { state: unknown }) => slot.state)).toEqual(states);
+    expect(read.prepare("SELECT * FROM native_input_publication_images").all()).toEqual([{ operation_id: "operation", image_id: "unrelated", resource_id: "resource", part_index: 3 }]);
+  } finally { read.close(); }
+});
 
 test("v11 capture migration preserves over-limit stored values while new input remains bounded", () => {
   const f = fixture();

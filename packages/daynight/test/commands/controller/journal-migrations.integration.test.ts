@@ -435,15 +435,15 @@ test.each([false, true])("unversioned reset preserves nonempty legacy history af
   } finally { check.close(); }
 });
 
-test("an ownerless legacy projection cannot be dropped by the file migration", async () => {
+test("an ownerless legacy projection is skipped when its output path cannot be formed", async () => {
   const f = await fixture(); historical(f.file, 5, f.ticket);
   const db = new Database(f.file);
   db.exec("DELETE FROM execution; INSERT INTO projection VALUES('orphan','hash',1,'{}')"); db.close();
-  expect(() => readControllerSnapshot(f.file)).toThrow("migration-failed");
+  expect(readControllerSnapshot(f.file)).toBeNull();
   const check = new Database(f.file);
   try {
-    expect(check.pragma("user_version", { simple: true })).toBe(5);
-    expect(check.prepare("SELECT id FROM projection").get()).toEqual({ id: "orphan" });
+    expect(check.pragma("user_version", { simple: true })).toBe(journalVersion);
+    expect(check.prepare("SELECT COUNT(*) AS count FROM timeline_entries").get()).toEqual({ count: 0 });
   } finally { check.close(); }
 });
 

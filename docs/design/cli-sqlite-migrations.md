@@ -13,7 +13,7 @@
 | 原实例锁和严格不接管的同步维护 permit | `platform/instance-lock.ts` |
 | 本库基线 DDL、已交付转换、业务准入和必要结构检查 | 各 store 的 format 模块 |
 
-格式定义包含基线版本及建库函数、连续的后续迁移和按版本验证函数，不包含无版本来源验证或接入 callback。SQL 主链在格式模块初始化时从所属目录加载并按文件名排序；建库和迁移 callbacks 在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。每步迁移同时接收本次事务初始识别的 `SqliteSource`；该来源不随中间 `user_version` 推进改变，领域转换可以据此保留旧格式的完整性限制。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络或原生进程。Controller journal v6 的领域迁移还须先把旧正文可靠导出到本执行的待归档文件，再执行正文表删除及索引转换；SQLite 回滚不能撤销已落盘文件，重试须核对并复用它们，不能提前清除唯一正文源。v8 进一步把经原 SQL 索引精确验证的旧文件转换为不可变候选，提交指针决定可见性；不接纳超前、未登记或不一致的旧文件。候选落盘但 SQL 回滚时保持不可见，并保留原迁移源。该例外由 [Session 归档设计](task-session-protocol.md#完成后的文件归档)拥有，公共执行器不承担文件迁移。
+格式定义包含基线版本及建库函数、连续的后续迁移和按版本验证函数，不包含无版本来源验证或接入 callback。SQL 主链在格式模块初始化时从所属目录加载并按文件名排序；建库和迁移 callbacks 在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。每步迁移同时接收本次事务初始识别的 `SqliteSource`；该来源不随中间 `user_version` 推进改变，领域转换可以据此保留旧格式的完整性限制。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络或原生进程。Controller journal v6 的领域迁移还须先把旧正文可靠导出到本执行的待归档文件，再执行正文表删除及索引转换；SQLite 回滚不能撤销已落盘文件，重试须核对并复用它们，不能提前清除唯一正文源。v8 只按原 SQL 索引复制文件并发布不可变候选，提交指针决定可见性；未引用文件不参与转换。候选落盘但 SQL 回滚时保持不可见，并保留原迁移源。该例外由 [Session 归档设计](task-session-protocol.md#完成后的文件归档)拥有，公共执行器不承担文件迁移。
 
 ## SQL 资源与参考结构
 
@@ -41,7 +41,7 @@
 
 SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](../../.agents/notes/archived/architecture/2026-10-30-cli-sqlite-migrations.md)。
 
-Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。原 journal 格式拥有者构造完整 schema snapshots 并执行同一版本校验；010 的领域 callback 先完整验证并捕获原已提交指针，再在同一迁移事务执行包含旧索引删除的完整 DDL、重新核对文件、导入正文并核对统计。DDL 只执行一次；失败回滚恢复原索引。普通正文读写统一消费当前 SQL 行，旧文件解码器仅供编号迁移。当前行、历史源验证、纯升级与停止维护由 [SQL 正文设计](session-sqlite-content.md)拥有。011 在同一许可和迁移事务中建立 `outbox_totals`，对旧 outbox 编码文本逐行计算 UTF-8 字节并一次初始化；版本和总量一起提交或回滚。正常重开不重复初始化。容量与 ACK 计量由 [Controller 协议](task-session-protocol.md)拥有。012 的领域 callback 在原事务中转换原生图片槽位、原生输入 publication 和 Markdown 采集 JSON，保留原 request、当前 attempt、封存结果及未结观察责任；有充分原记录时冻结 direct submit 业务，没有可证明业务体的未知发送只保留观察责任，不重新读取来源。转换不执行来源 IO，字段和版本一起提交或回滚；运行时只消费转换后的当前格式。[图片来源设计](session-image-sources.md)拥有 submit 与恢复语义。
+Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。领域 callback 捕获原已提交指针，在同一迁移事务执行包含旧索引删除的完整 DDL，并从对应文件导入可映射的正文；totals 根据实际写入行计算。DDL 只执行一次；失败回滚恢复原索引。文件映射、局部坏值和纯升级由 [SQL 正文设计](session-sqlite-content.md)拥有。011 在同一许可和迁移事务中建立 `outbox_totals`，对旧 outbox 编码文本逐行计算 UTF-8 字节并一次初始化；版本和总量一起提交或回滚。正常重开不重复初始化。容量与 ACK 计量由 [Controller 协议](task-session-protocol.md)拥有。012 的领域 callback 只转换原生图片、Markdown 和 publication slot 中改变表示的 state 字段；无法操作的局部 state 保持原值，其他 slot 继续，未变化的 JSON 不重写。receipt、图片关联和不涉及映射的字段保持原样，不进行完整业务验证或恢复。字段和版本一起提交或回滚；[图片来源设计](session-image-sources.md)拥有运行期 submit 与恢复语义。
 
 ## 独立版本与起点
 
@@ -55,7 +55,7 @@ Controller 的 `010-timeline-content.sql` 通过同一编号序列启用 v10。�
 
 新库和版本 0 重置使用同一基线及后续步骤，避免另一套最新 DDL 漂移。版本 0 丢弃旧 schema 和数据；已有空版本 0 文件也通过这一路径初始化。文件创建许可 `allowCreate` 只作用于缺失文件，`inspectSqlite` 和 `upgradeSqlite` 没有空库许可参数。非零版本范围为正的 32 位有符号整数，负数、缺步、逆序、未知和较新版本均拒绝并保留原库。非零来源结构检查由本库维护，参考元数据来自上述实际 SQL 链，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局。
 
-已知非零迁移保留业务记录及原有转换语义。Worker 9→10 在 SQL 中从可访问的 registration 映射 intent 控制器身份，并设置原有 execution recovery 字段；每行直接更新，不跨复合主键查找其他 owner。Web 版本 1→2 在 SQL 中只移除原定的 cleanup 操作回执和资源完成字段，当前 parser 读取迁移后的清理意图，不在运行时代码兼容旧字段。这两步使用嵌套 CASE 先排除含实际 NUL 字符的文本并保护 JSON 语法和所需局部容器，再执行 JSON 操作；无效或不适用的值以及没有实际变化的行不执行 UPDATE，保留原字符串并继续其他行。它们不校验完整业务记录或修复关联，真实 SQL 失败仍回滚迁移事务。Web 2→3 只新增 orchestration_blockers 表，不改写原执行 JSON；旧版本受版本守卫保护而拒绝新库。其他 Web 字段保留原有解析语义；未来收紧字段仍需新增版本转换。Journal 的非零升级保留原有 JSON 字符串、序列、ACK、原生身份和 BLOB，不把原类型断言当成已经增加全面运行时校验。
+已知非零迁移按各步骤的必要映射保留可表示的业务记录。Worker 9→10 在 SQL 中从可访问的 registration 映射 intent 控制器身份，并设置原有 execution recovery 字段；每行直接更新，不跨复合主键查找其他 owner。Web 版本 1→2 在 SQL 中只移除原定的 cleanup 操作回执和资源完成字段，当前 parser 读取迁移后的清理意图，不在运行时代码兼容旧字段。这两步使用嵌套 CASE 先排除含实际 NUL 字符的文本并保护 JSON 语法和所需局部容器，再执行 JSON 操作；无效或不适用的值以及没有实际变化的行不执行 UPDATE，保留原字符串并继续其他行。它们不校验完整业务记录或修复关联，真实 SQL 失败仍回滚迁移事务。Web 2→3 只新增 orchestration_blockers 表，不改写原执行 JSON；旧版本受版本守卫保护而拒绝新库。其他 Web 字段保留原有解析语义；未来收紧字段仍需新增版本转换。Journal 的非零升级保留不涉及映射的值、序列、ACK、原生身份和 BLOB，不把原类型断言当成已经增加全面运行时校验。
 
 ## 连接来源与所有权
 

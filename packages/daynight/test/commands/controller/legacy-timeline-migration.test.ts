@@ -48,7 +48,7 @@ const exportToV8 = (f: ReturnType<typeof fixture>): void => {
   migratePendingEntryPointers(f.db, f.sessionId, sql(8), f.permit);
 };
 
-test("legacy SQL export preserves precise entry pointers, original resources and durable backups without a runtime content facade", () => {
+test("legacy SQL export preserves precise entry pointers and resources without a runtime content facade", () => {
   const f = fixture();
   f.db.transaction(() => exportToV8(f)).immediate();
   const imported: TimelineEntry[] = [];
@@ -57,11 +57,10 @@ test("legacy SQL export preserves precise entry pointers, original resources and
     captureCommittedPendingTimeline(f.db, f.sessionId).iterate(entry => { imported.push(entry); });
   }).deferred();
   expect(imported).toEqual([f.entry]);
-  expect(JSON.parse(readFileSync(path.join(f.pending, "legacy-sql", `${f.entry.entrySeq}.timeline.json`), "utf8"))).toEqual({ seq: f.entry.entrySeq, value: f.body });
-  expect(JSON.parse(readFileSync(path.join(f.pending, "legacy-sql", `${f.resource.resourceId}.resource.json`), "utf8"))).toEqual({ descriptor: JSON.stringify(f.resource), content: f.bytes.toString("base64") });
   const resources = openResourceFiles(f.file, f.sessionId), lease = resources.acquireResource(f.resource.resourceId);
   try { expect(lease.resource).toEqual(f.resource); expect(lease.read("0", f.bytes.length)).toEqual(f.bytes); } finally { lease.close(); }
-  expect(JSON.parse(readFileSync(path.join(f.pending, "migration.json"), "utf8"))).toMatchObject({ phase: "files_durable" });
+  expect(existsSync(path.join(f.pending, "migration.json"))).toBe(false);
+  expect(existsSync(path.join(f.pending, "legacy-sql"))).toBe(false);
 });
 
 test("rollback retains the original SQL and file exports, and a retry verifies the same source", () => {
@@ -112,7 +111,54 @@ test.skipIf(process.platform === "win32")("legacy mutable sources retain before/
   try { f.db.transaction(() => migratePendingEntryPointers(f.db, f.sessionId, sql(8), f.permit)).immediate(); } catch (cause) { failure = cause; }
   expect(failure).toBeInstanceOf(AggregateError);
   expect((failure as AggregateError).errors.map(error => error.message)).toEqual(["Pending archive entry changed while being read.", "close result lost"]);
-  expect(existsSync(path.join(f.pending, "entries"))).toBe(false);
+  expect(readdirSync(path.join(f.pending, "entries"))).toEqual([]);
   expect(readFileSync(`${file}.original`, "utf8")).toBe(f.body); expect(readFileSync(file, "utf8")).toBe(f.body);
   expect(f.db.prepare("SELECT id,revision,entry_seq FROM content_index").get()).toEqual({ id: f.entry.entryId, revision: f.entry.revision, entry_seq: f.entry.entrySeq });
+});
+
+test("file write, close and cleanup failures retain the complete error chain", () => {
+  const f = fixture(), open = fs.openSync, close = fs.closeSync, unlink = fs.unlinkSync;
+  let targetFd: number | undefined;
+  vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) => {
+    const fd = open(file, flags, mode);
+    if (typeof file === "string" && file.includes(`${path.sep}timeline${path.sep}`) && file.endsWith(".tmp")) targetFd = fd;
+    return fd;
+  });
+  vi.spyOn(fs, "fsyncSync").mockImplementation(fd => { if (fd === targetFd) throw new Error("write sync failed"); });
+  vi.spyOn(fs, "closeSync").mockImplementation(fd => { close(fd); if (fd === targetFd) throw new Error("close failed"); });
+  vi.spyOn(fs, "unlinkSync").mockImplementation(file => { if (typeof file === "string" && file.includes(`${path.sep}timeline${path.sep}`) && file.endsWith(".tmp")) throw new Error("cleanup failed"); unlink(file); });
+  let failure: unknown;
+  try { f.db.transaction(() => migratePendingContent(f.db, f.sessionId, sql(6), f.permit)).immediate(); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(AggregateError);
+  const outer = failure as AggregateError, inner = outer.errors[0] as AggregateError;
+  expect(outer.errors[1].message).toBe("cleanup failed");
+  expect(inner.errors.map(error => error.message)).toEqual(["write sync failed", "close failed"]);
+  expect(f.db.prepare("SELECT value FROM projection").get()).toEqual({ value: f.body });
+});
+
+test("empty v5 sources do not access an unrelated pending root", () => {
+  const f = fixture();
+  f.db.exec("DELETE FROM projection; DELETE FROM resources");
+  writeFileSync(f.pending, "unrelated", { mode: 0o600 });
+  f.db.transaction(() => migratePendingContent(f.db, f.sessionId, sql(6), f.permit)).immediate();
+  expect(readFileSync(f.pending, "utf8")).toBe("unrelated");
+  expect(f.db.prepare("SELECT COUNT(*) AS count FROM content_index").get()).toEqual({ count: 0 });
+});
+
+test("v5 projection does not inspect or rewrite an unrelated resource index", () => {
+  const f = fixture(); f.db.exec("DELETE FROM resources");
+  mkdirSync(f.pending, { mode: 0o700 });
+  const index = path.join(f.pending, "index.json"); writeFileSync(index, "not valid JSON", { mode: 0o600 });
+  f.db.transaction(() => migratePendingContent(f.db, f.sessionId, sql(6), f.permit)).immediate();
+  expect(readFileSync(index, "utf8")).toBe("not valid JSON");
+  expect(f.db.prepare("SELECT id FROM content_index").get()).toEqual({ id: f.entry.entryId });
+});
+
+
+test.skipIf(process.platform === "win32")("empty v5 sources leave an unrelated dangling symlink untouched", () => {
+  const f = fixture(); f.db.exec("DELETE FROM projection; DELETE FROM resources");
+  fs.symlinkSync(path.join(f.root, "missing-target"), f.pending);
+  f.db.transaction(() => migratePendingContent(f.db, f.sessionId, sql(6), f.permit)).immediate();
+  expect(fs.lstatSync(f.pending).isSymbolicLink()).toBe(true);
+  expect(f.db.prepare("SELECT COUNT(*) AS count FROM content_index").get()).toEqual({ count: 0 });
 });
