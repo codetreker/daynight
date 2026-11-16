@@ -238,6 +238,7 @@ func newSessionStoreSuite(t *testing.T) *sessionStoreSuite {
 		"oauth_grants",
 		"oauth_refresh_tokens",
 		"personal_access_tokens",
+		"preview_sso_logins",
 		"private_transfers",
 		"private_upload_chunks",
 		"project_github",
