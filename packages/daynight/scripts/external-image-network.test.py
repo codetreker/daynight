@@ -57,6 +57,27 @@ class AdmissionTests(unittest.TestCase):
         self.assertNotIn("0.0.0.0/0", result)
         self.assertNotIn("::/0", result)
 
+    def test_hostname_first_hosts_entry_protects_every_name_without_dropping_ip_aliases(self):
+        hosts = ("10.0.141.152 runner runner.internal\n"
+                 "ip-10-0-141-152.ec2.internal RUNNER.Local. alias.internal # host aliases\n"
+                 "203.0.113.10 public.example\n")
+        self.assertEqual(network.protected_domains(hosts, ["10.0.0.0/8"]),
+                         ["alias.internal", "ip-10-0-141-152.ec2.internal",
+                          "runner", "runner.internal", "runner.local"])
+
+    def test_hostname_first_hosts_entry_still_refuses_unrepresentable_aliases(self):
+        with self.assertRaisesRegex(RuntimeError, "/etc/hosts line 1"):
+            network.protected_domains("runner.internal invalid_alias\n", ["10.0.0.0/8"])
+
+    def test_hostname_first_hosts_entries_keep_the_protection_capacity_bound(self):
+        hosts = "runner.internal " + " ".join(f"host-{index}.internal" for index in range(256))
+        with self.assertRaisesRegex(RuntimeError, "/etc/hosts line 1.*capacity"):
+            network.protected_domains(hosts, ["10.0.0.0/8"])
+
+    def test_hostname_gateway_is_rejected_with_its_input_location(self):
+        with self.assertRaisesRegex(RuntimeError, "route.gateway.*ip-10-0-141-152.ec2.internal"):
+            network.protected_cidrs([], [{"dst": "default", "gateway": "ip-10-0-141-152.ec2.internal"}])
+
     def test_fixture_urls_refuse_credentials_and_non_http_sources(self):
         for values in (["file:///tmp/image.png", "https://example.org/a.png"],
                        ["http://user:secret@example.org/a.png", "https://example.org/a.png"],

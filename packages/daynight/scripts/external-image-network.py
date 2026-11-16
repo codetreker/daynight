@@ -93,7 +93,10 @@ def protected_cidrs(addresses, routes):
             if network.prefixlen:
                 result.add(network)
         if route.get("gateway"):
-            gateway = ipaddress.ip_address(route["gateway"])
+            try:
+                gateway = ipaddress.ip_address(route["gateway"])
+            except ValueError as error:
+                raise RuntimeError(f"Host route.gateway is not an IP address: {route['gateway']!r}.") from error
             result.add(ipaddress.ip_network(str(gateway) + ("/32" if gateway.version == 4 else "/128")))
     return [str(v) for family in (4, 6) for v in
             ipaddress.collapse_addresses(n for n in result if n.version == family)]
@@ -102,20 +105,27 @@ def protected_cidrs(addresses, routes):
 def protected_domains(hosts, cidrs):
     networks = [ipaddress.ip_network(cidr) for cidr in cidrs]
     domains = set()
-    for line in hosts.splitlines():
+    for line_number, line in enumerate(hosts.splitlines(), 1):
         fields = line.split("#", 1)[0].split()
         if len(fields) < 2:
             continue
-        address = ipaddress.ip_address(fields[0])
-        if not any(address in network for network in networks):
-            continue
-        for value in fields[1:]:
+        try:
+            address = ipaddress.ip_address(fields[0])
+        except ValueError:
+            # A hostname-first row cannot establish an address boundary. Protect
+            # every name conservatively rather than dropping its aliases.
+            aliases = fields
+        else:
+            if not any(address in network for network in networks):
+                continue
+            aliases = fields[1:]
+        for value in aliases:
             domain = value.lower().rstrip(".")
             if not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in domain.split(".")):
-                raise RuntimeError("A protected host alias cannot be represented by the production profile.")
+                raise RuntimeError(f"/etc/hosts line {line_number}: a protected host alias cannot be represented by the production profile.")
             domains.add(domain)
-    if len(domains) > 256:
-        raise RuntimeError("Protected host aliases exceed the production profile capacity.")
+        if len(domains) > 256:
+            raise RuntimeError(f"/etc/hosts line {line_number}: protected host aliases exceed the production profile capacity.")
     return sorted(domains)
 
 
