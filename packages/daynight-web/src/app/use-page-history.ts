@@ -5,7 +5,7 @@ import { accountHistory, emptyMyTasksReading, emptyResourceReading, myTasksHisto
 import { parseAuthRoute, parseRoute } from './router';
 import type { TaskCacheScope } from '../features/task-cache/project-cache';
 
-type ResourceFence = { generation: number; readonly entries: Map<string, number>; readonly listeners: Set<() => void> };
+type ResourceFence = { generation: number; accessRetirements: number; readonly entries: Map<string, number>; readonly listeners: Set<() => void> };
 const resourceFences = new WeakMap<TaskCacheScope, Map<string, ResourceFence>>();
 const resourceFencesFor = (scope: TaskCacheScope): Map<string, ResourceFence> => {
   let projects = resourceFences.get(scope);
@@ -16,7 +16,8 @@ const resourceFencesFor = (scope: TaskCacheScope): Map<string, ResourceFence> =>
   const unsubscribe = scope.subscribe(event => {
     if (!(event.historyChanged || event.accessRevoked)) return;
     let fence = all.get(event.projectId);
-    if (fence === undefined) { fence = { generation: 0, entries: new Map(), listeners: new Set() }; all.set(event.projectId, fence); }
+    if (fence === undefined) { fence = { generation: 0, accessRetirements: 0, entries: new Map(), listeners: new Set() }; all.set(event.projectId, fence); }
+    if (event.accessRevoked) fence.accessRetirements++;
     fence.generation++;
     for (const listener of fence.listeners) listener();
   });
@@ -27,7 +28,7 @@ const resourceFence = (scope: TaskCacheScope, projectId: string): ResourceFence 
   const projects = resourceFencesFor(scope);
   let fence = projects.get(projectId);
   if (fence !== undefined) return fence;
-  fence = { generation: 0, entries: new Map(), listeners: new Set() };
+  fence = { generation: 0, accessRetirements: 0, entries: new Map(), listeners: new Set() };
   projects.set(projectId, fence);
   return fence;
 };
@@ -133,7 +134,7 @@ export function useAccountHistory(userId: string, active: boolean) {
 }
 
 /** Project entries hold the complete reading position, while preferences remain user actions. */
-export function useProjectHistory(userId: string, projectId: string, active: boolean, defaults: Pick<ProjectReading, 'section' | 'view'>, scope: TaskCacheScope) {
+export function useProjectHistory(userId: string, projectId: string, active: boolean, defaults: Pick<ProjectReading, 'section' | 'view'>, scope: TaskCacheScope, isDisplayedGoal: (witness: string) => boolean = () => false) {
   const location = useBrowserLocation();
   const navigation = browserNavigation();
   const fence = resourceFence(scope, projectId);
@@ -144,8 +145,8 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
   const generation = useSyncExternalStore(subscribe, () => fence.generation);
   const key = `${userId}/${projectId}`;
   const empty = (): ProjectReading => ({ ...defaults, projectGraphWitness: null, detail: null });
-  const retained = useRef<{ key: string; generation: number; selection: ProjectReading; onPage: boolean }>({ key, generation, selection: empty(), onPage: false });
-  if (retained.current.key !== key || retained.current.generation !== generation) retained.current = { key, generation, selection: empty(), onPage: false };
+  const retained = useRef<{ key: string; fence: ResourceFence; accessRetirements: number; generation: number; selection: ProjectReading; entryId: string | null; onPage: boolean }>({ key, fence, accessRetirements: fence.accessRetirements, generation, selection: empty(), entryId: null, onPage: false });
+  if (retained.current.key !== key || retained.current.fence !== fence) retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection: empty(), entryId: null, onPage: false };
   const route = parseRoute(location.pathname, location.search);
   const onPage = active && route.kind === 'project' && route.projectId === projectId;
   if (onPage && !retained.current.onPage) retained.current.selection = empty();
@@ -158,17 +159,28 @@ export function useProjectHistory(userId: string, projectId: string, active: boo
   }
   const readSelection = selected;
   const retired = location.entryId !== null && selected !== null && isRetiredResourceEntry(scope, projectId, location.entryId);
+  const previous = retained.current;
+  const witness = previous.selection.projectGraphWitness;
+  // Only the committed current entry may carry a displayed Goal across a content
+  // history replacement. Access retirement must win even if another event follows it.
+  const carry = retired && onPage && previous.onPage && location.entryId === previous.entryId &&
+    previous.accessRetirements === fence.accessRetirements && !scope.isInvalidated && !scope.hasIdentityMismatch && scope.userId === userId &&
+    previous.selection.section === 'tasks' && previous.selection.view === 'goals' && witness !== null &&
+    selected?.section === 'tasks' && selected.view === 'goals' && selected.projectGraphWitness === witness && isDisplayedGoal(witness);
   if (retired) selected = null;
-  const selection = !onPage || location.entryId === null ? retained.current.selection : selected ?? empty();
+  const selection = carry ? { section: 'tasks', view: 'goals', projectGraphWitness: witness, detail: null } as const
+    : !onPage || location.entryId === null ? (previous.generation === generation ? previous.selection : empty()) : selected ?? empty();
   useLayoutEffect(() => {
     if (!onPage || error) return;
-    retained.current.selection = selection;
+    retained.current = { key, fence, accessRetirements: fence.accessRetirements, generation, selection, entryId: location.entryId, onPage };
     if (retired && location.entryId !== null && readSelection?.projectGraphWitness === null && readSelection.detail === null) fence.entries.set(location.entryId, generation);
+    // setView intentionally does nothing for equal values, so bind that entry here.
+    if (carry && location.entryId !== null && readSelection?.detail === null) fence.entries.set(location.entryId, generation);
     if (location.entryId !== null && selected === null) navigation.setView(projectHistory(userId, projectId, selection), { replace: true, onCommit: () => {
       const entryId = navigation.snapshot().entryId;
       if (entryId !== null) fence.entries.set(entryId, generation);
     } });
-  }, [onPage, error, selection, selected, location.entryId, navigation, userId, projectId, fence, generation, retired, readSelection]);
+  }, [onPage, error, selection, selected, location.entryId, navigation, userId, projectId, key, fence, generation, retired, readSelection, carry]);
   const select = (next: ProjectReading, replace = false, onCommit?: () => void) => {
     if (!onPage || error) return;
     const record = () => { const entryId = navigation.snapshot().entryId; if (entryId !== null) fence.entries.set(entryId, generation); };

@@ -26,9 +26,9 @@ details directly; chain graphs supplied dependency inspection. The later
 inspection decision replaces that action to let readers trace dependencies
 within the Goal scope. Goal and chain resource UUIDs use
 the existing history witness and project-scoped direction preference. The
-[deletion continuity decision](../bug-fix/2026-11-16-goal-graph-deletion-continuity.md)
-retains the current Goal graph navigation intent through project epoch retirement,
-subject to a fresh admitted snapshot; old resource content remains retired.
+[stable reconciliation decision](../bug-fix/2026-11-16-goal-graph-stable-reconciliation.md)
+keeps the displayed Goal graph mounted through project epoch retirement while old
+resource qualifications and details retire.
 
 The [Goal requirements](../../../../docs/spec/daynight-goals.md#goal-整体依赖图)
 own the user-visible contract and the [inspection design](../../../../docs/design/daynight-task-inspection.md#goal-整体图)

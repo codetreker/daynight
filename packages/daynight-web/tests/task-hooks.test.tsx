@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskDetail, TaskGraph } from "../src/api/types";
 import { ApiError, setTaskStatus, getTask, getTaskSync } from "../src/api/client";
 import { useTaskGraph } from "../src/features/projects/useTaskGraph";
+import { ProjectAccessBoundary, useProjectAccessSession } from "../src/features/projects/ProjectAccess";
 import { pollingIntervalsKey } from "../src/app/polling";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { TaskDetailSessionBoundary } from "../src/features/task-detail/TaskDetailSession";
@@ -375,6 +376,99 @@ describe("task graph snapshots", () => {
     expect(result.current.snapshot?.index.nodes.size).toBe(0);
     expect(result.current.snapshot?.revision).toBeGreaterThan(first!.revision);
     await waitFor(() => expect(result.current.error).toBeNull());
+  });
+
+  it("supersedes an old sync silently and retains its display through history replacement and retry", async () => {
+    const old = deferred<TaskGraph>();
+    const full = deferred<TaskGraph>();
+    const replacement = resetSnapshot({ ...graph(), tasks: [],
+      summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } });
+    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce(replacement).mockReturnValueOnce(full.promise).mockResolvedValue(replacement);
+    const { result } = renderHook(() => useTaskGraph(projectId));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const original = result.current.displaySnapshot;
+    act(() => result.current.refresh());
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    const oldSignal = graphRequest.mock.calls[1]![1];
+    act(() => result.current.reconcile());
+    expect(oldSignal.aborted).toBe(true);
+    expect(result.current).toMatchObject({ displaySnapshot: original, refreshing: false });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(4));
+    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", refreshing: false });
+    await act(async () => { old.resolve(graph()); });
+    expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", refreshing: false });
+    const failure = new Error("offline during replacement");
+    await act(async () => { full.reject(failure); });
+    await waitFor(() => expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: original, status: "ready", error: failure }));
+    act(() => result.current.refresh());
+    expect(result.current.refreshing).toBe(true);
+    await waitFor(() => expect(result.current.displaySnapshot?.graph.tasks).toEqual([]));
+    expect(result.current.snapshot).toBe(result.current.displaySnapshot);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("retains a sync error through a history fence until a fresh sync succeeds", async () => {
+    detailWorld = createTaskSessionWorld();
+    const failure = new Error("offline");
+    const recovery = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(graph()).mockRejectedValueOnce(failure).mockReturnValueOnce(recovery.promise);
+    const { result, unmount } = renderHook(() => useTaskGraph(projectId));
+    try {
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const display = result.current.displaySnapshot;
+      act(() => result.current.reconcile());
+      await waitFor(() => expect(result.current.error).toBe(failure));
+      act(() => detailWorld!.scope.fenceGoalHistory(projectId, "00000000-0000-4000-8000-000000000900"));
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+      expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: display, status: "ready", refreshing: false, error: failure });
+      await act(async () => { recovery.resolve(graph()); });
+      await waitFor(() => expect(result.current.error).toBeNull());
+      expect(result.current.snapshot).not.toBeNull();
+    } finally { unmount(); detailWorld.dispose(); detailWorld = null; }
+  });
+
+  it("forces mutation reconciliation while a Project access read is in flight", async () => {
+    graphRequest.mockResolvedValue(graph());
+    const { result } = renderHookWithoutSession(() => ({ graph: useTaskGraph(projectId), access: useProjectAccessSession(projectId)! }), {
+      wrapper: ({ children }) => <TestTaskCacheBoundary><ProjectAccessBoundary projectId={projectId}><TaskDetailSessionBoundary>{children}</TaskDetailSessionBoundary></ProjectAccessBoundary></TestTaskCacheBoundary>,
+    });
+    await waitFor(() => expect(result.current.graph.status).toBe("ready"));
+    const access = result.current.access;
+    access.requireProjectReadRecheck();
+    const historyTicket = access.scope.getObservedHistoryTicket(projectId);
+    expect(historyTicket).not.toBeNull();
+    const accessTicket = access.beginObservation();
+    const token = access.beginProjectRead();
+    const readRevision = access.scope.getProjectReadRevision(projectId);
+    expect(access.projectReadInFlight()).toBe(true);
+    act(() => result.current.graph.reconcile());
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.graph.snapshot!.revision).toBeGreaterThan(1));
+    expect(result.current.graph.refreshing).toBe(false);
+    expect(access.scope.getProjectReadRevision(projectId)).toBe(readRevision);
+    act(() => expect(access.withdrawProjectRead(accessTicket, historyTicket, new ApiError("server", 404, "not_found"))).toBe(true));
+    expect(result.current.graph.displaySnapshot).toBeNull();
+    access.endProjectRead(token);
+  });
+
+  it("clears the retained display on access withdrawal while a history rebuild is pending", async () => {
+    detailWorld = createTaskSessionWorld();
+    const full = deferred<TaskGraph>();
+    const replacement = resetSnapshot({ ...graph(), tasks: [],
+      summary: { proposed: 0, total: 0, todo: 0, inProgress: 0, done: 0, cancelled: 0, ready: 0, blocked: 0 } });
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(replacement).mockReturnValueOnce(full.promise);
+    const { result, unmount } = renderHook(() => useTaskGraph(projectId));
+    try {
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      act(() => result.current.reconcile());
+      await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+      expect(result.current.displaySnapshot).not.toBeNull();
+      act(() => detailWorld!.scope.suspendProject(projectId));
+      expect(result.current.displaySnapshot).toBeNull();
+      await act(async () => { full.resolve(replacement); });
+      expect(result.current).toMatchObject({ snapshot: null, displaySnapshot: null });
+    } finally { unmount(); detailWorld.dispose(); detailWorld = null; }
   });
 
   it("discards the entire retained graph after an authoritative not-found response", async () => {
