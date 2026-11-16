@@ -15,6 +15,7 @@ export const copilotDeadline = <T>(promise: Promise<T>, label: string, ms = 30_0
 export type CopilotProcessOptions = {
   cwd: string; env?: NodeJS.ProcessEnv; executable?: string; toolLaunch?: ResolvedToolLaunch; toolRuntimeRoot?: string;
   unattended?: boolean; resumeNativeSessionId?: string | null;
+  observeImageRoute?: boolean;
   onSpawn(child: ChildProcess): void;
   onDiagnostic?(line: string): void;
   onNativeReadPolicy?(policy: NativeReadPolicy | null): void;
@@ -25,6 +26,7 @@ export const startCopilotProcess = (options: CopilotProcessOptions, lost: (error
   const token = randomBytes(32).toString("hex"), execution = randomUUID();
   const startup = createOperation({ limits: { totalMs: 15_000 } });
   let child: ChildProcess | undefined, authority: CopilotReadAuthority | undefined;
+  let nativeExecutableSha256: string | null = null, identityReady = false;
   let closing = false, stopped = false, termRequested = false, killRequested = false, closePromise: Promise<void> | undefined;
   let exited: Promise<void> = Promise.resolve(), gracefulExit: Promise<void> | undefined;
   let rejectFailure!: (error: Error) => void;
@@ -37,6 +39,9 @@ export const startCopilotProcess = (options: CopilotProcessOptions, lost: (error
     startup.check();
     if (closing) throw new Error("Copilot runtime closed before startup.");
     const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), COPILOT_CONNECTION_TOKEN: token }; delete env.NODE_DEBUG;
+    // The endpoint RPC is an opt-in read; preserve explicit native policy values.
+    const routeGate = "COPILOT_ALLOW_GET_PROVIDER_ENDPOINT";
+    if (options.observeImageRoute && !Object.keys(env).some(key => (process.platform === "win32" ? key.toUpperCase() === routeGate : key === routeGate) && env[key] !== undefined)) env[routeGate] = "true";
     const profile = options.toolLaunch?.runtimeProfile;
     if (profile || artifacts) env.DAYNIGHT_COPILOT_AUTHORITY = execution;
     if (profile) { delete env.NODE_COMPILE_CACHE; env.NODE_DISABLE_COMPILE_CACHE = "1"; }
@@ -45,6 +50,11 @@ export const startCopilotProcess = (options: CopilotProcessOptions, lost: (error
     const entry = artifacts ? ["--import", new URL("./copilot-read-authority-preload.js", import.meta.url).href, artifacts.entry] : js ? [executable] : [];
     const logical = ["--headless", "--no-auto-update", ...(options.unattended && !options.resumeNativeSessionId ? ["--allow-all", "--no-ask-user", "--no-sandbox"] : [])];
     const command = options.toolLaunch ? toolCommand(options.toolLaunch, logical) : { file: artifacts || js ? process.execPath : executable, args: [...entry, ...logical] };
+    const launch = options.toolLaunch;
+    if (process.platform === "win32" && launch && !profile && !launch.interpreterPath && /\.exe$/i.test(launch.executablePath) && command.file === launch.executablePath) {
+      const matches = launch.artifacts.filter(item => ["entry", "runtime"].includes(item.role) && item.realPath === launch.executablePath);
+      if (matches.length === 1) nativeExecutableSha256 = matches[0]!.sha256;
+    }
     child = spawn(command.file, command.args, { cwd: options.cwd, env, stdio: profile || artifacts ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
     const owned = child;
     exited = new Promise<void>(resolve => {
@@ -68,6 +78,7 @@ export const startCopilotProcess = (options: CopilotProcessOptions, lost: (error
     authority = profile || artifacts ? new CopilotReadAuthority({ child: owned, execution, cwd: options.cwd, publish: policy => options.onNativeReadPolicy?.(policy) }) : undefined;
     const [, port] = await copilotDeadline(Promise.race([Promise.all([spawned, listening]), failed]), "Copilot runtime startup", Math.max(1, startup.remainingMs()));
     if (closing) throw new Error("Copilot runtime closed during startup.");
+    identityReady = true;
     return { child: owned, port, token, execution };
   })().finally(() => startup.dispose());
   void ready.catch(() => {});
@@ -98,5 +109,5 @@ export const startCopilotProcess = (options: CopilotProcessOptions, lost: (error
     void attempt.then(settled, settled);
     return attempt;
   };
-  return { get child() { return child; }, get authority() { return authority; }, get stopped() { return stopped; }, ready, failed, close };
+  return { get nativeExecutableSha256() { return identityReady && !closing && !stopped ? nativeExecutableSha256 : null; }, get child() { return child; }, get authority() { return authority; }, get stopped() { return stopped; }, ready, failed, close };
 };

@@ -8,7 +8,7 @@ export { copilotExecutable } from "../../../platform/tool-executables.js";
 
 export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Error) => void, artifacts?: CopilotAuthorityArtifacts, media?: CopilotBridgeMediaOptions) => {
   let closing = false, client: CopilotClient | undefined, closePromise: Promise<void> | undefined;
-  const owned = startCopilotProcess(options, error => { if (!closing) lost(error); }, artifacts);
+  const owned = startCopilotProcess({ ...options, observeImageRoute: media !== undefined }, error => { if (!closing) lost(error); }, artifacts);
   let bridge: ReturnType<typeof startCopilotBridge> | undefined;
   const ready = owned.ready.then(async ({ port, token }) => {
     if (closing) throw new Error("Copilot runtime closed during startup.");
@@ -59,5 +59,5 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
     void attempt.then(settled, settled);
     return attempt;
   };
-  return { get child() { return owned.child; }, ready, close, get authority() { return owned.authority; }, bridgeMetrics: () => bridge?.metrics() ?? { peakRss: 0, peakHeap: 0 } };
+  return { get nativeExecutableSha256() { return closing ? null : owned.nativeExecutableSha256; }, get child() { return owned.child; }, ready, close, get authority() { return owned.authority; }, bridgeMetrics: () => bridge?.metrics() ?? { peakRss: 0, peakHeap: 0 } };
 };

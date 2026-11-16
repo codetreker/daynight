@@ -36,6 +36,10 @@ in Provider capability revision even when the published numeric limits are equal
 The production qualification registry is empty; this mechanism grants no existing
 experimental combination production support.
 
+[Copilot runtime observation](2026-11-16-copilot-image-runtime-observation.md)
+supplies a private executable and native-declared route identity where supported.
+That observation does not establish actual outbound routing or qualification.
+
 The service intersects a real Provider report with its decoder, storage and
 history components and the application limits. It owns its effective revision,
 uses controls from the same state observation, and does not accept a Controller's

@@ -9,7 +9,7 @@ export type ImageRuntimeIdentity = Readonly<{
   sdkVersion: string | null;
   platform: string;
   arch: string;
-  /** Digest of a trustworthy backend identity, never an address or provider alias. */
+  /** Digest of the evidence-scoped visible route; never proof of hidden deployment or algorithms. */
   backendIdentity: string | null;
   modelId: string | null;
 }>;

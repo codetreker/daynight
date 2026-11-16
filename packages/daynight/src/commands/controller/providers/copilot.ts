@@ -20,7 +20,8 @@ import { prepareCopilotAuthorityArtifacts } from "./copilot-read-authority-artif
 import { ControllerStartupError } from "../startup.js";
 import { CopilotImageInputs } from "./copilot-image-input.js";
 import { CopilotImages } from "./copilot-images.js";
-import { sendCopilotBridgeImages } from "./copilot-bridge.js";
+import { observeCopilotBridgeRoute, sendCopilotBridgeImages } from "./copilot-bridge.js";
+import type { CopilotRouteObservation } from "./copilot-route-observation.js";
 
 // Resolve the SDK's own RPC constructor; its local transport errors also use ResponseError.
 const { ResponseError, ErrorCodes } = createRequire(createRequire(import.meta.url).resolve("@github/copilot-sdk"))("vscode-jsonrpc/node") as {
@@ -38,12 +39,16 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   let native: CopilotSession | undefined, client: CopilotClient | undefined;
   let verified = false, closed = false, stopped = false, disconnected = false, dispatching = false, startupFailed = false, controlsBusy = false;
   let imageProfile: CopilotImageProfile | null = null;
+  let routeObservation: CopilotRouteObservation | null = null, profileSdkVersion: unknown, profileNativeVersion: unknown;
+  let routeEpoch = 0;
+  let routeRefreshRequested = false, recoveringImages = false;
+  const invalidateRoute = () => { routeEpoch++; routeObservation = null; imageProfile = null; };
   let activity: ProviderState["activity"] = "initializing", currentTurnId: string | null = null, interactionId: string | null = null;
   let buffered: SessionEvent[] | undefined = [], bufferedBytes = 0, refill = false, heartbeat: NodeJS.Timeout | undefined, polling = false;
   const imageInputs = new CopilotImageInputs(options, nativeId), images = new CopilotImages(options, nativeId, imageInputs);
   const cancelWaiters = new Set<{ resolve(): void; reject(error: Error): void }>();
   const state = () => options.onState({ nativeSessionId: verified ? nativeId : null, activity: stopped ? "stopped" : closed || disconnected ? "unknown" : interactions.waiting ? "waiting_input" : activity, currentTurnId, turnStartedAt, ...(controls ? { controls: controls.store.value } : {}),
-    ...(controls ? { images: controls.imageCapabilities(imageInputs.profileAllowed && !closed && !disconnected && !controlsBusy ? imageProfile : null, verified ? nativeId : null) } : {}),
+    ...(controls ? { images: controls.imageCapabilities(imageInputs.profileAllowed && !closed && !disconnected && !controlsBusy && !recoveringImages ? imageProfile : null, verified ? nativeId : null) } : {}),
     capabilities: verified && !closed && !disconnected ? { send: true, steer: true, cancel: true, respond: true } : { send: false, steer: false, cancel: false, respond: false } });
   const projection = new CopilotProjection(nativeId, options.onTimeline, images);
   const interactions = new CopilotInteractions({ sessionId: nativeId, onTimeline: options.onTimeline, onChange: state,
@@ -52,6 +57,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   const lost = new Promise<never>((_, reject) => { rejectLost = reject; }); void lost.catch(() => {});
   const disconnect = (error: Error) => {
     if (closed || disconnected) return;
+    invalidateRoute();
     disconnected = true; runtime?.authority?.invalidate(); controls?.close(); if (heartbeat) clearInterval(heartbeat);
     rejectLost(error); interactions.dispose(error);
     if (currentTurnId) turns.complete(currentTurnId, error);
@@ -108,6 +114,8 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     else if (event.type === "session.shutdown") disconnect(new Error("Native Copilot session closed; operation results are unknown."));
   };
   const onEvent = (event: SessionEvent) => {
+    if (["session.model_change", "session.mode_changed", "session.shutdown", "session.error"].includes(event.type)) invalidateRoute();
+    if (["session.model_change", "session.mode_changed"].includes(event.type)) { routeRefreshRequested = true; queueMicrotask(recoverImageProfile); }
     runtime?.authority?.observe(event);
     if (runtime?.authority?.suppressPermissionEvent(event)) {
       if (hiddenPermissionEvents.size >= 100_000) runtime.authority.invalidate(); else hiddenPermissionEvents.add(event.id);
@@ -131,6 +139,23 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   let runtime: ReturnType<typeof startCopilotRuntime>;
   try { options.assertNativeDispatch?.(); runtime = startCopilotRuntime({ ...options, cwd }, disconnect, artifacts, options.imageRuntime ? { createSpool: maximum => options.imageRuntime!.createSpool(maximum) } : undefined); }
   catch (error) { await artifacts?.cleanup(); throw error; }
+  const refreshImageProfile = async () => {
+    invalidateRoute(); const epoch = routeEpoch;
+    try {
+      const observation = await call(observeCopilotBridgeRoute(native!), "Copilot declared route observation");
+      if (epoch !== routeEpoch || closed || disconnected || !observation || observation.modelId !== controls?.imageModelId()) return;
+      routeObservation = observation;
+      imageProfile = copilotImageProfile(profileSdkVersion, profileNativeVersion, controls.imageModelId(), runtime.nativeExecutableSha256, observation);
+    } catch { invalidateRoute(); }
+  };
+  function recoverImageProfile(): void {
+    if (!routeRefreshRequested || !verified || !controls || !options.imageRuntime || closed || disconnected || controlsBusy || recoveringImages || dispatching) return;
+    routeRefreshRequested = false; recoveringImages = true; const epoch = routeEpoch; state();
+    void controls.refresh(false).then(async () => {
+      if (epoch !== routeEpoch || closed || disconnected || dispatching) return;
+      await refreshImageProfile();
+    }).finally(() => { recoveringImages = false; state(); recoverImageProfile(); });
+  }
   let permissionHistoryPrepared = false;
   const preparePermissionHistory = async (): Promise<void> => {
     if (!runtime.authority) return;
@@ -191,6 +216,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   })().finally(() => { historyRead = null; });
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
+    invalidateRoute();
     if (closing) return closing;
     const attempt = (async () => {
       const errors: unknown[] = [];
@@ -253,7 +279,8 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     try {
       const status = await call(client.getStatus(), "Copilot version profile");
       const sdk = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@github/copilot-sdk")), "utf8")) as { version?: unknown };
-      imageProfile = options.imageRuntime ? copilotImageProfile(sdk.version, status.version, controls.imageModelId()) : null;
+      profileSdkVersion = sdk.version; profileNativeVersion = status.version;
+      if (options.imageRuntime) await refreshImageProfile();
     } catch { imageProfile = null; }
     if (options.validateNativeSelection && !options.resumeNativeSessionId) await controls.validateSelection({ model: options.model, ...(args.effort === undefined ? {} : { effort: args.effort }) });
     await runtime.authority?.install(nativeId);
@@ -273,7 +300,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     for (const match of imageInputs.pendingAccepted()) images.accepted(match);
     if (activity === "idle") { images.finishHistory(); imageInputs.finishTurn(); }
     if (disconnected) throw new Error("Copilot disconnected during session initialization.");
-    state(); refreshTodos();
+    state(); refreshTodos(); recoverImageProfile();
     // SDK exposes no public transport-close event. Observe owned process exit
     // immediately and use its public ping to detect a broken live connection.
     heartbeat = setInterval(() => {
@@ -289,28 +316,33 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   }
   const send = async (inputValue: NativeInput, operationId: string, expectedTurnId: string | null, displayPrompt?: string): Promise<ProviderReceipt> => {
       const { text, images: inputImages } = validateNativeInput(inputValue);
-      if (closed || disconnected || dispatching || controlsBusy || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed or cannot accept input.");
+      if (closed || disconnected || dispatching || controlsBusy || inputImages.length > 0 && recoveringImages || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed or cannot accept input.");
+      if (!inputImages.length && recoveringImages) { invalidateRoute(); routeRefreshRequested = true; }
       const steering = currentTurnId !== null;
       dispatching = true;
       try {
         if (inputImages.length) {
           await verifyNativeImageFiles(inputImages); await controls!.refresh(false);
+          await refreshImageProfile();
           const capability = controls!.imageCapabilities(imageInputs.profileAllowed ? imageProfile : null, verified ? nativeId : null);
           if ((steering ? capability.steer : capability.send) !== "supported" || inputImages.length > capability.maxImagesPerMessage || inputImages.some(image => !capability.inputMediaTypes.includes(image.mediaType as "image/png") || BigInt(image.byteLength) > BigInt(capability.maxImageBytes))) throw new NativeRpcError(-32602, "Copilot image capability is unavailable or changed before dispatch.");
           if (closed || disconnected || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed before image dispatch.");
           assertNativeImageAdmission(inputValue, capability, expectedTurnId);
           imageInputs.prepare(inputValue, operationId, expectedTurnId);
         }
-      } catch (error) { dispatching = false; state(); throw error; }
+      } catch (error) { dispatching = false; state(); recoverImageProfile(); throw error; }
       const turnId = currentTurnId ?? randomUUID(); if (!currentTurnId) turnStartedAt = null; currentTurnId = turnId; activity = "working"; state();
       let uncertain = false;
+      const expectedObservation = routeObservation;
+      const expectedExecutableSha256 = runtime.nativeExecutableSha256;
       const sending = Promise.resolve().then(() => {
         options.assertNativeDispatch?.();
         if (closed || disconnected || currentTurnId !== turnId) throw new NativeRpcError(-32602, "Native Copilot turn changed before input dispatch.");
         if (inputImages.length) return sendCopilotBridgeImages(native!, { prompt: text, mode: "immediate", attachments: inputImages.map(image => ({ path: image.localPath, byteLength: image.byteLength, sha256: image.sha256, mimeType: image.mediaType })) }, () => {
           if (closed || disconnected || currentTurnId !== turnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed before image dispatch.");
+          if (!expectedObservation || routeObservation !== expectedObservation || runtime.nativeExecutableSha256 !== expectedExecutableSha256) throw new NativeRpcError(-32602, "Copilot declared route observation changed before image dispatch.");
           assertNativeImageAdmission(inputValue, controls!.imageCapabilities(imageInputs.profileAllowed ? imageProfile : null, verified ? nativeId : null), expectedTurnId);
-        });
+        }, expectedObservation);
         return native!.send({ prompt: text, ...(displayPrompt ? { displayPrompt } : {}), mode: "immediate" });
       }).then(messageId => {
         if (typeof messageId !== "string" || !messageId) throw new Error("Copilot returned no native message identity; input result is unknown.");
@@ -323,7 +355,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
       });
       // A settled SDK send carries its own native message ID. Prompt equality and
       // locally generated operation IDs never establish native input acceptance.
-      void sending.then(() => { dispatching = false; }, () => { dispatching = false; if (inputImages.length) imageProfile = null; state(); });
+      void sending.then(() => { dispatching = false; recoverImageProfile(); }, () => { dispatching = false; if (inputImages.length) imageProfile = null; state(); recoverImageProfile(); });
       let messageId: string;
       try { messageId = await call(sending, "Copilot input acceptance", 60_000); }
       catch (error) { uncertain = true; throw error; }
@@ -332,10 +364,11 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
   };
   return {
     nativeSessionId: nativeId, send,
-    async refreshControls() { if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; state(); try { await controls!.refresh(); return { disposition: "handled" }; } finally { controlsBusy = false; state(); } },
+    async refreshControls() { if (closed || disconnected || dispatching || controlsBusy || recoveringImages) throw new NativeRpcError(-32602, "Native controls are unavailable."); controlsBusy = true; state(); try { await controls!.refresh(); if (options.imageRuntime) await refreshImageProfile(); return { disposition: "handled" }; } finally { controlsBusy = false; state(); recoverImageProfile(); } },
     async setSetting(id, value, operationId, revision) {
-      if (closed || disconnected || dispatching || controlsBusy) throw new NativeRpcError(-32602, "Native controls are unavailable.");
+      if (closed || disconnected || dispatching || controlsBusy || recoveringImages) throw new NativeRpcError(-32602, "Native controls are unavailable.");
       controlsBusy = true; controls!.invalidateImages(); state();
+      invalidateRoute();
       const modelSetting = id === "model" || id === "effort";
       try {
         if (!modelSetting) { runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); }
@@ -354,14 +387,16 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
           let valid = true; try { runtime.authority.verify(); } catch { valid = false; }
           if (!valid) await options.drainNativeReadPolicy?.();
         }
+        if (options.imageRuntime) await refreshImageProfile();
         return { disposition: "handled" };
-      } finally { controlsBusy = false; state(); }
+      } finally { controlsBusy = false; state(); recoverImageProfile(); }
     },
     async executeCommand(id, args, operationId, revision, expectedTurnId) {
-      if (closed || disconnected || dispatching || controlsBusy || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
+      if (closed || disconnected || dispatching || controlsBusy || recoveringImages || currentTurnId !== null || expectedTurnId !== null || interactions.waiting) throw new NativeRpcError(-32602, "Copilot commands require an idle session.");
       controlsBusy = true; controls!.invalidateImages(); state();
+      invalidateRoute();
       let result: Awaited<ReturnType<CopilotControls["invoke"]>>;
-      try { runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); result = await controls!.invoke(id, args, revision); await controls!.refresh(false); } finally { controlsBusy = false; state(); }
+      try { runtime.authority?.invalidate(); await options.drainNativeReadPolicy?.(); result = await controls!.invoke(id, args, revision); await controls!.refresh(false); if (options.imageRuntime) await refreshImageProfile(); } finally { controlsBusy = false; state(); recoverImageProfile(); }
       if (result.kind === "agent-prompt") { if (result.mode && result.mode !== "interactive") throw new NativeRpcError(-32602, "Copilot command requested an unsupported agent mode."); return send(textNativeInput(result.prompt), operationId, null, result.displayPrompt); }
       if (result.kind !== "text" && result.kind !== "completed") throw new NativeRpcError(-32602, "Copilot command requires unsupported subcommand selection.");
       const text = result.kind === "text" ? result.text : result.message;
