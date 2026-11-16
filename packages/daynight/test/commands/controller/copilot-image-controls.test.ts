@@ -1,3 +1,4 @@
+import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { afterEach, expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -10,7 +11,7 @@ import { copilotImageProfile, type CopilotImageProfile } from "../../../src/comm
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
 
 afterEach(() => vi.useRealTimers());
-const controlledProfile: CopilotImageProfile = { geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } };
+const controlledProfile: CopilotImageProfile = { modelId: "first", qualification: controlledImageQualification("copilot", "first"), geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } };
 const fixture = () => {
   const first: any = { id: "first", name: "First", capabilities: { supports: { vision: true }, limits: { vision: { supported_media_types: ["image/png", "image/jpeg"], max_prompt_image_size: 1024, max_prompt_images: 2 } } } };
   const models = [first, { ...structuredClone(first), id: "second", name: "Second" }];
@@ -21,7 +22,7 @@ const fixture = () => {
 test("Copilot image admission intersects the exact native model limits and requires a pinned runtime profile", async () => {
   const f = fixture(); await f.controls.refresh();
   try {
-    expect(f.controls.imageCapabilities(controlledProfile, "native")).toMatchObject({ send: "supported", steer: "unknown", inputMediaTypes: ["image/png", "image/jpeg"], maxImageBytes: "1024", maxImagesPerMessage: 2 });
+    expect(f.controls.imageCapabilities(controlledProfile, "native")).toMatchObject({ send: "supported", steer: "unsupported", inputMediaTypes: ["image/png", "image/jpeg"], maxImageBytes: "1024", maxImagesPerMessage: 2 });
     expect(f.controls.imageCapabilities(null, "native").send).toBe("unknown");
     expect(f.controls.imageCapabilities(controlledProfile, null).send).toBe("unknown");
     f.first.capabilities.supports.vision = false; await f.controls.refresh(false);
@@ -47,7 +48,7 @@ test("a timed-out model mutation cannot restore image admission from an old-mode
     await vi.advanceTimersByTimeAsync(30_001); await rejected;
     await f.controls.refresh(false); expect(f.controls.imageCapabilities(controlledProfile, "native").send).toBe("unknown");
     f.native.rpc.model.getCurrent.mockResolvedValue({ modelId: "second" }); await f.controls.refresh(false);
-    expect(f.controls.imageCapabilities(controlledProfile, "native").send).toBe("supported");
+    expect(f.controls.imageCapabilities(controlledProfile, "native").send).toBe("unknown");
   } finally { f.controls.close(); }
 });
 
@@ -66,8 +67,19 @@ test("Copilot capability publication survives the real journal boundary and neve
     expect(unsupported).toMatchObject({ send: "unsupported", reasonCode: "model_unsupported", revision: "2" });
     f.first.capabilities.supports.vision = true; await f.controls.refresh(false);
     const supported = journal.providerImageCapabilities(f.controls.imageCapabilities(controlledProfile, "native"));
-    expect(supported).toMatchObject({ send: "supported", steer: "unknown", reasonCode: "capability_unknown", revision: "3", geometry: { known: true } });
+    expect(supported).toMatchObject({ send: "supported", steer: "unsupported", reasonCode: null, revision: "3", geometry: { known: true } });
     const disabled = journal.providerImageCapabilities(f.controls.imageCapabilities(null, "native"));
     expect(disabled).toMatchObject({ send: "unknown", reasonCode: "profile_disabled", revision: "4" });
   } finally { journal.close(); if (database.open) database.close(); f.controls.close(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+ test("qualified Copilot limits intersect catalog and send/steer independently", async () => {
+  const f = fixture(); await f.controls.refresh();
+  try {
+    const qualification = controlledImageQualification("copilot", "first", { send: false, steer: true, inputMediaTypes: ["image/png"], maxImageBytes: "512", maxMessageImageBytes: "700", maxImagesPerMessage: 1 });
+    const profile = { modelId: "first", geometry: qualification.geometry, qualification };
+    expect(f.controls.imageCapabilities(profile, "native")).toMatchObject({ send: "unsupported", steer: "supported", reasonCode: null, inputMediaTypes: ["image/png"], maxImageBytes: "512", maxMessageImageBytes: "700", maxImagesPerMessage: 1 });
+    f.native.rpc.model.getCurrent.mockResolvedValue({ modelId: "second" }); await f.controls.refresh(false);
+    expect(f.controls.imageCapabilities(profile, "native")).toMatchObject({ send: "unknown", steer: "unknown", geometry: { known: false } });
+  } finally { f.controls.close(); }
 });

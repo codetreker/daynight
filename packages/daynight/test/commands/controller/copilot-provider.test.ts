@@ -1,3 +1,5 @@
+import { imageQualificationFingerprint } from "../../../src/commands/controller/providers/image-qualification.js";
+import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { authorizeNativeImageInput } from "../../../src/commands/controller/providers/image-admission.js";
 import { nativeEntryId } from "../../../src/commands/controller/providers/projection.js";
 import { textNativeInput } from "../../../src/commands/controller/providers/native-input.js";
@@ -14,12 +16,12 @@ import { NativeRpcTimeoutError } from "../../../src/commands/controller/provider
 import type { NativeReadPolicy, ProviderEntry, ProviderOptions, ProviderState } from "../../../src/commands/controller/providers/types.js";
 import type { LocalImageCheckpoint } from "../../../src/commands/controller/markdown/local-source-proof.js";
 import { bindCopilotRead, checkCopilotRead, type CopilotAuthorityNative } from "../../../src/commands/controller/providers/copilot-read-authority-check.js";
-const sdk = vi.hoisted(() => ({ provenGeometry: false, authority: null as any, construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
+const sdk = vi.hoisted(() => ({ provenGeometry: false, steerOnly: false, authority: null as any, construct: vi.fn(), imageSend: vi.fn(), connection: vi.fn((url, options) => ({ kind: "uri", url, ...options })) }));
 vi.mock("../../../src/commands/controller/providers/copilot-image-profile.js", async original => {
   const actual = await original<typeof import("../../../src/commands/controller/providers/copilot-image-profile.js")>();
-  return { ...actual, copilotImageProfile(sdkVersion: string, cliVersion: string) {
-    const profile = actual.copilotImageProfile(sdkVersion, cliVersion);
-    return profile && sdk.provenGeometry ? { geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } } : profile;
+  return { ...actual, copilotImageProfile(sdkVersion: string, cliVersion: string, modelId: string) {
+    const profile = actual.copilotImageProfile(sdkVersion, cliVersion, modelId);
+    return profile && sdk.provenGeometry ? { modelId, qualification: controlledImageQualification("copilot", modelId, { send: !sdk.steerOnly, steer: sdk.steerOnly }), geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } } : profile;
   } };
 });
 vi.mock("../../../src/commands/controller/providers/copilot-read-authority-artifacts.js", () => ({ prepareCopilotAuthorityArtifacts: async () => sdk.authority ? { entry: "/controlled/copilot/index.js", cleanup: async () => {} } : undefined }));
@@ -57,7 +59,7 @@ function setup() {
   const options: ProviderOptions = { cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, executable: "/controlled/copilot", env: { ...process.env, COPILOT_HOME: "/private/copilot-profile" }, onTimeline: e => entries.push(structuredClone(e)), onState: s => states.push(structuredClone(s)), onInputObserved: id => observed.push(typeof id === "string" ? id : id.operationId), onSpawn: p => { expect(p.pid).toBe(12345); spawned.push(p); } };
   return { child, client, native, entries, states, options, observed, spawned, emit: (e: unknown) => captured.onEvent(e), config: () => captured };
 }
-beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.authority = null; sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
+beforeEach(() => { vi.clearAllMocks(); sdk.provenGeometry = false; sdk.steerOnly = false; sdk.authority = null; sdk.imageSend.mockResolvedValue("native-image-message"); fixture = setup(); });
 afterEach(() => vi.useRealTimers());
 
 async function sourceAuthorityFixture() {
@@ -751,11 +753,12 @@ const imageFixture = async (pure = false, provenGeometry = true) => {
   const model = { getCurrent: vi.fn(async () => ({ modelId: "vision-model" })), list: vi.fn(async () => ({ list: [{ id: "vision-model", name: "Vision", capabilities: { supports: { vision: true }, limits: { vision: { supported_media_types: ["image/png"], max_prompt_image_size: 10_485_760, max_prompt_images: 8 } } } }] })) };
   Object.assign(fixture.native.rpc, { model }); Object.assign(fixture.client, { getStatus: vi.fn(async () => ({ version: "1.0.105", protocolVersion: 3 })) });
   const observed = vi.fn(() => true);
-  const options = { ...fixture.options, onInputObserved: observed, imageRuntime: { getIntent: (id: string) => id === operationId ? intent : null, readState: (key: string) => states.get(key) ?? null, writeState: (key: string, value: unknown) => states.set(key, structuredClone(value)) } } as unknown as ProviderOptions;
+  let liveImages: ProviderState["images"];
+  const options = { ...fixture.options, onState: (state: ProviderState) => { liveImages = state.images; fixture.options.onState(state); }, onInputObserved: observed, imageRuntime: { getIntent: (id: string) => id === operationId ? intent : null, readState: (key: string) => states.get(key) ?? null, writeState: (key: string, value: unknown) => states.set(key, structuredClone(value)) } } as unknown as ProviderOptions;
   return { root, get input() {
-    const caps = fixture.states.at(-1)?.images;
+    const caps = liveImages;
     const value = { content: input.content.map(part => part.type === "image" ? { ...part, validated: { mediaType: part.mediaType as "image/png", byteLength: part.byteLength, sha256: part.sha256, width: 1, height: 1, frameCount: 1 } } : part) };
-    return caps?.send === "supported" ? authorizeNativeImageInput(value, { ...caps, revision: "7", providerRevision: "1" }, () => {}) : value;
+    return caps && (caps.send === "supported" || caps.steer === "supported") ? authorizeNativeImageInput(value, { ...caps, revision: "7", providerRevision: "1" }, () => {}, imageQualificationFingerprint(caps)) : value;
   }, image, intent, operationId, options, observed, states, model };
 };
 
@@ -763,7 +766,7 @@ test.each([true, false])("under a controlled proven geometry profile the common 
   const f = await imageFixture(pure); let provider;
   try {
     provider = await openCopilotProvider(f.options);
-    expect(fixture.states.at(-1)?.images).toMatchObject({ send: "supported", steer: "unknown" });
+    expect(fixture.states.at(-1)?.images).toMatchObject({ send: "supported", steer: "unsupported" });
     const receipt = await provider.send(f.input, f.operationId, null); expect(receipt.disposition).toBe("started");
     expect(sdk.imageSend).toHaveBeenCalledOnce(); expect(sdk.imageSend.mock.calls[0]?.[1]).toEqual({ prompt: pure ? "" : "Inspect the image", mode: "immediate", attachments: [{ path: f.image.localPath, byteLength: f.image.byteLength, sha256: f.image.sha256, mimeType: "image/png" }] });
     expect(fixture.native.send).not.toHaveBeenCalled(); expect(f.observed).toHaveBeenCalledWith(expect.objectContaining({ provider: "copilot", operationId: f.operationId, nativeMessageId: "native-image-message", intentSha256: f.intent.sha256 }));
@@ -921,4 +924,20 @@ test("Copilot associates the receipt identity after an earlier message event wit
     expect(fixture.entries.filter(entry => entry.kind === "user_message")).toHaveLength(2);
     expect(fixture.native.send).toHaveBeenCalledOnce();
   } finally { await provider.close(); }
+});
+
+test("a controlled steer-only qualification dispatches an image to the active original turn", async () => {
+  const f = await imageFixture(); sdk.steerOnly = true; let provider;
+  try {
+    provider = await openCopilotProvider(f.options);
+    expect(fixture.states.at(-1)?.images).toMatchObject({ send: "unsupported", steer: "supported", reasonCode: null });
+    await expect(provider.send(f.input, f.operationId, null)).rejects.toThrow("capability");
+    expect(sdk.imageSend).not.toHaveBeenCalled();
+    const started = await provider.send(textNativeInput("work"), randomUUID(), null);
+    f.intent.command.payload.expectedTurnId = started.turnId;
+    const result = await provider.send(f.input, f.operationId, started.turnId!);
+    expect(result).toMatchObject({ disposition: "handled", turnId: started.turnId });
+    expect(sdk.imageSend).toHaveBeenCalledOnce();
+    expect(f.observed).toHaveBeenCalledWith(expect.objectContaining({ operationId: f.operationId, nativeMessageId: "native-image-message", intentSha256: f.intent.sha256 }));
+  } finally { await provider?.close(); await rm(f.root, { recursive: true, force: true }); }
 });

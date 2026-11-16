@@ -310,6 +310,9 @@ func validateProviderImages(raw json.RawMessage) bool {
 	b, _ := json.Marshal(m)
 	return validateImageCapabilities(b)
 }
+func DecodeProviderImageCapabilities(data []byte) (ProviderImageCapabilities, error) {
+	return decode[ProviderImageCapabilities](data, validateProviderImages)
+}
 func validateImageBudget(raw json.RawMessage) bool {
 	if !validateObject(raw, schema{"revision": sequence, "maxBytes": decimalRange(MaxSessionResourceBytes, true), "committedBytes": decimalRange(MaxSessionResourceBytes, true), "reservedBytes": decimalRange(MaxSessionResourceBytes, true), "maxResources": integerRange(0, 1000), "committedResources": integerRange(0, 1000), "reservedResources": integerRange(0, 1000)}) {
 		return false

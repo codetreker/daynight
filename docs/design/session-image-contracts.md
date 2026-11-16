@@ -90,9 +90,17 @@ Controller 在标记 dispatching 前以及异步文件读取、编码结束后�
 
 发送仍要求原有 operations.canSend、当前 expectedTurnId、同步状态和生命周期允许。活动回合需要图片 steer=supported；不支持时保留草稿等待，不扩展队列、不取消回合。纯文字继续使用原文字能力，不受未知图片能力影响。
 
-几何限制： ProviderImageCapabilities 与有效 ImageCapabilities 均包含必填 `geometry:{version:1,known:boolean,maxWidth:number,maxHeight:number,maxPixels:number,maxFrames:number}`。known=true时四项均为正安全整数，且不得高于通用解码上限；known=false时四项均为0且send/steer不能supported。宽高按原始存储画布（不交换EXIF方向），pixels为width×height，frames为完整解码的容器画布帧数、静态图为1。需要按显示方向判定的原生profile，由Provider先将两种方向归约成保证满足原生限制的保守存储画布上限，不让消费者自行猜方向。
+几何限制： ProviderImageCapabilities 与有效 ImageCapabilities 均包含必填 `geometry:{version:1,known:boolean,maxWidth:number,maxHeight:number,maxPixels:number,maxFrames:number}`。它表示获资格组合允许提交的原始图片，不表示原生内部转换结果或 backend 的全部处理能力。known=true时四项均为正安全整数，且不得高于通用解码上限；known=false时四项均为0且send/steer不能supported。宽高按原始存储画布（不交换EXIF方向），pixels为width×height，frames为完整解码的容器画布帧数、静态图为1。需要按显示方向判定的原生profile，由Provider先将两种方向归约成满足已确认输入限制的保守存储画布上限，不让消费者自行猜方向。
 
-Provider先把已证明的backend/model、原生累计历史/工具图片上下文及本条可能新增1..8图的条件限制归约为当前固定上限；不能把本条图数当累计上下文。上下文不可观测时，采用该backend/profile已证明覆盖所有可达上下文分支的最严格上限；没有可证明的包络才unknown。发送前若实际上下文/模型/权限改变，重新计算并推进revision，拒绝旧revision后保稿重核；不能偷偷继续用旧profile。服务取该上限与Controller 存储模块通用限制的交集，Web、上传complete及最终派发都消费相同有效值。显式更小限制对用户可见。
+Provider 按实际 executable、SDK、backend、精确模型、平台和操作匹配资格，资格记录绑定证据及已验证的原始输入限制、适用条件。目录中的 image modality、版本字符串或通用 decoder 上限不能独立建立资格。真实历史、工具、恢复及压缩观察限定证据范围；不把本条图数当累计上下文上限，也不要求推导不可观测的全部原生内部算法。原生可以正常转换及压缩，但已知会静默省略本次输入的条件不能匹配 supported。组合缺项、不匹配或资格不足时保持 unknown。
+
+服务取原生报告与当前上传、解码、存储、历史读取、归档及策略能力的交集；不能只将 Provider 的 supported 原样转发。双方已确认限额逐项向下取交集，Web、上传 complete 及最终派发消费同一有效值，显式更小限制对用户可见。发送前若可观测上下文条件、模型、权限或资格改变，重新计算并推进 revision，拒绝旧 revision 后保稿重核；不能偷偷继续用旧 profile。当前生产资格目录为空，支持合成机制不会自行授予图片资格。
+
+服务[能力合成](../../packages/daynight-server/internal/core/session/image_capabilities.go)严格解析 Provider 报告，并与同一状态帧的 native 身份、模型及 controls 核对；Controller 传入的有效 Images 不是服务权威值。状态应用保留服务自己的有效 revision，使用该帧 controls 后重新合成。组件条件包括 content revision 2、完整 decoder、原件文件与清理能力，以及资源、输入意图和归档持久化能力；未知或关闭的原生动作不会因组件齐全而升级。三态按 send/steer 分别保留，MIME、字节、张数及 geometry 与服务通用限制取交集。
+
+历史是否已同步到当前 sourceThrough 是授权时的事实，不是静态组件能力；逐条历史推进不因此改变图片 capability revision。新图片操作授权在实际事务中经[历史准入](../../packages/daynight-server/internal/core/session/image_history_admission.go)的 `requireImageHistoryLedger(false)` 核验历史账本，再核对原图片和完整 intent。已经存在的 Submit operation 沿原查询分支返回持久事实，不能因之后的历史或资格变化改写原接受结果。
+
+Daynight 从不可变原件取得完整有序输入，通过原生图片接口一次交付；Base64 编码或稳定私有 localImage 文件不改变原字节身份。原生接口之后的转换图片是另一观察对象，不能替换已保存原件、改变原件计量或冒称相同摘要。原生接受与模型消费分别记录证据；接受后明确附件交付失败时保留原操作、原件与逐图失败，并停止问题资格的新输入，不撤回接受事实或自动重发。详细原生关联由[Provider 设计](session-image-providers.md#三者共同的发送屏障)拥有。
 
 为使maxFrames可跨层核验，`ValidatedImage.frameCount` 必须为1..256安全整数；SessionResource 的图片扩展 `revision/width/height/frameCount` 必须整组提供，非 available 图片使用 null 几何值，旧资源可省略整组扩展。完整全帧 decoder产生此事实，Controller journal、服务资源对象、receipt、manifest原样持久和校验；frameCount与原bytes/hash绑定且available后不可变。legacy资源经读取/迁移边界归入同一资源模型，不伪造帧数；浏览器本地尚未完整确认帧数时以上传complete的双端验证元数据作为发送资格依据，本地预览不是frameCount证明。输入/恢复/模型变化测试必须覆盖静态1帧、动画及更小maxFrames。Profile绑定真实native/SDK/backend/model证据，单次识图成功不构成发布profile的充分依据。
 
@@ -643,7 +651,7 @@ GC事务核全部pin并标deleting，阻止新acquire；事务外unlink、刷目
 
 ## 发布、回滚与验证责任
 
-先部署严格协议、schema3/旧表示读取和容量guard，再部署私有blob、Controller与Provider，最后完整Web接线。新图片写入和来源采集默认关闭；只有同一真实路径的上传、校验、原生能力、保存、读取、归档和权限全部满足，才可发布supported。既有原件读取不因新输入能力unknown而失效。
+先部署严格协议、schema3/旧表示读取和容量guard，再部署私有blob、Controller与Provider，最后完整Web接线。新图片写入和来源采集默认关闭；只有明确组合和同一真实路径的上传、校验、完整原生交付、接受、保存、读取、归档和权限全部满足，才可发布对应 supported。来源采集按其权限、安全和持久读取条件独立准入，不借输入 profile 绕过来源限制。局部发布不要求其他尚未验证组合先通过，也不代表 A6 完成；当前空资格目录不因合成机制存在而开放。既有原件读取不因新输入能力unknown而失效。
 
 回滚关闭新写入，保留统一schema3/blob reader、旧数据边界、原upload/operation查询及unknown恢复直到保留期结束。只能使用理解新journal/schema的兼容程序，不能安装旧二进制后删存储重建。原生恢复路径可用与服务历史可读分别报告。
 
