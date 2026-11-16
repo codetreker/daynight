@@ -99,7 +99,7 @@ func (h *Routes) failure(w http.ResponseWriter, r *http.Request, phase string, s
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(body.Len()))
 	hash := sha256.Sum256([]byte(preserveRetryFragment))
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'sha256-"+base64.StdEncoding.EncodeToString(hash[:])+"'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'self' "+h.main.String()+"; form-action 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'sha256-"+base64.StdEncoding.EncodeToString(hash[:])+"'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors "+h.frameAncestors()+"; form-action 'none'")
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
 		return

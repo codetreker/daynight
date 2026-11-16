@@ -23,7 +23,8 @@ For an unauthenticated document or iframe navigation, the server saves the
 validated original URL in a short-lived SSO record and redirects with its short ID.
 Completion confirms the Cookie before returning the original GET. Subresources,
 fetch and HEAD retain non-HTML errors, while document errors preserve HTTP status
-and provide visible retry. The [SSO HTTP decision](2026-11-16-preview-sso-http.md)
+and provide visible retry. Error pages permit the configured preview subdomains as
+frame ancestors so nested Task documents retain recovery actions. The [SSO HTTP decision](2026-11-16-preview-sso-http.md)
 owns the credential exchange, and the [attachment design](../../../../docs/design/daynight-task-attachments.md#独立-task-预览-host)
 owns dispatch and error behavior.
 

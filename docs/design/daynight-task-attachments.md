@@ -336,7 +336,8 @@ PathGuard 在 ServeMux 规范化之前检查原始路径，Host 中的 UUID 必�
 不嵌套到 SSO 跳转，fragment 由浏览器继承。子资源、fetch 和 HEAD 返回非 HTML 错误；
 缺少 Fetch Metadata 时返回 401 及 SSO 入口。权限、缺失、删除或存储错误不触发 SSO。
 文档失败页保留状态码，按 Accept-Language 选择中英文，转义动态内容并提供同 URL
-重试及 401 新标签 SSO 入口。主站 shell 根据配置注入 `daynight-preview-origin` meta，
+重试及 401 新标签 SSO 入口。文档及 SSO 错误页允许主站和配置的 preview 子域作为
+frame 祖先，以便 Task 内容嵌套的 iframe 在登录失败时仍能显示恢复操作。主站 shell 根据配置注入 `daynight-preview-origin` meta，
 以最终字节计算 Content-Length；现有 Web URL 和主站 GET 仍使用主站入口。
 
 [独立预览 Host 决策](../../.agents/notes/implemented/architecture/2026-11-16-task-preview-host.md)

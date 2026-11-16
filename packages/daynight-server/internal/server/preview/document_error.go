@@ -79,7 +79,7 @@ func (h *Routes) documentError(w http.ResponseWriter, r *http.Request, status in
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(body.Len()))
 	hash := sha256.Sum256([]byte(retryScript))
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'sha256-"+base64.StdEncoding.EncodeToString(hash[:])+"'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'self' "+h.main.String())
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'sha256-"+base64.StdEncoding.EncodeToString(hash[:])+"'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors "+h.frameAncestors())
 	w.WriteHeader(status)
 	n, err := w.Write(body.Bytes())
 	if err == nil && n != body.Len() {
