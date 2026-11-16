@@ -119,8 +119,8 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
 };
 test("storage admission waits before the one original spawn and releases each permit", async () => {
   const v = await setup(null);
-  const capacity = new Error("Physical storage is reserved by another execution.");
-  f.prepareStorage.mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause: capacity });
+  const busy = new Error("Previous readers remain active.");
+  f.prepareStorage.mockReturnValueOnce({ kind: "waiting", reason: "reader_busy", cause: busy });
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
   const requests = f.prepareStorage.mock.calls.map(([request]) => request);
   expect(requests.map(request => request.mode)).toEqual(["writer", "writer"]);

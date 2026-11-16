@@ -548,7 +548,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
   process.once("SIGINT", signal); process.once("SIGTERM", signal);
   startup = (async () => {
     journal.patchSnapshot({ startup: { state: "starting", reasonCode: "initializing" } });
-    await journal.reconcileNativeIndexReservation();
+    await journal.reconcileNativeIndexLease();
     if (stopping) return;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { ipcBound = true; server.off("error", reject); resolve(); }); });
     if (process.platform !== "win32") await chmod(ticket.ipcEndpoint, 0o600);
@@ -606,8 +606,7 @@ const runControllerRuntime = async (options: ControllerRuntimeOptions, { signal:
         writeState: (key, value) => journal.writeNativeImageState(key, value),
         createSpool: maximum => journal.media().createSpool(maximum),
         indexDirectory: () => journal.media().nativeIndexDirectory(),
-        reserveIndex: additional => journal.media().reserveNativeIndex(additional),
-        acquireIndexReservation: (additional, owner) => journal.acquireNativeIndexReservation(additional, owner),
+        acquireIndexLease: owner => journal.acquireNativeIndexLease(owner),
       },
       onInputMessage: (operationId, nativeSessionId, entryId) => {
         let originalEntryId: string | undefined;

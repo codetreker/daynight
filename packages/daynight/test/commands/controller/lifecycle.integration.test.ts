@@ -257,7 +257,7 @@ it("publishes the first generation and its Controller proof in one visible commi
   const spy = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
     if (this.name === file && sql === "COMMIT" && this.prepare("SELECT name FROM sqlite_schema WHERE name='execution'").get() !== undefined && this.prepare("SELECT 1 FROM execution").get() !== undefined && !observedInitialCommit) {
       const observer = new Database(file, { readonly: true });
-      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(12); }
+      try { expect(observer.prepare("SELECT 1 FROM execution").get()).toBeUndefined(); expect(observer.pragma("user_version", { simple: true })).toBe(13); }
       finally { observer.close(); }
       observedInitialCommit = true;
     }

@@ -13,14 +13,12 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const { openSessionContent } = await import("../../src/commands/controller/content/session-content.ts");
 const { acquireControllerStoragePermit, assertControllerStoragePermit } = await import("../../src/commands/controller/storage-lock.ts");
-const { controllerMetadataBudget } = await import("../../src/commands/controller/media/metadata-budget.ts");
 const [file, sessionId, encoded, phase] = process.argv.slice(2);
 const permit = acquireControllerStoragePermit(file, undefined, { fileMustExist: true });
 const db = new Database(file);
 db.pragma("synchronous=FULL");
-const budget = controllerMetadataBudget(file, db);
 const content = openSessionContent(file, sessionId, db, {
-  assertWrite(additional) { if (!db.inTransaction) throw new Error("Publication requires the original write transaction."); assertControllerStoragePermit(permit, file); budget.assert(additional, true); },
+  assertWrite() { if (!db.inTransaction) throw new Error("Publication requires the original write transaction."); assertControllerStoragePermit(permit, file); },
   read: action => db.inTransaction ? action() : db.transaction(action).deferred(),
 });
 db.exec("BEGIN IMMEDIATE");

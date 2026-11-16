@@ -144,7 +144,7 @@ test.each(["unknown block", "assistant tool", "unknown child"] as const)("large 
   await expect(openClaudeTranscript(f)).rejects.toThrow("metadata"); expect(await readdir(f.indexDirectory)).toEqual([]);
 });
 
-test("an unknown text field within the original metadata budget is retained in full", async () => {
+test("an unknown text field within the record limit is retained in full", async () => {
   const f = await fixture(), text = "x".repeat(300_000);
   await f.write([f.record("result", null, "user", [{ content: text, type: "unknown" }])]);
   const reader = await openClaudeTranscript(f);
@@ -275,9 +275,9 @@ test("rewrites preserved segments and rejects selected parent cycles", async () 
   await expect(openClaudeTranscript(f)).rejects.toThrow("cycle");
 });
 
-test("cleans the actual SQLite files when a later metadata reservation is refused", async () => {
+test("cleans the actual SQLite files when a later writer lease is refused", async () => {
   const f = await fixture(); await f.write([f.record("u", null, "user", "one")]);
-  let reservations = 0, releases = 0;
-  await expect(openClaudeTranscript({ ...f, reserveIndex: async () => { if (++reservations === 2) throw new Error("shared metadata budget full"); return { release: () => { releases++; } }; } })).rejects.toThrow("metadata budget");
+  let leases = 0, releases = 0;
+  await expect(openClaudeTranscript({ ...f, acquireIndexLease: async () => { if (++leases === 2) throw new Error("writer lease unavailable"); return { release: () => { releases++; } }; } })).rejects.toThrow("writer lease");
   expect(releases).toBe(1); expect(await readdir(f.indexDirectory)).toEqual([]);
 });

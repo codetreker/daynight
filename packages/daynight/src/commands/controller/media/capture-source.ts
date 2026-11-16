@@ -2,13 +2,12 @@ import type Database from "better-sqlite3";
 import { canonicalImageJson, imageId, parseStoredImageCaptureRequest, parseImageCaptureRequest, parseImageCaptureReceipt, parseDirectCaptureSubmission, type DirectCaptureSubmission, type ImageCaptureRequest, type ImageCaptureReceipt } from "../../../session/image-values.js";
 import { parseSessionResource } from "../../../session/protocol.js";
 import type { ControllerSnapshot } from "../lifecycle-store.js";
-import type { controllerMetadataBudget } from "./metadata-budget.js";
 
 type Transactions = { read<T>(action: () => T): T; write<T>(action: () => T): T };
 type Capture = { request: ImageCaptureRequest; attemptId: string; attempts: string[]; receipt: ImageCaptureReceipt | null; submissions?: Record<string, DirectCaptureSubmission> };
 
 /** A retry can only reuse the original durable occurrence and locator. */
-export const createImageCaptureSource = (db: Database.Database, transactions: Transactions, snapshot: () => ControllerSnapshot, budget: ReturnType<typeof controllerMetadataBudget>) => {
+export const createImageCaptureSource = (db: Database.Database, transactions: Transactions, snapshot: () => ControllerSnapshot) => {
   const key = (captureId: string) => `capture:${imageId(captureId)}`;
   const load = (captureId: string): Capture => {
     const row = db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(key(captureId)) as { value: string } | undefined;
@@ -19,7 +18,7 @@ export const createImageCaptureSource = (db: Database.Database, transactions: Tr
     return capture;
   };
   const save = (capture: Capture) => {
-    const value = JSON.stringify(capture); budget.assert(Buffer.byteLength(value) + 16384, true);
+    const value = JSON.stringify(capture);
     db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key(capture.request.captureId), value);
   };
   const assertSource = (request: ImageCaptureRequest) => {

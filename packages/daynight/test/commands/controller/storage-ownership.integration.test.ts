@@ -11,7 +11,6 @@ import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
-import { CONTROLLER_METADATA_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, controllerStorageConnectionIsOpen, isControllerStorageLockHeld } from "../../../src/commands/controller/storage-lock.js";
 import { controllerJournalReadOptions, prepareControllerStorage, upgradeControllerJournal } from "../../../src/commands/controller/storage-preparation.js";
 import { readControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
@@ -20,7 +19,6 @@ import type { ControllerJobLease } from "../../../src/commands/controller/window
 import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { sessionBinding } from "../../../src/session/protocol.js";
-import { ControllerMetadataBudgetError } from "../../../src/commands/controller/media/metadata-budget.js";
 
 vi.mock("node:fs", async original => ({ ...await original<typeof import("node:fs")>() }));
 
@@ -319,22 +317,15 @@ test.each(["live", "unknown"])("a %s original owner blocks storage preparation e
   finally { permit.release(); }
 });
 
-test("only typed capacity refusal becomes a waiting result and closes the local connection", async () => {
+test("writer preparation succeeds with retained metadata beyond the former cumulative limit", async () => {
   const f = await fixture(); initialize(f);
   const permit = acquireControllerStoragePermit(f.file);
   try {
-    const history = `${f.file}.history-sync`;
+    const history = `${f.file}.history-sync`, retained = path.join(history, "retained.json");
     await mkdir(history, { mode: 0o700 });
-    const retained = path.join(history, "retained.json");
-    await writeFile(retained, "", { mode: 0o600 }); await truncate(retained, CONTROLLER_METADATA_BYTES + 1048576);
-    const result = prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit);
-    expect(result).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
-    if (result.kind === "waiting") {
-      let cause: unknown = result.cause;
-      while (cause instanceof Error && cause.cause !== undefined) cause = cause.cause;
-      expect(cause).toBeInstanceOf(ControllerMetadataBudgetError);
-      expect(controllerStorageConnectionIsOpen(result.cause)).toBe(false);
-    }
+    await writeFile(retained, "", { mode: 0o600 }); await truncate(retained, 129 * 1048576);
+    expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket: f.ticket }, permit)).toMatchObject({ kind: "prepared", snapshot: null });
+    expect((await stat(retained)).size).toBe(129 * 1048576);
   } finally { permit.release(); }
 });
 
@@ -582,14 +573,14 @@ test("automatic v9 reading imports above normal metadata capacity and leaves sto
   await mkdir(directory, { mode: 0o700 });
   await writeFile(path.join(directory, candidate), body, { mode: 0o600 });
   await writeFile(path.join(directory, orphan), "", { mode: 0o600 });
-  await truncate(path.join(directory, orphan), CONTROLLER_METADATA_BYTES + 1048576);
+  await truncate(path.join(directory, orphan), 129 * 1048576);
   const actual = readSqliteDatabase({ ...controllerJournalReadOptions(f.file), onMissing: () => { throw new Error("Original journal disappeared."); }, onMigration: () => {} }, reader => {
     const timeline = openTimelineStore(reader, { assertWrite: () => { throw new Error("Read is not a writer."); } });
     return { entry: timeline.get(entry.entryId), totals: timeline.totals(), row: reader.prepare("SELECT snapshot,legacy_timeline_cleanup_pending AS pending FROM execution WHERE id=1").get() };
   });
   expect(actual).toEqual({ entry, totals: { entryCount: 1, byteLength: Buffer.byteLength(body), timelineBytes: 14 + Buffer.byteLength(body) }, row: { snapshot: JSON.stringify(snapshot), pending: 1 } });
   expect(await readFile(path.join(directory, candidate), "utf8")).toBe(body);
-  expect((await stat(path.join(directory, orphan))).size).toBe(CONTROLLER_METADATA_BYTES + 1048576);
+  expect((await stat(path.join(directory, orphan))).size).toBe(129 * 1048576);
   await expect(stat(path.join(f.root, "storage.lock"))).rejects.toMatchObject({ code: "ENOENT" });
   const permit = acquireControllerStoragePermit(f.file);
   try {

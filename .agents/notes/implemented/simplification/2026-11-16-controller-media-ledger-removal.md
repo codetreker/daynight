@@ -74,7 +74,8 @@ failures continue to fail the operation. Existing media and execution
 files retain their original lifecycle and are not swept to satisfy admission.
 
 Single-image and message limits, archive and protocol limits, decoder memory and
-concurrency, outbox backpressure, logical content limits and metadata admission
-remain independently owned policies. Reintroducing a local
+concurrency, outbox backpressure, logical content limits remain independently owned policies. The later
+[metadata admission removal](2026-11-16-controller-metadata-admission-removal.md)
+removes the remaining cumulative metadata policy. Reintroducing a local
 cumulative quota would require an explicit policy decision and new accounting
 ownership, rather than reactivating stale `allocations` rows.

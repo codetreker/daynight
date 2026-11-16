@@ -148,7 +148,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     if (!options.imageRuntime) throw new Error("Claude history storage component is unavailable.");
     const hint = options.imageRuntime.readState(`claude:transcript:${nativeId}`);
     return { nativeHome: options.env?.CLAUDE_CONFIG_DIR ?? path.join(options.env?.HOME ?? homedir(), ".claude"), cwd: options.cwd, nativeSessionId: nativeId,
-      ...(typeof hint === "string" && hint ? { transcriptPath: hint } : {}), indexDirectory: options.imageRuntime.indexDirectory(), acquireIndexReservation: options.imageRuntime.acquireIndexReservation, onSpawn: options.onSpawn };
+      ...(typeof hint === "string" && hint ? { transcriptPath: hint } : {}), indexDirectory: options.imageRuntime.indexDirectory(), acquireIndexLease: options.imageRuntime.acquireIndexLease, onSpawn: options.onSpawn };
   };
   if (options.resumeNativeSessionId) {
     historyReader = await openClaudeTranscriptHelper(historyOptions());

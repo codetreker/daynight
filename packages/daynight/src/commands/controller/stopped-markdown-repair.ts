@@ -7,7 +7,6 @@ import { withStoppedControllerStorage } from "./stopped-storage.js";
 import { runSqliteImmediate } from "../../platform/sqlite-access.js";
 import { openSessionContent } from "./content/session-content.js";
 import { openControllerOutbox } from "./outbox-store.js";
-import { controllerMetadataBudget } from "./media/metadata-budget.js";
 import { createMarkdownImageProjector, type MarkdownProjectedOccurrence, type MarkdownProjectionState } from "./markdown/projection.js";
 import { parseSourceEvent } from "../../session/controller-protocol.js";
 import { parseTimelineEntry, parseSessionResource, type SessionResource, type TimelineEntry } from "../../session/protocol.js";
@@ -89,14 +88,13 @@ export async function repairStoppedMarkdownProjections(options: {
     return row ? JSON.parse(row.value) as T : null;
   };
   const save = (db: Database.Database, key: string, value: unknown): void => {
-    const encoded = JSON.stringify(value); controllerMetadataBudget(journalPath, db).assert(Buffer.byteLength(encoded) * 2 + 16384, true);
+    const encoded = JSON.stringify(value);
     db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, encoded);
   };
   const content = (db: Database.Database) => openSessionContent(journalPath, ticket.sessionId, db, {
-    read: action => action(), assertWrite: (additional, growth = 0) => {
+    read: action => action(), assertWrite: () => {
       if (!db.inTransaction) throw new Error("Stopped repair publication requires its original transaction.");
       assertOriginal(db);
-      const budget = controllerMetadataBudget(journalPath, db); budget.assert(additional, true, growth);
     },
   });
   await options.beforeWrite?.();
@@ -226,7 +224,6 @@ export async function repairStoppedMarkdownProjections(options: {
         const next = BigInt(captured.source.through) + 1n;
         parseSourceEvent({ ...event, sourceSeq: String(next) });
         const encoded = JSON.stringify(event);
-        controllerMetadataBudget(journalPath, db).assert(Buffer.byteLength(encoded) + 16384, true);
         openControllerOutbox(db, { assertWrite: () => { if (!db.inTransaction) throw new Error("Stopped repair outbox requires a transaction."); assertOriginal(db); } }).append(next, encoded);
         db.prepare("UPDATE execution SET last_sequence=? WHERE id=1").run(next);
         save(db, sourceKey(entryId), resolved.state);

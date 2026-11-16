@@ -63,7 +63,7 @@ Claude's persisted Read result uses `toolUseResult`, while the live SDK exposes
 bounded logical-string signature and the complete native record's schema before
 discarding the redundant bytes. It retains the authoritative content block's
 offset, occurrence and failure state. Unknown or unmatched copies remain subject
-to the original metadata budget. This comparison only identifies a documented
+to the per-record and page limits. This comparison only identifies a documented
 copy within one record; it cannot establish input acceptance or merge distinct
 image occurrences.
 

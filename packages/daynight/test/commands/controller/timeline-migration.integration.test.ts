@@ -12,7 +12,6 @@ import { currentSqliteVersion, inspectSqlite, upgradeSqlite } from "../../../src
 import { runSqliteImmediate, sqliteTransactionOutcome } from "../../../src/platform/sqlite-access.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { openResourceFiles } from "../../../src/commands/controller/content/resource-files.js";
-import { controllerMetadataBudget } from "../../../src/commands/controller/media/metadata-budget.js";
 
 const roots: string[] = [], connections: Database.Database[] = [], permits: ControllerStoragePermit[] = [];
 afterEach(async () => {
@@ -101,9 +100,9 @@ test.each([5, 7, 9].flatMap(version => ["text", "list"].map(kind => ({ version, 
 });
 
 test("canonical discovery preserves shipped DDL through the direct-capture data migration", async () => {
-  expect(currentSqliteVersion(controllerJournalFormat)).toBe(12);
+  expect(currentSqliteVersion(controllerJournalFormat)).toBe(13);
   const steps = loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url));
-  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  expect(steps.map(step => step.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
   const repository = path.resolve(import.meta.dirname, "../../../../..");
   const accounting = await readFile(path.join(repository, "packages/daynight/src/commands/controller/sqlite/journal/011-outbox-accounting.sql"));
   expect(hash(Buffer.from(accounting.toString("utf8").replaceAll("\r\n", "\n"), "utf8"))).toBe("8ccff911653736b9af8c346ce75d127291deba9d0082ee8e96521942ff61a462");
@@ -183,7 +182,6 @@ test.each([5, 7])("v%s exports despite old physical metadata above 128 MiB", asy
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const handle = await open(path.join(directory, `${randomUUID()}.json`), "wx", 0o600);
   try { await handle.truncate(129 * 1048576); } finally { await handle.close(); }
-  expect(() => controllerMetadataBudget(f.file, f.db).assert()).toThrow("metadata budget");
   f.migrate();
   expect(openTimelineStore(f.db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);
 });

@@ -13,8 +13,7 @@ import { assertNoOrphanTimelineSource } from "./content/migration.js";
 import { maintainControllerTimeline } from "./content/maintenance.js";
 import { openTimelineStore } from "./content/timeline-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, isControllerStorageLockHeld, type ControllerStoragePermit } from "./storage-lock.js";
-import { isControllerStorageCapacityError } from "./storage-capacity.js";
-import { controllerJournalPhysicalBytes } from "./media/metadata-budget.js";
+import { controllerJournalPhysicalBytes } from "./storage-metrics.js";
 
 export type { JournalMigrationContext } from "./journal-format.js";
 export type ControllerStorageRequest = { journalFile: string; deadline?: number } & (
@@ -23,9 +22,9 @@ export type ControllerStorageRequest = { journalFile: string; deadline?: number 
 );
 export type ControllerStoragePreparation =
   | { kind: "prepared"; snapshot: ControllerSnapshot | null; legacyTimelineCleanupPending: boolean }
-  | { kind: "waiting"; reason: "reader_busy" | "physical_capacity"; cause: Error };
+  | { kind: "waiting"; reason: "reader_busy"; cause: Error };
 export class ControllerStorageWaitingError extends Error {
-  constructor(readonly reason: "lock_busy" | "reader_busy" | "physical_capacity", cause: Error) {
+  constructor(readonly reason: "lock_busy" | "reader_busy", cause: Error) {
     super(`Controller storage preparation is waiting: ${reason}.`, { cause });
     this.name = "ControllerStorageWaitingError";
   }
@@ -196,11 +195,6 @@ export const assertControllerStorageRole = (request: ControllerStorageRequest, r
   return snapshot;
 };
 
-const capacityCause = (cause: unknown): Error | undefined => {
-  if (isControllerStorageCapacityError(cause)) return cause;
-  if (cause instanceof AggregateError || cause instanceof SqliteAccessError && cause.kind === "cleanup-failed") return undefined;
-  return cause instanceof Error ? capacityCause(cause.cause) : undefined;
-};
 export const controllerTimelineCleanupPending = (db: Database.Database): boolean => {
   const row = db.prepare("SELECT legacy_timeline_cleanup_pending AS pending FROM execution WHERE id=1").get() as { pending: number } | undefined;
   if (row !== undefined && row.pending !== 0 && row.pending !== 1) throw new Error("Controller timeline cleanup marker is invalid.");
@@ -284,7 +278,6 @@ export const prepareControllerStorage = (request: ControllerStorageRequest, stor
   if (db !== undefined && db.open) try { closeSqliteDatabase(db, { file: request.journalFile, format }, outcome); }
   catch (close) { throw new SqliteAccessError("cleanup-failed", { database: format.name, file: request.journalFile, phase: "timeline-preparation-close" }, { cause: failure === undefined ? close : new AggregateError([failure, close], "Controller timeline preparation and close failed."), outcome, connectionClosed: !db.open }); }
   if (failure !== undefined) {
-    if (capacityCause(failure) !== undefined && failure instanceof Error) return { kind: "waiting", reason: "physical_capacity", cause: failure };
     if (phase === "admission" && failure instanceof SqliteAccessError) {
       throw new SqliteAccessError(failure.kind, { database: format.name, file: request.journalFile, phase: "storage-admission" }, { cause: failure, outcome, connectionClosed: db === undefined || !db.open });
     }

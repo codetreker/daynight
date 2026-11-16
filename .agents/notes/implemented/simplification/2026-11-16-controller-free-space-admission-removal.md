@@ -21,13 +21,10 @@ filesystem and SQLite operations determine whether work can complete; ENOSPC,
 permission, write, commit and close errors retain their original known or unknown
 outcome semantics.
 
-The remaining capacity owner applies the existing metadata policy: 128 MiB of
-ordinary control metadata, 8 MiB of settlement headroom, real SQLite sidecars and
-pending metadata, with the original committed timeline and matching active
-history-file allowances. A `physical_capacity` wait can arise only from this
-metadata policy. Single-image, message and archive limits, protocol validation,
-decoder memory and concurrency limits, and outbox backpressure retain their
-independent owners.
+The subsequent [metadata admission removal](2026-11-16-controller-metadata-admission-removal.md)
+removes the remaining cumulative metadata policy and `physical_capacity` wait.
+Single-image, message and archive limits, protocol validation, decoder memory and
+concurrency limits, and outbox backpressure retain their independent owners.
 
 Stopped maintenance executes directly under its original storage permit. Reader
 barriers, recognized legacy-source identity and retirement, checkpoints,
@@ -79,6 +76,5 @@ outcome evidence; there is no predictive guarantee that later writes or cleanup
 will succeed. Low reported free space alone cannot prevent otherwise valid work.
 
 Media directory scans and future-byte bookkeeping no longer run solely for
-capacity prediction. Metadata measurement and its existing identity checks remain
-necessary for the retained metadata policy. No journal format migration, new
-configuration switch or stale-budget compatibility path is introduced.
+capacity prediction. The later metadata decision retains physical journal measurement for observation
+and compaction verification and migrates the native index lease format.

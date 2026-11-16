@@ -52,7 +52,7 @@ same permit and checks metadata at the original admission boundaries. The [media
 ledger removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
 replaces the original absolute execution reservation and refund mechanism. The later
 [free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
-removes remaining-work and VACUUM peak estimates while retaining metadata admission. The [component
+removes remaining-work and VACUUM peak estimates and the [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes the remaining cumulative metadata policy. The [component
 design](../../../../docs/design/session-sqlite-content.md) owns the interfaces,
 ordering, budgets and recovery behavior. The [storage ownership
 decision](2026-11-12-controller-storage-ownership.md) continues to own permits,

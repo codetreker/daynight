@@ -55,7 +55,7 @@ const setup = () => {
   storage.open.mockReset(); storage.open.mockImplementation(() => { storage.order.push("journal-open"); });
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
-  fixture.journal.mockReturnValue({ reconcileNativeIndexReservation: async () => {}, listOperations: () => [], disableOutboxWrites: vi.fn(), patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; storage.order.push("journal"); } });
+  fixture.journal.mockReturnValue({ reconcileNativeIndexLease: async () => {}, listOperations: () => [], disableOutboxWrites: vi.fn(), patchSnapshot: patch, getSnapshot: () => snapshot, appendEvent: vi.fn(), close: () => { fixture.closed = true; storage.order.push("journal"); } });
   fixture.capture.mockResolvedValue({ pid: 1 });
   fixture.close.mockImplementation(async () => { expect(fixture.closed).toBe(false); });
   return patch;
@@ -540,9 +540,9 @@ test("a launch that waits beyond its first observation window keeps the same tic
 });
 
 
-test("explicit physical-capacity waiting releases each short permit and retries the original writer preparation", async () => {
+test("reader waiting releases each short permit and retries the original writer preparation", async () => {
   setup(); vi.useFakeTimers();
-  storage.prepare.mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause: new Error("reserved storage is busy") });
+  storage.prepare.mockReturnValueOnce({ kind: "waiting", reason: "reader_busy", cause: new Error("Previous readers remain active.") });
   fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
   const settled = running.then(() => null, error => error);
@@ -769,7 +769,7 @@ test.each(["IPC admission", "relay capacity", "native image patch"] as const)("%
 test.each(["rolled-back", "unknown"] as const)("native publication carries its real SQLite %s outcome to the runtime fence", async outcome => {
   setup(); fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
   const db = new Database(":memory:");
-  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=12");
+  db.exec("CREATE TABLE outbox(sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox_totals(id INTEGER PRIMARY KEY, byte_length INTEGER NOT NULL); PRAGMA user_version=13");
   const quarantine = vi.fn(), originalExec = db.exec.bind(db);
   if (outcome === "unknown") vi.spyOn(db, "exec").mockImplementation(sql => { if (sql === "ROLLBACK") throw new Error("controlled rollback failure"); return originalExec(sql); });
   const publication = createNativeInputPublication({
