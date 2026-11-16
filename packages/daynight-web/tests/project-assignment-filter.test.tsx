@@ -1,3 +1,4 @@
+import { selectStatus, selectStatuses, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectPerson } from '../src/api/auth-types';
@@ -68,7 +69,7 @@ const filter = async (label: string | RegExp) => {
   fireEvent.click(screen.getByRole('button', { name: /^负责人:/ }));
   fireEvent.click(await screen.findByRole('option', { name: label }));
 };
-const status = (value: string) => fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value } });
+const status = selectStatus;
 const chains = () => screen.getByRole('tab', { name: '任务链' });
 const standalone = () => screen.getByRole('tab', { name: '独立任务' });
 const goals = () => screen.getByRole('tab', { name: 'Goal' });
@@ -389,6 +390,10 @@ describe('project assignee filtering', () => {
     const merged = document.getElementById(`goal-children-${id(4)}`)!;
     expect(merged.querySelectorAll('.task-row')).toHaveLength(4);
     expect(merged).toHaveTextContent('Task 8');
+    selectStatuses(['todo', 'in_progress']);
+    expect(chain(1)).toBeVisible();
+    expect(chain(4)).toBeVisible();
+    expect(statusTrigger()).toHaveTextContent('已选 2 项');
   });
 
   it('does not count an external prerequisite as a matching member of a chain', async () => {
@@ -454,18 +459,21 @@ describe('project assignee filtering', () => {
 
   it('preserves matching conditions for a nonrepresentative member and clears only a blocking status', async () => {
     install([task(1, otherUser, { status: 'done' }), task(2, TEST_VIEWER_ID, { dependsOn: [id(1)] }), task(3, otherUser)]);
-    await mount(); await filter('分配给我'); status('todo');
+    await mount(); await filter('分配给我'); selectStatuses(['todo', 'cancelled']);
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 1，/ }));
     await waitFor(() => expect(chain(1)).toHaveFocus());
     expect(chain(1)).toHaveClass('overview-progress-target');
-    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(statusTrigger()).toHaveTextContent('已选 2 项');
+    const preferenceKey = `daynight:task-status-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
+    expect(JSON.parse(localStorage.getItem(preferenceKey)!)).toEqual(['todo', 'cancelled']);
     expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('分配给我');
     status('done');
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 1，/ }));
     await waitFor(() => expect(chain(1)).toHaveFocus());
-    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('all');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('all'));
+    expect(JSON.parse(localStorage.getItem(preferenceKey)!)).toEqual(['proposed', 'todo', 'in_progress', 'done', 'cancelled']);
     expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('分配给我');
   });
 
@@ -477,7 +485,7 @@ describe('project assignee filtering', () => {
     const panel = screen.getByRole('tabpanel', { name: '独立任务' });
     await waitFor(() => expect(panel).toHaveFocus());
     expect(panel).toHaveClass('overview-progress-target');
-    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
     expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent('所有负责人');
     expect(row(1)).toBeVisible(); expect(row(2)).toBeVisible();
   });

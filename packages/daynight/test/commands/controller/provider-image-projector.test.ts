@@ -43,7 +43,7 @@ const migrateLegacyProjection = (states: Map<string, unknown>, old: unknown): Na
   try {
     for (const step of loadSqliteSequence(new URL("../../../src/commands/controller/sqlite/journal/", import.meta.url)).filter(step => step.version <= 11)) db.exec(step.sql);
     db.prepare("INSERT INTO image_runtime_state VALUES(?,?)").run(`native_provider:${key}`, JSON.stringify(old));
-    db.transaction(() => migrateDirectCaptureState(db, "SELECT 1", () => {}))();
+    db.transaction(() => migrateDirectCaptureState(db, "SELECT 1"))();
     const state = JSON.parse((db.prepare("SELECT value FROM image_runtime_state WHERE key=?").get(`native_provider:${key}`) as { value: string }).value) as NativeImageProjectionState;
     states.set(key, state); return state;
   } finally { db.close(); }

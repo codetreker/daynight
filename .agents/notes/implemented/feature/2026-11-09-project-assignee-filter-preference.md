@@ -21,8 +21,7 @@ Overview navigation also saves the resulting assignee condition when it must
 clear an obstruction. Read, validation and write failures leave current-session
 interaction available and report the preference error.
 
-Only this filter is added to browser persistence; status, search and page
-numbers retain their existing lifetimes. The [filter decision](2026-11-05-task-list-status-filter.md)
+The [status preference decision](2026-11-16-project-status-multiselect.md) also persists the status set; search and page numbers retain their existing lifetimes. The [filter decision](2026-11-05-task-list-status-filter.md)
 retains the combined matching, pagination and complete-chain guarantees. The
 [original browsing preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md)
 explains why browser-local, independent records were chosen for viewing

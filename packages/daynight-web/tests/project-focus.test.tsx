@@ -1,3 +1,4 @@
+import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -92,7 +93,7 @@ const openDialog = async (fullscreen = false, filterTodo = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
   await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toBeVisible());
-  if (filterTodo) fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+  if (filterTodo) selectStatus('todo');
   fireEvent.click(document.getElementById(`task-chain-graph-${rootId}`)!);
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
@@ -232,9 +233,9 @@ describe('project dialog focus restoration', () => {
     fireEvent.click(graphClose);
     await waitFor(() => expect(document.getElementById(keepRemaining ? `task-root-${remainingId}` : 'project-chain-list')).toHaveFocus());
     expectModalReleased();
-    expect(screen.getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
     if (!keepRemaining) {
-      fireEvent.change(await screen.findByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
+      selectStatus('all');
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }
@@ -264,6 +265,22 @@ describe('project dialog focus restoration', () => {
     expect(document.getElementById(`task-root-${remainingId}`)).toHaveAttribute('aria-expanded', 'false');
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expectModalReleased();
+  });
+
+  it('does not steal focus moved while replacement history is being read', async () => {
+    const replacement = resetSnapshot(graph(remainingChain));
+    const pending = Promise.withResolvers<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(replacement).mockReturnValueOnce(pending.promise);
+    const { dialog } = await openDialog();
+    fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const refresh = screen.getByRole('button', { name: '刷新' });
+    refresh.focus();
+    expect(refresh).toHaveFocus();
+    await act(async () => { pending.resolve(replacement); });
+    await waitFor(() => expect(screen.getByText('所选任务已不在新的任务图中，详情已关闭。')).toBeVisible());
+    expect(refresh).toHaveFocus();
   });
 
   it('returns focus to a surviving task when the dialog closes normally', async () => {

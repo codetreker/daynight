@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { lstatSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { SESSION_ARCHIVE_HISTORY_MAX_BYTES, SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
+import { SESSION_ARCHIVE_HISTORY_MAX_BYTES } from "../../../session/archive.js";
 export const CONTROLLER_METADATA_BYTES = 128 * 1048576;
 export const CONTROLLER_SETTLEMENT_BYTES = 8 * 1048576;
 export class ControllerMetadataBudgetError extends Error {
@@ -25,7 +25,7 @@ export const controllerMetadataBudget = (file: string, db: Database.Database) =>
     let timeline = 0, history = 0;
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='timeline_totals'").get()) {
       const row = db.prepare("SELECT byte_length FROM timeline_totals WHERE id=1").get() as { byte_length: number } | undefined;
-      if (!row || !Number.isSafeInteger(row.byte_length) || row.byte_length < 0 || row.byte_length > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Controller timeline totals are corrupt.");
+      if (!row || !Number.isSafeInteger(row.byte_length) || row.byte_length < 0) throw new Error("Controller timeline totals are corrupt.");
       timeline = row.byte_length;
     }
     if (!db.memory && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='image_runtime_state'").get()) {

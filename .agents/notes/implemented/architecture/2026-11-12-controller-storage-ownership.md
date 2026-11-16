@@ -24,7 +24,7 @@ permit through local work and validate its owner, path and unreleased state.
 Preparation separates format upgrade, maintenance of a proven stopped generation,
 and admission of a new writer. The numbered SQL sequence is the single schema
 owner, now ending at canonical 010. A local migration context supplies the original
-permit and reserved-write check; current-format reads require neither. The
+permit; current-format reads require neither. The [capacity-free conversion decision](2026-11-16-controller-capacity-free-upgrades.md) separates format conversion from capacity admission. The
 [SQL activation decision](2026-11-12-session-sqlite-activation.md) adopts current
 body rows while preserving message origins. The
 [SQL content components](2026-11-12-session-sqlite-content-components.md) reuse the
@@ -43,7 +43,7 @@ network is awaited. Each returning acknowledgement reacquires ownership and
 checks the original stopped identity and frozen source. Stopped batch and
 acknowledgement settlement retain the existing 8 MiB reserve above ordinary
 metadata admission; normal stopped-maintenance is required before the next
-writer, while actual numbered migrations keep their reserved-write checks.
+writer, while numbered migrations do not apply capacity admission.
 
 Stopped recording holds the permit while verifying the original process boundary
 outside a SQL transaction, then compares snapshot, ticket hash and owner PID in a
@@ -78,8 +78,7 @@ intent survives lock and capacity waiting without another spawn or recovery
 budget consumption. Process-state uncertainty, unknown transactions and failed
 handle closure remain visible and retain the evidence needed for recovery.
 
-Local ownership adds short gate operations around writable phases and durable
-capacity reservation checks before migration writes. It does not change public
+Local ownership adds short gate operations around writable phases; maintenance and ordinary writes retain their capacity admission. It does not change public
 Session protocols, image resource ownership or native input deduplication.
 Body format and retirement belong to the SQL content owner. The permit governs cooperating local code; it does
 not authenticate stored data against a malicious local writer.

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { canonicalImageJson, parseDirectCaptureSubmission, parseImageCaptureRequest, type DirectCaptureSubmission, type ImageCaptureReceipt, type ImageCaptureRequest, type ImageError, type ImageLocator, type ImageOccurrence, type ValidatedImage } from "../../../session/image-values.js";
+import { canonicalImageJson, parseDirectCaptureSubmission, parseImageCaptureRequest, parseStoredDirectCaptureSubmission, parseStoredImageCaptureRequest, type DirectCaptureSubmission, type ImageCaptureReceipt, type ImageCaptureRequest, type ImageError, type ImageLocator, type ImageOccurrence, type ValidatedImage } from "../../../session/image-values.js";
 import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { NativeReadPolicy, ProviderOptions } from "../providers/types.js";
@@ -60,8 +60,8 @@ export const createMarkdownCaptureCoordinator = (options: {
   const saved = (value: MarkdownCaptureRecord): MarkdownCaptureRecord => { store.put("source", value.occurrence.imageId, value); return value; };
   const get = (imageId: string): MarkdownCaptureRecord | null => {
     const record = store.get<MarkdownCaptureRecord>("source", imageId);
-    if (record?.request) parseImageCaptureRequest(record.request);
-    if (record?.submission) parseDirectCaptureSubmission(record.submission);
+    if (record?.request) parseStoredImageCaptureRequest(record.request);
+    if (record?.submission) parseStoredDirectCaptureSubmission(record.submission);
     return record;
   };
   const needsCleanup = (record: MarkdownCaptureRecord): boolean => !!record.sourceCleanup?.pending || !record.sourceCleanup && record.started && !!record.request;
@@ -74,7 +74,7 @@ export const createMarkdownCaptureCoordinator = (options: {
     const cleanup = record.sourceCleanup;
     if (!cleanup?.pending) return;
     if (!record.request || cleanup.captureId !== record.request.captureId) throw new Error("Image source cleanup identity is corrupt.");
-    parseImageCaptureRequest({ ...record.request, attemptId: cleanup.attemptId });
+    parseStoredImageCaptureRequest({ ...record.request, attemptId: cleanup.attemptId });
     try {
       await journal.media().releaseCaptureSource(cleanup.captureId, cleanup.attemptId);
       const completed = { ...cleanup, pending: false };

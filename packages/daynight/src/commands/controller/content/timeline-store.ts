@@ -1,7 +1,8 @@
 import type Database from "better-sqlite3";
-import { parseTimelineEntry, type TimelineEntry } from "../../../session/protocol.js";
+import { parseTimelineEntry, parseStoredTimelineEntry, type TimelineEntry } from "../../../session/protocol.js";
 import { SESSION_ARCHIVE_TIMELINE_MAX_BYTES } from "../../../session/archive.js";
 import { controllerPayloadHash } from "../launch-ticket.js";
+import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
 
 const MAX_SEQUENCE = 9_223_372_036_854_775_807n;
 const MAX_ENTRIES = 100_000;
@@ -20,11 +21,11 @@ const sequence = (value: string): bigint => {
 const totalSize = (entryCount: number, byteLength: number): TimelineTotals => {
   if (!Number.isSafeInteger(entryCount) || entryCount < 0 || !Number.isSafeInteger(byteLength) || byteLength < 0) throw new Error("SQL timeline totals are corrupt.");
   const timelineBytes = ENVELOPE_BYTES + byteLength + Math.max(entryCount - 1, 0);
-  if (entryCount > MAX_ENTRIES || timelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
+  if (!Number.isSafeInteger(timelineBytes)) throw new Error("SQL timeline totals are corrupt.");
   return { entryCount, byteLength, timelineBytes };
 };
 const decode = (row: TimelineRow): TimelineEntry => {
-  const entry = parseTimelineEntry(JSON.parse(row.value));
+  const entry = parseStoredTimelineEntry(JSON.parse(row.value));
   sequence(row.entry_seq); sequence(row.revision);
   if (entry.entryId !== row.id || entry.entrySeq !== row.entry_seq || entry.revision !== row.revision || entry.kind !== row.kind
     || !Number.isSafeInteger(row.byte_length) || row.byte_length < 1 || Buffer.byteLength(row.value) !== row.byte_length
@@ -35,17 +36,44 @@ const synchronous = (value: unknown): void => {
   if (value !== null && (typeof value === "object" || typeof value === "function") && "then" in value && typeof value.then === "function") throw new TypeError("SQL timeline traversal callbacks must be synchronous.");
 };
 
+const getRow = (db: Database.Database, id: string): TimelineRow | undefined => db.prepare(`SELECT ${columns} FROM timeline_entries WHERE id=?`).get(id) as TimelineRow | undefined;
+const totals = (db: Database.Database): TimelineTotals => {
+  const rows = db.prepare("SELECT id,entry_count,byte_length FROM timeline_totals").all() as { id: number; entry_count: number; byte_length: number }[];
+  if (rows.length !== 1 || rows[0]!.id !== 1) throw new Error("SQL timeline totals are missing or corrupt.");
+  return totalSize(rows[0]!.entry_count, rows[0]!.byte_length);
+};
+
+/** Publish one entry in the caller's transaction after its caller applies the appropriate admission. */
+const publish = (db: Database.Database, value: TimelineEntry, parse: (value: unknown) => TimelineEntry, admit?: (updated: TimelineTotals, byteLength: number, contentGrowth: number) => void): void => {
+  if (!db.inTransaction) throw new Error("SQL timeline publication requires its original journal write transaction.");
+  const entry = parse(JSON.parse(JSON.stringify(value))), entrySequence = sequence(entry.entrySeq), revision = sequence(entry.revision);
+  const previous = getRow(db, entry.entryId), old = previous === undefined ? undefined : decode(previous);
+  if (old !== undefined && (old.entrySeq !== entry.entrySeq || BigInt(old.revision) > revision)) throw new Error("SQL timeline sequence changed or revision regressed.");
+  const encoded = JSON.stringify(entry), contentHash = controllerPayloadHash(entry), byteLength = Buffer.byteLength(encoded);
+  if (old !== undefined && old.revision === entry.revision) {
+    if (previous!.value !== encoded || previous!.content_hash !== contentHash) throw new Error("SQL timeline revision cannot change its content.");
+    return;
+  }
+  const current = totals(db), updated = totalSize(current.entryCount + (old === undefined ? 1 : 0), current.byteLength - (previous?.byte_length ?? 0) + byteLength);
+  admit?.(updated, byteLength, Math.max(0, byteLength - (previous?.byte_length ?? 0)));
+  db.prepare("INSERT INTO timeline_entries(id,entry_seq,revision,kind,value,content_hash,byte_length) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,kind=excluded.kind,value=excluded.value,content_hash=excluded.content_hash,byte_length=excluded.byte_length")
+    .run(entry.entryId, entrySequence, revision, entry.kind, encoded, contentHash, byteLength);
+  const result = db.prepare("UPDATE timeline_totals SET entry_count=?,byte_length=? WHERE id=1").run(updated.entryCount, updated.byteLength);
+  if (result.changes !== 1) throw new Error("SQL timeline totals were not updated.");
+};
+
+/** Migration publishes using its original permit and transaction, without ordinary write admission. */
+export const publishMigratedTimelineEntry = (db: Database.Database, permit: ControllerStoragePermit, entry: TimelineEntry): void => {
+  assertControllerStoragePermit(permit, permit.journalFile);
+  if (!db.memory && db.name !== permit.journalFile) throw new Error("Timeline import permit belongs to another database.");
+  publish(db, entry, parseStoredTimelineEntry);
+};
+
 /** The caller owns transactions and proves that writes belong to its original write boundary. */
 export const openTimelineStore = (db: Database.Database, context: TimelineWriteContext) => {
-  const getRow = (id: string): TimelineRow | undefined => db.prepare(`SELECT ${columns} FROM timeline_entries WHERE id=?`).get(id) as TimelineRow | undefined;
-  const get = (id: string): TimelineEntry | undefined => { const row = getRow(id); return row === undefined ? undefined : decode(row); };
-  const totals = (): TimelineTotals => {
-    const rows = db.prepare("SELECT id,entry_count,byte_length FROM timeline_totals").all() as { id: number; entry_count: number; byte_length: number }[];
-    if (rows.length !== 1 || rows[0]!.id !== 1) throw new Error("SQL timeline totals are missing or corrupt.");
-    return totalSize(rows[0]!.entry_count, rows[0]!.byte_length);
-  };
+  const get = (id: string): TimelineEntry | undefined => { const row = getRow(db, id); return row === undefined ? undefined : decode(row); };
   const validate = (): void => {
-    const stored = totals();
+    const stored = totals(db);
     const actual = db.prepare("SELECT COUNT(*) AS entry_count, COALESCE(SUM(byte_length),0) AS byte_length FROM timeline_entries").get() as { entry_count: number; byte_length: number };
     if (actual.entry_count !== stored.entryCount || actual.byte_length !== stored.byteLength) throw new Error("SQL timeline totals differ from current entries.");
     for (const row of db.prepare(`SELECT ${columns} FROM timeline_entries ORDER BY timeline_entries.entry_seq`).iterate() as Iterable<TimelineRow>) decode(row);
@@ -54,22 +82,10 @@ export const openTimelineStore = (db: Database.Database, context: TimelineWriteC
   const save = (value: TimelineEntry): void => {
     if (!db.inTransaction) throw new Error("SQL timeline publication requires its original journal write transaction.");
     context.assertWrite(0);
-    const entry = parseTimelineEntry(JSON.parse(JSON.stringify(value))), entrySequence = sequence(entry.entrySeq), revision = sequence(entry.revision);
-    const previous = getRow(entry.entryId), old = previous === undefined ? undefined : decode(previous);
-    if (old !== undefined && (old.entrySeq !== entry.entrySeq || BigInt(old.revision) > revision)) throw new Error("SQL timeline sequence changed or revision regressed.");
-    const encoded = JSON.stringify(entry), contentHash = controllerPayloadHash(entry), byteLength = Buffer.byteLength(encoded);
-    if (old !== undefined && old.revision === entry.revision) {
-      if (previous!.value !== encoded || previous!.content_hash !== contentHash) throw new Error("SQL timeline revision cannot change its content.");
-      return;
-    }
-    const current = totals(), updated = totalSize(current.entryCount + (old === undefined ? 1 : 0), current.byteLength - (previous?.byte_length ?? 0) + byteLength);
-    // The owner admits the incoming JSON plus SQLite statement/page overhead
-    // against its normal or explicitly reserved migration capacity.
-    context.assertWrite(byteLength + 16_384, Math.max(0, byteLength - (previous?.byte_length ?? 0)));
-    db.prepare("INSERT INTO timeline_entries(id,entry_seq,revision,kind,value,content_hash,byte_length) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,kind=excluded.kind,value=excluded.value,content_hash=excluded.content_hash,byte_length=excluded.byte_length")
-      .run(entry.entryId, entrySequence, revision, entry.kind, encoded, contentHash, byteLength);
-    const result = db.prepare("UPDATE timeline_totals SET entry_count=?,byte_length=? WHERE id=1").run(updated.entryCount, updated.byteLength);
-    if (result.changes !== 1) throw new Error("SQL timeline totals were not updated.");
+    publish(db, value, parseTimelineEntry, (updated, byteLength, contentGrowth) => {
+      if (updated.entryCount > MAX_ENTRIES || updated.timelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
+      context.assertWrite(byteLength + 16_384, contentGrowth);
+    });
   };
   return {
     get,
@@ -97,7 +113,7 @@ export const openTimelineStore = (db: Database.Database, context: TimelineWriteC
       if (!db.inTransaction) throw new Error("SQL timeline traversal requires the original journal read transaction.");
       for (const row of db.prepare(`SELECT ${columns} FROM timeline_entries ORDER BY timeline_entries.entry_seq`).iterate() as Iterable<TimelineRow>) synchronous(visit(decode(row)));
     },
-    totals,
+    totals: () => totals(db),
   };
 };
 export type TimelineStore = ReturnType<typeof openTimelineStore>;

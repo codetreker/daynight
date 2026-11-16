@@ -9,7 +9,7 @@
 服务端实现入口为 `internal/service/task/task_sync.go` 的 `TaskSync.Get`、
 `internal/core/store/postgres/task/task_sync.go` 及 `internal/server/task/task_sync.go`；配置在 composition
 与应用共享 Engine 提供的 `service/task.SessionStateReader` 一起显式传给 `NewTaskSync(database, engine, overlap)`。`015_task_sync.sql` 提供 epoch 和更新时间索引。
-浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：按 `document.visibilityState` 选择唯一 interval：可见每 15 秒、隐藏每 5 分钟自动读取，窗口失焦不改变周期。首次挂载（包括初始隐藏）、显式刷新和恢复可见立即尝试；隐藏转换只从转换时刻重建 interval，不发请求或取消在途读取。每次可见性转换清除旧 interval 并从转换时刻重新计时；自动触发遇到活动读取时跳过，显式刷新取消并替换。浏览器节流或冻结使后台周期仅为名义值。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
+浏览器 `api/task-sync.ts` 严格解码摘要，`task-cache/{database,project-cache,projection}` 拥有存储、生命周期和投影，`useTaskGraph` 保留页面读取接口及调度：按 `document.visibilityState` 选择唯一 interval：可见每 15 秒、隐藏每 5 分钟自动读取，窗口失焦不改变周期。首次挂载（包括初始隐藏）、显式刷新和恢复可见立即尝试；隐藏转换只从转换时刻重建 interval，不发请求或取消在途读取。每次可见性转换清除旧 interval 并从转换时刻重新计时；周期与可见性触发遇到活动读取或项目访问读取时跳过；显式刷新与变更通知的后台核对取消并替换在途同步，历史确认／重建的后续读取仍为后台语义。只有显式刷新显示进度。浏览器节流或冻结使后台周期仅为名义值。详情缓存 `task-detail/detail-cache.ts` 使用同一缓存数据库与身份边界，现有 `TaskDetailSessions` 拥有读取、新鲜度和写结果安装；独立 profiles store 保存人员内容，在线人员清单仍归当前项目内存观察。
 
 ```text
 首次完整任务摘要 → IndexedDB → 本地图 / 列表 / 统计
@@ -256,6 +256,8 @@ projectSummaries 从全部 typed 摘要中选择普通 Task，以匹配版本的
 
 精确比较 UTC 秒部分、补齐到九位的小数及规范 ID，保留原字符串；不能以 Date.parse 毫秒或可变小数的原始字典序排序。时间水位也用相同精度计算。
 
+`useTaskGraph.snapshot` 保持当前历史的读取观察，`displaySnapshot` 仅保留同一用户、项目、scope 与访问边界内最后已显示的投影。内容历史变化或确认期间清除当前 snapshot、receipt 和 liveAccess，但保持 displaySnapshot 与 ready 呈现；网络、超时或协议失败保留显示并暴露错误和 Retry。访问撤销、身份或 scope 生命周期结束立即清除显示。新快照通过身份、权限、历史及 applySync 校验后同时发布两种状态；新旧历史不能按业务版本合并。ProjectPage 的列表、Goal 图和统计消费 displaySnapshot；详情的 snapshot、revision/task 观察、资源类型准入和修改资格仍只使用当前 snapshot。组织表单的显示选项可用显示投影，但已挂载表单与草稿不因当前快照暂缺而关闭，读取与提交仍遵循当前资格。显示快照的 receivedAt 或 revision 不能作为新读取或写入资格。
+
 仅本地摘要的 GraphSnapshot 没有成功接收时间或服务端时钟样本，revision 为 0；最近刷新标签、运行中耗时与可能卡住提醒等待实际响应，已完成耗时仍使用持久起止端点。概览的近期分类在此期间使用本机墙钟作为暂时当前时刻，首个成功响应后切换为服务端与单调时间；本地自然日边界继续使用浏览器时区，不把本机时间用于执行耗时或同步水位。每次成功实际响应的 observedAt 与 body 读取完成、解码前立即取得的本页 performance.now 接收值配对，独立推进 TaskExecutionClock；JSON/source 解码、校验和缓存等待沿用同一 receipt。observedAt 不参与 M。磁盘和跨页广播不能提供可复用的单调锚点；设置及自身字段和依赖状态均重复的摘要保持已发布图索引身份。`GraphSnapshot.revision` 的正值是本挂载每次成功同步的 receipt，不是任务版本、水位或持久提交序号。它提供当前挂载的访问准入和失败恢复机会，正常重复 receipt 不使匹配详情重新 GET。跨页读取沿用本页已取得的时钟 receipt。
 
 ### 详情内容、版本与读取
@@ -270,7 +272,7 @@ projectSummaries 从全部 typed 摘要中选择普通 Task，以匹配版本的
 
 Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完整 Task 与 `TaskCacheEpoch`；事务完成后才发布原完整正文与 `Daynight-Task-Epoch`。Web 的 `getTaskObservation` 严格验证主体、身份及 epoch。`TaskObservationInput` 区分摘要和 direct；后者由 `TaskCacheScope` 建立 userFence、项目 revision、history generation、Task、opening 和请求 generation 围栏，不要求 manifest。成功观察只属于当前 opening，不能写入持久详情或推进同步水位。摘要来源保留原完整摘要校验和持久化规则。
 
-图同步和 Task GET 使用同一 history 观察。有效 epoch 更替先退休旧投影、详情、Steps 与阅读子树并使旧 ticket 失效，再在新围栏下至多补读一次；缺失或 invalidated manifest 不是 epoch 更替证据。其他标签提交的 manifest 与当前实时 epoch 冲突时，先退休已有准入并触发实时补读；该持久结果可能来自更早的请求，不能单独证明历史先后或永久退休当前 epoch。重叠网络请求获得的不同 epoch 也不能按请求启动顺序判断快照先后，须在隔离旧投影后以新请求确认；不确定期间保守保留同历史可能存在的在途写锁，确认换代或撤权后退休。持久 manifest 与已知实时 epoch 不一致时不能作为项目预览发布，网络失败也不能恢复该旧投影。账户变化等待刷新时保留当前详情、关系、菜单、确认、Session 录像和本地输入，认证屏障阻止新的网络请求与写入；真实会话失效、项目或历史退休按各自规则撤回内容。已接受写入在关闭详情后由原操作所有者和审阅围栏继续准备或核对，重开后的观察只能使过期意图失效，不能替代原准入。已确认写保留 committedVersion，实时 GET 达到下界才能重新可写；unknown 和 conflict 只读核对。来源资格、父版本与写前审阅由详情会话统一检查。direct 的关系、人员目录和 Session 记录各自读取并受同一 opening 资格约束，不用伪造摘要授权；局部关系不承诺完整外部后续。具体准入和替代方案由 [direct 观察决策](../../.agents/notes/implemented/architecture/2026-11-06-task-direct-observation.md)记录。
+图同步和 Task GET 使用同一 history 观察。有效 epoch 更替先退休旧投影的读取资格、详情、Steps 与阅读子树并使旧 ticket 失效；同一身份和访问边界中的最后显示投影可暂时保留用于项目页面呈现；读取在新围栏下至多补读一次。缺失或 invalidated manifest 不是 epoch 更替证据。其他标签提交的 manifest 与当前实时 epoch 冲突时，先退休已有准入并触发实时补读；该持久结果可能来自更早的请求，不能单独证明历史先后或永久退休当前 epoch。重叠网络请求获得的不同 epoch 也不能按请求启动顺序判断快照先后，须在隔离旧投影后以新请求确认；不确定期间保守保留同历史可能存在的在途写锁，确认换代或撤权后退休。持久 manifest 与已知实时 epoch 不一致时不能作为新的项目预览或读取资格发布，网络失败也不能恢复旧资格。账户变化等待刷新时保留当前详情、关系、菜单、确认、Session 录像和本地输入，认证屏障阻止新的网络请求与写入；真实会话失效、项目或历史退休按各自规则撤回内容。已接受写入在关闭详情后由原操作所有者和审阅围栏继续准备或核对，重开后的观察只能使过期意图失效，不能替代原准入。已确认写保留 committedVersion，实时 GET 达到下界才能重新可写；unknown 和 conflict 只读核对。来源资格、父版本与写前审阅由详情会话统一检查。direct 的关系、人员目录和 Session 记录各自读取并受同一 opening 资格约束，不用伪造摘要授权；局部关系不承诺完整外部后续。具体准入和替代方案由 [direct 观察决策](../../.agents/notes/implemented/architecture/2026-11-06-task-direct-observation.md)记录。
 
 ### 详情存储与预算
 
@@ -294,7 +296,7 @@ Task GET 在同一只读 repeatable-read 回调内校验项目权限并读取完
 
 实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户先同步通知根账户 owner，再拒绝响应。缓存 scope 不在通知前销毁投影，根 owner 同步进入等待刷新并保留旧 scope 和已呈现内容。若 owner 保留 scope，通知返回后身份错配围栏终止旧的准入等待和未提交事务，拒绝继续读取或发布迟到的成功和负向结果，也不重复通知；已确认的写入事实仍可记录。普通同账户暂停不设置该围栏，可信撤权仍按原规则处理；另一标签页已确认的项目撤权按 userFence 和代际撤回相应内存投影，不让旧 scope 重新访问持久数据。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。可信 Task 404 先撤回该任务并触发项目访问重验；只有项目访问确认撤权才执行 scope 撤权，未知任务地址同样不能单独证明项目不可访问。
 
-`canRevokeProject(ticket)` 在会话清正文前检查当前用户 fence、投影和待处理拒绝是否仍匹配 ticket；同 scope 的在线准入序号还拒绝已被新历史准入取代、前驱不可比较的旧 ticket。读取请求在派发前另捕获 Project 正向读取序号，`canRevokeProjectRead` 不允许旧读取 404 撤回更新的 Project 或权限观察；任务同步、人员读取、删除预览、已拒绝的删除请求与权限重验使用该规则；通过各自生命周期和身份围栏的预览、人员、Task 详情及搜索成功也记录正向读取。已确认删除或转移的写入回执仍按原 ticket 清理，不受后续读取序号影响。旧 E1 的 GET/写 404 因而不能清 E2。`revokeProject(ticket,signal,broadcast=true,reason?)` 接收可选的原始可信 ApiError，来源页立即撤权事件因而保留 requestId；没有本地 HTTP 响应的 peer 使用通用 not_found。该方法同步记住被拒绝的 cacheGeneration，移除内存投影/授权并发出 accessRevoked 事件。详情会话清除所属项目正文/loadedRevision，useTaskGraph 清除快照；旧 revision 不能重新准入。applySync 与 detailTransaction 在事务前后检查被拒绝 generation，readProject 在物化前检查；清理失败或已提交的旧结果不能重新发布这些内容。
+`canRevokeProject(ticket)` 在会话清正文前检查当前用户 fence、投影和待处理拒绝是否仍匹配 ticket；同 scope 的在线准入序号还拒绝已被新历史准入取代、前驱不可比较的旧 ticket。读取请求在派发前另捕获 Project 正向读取序号，`canRevokeProjectRead` 不允许旧读取 404 撤回更新的 Project 或权限观察；任务同步、人员读取、删除预览、已拒绝的删除请求与权限重验使用该规则；通过各自生命周期和身份围栏的预览、人员、Task 详情及搜索成功也记录正向读取。已确认删除或转移的写入回执仍按原 ticket 清理，不受后续读取序号影响。旧 E1 的 GET/写 404 因而不能清 E2。`revokeProject(ticket,signal,broadcast=true,reason?)` 接收可选的原始可信 ApiError，来源页立即撤权事件因而保留 requestId；没有本地 HTTP 响应的 peer 使用通用 not_found。该方法同步记住被拒绝的 cacheGeneration，移除内存投影/授权并发出 accessRevoked 事件。详情会话清除所属项目正文/loadedRevision，useTaskGraph 清除当前和显示快照；旧 revision 不能重新准入。applySync 与 detailTransaction 在事务前后检查被拒绝 generation，readProject 在物化前检查；清理失败或已提交的旧结果不能重新发布这些内容。
 
 访问撤回与持久清理归仍存活的 scope，超出详情 UI 和 `TaskDetailSessions` 的寿命。切换到 `/invitations` 等页面可以释放详情会话而保留认证 scope；已提交写入返回可信 not_found 时按原历史发起项目访问重验，只有确认项目撤权才执行 scope 撤权。已释放会话只保留操作拒绝意图/错误并清自身旧正文，不通知其 UI listener、不补 GET 或重发写入；scope 退出/账号替换仍优先使旧响应失效，旧 E1 仍不能撤 E2。共享缓存 RW 事务只在持久 userFence 和 manifest.cacheGeneration 仍等于捕获 ticket 时清除该项目 summaries/details/profiles/sessionHistory，并写新的 invalidated manifest；不同用户、项目或 generation 不在该 CAS 清理范围。清理失败保留内存拒绝与可见存储错误。beginSync 先重试待处理清理，再建立同步基线；撤权后的持久摘要预览须等新的在线项目同步成功。direct 详情须在清理、身份与历史围栏允许后，通过新的实时 Task 观察准入。摘要预览以 scope 的既有退役记录和在线授权判定：未观察过有效撤权时允许首次本地预览；观察后必须重新在线授权，不能因清理跳过了不同 generation 的较新持久集合就恢复预览。hook 在 readProject 前与异步读取后均检查 canPreviewProject；同 scope 的项目导航与重新挂载沿用该判断，普通提示与失败的 Retry/轮询不改变授权。成功 applySync 恢复授权但不清除旧 generation 的退役围栏。manifest 在 snapshot、失效与清理时同事务保存完整代际祖先，ticket 携带该链；它用于识别撤权影响的旧投影，不扩大持久清理的 CAS 范围。任何保留记录也不能代替在线准入。
 

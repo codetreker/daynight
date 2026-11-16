@@ -1,6 +1,8 @@
+import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { browserNavigation } from "../src/app/navigation";
 import { projectHistory, readProjectHistory } from '../src/app/page-history';
 import { summariesForGraph } from './helpers/taskSync';
+import { installGraphMeasurements } from './graph-measurements';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
 import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
@@ -234,7 +236,7 @@ describe('project task views', () => {
     const ActualFilter = TaskAssigneeFilterModule.TaskAssigneeFilter;
     vi.spyOn(TaskAssigneeFilterModule, 'TaskAssigneeFilter').mockImplementation((props) => { changeAssignee = props.onChange; return <ActualFilter {...props} />; });
     mount(); await findTab('chains'); fireEvent.click(tab('goals'));
-    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    selectStatus('todo');
     act(() => changeAssignee({ kind: 'unassigned' }));
     expect(document.querySelectorAll('.goal-list-card')).toHaveLength(1);
     const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
@@ -918,11 +920,11 @@ describe('project overview and task workspace', () => {
     mountOverview();
     await screen.findByRole('heading', { name: project }); await waitForGraph();
     fireEvent.click(sectionTab('tasks'));
-    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    selectStatus('todo');
     expect(chainRow(rootId)).toBeNull();
     fireEvent.click(sectionTab('overview'));
     fireEvent.click(progressButton(`任务 ${rootId}`));
-    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('all');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('all'));
     expect(chainRow(rootId)).toBeVisible();
     expect(chainRow(rootId)).toHaveFocus();
     expect(screen.queryByText('无法定位所选任务')).toBeNull();
@@ -978,7 +980,7 @@ describe('project overview and task workspace', () => {
   it('resolves a retained overview task witness against its latest representative without reopening the graph or repeating navigation', async () => {
     const getNavigate = interceptOverviewNavigation();
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot([seed(canonicalTask(0), 'done'), seed(canonicalTask(1), 'done', [canonicalTask(0)]), ...seeds.slice(1)], 2);
@@ -1002,7 +1004,7 @@ describe('project overview and task workspace', () => {
   ])('keeps the requested category focused when the overview chain is %s before navigation', async (_name, tasks) => {
     const getNavigate = interceptOverviewNavigation();
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot(tasks, 2);
@@ -1021,7 +1023,7 @@ describe('project overview and task workspace', () => {
   it('locates a chain completed after the overview was rendered', () => {
     const getNavigate = interceptOverviewNavigation();
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state.snapshot = mockNavigationSnapshot([seeds[0]!, seed(canonicalTask(2), 'done', [canonicalTask(1)]), ...seeds.slice(2)], 2);
@@ -1035,8 +1037,8 @@ describe('project overview and task workspace', () => {
 
   it('consumes an overview target when project access disappears and returns focus to the visible Tasks section', () => {
     const getNavigate = interceptOverviewNavigation();
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mountOverview();
     const navigate = getNavigate();
     state = { ...state, snapshot: null, status: 'error', error: new ApiError('server', 404, 'not_found', 'missing-project') };
@@ -1351,7 +1353,7 @@ describe('recent task browsing and pagination', () => {
     if (pageCount > 1) {
       fireEvent.click(tab(category === 'standalone' ? 'chains' : 'standalone')); fireEvent.click(tab(category));
       expect(pagination(label)).toHaveTextContent(`第 ${pageCount} / ${pageCount} 页`);
-      fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+      selectStatus('todo');
       expect(pagination(label)).toHaveTextContent(`第 1 / ${pageCount} 页`);
     }
     expect(graphRequest).toHaveBeenCalledTimes(1);
@@ -1411,8 +1413,8 @@ describe('recent task browsing and pagination', () => {
     const sourceStatus = status === 'all' ? 'todo' : status;
     graphRequest.mockResolvedValue(snapshot([...finished, seed(source, sourceStatus === 'in_progress' ? 'done' : sourceStatus), seed(canonicalTask(101), sourceStatus, [source, dependency], [dependency])]));
     mount(); await findChainRow(source);
-    const statusControl = filters().getByRole('combobox', { name: '状态' });
-    fireEvent.change(statusControl, { target: { value: status } });
+    selectStatus(status);
+    const statusControl = statusTrigger();
     if (assignee === 'unassigned') act(() => changeAssignee({ kind: 'unassigned' }));
     const assigneeControl = filters().getByRole('button', { name: `负责人: ${assignee === 'all' ? '所有负责人' : '未分配'}` });
     const rows = [...document.querySelectorAll('.root-toggle')];
@@ -1433,7 +1435,7 @@ describe('recent task browsing and pagination', () => {
       expect([...document.querySelectorAll('.root-toggle')]).toEqual(rows);
       rows.forEach((row, position) => expect(document.querySelectorAll('.root-toggle')[position]).toBe(row));
       expect(original).toHaveAttribute('aria-expanded', 'true');
-      expect(statusControl).toHaveValue(status);
+      expect(statusControl).toHaveTextContent(statusLabel(status));
       expect(assigneeControl).toBeInTheDocument();
       expect(document.querySelector('#project-chain-list .list-pagination')).toBe(page);
       expect(page?.textContent).toBe(pageText);
@@ -1444,7 +1446,7 @@ describe('recent task browsing and pagination', () => {
     await waitFor(() => expect(trigger).toHaveFocus());
     expect(original).toBeVisible();
     expect(original).toHaveAttribute('aria-expanded', 'true');
-    expect(statusControl).toHaveValue(status);
+    expect(statusControl).toHaveTextContent(statusLabel(status));
     expect(assigneeControl).toBeVisible();
     expect(window.scrollTo).not.toHaveBeenCalled();
     expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
@@ -1459,7 +1461,7 @@ describe('recent task browsing and pagination', () => {
       seed(canonicalTask(200)), seed(canonicalTask(201), 'todo', [canonicalTask(200)])];
     const refreshed = [seed(replacement), ...initial.map((task) => task.id === source ? { ...task, dependsOn: [replacement] } : task)];
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mount(); await openChain(source);
     const removed = chainGraphButton(source);
     fireEvent.click(screen.getByTestId(`external-${first}`));
@@ -1475,10 +1477,11 @@ describe('recent task browsing and pagination', () => {
   });
 
   it('retains a Goal graph history witness through an incomplete cached preview', async () => {
+    installGraphMeasurements();
     const goal = canonicalTask(500);
     const tasks = [{ ...seed(goal), type: 'goal' as const }];
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
     selectTasks(); fireEvent.click(tab('goals'));
@@ -1502,8 +1505,8 @@ describe('recent task browsing and pagination', () => {
     const goal = canonicalTask(500), source = canonicalTask(1), child = canonicalTask(2);
     const tasks = [{ ...seed(goal), type: 'goal' as const }, { ...seed(source), parentId: goal },
       { ...seed(child, 'todo', [source]), parentId: goal }];
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), displaySnapshot: null, reconcile: vi.fn(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
     selectTasks(); fireEvent.click(tab('goals'));
@@ -1537,7 +1540,7 @@ describe('recent task browsing and pagination', () => {
       ? initial.map((task) => task.id === dependency ? { ...task, dependsOn: [] } : task)
       : initial.filter((task) => task.id !== dependency).map((task) => task.id === canonicalTask(101) ? { ...task, dependsOn: [source], externalDependsOn: [] } : task);
     const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
-    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => ({ ...state, displaySnapshot: state.snapshot, reconcile: state.refresh }));
     const view = mount(); await openChain(source);
     const trigger = chainGraphButton(source);
     fireEvent.click(screen.getByTestId(`external-${dependency}`));
@@ -1602,17 +1605,17 @@ describe('recent task browsing and pagination', () => {
     const refreshed = initial.map((task) => task.id === source || task.id === child ? { ...task, status: 'done' as const } : task);
     graphRequest.mockResolvedValueOnce(snapshot(initial)).mockResolvedValueOnce(snapshot(refreshed));
     mount(); await findChainRow(source);
-    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    selectStatus('todo');
     await openChain(source);
     const trigger = chainGraphButton(source);
     fireEvent.click(screen.getByTestId(`external-${dependency}`));
     await waitFor(() => expect(document.querySelector('.task-detail-title')).toHaveTextContent(`任务 ${dependency}`));
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await waitFor(() => expect(trigger.isConnected).toBe(false));
-    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
     fireEvent.click(within(document.querySelector<HTMLElement>('.task-detail-dialog')!).getByRole('button', { name: '关闭任务详情' }));
     await waitFor(() => expect(document.getElementById('project-chain-list')).toHaveFocus());
-    expect(filters().getByRole('combobox', { name: '状态' })).toHaveValue('todo');
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
   });
 
   it('clamps a removed final page immediately and does not restore it when tasks return', async () => {
@@ -1714,7 +1717,7 @@ describe('status-first project presentation', () => {
     expect(pagination(view)).toHaveTextContent('第 1–20 条，共 23 条');
     fireEvent.click(within(pagination(view)).getByRole('button', { name: '下一页' }));
     expect(presentedIds(view)).toEqual(ids([...unfinished.slice(20), 22, 21]));
-    fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'todo' } });
+    selectStatus('todo');
     if (view === 'chains') expect(pagination(view)).toHaveTextContent('第 1–20 条，共 21 条');
     else expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
     expect(graphRequest).toHaveBeenCalledOnce();
@@ -1772,8 +1775,8 @@ it('filters cancelled membership without hiding readable cancelled tasks or coun
   const standalone = { ...seed(canonicalTask(3), 'cancelled'), cancelledAt: timestamp };
   graphRequest.mockResolvedValue(snapshot([rootTask, cancelled, standalone]));
   mount(); await findChainRow();
-  fireEvent.change(filters().getByRole('combobox', { name: '状态' }), { target: { value: 'cancelled' } });
-  expect(screen.getByRole('option', { name: '已取消' })).toBeInTheDocument();
+  selectStatus('cancelled');
+  expect(statusTrigger()).toHaveTextContent('已取消');
   expect(chainRow().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
   fireEvent.click(tab('standalone')); await waitFor(() => expect(row(standalone.id)).toBeVisible());
   expect(row(rootTask.id)).toBeNull();

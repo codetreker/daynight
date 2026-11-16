@@ -119,7 +119,7 @@ it("automatically confirms a peer's real replacement before restoring the projec
   expect(view.result.current.snapshot?.index.nodes.get(taskId)?.titlePreview ?? "Replacement history").toBe("Replacement history");
   await act(async () => { finalRead.resolve(current); });
   await waitFor(() => expect(view.result.current.snapshot?.index.nodes.get(taskId)?.titlePreview).toBe("Replacement history"));
-  expect(view.result.current.error).toBeNull();
+  await waitFor(() => expect(view.result.current.error).toBeNull());
 });
 
 it("bounds project graph retries when consecutive live observations keep replacing history", async () => {
@@ -359,8 +359,8 @@ it("does not publish an already-read preview after access is withdrawn before hy
   await act(async () => { await cache.revokeProject(await cache.beginSync(projectId, new AbortController().signal), new AbortController().signal); });
   expect(result.current.snapshot).toBeNull();
   await act(async () => { release.resolve(); });
-  await waitFor(() => expect(getTaskSync).toHaveBeenCalledOnce());
-  expect(result.current).toMatchObject({ status: "error", snapshot: null });
+  expect(getTaskSync).not.toHaveBeenCalled();
+  expect(result.current).toMatchObject({ status: "error", snapshot: null, displaySnapshot: null });
 });
 
 it('retains a failed sync and an in-flight retry when cache events publish the authorized snapshot', async () => {

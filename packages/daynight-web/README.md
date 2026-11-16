@@ -1752,8 +1752,12 @@ decision](../../.agents/notes/archived/feature/2026-10-26-goal-task-lists.md) re
 The typed Goal category also expands each Goal in place. On desktop its header
 matches the task-chain header height for equivalent unwrapped content in the
 same font; wrapped content grows naturally, including on narrow screens. The header
-body toggles a flat list of all direct ordinary children. Separate Goal details
-and graph buttons open their readers without changing the disclosure. The Goal
+aligns its compact arrow with the task-chain arrow at the same card width, and
+uses a 20px decorative target with 8px gaps around it. The disclosure button
+retains a separate 22px-wide hit area, and wrapped progress aligns with the title.
+The disclosure button and non-interactive header content toggle a flat list of
+all direct ordinary children. The title and separate Goal details and graph
+buttons open their readers without changing the disclosure. The Goal
 disclosure starts closed. The card owns its rounded outline and clips its contents;
 the heading meets the neutral expanded area at a single divider, and the final
 visible child meets the inner bottom edge without the shared chain-list padding.

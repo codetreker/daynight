@@ -24,7 +24,7 @@ import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-err
 import { controllerJournalFormat } from "./journal-format.js";
 import { openControllerOutbox, withOutboxTransactionOutcome } from "./outbox-store.js";
 import { acquireControllerStoragePermit, assertControllerStoragePermit, type ControllerStoragePermit } from "./storage-lock.js";
-import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, prepareControllerStorage } from "./storage-preparation.js";
+import { controllerJournalReadOptions, controllerJournalWriteOptions, controllerTimelineCleanupPending, upgradeControllerJournal } from "./storage-preparation.js";
 import { controllerStorageMediaUsage, reserveControllerStoragePeak } from "./storage-capacity.js";
 import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync, existsSync } from "node:fs";
@@ -606,8 +606,7 @@ const recordStoppedWithPermit = async (file: string, ticket: ControllerLaunchTic
   let needsUpgrade = false;
   closeJournal(inspection, file, () => { needsUpgrade = inspection.transaction(() => inspectSqlite(inspection, controllerJournalFormat).kind !== "current").deferred(); }, "not-started");
   if (needsUpgrade) {
-    const preparation = prepareControllerStorage({ journalFile: file, stateDirectory: options.stateDirectory, mode: "upgrade-only", ...(deadline === undefined ? {} : { deadline }) }, permit);
-    if (preparation.kind === "waiting") throw preparation.cause;
+    upgradeControllerJournal(file, permit, { ...(deadline === undefined ? {} : { deadline }) });
   }
   remaining();
   let observedRow: ControllerStopRow | null = null;

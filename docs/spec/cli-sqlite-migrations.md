@@ -32,6 +32,8 @@ Review v2 不为接入公共机制额外提高版本或改写记录；journal v6
 
 Controller v10 必须从已验证的历史来源导入当前正文；v8–9 只能采用已提交指针，不收养目录中的较新候选。正文、totals、旧索引删除、cleanup pending 和版本同事务转换，原 operation、来源、native 身份及停止证据保留。导入后旧文件仍受 reader barrier 保护；只有完整停止维护、后置 checkpoint、真实占用核对与预留结算完成，才允许下一 writer。upgrade-only 可以读取已导入历史并保留 pending，不得制造 stopped。当前格式的普通正文生产者和消费者必须统一使用 SQL，旧解码器仅服务编号迁移。
 
+独立 Herdr lifecycle 库保留自身的无版本拒绝与严格来源 schema/version 边界。其格式 3 升级只为两张表的可操作旧 run 映射 `nativeLaunch`，不校验完整 lifecycle/Session、SQL identity/version 对应或 retirement 关系；无法操作的 JSON 或 run 保持原值，其余独立项继续。未映射的 JSON token 和重复键必须保留，不能因整行重新序列化消除原有冲突或将原数值改成 null。转换不执行 8 MiB 等普通容量政策。有效超 8 MiB 存量映射结果须能重开和只读 attach；普通新增写入的 8 MiB 限制和现有业务读取校验保持。具体映射由 [Herdr 生命周期设计](../design/herdr-worker-lifecycle.md#身份与存储)拥有，真实 SQL、IO 或提交错误保持失败或未知。
+
 ## 查询与并发
 
 当前格式的查询在同一个只读快照中检查版本并读取数据，不为迁移取得实例锁或额外写权限。运行中的 writer 可以继续提交；查询仍读取自己的已提交快照。SQLite 自身打开既有 WAL/SHM 所需的权限不因该约束改变。

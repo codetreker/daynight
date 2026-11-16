@@ -5,7 +5,7 @@ import { canonicalId } from "../../../api/parse.js";
 import type { JournalMigrationContext } from "../journal-format.js";
 import { captureCommittedPendingTimeline } from "../pending-content.js";
 import { assertControllerStoragePermit } from "../storage-lock.js";
-import { openTimelineStore } from "./timeline-store.js";
+import { publishMigratedTimelineEntry } from "./timeline-store.js";
 
 /** Empty SQL cannot establish ownership of a retained file archive. */
 export const assertNoOrphanTimelineSource = (journal: string): void => {
@@ -36,13 +36,12 @@ export const assertNoOrphanTimelineSource = (journal: string): void => {
 
 /** Import is part of the caller's original immediate versioned migration transaction. */
 export const importControllerTimeline = (db: Database.Database, context: JournalMigrationContext, schemaSql: string): undefined => {
-  const assertWrite = (additionalBytes: number): void => {
+  const assertMigration = (): void => {
     if (!db.inTransaction) throw new Error("Timeline import requires the journal migration transaction.");
     assertControllerStoragePermit(context.storagePermit, context.storagePermit.journalFile);
     if (!db.memory && db.name !== context.storagePermit.journalFile) throw new Error("Timeline import permit belongs to another database.");
-    context.assertReservedWrite(additionalBytes);
   };
-  assertWrite(0);
+  assertMigration();
   const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
   let sessionId: string | undefined;
   if (row === undefined) {
@@ -55,14 +54,13 @@ export const importControllerTimeline = (db: Database.Database, context: Journal
   }
   const source = sessionId === undefined ? undefined : captureCommittedPendingTimeline(db, sessionId);
   db.exec(schemaSql);
-  const store = openTimelineStore(db, { assertWrite });
   let count = 0, bytes = 0;
   source?.iterate(entry => {
     const length = Buffer.byteLength(JSON.stringify(entry));
-    store.save(entry);
+    publishMigratedTimelineEntry(db, context.storagePermit, entry);
     count++; bytes += length;
   });
-  const totals = store.totals();
+  const totals = db.prepare("SELECT entry_count AS entryCount,byte_length AS byteLength FROM timeline_totals WHERE id=1").get() as { entryCount: number; byteLength: number };
   if (totals.entryCount !== count || totals.byteLength !== bytes) throw new Error("Imported timeline totals differ from the committed source.");
   const actual = db.prepare("SELECT COUNT(*) AS count,COALESCE(SUM(byte_length),0) AS bytes FROM timeline_entries").get() as { count: number; bytes: number };
   if (actual.count !== count || actual.bytes !== bytes) throw new Error("Imported timeline totals differ from the stored rows.");

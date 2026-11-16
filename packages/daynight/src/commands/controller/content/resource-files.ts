@@ -1,14 +1,17 @@
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { parseSessionResource, type SessionResource } from "../../../session/protocol.js";
+import { parseSessionResource, parseStoredSessionResource, type SessionResource } from "../../../session/protocol.js";
 import { syncDirectory, writeDurableJson } from "../../../platform/durable-json.js";
+import type Database from "better-sqlite3";
+import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
 
 /** Pending upload source, not a second permanent native session history. */
 export type PendingResource = { resource: SessionResource; data: string | null };
 export type ControlledResourceLease = { readonly path: string; readonly resource: SessionResource; read(offset: string, limit: number): Buffer; close(): void };
 const MAX_RESOURCE_BYTES = 10 * 1024 * 1024;
 const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
 type PendingContentIndex = { entries: string[]; resources: string[] };
 const readIndex = (root: string): { source: Buffer; value: PendingContentIndex } | undefined => {
   const file = join(root, "index.json");
@@ -81,17 +84,17 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     try {
       const hash = createHash("sha256"), block = Buffer.alloc(524288); let count = 0;
       for (;;) { const size = readSync(fd, block, 0, block.length, count); if (!size) break; count += size; hash.update(block.subarray(0, size)); }
-      if (count > MAX_RESOURCE_BYTES || String(count) !== resource.byteLength || hash.digest("hex") !== resource.sha256) throw new Error("Corrupt pending resource content.");
+      if (String(count) !== resource.byteLength || hash.digest("hex") !== resource.sha256) throw new Error("Corrupt pending resource content.");
     } finally { closeSync(fd); }
   };
-  const publishBytes = (resource: SessionResource, copy: (fd: number) => { length: number; digest: string }): void => {
-    if (resource.status !== "available" || resource.byteLength === null || resource.sha256 === null || BigInt(resource.byteLength) > BigInt(MAX_RESOURCE_BYTES)) throw new Error("Invalid pending resource bytes.");
+  const publishBytes = (resource: SessionResource, copy: (fd: number) => { length: number; digest: string }, admitNew = true): void => {
+    if (resource.status !== "available" || resource.byteLength === null || resource.sha256 === null || admitNew && BigInt(resource.byteLength) > BigInt(MAX_RESOURCE_BYTES)) throw new Error("Invalid pending resource bytes.");
     const file = blobPath(resource.resourceId), temporary = `${file}.${randomUUID()}.tmp`;
     const fd = openSync(temporary, "wx", 0o600);
     let published = false;
     try {
       const result = copy(fd);
-      if (result.length > MAX_RESOURCE_BYTES || String(result.length) !== resource.byteLength || result.digest !== resource.sha256) throw new Error("Corrupt pending resource content.");
+      if (admitNew && result.length > MAX_RESOURCE_BYTES || String(result.length) !== resource.byteLength || result.digest !== resource.sha256) throw new Error("Corrupt pending resource content.");
       fsyncSync(fd); closeSync(fd);
       if (existsSync(file)) { verifyBlob(resource); unlinkSync(temporary); }
       else renameSync(temporary, file);
@@ -101,12 +104,12 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
   for (const file of readdirSync(resourceDirectory).filter(file => file.endsWith(".json"))) {
     const original = readFileSync(join(resourceDirectory, file));
     const value = JSON.parse(original.toString("utf8")) as PendingResource;
-    const resource = parseSessionResource(value.resource);
+    const resource = parseStoredSessionResource(value.resource);
     if (name(resource.resourceId) !== file || (value.data !== null && typeof value.data !== "string")) throw new Error("Invalid pending resource identity.");
     if (value.data !== null) {
       const content = Buffer.from(value.data, "base64");
       if (content.toString("base64") !== value.data) throw new Error("Corrupt pending resource content.");
-      publishBytes(resource, fd => { writeFileSync(fd, content); return { length: content.length, digest: createHash("sha256").update(content).digest("hex") }; });
+      publishBytes(resource, fd => { writeFileSync(fd, content); return { length: content.length, digest: createHash("sha256").update(content).digest("hex") }; }, false);
       // Keep the exact old source until the new reader has verified the closure.
       const legacy = join(root, "legacy-resources"); mkdirSync(legacy, { recursive: true, mode: 0o700 });
       const old = join(legacy, file); if (!existsSync(old)) { const fd = openSync(old, "wx", 0o600); try { writeFileSync(fd, original); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(legacy); }
@@ -149,17 +152,17 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     const metadata = descriptorBytes - (resource && resources.has(resource.resourceId) ? encodedBytes(resources.get(resource.resourceId)!.resource) : 0) + (resource ? encodedBytes(resource) : 0);
     if (metadata > 4 * 1024 * 1024) throw new Error("Pending resource metadata budget exceeded.");
   };
-  checkResourceBudget();
   if (!existsSync(indexPath)) updateIndex();
-  const saveResource = (value: PendingResource, bytes?: Uint8Array) => {
+  const publishResource = (value: PendingResource, bytes: Uint8Array | undefined, admitNew: boolean): void => {
     assertWritable();
-    parseSessionResource(value.resource);
+    if (admitNew) parseSessionResource(value.resource); else parseStoredSessionResource(value.resource);
+    if (admitNew && value.resource.status === "available" && value.resource.byteLength !== null && BigInt(value.resource.byteLength) > BigInt(MAX_RESOURCE_BYTES)) throw new Error("Invalid pending resource bytes.");
     const input = bytes ?? (value.data === null ? undefined : Buffer.from(value.data, "base64"));
     if (value.data !== null && Buffer.from(value.data, "base64").toString("base64") !== value.data) throw new Error("Corrupt pending resource content.");
     const previous = resources.get(value.resource.resourceId);
     if (previous?.resource.status === "available" && JSON.stringify(previous.resource) !== JSON.stringify(value.resource)) throw new Error("An available local resource cannot change identity.");
-    checkResourceBudget(value.resource);
-    if (input !== undefined) publishBytes(value.resource, fd => { writeFileSync(fd, input); return { length: input.byteLength, digest: createHash("sha256").update(input).digest("hex") }; });
+    if (admitNew) checkResourceBudget(value.resource);
+    if (input !== undefined) publishBytes(value.resource, fd => { writeFileSync(fd, input); return { length: input.byteLength, digest: createHash("sha256").update(input).digest("hex") }; }, admitNew);
     if (value.resource.status === "available") verifyBlob(value.resource);
     const normalized = { resource: value.resource, data: null };
     if (previous && JSON.stringify(previous) === JSON.stringify(normalized)) return;
@@ -168,6 +171,13 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
     resources.set(value.resource.resourceId, JSON.parse(JSON.stringify(normalized)) as PendingResource);
     descriptorBytes += encodedBytes(value.resource) - (previous ? encodedBytes(previous.resource) : 0);
     if (!existed) updateIndex();
+  };
+  const saveResource = (value: PendingResource, bytes?: Uint8Array): void => publishResource(value, bytes, true);
+  const publishMigrationResource = (db: Database.Database, permit: ControllerStoragePermit, value: PendingResource, bytes?: Uint8Array): void => {
+    if (!db.inTransaction) throw new Error("Resource migration requires the journal migration transaction.");
+    assertControllerStoragePermit(permit, journal);
+    if (!db.memory && db.name !== journal) throw new Error("Resource migration permit belongs to another database.");
+    publishResource(value, bytes, false);
   };
   const writeResource = (resource: SessionResource, bytes: Uint8Array) => saveResource({ resource, data: null }, bytes);
   const importResourceFile = (resource: SessionResource, source: string): void => {
@@ -257,6 +267,6 @@ export const openResourceFiles = (journal: string, sessionId: string) => {
       }
     }
   };
-  return { root, get resources() { assertWritable(); return resources; }, saveResource, writeResource, importResourceFile, acquireResource, pinResource, unpinResource, releaseResource, assertResourceReleasable, descriptorBytes: () => { assertWritable(); return descriptorBytes; } };
+  return { root, get resources() { assertWritable(); return resources; }, saveResource, publishMigrationResource, writeResource, importResourceFile, acquireResource, pinResource, unpinResource, releaseResource, assertResourceReleasable, descriptorBytes: () => { assertWritable(); return descriptorBytes; } };
 };
 export type ResourceFiles = ReturnType<typeof openResourceFiles>;

@@ -62,7 +62,7 @@ const InitialViewport = ({ viewportFactory, revision, onReset, framingReady, onS
   return null;
 };
 
-export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClearInspection, viewportFactory, framingKey, framingRevision, onFramingReset, minZoom, maxZoom, fitViewOptions, framingReady = true, onSizeChange, onFitView, overlay }: {
+export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClearInspection, viewportFactory, framingKey, framingRevision, onFramingReset, minZoom, maxZoom, fitViewOptions, framingReady = true, onSizeChange, onFitView, overlay, emptyState }: {
   canvasId: string;
   nodes: TaskFlowNode[];
   geometry: CanvasLayout;
@@ -79,6 +79,7 @@ export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClear
   onSizeChange?: (width: number, height: number) => void;
   onFitView?: () => void;
   overlay?: ReactNode;
+  emptyState?: ReactNode;
 }) => {
   const { messages: { graph: m } } = useI18n();
   const canvas = useMemo(() => (
@@ -119,5 +120,6 @@ export const TaskGraphCanvas = ({ canvasId, nodes, geometry, inspection, onClear
   ), [nodes, canvasId, framingKey, geometry, viewportFactory, framingRevision, onFramingReset, onClearInspection, minZoom, maxZoom, fitViewOptions, framingReady, onSizeChange, onFitView, overlay, m]);
   return <div className="task-graph-canvas"><TaskInspectionContext value={inspection}>{canvas}</TaskInspectionContext>
     {overlay && <div style={{ position: 'absolute', inset: 0, background: '#fafbfe' }}>{overlay}</div>}
+    {emptyState && <div style={{ position: 'absolute', top: 0, left: 0, right: 0, pointerEvents: 'none' }}>{emptyState}</div>}
   </div>;
 };

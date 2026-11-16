@@ -353,13 +353,24 @@ test("an active old journal writer blocks DDL while current-format reads stay av
 });
 
 test("startup admission failure rolls back the complete preceding migration", async () => {
-  const f = await fixture(), original = historical(f.file, 1, f.ticket);
-  expect(() => openControllerLifecycleStore(f.file, { ...f.ticket, executionId: randomUUID() }, { onMigration: () => {} })).toThrow(expect.objectContaining({ cause: expect.objectContaining({ cause: expect.objectContaining({ message: expect.stringContaining("another execution") }) }) }));
-  const db = new Database(f.file);
+  const f = await fixture(); historical(f.file, 1, f.ticket);
+  const before = new Database(f.file, { readonly: true });
+  const state = () => ({
+    schema: before.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all(),
+    execution: before.prepare("SELECT * FROM execution").all(),
+    operations: before.prepare("SELECT * FROM operations").all(),
+    outbox: before.prepare("SELECT * FROM outbox").all(),
+  });
+  let original: ReturnType<typeof state>;
+  try { original = state(); } finally { before.close(); }
+  expect(() => openControllerLifecycleStore(f.file, { ...f.ticket, executionId: randomUUID() }, { onMigration: () => {} })).toThrow("Controller timeline maintenance must finish before writer initialization.");
+  const db = new Database(f.file, { readonly: true });
   try {
     expect(db.pragma("user_version", { simple: true })).toBe(1);
-    expect(db.prepare("SELECT snapshot,owner_pid FROM execution").get()).toEqual({ snapshot: original.snapshot, owner_pid: null });
-    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='projection'").get()).toBeUndefined();
+    expect(db.prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name").all()).toEqual(original.schema);
+    expect(db.prepare("SELECT * FROM execution").all()).toEqual(original.execution);
+    expect(db.prepare("SELECT * FROM operations").all()).toEqual(original.operations);
+    expect(db.prepare("SELECT * FROM outbox").all()).toEqual(original.outbox);
   } finally { db.close(); }
 });
 

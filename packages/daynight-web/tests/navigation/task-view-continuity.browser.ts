@@ -13,7 +13,7 @@ const row = (n: number, title: string, dependsOn: string[] = []) => detailFixtur
 
 async function install(page: Page, initial: TaskDetail[]) {
   const gate = Promise.withResolvers<void>();
-  const state = { tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve };
+  const state = { tasks: initial, writes: [] as string[], graphMode: 'normal' as 'normal' | 'pending' | 'error', releaseGraph: gate.resolve, epoch: taskSyncEpoch(projectId), deletions: 0, holdReplacement: false, replacementHeld: false };
   await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname, graph = graphFixture(state.tasks);
@@ -27,13 +27,19 @@ async function install(page: Page, initial: TaskDetail[]) {
     if (path === `/api/v1/projects/${projectId}/access`) return send(directAccessFixture(projectId));
     if (path === `/api/v1/projects/${projectId}/task-sync`) {
       if (state.graphMode === 'pending') await gate.promise;
+      if (state.holdReplacement && taskSyncQuery(url).epoch === undefined) { state.replacementHeld = true; await gate.promise; }
       if (state.graphMode === 'error') return send({ error: { code: 'internal_error', message: 'unavailable', requestId: 'graph-failure' } }, 500);
-      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
+      return send(taskSyncFixture(graph, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: task => state.tasks.find(item => item.id === task.id)!.version, propertiesForTask: task => state.tasks.find(item => item.id === task.id)!.properties }));
     }
     const base = `/api/v1/projects/${projectId}/tasks/`;
     if (path.startsWith(base)) {
       const parts = path.slice(base.length).split('/'), detail = state.tasks.find(item => item.id === parts[0]);
-      if (detail && parts.length === 1) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
+      if (detail && parts.length === 1 && request.method() === 'DELETE') {
+        state.tasks = state.tasks.filter(item => item.id !== detail.id).map(item => ({ ...item, dependsOn: item.dependsOn.filter(dep => dep !== detail.id), externalDependsOn: item.externalDependsOn.filter(dep => dep !== detail.id), blockedBy: item.blockedBy.filter(dep => dep !== detail.id), ready: item.status === 'todo' && item.blockedBy.filter(dep => dep !== detail.id).length === 0 }));
+        state.epoch = id(900 + ++state.deletions);
+        return route.fulfill({ status: 204, headers: { 'Daynight-User-ID': TEST_VIEWER_ID } });
+      }
+      if (detail && parts.length === 1) return send(detail, 200, { 'Daynight-Task-Epoch': state.epoch });
       if (detail && (parts[1] === 'sessions' || parts[1] === 'attachments')) return send({ items: [], nextCursor: null });
     }
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
@@ -111,6 +117,72 @@ for (const width of [1100, 390]) test(`project header and navigation survive a p
     await page.getByRole('button', { name: 'Retry', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Task chains', exact: true })).toBeVisible();
     expect(state.writes).toEqual([]);
+  } finally { state.releaseGraph(); }
+});
+
+for (const width of [1100, 390]) test(`deleting a Goal member keeps the graph and viewport mounted at ${width}px`, async ({ page }) => {
+  const goal = detailFixture(projectId, id(1), { type: 'goal', title: 'Release goal', ready: false });
+  const first = { ...row(2, 'Deleted member'), parentId: goal.id };
+  const second = { ...row(3, 'Remaining member', [first.id]), parentId: goal.id };
+  const state = await install(page, [goal, first, second]);
+  await page.setViewportSize({ width, height: 700 });
+  try {
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    await page.locator('#project-task-tab-goals').click();
+    await page.locator(`#project-goal-graph-${goal.id}`).click();
+    const dialog = page.locator(`#task-graph-${goal.id}`), viewport = dialog.locator('.react-flow__viewport');
+    const fullscreen = dialog.locator('.graph-fullscreen-toggle');
+    await expect(dialog.locator('.react-flow__node')).toHaveCount(2);
+    await expect(dialog.locator('.task-dependency-edge')).toHaveCount(1);
+    const selected = dialog.locator(`.react-flow__node[data-id="${second.id}"] .task-node-body`);
+    await selected.click(); await expect(selected).toHaveAttribute('aria-pressed', 'true');
+    await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
+    await fullscreen.click(); await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
+    const transform = await viewport.getAttribute('style');
+    const trace = await page.evaluateHandle(() => {
+      const graph = document.querySelector('.task-chain-dialog')!, canvas = graph.querySelector('.react-flow')!, viewport = graph.querySelector('.react-flow__viewport')!, workspace = document.querySelector('.project-tasks')!;
+      const removed: Node[] = []; let loading = false;
+      const observer = new MutationObserver(records => records.forEach(record => {
+        removed.push(...record.removedNodes);
+        for (const node of record.addedNodes) if (node.textContent?.includes('Loading task graph') || node.textContent?.includes('Refreshing')) loading = true;
+      }));
+      observer.observe(document.body, { childList: true, subtree: true });
+      return { graph, canvas, viewport, workspace, intact: () => [graph, canvas, viewport, workspace].every(node => node.isConnected && !removed.some(removedNode => removedNode === node || removedNode.contains(node))), loading: () => loading, stop: () => observer.disconnect() };
+    });
+    await dialog.getByRole('button', { name: `${first.title}, Details` }).click();
+    const detail = page.getByRole('dialog', { name: first.title });
+    await detail.getByRole('button', { name: 'More task actions' }).click();
+    await detail.getByRole('menuitem', { name: 'Delete task' }).click();
+    state.holdReplacement = true;
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete and remove dependencies' }).click();
+    await expect.poll(() => state.replacementHeld).toBe(true);
+    await expect(detail).toHaveCount(0);
+    await expect(dialog).toBeVisible(); await expect(viewport).toHaveAttribute('style', transform!);
+    await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
+    await expect(selected).toHaveAttribute('aria-pressed', 'true');
+    await fullscreen.focus(); const scroll = await position(page);
+    state.releaseGraph();
+    await expect(dialog.locator('.react-flow__node')).toHaveCount(1);
+    await expect(dialog.locator('.task-dependency-edge')).toHaveCount(0);
+    await expect(dialog.locator(`.react-flow__node[data-id="${first.id}"]`)).toHaveCount(0);
+    await expect(selected).toHaveAttribute('aria-pressed', 'true');
+    await expect(fullscreen).toBeFocused(); await expect(viewport).toHaveAttribute('style', transform!);
+    expect(await position(page)).toBe(scroll);
+    state.holdReplacement = false;
+    await dialog.getByRole('button', { name: `${second.title}, Details` }).click();
+    const remaining = page.getByRole('dialog', { name: second.title });
+    await remaining.getByRole('button', { name: 'More task actions' }).click();
+    await remaining.getByRole('menuitem', { name: 'Delete task' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete and remove dependencies' }).click();
+    await expect(dialog.locator('.react-flow__node')).toHaveCount(0);
+    await expect(dialog.getByText('This Goal has no tasks.')).toBeVisible();
+    await expect(viewport).toHaveAttribute('style', transform!);
+    await expect(dialog).toHaveClass(/task-chain-dialog-fullscreen/);
+    expect(await trace.evaluate(value => value.intact())).toBe(true);
+    expect(await trace.evaluate(value => value.loading())).toBe(false);
+    await trace.evaluate(value => value.stop()); await trace.dispose();
+    expect(state.writes).toEqual([`DELETE /api/v1/projects/${projectId}/tasks/${first.id}`, `DELETE /api/v1/projects/${projectId}/tasks/${second.id}`]);
   } finally { state.releaseGraph(); }
 });
 

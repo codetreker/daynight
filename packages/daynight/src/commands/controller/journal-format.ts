@@ -27,26 +27,22 @@ const validateVersioned = (db: Database.Database, version: number): undefined =>
 
 export type JournalMigrationContext = {
   readonly storagePermit: ControllerStoragePermit;
-  assertReservedWrite(additionalBytes: number): void;
-  /** A migration may reserve its full retained-source peak before exporting files. */
-  assertPendingWrite?(additionalBytes: number): void;
 };
 
 export const controllerJournalFormatForMigration = (context: (db: Database.Database) => JournalMigrationContext): SqliteFormat => {
-  const assertWrite = (db: Database.Database, additionalBytes: number): void => {
+  const assertWrite = (db: Database.Database): void => {
     const permission = context(db);
     assertControllerStoragePermit(permission.storagePermit, permission.storagePermit.journalFile);
     if (!db.memory && db.name !== permission.storagePermit.journalFile) throw new Error("Controller journal migration permit belongs to another database.");
-    permission.assertReservedWrite(additionalBytes);
   };
   return {
     name: "controller-journal",
-    baseline: { version: baseline.version, create: (db) => { assertNoOrphanTimelineSource(db.name); assertWrite(db, Buffer.byteLength(baseline.sql) + 16384); db.exec(baseline.sql); } },
+    baseline: { version: baseline.version, create: (db) => { assertNoOrphanTimelineSource(db.name); assertWrite(db); db.exec(baseline.sql); } },
     migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database, source: SqliteSource): undefined => {
-      assertWrite(db, Buffer.byteLength(step.sql) + 16384);
+      assertWrite(db);
       if (step.version === 10) return importControllerTimeline(db, context(db), step.sql);
       if (step.version === 11) return initializeOutboxAccounting(db, step.sql);
-      if (step.version === 12) return migrateDirectCaptureState(db, step.sql, bytes => assertWrite(db, bytes));
+      if (step.version === 12) return migrateDirectCaptureState(db, step.sql);
       if (step.version !== 6 && step.version !== 8) { db.exec(step.sql); return; }
       const row = db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string } | undefined;
       if (row === undefined) {
@@ -57,8 +53,8 @@ export const controllerJournalFormatForMigration = (context: (db: Database.Datab
       if (typeof snapshot.sessionId !== "string" || canonicalId(snapshot.sessionId) !== snapshot.sessionId) throw new Error("Legacy journal session identity is invalid.");
       // Files survive an enclosing migration rollback; SQL sources disappear only
       // after their complete pending archive has reached durable storage.
-      if (step.version === 8) { migratePendingEntryPointers(db, snapshot.sessionId, step.sql, context(db).assertPendingWrite); return; }
-      migratePendingContent(db, snapshot.sessionId, step.sql, context(db).assertPendingWrite);
+      if (step.version === 8) { migratePendingEntryPointers(db, snapshot.sessionId, step.sql, context(db).storagePermit); return; }
+      migratePendingContent(db, snapshot.sessionId, step.sql, context(db).storagePermit);
       // Version 1 has no durable projection, and its acknowledged outbox may have
       // discarded history. Intermediate DDL cannot establish that source as complete.
       if (source.kind === "outdated" && source.version === 1) db.exec("UPDATE execution SET archive_incomplete=1 WHERE id=1");
@@ -67,7 +63,7 @@ export const controllerJournalFormatForMigration = (context: (db: Database.Datab
   };
 };
 
-export const controllerJournalFormat = controllerJournalFormatForMigration(() => { throw new Error("Controller journal migration requires its original storage permit and reserved-write context."); });
+export const controllerJournalFormat = controllerJournalFormatForMigration(() => { throw new Error("Controller journal migration requires its original storage permit."); });
 
 export const assertJournalMigrationAllowed = (db: Database.Database, source: SqliteSource, toVersion = currentSqliteVersion(controllerJournalFormat)): undefined => {
   if (source.kind === "empty") return;

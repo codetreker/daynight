@@ -7,7 +7,7 @@ import { syncDirectory } from "../../../platform/durable-json.js";
 import { runSqliteImmediate, sqliteTransactionOutcome, type SqliteMigrationEvent, type SqliteMigrationReporter } from "../../../platform/sqlite-access.js";
 import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../../../platform/sqlite-error.js";
 import { currentSqliteVersion, inspectSqlite } from "../../../platform/sqlite-format.js";
-import { parseTimelineEntry } from "../../../session/protocol.js";
+import { parseStoredTimelineEntry } from "../../../session/protocol.js";
 import { controllerJournalFormat, type JournalMigrationContext } from "../journal-format.js";
 import { preflightPendingTimeline } from "../pending-content.js";
 import { CONTROLLER_METADATA_BYTES, CONTROLLER_SETTLEMENT_BYTES, controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
@@ -39,9 +39,10 @@ const originalExecutionId = (db: Database.Database, expected?: string): string |
 
 export type TimelineMaintenanceReservation = JournalMigrationContext & {
   refresh(additionalBytes?: number): number;
+  assertReservedWrite(additionalBytes: number): void;
   settleNormalAdmission(): void;
 };
-/** The migration allowance charges retained sources and the remaining work, never historical garbage against the normal writer ceiling. */
+/** Maintenance accounts for retained sources and remaining work before compaction. */
 export const createTimelineMaintenanceReservation = (db: Database.Database, options: {
   journalFile: string; stateDirectory: string; storagePermit: ControllerStoragePermit; executionId?: string; deadline?: number;
 }): TimelineMaintenanceReservation => {
@@ -61,7 +62,7 @@ export const createTimelineMaintenanceReservation = (db: Database.Database, opti
     if (hasTable(db, "projection")) {
       let serializedTimelineBytes = Buffer.byteLength('{"entries":[]}');
       for (const row of db.prepare("SELECT CAST(rowid AS TEXT) AS seq,value FROM projection ORDER BY rowid").iterate() as Iterable<{ seq: string; value: string }>) {
-        const entry = parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
+        const entry = parseStoredTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
         const bytes = Buffer.byteLength(JSON.stringify(entry)), backupBytes = Buffer.byteLength(JSON.stringify(row));
         serializedTimelineBytes += bytes + (entryCount > 0 ? 1 : 0); entryCount++; bodyBytes += bytes;
         if (entryCount > 100000 || serializedTimelineBytes > SESSION_ARCHIVE_TIMELINE_MAX_BYTES) throw new Error("Pending session timeline budget exceeded.");
@@ -112,7 +113,6 @@ export const createTimelineMaintenanceReservation = (db: Database.Database, opti
     storagePermit,
     refresh,
     assertReservedWrite,
-    assertPendingWrite: assertReservedWrite,
     settleNormalAdmission: () => {
       assertControllerStoragePermit(storagePermit, journalFile);
       assertControllerStorageCapacity(journalFile, db, stateDirectory, originalExecutionId(db, options.executionId), 0, deadline);
@@ -152,13 +152,13 @@ const retirementSources = (journalFile: string, sessionId: string): RetainedSour
         if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/.test(name)) throw new Error("Controller timeline retirement found an unrecognized candidate.");
       } else if (kind === "timeline") {
         if (!/^[a-f0-9]{64}\.json$/.test(name)) throw new Error("Controller timeline retirement found an unrecognized legacy source.");
-        const entry = parseTimelineEntry(JSON.parse(readFileSync(file, "utf8")));
+        const entry = parseStoredTimelineEntry(JSON.parse(readFileSync(file, "utf8")));
         if (`${createHash("sha256").update(entry.entryId).digest("hex")}.json` !== name) throw new Error("Controller legacy timeline source identity differs from its filename.");
       } else {
         if (!/^[1-9][0-9]*\.timeline\.json$/.test(name)) throw new Error("Controller timeline retirement found an unrecognized migration backup.");
         const row = JSON.parse(readFileSync(file, "utf8")) as { seq: string; value: string };
         if (`${row.seq}.timeline.json` !== name || typeof row.value !== "string") throw new Error("Controller migration timeline backup identity is invalid.");
-        parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
+        parseStoredTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
       }
       sources.push({ file, dev: stat.dev, ino: stat.ino, bytes: stat.size, modified: stat.mtimeMs });
     }

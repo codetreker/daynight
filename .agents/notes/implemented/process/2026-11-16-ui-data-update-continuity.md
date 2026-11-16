@@ -40,7 +40,8 @@ continuity. The rule instead governs the user's observable interface.
 The requirement applies across UI development and review; product specifications
 retain interface-specific behavior. Necessary cleanup and admission cannot be
 bypassed by retaining stale private content. Existing ordinary-chain witness
-closure and automatic framing, and Goal graph retirement and recovery, do not
-yet establish the required continuity; the design documents record those gaps.
+closure and automatic framing do not yet establish the required continuity; the
+[Goal graph implementation](../bug-fix/2026-11-16-goal-graph-stable-reconciliation.md)
+keeps that graph mounted and preserves its viewport through reconciliation.
 Implemented status records adoption of the specification, not runtime acceptance
 of all consumers. No replacement graph host or witness algorithm is prescribed.
