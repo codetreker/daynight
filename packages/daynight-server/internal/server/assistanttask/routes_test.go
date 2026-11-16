@@ -79,6 +79,7 @@ func TestWriteRoutesPreserveInputsAndActor(t *testing.T) {
 		bot                      bool
 		args                     []any
 	}{
+		{"POST", "/api/v1/assistant-task-presets/watchdog", `{"id":"` + testID + `","targetBotId":"` + testTarget + `"}`, "EnableWatchdog", false, []any{testID, testTarget}},
 		{"POST", "/api/v1/assistant-tasks", `{"id":"` + testID + `","name":"name","purpose":"purpose","scope":"scope","kind":"continuous","takeover":"auto","application":"app","trigger":{"minutes":1},"manual":{"body":"manual","rules":[]}}`, "Create", false, []any{core.CreateInput{ID: testID, Name: "name", Purpose: "purpose", Scope: "scope", Kind: "continuous", Takeover: "auto", Application: "app", Trigger: json.RawMessage(`{"minutes":1}`), Body: "manual", Rules: json.RawMessage(`[]`)}}},
 		{"PATCH", taskPath, `{"ifVersion":"9007199254740993","name":"new","purpose":"purpose","scope":"scope","takeover":"manual","state":"paused","trigger":{"minutes":2}}`, "Update", false, []any{core.UpdateInput{TaskID: testTask, IfVersion: 9007199254740993, Name: pointer("new"), Purpose: pointer("purpose"), Scope: pointer("scope"), Takeover: pointer("manual"), State: pointer("paused"), Trigger: pointer(json.RawMessage(`{"minutes":2}`))}}},
 		{"DELETE", taskPath, `{"ifVersion":"4"}`, "Update", false, []any{core.UpdateInput{TaskID: testTask, IfVersion: 4, State: pointer("deleted")}}},

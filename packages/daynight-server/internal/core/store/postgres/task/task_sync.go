@@ -5,8 +5,31 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	pg "github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/internal"
 )
+
+func (s *Reader) TaskSyncActiveTasks(ctx context.Context, projectID string) ([]store.TaskSyncTaskIdentity, error) {
+	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.version FROM task_resource_rows t
+		WHERE t.project_id=$1 AND t.effective_deleted_at IS NULL AND t.type='task' AND t.status='in_progress'
+		ORDER BY t.id`, projectID)
+	if err != nil {
+		return nil, pg.QueryError("read task sync active tasks", err)
+	}
+	defer rows.Close()
+	result := make([]store.TaskSyncTaskIdentity, 0)
+	for rows.Next() {
+		var task store.TaskSyncTaskIdentity
+		if err := rows.Scan(&task.ID, &task.Version); err != nil {
+			return nil, pg.QueryError("read task sync active task", err)
+		}
+		result = append(result, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, pg.QueryError("read task sync active tasks", err)
+	}
+	return result, nil
+}
 
 func (s *Reader) TaskCacheEpoch(ctx context.Context, projectID string) (string, error) {
 	var epoch string
@@ -18,7 +41,7 @@ func (s *Reader) TaskCacheEpoch(ctx context.Context, projectID string) (string, 
 
 func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *time.Time, previewCharacters int) ([]model.TaskViewRecord, error) {
 	lower = taskSyncLowerBound(lower)
-	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.type, t.parent_id::text, left(t.title, $2), char_length(t.title) > $2,
+	rows, err := s.tx.Query(ctx, `SELECT t.id::text, t.type, t.parent_id::text, t.title, left(t.title, $2), char_length(t.title) > $2,
 		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.cancelled_at, t.allow_agents, t.required_platform, t.assigned_to::text, `+pg.TaskDependsOn+`, `+pg.TaskExternalDependsOn+`
 		FROM task_resource_rows t WHERE t.project_id = $1 AND t.effective_deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
 		ORDER BY t.created_at, t.id`, projectID, previewCharacters, lower)
@@ -29,7 +52,7 @@ func (s *Reader) TaskSyncTasks(ctx context.Context, projectID string, lower *tim
 	tasks := make([]model.TaskViewRecord, 0)
 	for rows.Next() {
 		var task model.TaskViewRecord
-		if err := rows.Scan(&task.ID, &task.Type, &task.ParentID, &task.TitlePreview, &task.TitleTruncated, &task.Status, &task.Version,
+		if err := rows.Scan(&task.ID, &task.Type, &task.ParentID, &task.Title, &task.TitlePreview, &task.TitleTruncated, &task.Status, &task.Version,
 			&task.CreatedAt, &task.UpdatedAt, &task.StartedAt, &task.CompletedAt, &task.CancelledAt, &task.AllowAgents, &task.RequiredPlatform, &task.AssignedTo, &task.DependsOn, &task.ExternalDependsOn); err != nil {
 			return nil, pg.QueryError("read task sync", err)
 		}

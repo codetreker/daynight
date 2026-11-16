@@ -93,7 +93,7 @@ func (f *tagDAO) InsertTag(ctx context.Context, item model.Tag) (model.Tag, erro
 	x.item = item
 	return item, x.call("insert")
 }
-func (f *tagDAO) UpdateTag(ctx context.Context, id string, version int64, name, key string, at time.Time) (model.Tag, error) {
+func (f *tagDAO) UpdateTag(ctx context.Context, id string, version int64, name, key, color string, at time.Time) (model.Tag, error) {
 	x := f.fixture
 	x.seenVersion = version
 	x.seenTime = at
@@ -101,6 +101,7 @@ func (f *tagDAO) UpdateTag(ctx context.Context, id string, version int64, name, 
 	item := x.item
 	item.Name = name
 	item.NameKey = key
+	item.Color = color
 	item.Version++
 	return item, err
 }
@@ -134,7 +135,7 @@ func (f *associationDAO) ClearTagAssociations(context.Context, string) error {
 	return f.fixture.call("clear")
 }
 func newFixture() *fixture {
-	return &fixture{item: model.Tag{ID: tagIDValue, ProjectID: projectID, Name: "Alpha", NameKey: "alpha", Version: 7}, completion: store.Completion{Outcome: store.TransactionCommitted}}
+	return &fixture{item: model.Tag{ID: tagIDValue, ProjectID: projectID, Name: "Alpha", NameKey: "alpha", Color: "#123456", Version: 7}, completion: store.Completion{Outcome: store.TransactionCommitted}}
 }
 func faultCode(err error) string {
 	var f *model.Fault
@@ -192,8 +193,8 @@ func TestWritesKeepPermissionVersionAndMutationOrder(t *testing.T) {
 	})
 	t.Run("create", func(t *testing.T) {
 		f := newFixture()
-		result, err := New(f).Create(context.Background(), principal, projectID, " A ")
-		if err != nil || result.Item.Tag.Name != "A" || f.item.NameKey != "a" || f.item.CreatedAt != clock || !reflect.DeepEqual(f.calls, []string{"lock", "access", "time", "insert", "epoch"}) {
+		result, err := New(f).Create(context.Background(), principal, projectID, " A ", nil)
+		if err != nil || result.Item.Tag.Name != "A" || f.item.NameKey != "a" || f.item.Color != "#9AA3B2" || f.item.CreatedAt != clock || !reflect.DeepEqual(f.calls, []string{"lock", "access", "time", "insert", "epoch"}) {
 			t.Fatalf("%+v %v %v", result, err, f.calls)
 		}
 	})
@@ -225,14 +226,15 @@ type readFixture struct {
 	store.SnapshotScope
 	store.ProjectReader
 	store.TagReader
-	calls     []string
-	accessErr error
-	fail      map[string]error
-	epoch     string
-	page      store.TagPage
-	resolved  []model.Tag
-	item      model.Tag
-	query     store.TagQuery
+	calls      []string
+	accessErr  error
+	fail       map[string]error
+	epoch      string
+	page       store.TagPage
+	resolved   []model.Tag
+	resolveIDs []string
+	item       model.Tag
+	query      store.TagQuery
 }
 
 func (f *readFixture) ReadSnapshot(ctx context.Context, run func(store.SnapshotScope) error) error {
@@ -267,7 +269,128 @@ func (f *readFixture) TagUsage(ctx context.Context, project, id string) (model.T
 }
 func (f *readFixture) ResolveTags(ctx context.Context, project string, ids []string) ([]model.Tag, error) {
 	f.calls = append(f.calls, "resolve")
-	return f.resolved, nil
+	f.resolveIDs = append([]string(nil), ids...)
+	return f.resolved, f.fail["resolve"]
+}
+
+func TestColorWrites(t *testing.T) {
+	ctx := context.Background()
+	color := "#ab12cd"
+	f := newFixture()
+	created, err := New(f).Create(ctx, principal, projectID, "New", &color)
+	if err != nil || created.Item.Tag.Color != "#AB12CD" || f.item.Color != "#AB12CD" {
+		t.Fatalf("create=%+v err=%v", created, err)
+	}
+	f = newFixture()
+	name := " New "
+	updated, err := New(f).Update(ctx, principal, projectID, tagIDValue, 7, &name, &color)
+	if err != nil || updated.Item.Tag.Name != "New" || updated.Item.Tag.Color != "#AB12CD" || updated.Item.Tag.Version != 8 || !reflect.DeepEqual(f.calls, []string{"lock", "access", "tag", "usage", "time", "update", "touch", "epoch"}) {
+		t.Fatalf("update=%+v calls=%v err=%v", updated, f.calls, err)
+	}
+	f = newFixture()
+	updated, err = New(f).Rename(ctx, principal, projectID, tagIDValue, 7, "New")
+	if err != nil || updated.Item.Tag.Color != "#123456" {
+		t.Fatalf("rename=%+v err=%v", updated, err)
+	}
+	f = newFixture()
+	updated, err = New(f).Update(ctx, principal, projectID, tagIDValue, 7, nil, &color)
+	if err != nil || updated.Item.Tag.Name != "Alpha" || updated.Item.Tag.Color != "#AB12CD" {
+		t.Fatalf("color-only=%+v err=%v", updated, err)
+	}
+	f = newFixture()
+	same := "#123456"
+	_, err = New(f).Update(ctx, principal, projectID, tagIDValue, 6, nil, &same)
+	if faultCode(err) != "version_conflict" || !reflect.DeepEqual(f.calls, []string{"lock", "access", "tag"}) {
+		t.Fatalf("stale calls=%v err=%v", f.calls, err)
+	}
+	f = newFixture()
+	_, err = New(f).Update(ctx, principal, projectID, tagIDValue, 7, nil, &same)
+	if err != nil || !reflect.DeepEqual(f.calls, []string{"lock", "access", "tag", "usage"}) {
+		t.Fatalf("noop calls=%v err=%v", f.calls, err)
+	}
+	for _, invalid := range []string{"", "#nothex"} {
+		f = newFixture()
+		_, err = New(f).Update(ctx, principal, projectID, tagIDValue, 7, nil, &invalid)
+		if faultCode(err) != "invalid_tag_color" || len(f.calls) != 0 {
+			t.Fatalf("invalid calls=%v err=%v", f.calls, err)
+		}
+	}
+	f = newFixture()
+	_, err = New(f).Update(ctx, principal, projectID, tagIDValue, 7, nil, nil)
+	if faultCode(err) != "invalid_input" || len(f.calls) != 0 {
+		t.Fatalf("missing calls=%v err=%v", f.calls, err)
+	}
+	for _, stop := range []string{"update", "touch", "epoch"} {
+		f = newFixture()
+		f.stop, f.errorAt = stop, errors.New("write failed")
+		result, err := New(f).Update(ctx, principal, projectID, tagIDValue, 7, &name, &color)
+		if !errors.Is(err, f.errorAt) || result.Outcome != store.TransactionNotCommitted || result.Item.Tag.ID != "" || f.calls[len(f.calls)-1] != stop {
+			t.Fatalf("stop=%s result=%+v calls=%v err=%v", stop, result, f.calls, err)
+		}
+	}
+	f = newFixture()
+	cause := errors.New("commit confirmation lost")
+	f.completion = store.Completion{Outcome: store.TransactionUnknown}
+	f.completionErr = &store.TransactionError{Phase: "commit", Outcome: store.TransactionUnknown, CommitAttempted: true, Cause: cause}
+	result, err := New(f).Update(ctx, principal, projectID, tagIDValue, 7, &name, &color)
+	if !errors.Is(err, cause) || result.Outcome != store.TransactionUnknown || result.Item.Tag.ID != "" || len(f.calls) != 8 {
+		t.Fatalf("unknown=%+v calls=%v err=%v", result, f.calls, err)
+	}
+}
+
+func TestResolveColorsUsesAuthorizedSnapshotAndPreservesMissing(t *testing.T) {
+	ctx := context.Background()
+	epoch := "10000000-0000-4000-8000-000000000005"
+	missing := "10000000-0000-4000-8000-000000000009"
+	f := &readFixture{epoch: epoch, resolved: []model.Tag{{ID: tagIDValue, Version: 9, Color: "#ABCDEF"}}}
+	page, err := New(f).ResolveColors(ctx, principal, projectID, []string{missing, tagIDValue, tagIDValue}, &epoch)
+	want := []ColorItem{{ID: missing}, {ID: tagIDValue, Found: true, Version: 9, Color: "#ABCDEF"}}
+	if err != nil || page.CatalogEpoch != epoch || !reflect.DeepEqual(page.Items, want) || !reflect.DeepEqual(f.calls, []string{"snapshot", "access", "epoch", "resolve"}) {
+		t.Fatalf("page=%+v calls=%v err=%v", page, f.calls, err)
+	}
+	f.calls = nil
+	other := "10000000-0000-4000-8000-000000000006"
+	page, err = New(f).ResolveColors(ctx, principal, projectID, []string{tagIDValue}, &other)
+	if faultCode(err) != "catalog_changed" || page.Items != nil || !reflect.DeepEqual(f.calls, []string{"snapshot", "access", "epoch"}) {
+		t.Fatalf("page=%+v calls=%v err=%v", page, f.calls, err)
+	}
+	f.calls = nil
+	_, err = New(f).ResolveColors(ctx, principal, projectID, []string{"bad"}, nil)
+	if err == nil || len(f.calls) != 0 {
+		t.Fatalf("calls=%v err=%v", f.calls, err)
+	}
+	f.accessErr = model.ErrNotFound
+	_, err = New(f).ResolveColors(ctx, principal, projectID, []string{tagIDValue}, nil)
+	if faultCode(err) != "not_found" || !reflect.DeepEqual(f.calls, []string{"snapshot", "access"}) {
+		t.Fatalf("calls=%v err=%v", f.calls, err)
+	}
+	for _, stop := range []string{"epoch", "resolve"} {
+		cause := errors.New("read failed")
+		f = &readFixture{epoch: epoch, fail: map[string]error{stop: cause}}
+		page, err := New(f).ResolveColors(ctx, principal, projectID, []string{tagIDValue}, nil)
+		if !errors.Is(err, cause) || page.Items != nil || page.CatalogEpoch != "" || f.calls[len(f.calls)-1] != stop {
+			t.Fatalf("stop=%s page=%+v calls=%v err=%v", stop, page, f.calls, err)
+		}
+	}
+}
+
+func TestResolveColorsCanonicalizesIDsAcrossEpochBoundBatches(t *testing.T) {
+	ctx := context.Background()
+	epoch := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	firstID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	secondID := "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	f := &readFixture{epoch: epoch, resolved: []model.Tag{{ID: firstID, Version: 7, Color: "#123ABC"}}}
+	svc := New(f)
+	first, err := svc.ResolveColors(ctx, principal, projectID, []string{strings.ToUpper(firstID), firstID}, nil)
+	if err != nil || first.CatalogEpoch != epoch || !reflect.DeepEqual(first.Items, []ColorItem{{ID: firstID, Found: true, Version: 7, Color: "#123ABC"}}) || !reflect.DeepEqual(f.resolveIDs, []string{firstID}) {
+		t.Fatalf("first=%+v ids=%v err=%v", first, f.resolveIDs, err)
+	}
+	f.calls = nil
+	f.resolved = []model.Tag{{ID: secondID, Version: 8, Color: "#ABCDEF"}}
+	second, err := svc.ResolveColors(ctx, principal, projectID, []string{secondID, strings.ToUpper(secondID)}, &first.CatalogEpoch)
+	if err != nil || second.CatalogEpoch != first.CatalogEpoch || !reflect.DeepEqual(second.Items, []ColorItem{{ID: secondID, Found: true, Version: 8, Color: "#ABCDEF"}}) || !reflect.DeepEqual(f.resolveIDs, []string{secondID}) || !reflect.DeepEqual(f.calls, []string{"snapshot", "access", "epoch", "resolve"}) {
+		t.Fatalf("second=%+v ids=%v calls=%v err=%v", second, f.resolveIDs, f.calls, err)
+	}
 }
 func TestReadsUseOneAuthorizedSnapshot(t *testing.T) {
 	f := &readFixture{epoch: "10000000-0000-4000-8000-000000000005", page: store.TagPage{Items: []model.Tag{{ID: tagIDValue, Name: "Alpha", NameKey: "alpha"}}, HasMore: true}}
@@ -322,9 +445,15 @@ func TestWriteFailuresStopAtTheirBoundary(t *testing.T) {
 		name, stop string
 		run        func(*Tags) (WriteResult, error)
 	}{
-		{"create clock", "time", func(s *Tags) (WriteResult, error) { return s.Create(context.Background(), principal, projectID, "New") }},
-		{"create insertion", "insert", func(s *Tags) (WriteResult, error) { return s.Create(context.Background(), principal, projectID, "New") }},
-		{"create epoch", "epoch", func(s *Tags) (WriteResult, error) { return s.Create(context.Background(), principal, projectID, "New") }},
+		{"create clock", "time", func(s *Tags) (WriteResult, error) {
+			return s.Create(context.Background(), principal, projectID, "New", nil)
+		}},
+		{"create insertion", "insert", func(s *Tags) (WriteResult, error) {
+			return s.Create(context.Background(), principal, projectID, "New", nil)
+		}},
+		{"create epoch", "epoch", func(s *Tags) (WriteResult, error) {
+			return s.Create(context.Background(), principal, projectID, "New", nil)
+		}},
 		{"rename tag", "tag", func(s *Tags) (WriteResult, error) {
 			return s.Rename(context.Background(), principal, projectID, tagIDValue, 7, "New")
 		}},
@@ -370,10 +499,12 @@ func TestWriteFailuresStopAtTheirBoundary(t *testing.T) {
 func TestInputErrorsDoNotStartTransactions(t *testing.T) {
 	for _, run := range []func(*Tags) (WriteResult, error){
 		func(s *Tags) (WriteResult, error) {
-			return s.Create(context.Background(), model.Principal{}, projectID, "ok")
+			return s.Create(context.Background(), model.Principal{}, projectID, "ok", nil)
 		},
-		func(s *Tags) (WriteResult, error) { return s.Create(context.Background(), principal, "bad", "ok") },
-		func(s *Tags) (WriteResult, error) { return s.Create(context.Background(), principal, projectID, "") },
+		func(s *Tags) (WriteResult, error) { return s.Create(context.Background(), principal, "bad", "ok", nil) },
+		func(s *Tags) (WriteResult, error) {
+			return s.Create(context.Background(), principal, projectID, "", nil)
+		},
 		func(s *Tags) (WriteResult, error) {
 			return s.Rename(context.Background(), principal, projectID, "bad", 1, "ok")
 		},
@@ -417,7 +548,7 @@ func TestNameConflictRetainsDatabaseAndRollbackEvidence(t *testing.T) {
 		run        func(*Tags) (WriteResult, error)
 	}{
 		{"create", "insert", func(s *Tags) (WriteResult, error) {
-			return s.Create(context.Background(), principal, projectID, "Duplicate")
+			return s.Create(context.Background(), principal, projectID, "Duplicate", nil)
 		}},
 		{"rename", "update", func(s *Tags) (WriteResult, error) {
 			return s.Rename(context.Background(), principal, projectID, tagIDValue, 7, "Duplicate")

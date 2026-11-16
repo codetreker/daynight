@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invalidateAuthRequests, pauseAuthRequests } from "../src/api/client";
-import { connectGitHub, disconnectGitHub, discoverGitHubInstallation, getGitHubPullRequestCounts, getGitHubStatus, saveGitHubSettings } from "../src/api/github-integration";
+import { connectGitHub, disconnectGitHub, discoverGitHubInstallation, getGitHubPullRequestCounts, getGitHubStatus, saveGitHubSettings, updateGitHubSync } from "../src/api/github-integration";
 import { wireResponse } from "./helpers/wireJson";
 
 const project = "00000000-0000-4000-8000-000000000001";
@@ -8,7 +8,7 @@ const userId = "00000000-0000-4000-8000-000000000002";
 const other = "00000000-0000-4000-8000-000000000003";
 const version = "9007199254740993";
 const status = (overrides: Record<string, unknown> = {}) => ({
-  projectId: project, version, revision: "0", serviceAvailable: true, connection: "not_connected", repository: null, installation: null,
+  projectId: project, version, revision: "0", serviceAvailable: true, syncEnabled: false, connection: "not_connected", repository: null, installation: null,
   pollIntervalMinutes: 5, initializing: false,
   poll: { running: false, lastAttemptAt: null, lastSuccessAt: null, nextAttemptAt: null, error: null },
   webhook: { running: false, lastReceivedAt: null, lastAttemptAt: null, lastSuccessAt: null, error: null }, ...overrides,
@@ -71,6 +71,22 @@ describe("GitHub integration transport", () => {
     const access = admission();
     await expect(disconnectGitHub(project, { version }, signal(), access)).rejects.toMatchObject({ kind: "server", status: 409, code: "version_conflict" });
     expect(access.onWriteConfirmed).not.toHaveBeenCalled(); expect(access.onWriteRejected).toHaveBeenCalledOnce();
+  });
+
+  it("requires a boolean sync setting and sends an independent versioned mutation", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(wire(status({ syncEnabled: undefined })))
+      .mockResolvedValueOnce(wire(status({ syncEnabled: null })))
+      .mockResolvedValueOnce(wire(status({ syncEnabled: "false" })))
+      .mockResolvedValueOnce(wire(status({ version: "9007199254740994", syncEnabled: true })))
+      .mockResolvedValueOnce(wire(status({ version: "9007199254740994", syncEnabled: false })));
+    vi.stubGlobal("fetch", fetcher); const access = admission();
+    for (let i = 0; i < 3; i++) await expect(getGitHubStatus(project, signal(), access)).rejects.toMatchObject({ kind: "protocol" });
+    expect(await updateGitHubSync(project, { version, syncEnabled: true }, signal(), access)).toMatchObject({ syncEnabled: true });
+    expect(fetcher.mock.calls[3]![0]).toBe(`/api/v1/projects/${project}/github/sync`);
+    expect(fetcher.mock.calls[3]![1]).toMatchObject({ method: "PATCH", body: `{"version":"${version}","syncEnabled":true}` });
+    await expect(updateGitHubSync(project, { version, syncEnabled: true }, signal(), access)).rejects.toMatchObject({ kind: "protocol" });
+    expect(access.onWriteConfirmed).toHaveBeenCalledOnce();
   });
 
   it("checks exact coherent retained counts without interpreting read failures as empty", async () => {

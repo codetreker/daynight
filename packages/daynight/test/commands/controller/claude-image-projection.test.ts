@@ -79,12 +79,12 @@ test("submitted and native user image positions reuse the original ordered ident
 });
 
 test("closing history projection cancels a source waiting for its page acknowledgement", async () => {
-  const f = fixture(); let reserved!: () => void;
-  const entered = new Promise<void>(resolve => { reserved = resolve; }), write = f.options.imageRuntime!.writeState;
-  f.options.imageRuntime!.writeState = (key, value) => { write(key, value); if ((value as any).phase === "reserved") reserved(); };
+  const f = fixture(); let preparing!: () => void;
+  const entered = new Promise<void>(resolve => { preparing = resolve; }), write = f.options.imageRuntime!.writeState;
+  f.options.imageRuntime!.writeState = (key, value) => { write(key, value); if ((value as any).phase === "preparing") preparing(); };
   f.options.imageOccurrenceAcknowledged = () => true;
-  f.options.registerImageCapture = async (request: ImageCaptureRequest) => ({ captureId: request.captureId, attemptId: request.attemptId, revision: "1", occurrence: request.occurrence, state: "reserved", resourceId: null, resource: null, error: null });
-  f.options.queryImageCapture = vi.fn(); f.options.stageImageCapture = vi.fn(); f.options.commitImageCapture = vi.fn(); f.options.failImageCapture = vi.fn(); f.options.imageRuntime!.createSpool = vi.fn();
+  f.options.prepareImageCapture = async () => {};
+  f.options.queryImageCapture = vi.fn(); f.options.stageImageCapture = vi.fn(); f.options.submitImageCapture = vi.fn(); f.options.imageRuntime!.createSpool = vi.fn();
   const projection = new ClaudeProjection(f.options, f.sessionId, () => null), readMedia = vi.fn();
   const value = { type: "assistant", uuid: "history", message: { id: "history-message", content: [{ type: "image", source: { type: "base64", data: null } }] } };
   projection.message(value, { acknowledged: new Promise(() => {}), reader: { readMedia } as never, row: { value, assistantBlockOffset: 0, media: [{ mediaId: "source", path: ["message", "content", 0, "source", "data"], mediaType: "image/png", byteLength: 3, state: "available", error: null }] } });

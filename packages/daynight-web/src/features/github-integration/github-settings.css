@@ -31,3 +31,14 @@
 .github-settings .number-unit input { width: 140px; }
 .github-settings .number-unit span { flex: none; }
 .github-repository-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+
+.github-sync-control { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid #d5dce5; }
+.github-sync-control > div { min-width: 0; }
+.github-sync-control p { color: #556176; font-size: .875rem; }
+.github-settings .task-automation-switch { width: 42px; height: 24px; border: 1px solid #d6dae5; border-radius: 15px; background: #e4e7ef; position: relative; padding: 2px; flex: none; }
+.github-settings .task-automation-switch > span { display: block; width: 18px; height: 18px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px #35405630; }
+.github-settings .task-automation-switch[aria-checked=true] { background: #5c5ce0; border-color: #5c5ce0; }
+.github-settings .task-automation-switch[aria-checked=true] > span { transform: translateX(17px); }
+.github-settings .task-automation-switch:disabled, .github-settings .task-automation-switch[aria-disabled=true] { opacity: .55; cursor: not-allowed; }
+.github-settings .task-automation-switch:focus-visible { outline: 3px solid #344054; outline-offset: 3px; }
+.github-sync-readonly { color: #526174; background: #fafbfc; border: 1px solid #d5dce5; border-radius: .35rem; padding: .2rem .55rem; white-space: nowrap; font-size: .875rem; }

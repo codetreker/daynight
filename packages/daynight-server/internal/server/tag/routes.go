@@ -3,6 +3,7 @@ package tag
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -22,10 +23,11 @@ import (
 type Operations interface {
 	List(context.Context, model.Principal, string, tagservice.ListInput) (tagservice.Page, error)
 	Get(context.Context, model.Principal, string, string) (tagservice.Item, error)
-	Create(context.Context, model.Principal, string, string) (tagservice.WriteResult, error)
-	Rename(context.Context, model.Principal, string, string, int64, string) (tagservice.WriteResult, error)
+	Create(context.Context, model.Principal, string, string, *string) (tagservice.WriteResult, error)
+	Update(context.Context, model.Principal, string, string, int64, *string, *string) (tagservice.WriteResult, error)
 	Delete(context.Context, model.Principal, string, string, int64, bool) (tagservice.WriteResult, error)
 	Resolve(context.Context, model.Principal, string, []string) ([]model.TagReference, error)
+	ResolveColors(context.Context, model.Principal, string, []string, *string) (tagservice.ColorPage, error)
 }
 
 type Authentication interface {
@@ -44,6 +46,8 @@ func RegisterRoutes(mux *http.ServeMux, operations Operations, auth Authenticati
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags", auth.Require(h.create))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tags", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/resolve", auth.Require(h.resolve))
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/tags/colors/resolve", auth.Require(h.resolveColors))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tags/colors/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	for _, method := range []string{"GET", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /api/v1/projects/{projectId}/tags/resolve", auth.Require(httpx.ResourceMethodNotAllowed(logger, "POST")))
 	}
@@ -140,8 +144,9 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request, p model.Princip
 		_, err = httpx.QueryValues(r)
 	}
 	var name string
+	var color *string
 	if err == nil {
-		fields, e := httpx.DecodeObject(w, r, "name")
+		fields, e := httpx.DecodeObject(w, r, "name", "color")
 		err = e
 		if err == nil {
 			if !jsonunicode.Valid(fields["name"]) {
@@ -149,11 +154,14 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request, p model.Princip
 			} else {
 				name, err = httpx.RequiredString(fields, "name")
 			}
+			if err == nil {
+				color, err = optionalText(fields, "color")
+			}
 		}
 	}
 	if err == nil {
 		var result tagservice.WriteResult
-		result, err = h.operations.Create(r.Context(), p, projectID, name)
+		result, err = h.operations.Create(r.Context(), p, projectID, name, color)
 		if err == nil {
 			logger = logger.With("tag_id", result.Item.Tag.ID, "tx_outcome", string(result.Outcome), "phase", result.Phase)
 			logger.InfoContext(r.Context(), "tag created", "component", "tag", "request_id", httpx.RequestID(r.Context()))
@@ -173,27 +181,29 @@ func (h *handler) rename(w http.ResponseWriter, r *http.Request, p model.Princip
 		_, err = httpx.QueryValues(r)
 	}
 	var version int64
-	var name string
+	var name, color *string
 	if err == nil {
-		fields, e := httpx.DecodeObject(w, r, "version", "name")
+		fields, e := httpx.DecodeObject(w, r, "version", "name", "color")
 		err = e
 		if err == nil {
 			version, err = httpx.VersionInput(fields)
 		}
 		if err == nil {
-			if !jsonunicode.Valid(fields["name"]) {
-				err = httpx.InvalidInput("name must contain valid Unicode text")
-			} else {
-				name, err = httpx.RequiredString(fields, "name")
-			}
+			name, err = optionalText(fields, "name")
+		}
+		if err == nil {
+			color, err = optionalText(fields, "color")
+		}
+		if err == nil && name == nil && color == nil {
+			err = httpx.InvalidInput("at least one of name or color is required")
 		}
 	}
 	if err == nil {
 		var result tagservice.WriteResult
-		result, err = h.operations.Rename(r.Context(), p, projectID, tagID, version, name)
+		result, err = h.operations.Update(r.Context(), p, projectID, tagID, version, name, color)
 		if err == nil {
 			logger = logger.With("tx_outcome", string(result.Outcome), "phase", result.Phase)
-			logger.InfoContext(r.Context(), "tag renamed", "component", "tag", "request_id", httpx.RequestID(r.Context()))
+			logger.InfoContext(r.Context(), "tag updated", "component", "tag", "request_id", httpx.RequestID(r.Context()))
 			httpx.WriteMutationJSON(w, r, logger, "tag", http.StatusOK, tagResponse(result.Item))
 			return
 		}
@@ -201,6 +211,13 @@ func (h *handler) rename(w http.ResponseWriter, r *http.Request, p model.Princip
 		return
 	}
 	writeError(w, r, logger, "rename", err)
+}
+
+func optionalText(fields map[string]json.RawMessage, key string) (*string, error) {
+	if !jsonunicode.Valid(fields[key]) {
+		return nil, httpx.InvalidInput(key + " must contain valid Unicode text")
+	}
+	return httpx.OptionalString(fields, key)
 }
 
 func (h *handler) delete(w http.ResponseWriter, r *http.Request, p model.Principal) {
@@ -285,6 +302,65 @@ func (h *handler) resolve(w http.ResponseWriter, r *http.Request, p model.Princi
 	writeError(w, r, logger, "resolve", err)
 }
 
+func (h *handler) resolveColors(w http.ResponseWriter, r *http.Request, p model.Principal) {
+	projectID, _, logger, err := h.resource(w, r, p, false)
+	if err == nil {
+		_, err = httpx.QueryValues(r)
+	}
+	var ids *[]string
+	var epoch *string
+	if err == nil {
+		var fields map[string]json.RawMessage
+		fields, err = httpx.DecodeObject(w, r, "tagIds", "catalogEpoch")
+		if err == nil {
+			if !jsonunicode.Valid(fields["tagIds"]) {
+				err = httpx.InvalidInput("tagIds must contain valid Unicode text")
+			} else {
+				ids, err = httpx.OptionalStrings(fields, "tagIds")
+			}
+			if err == nil && ids == nil {
+				err = httpx.InvalidInput("tagIds is required and must be an array of strings")
+			}
+		}
+		if err == nil {
+			epoch, err = optionalText(fields, "catalogEpoch")
+		}
+	}
+	if err == nil {
+		var page tagservice.ColorPage
+		page, err = h.operations.ResolveColors(r.Context(), p, projectID, *ids, epoch)
+		if err == nil {
+			response := api.TagColorPage{CatalogEpoch: page.CatalogEpoch, Items: make([]api.TagColorItem, 0, len(page.Items))}
+			for _, item := range page.Items {
+				out := api.TagColorItem{ID: item.ID, State: "missing"}
+				if item.Found {
+					out.State, out.Version, out.Color = "found", &item.Version, &item.Color
+				}
+				response.Items = append(response.Items, out)
+			}
+			var body bytes.Buffer
+			_, err = tagprotocol.EncodeColors(&body, response)
+			if err == nil {
+				if r.Context().Err() != nil {
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				n, e := w.Write(body.Bytes())
+				if e == nil && n != body.Len() {
+					e = io.ErrShortWrite
+				}
+				if e != nil {
+					httpx.LogFailure(logger, r.Context(), "tag", "response", e)
+				}
+				return
+			}
+			err = &model.Fault{Code: "resource_limit_exceeded", Message: "Tag color resolution response exceeds its encoded resource limit.", Cause: err}
+		}
+	}
+	writeError(w, r, logger, "resolve_colors", err)
+}
+
 func writeMutationError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, phase string, result tagservice.WriteResult, err error) {
 	logger = logger.With("tx_outcome", string(result.Outcome), "tx_phase", result.Phase, "cleanup_failed", result.CleanupFailed)
 	facts := operation.CompletionFacts(err)
@@ -355,7 +431,7 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, pha
 	if fault, ok := httpx.KnownFault(err); ok && httpx.ErrorKind(err) == fault.Code {
 		status := 0
 		switch fault.Code {
-		case "invalid_tag_name", "invalid_tag_filter", "confirmation_required":
+		case "invalid_tag_name", "invalid_tag_color", "invalid_tag_filter", "confirmation_required":
 			status = http.StatusBadRequest
 		case "tag_not_found":
 			status = http.StatusNotFound

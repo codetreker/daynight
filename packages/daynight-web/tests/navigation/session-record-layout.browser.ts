@@ -204,6 +204,28 @@ test('completed Herdr reads its bound terminal archive without acquiring control
   expect(state.writes).toEqual([]); expect(state.channels).toBe(0); expect(state.sent).toEqual([]);
 });
 
+test('terminal recording native zoom Escape cancels before leaving fullscreen', async ({ page }, info) => {
+  const state = await install(page, 'herdr');
+  await navigate(page);
+  await expect(page.locator('.terminal-recording')).toBeVisible();
+  const toggle = page.locator('.session-fullscreen-toggle');
+  await toggle.click();
+  const zoom = page.locator('.terminal-recording-summary select');
+  await zoom.selectOption('125');
+  await expect(zoom.locator('..')).toHaveAttribute('data-density', 'filter');
+  expect(await zoom.evaluate(node => node.getBoundingClientRect().height)).toBe(32);
+  await zoom.click();
+  await expect.poll(() => zoom.evaluate(node => node.matches(':open'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect.poll(() => zoom.evaluate(node => node.matches(':open'))).toBe(false);
+  await expect(zoom).toHaveValue('125');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false'); await expect(toggle).toBeFocused();
+  expect(state.writes).toEqual([]); expect(state.channels).toBe(0); expect(state.sent).toEqual([]);
+  await info.attach('native-recording-cancel', { body: JSON.stringify({ zoom: '125', height: 32, nativePopupObserved: true, firstEscapeRetainsFullscreen: true, secondEscapeRestoresFocus: true }), contentType: 'application/json' });
+});
+
 
 test('an already open working Session becomes readonly before its native lifecycle drains, then survives release', async ({ page }) => {
   const state = await install(page, 'working'); await navigate(page);

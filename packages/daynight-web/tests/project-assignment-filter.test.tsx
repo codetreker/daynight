@@ -33,6 +33,7 @@ const install = (initial: readonly TaskDetail[]) => {
       assigneeVersions: people.map(({ userId, version, hasProjectAccess }) => ({ userId, version, hasProjectAccess })),
       viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: (value) => tasks.get(value.id)!.version,
       propertiesForTask: (value) => tasks.get(value.id)!.properties,
+      tagsForTask: (value) => tasks.get(value.id)!.tags,
     });
     if (url.pathname === `/api/v1/projects/${projectId}/task-assignees`) {
       const requested = url.searchParams.getAll('userId');
@@ -56,11 +57,11 @@ const install = (initial: readonly TaskDetail[]) => {
   vi.stubGlobal('fetch', fetcher);
   return { tasks, fetcher };
 };
-const mount = async () => {
+const mount = async (findFilter = () => screen.findByRole('button', { name: /^负责人:/ })) => {
   const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
   const view = render(<ProjectPage projectId={projectId} />, { container: root, taskCache: true });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
-  await screen.findByRole('button', { name: /^负责人:/ });
+  await findFilter();
   return view;
 };
 const filter = async (label: string | RegExp) => {
@@ -93,6 +94,9 @@ describe('project assignee filtering', () => {
       task(21, null), task(22, null, { dependsOn: [id(21)] }),
       task(31, formerUser), task(32, formerUser, { dependsOn: [id(31)] }),
       task(101, TEST_VIEWER_ID, { type: 'goal' }), task(102, null, { type: 'goal' }), task(103, formerUser, { type: 'goal' }),
+      task(201, TEST_VIEWER_ID, { type: 'goal', status: 'done', completedAt: '2026-10-22T10:00:00Z' }),
+      task(202, null, { type: 'goal', status: 'cancelled', cancelledAt: '2026-10-22T10:00:00Z' }),
+      task(203, formerUser, { type: 'goal', status: 'done', completedAt: '2026-10-22T10:00:00Z' }),
     ]);
     const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
     const matchingIds = new Set<number>(matching);
@@ -100,7 +104,7 @@ describe('project assignee filtering', () => {
     const view = await mount();
     await waitFor(() => expect(chain(matching[0]! * 10 + 1)).toBeVisible());
     await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
-    expectCounts(matching.length, matching.length * 2, matching.length);
+    expectCounts(matching.length, matching.length, matching.length);
     for (const n of [1, 2, 3]) {
       if (matchingIds.has(n)) expect(chain(n * 10 + 1)).toBeVisible();
       else expect(chain(n * 10 + 1)).toBeNull();
@@ -114,11 +118,11 @@ describe('project assignee filtering', () => {
     await mount();
     await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
     await waitFor(() => expect(row(matching[0]!)).toBeVisible());
-    expectCounts(matching.length, matching.length * 2, matching.length);
+    expectCounts(matching.length, matching.length, matching.length);
     for (const n of [1, 2, 3]) if (!matchingIds.has(n)) expect(row(n)).toBeNull();
   });
 
-  it('counts matching unfinished members and Goal owners independently of list status and scope', async () => {
+  it('counts chains with matching unfinished members and Goal owners independently of list status and scope', async () => {
     const finishedAt = '2026-10-22T10:00:00Z';
     install([
       task(1, TEST_VIEWER_ID, { status: 'proposed' }), task(2, null), task(3, formerUser, { status: 'in_progress', startedAt: finishedAt }),
@@ -135,40 +139,121 @@ describe('project assignee filtering', () => {
       task(502, null, { type: 'goal' }), task(503, formerUser, { type: 'goal', status: 'done', completedAt: finishedAt }),
     ]);
     await mount();
-    expectCounts(4, 5, 4);
+    expectCounts(4, 2, 1);
     await filter('分配给我');
-    expectCounts(2, 1, 1);
+    expectCounts(2, 1, 0);
     expect(chain(11)).toBeVisible();
     fireEvent.click(chain(11)!);
-    expect(document.getElementById(`goal-children-${id(11)}`)!.querySelectorAll('.goal-task-row')).toHaveLength(5);
+    expect(document.getElementById(`goal-children-${id(11)}`)!.querySelectorAll('.task-row')).toHaveLength(5);
     status('todo');
     expect(chain(11)).toBeNull(); // The viewer's unfinished member is proposed, not todo.
-    expectCounts(2, 1, 1);
+    expectCounts(2, 1, 0);
     fireEvent.click(goals());
     expect(document.querySelector(`[data-goal-id="${id(500)}"]`)).toBeNull();
-    expectCounts(2, 1, 1);
+    expectCounts(2, 1, 0);
     status('all');
     expect(document.querySelector(`[data-goal-id="${id(501)}"]`)).toBeVisible();
     await filter('未分配'); expectCounts(1, 1, 1);
-    await filter(/^Former person/); expectCounts(1, 1, 1);
-    await filter('所有负责人'); expectCounts(4, 5, 4);
+    await filter(/^Former person/); expectCounts(1, 1, 0);
+    await filter('所有负责人'); expectCounts(4, 2, 1);
   });
 
-  it('persists each selection made through the control and restores it on reopening', async () => {
+  it('counts unfinished Goal owners independently of children and list status in both locales', async () => {
+    const finishedAt = '2026-10-22T10:00:00Z';
+    install([
+      task(500, TEST_VIEWER_ID, { type: 'goal' }),
+      task(501, TEST_VIEWER_ID, { type: 'goal', status: 'in_progress', startedAt: finishedAt }),
+      task(502, TEST_VIEWER_ID, { type: 'goal', status: 'done', completedAt: finishedAt }),
+      task(503, TEST_VIEWER_ID, { type: 'goal', status: 'cancelled', cancelledAt: finishedAt }),
+      task(504, null, { type: 'goal' }), task(505, formerUser, { type: 'goal' }),
+      task(506, otherUser, { type: 'goal', status: 'done', completedAt: finishedAt }),
+      task(1, otherUser, { parentId: id(500), status: 'done', completedAt: finishedAt }),
+      task(2, otherUser, { parentId: id(501), status: 'cancelled', cancelledAt: finishedAt }),
+      task(3, TEST_VIEWER_ID, { parentId: id(506) }),
+    ]);
+    const view = await mount();
+    await filter('分配给我');
+    expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^2$/);
+    expect(goals().querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成 Goal 数');
+    fireEvent.click(goals());
+    status('done');
+    expect(document.querySelector(`[data-goal-id="${id(502)}"]`)).toBeVisible();
+    expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^2$/);
+    status('cancelled');
+    expect(document.querySelector(`[data-goal-id="${id(503)}"]`)).toBeVisible();
+    expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^2$/);
+    await filter('未分配'); expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^1$/);
+    await filter(/^Former person/); expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^1$/);
+    await filter('所有负责人'); expect(goals().querySelector('.graph-count-pill')).toHaveTextContent(/^4$/);
+    view.setLocale('en');
+    expect(screen.getByRole('tab', { name: 'Goals' }).querySelector('.graph-count-pill')).toHaveAttribute('title', 'Unfinished Goal count');
+  });
+
+  it('keeps the unfinished Goal count while filtering Goals and their children by tags', async () => {
+    const tag = { id: id(900), name: 'backend' };
+    install([
+      task(500, TEST_VIEWER_ID, { type: 'goal', tags: [tag] }), task(501, TEST_VIEWER_ID, { type: 'goal' }),
+      task(1, TEST_VIEWER_ID, { parentId: id(501), tags: [tag] }), task(2, TEST_VIEWER_ID, { parentId: id(501) }),
+    ]);
+    await mount(); fireEvent.click(goals());
+    const count = () => goals().querySelector('.graph-count-pill');
+    expect(count()).toHaveTextContent(/^2$/);
+    fireEvent.click(screen.getByText('标签筛选', { selector: 'summary' }));
+    const goalFilter = screen.getByText('标签筛选', { selector: 'summary' }).closest('.tag-filter')!;
+    fireEvent.click(within(goalFilter as HTMLElement).getByRole('checkbox', { name: '无标签' }));
+    expect(document.querySelector(`[data-goal-id="${id(500)}"]`)).toBeNull();
+    const card = document.querySelector<HTMLElement>(`[data-goal-id="${id(501)}"]`)!;
+    expect(card).toBeVisible(); expect(count()).toHaveTextContent(/^2$/);
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(2);
+    fireEvent.click(screen.getByText('子 Task 标签筛选', { selector: 'summary' }));
+    const childFilter = screen.getByText('子 Task 标签筛选', { selector: 'summary' }).closest('.tag-filter')!;
+    fireEvent.click(within(childFilter as HTMLElement).getByRole('checkbox', { name: '无标签' }));
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(1);
+    expect(card).toHaveTextContent('Task 2');
+    expect(count()).toHaveTextContent(/^2$/);
+  });
+
+  it('counts only unfinished members matching the assignee inside the top-level scope', async () => {
+    const finishedAt = '2026-10-22T10:00:00Z';
+    install([
+      task(1, TEST_VIEWER_ID, { status: 'done', completedAt: finishedAt }),
+      task(2, otherUser, { dependsOn: [id(1)] }),
+      task(3, null, { status: 'proposed', dependsOn: [id(1)] }),
+      task(4, TEST_VIEWER_ID, { parentId: id(500), dependsOn: [id(5)] }),
+      task(5, otherUser, { status: 'done', completedAt: finishedAt }),
+      task(6, otherUser, { status: 'done', completedAt: finishedAt, parentId: id(500) }),
+      task(7, TEST_VIEWER_ID, { status: 'in_progress', startedAt: finishedAt, dependsOn: [id(6)] }),
+      task(8, TEST_VIEWER_ID, { status: 'cancelled', cancelledAt: finishedAt }),
+      task(9, null, { status: 'done', completedAt: finishedAt, dependsOn: [id(8)] }),
+      task(12, TEST_VIEWER_ID, { status: 'cancelled', cancelledAt: finishedAt }),
+      task(13, null, { status: 'cancelled', cancelledAt: finishedAt, dependsOn: [id(12)] }),
+      task(10, TEST_VIEWER_ID),
+      task(11, otherUser, { externalDependsOn: [id(10)], dependsOn: [id(10)] }),
+      task(500, otherUser, { type: 'goal' }),
+    ]);
+    await mount();
+    expectCounts(2, 2, 1);
+    await filter('分配给我'); expectCounts(1, 1, 0);
+    await filter('未分配'); expectCounts(0, 1, 0);
+    await filter(/^Other person/); expectCounts(1, 1, 1);
+    await filter('所有负责人'); expectCounts(2, 2, 1);
+  });
+
+  it.each([
+    ['分配给我', { kind: 'me' }], ['未分配', { kind: 'unassigned' }],
+    ['Former person', { kind: 'user', userId: formerUser }], ['所有负责人', { kind: 'all' }],
+  ] as const)('persists %s through the control and restores it on reopening', async (label, saved) => {
     install([task(1, TEST_VIEWER_ID), task(2, null), task(3, formerUser)]);
     const preference = `daynight:task-assignee-filter:${JSON.stringify([projectId, TEST_VIEWER_ID])}`;
-    for (const [label, saved] of [
-      ['分配给我', { kind: 'me' }], ['未分配', { kind: 'unassigned' }],
-      ['Former person', { kind: 'user', userId: formerUser }], ['所有负责人', { kind: 'all' }],
-    ] as const) {
-      const view = await mount();
-      await filter(label === 'Former person' ? /^Former person/ : label);
-      expect(JSON.parse(localStorage.getItem(preference)!)).toEqual(saved);
-      view.unmount();
-      const reopened = await mount();
-      await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
-      reopened.unmount();
-    }
+    localStorage.setItem(preference, JSON.stringify(label === '所有负责人' ? { kind: 'unassigned' } : { kind: 'all' }));
+    const view = await mount();
+    await filter(label === 'Former person' ? /^Former person/ : label);
+    expect(JSON.parse(localStorage.getItem(preference)!)).toEqual(saved);
+    view.unmount(); view.container.remove();
+    const reopened = await mount();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^负责人:/ })).toHaveTextContent(label));
+    reopened.unmount(); reopened.container.remove();
   });
 
   it('shows localized write failure while keeping the current list usable, and clears it after saving', async () => {
@@ -255,11 +340,11 @@ describe('project assignee filtering', () => {
     expect(chain(1)).toHaveTextContent('1 进行中');
     fireEvent.click(chain(1)!);
     const children = document.getElementById(`goal-children-${id(1)}`)!;
-    expect(children.querySelectorAll('.goal-task-row')).toHaveLength(3);
+    expect(children.querySelectorAll('.task-row')).toHaveLength(3);
     expect(children).toHaveTextContent('Task 2');
     expect(children).toHaveTextContent('Task 4');
     const child = document.getElementById(`chain-task-${id(1)}-${id(3)}`)!;
-    expect(child.closest('.goal-task-row')).toHaveTextContent('被阻塞');
+    expect(child.closest('.task-row')).toHaveTextContent('被阻塞');
     fireEvent.click(child);
     const detail = screen.getByRole('dialog');
     await within(detail).findByRole('heading', { name: 'Task 3' });
@@ -288,7 +373,7 @@ describe('project assignee filtering', () => {
     expect(chain(4)).toBeNull();
     fireEvent.click(chain(1)!);
     const children = document.getElementById(`goal-children-${id(1)}`)!;
-    expect(children.querySelectorAll('.goal-task-row')).toHaveLength(2);
+    expect(children.querySelectorAll('.task-row')).toHaveLength(2);
     expect(children).toHaveTextContent('Task 2');
     expect(children).toHaveTextContent('Task 3');
     fireEvent.click(standalone());
@@ -302,7 +387,7 @@ describe('project assignee filtering', () => {
     expect(chain(1)).toBeNull();
     fireEvent.click(chain(4)!);
     const merged = document.getElementById(`goal-children-${id(4)}`)!;
-    expect(merged.querySelectorAll('.goal-task-row')).toHaveLength(4);
+    expect(merged.querySelectorAll('.task-row')).toHaveLength(4);
     expect(merged).toHaveTextContent('Task 8');
   });
 
@@ -322,23 +407,35 @@ describe('project assignee filtering', () => {
       const root = position * 2 + 1;
       return [task(root, TEST_VIEWER_ID), task(root + 1, TEST_VIEWER_ID, { dependsOn: [id(root)] }), task(1000 + position, TEST_VIEWER_ID)];
     }).flat());
-    await mount();
+    const assigneePicker = () => {
+      const element = document.querySelector<HTMLElement>('.task-assignee-filter');
+      if (element === null) throw new Error('Assignee filter not found');
+      return within(element);
+    };
+    await mount(() => waitFor(() => assigneePicker().getByRole('button', { name: /^负责人:/ })));
+    expectCounts(41, 41, 0);
     fireEvent.click(within(pagination('任务链列表')).getByRole('button', { name: '下一页' }));
     expect(pagination('任务链列表')).toHaveTextContent('第 2 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(standalone());
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     expect(pagination('独立任务列表')).toHaveTextContent('第 2 / 3 页');
-    await filter('分配给我');
+    fireEvent.click(assigneePicker().getByRole('button', { name: /^负责人:/ }));
+    fireEvent.click(await assigneePicker().findByRole('option', { name: '分配给我' }));
     expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(chains());
     expect(pagination('任务链列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(within(pagination('任务链列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(standalone());
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     status('todo');
     expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
     fireEvent.click(chains());
     expect(pagination('任务链列表')).toHaveTextContent('第 1 / 3 页');
+    expectCounts(41, 41, 0);
   });
 
   it('uses an assignee-specific empty state while the full overview still navigates to an excluded Goal', async () => {

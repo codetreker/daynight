@@ -39,7 +39,7 @@ const Fixture = () => {
     (window as unknown as { summaryDetailFixture: { setRevision(value: number | null): void; setSource(value: 'direct' | 'summary'): void; directReads(): number } }).summaryDetailFixture = { setRevision, setSource, directReads: () => directReads };
   }, []);
   const graph = revision === null ? null : snapshot(revision);
-  return <LocaleProvider initial={{ locale: 'en', issue: null }}><CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Reader' }} admissionBlocked={false}>
+  return <LocaleProvider initial={{ locale: 'en', issue: null }}><CurrentAccountProvider user={{ id: TEST_VIEWER_ID, name: 'Reader', avatarUrl: null }} admissionBlocked={false}>
     <output data-testid="summary-fixture-stage">{source}:{revision === null ? 'none' : revision}</output>
     <TaskCacheProvider scope={scope}><TaskAssigneesProvider><ProjectDraftHost projectId={projectId} taskId={taskId} source={source} summaryType={graph === null ? undefined : graph.summaries.get(taskId)?.type ?? null} insideProjectGraph={false} graphWitness={null}>
       <TaskDetailDialog projectId={projectId} taskId={taskId} snapshot={graph} observation={source === 'direct' ? { kind: 'direct' } : { kind: 'project-summary', revision: revision ?? 0, task: graph?.index.nodes.get(taskId) }}

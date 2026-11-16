@@ -130,6 +130,60 @@ test('background reconciliation retains the real dialog, raw choice, focus and r
   expect(state.unexpected).toEqual([]);
 });
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) {
+  test(`sync off and unavailable service show one primary notice at ${width}px in ${locale}`, async ({ page }, info) => {
+    const state = await installPrList(page, locale);
+    state.syncOff = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    const notice = page.locator('.pr-sync-status .pr-status-note');
+    await expect(notice).toHaveCount(1);
+    await expect(notice).toContainText(locale === 'en'
+      ? 'Sync is off. Saved pull requests remain readable but will not be updated.'
+      : '同步已关闭，已有 PR 仍可读取，暂不会更新。');
+    const link = notice.getByRole('link', { name: locale === 'en' ? 'View sync settings' : '查看同步设置' });
+    await expect(link).toHaveCount(1);
+    await expect(link).toHaveAttribute('href', `/projects/${projectId}/settings`);
+    await assertFits(page);
+    await capture(page, info, `sync-off-${locale}-${width}`);
+    await link.click();
+    await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/settings$`));
+    expect(state.unexpected.filter(request => !request.startsWith('GET '))).toEqual([]);
+  });
+}
+
+test('a background sync status change preserves filtering, pagination and the open reading position', async ({ page }) => {
+  const state = await installPrList(page);
+  await page.clock.install();
+  await open(page);
+  const panel = page.locator('#project-section-panel-prs');
+  const filter = panel.locator('.pr-toolbar select'), search = panel.locator('.pr-toolbar input');
+  await filter.selectOption('all');
+  await search.fill('Pull request');
+  await expect(page.locator('.pr-row')).toHaveCount(6);
+  await panel.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  await page.locator('.pr-row').first().click();
+  const dialog = page.getByRole('dialog'), raw = dialog.getByRole('checkbox', { name: 'Raw Markdown' });
+  await raw.check();
+  const body = dialog.locator('.dialog-body');
+  const position = await body.evaluate(element => { element.scrollTop = Math.floor(element.scrollHeight / 2); return element.scrollTop; });
+  expect(position).toBeGreaterThan(0);
+  await dialog.evaluate(element => element.setAttribute('data-reading-witness', 'retained'));
+  const reads = state.statusReads;
+  state.syncOff = true;
+  await page.clock.fastForward(15_100);
+  await expect.poll(() => state.statusReads).toBeGreaterThan(reads);
+  await expect(panel.locator('.pr-sync-status .pr-status-note')).toContainText('Sync is off.');
+  await expect(dialog).toHaveAttribute('data-reading-witness', 'retained');
+  await expect(raw).toBeChecked(); await expect(raw).toBeFocused();
+  expect(await body.evaluate(element => element.scrollTop)).toBe(position);
+  await page.keyboard.press('Escape');
+  await expect(filter).toHaveValue('all'); await expect(search).toHaveValue('Pull request');
+  await expect(page.locator('.pr-row').first()).toContainText('#1241');
+  expect(state.unexpected).toEqual([]);
+});
+
 test('independent PR empty, connection and saved-data notices remain readable at phone width', async ({ page }, info) => {
   const state = await installPrList(page);
   await page.setViewportSize({ width: 320, height: 800 });
@@ -152,3 +206,59 @@ test('independent PR empty, connection and saved-data notices remain readable at
   }
   expect(state.unexpected).toEqual([]);
 });
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 768, 390, 320]) {
+  test(`PR filter arrow and native selection at ${width}px in ${locale}`, async ({ page }, info) => {
+    const state = await installPrList(page, locale);
+    state.longCounts = true;
+    await page.setViewportSize({ width, height: 900 });
+    await open(page);
+    const filter = page.getByRole('combobox', { name: locale === 'en' ? 'Pull request status' : 'PR 状态' });
+    const arrow = page.locator('.pr-filter-wrap .native-select__arrow');
+    await expect(arrow).toHaveAttribute('aria-hidden', 'true');
+    await expect(arrow.locator('path')).toHaveAttribute('d', 'm2 3.5 3 3 3-3');
+    await expect(filter.locator('option')).toHaveCount(4);
+    for (const value of ['active', 'merged', 'closed', 'all']) {
+      await filter.selectOption(value);
+      await expect(filter).toHaveValue(value);
+      const geometry = await filter.evaluate((element) => {
+        const select = element as HTMLSelectElement, rect = select.getBoundingClientRect();
+        const icon = select.parentElement!.querySelector('svg')!, box = icon.getBoundingClientRect();
+        const style = getComputedStyle(select), canvas = document.createElement('canvas'), context = canvas.getContext('2d')!;
+        context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        return { right: rect.right - box.right, center: (rect.top + rect.bottom - box.top - box.bottom) / 2,
+          width: box.width, height: box.height, selectHeight: rect.height, appearance: style.appearance,
+          textWidth: context.measureText(select.selectedOptions[0]!.textContent!).width,
+          available: rect.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2,
+          hitSelect: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === select };
+      });
+      expect(geometry.right).toBeCloseTo(12, 0);
+      expect(Math.abs(geometry.center)).toBeLessThanOrEqual(1);
+      expect([geometry.width, geometry.height, geometry.selectHeight, geometry.appearance]).toEqual([10, 10, 32, 'none']);
+      expect(geometry.textWidth).toBeLessThanOrEqual(geometry.available + 1);
+      expect(geometry.hitSelect).toBe(true);
+      await assertFits(page);
+    }
+    await filter.selectOption('active');
+    const box = (await arrow.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(filter).toBeFocused();
+    await expect.poll(() => filter.evaluate(element => element.matches(':open'))).toBe(true);
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(filter).toHaveValue('merged');
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#pr-search')).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
+    await expect(filter).toBeFocused();
+    expect(await filter.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
+    await capture(page, info, `pr-filter-${locale}-${width}`);
+    state.longCounts = false;
+    state.scene = 'initial';
+    await page.reload();
+    await page.locator('#project-section-tab-prs').click();
+    await expect(filter.locator('option').first()).not.toContainText('·');
+    await assertFits(page);
+    expect(state.unexpected).toEqual([]);
+  });
+}

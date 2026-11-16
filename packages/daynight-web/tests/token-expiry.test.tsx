@@ -23,6 +23,20 @@ const save = () => fireEvent.submit(document.getElementById("edit-token-expiry-f
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 
 describe("optional token expiration", () => {
+  it("retains a custom date through mode changes and cancels without writing", async () => {
+    const transport = fixture(); render(page(transport)); await ready(); edit();
+    const select = screen.getByRole("combobox", { name: "有效期" });
+    mode("custom"); date(); mode("never");
+    expect(screen.queryByLabelText("到期日期和时间")).toBeNull();
+    expect(select).toHaveValue("never");
+    mode("custom");
+    expect(screen.getByRole("combobox", { name: "有效期" })).toBe(select);
+    expect(screen.getByLabelText("到期日期和时间")).toHaveValue(futureInput);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(transport.update).not.toHaveBeenCalled(); expect(transport.create).not.toHaveBeenCalled();
+  });
+
   it.each([null, "2026-11-12T12:00:00.123456788Z"])("keeps the editor through a clock tick and merges an older PATCH usage value %s", async (receiptUse) => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-12T12:03:01Z"));
     try {

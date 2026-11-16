@@ -31,6 +31,26 @@ const targetDialog = () => within(screen.getByRole("dialog", { name: "Select tar
 beforeEach(() => { navigationDraft.current = null; navigationDecision.current = null; Object.assign(read, { resource: resource(steps.slice(0, 4)), status: "ready", error: null, refreshing: false, stale: false, retry: vi.fn(), canDisplayStatus: true, canSetStatus: true, canAdd: true, canMove: true, canDelete: true, remove: vi.fn().mockReturnValue("request-delete"), move: vi.fn(), setStatus: vi.fn(), add: vi.fn().mockReturnValue("request-add"), edit: vi.fn().mockReturnValue("request-edit"), reconcile: vi.fn(), mutation: { operation: null, phase: "idle", error: null, reconciling: false, reconciliationError: null, reconciledFrom: undefined } }); });
 
 describe("Step status", () => {
+  it("leaves native popup and composing Escape to the browser before cancelling a draft", () => {
+    renderWithLocale(panel(), { locale: "en" });
+    fireEvent.click(toolbar().getByRole("button", { name: "Add step" }));
+    const title = draftForm().getByRole("textbox", { name: "Title" });
+    fireEvent.change(title, { target: { value: "Unsaved" } });
+    const select = draftForm().getByRole("combobox", { name: "Initial status" });
+    const matches = vi.spyOn(select, "matches").mockImplementation(query => query === ":open");
+    const outside = vi.fn(); document.addEventListener("keydown", outside);
+    try {
+      const popupEscape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      fireEvent(select, popupEscape);
+      expect(popupEscape.defaultPrevented).toBe(false); expect(outside).not.toHaveBeenCalled();
+      expect(title).toHaveValue("Unsaved"); expect(screen.queryByRole("alertdialog")).toBeNull();
+      matches.mockReturnValue(false);
+      fireEvent.keyDown(select, { key: "Escape", isComposing: true });
+      expect(title).toHaveValue("Unsaved"); expect(screen.queryByRole("alertdialog")).toBeNull();
+      fireEvent.keyDown(select, { key: "Escape" });
+      expect(screen.getByRole("alertdialog")).toBeVisible();
+    } finally { document.removeEventListener("keydown", outside); matches.mockRestore(); }
+  });
   it("offers four keyboard-accessible choices and retains the confirmed state until a response", () => {
     renderWithLocale(panel(), { locale: "en" });
     const trigger = screen.getByRole("button", { name: "Status for Round 1: To do" });

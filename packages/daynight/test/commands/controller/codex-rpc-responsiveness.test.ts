@@ -119,11 +119,11 @@ test.each(["dispose", "error"])("%s during an awaited immediate stops dispatch a
   } finally { rpc.dispose(); await rpc.stopped; }
 });
 
-test("natural close blocks new writes while draining received notifications and a pending response", async () => {
+test("natural exit blocks new writes while draining received notifications and a pending response", async () => {
   const child = transport(), received: number[] = [], failures: Error[] = [], closed = Promise.withResolvers<void>();
   const rpc = new CodexRpc(child, message => {
     received.push((message.params as { index: number }).index);
-    if (received.length === 1) setImmediate(() => { child.emit("close"); closed.resolve(); });
+    if (received.length === 1) setImmediate(() => { child.emit("exit"); closed.resolve(); });
   }, { createSpool: noSpool, onFatalError: error => failures.push(error) });
   try {
     const response = rpc.request("finish", {});
@@ -132,6 +132,8 @@ test("natural close blocks new writes while draining received notifications and 
     await closed.promise;
     await expect(rpc.request("too-late", {})).rejects.toThrow("closed");
     expect(() => rpc.notify("too-late")).toThrow("closed");
+    expect(() => rpc.respond(2, {})).toThrow("closed");
+    expect(() => rpc.reject(2, "unsupported")).toThrow("closed");
     expect(child.stdin.read().toString()).toBe('{"id":1,"method":"finish","params":{}}\n');
     expect(failures).toEqual([]);
     expect(await response).toBe("confirmed");

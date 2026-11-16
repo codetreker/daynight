@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
@@ -13,6 +14,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/github/remote"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service/internal/completion"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/requestid"
 )
 
 type managementStore interface {
@@ -39,10 +41,15 @@ type Manager struct {
 	db     managementStore
 	remote managementRemote
 	appID  int64
+	logger *slog.Logger
 }
 
-func NewManager(db managementStore, r managementRemote, appID int64) *Manager {
-	return &Manager{db: db, remote: r, appID: appID}
+func NewManager(db managementStore, r managementRemote, appID int64, loggers ...*slog.Logger) *Manager {
+	logger := slog.Default()
+	if len(loggers) > 0 && loggers[0] != nil {
+		logger = loggers[0]
+	}
+	return &Manager{db: db, remote: r, appID: appID, logger: logger}
 }
 func (m *Manager) available() bool { return m.appID > 0 && m.remote != nil }
 func (m *Manager) ready() error {
@@ -271,6 +278,52 @@ func (m *Manager) Disconnect(ctx context.Context, p model.Principal, id string, 
 }
 func (m *Manager) Settings(ctx context.Context, p model.Principal, id string, version int64, minutes int32) (core.Status, error) {
 	return m.write(ctx, p, id, version, "settings", minutes, "", core.InstallationCandidate{})
+}
+
+// Sync changes only Project synchronization intent, without contacting GitHub.
+func (m *Manager) Sync(ctx context.Context, p model.Principal, id string, version int64, enabled bool) (core.Status, error) {
+	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)
+	defer cancel()
+	id, err := project.ValidateRead(p, id)
+	if err != nil {
+		return core.Status{}, err
+	}
+	var out githubpr.Connection
+	var refusal *model.Fault
+	c, err := m.db.WriteProject(ctx, id, func(s store.ProjectWriteScope) error {
+		return completion.Capture(func() error {
+			var e error
+			out, e = core.ManageSync(ctx, s, p, version, enabled, m.available(), m.appID)
+			return e
+		}, &refusal)
+	})
+	code := "ok"
+	if c.Outcome == store.TransactionUnknown {
+		code = "github_write_outcome_unknown"
+	} else if err != nil || c.Outcome != store.TransactionCommitted {
+		code = "github_unavailable"
+	} else if refusal != nil {
+		code = refusal.Code
+	}
+	m.logger.InfoContext(ctx, "github synchronization configuration", "component", "github_sync", "phase", "sync_config", "request_id", requestid.From(ctx), "user_id", p.UserID, "project_id", id, "sync_enabled", enabled, "version", out.Version, "generation", out.Generation, "result_code", code, "write_outcome", string(c.Outcome))
+	if c.Outcome == store.TransactionUnknown {
+		return core.Status{}, &ManagementError{Code: code, Message: "GitHub configuration write outcome is unknown; read the resource before deciding what to do.", Cause: err}
+	}
+	if err != nil {
+		return core.Status{}, project.ProjectWriteError(err)
+	}
+	if c.Outcome != store.TransactionCommitted {
+		return core.Status{}, fmt.Errorf("GitHub configuration transaction not committed")
+	}
+	if refusal != nil {
+		switch refusal.Code {
+		case "github_not_configured", "github_not_connected", "github_connection_unavailable":
+			return core.Status{}, &ManagementError{Code: refusal.Code, Message: refusal.Message, Cause: refusal}
+		default:
+			return core.Status{}, refusal
+		}
+	}
+	return core.Status{Connection: out, ServiceAvailable: m.available()}, nil
 }
 func (m *Manager) write(ctx context.Context, p model.Principal, id string, version int64, action string, minutes int32, repo string, candidate core.InstallationCandidate) (core.Status, error) {
 	ctx, cancel := context.WithTimeout(ctx, core.OperationTimeout)

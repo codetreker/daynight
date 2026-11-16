@@ -1,5 +1,6 @@
 import { useId, useState, type FormEvent } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { promptMessages } from './messages';
 import type { WorkerPromptController } from './useWorkerPrompt';
 import './worker-prompts.css';
@@ -30,6 +31,6 @@ export const WorkerPromptEditor = ({ state, scope }: { readonly state: WorkerPro
         <div className="worker-prompt-actions"><span role="status">{state.dirty ? m.dirty : m.clean}</span><button className="button" type="button" disabled={!state.dirty || state.pending || state.confirmed || state.uncertain} onClick={state.discard}>{m.discard}</button><button className="button primary" type="submit" disabled={!state.readEnabled || !state.dirty || state.pending || state.confirmed || state.uncertain || state.conflict || state.invalid || state.tooLarge}>{state.pending ? m.saving : m.save}</button></div>
       </form></section>
       <aside className="worker-prompt-aside"><section className="panel"><header className="panel-heading"><h2>{m.order}</h2></header><div className="panel-body"><ol><li>{m.builtin}</li>{(['user', 'project', 'worker'] as const).map(layer => <li key={layer}><strong>{m.titles[layer]}</strong></li>)}</ol></div></section><section className="panel"><header className="panel-heading"><h2>{m.timing}</h2></header><div className="panel-body">{m.timingDetail}</div></section></aside></div>
-    <section className="panel worker-prompt-preview"><header className="panel-heading"><div><h2>{m.preview}</h2><p>{m.example}</p></div></header><div className="panel-body"><label htmlFor={`${id}-scenario`}>{m.scenario}</label>{' '}<select id={`${id}-scenario`} value={scenario} onChange={event => setScenario(event.target.value as typeof scenario)}><option value="start">{m.start}</option><option value="resume">{m.resume}</option><option value="ping">{m.ping}</option></select><pre tabIndex={0}>{preview}</pre>{scenario === 'resume' && <p className="hint">{m.resumeNote}</p>}</div></section>
+    <section className="panel worker-prompt-preview"><header className="panel-heading"><div><h2>{m.preview}</h2><p>{m.example}</p></div></header><div className="panel-body"><label htmlFor={`${id}-scenario`}>{m.scenario}</label>{' '}<NativeSelect density="filter" layout="content" id={`${id}-scenario`} value={scenario} onChange={event => setScenario(event.target.value as typeof scenario)}><option value="start">{m.start}</option><option value="resume">{m.resume}</option><option value="ping">{m.ping}</option></NativeSelect><pre tabIndex={0}>{preview}</pre>{scenario === 'resume' && <p className="hint">{m.resumeNote}</p>}</div></section>
   </div>;
 };

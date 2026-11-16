@@ -248,6 +248,15 @@ export const createSharedWorkerHerdr = (options: Options): WorkerHerdrAdapter & 
   };
   return {
     paths, tasks, prepareSelection, reserveSelection, ensureExecution,
+    observeResources: operation => serialized(operation, async () => {
+      const record = read();
+      if ((record === null || record.current === null && record.pending === null) && !hasResponsibilities() && !await legacyPresence(operation)) {
+        if (!await mappingsStopped(operation)) throw new Error("The original shared native process trees are not confirmed stopped.");
+        return [];
+      }
+      await connectOriginal(operation);
+      return original().tasks.listResources(operation);
+    }),
     get attachment() { return original().attachment; },
     createShellStartup: () => original().createShellStartup(),
     // Only admission owns spawning. Repeated coordinator ensures reconnect to the retained owner.

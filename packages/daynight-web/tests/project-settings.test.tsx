@@ -255,10 +255,10 @@ describe("project settings form", () => {
     const resume = pauseAuthRequests(); holdPermission = true; fireEvent(window, new Event("focus"));
     saved = true; await act(async () => saving.resolve(json(project(90, 9_007_199_254_740_994n))));
     resume(); await act(async () => permission.resolve(fail(503)));
-    await screen.findByText("设置已保存。"); const alert = (await screen.findByText("safe-request")).closest('[role="alert"]') as HTMLElement;
+    await screen.findByText("设置已保存。"); const alert = (await screen.findByRole("alert")).closest('[role="alert"]') as HTMLElement;
     expect(screen.getByRole("button", { name: "保存设置" })).toBeDisabled();
     holdPermission = false; fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
-    await waitFor(() => expect(screen.queryByText("safe-request")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(screen.getByLabelText("提醒阈值")).toHaveValue(90);
     expect(fetcher.mock.calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1);
   });
@@ -519,7 +519,7 @@ describe("settings navigation and authenticated identity", () => {
 
   it("renders localized route title, breadcrumbs and active project navigation", async () => {
     window.history.replaceState(null, "", `/projects/${id}/settings`); install((url) => url === "/api/v1/me" ? json(user) : url.endsWith("/members") ? json(members()) : json(project())); render(<AuthenticatedApp />); await ready();
-    expect(document.title).toBe("项目设置 · Daynight"); const nav = screen.getByRole("navigation", { name: "项目设置" }); expect(within(nav).getByRole("link", { name: "项目设置" })).toHaveAttribute("aria-current", "page"); expect(screen.getByRole("navigation", { name: "面包屑" })).toHaveTextContent("项目设置");
+    expect(document.title).toBe("项目设置 · Daynight"); const nav = screen.getByRole("navigation", { name: "项目设置" }); expect(within(nav).getAllByRole("link")).toHaveLength(1); expect(within(nav).getByRole("link", { name: "项目任务" })).toHaveAttribute("href", `/projects/${id}`); expect(screen.getByRole("navigation", { name: "面包屑" })).toHaveTextContent("项目设置");
   });
 
   it("preserves drafts through focus and an account change until refresh", async () => {

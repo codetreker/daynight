@@ -40,6 +40,12 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	}
 	independent := createTask(t, f, personal, "Personal inventory", map[string]any{"assignedTo": f.userID, "status": "todo"})
 	independent = setStatus(t, f, independent, "in_progress", nil)
+	tagsPath := "/api/v1/projects/" + personal.ID + "/tags"
+	tag := requestJSON[catalogTag](t, f, http.MethodPost, tagsPath, map[string]any{"name": "Inventory tag"}, http.StatusCreated)
+	workerTask := createTask(t, f, personal, "Worker inventory", map[string]any{"assignedTo": f.userID, "status": "todo", "requiredPlatform": "linux", "tagIds": []string{tag.ID}})
+	workerTask = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(workerTask), map[string]any{"version": workerTask.Version, "allowAgents": true}, http.StatusOK)
+	claimID, workerID, machineID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim", map[string]any{"version": workerTask.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Inventory machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
 	// Leave a Team after creating a direct grant, so this project is readable only through sharing.
 	sharedTeam := requestJSON[api.Team](t, f, http.MethodPost, "/api/v1/teams", api.CreateTeamRequest{Name: "Shared inventory Team", ExpectedUserID: f.userID}, http.StatusCreated)
 	shared := requestJSON[api.Project](t, f, http.MethodPost, "/api/v1/projects", api.CreateProjectRequest{Name: "Shared inventory project", RepoURL: "https://github.com/example/inventory-shared", TeamID: &sharedTeam.ID, ExpectedUserID: f.userID}, http.StatusCreated)
@@ -52,6 +58,9 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	revision := ""
 	for {
 		page := requestJSON[protocol.PersonalTaskPage](t, f, http.MethodGet, path, nil, http.StatusOK)
+		if page.ResponseTaskAt.IsZero() || page.ResponseSessionAt.IsZero() {
+			t.Fatal("response clocks missing")
+		}
 		if revision == "" {
 			revision = page.InventoryRevision
 		} else if revision != page.InventoryRevision {
@@ -76,6 +85,53 @@ func serverAPIPersonalTaskNormalFlow(t *testing.T, f *fixture) {
 	sharedItem, ok := seen[sharedTask.ID]
 	if !ok || sharedItem.Project.ID != shared.ID || sharedItem.Project.OwnerTeam.ID != sharedTeam.ID || sharedItem.Session.Observation != "observed" {
 		t.Fatalf("shared task: %+v", sharedItem)
+	}
+	workerItem, ok := seen[workerTask.ID]
+	if !ok || workerItem.Task.Worker == nil || workerItem.Task.Worker.State != "active" || workerItem.Task.Worker.WorkerID != workerID || workerItem.Task.Worker.Machine.ID != machineID || workerItem.Task.Worker.Machine.Name != "Inventory machine" || workerItem.Task.CreatedAt.IsZero() || workerItem.Task.RequiredPlatform == nil || *workerItem.Task.RequiredPlatform != "linux" || len(workerItem.Task.Tags) != 1 || workerItem.Task.Tags[0].ID != tag.ID || workerItem.Task.Tags[0].Name != tag.Name || workerItem.Task.BlockedBy == nil || workerItem.Task.Ready {
+		t.Fatalf("claimed worker missing: %+v", workerItem)
+	}
+	firstPage := requestJSON[protocol.PersonalTaskPage](t, f, http.MethodGet, "/api/v1/me/in-progress-tasks?limit=1", nil, http.StatusOK)
+	if firstPage.NextCursor == nil {
+		t.Fatal("expected continuation")
+	}
+	tag = requestJSON[catalogTag](t, f, http.MethodPatch, tagsPath+"/"+tag.ID, map[string]any{"version": tag.Version, "name": "Renamed inventory tag"}, http.StatusOK)
+	reset := requestJSON[api.ErrorResponse](t, f, http.MethodGet, "/api/v1/me/in-progress-tasks?limit=1&cursor="+*firstPage.NextCursor, nil, http.StatusConflict)
+	if reset.Error.Code != "reset_required" {
+		t.Fatalf("tag rename did not reset inventory: %+v", reset)
+	}
+	workerTask = requestJSON[api.Task](t, f, http.MethodGet, taskPath(workerTask), nil, http.StatusOK)
+	workerTask = setStatus(t, f, workerTask, "done", &claimID)
+	workerTask = setStatus(t, f, workerTask, "in_progress", nil)
+	page := requestJSON[protocol.PersonalTaskPage](t, f, http.MethodGet, "/api/v1/me/in-progress-tasks", nil, http.StatusOK)
+	foundCompleted := false
+	for _, item := range page.Items {
+		if item.Task.ID == workerTask.ID {
+			foundCompleted = true
+			if item.Task.Worker == nil || item.Task.Worker.State != "completed" || item.Task.Worker.WorkerID != workerID || len(item.Task.Tags) != 1 || item.Task.Tags[0].Name != tag.Name || item.Session.Registration != "not_applicable" || item.Session.Reason != "no_execution" {
+				t.Fatalf("manual restart retained incorrect execution: %+v", item)
+			}
+		}
+	}
+	if !foundCompleted {
+		t.Fatal("reopened task absent")
+	}
+	workerTask = setStatus(t, f, workerTask, "todo", nil)
+	newClaimID := uuid.NewString()
+	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim", map[string]any{"version": workerTask.Version, "claimId": newClaimID, "workerId": workerID, "machine": map[string]any{"id": machineID, "name": "Inventory machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
+	workerTask = requestJSON[api.Task](t, f, http.MethodPost, taskPath(workerTask)+"/worker-claim/release", map[string]any{"version": workerTask.Version, "claimId": newClaimID, "stoppedConfirmed": true}, http.StatusOK)
+	workerTask = setStatus(t, f, workerTask, "in_progress", nil)
+	page = requestJSON[protocol.PersonalTaskPage](t, f, http.MethodGet, "/api/v1/me/in-progress-tasks", nil, http.StatusOK)
+	foundReleased := false
+	for _, item := range page.Items {
+		if item.Task.ID == workerTask.ID {
+			foundReleased = true
+			if item.Task.Worker != nil {
+				t.Fatalf("released worker retained: %+v", item.Task.Worker)
+			}
+		}
+	}
+	if !foundReleased {
+		t.Fatal("released task absent after restart")
 	}
 	assertTaskContent(t, requestJSON[api.Task](t, f, http.MethodGet, taskPath(child), nil, http.StatusOK), child)
 	goalReadback := requestJSON[api.Task](t, f, http.MethodGet, taskPath(goal), nil, http.StatusOK)

@@ -66,6 +66,27 @@ it('excludes work owned by another assistant', async () => {
   expect(screen.queryByRole('button')).toBeNull(); expect(f.fetch).not.toHaveBeenCalled();
 });
 
+it('retains the selected transfer target during a refresh and cancels without a write', async () => {
+  const f = install();
+  renderWithLocale(<AssistantTaskDetail taskId={taskId} enabled bots={[botDefinition(1), botDefinition(2), botDefinition(3)]} onChanged={() => {}} />, { locale: 'en', taskCache: { viewerId: BOT_USER } });
+  await screen.findByRole('region', { name: 'Coordination' });
+  fireEvent.click(screen.getByRole('button', { name: 'Transfer' }));
+  const select = screen.getByRole('combobox', { name: 'Choose an assistant' }) as HTMLSelectElement;
+  expect(select).toBeRequired();
+  expect(select.options[0]).toBeDisabled();
+  expect([...select.options].map(option => option.value)).toEqual(['', botId(2), botId(3)]);
+  expect(select).toHaveValue(botId(2));
+  fireEvent.change(select, { target: { value: botId(3) } });
+  const before = f.fetch.mock.calls.length;
+  fireEvent(document, new Event('visibilitychange'));
+  await waitFor(() => expect(f.fetch.mock.calls.length).toBeGreaterThan(before));
+  expect(screen.getByRole('combobox', { name: 'Choose an assistant' })).toBe(select);
+  expect(select).toHaveValue(botId(3));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByRole('combobox', { name: 'Choose an assistant' })).toBeNull();
+  expect(f.fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+});
+
 it('moves unresolved decisions to the new holder even when delivery targeted the previous assistant', async () => {
   const f = install();
   const transferred: AssistantTask = { ...task, holderBotId: botId(2), claimGeneration: '2', claimState: 'pending', credentialOperationId: null };

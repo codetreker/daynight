@@ -12,9 +12,9 @@ const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
 const project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { type: "task", parentId: null, assignedTo: null, tags: [], id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
+const task = { type: "task", parentId: null, assignedTo: null, tags: [], id: taskId, version: "9007199254740993", properties: {}, title: "Task", titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const dependencyStates = { [taskId]: { taskVersion: task.version, blockedBy: [], ready: true } };
-const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, tasks: [task], dependencyStates, sessions: {} };
+const sync = { assigneeVersions: [{ userId, version: "a".repeat(64), hasProjectAccess: true }], actorAccess: directAccessFixture(projectId, userId), mode: "snapshot", epoch, project, observedAt: time, responseTaskAt: time, responseSessionAt: time, sessionPartial: false, taskObservations: {}, tasks: [task], dependencyStates, sessions: {} };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal: string | null = userId) => wireResponse(value, { status, headers: principal === null ? {} : { "Daynight-User-ID": principal } });
 
@@ -66,6 +66,54 @@ describe("complete lightweight Session snapshot", () => {
     const result = parseTaskSync({ ...sync, tasks, dependencyStates, sessions }, projectId);
     expect(result.tasks).toEqual(tasks.map((task) => ({ ...task, version: 9_007_199_254_740_993n })));
     expect(result.sessions).toEqual(sessions);
+  });
+});
+
+describe("complete Task Session observations", () => {
+  const observation = { taskVersion: task.version, state: "working", observedAt: time, freshUntil: time, needsAttention: false, canOpen: true };
+  it("preserves every state and exact version in snapshot and delta independently of changed tasks", () => {
+    for (const state of ["no_session", "not_registered", "pending", "working", "notice", "warning", "unavailable"]) {
+      const item = { ...observation, state, canOpen: state !== "no_session" && state !== "not_registered" };
+      for (const mode of ["snapshot", "delta"]) {
+        const parsed = parseTaskSync({ ...sync, mode, taskObservations: { [taskId]: item }, sessionPartial: state === "unavailable" }, projectId);
+        expect(parsed.taskObservations[taskId]).toEqual({ ...item, taskVersion: 9_007_199_254_740_993n });
+      }
+    }
+    expect(parseTaskSync({ ...sync, mode: "delta", tasks: [], taskObservations: { [taskId]: observation } }, projectId).taskObservations[taskId]?.state).toBe("working");
+    expect(parseTaskSync(sync, projectId).taskObservations).toEqual({});
+  });
+  it("accepts unknown attention and null freshness, and unavailable without time anchors", () => {
+    for (const item of [
+      { ...observation, freshUntil: null, needsAttention: null, canOpen: false },
+      { ...observation, state: "unavailable", observedAt: null, freshUntil: null, needsAttention: null, canOpen: false },
+      { ...observation, state: "unavailable" },
+    ]) expect(parseTaskSync({ ...sync, taskObservations: { [taskId]: item }, sessionPartial: item.state === "unavailable" }, projectId).taskObservations[taskId]).toEqual({ ...item, taskVersion: 9_007_199_254_740_993n });
+  });
+  it.each([undefined, null, [], "invalid", { invalid: observation }, { ["AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"]: observation },
+    { [taskId]: null }, { [taskId]: { ...observation, taskVersion: "0" } }, { [taskId]: { ...observation, taskVersion: "9223372036854775808" } },
+    { [taskId]: { ...observation, taskVersion: 1 } }, { [taskId]: { ...observation, state: "expired" } },
+    { [taskId]: { ...observation, observedAt: null } }, { [taskId]: { ...observation, observedAt: "2026-02-30T00:00:00Z" } },
+    { [taskId]: { ...observation, freshUntil: null } }, { [taskId]: { ...observation, needsAttention: "false" } },
+    { [taskId]: { ...observation, canOpen: 1 } }, { [taskId]: { ...observation, state: "no_session" } },
+    { [taskId]: { ...observation, state: "not_registered" } }, { [taskId]: { ...observation, canOpen: undefined } },
+  ])("rejects malformed or inconsistent observations %#", (taskObservations) => {
+    expect(() => parseTaskSync({ ...sync, taskObservations }, projectId)).toThrow("invalid response");
+  });
+  it("requires both valid UTC clocks and the partial flag", () => {
+    for (const field of ["responseTaskAt", "responseSessionAt", "sessionPartial"] as const) {
+      for (const value of [undefined, null, "invalid"]) expect(() => parseTaskSync({ ...sync, [field]: value }, projectId)).toThrow("invalid response");
+    }
+    for (const field of ["responseTaskAt", "responseSessionAt"] as const) {
+      for (const value of ["0000-01-01T00:00:00Z", "2026-10-20T12:34:56+00:00", "2026-02-30T00:00:00Z"]) expect(() => parseTaskSync({ ...sync, [field]: value }, projectId)).toThrow("invalid response");
+    }
+    expect(() => parseTaskSync({ ...sync, taskObservations: { [taskId]: { ...observation, state: "unavailable" } } }, projectId)).toThrow("invalid response");
+  });
+  it("requires each observation field", () => {
+    for (const field of Object.keys(observation)) {
+      const item: Record<string, unknown> = { ...observation };
+      delete item[field];
+      expect(() => parseTaskSync({ ...sync, taskObservations: { [taskId]: item } }, projectId)).toThrow("invalid response");
+    }
   });
 });
 
@@ -160,12 +208,12 @@ describe("strict summary protocol", () => {
   it.each([undefined, null, 1, 1n, "", "0", "-1", "+1", "01", "1.0", "1e1", "9223372036854775808"])("rejects noncanonical versions %#", (version) => {
     expect(() => parseTaskSummary({ ...task, version })).toThrow("invalid response");
   });
-  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "updatedAt", "version", "properties"])("requires %s", (field) => {
+  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "updatedAt", "version", "properties", "title"])("requires %s", (field) => {
     const incomplete: Record<string, unknown> = { ...task }; delete incomplete[field];
     expect(() => parseTaskSummary(incomplete)).toThrow("invalid response");
   });
   it.each([
-    { properties: null }, { properties: [] }, { properties: 17 },
+    { title: null }, { title: 7 }, { properties: null }, { properties: [] }, { properties: 17 },
     { status: "pending" }, { requiredPlatform: "android" }, { dependsOn: [taskId, taskId] },
     { externalDependsOn: [projectId] }, { updatedAt: "2026-02-30T00:00:00Z" },
     { createdAt: "2026-10-20T00:00:00.1234567890Z" }, { startedAt: "2026-10-20T00:00:00+00:00" },

@@ -16,7 +16,7 @@ const common = { id: taskId, type: "task", parentId: null, status: "todo", assig
   allowAgents: false, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time };
 const detail = { ...common, projectId, title: "Task", description: "", properties: {}, version: 1n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
-const summary = { ...common, titlePreview: "Task", titleTruncated: false, properties: {}, version: "1", dependsOn: [], externalDependsOn: [] };
+const summary = { ...common, title: "Task", titlePreview: "Task", titleTruncated: false, properties: {}, version: "1", dependsOn: [], externalDependsOn: [] };
 const project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 },
   ownership: { teamId: "00000000-0000-4000-8000-000000000701", version: 1n }, createdAt: time, updatedAt: time };
 const searchItem = { ...common, projectId, title: "Task", context: null, match: { fields: ["title"], descriptionSnippet: null } };
@@ -24,11 +24,11 @@ const admission = { userId, onPrincipalMismatch: vi.fn() };
 const signal = () => new AbortController().signal;
 const reads = [
   { body: (tags: unknown) => ({ ...detail, tags }), read: () => getTask(projectId, taskId, signal(), admission).then((value) => value.tags) },
-  { body: (tags: unknown) => ({ mode: "snapshot", epoch, project, observedAt: time, tasks: [{ ...summary, tags }],
+  { body: (tags: unknown) => ({ mode: "snapshot", epoch, project, observedAt: time, responseTaskAt: time, responseSessionAt: time, sessionPartial: false, taskObservations: {}, tasks: [{ ...summary, tags }],
     dependencyStates: { [taskId]: { taskVersion: "1", blockedBy: [], ready: true } }, sessions: {}, actorAccess: directAccessFixture(projectId, userId), assigneeVersions: [] }),
   read: () => getTaskSync(projectId, {}, userId, signal()).then((value) => value.sync.tasks[0]!.tags) },
   { body: (tags: unknown) => ({ projectId, total: 1, items: [{ ...searchItem, tags }], nextCursor: null }),
-    read: () => searchTasks(projectId, "Task", { status: "", assignedTo: "" }, null, signal(), admission).then((value) => value.items[0]!.tags) },
+    read: () => searchTasks(projectId, "Task", { status: "", assignedTo: "", type: "task", parentId: null, tagIds: [], tagMatch: "all", untagged: false }, null, signal(), admission).then((value) => value.items[0]!.tags) },
 ];
 afterEach(() => vi.unstubAllGlobals());
 

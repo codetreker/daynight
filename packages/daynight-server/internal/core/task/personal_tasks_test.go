@@ -7,8 +7,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
+
+func TestRetainedPersonalTaskWorker(t *testing.T) {
+	claim := &model.WorkerClaim{State: model.WorkerActive, WorkerID: "11111111-1111-4111-8111-111111111111", Machine: model.WorkerMachine{ID: "22222222-2222-4222-8222-222222222222", Name: "name"}}
+	worker, err := RetainedPersonalTaskWorker(claim)
+	if err != nil || worker == nil || worker.WorkerID != claim.WorkerID || worker.Machine != claim.Machine {
+		t.Fatalf("active worker: %#v", worker)
+	}
+	claim.State = model.WorkerCompleted
+	if worker, err := RetainedPersonalTaskWorker(claim); err != nil || worker == nil || worker.State != model.WorkerCompleted {
+		t.Fatal("completed claim lost")
+	}
+	if worker, err := RetainedPersonalTaskWorker(nil); err != nil || worker != nil {
+		t.Fatal("absent claim exposed")
+	}
+	for _, change := range []func(*model.WorkerClaim){
+		func(c *model.WorkerClaim) { c.State = "invalid" },
+		func(c *model.WorkerClaim) { c.WorkerID = "invalid" },
+		func(c *model.WorkerClaim) { c.Machine.ID = "invalid" },
+		func(c *model.WorkerClaim) { c.Machine.Name = "  " },
+		func(c *model.WorkerClaim) { c.Machine.Name = "a\x00b" },
+		func(c *model.WorkerClaim) { c.Machine.Name = string([]byte{0xff}) },
+	} {
+		invalid := *claim
+		change(&invalid)
+		if worker, err := RetainedPersonalTaskWorker(&invalid); err == nil || worker != nil {
+			t.Fatalf("invalid worker published: %#v", invalid)
+		}
+	}
+}
 
 func TestPersonalTaskCursorAndRevision(t *testing.T) {
 	actor := "00000000-0000-4000-8000-000000000001"

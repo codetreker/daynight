@@ -2,7 +2,6 @@
 .terminal-session { padding: 1rem; gap: .75rem; }
 .terminal-host-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-width: 0; margin-bottom: .65rem; }
 .terminal-host-toolbar > label { display: flex; align-items: center; gap: .5rem; flex: 1; min-width: 0; }
-.terminal-host-toolbar select { min-width: 0; max-width: 100%; padding: .5rem; flex: 1; }
 .terminal-host-toolbar time { color: var(--muted, #64748b); font-size: .8rem; overflow-wrap: anywhere; }
 .terminal-notice { padding: .75rem; border: 1px solid #d6d3ee; border-radius: .5rem; background: #f8f7ff; }
 .terminal-notice p { margin: 0 0 .5rem; }
@@ -25,7 +24,6 @@
 .task-session-host { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .task-session-host > .terminal-host-toolbar { flex: none; padding: .5rem .75rem; margin: 0; border-bottom: 1px solid #e8ebf1; }
 .task-session-host > .terminal-host-toolbar > label { flex: 1 1 0; flex-wrap: nowrap; min-width: min-content; max-width: 500px; white-space: nowrap; }
-.task-session-host > .terminal-host-toolbar select { flex: 1 1 0; width: 0; min-width: 96px; }
 .task-session-current { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .task-session-current[hidden] { display: none; }
 .terminal-session { overflow: auto; }

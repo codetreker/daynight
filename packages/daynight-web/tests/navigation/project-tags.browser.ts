@@ -14,11 +14,11 @@ const tag = { id: tagId, projectId, name: 'Release', version: 3n, createdAt: tim
 
 async function install(page: Page, locale: 'en' | 'zh-CN') {
   const gate = Promise.withResolvers<void>();
-  const state = { hold: false, started: false, writes: [] as string[] };
+  const state = { hold: false, started: false, writes: [] as string[], bodies: [] as unknown[], tags: [{ ...tag }], colors: new Map([[tagId, '#D85656']]) };
   await page.addInitScript(value => localStorage.setItem('daynight.web.locale', value), locale);
   await page.route('**/api/v1/**', async route => {
     const request = route.request(), url = new URL(request.url()), path = url.pathname;
-    if (!['GET', 'HEAD'].includes(request.method())) state.writes.push(`${request.method()} ${path}`);
+    if (!['GET', 'HEAD'].includes(request.method()) && !path.endsWith('/tags/colors/resolve')) state.writes.push(`${request.method()} ${path}`);
     const send = (body: unknown, status = 200) => route.fulfill({ status, body: stringifyWireJson(body), headers: { 'Content-Type': 'application/json', 'Daynight-User-ID': TEST_VIEWER_ID } });
     if (path === '/api/v1/me') return send({ id: TEST_VIEWER_ID, personalTeam: { id: personalId, kind: 'personal', name: null }, name: 'Reader', email: null, emailVerified: null, avatarUrl: null });
     if (path === '/api/v1/projects') return send({ items: [graph.project], nextCursor: null });
@@ -30,9 +30,28 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
     if (path === `/api/v1/projects/${projectId}/tags` && request.method() === 'GET') {
       if (state.hold) { state.hold = false; state.started = true; await gate.promise; }
       const query = url.searchParams.get('query') ?? '';
-      return send({ items: tag.name.toLowerCase().includes(query.toLowerCase()) ? [tag] : [], catalogEpoch: epoch, nextCursor: null });
+      return send({ items: state.tags.filter(item => item.name.toLowerCase().includes(query.toLowerCase())), catalogEpoch: epoch, nextCursor: null });
     }
-    if (path === `/api/v1/projects/${projectId}/tags/${tagId}` && request.method() === 'GET') return send(tag);
+    if (path === `/api/v1/projects/${projectId}/tags/colors/resolve`) {
+      const body = request.postDataJSON() as { tagIds: string[] };
+      return send({ catalogEpoch: epoch, items: body.tagIds.map(id => {
+        const found = state.tags.find(item => item.id === id);
+        return found ? { id, state: 'found', version: found.version, color: state.colors.get(id) } : { id, state: 'missing' };
+      }) });
+    }
+    if (path === `/api/v1/projects/${projectId}/tags` && request.method() === 'POST') {
+      const body = request.postDataJSON() as { name: string; color: string }; state.bodies.push(body);
+      const created = { ...tag, id: '00000000-0000-4000-8000-000000000063', name: body.name, version: 1n, usage: { tasks: 0, goals: 0 } };
+      state.tags.push(created); state.colors.set(created.id, body.color);
+      return send(created, 201);
+    }
+    if (path === `/api/v1/projects/${projectId}/tags/${tagId}` && request.method() === 'GET') return send(state.tags[0]);
+    if (path === `/api/v1/projects/${projectId}/tags/${tagId}` && request.method() === 'PATCH') {
+      const body = request.postDataJSON() as { name: string; color: string; version: number }; state.bodies.push(body);
+      state.tags[0] = { ...state.tags[0]!, name: body.name, version: BigInt(body.version) + 1n };
+      state.colors.set(tagId, body.color);
+      return send(state.tags[0]);
+    }
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
   });
   return { state, release: gate.resolve };
@@ -41,8 +60,8 @@ async function install(page: Page, locale: 'en' | 'zh-CN') {
 for (const locale of ['en', 'zh-CN'] as const) for (const width of [1100, 320]) {
   test(`project tags retain draft and focus during background checks (${locale}, ${width}px)`, async ({ page }) => {
     const m = locale === 'en'
-      ? { overview: 'Overview', tags: 'Tags', search: 'Search tags', create: 'New tag', name: 'Name', cancel: 'Cancel', rename: 'Rename: Release' }
-      : { overview: '概览', tags: '标签', search: '搜索标签', create: '新建标签', name: '名称', cancel: '取消', rename: '重命名: Release' };
+      ? { overview: 'Overview', tags: 'Tags', search: 'Search tags', create: 'New tag', name: 'Name', cancel: 'Cancel', rename: 'Edit: Release' }
+      : { overview: '概览', tags: '标签', search: '搜索标签', create: '新建标签', name: '名称', cancel: '取消', rename: '编辑: Release' };
     const { state, release } = await install(page, locale);
     try {
       await page.setViewportSize({ width, height: 700 });
@@ -64,7 +83,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1100, 320]) 
       await opener.click();
       const dialog = page.getByRole('dialog');
       const input = dialog.getByRole('textbox', { name: new RegExp(`^${m.name}`) });
-      await expect(input).toBeFocused(); await input.fill('Draft name');
+      await expect(input).toBeEnabled(); await input.focus(); await input.fill('Draft name');
       await input.evaluate((element: HTMLInputElement) => element.setSelectionRange(2, 6));
       state.hold = true;
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -86,6 +105,66 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1100, 320]) 
       await page.keyboard.press('Escape');
       await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
       expect(state.writes).toEqual([]);
+    } finally { release(); }
+  });
+}
+
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1100, 320]) {
+  test(`create and edit tag colors with keyboard and responsive layout (${locale}, ${width}px)`, async ({ page }) => {
+    const zh = locale === 'zh-CN';
+    const { state, release } = await install(page, locale);
+    try {
+      await page.setViewportSize({ width, height: 700 });
+      await page.goto(`/projects/${projectId}`);
+      await page.getByRole('tab', { name: zh ? '标签' : 'Tags', exact: true }).click();
+      const create = page.getByRole('button', { name: zh ? '新建标签' : 'New tag', exact: true });
+      await expect(create).toBeEnabled();
+      await create.focus(); await page.keyboard.press('Enter');
+      const dialog = page.getByRole('dialog');
+      const name = dialog.getByRole('textbox', { name: zh ? '名称' : 'Name', exact: true });
+      const hex = dialog.getByRole('textbox', { name: zh ? '十六进制颜色' : 'Hex color' });
+      await expect(name).toBeFocused(); await name.fill('Browser color');
+      await expect(hex).toHaveValue('#9AA3B2');
+      await hex.fill('#oops');
+      await dialog.getByRole('button', { name: zh ? '保存' : 'Save', exact: true }).click();
+      await expect(hex).toHaveAttribute('aria-invalid', 'true');
+      expect(state.writes).toEqual([]);
+      await hex.fill('#12a4cd');
+      await expect(dialog.locator('.tag-color-preview .task-tag')).toContainText('Browser color');
+      await expect(dialog.locator('.tag-color-preview .task-tag-dot')).toHaveCSS('background-color', 'rgb(18, 164, 205)');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await dialog.getByRole('button', { name: zh ? '保存' : 'Save', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(state.bodies).toEqual([{ name: 'Browser color', color: '#12A4CD' }]);
+      const created = page.locator('.project-tags-list .task-tag').filter({ hasText: 'Browser color' });
+      await expect(created.locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(18, 164, 205)');
+
+      await create.focus(); await page.keyboard.press('Enter');
+      await expect(hex).toHaveValue('#9AA3B2');
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0); await expect(create).toBeFocused();
+      expect(state.writes).toHaveLength(1);
+
+      const edit = page.getByRole('button', { name: zh ? '编辑: Release' : 'Edit: Release', exact: true });
+      await edit.focus(); await page.keyboard.press('Enter');
+      await expect(hex).toHaveValue('#D85656');
+      await name.fill('Release changed');
+      const blue = dialog.getByRole('button', { name: zh ? '蓝色 #4C88C7' : 'Blue #4C88C7' });
+      await blue.focus(); await page.keyboard.press('Space');
+      await expect(blue).toHaveAttribute('aria-pressed', 'true');
+      await expect(blue).toBeFocused();
+      expect(await blue.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+      await expect(hex).toHaveValue('#4C88C7');
+      await dialog.getByRole('button', { name: zh ? '保存' : 'Save', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      expect(state.bodies).toEqual([{ name: 'Browser color', color: '#12A4CD' }, { version: 3, name: 'Release changed', color: '#4C88C7' }]);
+      await expect(page.locator('.project-tags-list .task-tag').filter({ hasText: 'Release changed' }).locator('.task-tag-dot')).toHaveCSS('background-color', 'rgb(76, 136, 199)');
+      const changed = page.getByRole('button', { name: zh ? '编辑: Release changed' : 'Edit: Release changed', exact: true });
+      await changed.click(); await expect(hex).toHaveValue('#4C88C7');
+      await hex.fill('#FFFFFF'); await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0); await expect(changed).toBeFocused();
+      expect(state.colors.get(tagId)).toBe('#4C88C7'); expect(state.writes).toHaveLength(2);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     } finally { release(); }
   });
 }

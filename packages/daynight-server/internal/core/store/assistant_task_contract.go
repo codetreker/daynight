@@ -58,6 +58,7 @@ type AssistantTaskDAO interface {
 	// A task owned by another account may return only ID and OwnerUserID so core
 	// can distinguish forbidden from absent without loading private content.
 	Task(context.Context, string, string, bool) (model.AssistantTask, error)
+	ApplicationTask(context.Context, string, string) (model.AssistantTask, error)
 	Tasks(context.Context, AssistantTaskQuery) ([]model.AssistantTask, error)
 	InsertTask(context.Context, model.AssistantTask) (bool, error)
 	SaveTask(context.Context, model.AssistantTask, AssistantTaskCondition) (bool, error)

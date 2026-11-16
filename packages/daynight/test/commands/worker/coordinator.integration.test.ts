@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { createMemoryDatabase } from "../../helpers/sqlite.js";
@@ -26,6 +27,8 @@ import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/work
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
 import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
 import { createWorkerCoordinator as createCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { createSharedWorkerHerdr } from "../../../src/commands/worker/herdr/shared.js";
+import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWorkerGitManager, WorktreePreconditionError } from "../../../src/commands/worker/worktrees.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
@@ -788,6 +791,30 @@ describe("ordinary claim admission with retained resources", () => {
     expect(f.manifests.has(owner.claimId)).toBe(false);
     expect(f.git.retireWorktreeManifest).toHaveBeenCalledWith(f.project, owner, expect.anything());
     expect(f.remote.claim).toHaveBeenCalledOnce();
+  });
+
+  it("retires rowless metadata and claims Web work when the original shared Herdr instance is absent", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), owner = { projectId: f.project.projectId, taskId: uuid(100), claimId: uuid(700), worktreeId: uuid(702) };
+    let root = f.root;
+    // Real AF_UNIX endpoint names retain their platform limit inside long checkouts.
+    if (process.platform !== "win32") {
+      root = path.join("/tmp", `dn-h-${randomUUID().slice(0, 8)}`);
+      await symlink(f.root, root); directories.push(root);
+    }
+    const paths = resolveWorkerPaths(root), herdr = createSharedWorkerHerdr({ paths, homeDirectory: root, hasResponsibilities: () => false });
+    f.manifests.set(owner.claimId, { owner, binding: f.bind(owner) }); f.candidates.splice(1);
+    const webStore = openWebExecutionStore(path.join(f.root, "web.sqlite")), webConfiguration = { ...configuration, args: [], agentControlMode: "web" as const };
+    const coordinator = createWorkerCoordinator({ ...f.options, herdr, webStore, globalConfiguration: webConfiguration, repositories: [{ project: f.project, configuration: webConfiguration }],
+      webBackend: { observeExecutionStop: unknownStop, advance: async input => input, cleanup: async task => ({ task, complete: true }) } });
+    try {
+      await coordinator.tick();
+      expect(f.manifests.has(owner.claimId)).toBe(false);
+      expect(f.remote.claim).toHaveBeenCalledOnce();
+      expect(readWorkerClaim([...f.grants.values()][0]!.properties)?.agentControlMode).toBe("web");
+      await expect(access(herdr.paths.configurationFile)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(f.events.some(event => event.kind === "cleanup-error")).toBe(false);
+    } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
   it("retires a rowless legacy manifest only after real Git and directory absence", async () => {

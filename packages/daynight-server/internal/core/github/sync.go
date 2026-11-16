@@ -26,7 +26,7 @@ const (
 // stored App ID may differ from appID: the caller must then record app_changed
 // without contacting the old installation.
 func WorkKind(c githubpr.Connection, appID int64, now time.Time, pendingDue bool) string {
-	if !c.Enabled || c.AppID == nil || c.InstallationID == nil || c.RepositoryID == nil || c.PollIntervalMinutes < 1 ||
+	if !c.Enabled || !c.SyncEnabled || c.AppID == nil || c.InstallationID == nil || c.RepositoryID == nil || c.PollIntervalMinutes < 1 ||
 		c.NotBefore != nil && c.NotBefore.After(now) || c.ClaimUntil != nil && c.ClaimUntil.After(now) {
 		return ""
 	}

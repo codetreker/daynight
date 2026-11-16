@@ -31,6 +31,8 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 	client.Transport = sessionWorkerTransport{next: client.Transport}
 	f.client = &client
 	project := createProject(t, f, "API native Session")
+	manual := createTask(t, f, project, "Manual execution", nil)
+	manual = setStatus(t, f, manual, "in_progress", nil)
 	task := createTask(t, f, project, "Native Session task", map[string]any{"assignedTo": f.userID, "status": "todo"})
 	task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
 	claimID, workerID, worktreeID := uuid.NewString(), uuid.NewString(), uuid.NewString()
@@ -43,6 +45,7 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 	if claimed.ID != task.ID || claimed.Status != "in_progress" || claim.ClaimID != claimID || claim.WorkerID != workerID || claim.WorktreeID != worktreeID || claim.UserID != f.userID || claim.AgentControlMode != "web" {
 		t.Fatalf("Session Worker claim differs: task=%+v claim=%+v", claimed, claim)
 	}
+	sessionSyncInitialFlow(t, f, project, manual, claimed)
 
 	base := taskPath(claimed) + "/sessions"
 	registration := sp.Registration{
@@ -187,6 +190,7 @@ func TestServerAPISessionNormalFlow(t *testing.T) {
 		}
 	}
 	sessionDirectImageFlow(t, f)
+	sessionSyncReopenedFlow(t, f, project, claimed, registered.SessionID, claimID)
 }
 
 func sessionFlowDial(t *testing.T, f *fixture, path string, options *websocket.DialOptions) *websocket.Conn {

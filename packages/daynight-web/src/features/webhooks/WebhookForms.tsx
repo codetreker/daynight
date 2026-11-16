@@ -1,3 +1,4 @@
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import { useId, useState, type FormEvent } from "react";
 import type { Project } from "../../api/types";
 import type { WebhookActiveEndpoint, WebhookEventType, WebhookSubscriptionInput, WebhookSubscription } from "../../api/webhooks";
@@ -111,7 +112,7 @@ export const WebhookSubscriptionDialog = ({ endpoint, subscription, projects, pr
   const unavailableSelected = projectId !== "" && !projects?.some(project => project.id === projectId);
   return <WebhookDialog title={subscription === null ? m.addSub : m.editSub} opener={actions.opener} onClose={actions.onClose} footer={<><button className="button" type="button" onClick={actions.onClose}>{m.cancel}</button><button className="button primary" type="submit" form={formId} disabled={!actions.canSubmit || isPending(actions.state) || expansionBlocked || projects === null && subscription === null}>{m.save}</button></>}>
     <form id={formId} onSubmit={event => { void submit(event); }}><WebhookPendingNotice state={actions.state} active={actions.canRead} onCheck={actions.reconcile}/>{validation !== null && <div className="inline-error" role="alert">{validation}</div>}{(localError ?? errorFor(actions.state)) !== null && <WebhookError error={localError ?? errorFor(actions.state)}/>}
-      <div className="form-field"><label htmlFor="webhook-subscription-project">{m.project}</label><select id="webhook-subscription-project" className="input" value={projectId} onChange={event => setProjectId(event.target.value)} disabled={!eligible || subscription === null && !actions.expansionAvailable}><option value="">{m.selectProjects}</option>{unavailableSelected && <option value={projectId}>{projectId}</option>}{projects?.map(project => <option value={project.id} key={project.id} disabled={!canExpand && project.id !== subscription?.projectId}>{project.name} · {projectLabels.get(project.id)}</option>)}</select></div>
+      <div className="form-field"><label htmlFor="webhook-subscription-project">{m.project}</label><NativeSelect layout="fill" id="webhook-subscription-project" value={projectId} onChange={event => setProjectId(event.target.value)} disabled={!eligible || subscription === null && !actions.expansionAvailable}><option value="">{m.selectProjects}</option>{unavailableSelected && <option value={projectId}>{projectId}</option>}{projects?.map(project => <option value={project.id} key={project.id} disabled={!canExpand && project.id !== subscription?.projectId}>{project.name} · {projectLabels.get(project.id)}</option>)}</NativeSelect></div>
       <EventChecks value={selectedEvents} onChange={setSelectedEvents} canAdd={canExpand}/>
     </form>
   </WebhookDialog>;

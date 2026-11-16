@@ -1,3 +1,10 @@
+import { summariesForIndex } from "./helpers/taskSync";
+
+// These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
+vi.mock('../src/app/router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
 import { useRef, useState, type ReactElement } from 'react';
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -57,7 +64,7 @@ const render = (ui: ReactElement) => {
   return { ...view, rerender: (next: ReactElement) => view.rerender(clock(next)) };
 };
 const noop = () => {};
-const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+const list = (index: GraphIndex, onOpenTask = noop) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
   openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
@@ -88,7 +95,7 @@ describe('Goal task lists', () => {
     ];
     const index = indexOf(items);
     const onOpenTask = vi.fn();
-    render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Outside']} allRepresentativeIds={['Outside']}
+    render(<ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Outside']} allRepresentativeIds={['Outside']}
       scopedMembers={new Map([['Outside', ['Inside']]])} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} />);
     const header = document.getElementById('task-root-Outside')!;
     expect(header).toHaveTextContent('Outside');
@@ -96,7 +103,7 @@ describe('Goal task lists', () => {
     expect(header.closest('.goal-header')).toHaveAttribute('data-task-status', 'todo');
     expect(header.querySelector('.task-assignee-identity')).toBeNull();
     fireEvent.click(header);
-    const rows = document.querySelectorAll('.goal-task-main');
+    const rows = document.querySelectorAll('.task-row-title');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveTextContent('Inside');
     fireEvent.click(rows[0]!);
@@ -109,21 +116,21 @@ describe('Goal task lists', () => {
     const newer = { ...task('Newer', 'done', ['Older', 'External'], ['External']), completedAt: '2026-10-22T12:00:00Z' };
     const external = { ...task('External', 'done'), completedAt: '2026-10-25T10:00:00Z' };
     const scoped = new Map([['Outside', ['Older', 'Newer']]]);
-    const tree = (last: GraphTask) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={indexOf([outside, older, last, external])}
+    const tree = (last: GraphTask) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={indexOf([outside, older, last, external])} summaries={summariesForIndex(indexOf([outside, older, last, external]))}
       representativeIds={['Outside']} allRepresentativeIds={['Outside']} scopedMembers={scoped} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(tree(newer));
     const aggregate = () => screen.queryByRole('button', { name: '查看 Outside 的完成时间' });
     expect(aggregate()?.querySelector('time')).toHaveAttribute('datetime', newer.completedAt);
     fireEvent.click(document.getElementById('task-root-Outside')!);
     const known = () => document.getElementById('chain-task-Outside-Older')!;
-    expect(known().querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
+    expect(known().closest('.task-row')!.querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
     view.rerender(tree({ ...newer, completedAt: null }));
     expect(aggregate()).toBeNull();
-    expect(known().querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
+    expect(known().closest('.task-row')!.querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
     view.rerender(tree({ ...newer, status: 'in_progress' }));
     expect(aggregate()).toBeNull();
-    expect(known().querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
-    expect(document.getElementById('chain-task-Outside-Newer')!.querySelector('time.completion-time-label')).toBeNull();
+    expect(known().closest('.task-row')!.querySelector('time.completion-time-label')).toHaveAttribute('datetime', older.completedAt);
+    expect(document.getElementById('chain-task-Outside-Newer')!.closest('.task-row')!.querySelector('time.completion-time-label')).toBeNull();
     expect(document.getElementById('task-root-Outside')).toHaveAttribute('aria-expanded', 'true');
   });
 
@@ -142,7 +149,7 @@ describe('Goal task lists', () => {
     const index = indexOf([task('First', 'done'), task('Second', 'todo', ['First']), task('Other', 'done'), task('Last', 'todo', ['Other'])]);
     const scopedMembers = new Map([['First', ['First', 'Second']], ['Other', ['Other', 'Last']]]);
     const onRevealed = vi.fn();
-    const tree = (revealTaskId: string | null) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['First', 'Other']} allRepresentativeIds={['First', 'Other']}
+    const tree = (revealTaskId: string | null) => <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['First', 'Other']} allRepresentativeIds={['First', 'Other']}
       scopedMembers={scopedMembers} revealTaskId={revealTaskId} onRevealed={onRevealed} openGraphTarget={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(tree(null));
     fireEvent.click(document.getElementById('task-root-Other')!);
@@ -160,12 +167,12 @@ describe('Goal task lists', () => {
     fireEvent.click(disclosure());
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
     expect(disclosure()).toHaveAttribute('aria-controls', children().id);
-    const rows = within(children()).getAllByRole('button', { name: /已完成|进行中|待处理/ });
-    expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
-    expect(rows.map((row) => row.closest('.goal-task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
-    expect(rows.map((row) => row.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
+    const rows = within(children()).getAllByRole('link');
+    expect(rows.map((row) => row.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
+    expect(rows.map((row) => row.closest('.task-row')!.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows.map((row) => row.closest('.task-row')!.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
     expect(disclosure().closest('.goal-header')).toHaveAttribute('data-task-status', 'in_progress');
-    expect(rows[1]!.closest('.goal-task-row')).toHaveTextContent('被阻塞');
+    expect(rows[1]!.closest('.task-row')).toHaveTextContent('被阻塞');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
     expect(disclosure().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
@@ -202,7 +209,7 @@ describe('Goal task lists', () => {
     const snapshotOrder = [...index.nodes.keys()];
     render(list(index));
     fireEvent.click(disclosure());
-    expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual([
+    expect([...children().querySelectorAll('.task-row-title')].map((title) => title.textContent)).toEqual([
       'Active first', 'Active second', 'Todo first', 'Todo second', 'Done third', 'Done first', 'Done second',
     ]);
     expect([...index.nodes.keys()]).toEqual(snapshotOrder);
@@ -218,7 +225,7 @@ describe('Goal task lists', () => {
       { ...task('Equal second', 'done', ['Goal']), completedAt: '2026-10-21T12:00:00.100000000Z' },
     ])));
     fireEvent.click(disclosure());
-    expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual([
+    expect([...children().querySelectorAll('.task-row-title')].map((title) => title.textContent)).toEqual([
       'Later nanosecond', 'Earlier nanosecond', 'Equal first', 'Equal second', 'Unknown first', 'Unknown second',
     ]);
   });
@@ -230,7 +237,7 @@ describe('Goal task lists', () => {
     const goal = task('Goal', 'done');
     const view = render(list(indexOf([goal, first, second, waiting])));
     fireEvent.click(disclosure());
-    const titles = () => [...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent);
+    const titles = () => [...children().querySelectorAll('.task-row-title')].map((title) => title.textContent);
     expect(titles()).toEqual(['Waiting', 'Second', 'First']);
     view.rerender(list(indexOf([
       goal, { ...first, completedAt: '2026-10-23T12:00:00Z' }, second,
@@ -259,7 +266,7 @@ describe('Goal task lists', () => {
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
       const opener = useRef<HTMLElement | null>(null);
-      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
+      return <ChainList workerMachines={new Map()} projectId="00000000-0000-4000-8000-000000000101" index={index} summaries={summariesForIndex(index)} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openGraphTarget={openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }} onOpenChain={(id, trigger) => { opener.current = trigger; setOpenChainId(id); }} onCloseChain={() => setOpenChainId(null)}
         onRestoreGraphFocus={() => opener.current?.focus({ preventScroll: true })} onOpenTask={onOpenTask} />;
     };
@@ -273,7 +280,7 @@ describe('Goal task lists', () => {
     expect(graph).toHaveFocus();
     disclosure().focus();
     await user.keyboard('{Enter}');
-    const child = screen.getByRole('button', { name: /Implementation.*进行中/ });
+    const child = screen.getByRole('link', { name: 'Implementation' });
     await user.click(child);
     expect(onOpenTask).toHaveBeenLastCalledWith('Implementation', child);
     const goalDetails = screen.getByRole('button', { name: 'Goal，查看 Goal 详情' });
@@ -293,16 +300,16 @@ describe('Goal task lists', () => {
   it('refreshes visible members and status while preserving disclosure and restoring focus after removal', () => {
     const view = render(list(indexOf()));
     fireEvent.click(disclosure());
-    const removed = screen.getByRole('button', { name: /Acceptance.*待处理\s*被阻塞/ });
+    const removed = screen.getByRole('link', { name: 'Acceptance' });
     removed.focus();
     const after = seeds.filter((item) => item.id !== 'Acceptance').map((item) => item.id === 'Implementation' ? { ...item, status: 'done' as const } : item);
     view.rerender(list(indexOf(after)));
     expect(removed.isConnected).toBe(false);
     expect(disclosure()).toHaveFocus();
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
-    expect(within(children()).getAllByRole('button')).toHaveLength(3);
-    expect(screen.getByRole('button', { name: /Implementation.*已完成/ })).toBeVisible();
-    expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual(['Other root', 'Implementation']);
+    expect(within(children()).getAllByRole('link')).toHaveLength(2);
+    expect(screen.getByRole('link', { name: 'Implementation' })).toBeVisible();
+    expect([...children().querySelectorAll('.task-row-title')].map((title) => title.textContent)).toEqual(['Other root', 'Implementation']);
     expect(disclosure().closest('.goal-header')!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
   });
 
@@ -342,7 +349,7 @@ describe('shared scoped chain presentation', () => {
 
   const Instance = ({ id }: { readonly id: string }) => {
     const [expanded, setExpanded] = useState(false);
-    return <ScopedTaskChainRow projectId={projectId} index={index} rootId="Outside" memberIds={members} progress={progress}
+    return <ScopedTaskChainRow projectId={projectId} index={index} summaries={summariesForIndex(index)} rootId="Outside" memberIds={members} progress={progress}
       workerMachines={machines} instanceId={id} expanded={expanded} onExpandedChange={setExpanded} open={false}
       onOpenTask={onOpenTask} onOpenChain={onOpenChain} />;
   };
@@ -364,7 +371,7 @@ describe('shared scoped chain presentation', () => {
     expect(firstChildren).toBeVisible();
     expect(secondChildren).not.toBeVisible();
     expect(second).toHaveAttribute('aria-expanded', 'false');
-    expect([...firstChildren.querySelectorAll('.goal-task-main .root-title')].map((node) => node.textContent)).toEqual(['Newer', 'Older', 'Unknown']);
+    expect([...firstChildren.querySelectorAll('.task-row-title')].map((node) => node.textContent)).toEqual(['Newer', 'Older', 'Unknown']);
     expect(within(firstChildren).queryByText('Outside')).toBeNull();
     fireEvent.click(second);
     expect(secondChildren).toBeVisible();

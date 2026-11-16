@@ -90,13 +90,13 @@ it.each([
       expect(mounted.access().snapshot()).toMatchObject({ status: 'ready', access: { effectiveRole: role } });
     } else {
       await waitFor(() => expect(mounted.access().snapshot()).toMatchObject({ status: 'error', refreshing: false }));
-      expect(await screen.findByText('management-access')).toBeVisible();
+      await waitFor(() => expect(screen.getAllByText('management-access').some(element => !element.closest('[hidden]'))).toBe(true));
       await focus(mounted.access());
     }
     expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
     if (kind === 'settings') expect(await screen.findByLabelText('Alert threshold')).toHaveValue(60);
     else await screen.findByText(oldEmail);
-    await waitFor(() => kind === 'settings' ? expect(screen.queryByText('management-access')).toBeNull() : expect(screen.queryByRole('alert')).toBeNull());
+    await waitFor(() => kind === 'settings' ? expect(screen.queryAllByText('management-access').some(element => !element.closest('[hidden]'))).toBe(false) : expect(screen.queryByRole('alert')).toBeNull());
     if (kind === 'members' && role === 'admin') await waitFor(() => expect(invitationReads).toBeGreaterThan(0));
     else expect(resourceReads).toBe(kind === 'settings' ? 2 : 1);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
@@ -189,10 +189,10 @@ it('retries an access-only failure without replacing a valid unsaved settings dr
     expect(field).toHaveValue(95);
     expect(field).toBeDisabled();
     accessFails = false;
-    const alert = screen.getByText('management-access').closest('[role="alert"]') as HTMLElement;
+    const alert = screen.getAllByText('management-access').find(element => !element.closest('[hidden]'))!.closest('[role="alert"]') as HTMLElement;
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(mounted.access().snapshot()).toMatchObject({ status: 'ready', refreshing: false }));
-    await waitFor(() => expect(screen.queryByText('management-access')).toBeNull());
+    await waitFor(() => expect(screen.queryAllByText('management-access').some(element => !element.closest('[hidden]'))).toBe(false));
     expect(screen.getByLabelText('Alert threshold')).toHaveValue(95);
     expect(screen.getByLabelText('Alert threshold')).not.toBeDisabled();
     expect(resourceReads).toBe(1);
@@ -489,7 +489,7 @@ it('withdraws shared project admission after a confirmed self-removal while the 
     resume = pauseAuthRequests();
     await act(async () => { heldWrite.resolve(json({ projectId, userId: TEST_VIEWER_ID, deleted: true, actorAccess: null })); await nextEventLoopTurn(); });
     expect(() => scope.getAuthorizedProject(projectId)).toThrow(expect.objectContaining({ name: 'AbortError' }));
-    expect(scope.isProjectSuspended(projectId)).toBe(false);
+    expect(scope.isProjectSuspended(projectId)).toBe(true);
     expect(accessReads).toBe(beforeReads);
     expect(screen.getByLabelText('Other draft')).toHaveValue('new draft');
     expect(removed).not.toHaveBeenCalled();
@@ -690,4 +690,45 @@ it('does not publish an initial settings resource or allow a save before replace
     expect(field).toBeDisabled(); expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
     expect(writes).toBe(0);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+it('publishes the trusted self-removal result outside the hidden members section after access loss', async () => {
+  const heldWrite = Promise.withResolvers<Response>();
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
+  const resultHost = document.createElement('div');
+  document.body.append(resultHost);
+  const removed = vi.fn();
+  let denied = false;
+  let writes = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === root) return json(project);
+    if (url === `${root}/access`) return denied ? failure(404) : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
+    if (url === `${root}/members`) return json(roster(oldEmail, 'admin'));
+    if (url === `${root}/invitations`) return json({ items: [] });
+    if (url === `${root}/grants/${TEST_VIEWER_ID}` && init?.method === 'DELETE') { writes++; return heldWrite.promise; }
+    throw new Error(`Unexpected request ${url}`);
+  }));
+  const content = (active: boolean) => <ProjectAccessBoundary projectId={projectId}>
+    <div hidden={!active} inert={!active}><MembersPanel projectId={projectId} projectName="Private project name" user={user} onRemoved={removed} active={active} onRoute resultHost={resultHost} presentationGeneration={active ? 0 : 1} /></div>
+  </ProjectAccessBoundary>;
+  const view = renderWithLocale(content(true), { locale: 'en', taskCache: { scope } });
+  try {
+    const button = await screen.findByRole('button', { name: 'Remove direct grant for Alice' });
+    await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
+    const confirm = screen.getByRole('button', { name: 'Remove grant' });
+    await waitFor(() => expect(confirm).toBeEnabled()); fireEvent.click(confirm);
+    await waitFor(() => expect(writes).toBe(1));
+    view.rerender(content(false));
+    denied = true;
+    await act(async () => { heldWrite.resolve(json({ projectId, userId: TEST_VIEWER_ID, deleted: true, actorAccess: null })); });
+    expect(scope.isProjectSuspended(projectId)).toBe(true);
+    expect(await within(resultHost).findByText('Direct grant for Alice removed.')).toBeVisible();
+    expect(within(resultHost).getByRole('button', { name: 'Return to projects' })).toBeVisible();
+    expect(screen.queryByText('Private project name · Manage collaborators and invitations')).toBeNull();
+    expect(screen.queryByText(oldEmail)).toBeNull();
+    expect(removed).not.toHaveBeenCalled();
+    fireEvent.click(within(resultHost).getByRole('button', { name: 'Return to projects' }));
+    expect(removed).toHaveBeenCalledOnce();
+    expect(writes).toBe(1);
+  } finally { view.unmount(); scope.dispose(); resultHost.remove(); }
 });

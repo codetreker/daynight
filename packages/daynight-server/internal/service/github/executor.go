@@ -162,7 +162,7 @@ func (r *run) claim(ctx context.Context) (bool, error) {
 			if e != nil {
 				return e
 			}
-			valid = conn.Enabled && conn.Generation == r.lease.Generation && conn.ClaimToken != nil && *conn.ClaimToken == r.lease.Token && conn.ClaimUntil != nil && conn.ClaimUntil.After(now)
+			valid = conn.Enabled && conn.SyncEnabled && conn.Generation == r.lease.Generation && conn.ClaimToken != nil && *conn.ClaimToken == r.lease.Token && conn.ClaimUntil != nil && conn.ClaimUntil.After(now)
 			return nil
 		})
 		if readErr == nil && valid {

@@ -56,7 +56,7 @@
 .chain-summary-context>.root-meta{margin-top:0}
 .chain-summary-meta .task-assignee-identity{max-width:100%}
 .chain-summary-meta .assignee-name{max-width:none;overflow:visible;text-overflow:clip;white-space:normal;overflow-wrap:anywhere}
-.chain-summary-meta .chain-completion-time{padding:3px 4px}
+.chain-summary-meta .chain-completion-time{display:flex;align-items:center;font-size:.75rem;line-height:17px;padding:0 4px}
 @container(max-width:600px){
   .goal-header{grid-template-columns:minmax(0,1fr) auto}
   .chain-summary{grid-column:1/-1;padding:11px 11px 0}
@@ -68,4 +68,12 @@
 }
 
 .task-chain-dialog :focus-visible { outline-color: var(--task-focus); }
-.task-node-goal .task-node-bottom{padding-right:0}
+
+.project-session-status { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; max-width: 130px; }
+.project-session-control, .project-session-text { font-size: 10px; line-height: 1.4; text-align: right; overflow-wrap: anywhere; }
+.project-session-control { min-height: 36px; border: 0; border-radius: 4px; background: transparent; color: var(--task-in_progress-ink); padding: 3px; text-decoration: underline; text-underline-offset: 2px; }
+.project-session-control:focus-visible { outline: 2px solid var(--task-focus); outline-offset: 1px; }
+.project-session-text { color: var(--task-helper); }
+
+.project-session-control:is([data-session-state="notice"], [data-session-state="warning"], [data-needs-attention]),
+.project-session-text:is([data-session-state="notice"], [data-session-state="warning"], [data-needs-attention]) { color: var(--task-attention-ink); }

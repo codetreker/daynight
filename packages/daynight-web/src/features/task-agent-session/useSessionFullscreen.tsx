@@ -3,6 +3,7 @@ import { useBodyScrollLock } from '../../app/useBodyScrollLock';
 import { acquireInert } from '../../app/inert';
 import { dialogFocusables } from '../task-detail/focus';
 import { containSessionScroll } from './containSessionScroll';
+import { isNativeSelectPopupOpen } from '../../ui/native-select/NativeSelect';
 
 export type SessionFullscreenRegistration = { readonly owner: object; readonly root: HTMLElement; readonly exit: () => void };
 export const SessionFullscreenContext = createContext<((registration: SessionFullscreenRegistration) => (() => void)) | null>(null);
@@ -162,7 +163,12 @@ export function useSessionFullscreen({ client, userId, active, identity, fullscr
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLElement> | globalThis.KeyboardEvent) => {
     if (!fullscreen || event.defaultPrevented) return;
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); exit(); }
+    if (event.key === 'Escape') {
+      const nativeEvent = 'nativeEvent' in event ? event.nativeEvent : event;
+      event.stopPropagation();
+      if (nativeEvent.isComposing || nativeEvent.keyCode === 229 || isNativeSelectPopupOpen(event.target)) return;
+      event.preventDefault(); exit();
+    }
     else if (event.key === 'Tab') {
       const root = rootElement();
       const results = resultSlot();

@@ -10,7 +10,6 @@
 .goal-detail-description { padding: 1.25rem; overflow: auto; overscroll-behavior: contain; }
 .goal-detail-description-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; align-items: start; gap: 1.75rem; min-width: 0; }
 .goal-detail-description-body { min-width: 0; overflow-wrap: anywhere; }
-.goal-detail-description-body > .task-description { padding: 0; }
 .goal-information { min-width: 0; border-left: 1px solid var(--line); padding-left: 1.25rem; color: var(--task-helper); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .goal-information-section + .goal-information-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
 .goal-information h3 { margin: 0 0 1rem; color: var(--ink); font-size: 13px; font-weight: 600; }

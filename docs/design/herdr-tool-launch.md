@@ -86,13 +86,17 @@ Worker 核验原边界、helper 出生身份及 Job 成员关系后，保留第�
 
 混合模式的前置 Herdr 重连或资源读取失败时，协调器仍可调度本轮完整清单覆盖、项目已准备且保留原 worktree 与持久 `webExecution` 的 active Web 执行。该调度继续核对原 claim、许可、暂停和 backend 身份；取消不进入此路径。原 Herdr 错误仍上报，容量保持未知，不进入全局资源结算、pending 启动或新 claim 准入。原 Web 执行的显式 retry、清理和完成也按其冻结模式选择 backend，不以当前工具目标或其它 claim 的 Herdr 责任增加前置依赖。
 
+孤立 worktree 清单通过独立的 `observeResources` 只读入口观察 legacy 资源：共享串行队列内只有 current/pending owner 和执行责任均缺席、配置与 session 路径及两个 endpoint 均缺席、原 native mapping 全部确认停止时才返回空集合；其它情况按原实例重连并读取资源，保留未知状态与读取错误。实例存在检查和新执行准入不采用这一空观察替代原身份核验。
+
 ## 观察与验证边界
 
 工具遥测按 selectionKey 聚合原实例与执行事实，允许同时出现多个实际选择。版本来自对应冻结观察或实际实例握手；无完整证据时计数和版本保持未知并保留 unconfirmed，不能由 task.status 推导进程存活。采样只读，不启动或探测工具。
 
 单测与受控故障覆盖映射损坏、未知输入、旧 claim 恢复、A/B pending、替代进程、legacy endpoint 和旧 attach。`herdr-tool-platform.integration.test.ts` 在对应真实 OS 使用固定官方发行工具验证 shell、argv、TTY/console、官方 Session 回报及完整进程回收；Windows 验证真实系统 PowerShell 5 和 ExternalScript。独立清理检查不能以测试通过代替。CI 的三平台 job 必须实际成功，跳过不算通过；这些真实 native 隔离证据仍不等同于真实账号 Provider、完整 Worker 或网页组合验收。
 
-Windows 的最终独立清理检查重新观察原 PID 的出生身份，不能仅凭 `kill(pid, 0)` 判定原进程仍在。普通平台证据沿用 CIM `CreationDate` 的 UTC ticks，metadata oracle 沿用其原 `.NET Process.StartTime` UTC ticks；按各自来源完整比较，不混用精度。检查保留原标识、当前标识、观察来源及错误，区分原进程仍在、PID 已复用、缺失和未知。原停证完整且独立观察确认缺失或不同出生身份时，才可确认原进程不再存活；原进程仍在、缺原身份、查询失败或不完整输出均失败。观察器仅清理自己创建的查询进程，不向被检查 PID 发信号；endpoint、目录、查询进程及输出流关闭检查仍独立成立。
+真实平台 fixture 从继承的 PATH 通过现有 `which` 依赖解析 Windows 的真实 `git.exe`，随后执行真实 `git init`，保留其 5 秒上限。子进程失败的上传诊断保留 `code`、`killed`、`signal` 与耗时，不能仅凭 `Command failed` 将非零退出或超时解释为缺少 Git。fixture 在创建 adapter 前记录初始化阶段，并在创建前切换阶段；失败材料保留该阶段。
+
+Windows 的最终独立清理检查区分尚未创建 adapter 的无资源初始化失败与已经进入 adapter 创建的执行。前者必须保留明确失败、诊断耗时、空进程与 endpoint/receipt 记录、零输入和请求、已关闭 mock 与空查询记录；矛盾或不完整的证据仍失败，目录和链接的清理检查继续执行。该分类只证明没有 Herdr 资源需要停证，测试本身仍保留原初始化失败。真实平台 fixture 在 daemon 启动后保留原始 PID 与出生 token，后续捕获只沿当前仍匹配原身份的祖先扩展 owned set。每条父子边都以 BigInt 比较同来源出生 token，要求子进程不早于父进程；相等时间符合 CIM 微秒及 Linux clock-tick 精度。旧子进程及其子树不能通过复用的 parent PID 纳入；已捕获身份退出后继续保留供停证使用，替代 incarnation 不能仅凭相同 PID 成为遍历根；若新进程通过当前仍存活的原始祖先重新建立归属，则按新的 PID/出生 token 身份纳入历史，并保留旧身份的清理责任。独立 checker 要求每个 PID/出生 token 身份唯一且具有完整停证；每个 PID/来源只查询一次，再分别比较所有历史出生身份。任何一代 owned incarnation 仍存活或观察未知均使清理失败。必要身份缺失、候选 token 无法解析或同身份证据矛盾均保留捕获失败。具体决策见[进程 incarnation 捕获记录](../../.agents/notes/implemented/testing/2026-11-14-herdr-process-incarnation-capture.md)。启动后的独立检查重新观察原 PID 的出生身份，不能仅凭 `kill(pid, 0)` 判定原进程仍在。普通平台证据沿用 CIM `CreationDate` 的 UTC ticks，metadata oracle 沿用其原 `.NET Process.StartTime` UTC ticks；按各自来源完整比较，不混用精度。检查保留原标识、当前标识、观察来源及错误，区分原进程仍在、PID 已复用、缺失和未知。原停证完整且独立观察确认缺失或不同出生身份时，才可确认原进程不再存活；原进程仍在、缺原身份、查询失败或不完整输出均失败。观察器仅清理自己创建的查询进程，不向被检查 PID 发信号；endpoint、目录、查询进程及输出流关闭检查仍独立成立。
 
 Windows 清理策略单测执行真实检查器及文件操作，仅在 OS 查询边界控制观察结果；专用 native job 必须实际验证 PowerShell 5、同来源出生身份比较和脚本入口。一个 Windows 机制测试保留对存活 owned 进程的真实 .NET 读取；脚本退出码测试在检查器模块边界控制返回结果。POSIX 脚本入口及查询子进程超时后的真实关闭验证分别保留，不以策略模拟代替 native 验收。
 

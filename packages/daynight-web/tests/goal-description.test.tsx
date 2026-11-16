@@ -41,6 +41,7 @@ it.each(['dialog', 'page'] as const)('keeps description and information with key
   const panel = screen.getByRole('tabpanel', { name: 'Description' });
   expect(panel.id).toBe(tabs[0]!.getAttribute('aria-controls'));
   expect(within(panel).getByRole('heading', { name: 'Goal text' })).toBeVisible();
+  expect(within(panel).getByRole('heading', { name: 'Goal text' }).closest('.description-card')).not.toBeNull();
   expect(within(panel).getByRole('img', { name: 'Diagram' })).toHaveAttribute('src', expect.stringContaining('/images/diagram.png'));
   fireEvent.click(within(panel).getByRole('link', { name: 'Guide' }));
   expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
@@ -56,6 +57,7 @@ it('shows the localized empty description in its own panel', () => {
   renderWithLocale(surface(''), { locale: 'zh-CN', taskCache: true, container: root });
   fireEvent.click(screen.getByRole('tab', { name: '描述' }));
   expect(screen.getByRole('tabpanel', { name: '描述' })).toHaveTextContent('暂无描述');
+  expect(screen.getByRole('tabpanel', { name: '描述' }).querySelector('.description-card')).toBeNull();
 });
 
 it('retains a tag draft through a background failure but retires it when Goal access is lost', () => {

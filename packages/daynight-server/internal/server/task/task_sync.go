@@ -55,6 +55,13 @@ func taskSyncRequest(request *http.Request) (service.TaskSyncRequest, error) {
 
 func TaskSyncResponse(sync model.TaskSync) api.TaskSync {
 	result := api.TaskSync{Mode: sync.Mode, Epoch: sync.Epoch, Project: projecthttp.ProjectResponse(sync.Project), ActorAccess: projecthttp.AccessResponse(sync.ActorAccess), ObservedAt: sync.ObservedAt.UTC(), Tasks: make([]api.TaskViewRecord, 0, len(sync.Tasks)), DependencyStates: make(map[string]api.TaskDependencyState, len(sync.DependencyStates)), AssigneeVersions: make([]api.TaskAssigneeVersion, 0, len(sync.AssigneeVersions))}
+	result.TaskObservations = make(map[string]api.TaskSyncObservation, len(sync.TaskObservations))
+	result.SessionPartial = sync.SessionPartial
+	result.ResponseTaskAt = sync.ResponseTaskAt.UTC()
+	result.ResponseSessionAt = sync.ResponseSessionAt.UTC()
+	for id, observation := range sync.TaskObservations {
+		result.TaskObservations[id] = taskprotocol.SessionRowResponse(observation)
+	}
 	for id, state := range sync.DependencyStates {
 		blocked := append([]string{}, state.BlockedBy...)
 		result.DependencyStates[id] = api.TaskDependencyState{TaskVersion: strconv.FormatInt(state.TaskVersion, 10), BlockedBy: blocked, Ready: state.Ready}

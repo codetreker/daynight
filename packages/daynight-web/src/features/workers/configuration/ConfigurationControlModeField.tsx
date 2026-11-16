@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { WorkerConfigurationResource, WorkerControlMode } from '../../../api/worker-configuration';
 import { useI18n } from '../../../i18n/LocaleProvider';
+import { NativeSelect } from '../../../ui/native-select/NativeSelect';
 import { ConfigurationFeedback } from './ConfigurationFeedback';
 
 export const ConfigurationControlModeField = ({ resource, value, changed, disabled, onChange }: {
@@ -21,11 +22,11 @@ export const ConfigurationControlModeField = ({ resource, value, changed, disabl
   });
   return <div className="field">
     <label htmlFor="config-agentControlMode">{m.agentControlMode}</label>
-    <div className="config-select"><select ref={select} id="config-agentControlMode" value={value ?? ''} disabled={disabled || !supported}
+    <NativeSelect density="form" layout="fill" ref={select} id="config-agentControlMode" value={value ?? ''} disabled={disabled || !supported}
       aria-describedby={`control-mode-detail feedback-agentControlMode${!supported || adoptionPending ? ' control-mode-availability' : ''}`}
       onChange={event => { if (event.target.value === 'herdr' || event.target.value === 'web') onChange(event.target.value); }}>
       <option value="herdr">herdr</option><option value="web">web</option>
-    </select></div>
+    </NativeSelect>
     <p className="configuration-field-detail" id="control-mode-detail">{m.controlModeDetail}</p>
     {(!supported || adoptionPending) && <p className="configuration-field-detail" id="control-mode-availability">{supported ? m.controlModeAwaitingAdoption : m.controlModeUnsupported}</p>}
     <ConfigurationFeedback id="feedback-agentControlMode" resource={resource} kind="agentControlMode" expected={resource.desired?.value.agentControlMode ?? null} changed={changed} />

@@ -593,6 +593,8 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456000, time.UTC)
 	readerExec(t, s, `UPDATE tasks SET created_at=$1, updated_at=$1, version=9007199254740993,
 		title=repeat('😀',161) WHERE project_id=$2`, stamp, project.ID)
+	readerExec(t, s, `UPDATE tasks SET title=repeat('界',160), type='goal' WHERE id=$1`, a.ID)
+	readerExec(t, s, `UPDATE tasks SET title=repeat('界',160)||repeat('x',1100) WHERE id=$1`, c.ID)
 	readerExec(t, s, "UPDATE tasks SET updated_at=$1, required_platform='linux', allow_agents=true WHERE id=$2", stamp.Add(time.Microsecond), c.ID)
 	readerExec(t, s, "UPDATE task_dependencies SET external=true WHERE task_id=$1 AND depends_on_task_id=$2", c.ID, b.ID)
 	// Failing detail expressions prove that the summary reader never selects bodies.
@@ -603,7 +605,9 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 		status, version, created_at, updated_at, started_at, completed_at, cancelled_at, allow_agents, required_platform, assigned_to, deleted_at,effective_deleted_at FROM resource_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot SnapshotScope) error {
 		all, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, nil, 160)
-		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].TitlePreview != strings.Repeat("😀", 160) || !all[0].TitleTruncated ||
+		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].Type != model.TaskTypeGoal || all[0].Title != strings.Repeat("界", 160) || all[0].TitlePreview != all[0].Title || all[0].TitleTruncated ||
+			all[1].Title != strings.Repeat("😀", 161) || all[1].TitlePreview != strings.Repeat("😀", 160) || !all[1].TitleTruncated ||
+			all[2].Title != strings.Repeat("界", 160)+strings.Repeat("x", 1100) || all[2].TitlePreview != strings.Repeat("界", 160) || !all[2].TitleTruncated ||
 			all[0].RequiredPlatform != nil || all[2].RequiredPlatform == nil || *all[2].RequiredPlatform != model.TaskPlatform("linux") || !all[2].AllowAgents ||
 			!slices.Equal(all[2].DependsOn, []string{a.ID, b.ID}) || !slices.Equal(all[2].ExternalDependsOn, []string{b.ID}) {
 			t.Fatalf("intrinsic projection: %#v, %v", all, err)
@@ -618,6 +622,9 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 			got, err := snapshot.TaskDAO().TaskSyncTasks(ctx, project.ID, &test.lower, 160)
 			if err != nil || got == nil || len(got) != test.count {
 				t.Fatalf("lower %s: %#v, %v", test.lower.Format(time.RFC3339Nano), got, err)
+			}
+			if test.count == 1 && (got[0].ID != c.ID || got[0].Title != all[2].Title || got[0].TitlePreview != all[2].TitlePreview || !got[0].TitleTruncated) {
+				t.Fatalf("delta title differs: %#v", got[0])
 			}
 		}
 		return nil
@@ -657,6 +664,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 	for _, test := range []struct{ name, ddl string }{
 		{"query", "DROP VIEW task_resource_rows; DROP TABLE tasks"},
+		{"missing-title", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,NULL::text AS title,status,version,created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
 		{"decode", `ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
 		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER VIEW task_resource_rows RENAME TO resource_source; CREATE VIEW task_resource_rows AS SELECT id,project_id,type,parent_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,cancelled_at,allow_agents,required_platform,assigned_to,deleted_at,effective_deleted_at FROM resource_source`},
 	} {

@@ -79,10 +79,14 @@ describe("Team members", () => {
     await screen.findByText("Alice", { exact: false, selector: ".person-name" });
     const other = row(otherId);
     expect(within(other).getByRole("button", { name: "Remove" })).toBeEnabled();
-    fireEvent.change(within(other).getByRole("combobox"), { target: { value: "member" } });
+    const role = within(other).getByRole("combobox");
+    fireEvent.change(role, { target: { value: "member" } });
+    expect(role).toHaveValue("admin");
+    expect(writes(fixture.fetcher)).toHaveLength(0);
     expect(screen.getByRole("dialog", { name: "Change Team role" })).toHaveTextContent("Administrator → Member");
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(other).getByRole("combobox")).toBe(role); expect(role).toHaveValue("admin");
     expect(writes(fixture.fetcher)).toHaveLength(0);
   });
   it("lets members leave but prevents changes to other people", async () => {

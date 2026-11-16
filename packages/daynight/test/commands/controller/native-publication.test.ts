@@ -12,7 +12,7 @@ import { openSessionContent } from "../../../src/commands/controller/content/ses
 import { observeNativeInput } from "../../../src/commands/controller/recovery.js";
 import type { NativeImageProjectionState, NativeInputPublicationRequest } from "../../../src/commands/controller/media/native-publication-types.js";
 import { nativeInputPublicationFailure } from "../../../src/commands/controller/media/native-publication.js";
-import { canonicalImageJson } from "../../../src/session/image-values.js";
+import { canonicalImageJson, type DirectCaptureSubmission } from "../../../src/session/image-values.js";
 import { createMarkdownTimelinePipeline } from "../../../src/commands/controller/markdown/pipeline.js";
 import { createMarkdownImageProjector, type MarkdownProjectionState } from "../../../src/commands/controller/markdown/projection.js";
 import type { ImageOccurrence } from "../../../src/session/image-values.js";
@@ -47,7 +47,7 @@ const fixture = async (resourceMetadata: Partial<SessionResource> = {}, imageCou
     const index = ordinal + 1, nativeSource = { provider: "copilot" as const, nativeSessionId, nativeMessageId, nativePartId: `attachment-${ordinal}` };
     const sourceKey = canonicalImageJson([1, nativeSource, entryId, "content", null, index]), nativeImageId = nativeEntryId(nativeSessionId, `image:${sourceKey}`), key = `image-slot:${nativeEntryId(nativeSessionId, sourceKey)}`;
     const pending = { type: "image_unavailable" as const, imageId: nativeImageId, label: "Native image", error: { code: "capture_pending", message: "The original image is being saved." } };
-    const state: NativeImageProjectionState = { request: { captureId: nativeEntryId(nativeImageId, "capture"), attemptId: nativeEntryId(nativeImageId, "attempt"), occurrence: { imageId: nativeImageId, entryId, container: "content", partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey }, nativeSource, locator: { kind: "native", ...nativeSource } }, index, waitingForSource: false, phase: "new", unknownAction: null, part: pending, validated: null };
+    const state: NativeImageProjectionState = { request: { captureId: nativeEntryId(nativeImageId, "capture"), attemptId: nativeEntryId(nativeImageId, "attempt"), occurrence: { imageId: nativeImageId, entryId, container: "content", partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey }, nativeSource, locator: { kind: "native", ...nativeSource } }, attemptId: nativeEntryId(nativeImageId, "attempt"), index, waitingForSource: false, phase: "new", part: pending, submission: null };
     return { index, nativeSource, nativeImageId, key, pending, state };
   });
   const { nativeImageId, key, state } = nativeStates[0]!;
@@ -348,20 +348,20 @@ test("querying a committed association reports a later settled capture without w
   } finally { f.journal.close(); }
 });
 
-test.each(["commit", "failure"] as const)("publication query retains a durable %s retry", async action => {
+test.each(["validated", "failed"] as const)("publication query retains a durable %s submission", async kind => {
   const f = await fixture();
   try {
     f.publishNative(); const result = f.journal.publishNativeInputAssociation(f.request);
     expect(result.state).toBe("committed"); if (result.state !== "committed") return;
-    const state: NativeImageProjectionState = action === "commit"
-      ? { ...f.state, phase: "commit", retryAt: 12345, validated: { mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 } }
-      : { ...f.state, phase: "failure", retryAt: 12345, part: { type: "image_unavailable", imageId: f.nativeImageId, label: "Native image", error: { code: "source_missing", message: "Original is missing." } } };
+    const outcome: DirectCaptureSubmission["outcome"] = kind === "validated"
+      ? { kind, validated: { mediaType: "image/png", byteLength: "3", sha256: "a".repeat(64), width: 1, height: 1, frameCount: 1 } }
+      : { kind, error: { code: "source_missing", message: "Original is missing." } };
+    const state: NativeImageProjectionState = { ...f.state, phase: "submit", submission: { request: f.state.request, attemptId: f.state.attemptId, outcome } };
     f.journal.writeNativeImageState(f.key, state);
     const query = f.journal.queryNativeInputAssociation(f.request.identity);
     expect(query.state).toBe("committed"); if (query.state === "committed") expect(query.view.slots[0]!.state).toEqual(state);
   } finally { f.journal.close(); }
 });
-
 test("a lost SQL commit confirmation is unknown until querying the unchanged identity observes the original committed receipt", async () => {
   const f = await fixture();
   try {

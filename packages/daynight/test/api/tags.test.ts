@@ -70,6 +70,64 @@ describe("project tag catalog API", () => {
     ]);
   });
 
+
+  it("sends optional creation colors and color-only updates without changing the receipt shape", async () => {
+    const created = tag(firstId, { version: 1n });
+    const recolored = tag(firstId, { version: version + 1n });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(created, 201, { Location: `/api/v1/projects/${project}/tags/${firstId}` })).mockResolvedValueOnce(json(recolored)).mockResolvedValueOnce(json(recolored));
+    const api = client(fetch);
+    expect(await api.createTag(project, "Project tag", "#1a2b3c")).toEqual(created);
+    expect(await api.setTagColor(project, firstId, "#Ab12Cd", version)).toEqual(recolored);
+    expect(await api.setTagColor(project, firstId, "#AB12CD", version + 1n)).toEqual(recolored);
+    expect(fetch.mock.calls.map(([, options]) => [options!.method, options!.body])).toEqual([
+      ["POST", '{"name":"Project tag","color":"#1a2b3c"}'],
+      ["PATCH", '{"version":9007199254740993,"color":"#Ab12Cd"}'],
+      ["PATCH", '{"version":9007199254740994,"color":"#AB12CD"}'],
+    ]);
+    for (const [url] of fetch.mock.calls.slice(1)) expect(new URL(String(url)).pathname).toBe(`/api/v1/projects/${project}/tags/${firstId}`);
+  });
+
+  it.each([{ id: secondId }, { version: version - 1n }, { version: version + 2n }, { color: "#123ABC" }])("keeps an invalid color update receipt unknown: %#", async changes => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(tag(firstId, changes)));
+    await expect(client(fetch).setTagColor(project, firstId, "#123ABC", version)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it.each([{ status: 400, code: "invalid_request", confirmed: true }, { status: 403, code: "forbidden", confirmed: true }, { status: 409, code: "version_conflict", confirmed: true }, { status: 503, code: "write_outcome_unknown", confirmed: false }])("propagates color write $code without replay", async ({ status, code, confirmed }) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ error: { code, message: "Refused", requestId: "color-request" } }, status));
+    await expect(client(fetch).setTagColor(project, firstId, "invalid", version)).rejects.toMatchObject({ status, code, confirmedRefusal: confirmed, outcomeUnconfirmed: !confirmed });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(String(fetch.mock.calls[0]![1]!.body)).toContain('"color":"invalid"');
+  });
+
+  it("retains cancellation after dispatch as unknown without replaying the color write", async () => {
+    const cancellation = new AbortController();
+    const operation = createOperation({ signal: cancellation.signal }); cleanups.push(() => operation.dispose());
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, options) => { cancellation.abort(); options!.signal!.throwIfAborted(); throw new Error("unreachable"); });
+    const api = createApiClient({ serverUrl: "http://localhost:8787", operation, fetch });
+    await expect(api.setTagColor(project, firstId, "#123ABC", version)).rejects.toMatchObject({ outcomeUnconfirmed: true, cause: expect.objectContaining({ kind: "cancelled" }) });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(() => operation.check()).toThrow("Operation cancelled.");
+  });
+
+  it("preserves a confirmed color write when response cleanup fails", async () => {
+    const response = json(tag(firstId, { version: version + 1n }));
+    const reader = response.body!.getReader(), release = reader.releaseLock.bind(reader);
+    Object.defineProperty(reader, "releaseLock", { value: () => { release(); throw new Error("release failed"); } });
+    Object.defineProperty(response.body, "getReader", { value: () => reader });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    await expect(client(fetch).setTagColor(project, firstId, "#123ABC", version)).rejects.toMatchObject({ confirmedMutationId: firstId, outcomeUnconfirmed: false });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the existing tag receipt shape and rejects an added color field", async () => {
+    const receipt = tag(firstId, { version: 2n, name: "Platform" });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(receipt)).mockResolvedValueOnce(json({ ...receipt, color: "#123ABC" }));
+    const api = client(fetch);
+    expect(await api.getTag(project, firstId)).toEqual(receipt);
+    await expect(api.getTag(project, firstId)).rejects.toMatchObject({ phase: "protocol" });
+  });
+
   it.each([{ projectId: otherProject }, { id: secondId }, { version: 0 }, { usage: { tasks: -1, goals: 0 } }, { name: " trailing " }])("rejects malformed or mismatched tag responses: %#", async changes => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json(tag(firstId, changes)));
     await expect(client(fetch).getTag(project, firstId)).rejects.toMatchObject({ phase: "protocol" });

@@ -23,6 +23,13 @@ type TaskStepProjection struct {
 	TitleTruncated bool
 }
 
+// TaskSyncTaskIdentity identifies a visible in-progress ordinary Task in the
+// same snapshot as the rest of the task-sync projection.
+type TaskSyncTaskIdentity struct {
+	ID      string
+	Version int64
+}
+
 type TaskReader interface {
 	TaskWorkReader
 	Task(context.Context, string, string) (model.Task, error)
@@ -45,5 +52,6 @@ type TaskReader interface {
 	TaskGraphTasks(context.Context, string, string, TaskGraphSelection, int) ([]model.GraphTask, error)
 	TaskCacheEpoch(context.Context, string) (string, error)
 	TaskSyncTasks(context.Context, string, *time.Time, int) ([]model.TaskViewRecord, error)
+	TaskSyncActiveTasks(context.Context, string) ([]TaskSyncTaskIdentity, error)
 	TaskSyncDependencyStates(context.Context, string, *time.Time) (map[string]model.TaskDependencyState, error)
 }

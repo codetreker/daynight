@@ -92,6 +92,16 @@ beforeEach(() => {
 });
 
 describe('account credentials', () => {
+  it.each(['https://example.test/avatar.png', 'data:image/png;base64,aW1hZ2U='])('passes the account avatar source to Identity: %s', (avatarUrl) => {
+    render(<AccountPage user={{ ...user, avatarUrl }} onSignOut={vi.fn()} onIdentityMismatch={vi.fn()} />);
+    const avatar = document.querySelector('.profile-info .management-avatar')!;
+    const image = avatar.querySelector('img')!;
+    expect(avatar).toHaveTextContent('JI'); expect(image).toHaveAttribute('src', avatarUrl); expect(image).not.toBeVisible();
+    fireEvent.load(image);
+    expect(image).toBeVisible(); expect(avatar).not.toHaveTextContent('JI');
+    expect(screen.getByText(user.name!)).toBeVisible(); expect(screen.getByText(user.email!)).toBeVisible();
+  });
+
   it('shows normalized profile, invokes sign out, loads safe errors and retries without representing failure as empty', async () => {
     const signOut = vi.fn();
     vi.mocked(auth.listTokens).mockRejectedValueOnce(new ApiError('server', 500, 'internal_error', 'safe-id'));
@@ -431,7 +441,7 @@ describe('authoritative project management', () => {
   it('reads regular member state without requesting administrator invitations', async () => {
     actorRole = 'member';
     vi.mocked(auth.listMembers).mockResolvedValue(memberPage([member(user.id), member('Alice', 'admin')]));
-    members(); await readyMembers();
+    members({ projectName: 'Very long project name' }); await readyMembers();
     expect(screen.getByText(/成员与邀请由项目管理员管理/)).toBeInTheDocument();
     expect(auth.listInvitations).not.toHaveBeenCalled(); expect(screen.queryByRole('combobox')).toBeNull(); expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull();
     expect(screen.getByText('Very long project name · 管理协作成员与加入邀请')).toBeInTheDocument();
@@ -606,16 +616,19 @@ describe('authoritative project management', () => {
   it('retains a confirmed invitation secret across navigation until explicitly closed', async () => {
     const link = 'https://daynight.test/invitations#once-secret';
     vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
-    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn() };
+    const retain = vi.fn();
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn(), onGuardChange: retain };
     const view = render(<MembersPanel {...props} active onRoute />); await readyMembers();
     await clickWhenReady('邀请成员'); await dialogClick('创建邀请链接');
     await screen.findByDisplayValue(link);
+    await waitFor(() => expect(retain).toHaveBeenLastCalledWith(true));
     view.rerender(<MembersPanel {...props} active={false} onRoute={false} />);
     expect(screen.getByDisplayValue(link)).not.toBeVisible();
     view.rerender(<MembersPanel {...props} active onRoute />);
     expect(await screen.findByDisplayValue(link)).toBeVisible();
     await dialogClick('我已保存，关闭');
     expect(screen.queryByDisplayValue(link)).toBeNull();
+    await waitFor(() => expect(retain).toHaveBeenLastCalledWith(false));
     expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
@@ -669,7 +682,7 @@ describe('authoritative project management', () => {
     expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
-  it.each(['member', 'denied'] as const)('keeps an existing secret visible after confirmed %s access', async (outcome) => {
+  it.each(['member', 'denied'] as const)('preserves or clears a revealed secret according to confirmed %s access', async (outcome) => {
     const link = 'https://daynight.test/invitations#once-secret';
     vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link });
     members(); await readyMembers();
@@ -683,8 +696,10 @@ describe('authoritative project management', () => {
     fireEvent(window, new Event('focus'));
     if (outcome === 'member') await waitFor(() => expect(screen.queryByRole('button', { name: '邀请成员' })).toBeNull());
     else await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('项目不存在'));
-    expect(screen.getByDisplayValue(link)).toBe(field); expect(field).toBeVisible();
-    expect(document.activeElement).toBe(field); expect(field.selectionStart).toBe(2); expect(field.selectionEnd).toBe(8);
+    if (outcome === 'member') {
+      expect(screen.getByDisplayValue(link)).toBe(field); expect(field).toBeVisible();
+      expect(document.activeElement).toBe(field); expect(field.selectionStart).toBe(2); expect(field.selectionEnd).toBe(8);
+    } else expect(screen.queryByDisplayValue(link)).toBeNull();
     expect(auth.createInvitation).toHaveBeenCalledOnce();
   });
 
@@ -977,6 +992,34 @@ describe('participant grants and unconfirmed writes', () => {
     expect(screen.queryByRole('button', { name: '移除 Inherited' })).toBeNull();
     await waitFor(() => expect(memberRoster().getByRole('combobox', { name: 'Jianjun 的单独授权' })).not.toBeDisabled());
   });
+  it('reports an unsaved role choice in the members section summary', async () => {
+    const state = vi.fn(); members({ onStateChange: state }); await readyMembers();
+    const select = memberRoster().getByRole('combobox', { name: 'Alice 的单独授权' });
+    await waitFor(() => expect(select).toBeEnabled());
+    fireEvent.change(select, { target: { value: 'admin' } });
+    await waitFor(() => expect(state).toHaveBeenLastCalledWith(expect.objectContaining({ dirty: true })));
+    await dialogClick('取消');
+    await waitFor(() => expect(state).toHaveBeenLastCalledWith(expect.objectContaining({ dirty: false })));
+  });
+
+  it('publishes a held grant without closing a dialog from an earlier presentation', async () => {
+    const pending = deferred<auth.ProjectGrantResult>();
+    vi.mocked(auth.setProjectGrant).mockImplementationOnce(async (_project, _user, _input, _signal, _mismatch, dispatched) => { dispatched?.(); return pending.promise; });
+    const props = { projectId: '00000000-0000-4000-8000-000000000101', user, onRemoved: vi.fn() };
+    const view = render(<MembersPanel {...props} active onRoute presentationGeneration={0} />); await readyMembers();
+    const select = memberRoster().getByRole('combobox', { name: 'Alice 的单独授权' });
+    await waitFor(() => expect(select).toBeEnabled()); fireEvent.change(select, { target: { value: 'admin' } });
+    const dialog = screen.getByRole('dialog');
+    await dialogClick('保存角色');
+    await waitForState(() => expect(auth.setProjectGrant).toHaveBeenCalledOnce());
+    view.rerender(<MembersPanel {...props} active={false} onRoute presentationGeneration={1} />);
+    await act(async () => pending.resolve({ grant: member('Alice', 'admin').directGrant!, actorAccess: directAccessFixture(props.projectId, user.id, 'admin') }));
+    await screen.findByText(/已将 Alice 的单独授权保存为/);
+    view.rerender(<MembersPanel {...props} active onRoute presentationGeneration={1} />);
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(auth.setProjectGrant).toHaveBeenCalledOnce();
+  });
+
   it('holds a grant receipt until identity and fresh project access are confirmed', async () => {
     const pending = deferred<auth.ProjectGrantResult>();
     const permission = deferred<auth.ProjectAccess>();
@@ -1130,8 +1173,47 @@ describe('participant grants and unconfirmed writes', () => {
 });
 
 describe('management feedback', () => {
+  it('isolates avatar loading and failure by member identity and source', () => {
+    const profile = { userId: 'member-a', name: 'Alice', email: 'alice@example.com', avatarUrl: 'https://example.test/a.png' };
+    const view = render(<Identity user={profile} self />);
+    const avatar = () => view.container.querySelector('.management-avatar')!;
+    const imageA = avatar().querySelector('img')!;
+    expect(avatar()).toHaveAttribute('aria-hidden', 'true'); expect(imageA).toHaveAttribute('alt', '');
+    expect(avatar()).toHaveTextContent('AL'); expect(imageA).not.toBeVisible();
+    fireEvent.error(imageA); expect(avatar().querySelector('img')).toBeNull(); expect(avatar()).toHaveTextContent('AL');
+    view.rerender(<Identity user={{ ...profile }} self />); expect(avatar().querySelector('img')).toBeNull();
+    view.rerender(<Identity user={{ ...profile, avatarUrl: 'https://example.test/b.png' }} self />);
+    const imageB = avatar().querySelector('img')!; expect(imageB).toHaveAttribute('src', 'https://example.test/b.png');
+    fireEvent.load(imageB); fireEvent.error(imageA); expect(imageB).toBeVisible();
+    view.rerender(<Identity user={{ ...profile, avatarUrl: 'https://example.test/b.png' }} self />);
+    expect(avatar().querySelector('img')).toBe(imageB); expect(imageB).toBeVisible();
+    view.rerender(<Identity user={{ ...profile, userId: 'member-b', avatarUrl: 'https://example.test/b.png' }} self />);
+    expect(avatar().querySelector('img')).not.toBe(imageB); expect(avatar()).toHaveTextContent('AL');
+    fireEvent.error(avatar().querySelector('img')!);
+    view.rerender(<Identity user={{ ...profile, userId: 'member-c', avatarUrl: 'https://example.test/b.png' }} self />);
+    expect(avatar().querySelector('img')).not.toBeNull(); expect(screen.getByText(/Alice/)).toHaveTextContent('Alice');
+  });
+
+  it('ignores events from an image replaced while still loading', () => {
+    const profile = { userId: 'member-a', name: 'Alice', email: null, avatarUrl: 'https://example.test/a.png' };
+    const view = render(<Identity user={profile} />);
+    const old = view.container.querySelector('img')!;
+    view.rerender(<Identity user={{ ...profile, avatarUrl: 'https://example.test/b.png' }} />);
+    const current = view.container.querySelector('img')!;
+    fireEvent.load(old); fireEvent.error(old);
+    expect(current).not.toBeVisible(); expect(view.container.querySelector('.management-avatar')).toHaveTextContent('AL');
+    fireEvent.load(current); expect(current).toBeVisible();
+    fireEvent.error(old); expect(current).toBeVisible();
+  });
+
+  it.each([null, ''])('uses local ID initials without an image for source %s', (avatarUrl) => {
+    const view = render(<Identity user={{ id: 'id-only', name: null, email: null, avatarUrl }} />);
+    expect(view.container.querySelector('.management-avatar')).toHaveTextContent('ID');
+    expect(view.container.querySelector('img')).toBeNull(); expect(screen.getByText('id-only')).toBeVisible();
+  });
+
   it('renders only safe error fields and normalized fallback identities', () => {
-    const view = render(<><ManagementError error={new ApiError('server', 401)} /><Identity user={{ name: null, email: null, id: 'id-only' }} /><Identity user={{ name: null, email: 'email-only', userId: 'user-id' }} /><Identity user={{ name: null, email: null, userId: 'user-id' }} /></>);
+    const view = render(<><ManagementError error={new ApiError('server', 401)} /><Identity user={{ name: null, email: null, id: 'id-only', avatarUrl: null }} /><Identity user={{ name: null, email: 'email-only', userId: 'user-id', avatarUrl: null }} /><Identity user={{ name: null, email: null, userId: 'user-id', avatarUrl: null }} /></>);
     expect(screen.getByText('登录状态已失效，请重新登录。')).toBeInTheDocument(); expect(screen.getByText('id-only')).toBeInTheDocument(); expect(screen.getByText('user-id')).toBeInTheDocument();
     view.rerender(<ManagementError error={new ApiError('server', 404)} />); expect(screen.getByRole('alert')).toHaveTextContent('项目不存在');
   });

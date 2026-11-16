@@ -19,11 +19,14 @@ type PersonalTaskItem struct {
 	Task             store.PersonalTaskRow
 	MatchedTaskCount int64
 	Paused           bool
+	Worker           *taskcore.PersonalTaskWorker
 	Session          sp.TaskSessionObservation
+	SessionRow       model.TaskSyncObservation
 }
 
 type PersonalTaskPage struct {
 	ObservedAt                        time.Time
+	ResponseTaskAt, ResponseSessionAt time.Time
 	InventoryRevision                 string
 	TotalTaskCount, TotalProjectCount int64
 	SessionPartial                    bool
@@ -53,6 +56,9 @@ func personalTaskPhase(phase string, err error) error {
 func (s *Observations) PersonalTasks(ctx context.Context, principal model.Principal, limit int, cursor *string) (PersonalTaskPage, error) {
 	if err := model.RequirePrincipal(principal); err != nil {
 		return PersonalTaskPage{}, personalTaskPhase("select", err)
+	}
+	if _, ok := s.observer.(personalSessionRowObserver); !ok {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("personal task row observer is unavailable"))
 	}
 	selection, err := taskcore.SelectPersonalTasks(principal.UserID, limit, cursor)
 	if err != nil {
@@ -139,6 +145,38 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 				return err
 			}
 			sources[project] = selected
+			ids := make([]string, len(identities[project]))
+			for i, identity := range identities[project] {
+				ids[i] = identity.ID
+			}
+			captured, err := selected.SessionDAO().TaskSessionSources(ctx, project, ids)
+			if err != nil {
+				return err
+			}
+			byID := make(map[string]store.TaskSessionSource, len(captured))
+			for _, source := range captured {
+				if _, exists := byID[source.TaskID]; exists {
+					return fmt.Errorf("duplicate personal task source")
+				}
+				byID[source.TaskID] = source
+			}
+			if len(byID) != len(ids) {
+				return fmt.Errorf("personal task source count does not match selected rows")
+			}
+			for i := range result.Items {
+				item := &result.Items[i]
+				if item.Task.ProjectID != project {
+					continue
+				}
+				source, exists := byID[item.Task.ID]
+				if !exists || source.TaskID != item.Task.ID || source.ProjectID != project || source.TaskVersion != item.Task.Version || source.TaskStatus != model.TaskInProgress {
+					return fmt.Errorf("personal task source does not match selected row")
+				}
+				item.Worker, err = taskcore.RetainedPersonalTaskWorker(source.Worker)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})
@@ -146,8 +184,23 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 		return PersonalTaskPage{}, personalTaskPhase("select", err)
 	}
 	allObservations := map[string]sp.TaskSessionObservation{}
+	rowObservations := map[string]model.TaskSyncObservation{}
+	sessionClock, ok := s.observer.(interface {
+		TaskObservationTime(context.Context) (time.Time, error)
+	})
+	if !ok {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("session observation clock is unavailable"))
+	}
+	observationTime, err := sessionClock.TaskObservationTime(ctx)
+	if err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("observe", err)
+	}
+	if !validPersonalClock(observationTime) {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("invalid session observation clock"))
+	}
+	observationTime = observationTime.UTC()
 	for _, project := range order {
-		observations, partial, observeErr := s.observeExecutionBatchWithPolicy(ctx, sources[project], principal, project, identities[project], result.ObservedAt, true)
+		observations, partial, observeErr := s.observeExecutionBatchWithPolicy(ctx, sources[project], principal, project, identities[project], observationTime, true, rowObservations)
 		if observeErr != nil {
 			var stage *PersonalTaskError
 			if !errors.As(observeErr, &stage) {
@@ -160,7 +213,7 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 			// retain their own result; changed project access becomes reset_required.
 			// Storage errors are returned directly without a second attempt.
 			if _, known := operation.KnownFault(observeErr); known && observationAuthorityFailure(observeErr) {
-				if err := s.recheckPersonalInventory(ctx, principal, result.InventoryRevision); err != nil {
+				if _, err := s.recheckPersonalInventory(ctx, principal, result.InventoryRevision); err != nil {
 					return PersonalTaskPage{}, err
 				}
 			}
@@ -171,19 +224,43 @@ func (s *Observations) PersonalTasks(ctx context.Context, principal model.Princi
 			allObservations[id] = observation
 		}
 	}
-	if err := s.recheckPersonalInventory(ctx, principal, result.InventoryRevision); err != nil {
+	result.ResponseTaskAt, err = s.recheckPersonalInventory(ctx, principal, result.InventoryRevision)
+	if err != nil {
 		return PersonalTaskPage{}, err
 	}
+	result.ResponseSessionAt, err = sessionClock.TaskObservationTime(ctx)
+	if err != nil {
+		return PersonalTaskPage{}, personalTaskPhase("observe", err)
+	}
+	if !validPersonalClock(result.ResponseSessionAt) {
+		return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("invalid session response clock"))
+	}
+	result.ResponseSessionAt = result.ResponseSessionAt.UTC()
 	if err := ctx.Err(); err != nil {
 		return PersonalTaskPage{}, personalTaskPhase("recheck", err)
 	}
 	for i := range result.Items {
-		result.Items[i].Session = allObservations[result.Items[i].Task.ID]
+		item := &result.Items[i]
+		item.Session = allObservations[item.Task.ID]
+		if item.Session.Observation != "observed" {
+			item.SessionRow = model.TaskSyncObservation{TaskVersion: item.Task.Version, State: "unavailable"}
+			continue
+		}
+		row, exists := rowObservations[item.Task.ID]
+		if !exists {
+			return PersonalTaskPage{}, personalTaskPhase("observe", fmt.Errorf("missing personal task row observation"))
+		}
+		item.SessionRow = row
 	}
 	return result, nil
 }
 
-func (s *Observations) recheckPersonalInventory(ctx context.Context, principal model.Principal, expected string) error {
+func validPersonalClock(at time.Time) bool {
+	return !at.IsZero() && at.Year() >= 1 && at.Year() <= 9999
+}
+
+func (s *Observations) recheckPersonalInventory(ctx context.Context, principal model.Principal, expected string) (time.Time, error) {
+	var observed time.Time
 	err := s.database.ReadSnapshot(ctx, func(snapshot store.SnapshotScope) error {
 		if err := s.operations.credential(ctx, snapshot.CredentialDAO(), principal); err != nil {
 			return err
@@ -203,7 +280,15 @@ func (s *Observations) recheckPersonalInventory(ctx context.Context, principal m
 		if revision != expected {
 			return &model.Fault{Code: "reset_required", Message: "Tasks changed during this personal inventory; restart the inventory."}
 		}
+		observed, err = snapshot.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		if !validPersonalClock(observed) {
+			return fmt.Errorf("invalid personal task response clock")
+		}
+		observed = observed.UTC()
 		return nil
 	})
-	return personalTaskPhase("recheck", err)
+	return observed, personalTaskPhase("recheck", err)
 }

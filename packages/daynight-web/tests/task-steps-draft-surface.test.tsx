@@ -38,7 +38,12 @@ it.each((['edit', 'delete'] as const).flatMap(action => (['identity', 'project']
   const tree = <TaskDetailSessionBoundary><Capture /><TaskDetailSurface presentation="page" fullscreen={{ active: false, onChange: vi.fn() }} projectId={projectId} taskId={taskId} snapshot={snapshotFixture([detail])} navigation={{ tab: 'steps', path: null }} attachmentApi={api} onNavigate={vi.fn()} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} /></TaskDetailSessionBoundary>;
   renderWithLocale(tree, { locale: 'en', taskCache: { scope: world.scope } });
   try {
-    fireEvent.click(await screen.findByRole('button', { name: 'Private step' }));
+    const stepButton = await waitFor(() => {
+      expect(sessions.stepsSnapshot(projectId, taskId)).toMatchObject({ status: 'ready', stale: false, error: null });
+      expect(sessions.canSetStepStatus(projectId, taskId)).toBe(true);
+      return screen.getByRole('button', { name: 'Private step' });
+    });
+    fireEvent.click(stepButton);
     fireEvent.click(screen.getByRole('button', { name: 'Edit step' }));
     fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), { target: { value: 'Unsaved private edit' } });
     if (action === 'edit') fireEvent.click(screen.getByRole('button', { name: 'Save' }));

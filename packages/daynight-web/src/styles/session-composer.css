@@ -15,8 +15,6 @@
 .session-controls-heading, .session-command-heading { margin-bottom: 10px; }
 .session-control-setting { display: grid; gap: 5px; margin: 12px 0; }
 .session-control-setting label { font-weight: 600; font-size: 12px; }
-.session-control-setting select { width: 100%; min-height: 36px; padding: 6px 8px; color: inherit; background: var(--surface, white); border: 1px solid var(--border, #dddde7); border-radius: 6px; }
-.session-control-setting[data-setting-state="pending"] select { border-color: #a77f34; }
 .session-control-note, .session-controls-foot, .session-composer-keyboard { font-size: 11px; color: var(--muted, #72717e); margin: 0; }
 .session-command-menu [role="listbox"] { display: grid; gap: 3px; }
 .session-command-menu [role="option"] { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); min-width: 0; overflow-wrap: anywhere; text-align: left; gap: 4px 12px; border: 0; padding: 8px; background: transparent; border-radius: 5px; color: inherit; font: inherit; }

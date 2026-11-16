@@ -29,7 +29,7 @@ already-scheduled immediate settles normally and belongs to `rpc.stopped`;
 shutdown never clears an immediate while leaving its Promise unresolved. Final
 decoder disposal preserves independently retained consumer media references.
 
-Natural child closure closes outbound dispatch immediately, while the reader
+The child `exit` event closes outbound dispatch immediately, while the reader
 drains received stdout through its normal checkpoints and validates decoder EOF.
 The provider invalidates local read authority on physical exit and defers turn
 rejection and runtime shutdown until that reader stops, preserving buffered
@@ -37,7 +37,9 @@ terminal evidence. Physical exit and reader completion are tracked separately so
 shutdown cannot wait for an already-consumed close event. Explicit disposal,
 genuine transport errors and frame deadline failures still cancel consumption
 immediately. Automatic rejection of native requests is skipped after known
-physical exit: replying to a dead peer must not abort the remaining input. Live
+physical exit: replying to a dead peer must not abort the remaining input. The
+separate `close` event retains stream and process cleanup ownership; a shutdown
+started between exit and close joins the reader before disposing it. Live
 peers retain their normal rejection behavior.
 
 The [Controller design](../../../../docs/design/task-session-protocol.md#codex-输出消费与-io)
@@ -69,6 +71,9 @@ Letting the existing immediate settle keeps a single joined asynchronous owner.
 asynchronous reader has consumed its current chunk. Both transport failure and
 provider shutdown can destroy that owned input; natural closure must join the
 reader before applying terminal effects.
+
+**Revoke writes only on child close.** Buffered requests can be consumed after
+the process exits but before its streams close, so a reply can hit a broken pipe.
 
 ## Consequences
 

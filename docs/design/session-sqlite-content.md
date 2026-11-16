@@ -2,7 +2,7 @@
 
 ## 范围与所有者
 
-Controller journal 的唯一编号序列为 `001`–`011`，当前格式为 v11。标准化 timeline 的唯一权威是原 `journal.sqlite` 的当前行；普通发布、分页、inspection、同步、归档和资源引用判断均消费同一个 SQL 正文所有者。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务。
+Controller journal 的唯一编号序列为 `001`–`012`，当前格式为 v12。标准化 timeline 的唯一权威是原 `journal.sqlite` 的当前行；普通发布、分页、inspection、同步、归档和资源引用判断均消费同一个 SQL 正文所有者。旧正文文件仅作为编号迁移源及待退休材料存在。[Controller 协议](task-session-protocol.md#controller-与原生会话)继续拥有执行身份、启动、停止和投递语义，[SQLite 设计](cli-sqlite-migrations.md)拥有通用连接与迁移事务及 v12 图片采集状态转换。
 
 | 模块 | 责任 |
 |---|---|

@@ -8,6 +8,10 @@
 
 读取在同一个只读 Repeatable Read 快照中检查外层权限并读取资源。项目写入在专用 Read Committed 事务内按 live Project、ownership、Team member、direct grant 的既有顺序取得授权共享锁并等待后复查，持锁至提交；正文 CAS 独立保护版本。Worker 身份按用户和 Worker 精确检查，不依赖近期窗口。只有确认提交才返回写入成功；提交未知和回滚错误保留内部错误链。
 
+## Web 编辑与预览
+
+`WorkerPromptEditor` 的 user、project 和 worker 三层共用同一编辑与预览结构。预览场景使用 [NativeSelect](native-select.md) 的 `filter`/`content` 变体，32px 高度按内容占位；公共组件拥有控件和箭头外观，页面仅安排预览区域与文本布局。原生 label、id、场景值及 `start`/`resume`/`ping` 选项保持对应；选择场景只更新示例预览，不保存正文、不发起请求，也不清除正文草稿。
+
 Web 的三层编辑共用保存 owner。每次保存固定账户、目标、版本、操作身份和草稿代际；实际派发与完整校验的回执分别记录。身份暂停取消准备或在途请求，本地状态按未派发、未知或已确认结算，不等待远程准入。已确认资源由原 owner 持有可取消的发布工作，通过身份与项目权限检查后安装；销毁或替换 owner 会取消等待。暂停期间收到的撤权清理独立等待身份准入，恢复时复查撤权事实或原操作归属，不丢弃待发布回执。发布依据草稿代际保留之后的编辑，待发布回执不能作为再次写入的版本授权。
 
 ## 配置报告
@@ -29,5 +33,7 @@ Worker 在确认服务、用户和 Worker 身份后建立仅驻留内存的 sour
 原生边界分别复用完整 Herdr JSON-RPC 编码、macOS terminal paste 和 Web 完整 ticket 的纯校验。超限是明确未提交的等待，不改变恢复预算；按版本 tuple 和原生配置在内存中去重，变化后重新组合。Web 在身份资源准备完成后捕获正文，验证 raw prompt 和完整 ticket 后才固定 `initialPrompt` 并写入同一 ticket。
 
 ## 验证边界
+
+`team-playwright.config.ts` 中的提示词浏览器回归验证 `WorkerPromptEditor` 的场景切换、正文草稿及后台复核连续性；prompt hook 模块测试验证保存和结果恢复。控件共同外观和原生行为由[公共选择组件](native-select.md#验证责任)的测试拥有。
 
 core 单元验证正文、版本和状态转换；HTTP 和 service 验证身份先决条件、协议格式、原生提交与只读失败的独立结果。真实隔离 PostgreSQL 验证唯一创建、条件并发、授权锁与版本/正文同快照。一条真实 API 链路覆盖编辑、配置报告、unchanged 和清空。Worker 测试验证有限批次、代际与失败、输入组合和各原生路径的容量与等待；服务端确认下发不证明 Worker 已接收正文。

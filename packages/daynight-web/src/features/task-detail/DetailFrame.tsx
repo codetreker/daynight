@@ -1,3 +1,4 @@
+import { isNativeSelectPopupOpen } from "../../ui/native-select/NativeSelect";
 import { useContext, useEffect, useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react';
 import { isTopOverlay, OverlayOwnerContext, registerOverlay } from '../../app/overlay';
 import { useBodyScrollLock } from '../../app/useBodyScrollLock';
@@ -37,6 +38,8 @@ export const useDetailOverlay = ({ root, initialFocus, modal, fullscreen, scope,
       const element = root.current!;
       if (!isTopOverlay(element) || callbacks.current.blocked() || event.defaultPrevented) return;
       if (event.key === 'Escape') {
+        if (event.isComposing || event.keyCode === 229) return;
+        if (isNativeSelectPopupOpen(event.target)) { event.stopPropagation(); return; }
         event.preventDefault();
         callbacks.current.onEscape();
       } else if (event.key === 'Tab' && modal) {

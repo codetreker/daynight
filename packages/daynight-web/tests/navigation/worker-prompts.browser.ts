@@ -120,3 +120,38 @@ for (const width of [1280, 390]) test(`${width}px Worker tabs expose selection a
   await expect(prompt).toHaveAttribute('tabindex', '-1');
   expect(state.writes).toEqual([]);
 });
+
+for (const width of [1280, 320]) test(`${width}px preview scenarios retain the shared filter and unsaved prompt`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 900 });
+  const state = await install(page); await open(page);
+  const input = page.locator('.worker-prompt-text'), preview = page.locator('.worker-prompt-preview');
+  await input.fill('Unsaved prompt 汉字');
+  const select = preview.getByRole('combobox'), wrapper = select.locator('..');
+  await expect(wrapper).toHaveAttribute('data-density', 'filter');
+  await expect(wrapper).toHaveAttribute('data-layout', 'content');
+  expect(await select.locator('option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value))).toEqual(['start', 'resume', 'ping']);
+  for (const [value, text] of [['start', 'You are executing'], ['resume', 'Resume the original'], ['ping', '<system remider>']] as const) {
+    await select.selectOption(value);
+    await expect(preview.locator('pre')).toContainText(text);
+    await expect(preview.locator('pre')).toContainText('Unsaved prompt 汉字');
+    await expect(input).toHaveValue('Unsaved prompt 汉字');
+    await expect(page.locator('.worker-prompt').getByText('Unsaved changes', { exact: true })).toBeVisible();
+  }
+  await select.focus();
+  await select.evaluate(element => { (window as unknown as { scenarioNode: Element }).scenarioNode = element; });
+  const prompt = gate(); state.prompt = prompt.value;
+  await revalidate(page); await prompt.started;
+  await expect(select).toBeFocused(); await expect(select).toHaveValue('ping');
+  const refreshed = page.waitForResponse(response => response.url().endsWith(`/workers/${target}/prompt`) && response.request().method() === 'GET');
+  prompt.finish();
+  await refreshed;
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await select.evaluate(element => element === (window as unknown as { scenarioNode: Element }).scenarioNode)).toBe(true);
+  await expect(select).toBeFocused(); await expect(select).toHaveValue('ping');
+  const control = (await select.boundingBox())!, arrow = (await wrapper.locator('svg').boundingBox())!;
+  expect(control.height).toBe(32);
+  expect(control.x + control.width - arrow.x - arrow.width).toBe(12);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  expect(state.writes).toEqual([]);
+  await page.screenshot({ path: info.outputPath(`preview-${width}.png`), fullPage: true });
+});

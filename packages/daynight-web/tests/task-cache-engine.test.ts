@@ -21,8 +21,8 @@ const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(1
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: taskId(n), version: 1n, properties: {}, tags: [], titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
-const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, sessions: {}, dependencyStates: Object.fromEntries(tasks.filter(task => task.type === "task").map(task => {
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ type: "task", parentId: null, assignedTo: null, id: taskId(n), version: 1n, properties: {}, tags: [], title: `Task ${n}`, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes });
+const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ assigneeVersions: [], actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, responseTaskAt: later, responseSessionAt: later, sessionPartial: false, taskObservations: {}, tasks, sessions: {}, dependencyStates: Object.fromEntries(tasks.filter(task => task.type === "task").map(task => {
   const blockedBy = task.dependsOn.filter(id => !tasks.some(candidate => candidate.id === id && (candidate.status === "done" || candidate.status === "cancelled")));
   return [task.id, { taskVersion: task.version, blockedBy, ready: task.status === "todo" && blockedBy.length === 0 }];
 })), ...changes });
@@ -74,6 +74,19 @@ beforeEach(() => {
 afterEach(() => {
   for (const cache of scopes.splice(0)) cache.dispose();
   for (const database of connections.splice(0)) database.close();
+});
+
+it("notifies same-account tabs of color invalidation without relaying the hint", async () => {
+  const first = scope(); const peer = scope(); const other = scope(otherUser);
+  const local = vi.fn(), remote = vi.fn(), unrelated = vi.fn();
+  first.subscribeTagColors(local); peer.subscribeTagColors(remote); other.subscribeTagColors(unrelated);
+  first.notifyTagColors(projectId);
+  await vi.waitFor(() => expect(remote).toHaveBeenCalledWith(projectId));
+  expect(local).toHaveBeenCalledWith(projectId);
+  expect(unrelated).not.toHaveBeenCalled();
+  expect(Channel.hints).toEqual([{ userId, projectId, tagColorsChanged: true }]);
+  first.notifyTagColors(projectId, false);
+  expect(Channel.hints).toHaveLength(1);
 });
 
 it("atomically saves task data and reopens the exact maximum without granting local access", async () => {

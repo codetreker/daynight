@@ -749,6 +749,15 @@ write_outcome_unknown，确认提交后的响应丢失不重复执行操作。Pe
 独立 Project grant 均保持原规则。[直接成员决策](../../.agents/notes/implemented/feature/2026-11-13-direct-team-members.md)
 拥有三阶段边界与明确角色收敛的取舍。
 
+### 按外部身份解析 Team 成员
+
+`POST /api/v1/teams/{teamId}/members/resolve` 复用直接成员的主体和外部身份校验，
+但仅接受外部身份键。`DirectMembers` 在一个原 Team 作用域内检查真实凭据，
+由 `core/team` 检查当前普通 Team admin，再通过同事务 DAO 将既有身份与该 Team 的成员关系关联。
+身份或成员不存在均返回 null；其他错误保持拒绝。读取完成后以新鲜时间重验凭据，
+事务确认完成才输出结果。该路径不调用用户初始化或成员写入，也不把读取结果作为未来写操作的授权。
+[解析决策](../../.agents/notes/implemented/feature/2026-11-14-team-member-resolution.md)记录接口取舍。
+
 ### Team 邀请
 
 Team 邀请使用独立 `dnteam_` 秘密及 `team_invitations`，仅存散列。接受按 Team →
@@ -853,7 +862,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 不确定 PATCH 先重读 Project 和当前 access，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
 仅权限核验失败的重试保留有效资源和设置草稿；完整资源核对仍用于资源错误、缺失及写结果不确定。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)与[Web 架构](daynight-web.md#项目执行提醒设置)拥有。
-项目成员页分别展示有效、Team 继承和单独授权，按 participant 的真实 grant 存在性与版本操作；确认回执提供提交后本人 access，失权时清除项目缓存并保留成功结果。成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。
+项目设置的成员与邀请分组分别展示有效、Team 继承和单独授权，按 participant 的真实 grant 存在性与版本操作；确认回执提供提交后本人 access，失权时清除项目缓存并保留合法成功结果。成员冲突重取权威数据；邀请创建确认后保留一次性链接，再读取完整目录，旧读取不能覆盖已确认邀请。成员 controller、秘密和非秘密结果的工作空间生命周期由[项目设置设计](project-settings.md)拥有。
 成员页副标题的名称由各自面板按 projectId 读取现有 Project 资源，不依赖导航按钮传入或分页项目列表。读取受当前账号、ProjectAccess 和项目缓存代际约束；名称读取失败单独展示错误并重试，不阻断成员目录。首次读取使用副标题占位，确认失权或更换账号后清除旧名称，迟到响应不能恢复它；很长的名称完整换行并为邀请按钮保留空间。机制与取舍见[成员页名称决策](../../.agents/notes/implemented/bug-fix/2026-11-06-member-project-name.md)。
 成员表格在所有视口宽度使用局部 overflow-x:auto，按自身容器宽度决定是否滚动。表头与成员行共享身份、有效角色、Team 继承、单独授权和操作五列；五列的最小宽度和既有 ≤700px 布局保留。侧栏展开压缩内容区时，操作列仍可完整滚入表格，不把溢出转交给页面。账户 OAuth 授权列表的响应式列布局限定于 `.owner-grant-row`，不覆盖项目成员行；其宽屏三列、≤800px 两列及 ≤400px 单列保持独立。
 普通 Team 设置的成员与邀请分区、Project 成员页分别管理本范围的邀请；列表只显示元数据，创建回执中的链接只保存在一次结果对话框中。邀请的读取和写入响应核对主体；Project 接受页按 directGrant 展示真实关系，确认后消费回执并进入原项目。Team 接受页展示真实 Team 和本人关系，确认后的回执显示名称、ID、加入结果并提供真实 Team 路由；该路由通过现有 Team 选择机制验证并保存当前上下文。

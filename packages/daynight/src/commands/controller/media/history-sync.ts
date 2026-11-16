@@ -7,6 +7,7 @@ import type { ControllerLaunchTicket } from "../launch-ticket.js";
 import type { ControllerLifecycleStore } from "../lifecycle-store.js";
 import { readControllerGrant } from "../relay.js";
 import type { ImageError } from "../../../session/image-values.js";
+import { ImageCaptureNotDispatchedError } from "./capture-error.js";
 
 export class ImageHistorySyncFailedError extends Error {
   constructor(readonly imageError: ImageError) {
@@ -25,9 +26,14 @@ export const assertImageHistoryAvailable = (journal: ControllerLifecycleStore): 
 export const syncControllerImageHistory = async (options: {
   ticket: ControllerLaunchTicket; journal: ControllerLifecycleStore; fence: ControllerFence;
   currentFence(): ControllerFence | null; signal?: AbortSignal; request?: typeof fetch;
+  requiredSourceThrough?: string;
 }): Promise<void> => {
   const { ticket, journal, fence } = options;
-  const intent = journal.prepareImageHistorySync(); if (!intent) return;
+  const intent = journal.prepareImageHistorySync();
+  if (!intent) {
+    if (options.requiredSourceThrough !== undefined && !journal.hasImageHistoryCheckpoint(options.requiredSourceThrough)) throw new ImageCaptureNotDispatchedError("Image capture is waiting for its complete acknowledged history checkpoint.");
+    return;
+  }
   const root = ticket.testExecutionId !== undefined ? `/api/v1/test-sessions/${ticket.sessionId}` : `/api/v1/projects/${ticket.projectId}/tasks/${ticket.taskId}/sessions/${ticket.sessionId}`;
   const url = `${ticket.serverOrigin}${root}/image-history-ledger/${intent.syncId}`, request = options.request ?? fetch;
   const call = async (method: string, suffix: string, bytes?: Uint8Array): Promise<unknown> => {
@@ -84,4 +90,7 @@ export const syncControllerImageHistory = async (options: {
   const failure = receipt.state === "failed" ? receipt.error ?? { code: "history_unavailable", message: "The original controller history synchronization failed." } : undefined;
   journal.finishImageHistorySync(intent.syncId, receipt.state === "complete", failure);
   if (failure) throw new ImageHistorySyncFailedError(failure);
+  // An older frozen upload must finish under its original identity before the
+  // capture can establish the checkpoint containing its newly published slot.
+  if (options.requiredSourceThrough !== undefined && !journal.hasImageHistoryCheckpoint(options.requiredSourceThrough)) await syncControllerImageHistory(options);
 };

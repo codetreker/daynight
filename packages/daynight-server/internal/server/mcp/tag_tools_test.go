@@ -20,12 +20,14 @@ import (
 )
 
 type tagTestOperations struct {
-	t      *testing.T
-	list   func(context.Context, model.Principal, string, tagservice.ListInput) (tagservice.Page, error)
-	get    func(context.Context, model.Principal, string, string) (tagservice.Item, error)
-	create func(context.Context, model.Principal, string, string) (tagservice.WriteResult, error)
-	rename func(context.Context, model.Principal, string, string, int64, string) (tagservice.WriteResult, error)
-	delete func(context.Context, model.Principal, string, string, int64, bool) (tagservice.WriteResult, error)
+	t           *testing.T
+	list        func(context.Context, model.Principal, string, tagservice.ListInput) (tagservice.Page, error)
+	get         func(context.Context, model.Principal, string, string) (tagservice.Item, error)
+	create      func(context.Context, model.Principal, string, string) (tagservice.WriteResult, error)
+	createColor func(context.Context, model.Principal, string, string, *string) (tagservice.WriteResult, error)
+	update      func(context.Context, model.Principal, string, string, int64, *string, *string) (tagservice.WriteResult, error)
+	rename      func(context.Context, model.Principal, string, string, int64, string) (tagservice.WriteResult, error)
+	delete      func(context.Context, model.Principal, string, string, int64, bool) (tagservice.WriteResult, error)
 }
 
 func (f tagTestOperations) List(ctx context.Context, p model.Principal, project string, in tagservice.ListInput) (tagservice.Page, error) {
@@ -42,19 +44,33 @@ func (f tagTestOperations) Get(ctx context.Context, p model.Principal, project, 
 	}
 	return f.get(ctx, p, project, id)
 }
-func (f tagTestOperations) Create(ctx context.Context, p model.Principal, project, name string) (tagservice.WriteResult, error) {
+func (f tagTestOperations) Create(ctx context.Context, p model.Principal, project, name string, color *string) (tagservice.WriteResult, error) {
+	if f.createColor != nil {
+		return f.createColor(ctx, p, project, name, color)
+	}
+	if color != nil {
+		f.t.Error("legacy create supplied color")
+		return tagservice.WriteResult{}, errors.New("unexpected color")
+	}
 	if f.create == nil {
 		f.t.Error("unexpected Create")
 		return tagservice.WriteResult{}, errors.New("unexpected Create")
 	}
 	return f.create(ctx, p, project, name)
 }
-func (f tagTestOperations) Rename(ctx context.Context, p model.Principal, project, id string, version int64, name string) (tagservice.WriteResult, error) {
+func (f tagTestOperations) Update(ctx context.Context, p model.Principal, project, id string, version int64, name, color *string) (tagservice.WriteResult, error) {
+	if f.update != nil {
+		return f.update(ctx, p, project, id, version, name, color)
+	}
+	if name == nil || color != nil {
+		f.t.Error("legacy rename must supply only name")
+		return tagservice.WriteResult{}, errors.New("unexpected update fields")
+	}
 	if f.rename == nil {
 		f.t.Error("unexpected Rename")
 		return tagservice.WriteResult{}, errors.New("unexpected Rename")
 	}
-	return f.rename(ctx, p, project, id, version, name)
+	return f.rename(ctx, p, project, id, version, *name)
 }
 func (f tagTestOperations) Delete(ctx context.Context, p model.Principal, project, id string, version int64, confirm bool) (tagservice.WriteResult, error) {
 	if f.delete == nil {
@@ -66,7 +82,7 @@ func (f tagTestOperations) Delete(ctx context.Context, p model.Principal, projec
 
 func tagTestItem(name string) tagservice.Item {
 	stamp := time.Date(2026, 11, 13, 1, 2, 3, 0, time.UTC)
-	return tagservice.Item{Tag: model.Tag{ID: testTargetID, ProjectID: testProjectID, Name: name, Version: 9007199254740993, CreatedAt: stamp, UpdatedAt: stamp}, Usage: model.TagUsage{Tasks: 2, Goals: 3}}
+	return tagservice.Item{Tag: model.Tag{ID: testTargetID, ProjectID: testProjectID, Name: name, Color: "#123456", Version: 9007199254740993, CreatedAt: stamp, UpdatedAt: stamp}, Usage: model.TagUsage{Tasks: 2, Goals: 3}}
 }
 func tagTestWrite(item tagservice.Item) tagservice.WriteResult {
 	return tagservice.WriteResult{Item: item, ProjectID: testProjectID, TagID: testTargetID, Phase: "commit", Outcome: store.TransactionCommitted}
@@ -146,7 +162,7 @@ func TestTagToolsDiscoveryAndProtocol(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			expected := map[string]bool{"tag_list": true, "tag_show": true, "tag_create": true, "tag_rename": true, "tag_delete": true}
+			expected := map[string]bool{"tag_list": true, "tag_show": true, "tag_create": true, "tag_rename": true, "tag_update": true, "tag_delete": true}
 			for _, tool := range listing.Tools {
 				if expected[tool.Name] {
 					if tool.Description == "" || tool.InputSchema == nil || tool.OutputSchema == nil || tool.Annotations == nil {
@@ -183,6 +199,9 @@ func TestTagToolsDiscoveryAndProtocol(t *testing.T) {
 						t.Errorf("list: %+v", data)
 					}
 					data = object(t, data["items"].([]any)[0])
+				}
+				if tc.name != "tag_delete" && data["color"] != "#123456" {
+					t.Errorf("tag color: %+v", data)
 				}
 				if tc.name == "tag_delete" {
 					if data["projectId"] != testProjectID || data["tagId"] != testTargetID || data["deleted"] != true {
@@ -255,6 +274,18 @@ func TestTagToolsInputBoundaryAndCoreName(t *testing.T) {
 			t.Fatalf("invalid core name: %+v calls=%d", structured(t, result), calls)
 		}
 		validateDiscoveredResult(t, client, "tag_create", result)
+	}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"tag_rename", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1", "name": "a", "color": "#123456"}},
+	} {
+		beforeCreate, beforeRename := calls, renameCalls
+		result = tagTestCall(t, client, tc.name, tc.args)
+		if !result.IsError || calls != beforeCreate || renameCalls != beforeRename {
+			t.Fatalf("%s accepted color or invoked service: %+v", tc.name, result)
+		}
 	}
 	for _, version := range []any{nil, "0", "01", "+1", "9223372036854775808", 1} {
 		args := map[string]any{"projectId": testProjectID, "tagId": testTargetID, "name": "backend"}
@@ -460,6 +491,115 @@ func TestTagConflictClassificationAndSafeLogging(t *testing.T) {
 			if !strings.Contains(text, `"project_id":"`+testProjectID+`"`) || !strings.Contains(text, `"candidate_tag_id":"`+testTargetID+`"`) || strings.Contains(text, "private tag name") || strings.Contains(text, "private database text") {
 				t.Fatalf("unsafe or missing log fields: %s", text)
 			}
+		})
+	}
+}
+
+func TestTagColorToolsProtocol(t *testing.T) {
+	f := newEntryFixture(t)
+	calls := 0
+	ops := tagTestOperations{t: t}
+	ops.createColor = func(ctx context.Context, p model.Principal, project, name string, color *string) (tagservice.WriteResult, error) {
+		calls++
+		tagTestActor(t, ctx, p, project)
+		if name != "colored" || color == nil || *color != "#abcdef" {
+			t.Errorf("create arguments: %q %v", name, color)
+		}
+		item := tagTestItem(name)
+		item.Tag.Color = "#ABCDEF"
+		return tagTestWrite(item), nil
+	}
+	ops.update = func(ctx context.Context, p model.Principal, project, id string, version int64, name, color *string) (tagservice.WriteResult, error) {
+		calls++
+		tagTestActor(t, ctx, p, project)
+		if id != testTargetID || version != 9007199254740993 || color == nil || *color != "#abcdef" {
+			t.Errorf("update arguments: %q %d %v", id, version, color)
+		}
+		item := tagTestItem("original")
+		if name != nil {
+			item.Tag.Name = *name
+		}
+		item.Tag.Color = "#ABCDEF"
+		return tagTestWrite(item), nil
+	}
+	if err := RegisterTagTools(f.entry, ops); err != nil {
+		t.Fatal(err)
+	}
+	client := f.client(t, "2026-07-28", "alice")
+	for _, tc := range []struct {
+		name     string
+		args     map[string]any
+		wantName string
+	}{
+		{"tag_create", map[string]any{"projectId": testProjectID, "name": "colored", "color": "#abcdef"}, "colored"},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "9007199254740993", "color": "#abcdef"}, "original"},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "9007199254740993", "name": "renamed", "color": "#abcdef"}, "renamed"},
+	} {
+		result := tagTestCall(t, client, tc.name, tc.args)
+		if result.IsError {
+			t.Fatalf("%s: %+v", tc.name, structured(t, result))
+		}
+		validateDiscoveredResult(t, client, tc.name, result)
+		env := structured(t, result)
+		data := object(t, env["data"])
+		meta := object(t, env["meta"])
+		if data["name"] != tc.wantName || data["color"] != "#ABCDEF" || data["version"] != "9007199254740993" || meta["writeOutcome"] != "confirmed" || object(t, meta["refs"])["tagId"] != testTargetID {
+			t.Fatalf("%s receipt: %+v", tc.name, env)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("service calls: %d", calls)
+	}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"tag_create", map[string]any{"projectId": testProjectID, "name": "x", "color": nil}},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1"}},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1", "color": nil}},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1", "name": nil}},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": 1, "color": "#123456"}},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "01", "color": "#123456"}},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "9223372036854775808", "color": "#123456"}},
+		{"tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1", "name": strings.Repeat("x", httpx.MaxJSONBody), "color": "#123456"}},
+	} {
+		before := calls
+		result := tagTestCall(t, client, tc.name, tc.args)
+		if !result.IsError || calls != before {
+			t.Errorf("%s accepted invalid input or called service: %+v calls=%d", tc.name, result, calls)
+		}
+	}
+}
+
+func TestTagUpdateCompletionFacts(t *testing.T) {
+	for _, tc := range []struct {
+		outcome           store.TransactionOutcome
+		phase, code, want string
+		cause             error
+	}{
+		{store.TransactionNotCommitted, "query", "forbidden", "not_committed", &model.Fault{Code: "forbidden", Message: "Forbidden."}},
+		{store.TransactionNotCommitted, "write", "version_conflict", "not_committed", &model.Fault{Code: "version_conflict", Message: "Version changed."}},
+		{store.TransactionNotCommitted, "query", "tag_not_found", "not_committed", &model.Fault{Code: "tag_not_found", Message: "Missing."}},
+		{store.TransactionUnknown, "commit", "internal_error", "unknown", errors.New("commit lost")},
+		{store.TransactionCommitted, "commit", "internal_error", "confirmed", errors.New("cleanup failed")},
+	} {
+		t.Run(tc.want+tc.code, func(t *testing.T) {
+			f := newEntryFixture(t)
+			calls := 0
+			ops := tagTestOperations{t: t, update: func(_ context.Context, _ model.Principal, project, id string, _ int64, _, _ *string) (tagservice.WriteResult, error) {
+				calls++
+				return tagservice.WriteResult{ProjectID: project, TagID: id, Outcome: tc.outcome, Phase: tc.phase}, tc.cause
+			}}
+			if err := RegisterTagTools(f.entry, ops); err != nil {
+				t.Fatal(err)
+			}
+			client := f.client(t, "2026-07-28", "alice")
+			result := tagTestCall(t, client, "tag_update", map[string]any{"projectId": testProjectID, "tagId": testTargetID, "ifVersion": "1", "color": "#123456"})
+			failure := object(t, structured(t, result)["error"])
+			if !result.IsError || calls != 1 || failure["code"] != tc.code || failure["writeOutcome"] != tc.want || failure["phase"] != tc.phase || object(t, failure["refs"])["tagId"] != testTargetID {
+				t.Fatalf("completion/replay: %+v calls=%d", failure, calls)
+			}
+			validateDiscoveredResult(t, client, "tag_update", result)
 		})
 	}
 }

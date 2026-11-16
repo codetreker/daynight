@@ -7,10 +7,10 @@
 .steps-toolbar-actions { display: flex; align-items: center; gap: 8px; }
 .step-add-form { display: grid; gap: 12px; margin-top: 16px; padding: 16px; border: 1px solid #dce0e8; border-radius: 7px; background: #fcfcfe; min-width: 0; }
 .step-add-form label { display: grid; gap: 6px; color: #45516a; font-size: 11px; font-weight: 600; }
-.step-add-form input, .step-add-form select, .step-add-form textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid #dce0e8; border-radius: 5px; padding: 8px; background: #fff; color: #344258; font: inherit; font-size: 12px; }
+.step-add-form input, .step-add-form textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 1px solid #dce0e8; border-radius: 5px; padding: 8px; background: #fff; color: #344258; font: inherit; font-size: 12px; }
 .step-add-form textarea { min-height: 120px; resize: vertical; }
 .step-add-form textarea.step-title-editor { min-height: 40px; }
-.step-add-form input:focus-visible, .step-add-form select:focus-visible, .step-add-form textarea:focus-visible, .step-editor-heading button:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 2px; }
+.step-add-form input:focus-visible, .step-add-form textarea:focus-visible, .step-editor-heading button:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 2px; }
 .step-field-error { color: var(--task-error-ink); font-size: 11px; margin: -6px 0 0; }
 .step-editor-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #45516a; font-size: 11px; font-weight: 600; }
 .step-editor-heading div { display: flex; gap: 4px; }
@@ -101,7 +101,7 @@
 .step-target-selected { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 10px; padding: 10px; margin-bottom: 12px; background: #f5f6fb; border-radius: 6px; overflow-wrap: anywhere; }
 .step-target-selected span { color: var(--task-helper); }
 .step-target-field { display: grid; gap: 6px; margin: 12px 0; font-size: 11px; color: #45516a; }
-.step-target-field input, .step-target-field select { min-width: 0; width: 100%; padding: 8px; border: 1px solid #dce0e8; border-radius: 5px; background: #fff; font: inherit; color: #344258; }
+.step-target-field input { min-width: 0; width: 100%; padding: 8px; border: 1px solid #dce0e8; border-radius: 5px; background: #fff; font: inherit; color: #344258; }
 .step-target-pagination { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin: 12px 0; color: var(--task-helper); font-size: 11px; }
 .step-target-results { max-height: min(260px, 30dvh); overflow: auto; border: 1px solid #e9ecf2; border-radius: 6px; }
 .step-target-results > p { padding: 8px 12px; color: var(--task-helper); }

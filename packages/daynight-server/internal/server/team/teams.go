@@ -17,10 +17,11 @@ import (
 )
 
 type teamHandler struct {
-	teams     *teamservice.Teams
-	addMember func(context.Context, model.Principal, string, coreteam.AddTeamMember) (coreteam.DirectMemberResult, error)
-	logger    *slog.Logger
-	origin    string
+	teams         *teamservice.Teams
+	addMember     func(context.Context, model.Principal, string, coreteam.AddTeamMember) (coreteam.DirectMemberResult, error)
+	resolveMember func(context.Context, model.Principal, string, coreteam.ResolveTeamMember) (*model.TeamMember, error)
+	logger        *slog.Logger
+	origin        string
 }
 
 func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp.Authentication, logger *slog.Logger) {
@@ -34,7 +35,13 @@ func RegisterRoutes(mux *http.ServeMux, teams *teamservice.Teams, auth *authhttp
 	mux.HandleFunc("PATCH /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.setMemberRole))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/members/{userId}", auth.Require(h.removeMember))
 	mux.HandleFunc("/api/v1/teams/{teamId}/members", auth.Require(httpx.ResourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(httpx.ResourceMethodNotAllowed(logger, "PATCH, DELETE")))
+	mux.HandleFunc("/api/v1/teams/{teamId}/members/{userId}", auth.Require(func(w http.ResponseWriter, r *http.Request, p model.Principal) {
+		allowed := "PATCH, DELETE"
+		if r.PathValue("userId") == "resolve" {
+			allowed = "POST"
+		}
+		httpx.ResourceMethodNotAllowed(logger, allowed)(w, r, p)
+	}))
 	mux.HandleFunc("GET /api/v1/teams/{teamId}/invitations", auth.Require(h.listInvitations))
 	mux.HandleFunc("POST /api/v1/teams/{teamId}/invitations", auth.Require(h.createInvitation))
 	mux.HandleFunc("DELETE /api/v1/teams/{teamId}/invitations/{inviteId}", auth.Require(h.revokeInvitation))

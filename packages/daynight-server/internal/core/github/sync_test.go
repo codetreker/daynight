@@ -12,7 +12,7 @@ func TestWorkKindPriorityAndAdmission(t *testing.T) {
 	app, installation, repo := int64(1), int64(2), int64(3)
 	hint := "hint"
 	future := now.Add(time.Second)
-	c := githubpr.Connection{Enabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, PollIntervalMinutes: 5, AccessState: "available", NextPollAt: &now}
+	c := githubpr.Connection{Enabled: true, SyncEnabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, PollIntervalMinutes: 5, AccessState: "available", NextPollAt: &now}
 	check := func(want string, pending bool) {
 		t.Helper()
 		if got := WorkKind(c, app, now, pending); got != want {
@@ -20,6 +20,9 @@ func TestWorkKindPriorityAndAdmission(t *testing.T) {
 		}
 	}
 	check(WorkPoll, true)
+	c.SyncEnabled = false
+	check("", true)
+	c.SyncEnabled = true
 	c.AccessHintID = &hint
 	check(WorkAccess, true)
 	c.NextAccessCheckAt = &future
@@ -175,7 +178,7 @@ func TestRemovedInstallationIgnoresDelayedAccessHint(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	app, installation, repo := int64(1), int64(2), int64(3)
 	reason, hint := "installation_missing", "late"
-	c := githubpr.Connection{Enabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, PollIntervalMinutes: 5, AccessState: "unavailable", AccessReason: &reason, AccessHintID: &hint, NextAccessCheckAt: &now}
+	c := githubpr.Connection{Enabled: true, SyncEnabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, PollIntervalMinutes: 5, AccessState: "unavailable", AccessReason: &reason, AccessHintID: &hint, NextAccessCheckAt: &now}
 	if got := WorkKind(c, app, now, true); got != "" {
 		t.Fatalf("late hint revived removed installation: %q", got)
 	}

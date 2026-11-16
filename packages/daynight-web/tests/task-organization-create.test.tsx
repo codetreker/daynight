@@ -18,6 +18,30 @@ const snapshot = { summaries: new Map(), index: { nodes: new Map() } } as unknow
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); vi.clearAllMocks(); });
 
 describe('Task creation', () => {
+  it('lets the native menu and composing Escape finish before closing the form', () => {
+    const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    renderWithLocale(<TaskOrganization projectId="escape-project" snapshot={snapshot} onRefreshGraph={vi.fn()} />, { locale: 'en', container: root });
+    const opener = screen.getByRole('button', { name: 'New Task' });
+    opener.focus(); fireEvent.click(opener);
+    const title = screen.getByRole('textbox', { name: 'Title' });
+    fireEvent.change(title, { target: { value: 'Draft' } });
+    const select = screen.getByRole('combobox', { name: 'Goal' });
+    const matches = vi.spyOn(select, 'matches').mockImplementation(query => query === ':open');
+    try {
+      const popupEscape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      fireEvent(select, popupEscape);
+      expect(popupEscape.defaultPrevented).toBe(false); expect(title).toHaveValue('Draft');
+      matches.mockReturnValue(false);
+      fireEvent.keyDown(select, { key: 'Escape', isComposing: true });
+      expect(title).toHaveValue('Draft');
+      const prevented = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      prevented.preventDefault(); fireEvent(select, prevented);
+      expect(title).toHaveValue('Draft');
+      fireEvent.keyDown(select, { key: 'Escape' });
+      expect(screen.queryByRole('dialog')).toBeNull(); expect(opener).toHaveFocus();
+      expect(createTask).not.toHaveBeenCalled();
+    } finally { matches.mockRestore(); }
+  });
   it('freezes the submitted draft while a delayed creation is pending', async () => {
     let resolve!: (value: never) => void;
     vi.mocked(createTask).mockReturnValue(new Promise(done => { resolve = done; }));

@@ -197,3 +197,11 @@ func (m *operationMock) ClearAttention(ctx context.Context, dao store.AssistantT
 	_, err := m.call(ctx, dao, actor, "ClearAttention", target)
 	return err
 }
+
+func (m *operationMock) EnablePreset(ctx context.Context, dao store.AssistantTaskDAO, actor core.Actor, input core.CreateInput, target string) (core.TaskResult, error) {
+	value, err := m.call(ctx, dao, actor, "EnablePreset", input, target)
+	if value == nil {
+		return core.TaskResult{}, err
+	}
+	return value.(core.TaskResult), err
+}

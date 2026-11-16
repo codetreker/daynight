@@ -253,6 +253,59 @@ it("refreshes the current Team directory when a transfer receipt arrives after c
   await act(async () => pendingList.resolve(json({ items: [], nextCursor: null })));
 });
 
+it("refreshes the Team and shared directories when a transfer receipt arrives on the shared page", async () => {
+  const pendingTransfer = Promise.withResolvers<Response>();
+  const teamBefore = { ...project, id: "00000000-0000-4000-8000-000000000011", name: "Team before" };
+  const teamAfter = { ...project, id: "00000000-0000-4000-8000-000000000012", name: "Team after" };
+  const sharedBefore = { ...project, id: "00000000-0000-4000-8000-000000000013", name: "Shared before" };
+  const sharedAfter = { ...project, id: "00000000-0000-4000-8000-000000000014", name: "Shared after" };
+  let transferred = false, teamReads = 0, sharedReads = 0;
+  const fetcher = vi.fn((url: string) => {
+    if (url === "/api/v1/me") return Promise.resolve(json(user));
+    if (url.startsWith("/api/v1/teams?")) return Promise.resolve(json(personalTeamPage(userId)));
+    if (url === `/api/v1/teams/${source}`) return Promise.resolve(json(personalTeamPage(userId).items[0]));
+    if (url.startsWith("/api/v1/projects?")) {
+      const params = new URL(url, window.location.origin).searchParams;
+      if (params.get("teamId") === source && !params.has("shared")) {
+        teamReads++; return Promise.resolve(json({ items: [transferred ? teamAfter : teamBefore], nextCursor: null }));
+      }
+      if (params.get("shared") === "true" && !params.has("teamId")) {
+        sharedReads++; return Promise.resolve(json({ items: [transferred ? sharedAfter : sharedBefore], nextCursor: null }));
+      }
+      throw new Error(`Unexpected project scope ${url}`);
+    }
+    if (url === `/api/v1/projects/${projectId}`) return Promise.resolve(json(project));
+    if (url === `/api/v1/projects/${projectId}/access`) return Promise.resolve(json(access));
+    if (url === `/api/v1/projects/${projectId}/transfer-preview`) return Promise.resolve(json({ sourceTeam: personal, targetTeam: { ...targetTeam, version: 1n }, ownership: project.ownership, actorRole: null }));
+    if (url === `/api/v1/projects/${projectId}/transfer`) return pendingTransfer.promise;
+    throw new Error(`Unexpected request ${url}`);
+  });
+  vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
+  fireEvent.click(await screen.findByRole("button", { name: "Transfer project" }, { timeout: 10000 }));
+  const dialog = screen.getByRole("dialog", { name: "Transfer project" });
+  fireEvent.change(within(dialog).getByLabelText("Team ID or link"), { target: { value: target } });
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Preview" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Confirm transfer" })).toBeEnabled());
+  fireEvent.click(within(dialog).getByRole("button", { name: "Confirm transfer" }));
+  await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url.endsWith("/transfer"))).toBe(true));
+  act(() => navigate("/shared-projects"));
+  const nav = within(screen.getByRole("complementary", { name: "Workspace navigation" }));
+  const main = within(screen.getByRole("main"));
+  await nav.findByRole("link", { name: "Team before" });
+  await main.findByRole("heading", { name: "Shared before" });
+  expect(teamReads).toBe(1); expect(sharedReads).toBe(1);
+  transferred = true;
+  await act(async () => pendingTransfer.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: targetTeam, ownership: { teamId: target, version: 2n }, actorAccess: null })));
+  await nav.findByRole("link", { name: "Team after" });
+  await main.findByRole("heading", { name: "Shared after" });
+  expect(teamReads).toBe(2); expect(sharedReads).toBe(2);
+  expect(nav.queryByRole("link", { name: "Shared after" })).toBeNull();
+  expect(main.queryByRole("heading", { name: "Team after" })).toBeNull();
+  expect(await screen.findByText(/Project transferred to Destination/)).toBeInTheDocument();
+  expect(window.location.pathname).toBe("/shared-projects");
+}, 30000);
+
 it("retains independent unknown transfer and invitation results across their routes", async () => {
   const transferResult = Promise.withResolvers<Response>();
   const invitationResult = Promise.withResolvers<Response>();

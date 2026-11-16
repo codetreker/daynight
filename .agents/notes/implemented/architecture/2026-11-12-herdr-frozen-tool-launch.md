@@ -187,6 +187,13 @@ and new claims. Explicit retry, cleanup and completion use the original
 execution's backend rather than the current target configuration.
 Attach uses the original Herdr client recipe. Legacy endpoints remain usable for
 existing operations, while missing historical recipes cannot authorize new spawn.
+Read-only orphan-manifest observation is separate from required-running connection
+and execution admission. Under the shared mutex, an empty observation requires no
+current/pending instance owner or execution responsibility, absent configuration,
+session directory and both endpoints, and confirmed stopped native mappings.
+Other cases reconnect to the original instance; unknown ownership and observation
+failures remain errors. The [manifest decision](2026-11-12-worktree-manifest-adoption.md)
+owns metadata retirement after that observation.
 
 This extends the [frozen runtime decision](2026-11-12-worker-frozen-tool-runtime.md),
 whose initial delivery kept Herdr automatic until its distinct shell and instance
@@ -232,14 +239,28 @@ child or assembly file; its dynamic assembly ends with the original PowerShell
 process. The original shell, helper and native PIDs must all appear in the same
 console result.
 
-Final Windows acceptance cleanup independently rereads each original process birth.
-CIM CreationDate and the metadata oracle's .NET StartTime keep their respective
-original token sources and precision. Missing or replaced identities can confirm
-original absence only alongside complete original stop evidence; a live original,
-missing original identity, failed query or incomplete output fails validation.
-Results retain both identities, their source and observation errors. The observer
-never signals inspected PIDs and still checks endpoints, directories and query
-resource closure.
+Real-platform initialization resolves Windows Git from inherited PATH with the
+existing filesystem-based `which` dependency, then runs real `git init` with its
+five-second execution timeout. Command failure diagnostics preserve code, killed,
+signal and elapsed time. The fixture records initialization before adapter
+construction and advances the stage before constructing it. Independent cleanup
+accepts a no-resource initialization failure only with an explicit error and
+elapsed diagnostic, absent process and endpoint/receipt evidence, zero inputs and
+requests, a closed mock and no query resources. Directory and link checks remain
+mandatory. Contradictory or missing initialization evidence fails cleanup; the
+original initialization error still fails the platform test.
+
+Final Windows acceptance cleanup independently rereads each original process birth
+after adapter construction. CIM CreationDate and the metadata oracle's .NET
+StartTime keep their respective original token sources and precision. Missing or
+replaced identities can confirm original absence only alongside complete original
+stop evidence; a live original, missing original identity, failed query or
+incomplete output fails validation. Results retain both identities, their source
+and observation errors. The observer never signals inspected PIDs and still checks
+endpoints, directories and query resource closure. The [partial workspace
+evidence decision](../testing/2026-11-13-herdr-partial-workspace-evidence.md)
+defines the isolated fixture's additional proof for a readiness failure before
+the caller receives a binding.
 
 Windows cleanup policy tests execute the real checker and filesystem operations
 with controlled observations at the OS query boundary. Dedicated native jobs own
@@ -247,7 +268,9 @@ the real PowerShell 5 query, same-source birth comparison and script entry point
 their success remains mandatory. POSIX entry tests and the observer's real child
 timeout/close test retain their direct process coverage. One Windows mechanism
 test reads a live owned process through .NET; policy cases do not repeat that
-system query. Script exit-code tests control the checker result at its module
+system query. Its [test-specific query budget](../testing/2026-11-15-windows-cleanup-mechanism-budget.md)
+accommodates delayed PowerShell startup while preserving shared query deadlines
+and failure semantics. Script exit-code tests control the checker result at its module
 boundary without starting another OS query.
 
 ## Alternatives
@@ -367,6 +390,13 @@ and a compiler child, including with `GenerateInMemory=true`, and could repeat
 the same compilation dependency. `Reflection.Emit` preserves the independent
 console APIs without those resources or a cmdlet/JSON dependency. Actual PS5
 execution must still establish that the emitted declarations behave correctly.
+
+**Locate Git through a timed `where.exe` child.** The fixture only needs an
+executable path and already depends on `which`. An extra lookup child adds a
+process deadline before real Git runs. The observed Windows failure retained
+only `Command failed: where.exe git.exe`, which cannot distinguish nonzero exit
+from timeout; the historical exit status remains unknown. Filesystem resolution
+removes that extra child without extending the real Git deadline.
 
 ## Consequences
 

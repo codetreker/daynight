@@ -219,6 +219,18 @@ for (const { width, locale, readOnly } of [
     else {
       const select = table.locator('select').last();
       await select.focus(); await expect(select).toBeFocused(); await expect(select).toBeEnabled();
+      const controls = await table.locator('select').evaluateAll(elements => elements.map(element => {
+        const control = element.getBoundingClientRect(), arrow = element.parentElement!.querySelector('svg')!.getBoundingClientRect();
+        return { width: control.width, height: control.height, left: control.left, right: control.right, arrowInset: control.right - arrow.right, arrowOffset: arrow.top + arrow.height / 2 - control.top - control.height / 2 };
+      }));
+      await testInfo.attach('select-geometry', { contentType: 'application/json', body: JSON.stringify(controls) });
+      for (const control of controls) {
+        expect(control.width).toBe(120); expect(control.height).toBe(32);
+        expect(Math.abs(control.left - controls[0]!.left)).toBeLessThanOrEqual(1);
+        expect(Math.abs(control.right - controls[0]!.right)).toBeLessThanOrEqual(1);
+        expect(Math.abs(control.arrowInset - 12)).toBeLessThanOrEqual(1);
+        expect(Math.abs(control.arrowOffset)).toBeLessThanOrEqual(1);
+      }
     }
     await page.screenshot({ path: testInfo.outputPath(`member-columns-${width}-${locale}.png`) });
     expect(state.writes).toHaveLength(0);

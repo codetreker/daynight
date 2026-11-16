@@ -39,7 +39,9 @@ export const verifyCompletionFlow = async (page: Page, projectId: string, standa
   await page.getByRole("tab", { name: "Goals", exact: true }).click();
   await expect(goalCard.locator(".goal-list-row time.completion-time-label")).toHaveAttribute("datetime", firstGoal.completedAt!);
   await goalCard.locator(".goal-list-toggle").click();
-  const childRow = goalCard.locator(`#chain-task-goal-${goalId}-${childId}`);
+  const childLink = page.locator(`#chain-task-goal-${goalId}-${childId}`);
+  const childRow = goalCard.locator(".task-row").filter({ has: childLink });
+  const standaloneRow = page.locator(".task-row").filter({ has: page.locator(`#standalone-task-${standaloneId}`) });
   await expect(childRow.locator("time.completion-time-label")).toHaveCount(0);
   await expect(childRow).toBeVisible();
   await expect(childRow).toHaveAttribute("data-task-status", "todo");
@@ -47,7 +49,7 @@ export const verifyCompletionFlow = async (page: Page, projectId: string, standa
   const child = await transition(childId, "done");
   await openProject();
   await page.getByRole("tab", { name: "Standalone tasks" }).click();
-  await expect(page.locator(`#standalone-task-${standaloneId} time.completion-time-label`)).toHaveAttribute("datetime", firstTask.completedAt!);
+  await expect(standaloneRow.locator("time.completion-time-label")).toHaveAttribute("datetime", firstTask.completedAt!);
   await page.getByRole("tab", { name: "Task chains" }).click();
   await expect(page.locator(`[data-chain-id="${rootId}"] .goal-header time.completion-time-label`)).toHaveAttribute("datetime", root.completedAt!);
   await page.getByRole("tab", { name: "Goals", exact: true }).click();
@@ -66,7 +68,8 @@ export const verifyCompletionFlow = async (page: Page, projectId: string, standa
   await transition(goalId, "todo", true);
   await openProject();
   await page.getByRole("tab", { name: "Standalone tasks" }).click();
-  await expect(page.locator(`#standalone-task-${standaloneId} time.completion-time-label`)).toHaveCount(0);
+  await expect(standaloneRow).toHaveAttribute("data-task-status", "todo");
+  await expect(standaloneRow.locator("time.completion-time-label")).toHaveCount(0);
   await page.getByRole("tab", { name: "Goals", exact: true }).click();
   await expect(goalCard.locator(".goal-list-row time.completion-time-label")).toHaveCount(0);
 
@@ -76,7 +79,7 @@ export const verifyCompletionFlow = async (page: Page, projectId: string, standa
   expect(nextGoal.completedAt).not.toBe(firstGoal.completedAt);
   await openProject();
   await page.getByRole("tab", { name: "Standalone tasks" }).click();
-  await expect(page.locator(`#standalone-task-${standaloneId} time.completion-time-label`)).toHaveAttribute("datetime", nextTask.completedAt!);
+  await expect(standaloneRow.locator("time.completion-time-label")).toHaveAttribute("datetime", nextTask.completedAt!);
   await page.getByRole("tab", { name: "Goals", exact: true }).click();
   await expect(goalCard.locator(".goal-list-row time.completion-time-label")).toHaveAttribute("datetime", nextGoal.completedAt!);
   await goalCard.locator(`#project-goal-detail-${goalId}`).click();

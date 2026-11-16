@@ -46,6 +46,40 @@ const select = async (page: Page, name: string) => {
 };
 const position = (page: Page) => page.evaluate(() => new Promise<number>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(scrollY)))));
 
+for (const locale of ['en', 'zh-CN'] as const) for (const width of [1280, 320]) {
+  test(`unfinished Goal tab count and keyboard navigation at ${width}px in ${locale}`, async ({ page }) => {
+    const goal = (n: number, changes: Partial<TaskDetail>) => detailFixture(projectId, id(n), { type: 'goal', title: `Goal ${n}`, ...changes });
+    const state = await install(page, [
+      goal(1, { status: 'todo' }),
+      goal(2, { status: 'in_progress', startedAt: time }),
+      goal(3, { status: 'done', completedAt: time }),
+      goal(4, { status: 'cancelled', cancelledAt: time }),
+    ]);
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('combobox', { name: '语言 / Language' }).selectOption(locale);
+    await page.locator('#project-section-tab-tasks').click();
+    const chain = page.locator('#project-task-tab-chains');
+    const goalTab = page.locator('#project-task-tab-goals');
+    const pill = goalTab.locator('.graph-count-pill');
+    await expect(pill).toHaveText('2');
+    await expect(pill).toHaveAttribute('title', locale === 'en' ? 'Unfinished Goal count' : '未完成 Goal 数');
+    await expect(page.locator('#project-task-tab-standalone .graph-count-pill')).toHaveText('0');
+    await expect(chain.locator('.graph-count-pill')).toHaveText('0');
+    expect(await page.locator('.project-task-tabs').evaluate(tabs => {
+      const box = tabs.getBoundingClientRect();
+      return document.documentElement.scrollWidth <= innerWidth && [...tabs.querySelectorAll<HTMLElement>('[role="tab"]')].every(tab => {
+        const bounds = tab.getBoundingClientRect();
+        return bounds.width > 0 && bounds.left >= box.left - 1 && bounds.right <= box.right + 1 && tab.scrollWidth <= tab.clientWidth + 1;
+      });
+    })).toBe(true);
+    await chain.focus(); await page.keyboard.press('ArrowRight');
+    await expect(goalTab).toBeFocused(); await expect(goalTab).toHaveAttribute('aria-selected', 'true');
+    for (const n of [1, 2, 3, 4]) await expect(page.locator(`[data-goal-id="${id(n)}"]`)).toBeVisible();
+    expect(state.writes).toEqual([]);
+  });
+}
+
 for (const width of [1100, 390]) test(`project header and navigation survive a pending and failed graph at ${width}px`, async ({ page }) => {
   const state = await install(page, [row(10, 'Task')]);
   state.graphMode = 'pending';
@@ -116,7 +150,7 @@ test('category switching preserves real scroll and only the browser clamps short
       }
       const pagination = page.getByRole('navigation', { name: 'Standalone task list pagination' });
       await pagination.getByRole('button', { name: 'Next', exact: true }).click();
-      await expect(page.locator('.standalone-row')).toHaveCount(2);
+      await expect(page.locator('#project-standalone-list .task-row-title')).toHaveCount(2);
       const shortExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
       await select(page, 'Task chains'); const longExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
       expect(longExtent).toBeGreaterThan(shortExtent);
@@ -145,7 +179,7 @@ test('a task stays open through merge and split, then focus falls back to the su
   const joined = page.waitForResponse(response => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync` && response.status() === 200);
   await refresh.evaluate((element: HTMLButtonElement) => element.click()); await joined;
   await expect(page.locator(`#standalone-task-${child.id}`)).toHaveCount(0); await expect(dialog.locator('.task-detail-title')).toHaveText(child.title);
-  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(page.locator('.standalone-row').first()).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(page.locator('#project-standalone-list .task-row-title').first()).toBeFocused();
   await select(page, 'Task chains'); await page.locator(`#task-chain-graph-${root.id}`).click();
   const graph = page.locator('.task-chain-dialog'), details = page.locator(`.react-flow__node[data-id="${child.id}"] .task-node-details`);
   await expect(details).toBeVisible(); await details.click(); await expect(dialog.locator('.task-detail-title')).toHaveText(child.title);

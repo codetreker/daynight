@@ -28,3 +28,8 @@ export const toolPathSummaryStates = (resource: WorkerConfigurationResource, tel
 };
 
 export const toolPathContexts = (tool: Tool, primary: ToolContext = 'web'): readonly ToolContext[] => tool === 'herdr' ? ['herdr'] : [primary, primary === 'web' ? 'herdr' : 'web'];
+
+export const toolSoftwareEntries = (telemetry: ToolPathTelemetry, tool: Tool): readonly ToolPathObservation[] => telemetry.entries.filter(entry => entry.tool === tool && !(
+  entry.state === 'not_checked' && entry.actual === null && entry.candidate === null && entry.reason === null && entry.error === null
+  && entry.activeSelectionCount === 0 && entry.activeSelectionsComplete && entry.activeObservationError === null && entry.activeSelections.length === 0
+));

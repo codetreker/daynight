@@ -48,7 +48,7 @@ func TestTagMigrationPreservesHistoricalResources(t *testing.T) {
 	if previousChecksum != schemaMigrations[68].checksum() {
 		t.Fatalf("previous migration checksum=%q", previousChecksum)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:70]); err != nil {
 		t.Fatal(err)
 	}
 	var afterProjects, afterTasks, afterGitHub, afterPending, retainedLedger string
@@ -64,7 +64,7 @@ func TestTagMigrationPreservesHistoricalResources(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT checksum FROM schema_migrations WHERE version=70`).Scan(&checksum); err != nil || checksum != schemaMigrations[69].checksum() {
 		t.Fatalf("tag ledger checksum=%q error=%v", checksum, err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:70]); err != nil {
 		t.Fatalf("repeat migration: %v", err)
 	}
 	var retainedEpoch string

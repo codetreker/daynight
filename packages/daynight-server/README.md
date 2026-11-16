@@ -207,6 +207,12 @@ Project members manage the tag catalog through `/api/v1/projects/{projectId}/tag
 list, create, read, rename and confirmed deletion use stable IDs and original
 versions. List cursors bind the project, principal, query, page size and catalog
 epoch; `/tags/resolve` validates the complete selection within a bounded response.
+Create accepts an optional color (default `#9AA3B2`); PATCH atomically updates
+name and/or color using the exact version. Color is normalized to uppercase
+`#RRGGBB`. Existing Tag and Task responses retain their original fields.
+`/tags/colors/resolve` returns the exact version and color or a missing state for
+each unique requested ID in one authorized snapshot. An optional catalog epoch
+rejects changed catalogs, and the encoded response is bounded at 512 KiB.
 Visible Task and Goal usage counts are snapshot hints, while deletion removes all
 associations under the Project write lock. Task and Goal creation accepts `tagIds`
 and atomically saves the validated set with the new resource; omission or an empty
@@ -215,7 +221,7 @@ failed validation or response admission rolls back the entire creation. Task and
 `tagIds` set; omission preserves it and an empty array clears it. Mixed metadata
 and tag changes commit atomically with one version increment. Full, list, ready,
 search and sync results contain the current `tags` array, including `[]` when
-empty. Tag rename and deletion reach associated Tasks through ordinary sync
+empty. Tag rename, color changes and deletion reach associated Tasks through ordinary sync
 without rotating the task cache epoch. The [HTTP specification](../../docs/spec/daynight-server.md#http-api)
 and [server design](../../docs/design/daynight-server.md#领域模型与存储结构) describe the contract and implementation.
 The application mux mounts all of these modules and requires authentication for
@@ -268,8 +274,10 @@ and [architecture](../../docs/design/daynight-task-sync.md) define the implement
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
 snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
-exact decimal strings; each intrinsic summary includes explicit nullable
-assignedTo and the complete current properties object, while descriptions,
+exact decimal strings; each intrinsic summary includes the complete title and its
+existing preview and truncation marker, explicit nullable assignedTo and the
+complete current properties object. Historical titles are not truncated by the
+current write limit, while descriptions,
 derived blockers and readiness remain outside these summaries. Task rows and
 bulk property and tag-reference queries share one repeatable-read snapshot.
 The required `dependencyStates` map supplies each visible ordinary Task's exact
@@ -601,14 +609,19 @@ scoped cursors. Team, member, scoped Project, invitation and attachment pages
 use ordinary candidate batches and item-count continuation. Reads preserve full
 items without field-budget admission or repeated prefix encoding.
 
-`tag_list`, `tag_show`, `tag_create`, `tag_rename` and `tag_delete` use the
-shared Project tag service and Control permits. Catalog pages default to 50
-items (maximum 100), return `catalogEpoch` and bind the cursor to the Project,
-principal, query, limit and epoch. Tag versions are exact positive decimal
-strings; rename and deletion require the observed `ifVersion`, and deletion
-also requires `confirm: true`. Usage counts are snapshot hints, not a deletion
-condition. Mutation results retain confirmed, not committed or unknown completion;
-an unknown creation or deletion must not be replayed blindly.
+`tag_list`, `tag_show`, `tag_create`, `tag_rename`, `tag_update` and
+`tag_delete` use the shared Project tag service and Control permits. Catalog
+pages default to 50 items (maximum 100), return `catalogEpoch` and bind the cursor
+to the Project, principal, query, limit and epoch. Full Tag results include the
+canonical uppercase `#RRGGBB` color. Creation accepts an optional color and
+defaults to `#9AA3B2`. `tag_update` requires at least one of `name` and `color`;
+omitted fields retain their values, and both can change atomically. Tag versions
+are exact positive decimal strings; rename, update and deletion require the
+observed `ifVersion`, and deletion also requires `confirm: true`. Usage counts
+are snapshot hints, not a deletion condition. Mutation receipts contain the
+service's committed Tag and retain confirmed, not committed or unknown completion;
+an unknown mutation must not be replayed blindly. Task Tag references remain
+`{id,name}`.
 
 `project_resolve` reads the unique accessible Project for a supplied repository
 address, returning its ID in `data.id`. Equivalent HTTPS, SSH and SCP addresses
@@ -872,6 +885,15 @@ pull request and installation lifecycle events. The reverse proxy must allow a
 26,214,400-byte request body. The receiver persists refresh hints before
 acknowledging relevant deliveries; polling repairs missed deliveries. See the
 [connection and scheduler design](../../docs/design/github-connection-runtime.md).
+
+Each Project's PR synchronization defaults to off, independently of its GitHub
+connection. An administrator enables it after connecting; disabling it retains
+the connection and saved PRs. When upgrading across migration 073, stop and drain
+every old server replica before migrating, replace all replicas, and then start
+the new servers. Old binaries ignore the synchronization setting and must not run
+alongside the new version. Existing Projects also migrate with synchronization
+off and require an administrator to enable it again. The migration retains the
+binding, PRs and history while invalidating old work and pending hints.
 
 `s2s.shared_key` / `DAYNIGHT_S2S_SHARED_KEY` is optional and server-only. Empty
 disables S2S issuance; a nonempty value must contain 32 through 256 visible ASCII
@@ -2832,6 +2854,18 @@ its original version and timestamps; a different role returns
 PATCH to change that role. Direct addition neither changes the Team metadata
 version nor creates or consumes an invitation. Invitation acceptance still
 explicitly adds member and retains its existing actor and consumption rules.
+
+An ordinary Team admin can resolve an existing external identity with
+`POST /api/v1/teams/{teamId}/members/resolve` and exactly
+`{expectedUserId,user:{externalUserId}}`. It accepts no query or profile and
+uses the same identity validation as direct addition. The current user credential,
+expected actor and current Team admin are checked in the Team transaction.
+Success is `200 {membership,actorRole:"admin"}`; membership is the existing
+TeamMember or null when the identity or relationship is absent. Credential,
+authorization, Team and transaction failures are not null results. The response
+is no-store and does not echo the external identity. Resolution creates or changes
+no user, credential or membership; later writes still require current authority
+and the observed membership version.
 
 An admin changes an existing role with `PATCH /api/v1/teams/{teamId}/members/{userId}`
 and `{version,role,expectedUserId}`; the response is `{membership,actorRole}`.

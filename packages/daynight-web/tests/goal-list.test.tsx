@@ -1,10 +1,20 @@
-import { act, fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-import type { TaskSummary, WorkerClaim } from '../src/api/types';
+import type { ComponentProps } from 'react';
+
+// These graph fixtures use descriptive synthetic IDs; URL validity is tested with real UUIDs in browser tests.
+vi.mock('../src/app/router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/app/router')>(),
+  taskDetailUrl: (projectId: string, taskId: string) => `/projects/${projectId}/tasks/${taskId}`,
+}));
+import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TaskSummary, TaskSync, WorkerClaim } from '../src/api/types';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
-import { deriveTaskSyncBindings } from '../src/features/task-cache/execution-binding';
+import { deriveTaskSyncBindings, deriveTaskSyncVersions } from '../src/features/task-cache/execution-binding';
 import { TaskSessionSummaryProvider } from '../src/features/task-session-summary/TaskSessionSummaryProvider';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
+import { ProjectTaskObservationsProvider } from '../src/features/task-session-summary/ProjectTaskObservationsProvider';
 import { detailFixture, graphFixture, snapshotFixture } from './helpers/taskDetail';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
 import { buildGraphIndex } from '../src/features/task-graph/model';
@@ -15,12 +25,20 @@ import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskE
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { statesForSummaries } from './helpers/taskSync';
+import { listProjectTags, resolveProjectTags } from '../src/api/task-tags';
+import { ApiError } from '../src/api/client';
+
+vi.mock('../src/api/task-tags', async original => ({ ...await original<typeof import('../src/api/task-tags')>(), listProjectTags: vi.fn(), resolveProjectTags: vi.fn() }));
+beforeEach(() => {
+  vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [], catalogEpoch: 'epoch', nextCursor: null });
+  vi.mocked(resolveProjectTags).mockReset().mockResolvedValue([]);
+});
 
 const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
 const project = { id: projectId, name: 'Project', repoUrl: 'https://example.test/project', ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (id: string, type: 'task' | 'goal', parentId: string | null, status: TaskSummary['status'], changes: Partial<TaskSummary> = {}): TaskSummary => ({
-  tags: [], id, type, parentId, status, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
+  tags: [], id, type, parentId, status, title: id, titlePreview: id, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: false,
   dependsOn: [], externalDependsOn: [], properties: {}, version: 1n, startedAt: null, completedAt: null, cancelledAt: null, createdAt: time, updatedAt: time, ...changes,
 });
 const snapshot = (tasks: TaskSummary[]): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map((task) => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
@@ -35,26 +53,92 @@ const claim = (state: WorkerClaim['state']): WorkerClaim => ({
   phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time,
 });
 const noop = () => {};
+const FilteredGoalList = (props: ComponentProps<typeof GoalList>) => {
+  const filter = useTagFilter(projectId);
+  return <><TagFilter controller={filter} child /><GoalList {...props} childTagFilter={filter} /></>;
+};
 const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn(), onOpenListChain = vi.fn(), onOpenGoalGraph = vi.fn()) => <TaskPauseProvider taskIds={new Set(['child'])}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
-  <GoalList projectId={projectId} index={value.index} goals={[value.summaries.get(goal.id)!, value.summaries.get(other.id)!, value.summaries.get(empty.id)!]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenGoalGraphTask={noop} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+  <GoalList summaries={value.summaries} projectId={projectId} index={value.index} goals={[value.summaries.get(goal.id)!, value.summaries.get(other.id)!, value.summaries.get(empty.id)!]} total={3} workerMachines={value.workerMachines} onOpenGoal={onOpenGoal} onOpenGoalGraph={onOpenGoalGraph} onOpenGoalGraphTask={noop} onOpenListTask={onOpenListTask} onOpenListChain={onOpenListChain} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
-  it('toggles from each part of the header and keeps detail and graph actions separate', () => {
+  it('filters every Goal direct scope with one condition while retaining the complete chain context', async () => {
+    vi.mocked(listProjectTags).mockResolvedValue({ items: ['alpha', 'beta'].map((name, i) => ({ id: i === 0 ? 'tag-a' : 'tag-b', name, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: 'epoch', nextCursor: null });
+    vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => ids.map(id => ({ id, name: id === 'tag-a' ? 'alpha' : 'beta' })));
+    const entries = [goal, other, empty,
+      summary('child', 'task', goal.id, 'todo', { tags: [{ id: 'tag-a', name: 'alpha' }], dependsOn: ['sibling'] }),
+      summary('sibling', 'task', goal.id, 'todo', { tags: [{ id: 'tag-b', name: 'beta' }] }),
+      summary('outside', 'task', other.id, 'todo', { tags: [{ id: 'tag-a', name: 'alpha' }] }),
+      summary('standalone', 'task', goal.id, 'todo', { tags: [{ id: 'tag-b', name: 'beta' }] }),
+      summary('untagged', 'task', goal.id, 'todo')];
+    const value = snapshot(entries);
+    const openGraph = vi.fn();
+    createLocaleRender('en', { taskCache: true })(<TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+      <FilteredGoalList projectId={projectId} index={value.index} summaries={value.summaries} goals={[goal, other]} total={2} workerMachines={value.workerMachines} onOpenGoal={noop} onOpenGoalGraph={openGraph} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+    </TaskExecutionClockProvider></TaskPauseProvider>);
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'alpha' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
+    const otherCard = document.querySelector<HTMLElement>('[data-goal-id="other"]')!;
+    fireEvent.click(otherCard.querySelector('.goal-list-toggle')!);
+    expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(1);
+    expect(document.querySelectorAll('.tag-filter')).toHaveLength(1);
+    expect(card.querySelector('.tag-filter')).toBeNull();
+    const titles = () => [...card.querySelectorAll('.task-row-title')].map(node => node.textContent);
+    expect(titles()).toEqual(['child']);
+    expect(card.querySelector('.root-toggle')).toBeNull();
+    expect(card.querySelector('.goal-list-toggle')).toHaveAccessibleDescription(/4 tasks/);
+    expect(value.index.nodes.size).toBe(5);
+    const graphButton = within(card).getByRole('button', { name: 'goal, View Goal dependency graph' });
+    fireEvent.click(graphButton);
+    expect(openGraph).toHaveBeenCalledWith(goal.id, graphButton);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'beta' }));
+    expect(titles()).toEqual([]);
+    expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(0);
+    expect(within(card).getByText('No tasks match the filters')).toBeVisible();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Child task tag filter: AND / OR' }), { target: { value: 'any' } });
+    expect(titles()).toEqual(['child', 'sibling', 'standalone']);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'No tags' }));
+    expect(titles()).toEqual(['untagged']);
+    expect(otherCard.querySelectorAll('.task-row-title')).toHaveLength(0);
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    fireEvent.click(card.querySelector('.goal-list-toggle')!);
+    expect(titles()).toEqual(['untagged']);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
+    expect(within(card).getByText('standalone', { selector: '.task-row-title' })).toBeInTheDocument();
+    expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'alpha' }));
+    vi.mocked(resolveProjectTags).mockRejectedValue(new ApiError('server', 404, 'tag_not_found'));
+    vi.mocked(listProjectTags).mockResolvedValue({ items: [], catalogEpoch: 'new-epoch', nextCursor: null });
+    fireEvent.focus(window);
+    await waitFor(() => expect(screen.getByText('A selected tag is unavailable. Remove it to search again.')).toBeVisible());
+    expect(titles()).toEqual([]);
+    expect(within(card).queryByText('No tasks match the filters')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove alpha' })).toBeVisible();
+    expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
+  });
+  it('toggles from non-interactive header parts and keeps title, detail and graph actions separate', () => {
     const openGoal = vi.fn(); const openGraph = vi.fn();
     const assigned = tasks.map(task => task.id === goal.id ? { ...task, assignedTo: '12345678-0000-4000-8000-000000000001' } : task);
     createLocaleRender('en', { taskCache: true })(list(snapshot(assigned), openGoal, vi.fn(), vi.fn(), openGraph));
     const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    const title = card.querySelector<HTMLButtonElement>('.goal-list-title')!;
     const detail = document.getElementById('project-goal-detail-goal')!;
     const graph = document.getElementById('project-goal-graph-goal')!;
     const content = document.getElementById(toggle.getAttribute('aria-controls')!)!;
     expect(toggle).toHaveAccessibleDescription(/Assignee: 12345678.*2 tasks.*0\/1 completed.*To do/);
     expect(content).not.toBeVisible();
+    expect(title).toHaveAttribute('type', 'button');
+    expect(title).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(title).toHaveAttribute('id', 'project-goal-goal');
+    expect(toggle.contains(title)).toBe(false);
     expect(toggle.contains(detail)).toBe(false);
     expect(toggle.contains(graph)).toBe(false);
-    for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-title', '.goal-list-meta', '.goal-list-progress', '.root-status']) {
-      const target = toggle.querySelector(selector)!;
+    for (const selector of ['.goal-disclosure', '.goal-list-icon', '.goal-list-meta', '.goal-list-progress', '.root-status']) {
+      const target = card.querySelector(selector)!;
       fireEvent.click(target);
       expect(toggle, selector).toHaveAttribute('aria-expanded', 'true');
       expect(content).toBeVisible();
@@ -63,8 +147,17 @@ describe('Goal list', () => {
       expect(content).not.toBeVisible();
     }
     fireEvent.click(toggle);
+    const child = card.querySelector<HTMLAnchorElement>('.task-row-title')!;
+    child.focus();
+    fireEvent.click(card.querySelector('.root-status')!);
+    expect(toggle).toHaveFocus();
+    expect(content).not.toBeVisible();
+    fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     for (const expanded of [true, false]) {
+      fireEvent.click(title);
+      expect(openGoal).toHaveBeenLastCalledWith(goal.id, title);
+      expect(toggle).toHaveAttribute('aria-expanded', String(expanded));
       fireEvent.click(detail);
       expect(openGoal).toHaveBeenLastCalledWith(goal.id, detail);
       fireEvent.click(graph);
@@ -72,8 +165,22 @@ describe('Goal list', () => {
       expect(toggle).toHaveAttribute('aria-expanded', String(expanded));
       if (expanded) fireEvent.click(toggle);
     }
-    expect(openGoal).toHaveBeenCalledTimes(2);
+    expect(openGoal).toHaveBeenCalledTimes(4);
     expect(openGraph).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens the matching Goal from titles with different states and no children', () => {
+    const openGoal = vi.fn();
+    createLocaleRender('en', { taskCache: true })(list(snapshot(tasks), openGoal));
+    for (const id of ['goal', 'other', 'empty']) {
+      const card = document.querySelector<HTMLElement>(`[data-goal-id="${id}"]`)!;
+      const title = card.querySelector<HTMLButtonElement>('.goal-list-title')!;
+      const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+      fireEvent.click(title);
+      expect(openGoal).toHaveBeenLastCalledWith(id, title);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    }
+    expect(openGoal).toHaveBeenCalledTimes(3);
   });
 
   it('opens the overall graph independently of the title and disclosure, including an empty Goal', () => {
@@ -126,7 +233,7 @@ describe('Goal list', () => {
     expect(toggle).toHaveFocus();
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(toggle).toHaveAccessibleDescription(/2 in progress.*Automatic execution active.*1\/4 completed/);
-    const indicator = toggle.querySelector('.chain-worker-active')!;
+    const indicator = card.querySelector('.chain-worker-active')!;
     expect(indicator.querySelector('.chain-worker-active-dot')).toHaveAttribute('aria-hidden', 'true');
     expect(within(indicator as HTMLElement).queryByRole('button')).toBeNull();
 
@@ -174,8 +281,8 @@ describe('Goal list', () => {
     expect(first.querySelector('.goal-list-progress')).toHaveTextContent('0/1 已完成');
     fireEvent.click(toggle);
     fireEvent.click(within(second).getByRole('button', { name: '展开 Goal：other' }));
-    expect([...first.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent)).toEqual(['child', 'standalone']);
-    expect([...second.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent)).toEqual(['solo-other', 'root']);
+    expect([...first.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['child', 'standalone']);
+    expect([...second.querySelectorAll('.task-row-title')].map(node => node.textContent)).toEqual(['solo-other', 'root']);
     expect(first.querySelector('.root-toggle')).toBeNull();
     expect(within(first).getByText('已暂停')).toBeVisible();
     expect(first.querySelector('.task-duration')).toHaveTextContent('10 分钟');
@@ -188,9 +295,9 @@ describe('Goal list', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(toggle);
     expect(within(first).queryByText('child')).toBeNull();
-    expect(within(second).getByText('root')).toBeVisible();
+    expect(within(second).getByRole('link', { name: 'root' })).toBeVisible();
     fireEvent.click(toggle);
-    expect(within(first).getByText('child')).toBeVisible();
+    expect(within(first).getByRole('link', { name: 'child' })).toBeVisible();
     fireEvent.click(within(document.querySelector<HTMLElement>('[data-goal-id="empty"]')!).getByRole('button', { name: '展开 Goal：empty' }));
     expect(screen.getByText('此 Goal 暂无子任务。')).toBeVisible();
   });
@@ -206,7 +313,7 @@ describe('Goal list', () => {
     expect(progress.querySelectorAll('i')).toHaveLength(1);
     expect(progress.querySelector('i')).toHaveStyle({ width: '50%' });
     fireEvent.click(toggle);
-    const done = within(card).getByRole('button', { name: /done.*Done/ });
+    const done = within(card).getByRole('link', { name: 'done' });
     done.focus();
     view.rerender(list(snapshot(current.map((item) => item.id === 'done' ? { ...item, status: 'cancelled' } : item))));
     expect(progress).toHaveTextContent('0/1 completed');
@@ -216,7 +323,7 @@ describe('Goal list', () => {
     expect(progress).toHaveTextContent('0/0 completed');
     expect(progress.querySelector('i')).toHaveStyle({ width: '0%' });
     expect(within(card).queryByText('This Goal has no child tasks yet.')).toBeNull();
-    expect(within(card).getByText('cancelled', { selector: '.root-title' })).toBeVisible();
+    expect(within(card).getByText('cancelled', { selector: '.task-row-title' })).toBeVisible();
   });
 
   it('updates membership and dependency changes without losing surviving rows or expansion', () => {
@@ -234,7 +341,7 @@ describe('Goal list', () => {
     view.rerender(list(snapshot(merged)));
     expect(document.getElementById(child.id)).toBe(child);
     expect(child).toHaveFocus();
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(4);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(4);
     expect(card.querySelector('.root-toggle')).toBeNull();
     const moved = merged.map(task => task.id === 'child' ? { ...task, parentId: other.id } : task);
     view.rerender(list(snapshot(moved)));
@@ -266,7 +373,7 @@ describe('Goal list', () => {
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
     expect(toggle).toHaveAccessibleDescription(/8 tasks/);
     fireEvent.click(toggle);
-    const titles = () => [...card.querySelectorAll('.goal-task-main .root-title')].map(node => node.textContent);
+    const titles = () => [...card.querySelectorAll('.task-row-title')].map(node => node.textContent);
     expect(titles()).toEqual(['running', 'todo-a', 'todo-b', 'proposed', 'cancelled-newer', 'done-a', 'done-equal', 'done-unknown']);
     const first = document.getElementById('chain-task-goal-goal-todo-a')!;
     view.rerender(list(ordered([goal, other, empty, ...members.toReversed().map(task => task.id === 'running' ? { ...task, status: 'todo' as const } : task)])));
@@ -275,24 +382,32 @@ describe('Goal list', () => {
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('publishes Session controls only for visible expanded Goals and restores focus on Session-only withdrawal', async () => {
+  it('observes collapsed Goal members and restores focus when Session controls disappear', async () => {
     const firstGoal = '00000000-0000-4000-8000-000000000301';
     const secondGoal = '00000000-0000-4000-8000-000000000302';
     const firstTask = '00000000-0000-4000-8000-000000000303';
     const secondTask = '00000000-0000-4000-8000-000000000304';
+    const siblingTask = '00000000-0000-4000-8000-000000000305';
     const worker = { ...claim('active'), userId: TEST_VIEWER_ID };
     const details = [detailFixture(projectId, firstGoal, { type: 'goal', title: 'First Goal' }),
       detailFixture(projectId, secondGoal, { type: 'goal', title: 'Second Goal' }),
-      detailFixture(projectId, firstTask, { title: 'First Task', parentId: firstGoal, status: 'in_progress', properties: { worker } }),
+      detailFixture(projectId, firstTask, { title: 'First Task', parentId: firstGoal, status: 'in_progress', tags: [{ id: 'tag-a', name: 'alpha' }], properties: { worker } }),
+      detailFixture(projectId, siblingTask, { title: 'Sibling Task', parentId: firstGoal, status: 'in_progress', tags: [{ id: 'tag-a', name: 'alpha' }], properties: { worker } }),
       detailFixture(projectId, secondTask, { title: 'Second Task', parentId: secondGoal, status: 'in_progress', properties: { worker } })];
     const graph = graphFixture(details); const value = snapshotFixture(details);
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const signal = new AbortController().signal; const ticket = await scope.beginSync(projectId, signal);
-    const sync = taskSyncFromGraph(graph, { sessions: { [firstTask]: 'notice', [secondTask]: 'working' }, versionForTask: () => 1n,
+    const observationMap = (sessions: TaskSync['sessions']): TaskSync['taskObservations'] => Object.fromEntries(Object.entries(sessions).map(([id, state]) => [id, {
+      taskVersion: 1n, state, observedAt: graph.observedAt, freshUntil: '2026-10-22T10:00:30Z', needsAttention: null, canOpen: true,
+    }]));
+    const sessions = { [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' } as const;
+    const sync = taskSyncFromGraph(graph, { sessions, taskObservations: observationMap(sessions), versionForTask: () => 1n,
       propertiesForTask: (task) => details.find(item => item.id === task.id)!.properties });
     const result = await scope.applySync(ticket, sync, signal);
     const store = new TaskSessionSummaryStore(scope, projectId); store.start();
     store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions: sync.sessions, receivedMonotonic: performance.now() });
+    const observationStore = new ProjectTaskObservationsStore(scope, projectId); observationStore.start();
+    observationStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), observedVersions: deriveTaskSyncVersions(ticket, sync), sync, receivedMonotonic: performance.now() });
     const records: { callback: IntersectionObserverCallback; element: Element | null; disconnect: ReturnType<typeof vi.fn<() => void>> }[] = [];
     class Observer {
       record: typeof records[number];
@@ -303,45 +418,106 @@ describe('Goal list', () => {
     vi.stubGlobal('IntersectionObserver', Observer);
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
     const openSession = vi.fn();
-    const view = createLocaleRender('en', { taskCache: true })(<TaskSessionSummaryProvider store={store}>
-      <TaskExecutionClockProvider projectId={projectId} snapshot={value}><GoalList projectId={projectId} index={value.index} summaries={value.summaries}
-        goals={[value.summaries.get(firstGoal)!, value.summaries.get(secondGoal)!]} total={2} workerMachines={value.workerMachines}
+    const renderGoals = (current: GraphSnapshot) => <TaskSessionSummaryProvider store={store}><ProjectTaskObservationsProvider store={observationStore} active>
+      <TaskExecutionClockProvider projectId={projectId} snapshot={current}><FilteredGoalList projectId={projectId} index={current.index} summaries={current.summaries}
+        goals={[current.summaries.get(firstGoal)!, current.summaries.get(secondGoal)!]} total={2} workerMachines={current.workerMachines}
         onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop}
         openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} onOpenSession={openSession} /></TaskExecutionClockProvider>
       <button type="button">Outside</button>
-    </TaskSessionSummaryProvider>);
+    </ProjectTaskObservationsProvider></TaskSessionSummaryProvider>;
+    const view = createLocaleRender('en', { taskCache: true })(renderGoals(value));
     try {
-      expect(records).toHaveLength(0);
+      expect(records).toHaveLength(2);
       const firstCard = document.querySelector<HTMLElement>(`[data-goal-id="${firstGoal}"]`)!;
       const secondCard = document.querySelector<HTMLElement>(`[data-goal-id="${secondGoal}"]`)!;
       const firstToggle = firstCard.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
-      fireEvent.click(firstToggle); fireEvent.click(secondCard.querySelector('.goal-list-toggle')!);
-      expect(records).toHaveLength(2);
       const visible = (record: typeof records[number], isIntersecting: boolean) => act(() => record.callback([{ target: record.element!, isIntersecting } as IntersectionObserverEntry], {} as IntersectionObserver));
       expect(firstCard.querySelector('.session-status-action')).toBeNull();
       visible(records[0]!, true);
-      const session = firstCard.querySelector<HTMLButtonElement>('.session-status-action')!;
-      expect(session).toHaveAttribute('data-session-indicator', 'notice');
+      const aggregate = firstCard.querySelector<HTMLButtonElement>('.goal-list-row .session-status-action')!;
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
       expect(secondCard.querySelector('.session-status-action')).toBeNull();
+      fireEvent.click(aggregate);
+      expect(firstToggle).toHaveAttribute('aria-expanded', 'true');
+      expect(openSession).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByText('Child task tag filter', { selector: 'summary' }));
+      fireEvent.click(screen.getByRole('checkbox', { name: 'No tags' }));
+      expect(within(firstCard).getByText('No tasks match the filters')).toBeVisible();
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
+      fireEvent.click(screen.getByRole('button', { name: 'Remove No tags' }));
+      const session = firstCard.querySelector<HTMLButtonElement>('.task-row .session-status-action')!;
       fireEvent.click(session); expect(openSession).toHaveBeenCalledWith(firstTask, session);
       visible(records[1]!, true);
-      expect(secondCard.querySelector('.session-status-action')).toHaveAttribute('data-session-indicator', 'working');
+      expect(secondCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'warning');
+      const replaceSessions = (sessions: typeof sync.sessions) => act(() => {
+        const receivedMonotonic = performance.now();
+        store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions, receivedMonotonic });
+        observationStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), observedVersions: deriveTaskSyncVersions(ticket, sync), sync: { ...sync, taskObservations: observationMap(sessions) }, receivedMonotonic });
+      });
+      replaceSessions({ [firstTask]: 'working', [siblingTask]: 'warning', [secondTask]: 'warning' });
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'warning');
+      replaceSessions({ [firstTask]: 'working', [siblingTask]: 'pending', [secondTask]: 'warning' });
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'working');
+      replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
+      expect(aggregate).toHaveAttribute('data-session-indicator', 'notice');
       session.focus();
+      replaceSessions({ [siblingTask]: 'working', [secondTask]: 'warning' });
+      const firstRow = document.getElementById(`chain-task-goal-${firstGoal}-${firstTask}`)!.closest<HTMLElement>('.task-row')!;
+      expect(firstRow.querySelector('.session-status-action')).toBeNull();
+      expect(firstRow.querySelector('.task-row-title')).toHaveFocus();
+      replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
       visible(records[0]!, false);
-      expect(firstCard.querySelector('.session-status-action')).toBeNull();
-      expect(firstCard.querySelector('.goal-task-main')).toHaveFocus();
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
       expect(secondCard.querySelector('.session-status-action')).toBeVisible();
+      visible(records[0]!, true);
+      firstCard.querySelector<HTMLButtonElement>('.goal-list-row .session-status-action')!.focus();
+      visible(records[0]!, false);
+      expect(firstToggle).toHaveFocus();
       visible(records[0]!, true);
       screen.getByRole('button', { name: 'Outside' }).focus();
       visible(records[0]!, false);
       expect(screen.getByRole('button', { name: 'Outside' })).toHaveFocus();
       fireEvent.click(firstToggle);
-      expect(records[0]!.disconnect).toHaveBeenCalled();
       visible(records[0]!, true);
-      expect(store.snapshot().has(firstTask)).toBe(false);
+      expect(store.snapshot().has(firstTask)).toBe(true);
       expect(store.snapshot().has(secondTask)).toBe(true);
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
+      visibility.mockReturnValue('visible');
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'notice');
+      visibility.mockRestore();
+      const moved = snapshotFixture(details.map(task => task.id === firstTask ? { ...task, parentId: secondGoal } : task));
+      view.rerender(renderGoals(moved));
+      expect(records[0]!.disconnect).toHaveBeenCalled();
+      for (const record of records.slice(2)) visible(record, true);
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'working');
+      const removed = snapshotFixture(details.filter(task => task.id !== siblingTask).map(task => task.id === firstTask ? { ...task, parentId: secondGoal } : task));
+      const previousObservers = records.length;
+      view.rerender(renderGoals(removed));
+      for (const record of records.slice(previousObservers)) visible(record, true);
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
+      const beforeRestore = records.length;
+      view.rerender(renderGoals(value));
+      for (const record of records.slice(beforeRestore)) visible(record, true);
+      replaceSessions({ [firstTask]: 'pending', [siblingTask]: 'pending', [secondTask]: 'warning' });
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toBeNull();
+      expect(firstCard.querySelector('.goal-list-row .session-status-annotation')).toBeNull();
+      replaceSessions({ [firstTask]: 'notice', [siblingTask]: 'working', [secondTask]: 'warning' });
+      const completedDetails = details.map(task => task.id === firstTask ? { ...task, status: 'done' as const, version: 2n } : task);
+      const completedSync = taskSyncFromGraph(graphFixture(completedDetails), { query: { epoch: sync.epoch }, sessions: { [siblingTask]: 'working', [secondTask]: 'warning' }, versionForTask: (task) => task.id === firstTask ? 2n : 1n,
+        propertiesForTask: (task) => completedDetails.find(item => item.id === task.id)!.properties });
+      const completedTicket = await scope.beginSync(projectId, signal);
+      await act(async () => {
+        const completedResult = await scope.applySync(completedTicket, completedSync, signal);
+        store.replace({ project: completedResult.project, observedBindings: deriveTaskSyncBindings(completedTicket, completedSync), sessions: completedSync.sessions, receivedMonotonic: performance.now() });
+        observationStore.replace({ project: completedResult.project, observedBindings: deriveTaskSyncBindings(completedTicket, completedSync), observedVersions: deriveTaskSyncVersions(completedTicket, completedSync), sync: completedSync, receivedMonotonic: performance.now() });
+        view.rerender(renderGoals(snapshotFixture(completedDetails)));
+      });
+      expect(firstCard.querySelector('.goal-list-row .session-status-action')).toHaveAttribute('data-session-indicator', 'working');
       expect(fetch).not.toHaveBeenCalled();
-    } finally { view.unmount(); store.dispose(); scope.dispose(); vi.unstubAllGlobals(); }
+    } finally { view.unmount(); expect(records.every((record) => record.disconnect.mock.calls.length > 0)).toBe(true); observationStore.dispose(); store.dispose(); scope.dispose(); vi.unstubAllGlobals(); }
   });
 
 });

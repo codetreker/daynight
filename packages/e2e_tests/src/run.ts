@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,9 +80,14 @@ try {
   await link(ownerRecord, lockFile);
   ownsLock = true;
   const artifacts = await buildArtifacts({ repository, runDirectory, authSource: parsed.values["auth-source"], signal: cancellation.signal });
+  manifest.artifacts = artifacts;
+  const decoder = path.join(artifacts.directory, "image-validator");
+  await runCommand(process.execPath, [path.join(repository, "packages/daynight/scripts/package-image-validation.ts"), decoder], {
+    cwd: repository, signal: cancellation.signal, timeoutMs: 60_000,
+  });
+  manifest.decoder = Object.fromEntries(await Promise.all(["image-validation-helper.js", "image-validation-manifest.json"].map(async name => [name, createHash("sha256").update(await readFile(path.join(decoder, name))).digest("hex")])));
   await rm(lockFile);
   ownsLock = false;
-  manifest.artifacts = artifacts;
   preparingEnvironment = true;
   await writeRunPointer("environment");
   environment = await startEnvironment({ repository, runDirectory, artifactsDirectory: artifacts.directory, signal: cancellation.signal });

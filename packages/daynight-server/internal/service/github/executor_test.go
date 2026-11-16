@@ -46,7 +46,7 @@ func newPollFixture(t *testing.T) *pollFixture {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	app, installation, repo := int64(10), int64(20), int64(30)
 	name, login := "owner/repo", "owner"
-	f := &pollFixture{t: t, now: now, workKind: "poll", connection: githubpr.Connection{ProjectID: testProject, Enabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, RepositoryFullName: &name, InstallationAccountLogin: &login, Generation: 7, Revision: 8, AccessState: "available", PollIntervalMinutes: 5, NextPollAt: &now}}
+	f := &pollFixture{t: t, now: now, workKind: "poll", connection: githubpr.Connection{ProjectID: testProject, Enabled: true, SyncEnabled: true, AppID: &app, InstallationID: &installation, RepositoryID: &repo, RepositoryFullName: &name, InstallationAccountLogin: &login, Generation: 7, Revision: 8, AccessState: "available", PollIntervalMinutes: 5, NextPollAt: &now}}
 	f.db = &executorStore{t: t}
 	f.db.write = func(ctx context.Context, id string, work func(store.ProjectWriteScope) error) (store.Completion, error) {
 		if id != testProject {
@@ -462,15 +462,18 @@ func TestExecutorRateLimitUsesLaterRetry(t *testing.T) {
 }
 
 func TestExecutorUnknownClaimRequiresExactReadback(t *testing.T) {
-	for _, matches := range []bool{false, true} {
-		t.Run(fmt.Sprintf("matches=%t", matches), func(t *testing.T) {
+	for _, mode := range []string{"different-token", "sync-disabled", "matches"} {
+		t.Run(mode, func(t *testing.T) {
 			f := newPollFixture(t)
 			f.unknownClaim = true
 			f.db.snapshot = func(ctx context.Context, work func(store.SnapshotScope) error) error {
 				observed := f.connection
 				token := f.lease.Token
-				if !matches {
+				if mode == "different-token" {
 					token = "different-token"
+				}
+				if mode == "sync-disabled" {
+					observed.SyncEnabled = false
 				}
 				observed.ClaimToken, observed.ClaimUntil = &token, &f.until
 				dao := executorReadDAO{connection: func(_ context.Context, id string) (githubpr.Connection, error) {
@@ -486,7 +489,7 @@ func TestExecutorUnknownClaimRequiresExactReadback(t *testing.T) {
 				return remote.CheckpointRequest(ctx)
 			}
 			err := f.run(r)
-			if matches {
+			if mode == "matches" {
 				if err != nil {
 					t.Fatal(err)
 				}

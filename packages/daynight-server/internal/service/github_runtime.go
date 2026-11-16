@@ -33,6 +33,7 @@ type githubRuntime struct {
 
 func (a *App) assembleGitHub(db store.Transactions, c githubconfig.Config, logger *slog.Logger) error {
 	if !c.Enabled {
+		a.GitHubManager = githubservice.NewManager(db, nil, 0, logger)
 		return nil
 	}
 	reader, ok := db.(store.GitHubWorkReader)
@@ -65,7 +66,7 @@ func (a *App) assembleGitHub(db store.Transactions, c githubconfig.Config, logge
 		client.CloseIdleConnections()
 		return err
 	}
-	a.GitHubManager = githubservice.NewManager(db, client, c.AppID)
+	a.GitHubManager = githubservice.NewManager(db, client, c.AppID, logger)
 	a.GitHubWebhook = receiver
 	g := &githubRuntime{runner: runner, client: client, logger: logger}
 	a.githubRuntime = g

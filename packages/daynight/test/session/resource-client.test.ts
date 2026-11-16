@@ -26,7 +26,7 @@ it("uses explicit occurrence eligibility and keeps retry bound to the original i
   } finally { await api.close(); }
 });
 it("reads and verifies a resource above the former online limit with bounded chunks", async () => {
-  const bytes = Buffer.alloc(8_388_609, 42),
+  const bytes = Buffer.alloc(8_388_609, Buffer.from(Array.from({ length: 256 }, (_, i) => i))),
     sha256 = createHash("sha256").update(bytes).digest("hex");
   const descriptor = {
     resourceId: id,

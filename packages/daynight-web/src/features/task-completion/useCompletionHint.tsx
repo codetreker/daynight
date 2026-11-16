@@ -11,7 +11,7 @@ const ownerOf = (element: Element | null): Element | null => element?.closest('d
 const useHint = (value: CompletionValue | null, pinnable: boolean) => {
   const { messages: { completion } } = useI18n();
   const id = useId();
-  const trigger = useRef<HTMLButtonElement | null>(null);
+  const trigger = useRef<HTMLElement | null>(null);
   const tip = useRef<HTMLSpanElement | null>(null);
   const hoveredAnchor = useRef<HTMLElement | null>(null);
   const sources = useRef(initialSources());
@@ -34,7 +34,7 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
     cancelTimer();
     timer.current = window.setTimeout(() => { timer.current = null; update(); }, 120);
   }, [cancelTimer, update]);
-  const triggerRef: RefCallback<HTMLButtonElement> = useCallback((element) => { trigger.current = element; }, []);
+  const triggerRef: RefCallback<HTMLElement> = useCallback((element) => { trigger.current = element; }, []);
   const labelEvents = {
     onPointerEnter: (event: PointerEvent<HTMLElement>) => {
       if (event.pointerType === "touch") return;
@@ -46,9 +46,9 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
     },
   };
   const triggerEvents = {
-    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => { touchPin.current = event.pointerType === "touch"; },
+    onPointerDown: (event: PointerEvent<HTMLElement>) => { touchPin.current = event.pointerType === "touch"; },
     onFocus: () => { cancelTimer(); sources.current.focus = true; sources.current.dismissed = false; update(); },
-    onBlur: (_event: FocusEvent<HTMLButtonElement>) => dismiss(),
+    onBlur: (_event: FocusEvent<HTMLElement>) => dismiss(),
     onClick: () => {
       if (!pinnable) { dismiss(); return; }
       if (sources.current.pinned) { dismiss(); return; }
@@ -102,7 +102,7 @@ const useHint = (value: CompletionValue | null, pinnable: boolean) => {
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(position); };
     schedulePosition.current = schedule;
-    const competing = (event: Event) => { if ((event as CustomEvent<HTMLButtonElement>).detail !== button) dismiss(); };
+    const competing = (event: Event) => { if ((event as CustomEvent<HTMLElement>).detail !== button) dismiss(); };
     document.addEventListener("daynight:completion-hint", competing);
     document.dispatchEvent(new CustomEvent("daynight:completion-hint", { detail: button }));
     const keydown = (event: KeyboardEvent) => {

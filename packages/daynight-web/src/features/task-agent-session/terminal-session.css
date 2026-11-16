@@ -4,7 +4,6 @@
 .terminal-recording { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; color: #34445c; }
 .terminal-recording-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 22px; color: #68758a; font-size: 12px; }
 .terminal-recording-summary label { display: flex; align-items: center; gap: 8px; }
-.terminal-recording-summary select { border: 1px solid #dce0e8; border-radius: 6px; background: #fff; padding: 5px 8px; font: inherit; }
 .terminal-partial { color: #87682e; background: #fff5df; border-radius: 14px; padding: 3px 9px; }
 .terminal-recording-display { flex: 1 1 310px; display: flex; min-width: 0; min-height: 120px; margin: 0 22px; border: 1px solid #dce2ed; border-radius: 8px; overflow: hidden; }
 .terminal-recording-display > .terminal-screen { flex: 1; }

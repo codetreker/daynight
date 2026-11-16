@@ -1,3 +1,4 @@
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import { useId } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 
@@ -36,7 +37,7 @@ export const TokenExpiryField = ({ draft, onChange, disabled, invalid }: {
 }) => {
   const id = useId();
   const { messages: { auth: { management: { account: m } } } } = useI18n();
-  return <div className="field token-expiry-field"><label htmlFor={`${id}-mode`}>{m.expiryLabel}</label><select id={`${id}-mode`} value={draft.mode} disabled={disabled} onChange={(event) => onChange({ ...draft, mode: event.currentTarget.value as TokenExpiryDraft["mode"] })}>
+  return <div className="field token-expiry-field"><label htmlFor={`${id}-mode`}>{m.expiryLabel}</label><NativeSelect layout="fill" id={`${id}-mode`} value={draft.mode} disabled={disabled} onChange={(event) => onChange({ ...draft, mode: event.currentTarget.value as TokenExpiryDraft["mode"] })}>
     <option value="never">{m.neverExpires}</option><option value="custom">{m.customExpiry}</option>
-  </select>{draft.mode === "custom" && <div className="token-expiry-custom"><label htmlFor={`${id}-date`}>{m.expiryDateLabel}</label><input id={`${id}-date`} type="datetime-local" value={draft.input} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={`${id}-hint`} onChange={(event) => onChange({ ...draft, input: event.currentTarget.value })} /></div>}<p className={`hint${invalid ? " error" : ""}`} id={`${id}-hint`}>{invalid ? m.invalidExpiry : m.expiryHint}</p></div>;
+  </NativeSelect>{draft.mode === "custom" && <div className="token-expiry-custom"><label htmlFor={`${id}-date`}>{m.expiryDateLabel}</label><input id={`${id}-date`} type="datetime-local" value={draft.input} disabled={disabled} aria-invalid={invalid || undefined} aria-describedby={`${id}-hint`} onChange={(event) => onChange({ ...draft, input: event.currentTarget.value })} /></div>}<p className={`hint${invalid ? " error" : ""}`} id={`${id}-hint`}>{invalid ? m.invalidExpiry : m.expiryHint}</p></div>;
 };

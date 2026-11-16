@@ -20,7 +20,7 @@
 
 | 所有者 | 职责 |
 | --- | --- |
-| [共享 projector](../../packages/daynight/src/commands/controller/providers/image-projector.ts) | 将完整 content/tool output 布局中的图片位置、稳定来源 tuple 和 capture 状态存入原 journal；为富图片条目设置 `imageProjectionError`，经位置 ACK 后开始 register/query/stage/commit。 |
+| [共享 projector](../../packages/daynight/src/commands/controller/providers/image-projector.ts) | 将完整 content/tool output 布局中的图片位置、稳定来源 tuple 和 capture 状态存入原 journal；为富图片条目设置 `imageProjectionError`，经位置 ACK 和实际完整历史确认后封存并 submit，未知时 query 原身份。 |
 | [原生状态](../../packages/daynight/src/commands/controller/media/native-state.ts) | 在既有 `image_runtime_state` 中保存 matcher、别名、分页及出现状态；单值不超过 1 MiB，消费普通元数据预算。 |
 | [wire spool](../../packages/daynight/src/commands/controller/media/native-spool.ts) 与 [media owner](../../packages/daynight/src/commands/controller/media/preparations.ts) | 按实际暂存字节计公共磁盘账本，单次写不超过 64 KiB；seal 后只读，活跃 reader、未完成 unlink 或目录同步均不允许提前释放。 |
 | [Codex RPC](../../packages/daynight/src/commands/controller/providers/codex-rpc.ts) | 有界解析原生流，将明确媒体字段交独立 token 暂存，保持 RPC 回执与原连接。 |
@@ -29,7 +29,7 @@
 
 索引 writer 的预算 reservation 与实际进程证明持久保存。恢复只有在原 writer 已停止或已被其他进程替代时才释放 reservation；存活、无法确认或缺少证明时拒绝新 writer。实际索引、sidecar 和 reservation 按占用上界计量，避免重复计费；原生状态不能借用结算专用额度。
 
-Provider 只交出本地或外部 locator，不自行打开路径或抓取 URL。公共 `resolveImageCaptureSource` 在原出现已 ACK 且 capture 已 reserved 后读取；组件缺失时保留同位置的 `component_unsupported`。已保存的图片直接复用服务 resource，重开不重新访问原来源。待到达来源保留 pending，最终 payload 到达后更新同一位置；完成布局由 normalizer 完整提供，不能用纯文字 delta 覆盖图片槽。
+Provider 只交出本地或外部 locator，不自行打开路径或抓取 URL。公共 `resolveImageCaptureSource` 在原出现已 ACK、本地原 request 已持久且实际完整历史已确认后，沿原来源权限读取；组件缺失时保留同位置的 `component_unsupported`。读取不等待服务 register 或 reserved。已保存的图片直接复用服务 resource，重开不重新访问原来源。待到达来源保留 pending，最终 payload 到达后更新同一位置；完成布局由 normalizer 完整提供，不能用纯文字 delta 覆盖图片槽。
 
 ## 三者共同的发送屏障
 
@@ -150,7 +150,7 @@ SDK user 工具事件的 `tool_use_result` 若为明确的 image `FileReadOutput
 
 第一遍增量 tokenizer 扫描 JSONL，媒体按 token 跳过并记录 offset；受限磁盘索引保存 uuid/parentUuid/message.id/block、tool、sidechain/meta 与 compaction 字段。按真实 parent chain、preservedMessages/preservedSegment、父链重写及 sibling/tool_result 选可见分支，不以物理行序当最终对话。helper 只输出元数据，由 Controller 唯一 journal writer 提交：每页最多 100 条、序列化最多 1 MiB，ACK 后下一页。
 
-第二遍只读取所选出现，register 后逐块解码其媒体到已预留 staging。单行或总历史大于旧 32 MiB 不是失败理由；超单图 10 MiB 有界跳过并保留位置，不吞同行文字。结构深度 64，身份沿公共上限，文字沿既有截断规则。末尾未完成行等待后续扫描；截断、替换、前缀变化或父链缺口停止新导入且保留旧图。cursor 绑定快照/chain/表示/historyEpoch；append 验证连续前缀，不重建身份。helper 不 query/send、不恢复或修改原生会话。
+第二遍只读取所选出现，原位置 ACK 和必要完整历史确认后逐块解码其媒体到本机已预留 staging，封存后直接 submit。单行或总历史大于旧 32 MiB 不是失败理由；超单图 10 MiB 有界跳过并保留位置，不吞同行文字。结构深度 64，身份沿公共上限，文字沿既有截断规则。末尾未完成行等待后续扫描；截断、替换、前缀变化或父链缺口停止新导入且保留旧图。cursor 绑定快照/chain/表示/historyEpoch；append 验证连续前缀，不重建身份。helper 不 query/send、不恢复或修改原生会话。
 
 已知 `tool_result.content` 字符串及其 text 块在元数据预算前保留有界前缀，最终显示仍由既有文字投影生成截断标记。历史扫描继续检查被丢弃尾部的 JSON 转义、UTF-8 和完整结构，完整解析后核对所属块类型；未知字段不能借用文字截断通道绕过容量限制。live 与历史共享前缀规则，保留图片位置和相邻正文；总元数据和页预算不变。
 
@@ -217,7 +217,7 @@ bridge 失败只暂停媒体并留下当前连接未知；是否恢复/停止遵
 
 ## 来源提交、平台与验证
 
-三者全部来源遵守同一两阶段次序：Controller 先持久 entry/出现位置，经原 timeline/source outbox 得到覆盖该位置的服务 ACK，再 `image_capture register` 原子登记来源映射和身份。收到兼容 reserved 回执才读源，该状态不表示服务端容量预留；未知只 query 原 captureId。自有输入回显同样在位置 ACK 后以 resource locator register，已 available 同 Session 原件直接 committed，只增加出现引用和可信 nativeSource，不复制 blob、不重计资源槽，也不凭此确认输入。
+三者全部来源遵守同一次序：Controller 先持久 entry/出现位置与原 request，经原 timeline/source outbox 得到覆盖该位置的服务 ACK，并确认必要实际完整历史；沿原来源权限读取并封存，再以原 request、当前 attempt 和 frozen outcome 直接 `image_capture submit`。服务原子核验来源映射、身份和当前 attempt，真实保存后 committed；本地读取不等待 register 或 reserved。未知先 query 原 captureId，只有当前授权和 fence 有效且明确 capture_not_found 才重放原冻结提交与封存字节。自有输入回显同样在位置 ACK 后以 resource locator 和 resource outcome submit，已 available 同 Session 原件直接 committed，只增加出现引用和可信 nativeSource，不复制 blob、不重计资源槽，也不凭此确认输入。
 
 canonical aliases 只由可信 native ID 关联事务添加，不能用 hash 猜并。已 committed 永远读服务原件，格式错误、源消失、权限变化保留原位置与安全错误。结束时停止新源 IO，结算原捕获；unknown 或已保存 bytes 损坏不能伪装“从未采集”。
 

@@ -10,7 +10,11 @@ const original = { taskId, version: '1', body: '## Original manual\n\nRead the a
 const revision = { ...original, version: '2', body: '## Approved manual\n\nUse the verified evidence.', source: 'revision', proposalId: firstProposalId };
 const rollback = { ...original, version: '3', source: 'rollback' };
 const proposal = (id: string, reason: string) => ({ id, taskId, baseVersion: '1', body: revision.body, rules: [], reason, evidenceRecords: [], authorBotId: botId(1), widens: id === firstProposalId, status: 'pending', decisionNote: '', createdAt: BOT_TIME, decidedAt: null as string | null });
-async function install(page: Page) {
+const longName = 'Long assistant name 很长助手名称 1234567890';
+const itemId = botId(50);
+const item = { id: itemId, taskId, key: 'Long item key 很长事项 '.repeat(8).trim(), episode: '1', state: 'open', category: 'stalled', followerBotId: botId(2), appState: {}, version: '1', createdAt: BOT_TIME, updatedAt: BOT_TIME };
+const record = { id: botId(51), taskId, itemId, kind: 'fact', author: 'bot', authorBotId: botId(2), text: 'Selected evidence', refs: [], createdAt: BOT_TIME };
+async function install(page: Page, options: { noBots?: boolean } = {}) {
   let currentTask = { ...task }, currentManual = { ...original };
   const histories = [{ ...original }];
   const proposals = [proposal(firstProposalId, 'Repeated successful observations'), proposal(secondProposalId, 'Unverified alternative')];
@@ -43,13 +47,15 @@ async function install(page: Page) {
     if (path === `/api/v1/teams/${personalId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
     if (path === '/api/v1/me/bots/defaults') return send(botDefaults());
-    if (path === '/api/v1/me/bots') return send({ items: [botDefinition(1)], nextCursor: null });
+    if (path === '/api/v1/me/bots') return send({ items: options.noBots ? [] : [botDefinition(1), { ...botDefinition(2), name: longName }], nextCursor: null });
     if (path === '/api/v1/assistant-tasks') return send(paged([currentTask]));
     if (path === `/api/v1/assistant-tasks/${taskId}`) return send(currentTask);
     if (path.endsWith('/manual')) return send(currentManual);
     if (path.endsWith('/manual/versions')) return send(paged(histories));
     if (path.endsWith('/proposals')) return send(paged(proposals));
-    if (path.endsWith('/appendix') || path.endsWith('/records') || path.endsWith('/events') || path.endsWith('/items') || path === '/api/v1/assistant-task-events') return send(paged([]));
+    if (path.endsWith('/items')) return send(paged([item]));
+    if (path.endsWith('/records')) return send(paged([record]));
+    if (path.endsWith('/appendix') || path.endsWith('/events') || path === '/api/v1/assistant-task-events') return send(paged([]));
     return send({ error: { code: 'not_found', message: 'Not found', requestId: 'assistant-task-fixture' } }, 404);
   });
   return writes;
@@ -98,3 +104,67 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     });
   });
 }
+
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 320, height: 568 }]) {
+  test(`assistant selection fields preserve choices and fit at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const writes = await install(page); await page.goto('/bots');
+    await page.getByRole('button', { name: 'Create assistant task', exact: true }).click();
+    const create = page.getByRole('dialog', { name: 'Create assistant task' });
+    await create.getByLabel('Name', { exact: true }).fill('Retained draft');
+    await create.getByRole('combobox', { name: 'Kind', exact: true }).selectOption('once');
+    await expect(create.getByRole('combobox', { name: 'Kind', exact: true })).toHaveValue('once');
+    await expect(create.getByLabel('Name', { exact: true })).toHaveValue('Retained draft');
+    expect(await create.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    await create.getByRole('button', { name: 'Cancel' }).click();
+
+    await page.getByRole('button', { name: 'Enable Watchdog', exact: true }).click();
+    const watchdog = page.getByRole('dialog', { name: 'Enable Watchdog' });
+    const bot = watchdog.getByRole('combobox', { name: 'Choose an assistant' });
+    await expect(bot).toHaveValue(botId(1)); await bot.selectOption(botId(2));
+    await expect(bot.locator('option:checked')).toHaveText(longName);
+    expect(await watchdog.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    await watchdog.getByRole('button', { name: 'Cancel' }).click(); expect(writes).toHaveLength(0);
+
+    await page.goto(`/bots/tasks/${taskId}`);
+    const detail = page.locator('.assistant-task-detail');
+    await detail.getByRole('button', { name: 'Transfer', exact: true }).click();
+    const transfer = page.getByRole('dialog', { name: 'Transfer' });
+    const target = transfer.getByRole('combobox', { name: 'Choose an assistant' });
+    await expect(target).toHaveValue(botId(2)); await expect(target.locator(`option[value="${botId(1)}"]`)).toHaveCount(0);
+    await expect(target.locator('option:checked')).toHaveText(longName);
+    expect(await transfer.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+    await transfer.getByRole('button', { name: 'Cancel' }).click(); expect(writes).toHaveLength(0);
+
+    await detail.getByRole('button', { name: 'Work records', exact: true }).click();
+    const section = detail.locator('.assistant-task-record-section');
+    await expect(section.getByText('Selected evidence')).toBeVisible();
+    await section.getByRole('combobox', { name: 'Item', exact: true }).selectOption(itemId);
+    await section.getByRole('combobox', { name: 'Record type', exact: true }).selectOption('fact');
+    await section.getByRole('combobox', { name: 'Author', exact: true }).selectOption(botId(2));
+    await expect(section.getByText('Selected evidence')).toBeVisible();
+    await expect(section.getByRole('combobox', { name: 'Item', exact: true }).locator('option:checked')).toHaveText(item.key);
+    await noOverflow(page); expect(writes).toHaveLength(0);
+    await section.getByRole('button', { name: 'Clear filters' }).click();
+    await expect(section.getByRole('combobox', { name: 'Item', exact: true })).toHaveValue('');
+    await expect(section.getByRole('combobox', { name: 'Record type', exact: true })).toHaveValue('');
+    await expect(section.getByRole('combobox', { name: 'Author', exact: true })).toHaveValue('');
+  });
+}
+
+test('empty assistant choice retains native required validation and prevents a watchdog write', async ({ page }) => {
+  const writes = await install(page, { noBots: true }); await page.goto('/bots');
+  await page.getByRole('button', { name: 'Enable Watchdog', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Enable Watchdog' }), select = dialog.getByRole('combobox', { name: 'Choose an assistant' });
+  await expect(select).toHaveValue(''); await expect(select).toHaveAttribute('required', '');
+  expect(await select.evaluate(node => (node as HTMLSelectElement).validity.valueMissing)).toBe(true);
+  await expect(dialog.getByRole('button', { name: 'Enable Watchdog' })).toBeDisabled();
+  const invalid = await select.evaluate(node => {
+    let count = 0;
+    node.addEventListener('invalid', () => { count++; }, { once: true });
+    (node as HTMLSelectElement).form!.requestSubmit();
+    return count;
+  });
+  expect(invalid).toBe(1);
+  expect(writes).toHaveLength(0);
+});

@@ -32,11 +32,19 @@ export type ProjectTag = TaskTag & {
 };
 export type ProjectTagPage = { readonly items: readonly ProjectTag[]; readonly catalogEpoch: string; readonly nextCursor: string | null };
 export type ProjectTagQuery = { readonly query: string; readonly limit: number; readonly cursor: string | null };
+export type ProjectTagColor =
+  | { readonly id: string; readonly state: "found"; readonly version: bigint; readonly color: string }
+  | { readonly id: string; readonly state: "missing" };
+export type ProjectTagColorPage = { readonly catalogEpoch: string; readonly items: readonly ProjectTagColor[] };
 
 export const normalizeTagName = (value: string): string | null => {
   if (!value.isWellFormed()) return null;
   const name = value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
   return name.length === 0 || Array.from(name).length > 64 || /[\p{Cc}\u2028\u2029]/u.test(name) ? null : name;
+};
+export const normalizeTagColor = (value: string): string | null => {
+  const color = value.trim().toUpperCase();
+  return /^#[0-9A-F]{6}$/.test(color) ? color : null;
 };
 export const tagNameKey = (name: string): string => name.replace(/[A-Z]/g, character => character.toLowerCase());
 
@@ -67,7 +75,9 @@ const base = (project: string) => `/api/v1/projects/${project}/tags`;
 export const listProjectTags = async (projectId: string, query: ProjectTagQuery, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTagPage> => {
   const project = requestId(projectId);
   if (!query.query.isWellFormed() || query.query.includes("\0") || !Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100 || query.cursor !== null && (!query.cursor.isWellFormed() || query.cursor.trim() === "" || query.cursor.includes("\0"))) throw new ApiError("protocol");
-  const parameters = new URLSearchParams({ query: query.query, limit: String(query.limit) });
+  const parameters = new URLSearchParams();
+  if (query.query !== "") parameters.set("query", query.query);
+  parameters.set("limit", String(query.limit));
   if (query.cursor !== null) parameters.set("cursor", query.cursor);
   const response = await request(`${base(project)}?${parameters}`, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
@@ -92,15 +102,23 @@ const writeTag = async (project: string, tag: string | null, method: "POST" | "P
       return { projectId: project, tagId: tag!, deleted: true };
     }
     const result = parseProjectTag(value, project, tag ?? undefined);
-    const input = body as { readonly name: string; readonly version?: bigint };
-    if (result.name !== input.name || input.version !== undefined && result.version !== input.version && result.version !== input.version + 1n) return malformed();
+    const input = body as { readonly name?: string; readonly version?: bigint };
+    if (input.name !== undefined && result.name !== input.name || input.version !== undefined && result.version !== input.version && result.version !== input.version + 1n) return malformed();
     return result;
   }, undefined, false, admission.onWriteRejected);
 };
-export const createProjectTag = (projectId: string, name: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTag> => {
+export const createProjectTag = (projectId: string, name: string, signal: AbortSignal, admission: TaskResponseAdmission, color?: string): Promise<ProjectTag> => {
   const project = requestId(projectId), normalized = normalizeTagName(name);
-  if (normalized === null) throw new ApiError("protocol");
-  return writeTag(project, null, "POST", { name: normalized }, signal, admission) as Promise<ProjectTag>;
+  const normalizedColor = color === undefined ? undefined : normalizeTagColor(color);
+  if (normalized === null || normalizedColor === null) throw new ApiError("protocol");
+  return writeTag(project, null, "POST", { name: normalized, ...(normalizedColor === undefined ? {} : { color: normalizedColor }) }, signal, admission) as Promise<ProjectTag>;
+};
+export const updateProjectTag = (projectId: string, tagId: string, fields: { readonly name?: string; readonly color?: string }, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTag> => {
+  const project = requestId(projectId), tag = requestId(tagId);
+  const name = fields.name === undefined ? undefined : normalizeTagName(fields.name);
+  const color = fields.color === undefined ? undefined : normalizeTagColor(fields.color);
+  if (!isTaskVersion(version) || name === null || color === null || name === undefined && color === undefined) throw new ApiError("protocol");
+  return writeTag(project, tag, "PATCH", { version, ...(name === undefined ? {} : { name }), ...(color === undefined ? {} : { color }) }, signal, admission) as Promise<ProjectTag>;
 };
 export const renameProjectTag = (projectId: string, tagId: string, name: string, version: bigint, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTag> => {
   const project = requestId(projectId), tag = requestId(tagId), normalized = normalizeTagName(name);
@@ -123,4 +141,32 @@ export const resolveProjectTags = async (projectId: string, tagIds: readonly str
     if (items.length !== ids.length || items.some(item => !ids.includes(item.id))) return malformed();
     return items;
   });
+};
+
+export const resolveProjectTagColors = async (projectId: string, tagIds: readonly string[], catalogEpoch: string | null, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectTagColorPage> => {
+  const project = requestId(projectId), ids = tagIds.map(requestId);
+  const epoch = catalogEpoch === null ? null : requestId(catalogEpoch);
+  if (ids.length > 100 || new Set(ids).size !== ids.length) throw new ApiError("protocol");
+  const response = await request(`${base(project)}/colors/resolve`, signal, {
+    method: "POST", headers, body: JSON.stringify({ tagIds: ids, ...(epoch === null ? {} : { catalogEpoch: epoch }) }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  return json(response, signal, value => {
+    if (response.status !== 200) return malformed();
+    const data = record(value), resultEpoch = id(data.catalogEpoch);
+    if (epoch !== null && resultEpoch !== epoch) return malformed();
+    const items = array(data.items, (item): ProjectTagColor => {
+      const entry = record(item), tag = id(entry.id);
+      if (entry.state === "missing") {
+        if (Object.keys(entry).length !== 2) return malformed();
+        return { id: tag, state: "missing" };
+      }
+      if (entry.state !== "found" || Object.keys(entry).length !== 4 || !isTaskVersion(entry.version) ||
+        typeof entry.color !== "string" || !/^#[0-9A-F]{6}$/.test(entry.color)) return malformed();
+      return { id: tag, state: "found", version: entry.version, color: entry.color };
+    });
+    const requested = new Set(ids), returned = new Set(items.map(item => item.id));
+    if (items.length !== ids.length || returned.size !== items.length || items.some(item => !requested.has(item.id))) return malformed();
+    return { catalogEpoch: resultEpoch, items };
+  }, decodePage);
 };

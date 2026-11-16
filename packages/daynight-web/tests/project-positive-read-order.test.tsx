@@ -58,11 +58,12 @@ it('retains a newer successful search when an older Project read returns 404', a
   const scope = await mount();
   const old = await startOldProjectRead();
   const before = scope.getProjectReadRevision(projectId);
-  vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ tags: [], id: taskId, projectId, title: 'Search evidence', status: 'todo', assignedTo: null, updatedAt: detail.updatedAt, cancelledAt: null, context: null, match: { fields: ['title'], descriptionSnippet: null } }] });
+  vi.mocked(searchTasks).mockResolvedValue({ projectId, total: 1, nextCursor: null, items: [{ tags: [], type: 'task', parentId: null, id: taskId, projectId, title: 'Search evidence', status: 'todo', assignedTo: null, updatedAt: detail.updatedAt, cancelledAt: null, context: null, match: { fields: ['title'], descriptionSnippet: null } }] });
   const input = screen.getByRole('textbox', { name: /Search task IDs/ });
   fireEvent.change(input, { target: { value: 'evidence' } });
   fireEvent.submit(input.closest('form')!);
   const result = await screen.findByText('Search evidence');
+  expect(result.closest('.task-search-result')!.querySelector('.task-tag-list')).toBeNull();
   expect(scope.getProjectReadRevision(projectId)).toBeGreaterThan(before);
   await act(async () => { old.reject(new ApiError('server', 404, 'not_found')); });
   expect(screen.getByText('Search evidence')).toBe(result);
@@ -75,7 +76,7 @@ it('retains a newer successful summary detail when an older Project read returns
   const old = await startOldProjectRead();
   const before = scope.getProjectReadRevision(projectId);
   fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
-  fireEvent.click(screen.getByRole('button', { name: /Evidence task/ }));
+  fireEvent.click(screen.getByRole('link', { name: 'Evidence task' }));
   const dialog = screen.getByRole('dialog');
   await within(dialog).findByText('Private description');
   expect(getTaskObservation).toHaveBeenCalled();

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/assistanttask/watchdog"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
@@ -111,6 +112,7 @@ func TestTasksForwardOnlyTransactionBoundOperations(t *testing.T) {
 		args []any
 		run  func(*Tasks) error
 	}{
+		{"EnablePreset", []any{watchdog.Preset("created"), "bot"}, func(s *Tasks) error { _, err := s.EnableWatchdog(ctx, actor, "created", "bot"); return err }},
 		{"Create", []any{core.CreateInput{ID: "created", Name: "name", Body: "manual"}}, func(s *Tasks) error {
 			_, err := s.Create(ctx, actor, core.CreateInput{ID: "created", Name: "name", Body: "manual"})
 			return err

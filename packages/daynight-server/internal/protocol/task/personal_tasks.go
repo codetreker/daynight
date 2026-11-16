@@ -9,6 +9,8 @@ import (
 // PersonalTaskPage is the account-wide lightweight Task inventory and its Session observations.
 type PersonalTaskPage struct {
 	ObservedAt        time.Time          `json:"observedAt"`
+	ResponseTaskAt    time.Time          `json:"responseTaskAt"`
+	ResponseSessionAt time.Time          `json:"responseSessionAt"`
 	InventoryRevision string             `json:"inventoryRevision"`
 	TotalTaskCount    int64              `json:"totalTaskCount"`
 	TotalProjectCount int64              `json:"totalProjectCount"`
@@ -18,9 +20,10 @@ type PersonalTaskPage struct {
 }
 
 type PersonalTaskItem struct {
-	Project PersonalTaskProject       `json:"project"`
-	Task    PersonalTask              `json:"task"`
-	Session sp.TaskSessionObservation `json:"session"`
+	Project    PersonalTaskProject       `json:"project"`
+	Task       PersonalTask              `json:"task"`
+	Session    sp.TaskSessionObservation `json:"session"`
+	SessionRow SessionRow                `json:"sessionRow"`
 }
 
 type PersonalTaskProject struct {
@@ -38,14 +41,31 @@ type PersonalTaskTeam struct {
 }
 
 type PersonalTask struct {
-	ID          string            `json:"id"`
-	Version     string            `json:"version"`
-	Title       string            `json:"title"`
-	Status      string            `json:"status"`
-	StartedAt   *time.Time        `json:"startedAt"`
-	AllowAgents bool              `json:"allowAgents"`
-	Paused      bool              `json:"paused"`
-	Goal        *PersonalTaskGoal `json:"goal"`
+	ID               string              `json:"id"`
+	Version          string              `json:"version"`
+	Title            string              `json:"title"`
+	Status           string              `json:"status"`
+	CreatedAt        time.Time           `json:"createdAt"`
+	StartedAt        *time.Time          `json:"startedAt"`
+	RequiredPlatform *string             `json:"requiredPlatform"`
+	Tags             []RESTTagReference  `json:"tags"`
+	BlockedBy        []string            `json:"blockedBy"`
+	Ready            bool                `json:"ready"`
+	AllowAgents      bool                `json:"allowAgents"`
+	Paused           bool                `json:"paused"`
+	Goal             *PersonalTaskGoal   `json:"goal"`
+	Worker           *PersonalTaskWorker `json:"worker"`
+}
+
+type PersonalTaskWorker struct {
+	WorkerID string              `json:"workerId"`
+	State    string              `json:"state"`
+	Machine  PersonalTaskMachine `json:"machine"`
+}
+
+type PersonalTaskMachine struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type PersonalTaskGoal struct {

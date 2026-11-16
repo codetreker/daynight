@@ -46,7 +46,9 @@ export const useProjectTags = (projectId: string, active = true) => {
         }
       }
       await scope.ready(signal);
-      if (signal.aborted || ticket !== generation.current || scope.isInvalidated) return;
+      if (signal.aborted || ticket !== generation.current || scope.isInvalidated || scope.isProjectSuspended(projectId)) return;
+      scope.markProjectReadable(projectId);
+      scope.notifyTagColors(projectId, false);
       setState(previous => {
         if (previous.scope !== scope || previous.projectId !== projectId || previous.query !== query) return previous;
         return { ...previous, cursor: resultCursor, page, loading: false, refreshing: false, error: null };
@@ -120,5 +122,5 @@ export const useProjectTags = (projectId: string, active = true) => {
   const refresh = useCallback(() => { if (active) { if (revoked.current !== null) void retryAccess(); else void request(stateRef.current.query, null); } }, [active, request, retryAccess]);
   const first = refresh;
   const next = useCallback(() => { const current = stateRef.current; if (active && current.page?.nextCursor != null) void request(current.query, current.page.nextCursor); }, [active, request]);
-  return { page: visible.page, query: visible.query, loading: visible.loading, refreshing: visible.refreshing, error: visible.error, setQuery, refresh, first, next };
+  return { page: visible.page, cursor: visible.cursor, query: visible.query, loading: visible.loading, refreshing: visible.refreshing, error: visible.error, setQuery, refresh, first, next };
 };

@@ -295,7 +295,7 @@ test.each(["unlink", ...(process.platform === "win32" ? [] : ["fsync"]), "vacuum
       vi.spyOn(db, "exec").mockImplementation(source => { if (source === "VACUUM") throw failure; return exec(source); });
     }
     expect(() => maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toThrow();
-    expect(db.pragma("user_version", { simple: true })).toBe(11); expect(marker(db)).toBe(1);
+    expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); expect(marker(db)).toBe(1);
     expect(openTimelineStore(db, { assertWrite: () => {} }).get(f.entry.entryId)).toEqual(f.entry);
     restoreMocks();
     const fsync = vi.spyOn(fs, "fsyncSync");
@@ -479,7 +479,7 @@ test("preparation close failure retains an unknown cleanup marker outcome after 
     expect(causes[1]).toMatchObject({ kind: "cleanup-failed", outcome: "unknown" });
     restoreMocks();
     const actual = new Database(f.file);
-    try { expect(actual.pragma("user_version", { simple: true })).toBe(11); expect(marker(actual)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, actual).bytes()); }
+    try { expect(actual.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); expect(marker(actual)).toBe(0); expect(charge(f)).toBeGreaterThan(controllerMetadataBudget(f.file, actual).bytes()); }
     finally { actual.close(); }
     expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
   } finally { restoreMocks(); f.permit.release(); }
@@ -538,7 +538,7 @@ test("stopped archive storage preserves a held legacy reader and completes maint
   const original = (db: Database.Database) => expect(JSON.parse((db.prepare("SELECT snapshot FROM execution WHERE id=1").get() as { snapshot: string }).snapshot)).toEqual(f.snapshot);
   const action = () => withStoppedControllerStorage({ journalPath: f.file, stateDirectory: f.root, ticket: f.ticket, assertOriginal: original }, db => {
     invoked = true;
-    expect(db.pragma("user_version", { simple: true })).toBe(11); expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(false);
+    expect(db.pragma("user_version", { simple: true })).toBe(currentSqliteVersion(controllerJournalFormat)); expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(false);
     expect(openTimelineStore(db, { assertWrite: () => { throw new Error("Archive readback is read-only."); } }).get(f.entry.entryId)).toEqual(f.entry);
   });
   try {

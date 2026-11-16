@@ -141,6 +141,14 @@ const submitSave = async () => {
 };
 const leave = () => act(() => navigate("/workers"));
 const returnToSettings = () => selectSection(lastSection);
+const visitRevokedMembers = () => { act(() => navigate(`/projects/${projectId}/members`)); fireEvent(window, new Event("focus")); };
+const visitRevokedProject = () => { act(() => navigate(`/projects/${projectId}`)); fireEvent(window, new Event("focus")); };
+const returnAfterRevocation = () => { returnToSettings(); fireEvent(window, new Event("focus")); };
+const visibleText = async (text: string) => waitFor(() => {
+  const element = screen.getAllByText(text).find(value => value.closest('[hidden]') === null);
+  expect(element).toBeDefined();
+  return element!;
+});
 const previewTransfer = async (blocked = false) => {
   selectSection("management");
   const open = await screen.findByRole("button", { name: /^Transfer project$/ });
@@ -177,6 +185,19 @@ it("keeps a dispatched personal project prompt owner across route navigation", a
   expect(await screen.findByRole("textbox", { name: "Prompt text" })).toBe(field);
   await act(async () => app.promptSave.resolve(json({ scope: "project", scopeId: projectId, revision: "1", text: "project instructions", updatedAt: time })));
   expect(app.fetcher.mock.calls.filter(([url, init]) => url.endsWith("/worker-prompt") && init?.method === "PUT")).toHaveLength(1);
+});
+
+it("keeps a prompt draft when the legacy members URL stays within the project workspace", async () => {
+  const app = setup(); selectSection("prompts");
+  const field = await screen.findByRole("textbox", { name: "Prompt text" });
+  fireEvent.change(field, { target: { value: "project instructions" } });
+  act(() => navigate(`/projects/${projectId}/members`));
+  expect(screen.queryByRole("dialog", { name: /discard/i })).toBeNull();
+  expect(screen.getByRole("link", { name: "Members & invitations" })).toHaveAttribute("aria-current", "page");
+  selectSection("prompts");
+  expect(screen.getByRole("textbox", { name: "Prompt text" })).toBe(field);
+  expect(field).toHaveValue("project instructions");
+  expect(app.fetcher.mock.calls.filter(([url, init]) => url.endsWith("/worker-prompt") && init?.method === "PUT")).toHaveLength(0);
 });
 
 it("keeps transfer blocked while a settings save is dispatched, including after route changes", async () => {
@@ -419,7 +440,7 @@ it("keeps the confirmed save while failed access is retried on the same route", 
   app.setSavedProject(project(90, 2n));
   await act(async () => { app.save.resolve(json(project(90, 2n))); app.permission.resolve(fail(503, "unavailable", "access-failed")); });
   expect(await screen.findByText("Settings saved.")).toBeVisible();
-  const alert = (await screen.findByText("access-failed")).closest('[role="alert"]')!; expect(alert).toBeVisible();
+  const alert = (await visibleText("access-failed")).closest('[role="alert"]')!; expect(alert).toBeVisible();
   const field = screen.getByLabelText("Alert threshold"); expect(field).toBeDisabled();
   app.setHoldPermission(false);
   fireEvent.click(within(alert as HTMLElement).getByRole("button", { name: "Retry" }));
@@ -436,7 +457,7 @@ it("preserves a draft edited before access fails through the later retry", async
   await waitForState(() => expect(app.fetcher.mock.calls.filter(([url]) => url.endsWith("/access")).length).toBeGreaterThan(accessReads));
   fireEvent.change(field, { target: { value: "110" } });
   await act(async () => app.permission.resolve(fail(503, "unavailable", "access-failed")));
-  const alert = (await screen.findByText("access-failed")).closest('[role="alert"]')!; expect(alert).toBeVisible();
+  const alert = (await visibleText("access-failed")).closest('[role="alert"]')!; expect(alert).toBeVisible();
   expect(field).toBeDisabled(); expect(field).toHaveValue(110);
   app.setHoldPermission(false); fireEvent.click(within(alert as HTMLElement).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
@@ -487,7 +508,7 @@ it("does not reinstall private settings from a late save after trusted access is
 it.each(["confirmed", "unknown", "conflict"] as const)("keeps a dispatched %s result across off-route revocation and restores it only after access recovers", async (result) => {
   const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
   app.setDenyAccess(true);
-  act(() => navigate(`/projects/${projectId}/members`));
+  visitRevokedMembers();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
   expect(app.saveSignal?.aborted).toBe(false);
@@ -501,7 +522,7 @@ it.each(["confirmed", "unknown", "conflict"] as const)("keeps a dispatched %s re
   expect(screen.queryByText(/save was rejected because settings changed/i)).toBeNull();
   expect(screen.queryByText("save-conflict")).toBeNull();
   const denialsBeforeReturn = app.denials;
-  returnToSettings();
+  returnAfterRevocation();
   await waitForState(() => expect(app.denials).toBeGreaterThan(denialsBeforeReturn));
   await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
   await waitFor(() => expect(screen.queryByText("Loading project settings…")).toBeNull());
@@ -531,11 +552,11 @@ it.each(["confirmed", "unknown", "conflict"] as const)("keeps a dispatched %s re
 
 it("recovers after a confirmed save aborts an older Project read following restored access", async () => {
   const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
-  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  app.setDenyAccess(true); visitRevokedProject();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
   expect(app.saveSignal?.aborted).toBe(false);
-  const denials = app.denials; returnToSettings();
+  const denials = app.denials; returnAfterRevocation();
   await waitForState(() => expect(app.denials).toBeGreaterThan(denials));
   await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
   const held = app.holdNextProjectRead(), before = app.projectReads;
@@ -560,10 +581,10 @@ it("recovers after a confirmed save aborts an older Project read following resto
 
 it("keeps a failed return-read error and retry when the confirmed save arrives later", async () => {
   const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
-  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  app.setDenyAccess(true); visitRevokedProject();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
-  const denials = app.denials; returnToSettings();
+  const denials = app.denials; returnAfterRevocation();
   await waitForState(() => expect(app.denials).toBeGreaterThan(denials));
   const held = app.holdNextProjectRead(), before = app.projectReads;
   app.setDenyAccess(false); app.setFailRead(true); fireEvent(window, new Event("focus"));
@@ -586,10 +607,10 @@ it("keeps a failed return-read error and retry when the confirmed save arrives l
 
 it("keeps a dispatched save private after a Project 404 until a successful resource reread", async () => {
   const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
-  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  app.setDenyAccess(true); visitRevokedMembers();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
-  const denials = app.denials; returnToSettings();
+  const denials = app.denials; returnAfterRevocation();
   await waitForState(() => expect(app.denials).toBeGreaterThan(denials));
   const held = app.holdNextProjectRead(), before = app.projectReads;
   app.setDenyAccess(false); fireEvent(window, new Event("focus"));
@@ -612,10 +633,10 @@ it("keeps a dispatched save private after a Project 404 until a successful resou
 
 it("retires a private draft on Project 404 but keeps the dispatched rejection until recovery", async () => {
   const app = setup(); await submitSave(); await waitForState(() => expect(app.saves()).toBe(1));
-  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  app.setDenyAccess(true); visitRevokedMembers();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
-  const denials = app.denials; returnToSettings();
+  const denials = app.denials; returnAfterRevocation();
   await waitForState(() => expect(app.denials).toBeGreaterThan(denials));
   const held = app.holdNextProjectRead(), before = app.projectReads;
   app.setDenyAccess(false); fireEvent(window, new Event("focus"));
@@ -645,11 +666,11 @@ it("hides an unconfirmed transfer preview after revocation while a settings save
   const dialog = await previewTransfer(true);
   expect(within(dialog).getByText("Destination")).toBeVisible();
   expect(within(dialog).getByLabelText("Team ID or link")).toHaveValue(targetId);
-  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  app.setDenyAccess(true); visitRevokedMembers();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
   expect(app.saveSignal?.aborted).toBe(false); expect(app.transfers()).toBe(0);
-  const denials = app.denials; returnToSettings();
+  const denials = app.denials; returnAfterRevocation();
   await waitForState(() => expect(app.denials).toBeGreaterThan(denials));
   await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Transfer project" })).toBeNull());
@@ -702,7 +723,7 @@ it("retires an unsubmitted transfer preview when the account changes", async () 
 
 it.each(["unknown", "confirmed", "rejected"] as const)("keeps a dispatched %s transfer private after revocation and restores its outcome", async (result) => {
   const app = setup(); await startTransfer(); await waitForState(() => expect(app.transfers()).toBe(1));
-  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  app.setDenyAccess(true); visitRevokedMembers();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect((await screen.findAllByText("Project not found or access unavailable.")).length).toBeGreaterThan(0);
   expect(app.transferSignal?.aborted).toBe(false);
@@ -715,7 +736,7 @@ it.each(["unknown", "confirmed", "rejected"] as const)("keeps a dispatched %s tr
     await act(async () => app.transfer.resolve(json({ projectId, changed: true, sourceTeam: personal, ownerTeam: target, ownership, actorAccess: restoredAccess })));
   }
   expect(app.transferSignal?.aborted).toBe(false);
-  const denials = app.denials; returnToSettings(); await waitForState(() => expect(app.denials).toBeGreaterThan(denials));
+  const denials = app.denials; returnAfterRevocation(); await waitForState(() => expect(app.denials).toBeGreaterThan(denials));
   await waitFor(() => expect(screen.queryByLabelText("Alert threshold")).toBeNull());
   if (result === "unknown") {
     await waitFor(() => expect(screen.getByText(/transfer result is unknown/i)).toBeVisible());
@@ -749,7 +770,7 @@ it.each(["unknown", "confirmed", "rejected"] as const)("keeps a dispatched %s tr
 it("keeps confirmed transfer cleanup retry actionable without exposing a revoked preview", async () => {
   const app = setup();
   await startTransfer(); await waitForState(() => expect(app.transfers()).toBe(1));
-  app.setDenyAccess(true); act(() => navigate(`/projects/${projectId}/members`));
+  app.setDenyAccess(true); visitRevokedMembers();
   await waitForState(() => expect(app.denials).toBeGreaterThan(0));
   expect(app.transferSignal?.aborted).toBe(false);
   const revoke = vi.spyOn(TaskCacheScope.prototype, "revokeProject").mockRejectedValueOnce(new Error("cleanup failed")).mockResolvedValueOnce(true);
@@ -842,7 +863,7 @@ it("keeps a preexisting draft through a return access failure and recovery", asy
   selectSection("execution");
   const returned = screen.getByLabelText("Alert threshold"); expect(returned).toBeDisabled();
   expect(returned).toHaveValue(90);
-  expect(screen.getByText("The operation could not be completed. Please try again.")).toBeVisible();
+  expect(await visibleText("The operation could not be completed. Please try again.")).toBeVisible();
   app.setHoldPermission(false); fireEvent(window, new Event("focus"));
   await waitFor(() => expect(settings().getByRole("button", { name: "Save settings" })).toBeEnabled());
   expect(screen.getByLabelText("Alert threshold")).toHaveValue(90);
@@ -950,13 +971,13 @@ it.each([
   if (failure === "access") await act(async () => { held.resolve(json(project(120, 2n))); app.permission.resolve(fail(503, "unavailable", "access-failed")); });
   else await act(async () => held.resolve(fail(503, "unavailable", "project-read-failed")));
   const requestId = failure === "access" ? "access-failed" : "project-read-failed";
-  expect(await screen.findByText(requestId)).toBeVisible();
+  const failureText = await visibleText(requestId); expect(failureText).toBeVisible();
   expect(returned).toHaveValue(60);
   if (failure === "access") expect(returned).toBeDisabled();
   expect(settings().getByRole("button", { name: "Save settings" })).toBeDisabled();
   app.setHoldPermission(false);
   const readsAfterFailure = app.projectReads;
-  fireEvent.click(within(screen.getByText(requestId).closest('[role="alert"]') as HTMLElement).getByRole("button", { name: "Retry" }));
+  fireEvent.click(within(failureText.closest('[role="alert"]') as HTMLElement).getByRole("button", { name: "Retry" }));
   await waitForState(() => expect(app.projectReads).toBeGreaterThan(readsAfterFailure));
   if (action === "restore") {
     expect(await screen.findByText(/settings changed while you were away/i)).toBeVisible();

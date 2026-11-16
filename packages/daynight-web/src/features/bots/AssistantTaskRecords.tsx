@@ -1,3 +1,4 @@
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { stringifyAssistantTaskJson } from '../../api/assistant-tasks';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
@@ -62,9 +63,9 @@ export function AssistantTaskRecords({ taskId, enabled, bots = [], recordId = nu
   for (const entry of filtered) { const key = entry.itemId ?? ''; const group = groups.get(key) ?? []; group.push(entry); groups.set(key, group); }
   return <section ref={region} className="assistant-task-record-section" aria-label={m.records}>
     <div className="assistant-task-filters">
-      <label>{m.item}<select value={itemId} onChange={event => setSelection({ taskId, itemId: event.target.value, pages: 1 })}><option value="">{m.allItems}</option>{(items.value ?? []).map(item => <option key={item.id} value={item.id}>{item.key}</option>)}</select></label>
-      <label>{m.kind}<select value={kind} onChange={event => setKind(event.target.value)}><option value="">{m.all}</option>{kinds.map(value => <option key={value} value={value}>{m[value]}</option>)}</select></label>
-      <label>{m.author}<select value={author} onChange={event => setAuthor(event.target.value)}><option value="">{m.allAuthors}</option>{[...authors].map(id => <option key={id} value={id}>{name(id)}</option>)}</select></label>
+      <label>{m.item}<NativeSelect density="filter" value={itemId} onChange={event => setSelection({ taskId, itemId: event.target.value, pages: 1 })}><option value="">{m.allItems}</option>{(items.value ?? []).map(item => <option key={item.id} value={item.id}>{item.key}</option>)}</NativeSelect></label>
+      <label>{m.kind}<NativeSelect density="filter" value={kind} onChange={event => setKind(event.target.value)}><option value="">{m.all}</option>{kinds.map(value => <option key={value} value={value}>{m[value]}</option>)}</NativeSelect></label>
+      <label>{m.author}<NativeSelect density="filter" value={author} onChange={event => setAuthor(event.target.value)}><option value="">{m.allAuthors}</option>{[...authors].map(id => <option key={id} value={id}>{name(id)}</option>)}</NativeSelect></label>
       {itemId || kind || author ? <button className="button quiet" type="button" onClick={() => { setSelection({ taskId, itemId: '', pages: 1 }); setKind(''); setAuthor(''); }}>{m.clearFilters}</button> : null}
     </div>
     {items.error ? <div role="alert" className="notice error">{m.itemsError}<button className="button" type="button" disabled={!enabled || items.busy} onClick={items.refresh}>{m.retry}</button></div> : null}

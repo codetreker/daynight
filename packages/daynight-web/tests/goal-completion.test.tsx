@@ -36,7 +36,7 @@ const view = (tasks: TaskDetail[], withSnapshot = true) => {
   const snapshot = snapshotFixture(tasks);
   const currentGoal = tasks.find(item => item.id === goalId)!;
   return <TaskExecutionClockProvider projectId={projectId} snapshot={withSnapshot ? snapshot : null}>
-    <GoalList projectId={projectId} index={snapshot.index} goals={[snapshot.summaries.get(goalId)!]} total={1} workerMachines={snapshot.workerMachines} onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+    <GoalList summaries={snapshot.summaries} projectId={projectId} index={snapshot.index} goals={[snapshot.summaries.get(goalId)!]} total={1} workerMachines={snapshot.workerMachines} onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
     <GoalDetailSurface projectId={projectId} taskId={goalId} detail={currentGoal} resourceState={state} snapshot={withSnapshot ? snapshot : null} presentation="page" fullscreen={{ active: false, onChange: noop }} onSelectTask={noop} onRefreshGraph={noop} />
   </TaskExecutionClockProvider>;
 };
@@ -49,25 +49,27 @@ it('keeps Goal facts independent of children and aggregates only scoped members 
   expect(card.querySelector(`time[datetime="${goalAt}"]`)).not.toBeNull();
   expect(surface.querySelector(`.goal-detail-meta time[datetime="${goalAt}"]`)).not.toBeNull();
   fireEvent.click(card.querySelector('.goal-list-toggle')!);
-  expect(within(card).getByRole('button', { name: /Unfinished.*To do/ })).toBeVisible();
-  const first = card.querySelector<HTMLButtonElement>(`#chain-task-goal-${goalId}-${id(2)}`)!;
-  const second = card.querySelector<HTMLButtonElement>(`#chain-task-goal-${goalId}-${id(3)}`)!;
-  expect(first.querySelector(`time[datetime="${firstAt}"]`)).not.toBeNull();
-  expect(second.querySelector(`time[datetime="${lastAt}"]`)).not.toBeNull();
+  const unfinished = within(card).getByRole('link', { name: 'Unfinished' });
+  expect(unfinished).toBeVisible();
+  expect(unfinished.closest('.task-row')).toHaveTextContent('To do');
+  const first = card.querySelector<HTMLAnchorElement>(`#chain-task-goal-${goalId}-${id(2)}`)!;
+  const second = card.querySelector<HTMLAnchorElement>(`#chain-task-goal-${goalId}-${id(3)}`)!;
+  expect(first.closest('.task-row')!.querySelector(`time[datetime="${firstAt}"]`)).not.toBeNull();
+  expect(second.closest('.task-row')!.querySelector(`time[datetime="${lastAt}"]`)).not.toBeNull();
   first.focus();
   const changed = items.map(item => item.id === id(3) ? { ...item, completedAt: null } : item);
   result.rerender(view(changed));
-  expect(second.querySelector('time')).toBeNull();
+  expect(second.closest('.task-row')!.querySelector('.completion-time-label')).toBeNull();
   expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'true');
   expect(first).toHaveFocus();
-  expect(first.querySelector(`time[datetime="${firstAt}"]`)).not.toBeNull();
+  expect(first.closest('.task-row')!.querySelector(`time[datetime="${firstAt}"]`)).not.toBeNull();
   result.rerender(view(items.map(item => item.id === id(3) ? { ...item, status: 'todo' as const, completedAt: null } : item)));
-  expect(second.querySelector('time')).toBeNull();
+  expect(second.closest('.task-row')!.querySelector('.completion-time-label')).toBeNull();
   const allDoneGoalOpen = items.map(item => item.id === goalId ? { ...item, status: 'in_progress' as const, completedAt: null } : item.id === id(4) ? { ...item, status: 'done' as const, completedAt: firstAt } : item);
   result.rerender(view(allDoneGoalOpen));
   expect(card.querySelector('.goal-list-meta time')).toBeNull();
   expect(surface.querySelector('.goal-detail-meta time')).toBeNull();
-  expect(second.querySelector(`time[datetime="${lastAt}"]`)).not.toBeNull();
+  expect(second.closest('.task-row')!.querySelector(`time[datetime="${lastAt}"]`)).not.toBeNull();
   result.rerender(view(items.map(item => item.id === goalId ? { ...item, status: 'cancelled' as const } : item)));
   expect(card.querySelector('.goal-list-meta time')).toBeNull();
   result.rerender(view(items.map(item => item.id === goalId ? { ...item, completedAt: null } : item)));

@@ -325,11 +325,12 @@ test.each(["UTF-8", "UTF-16le"] as const)("upgrades a nonempty v10 %s journal on
   db.pragma("user_version=10"); db.close();
   expect(readControllerSnapshot(f.file)).toMatchObject({ executionId: f.ticket.executionId });
   const check = new Database(f.file, { readonly: true });
-  expect(check.pragma("user_version", { simple: true })).toBe(11);
-  expect(String(check.pragma("encoding", { simple: true })).toLowerCase()).toBe(encoding.toLowerCase());
-  expect(check.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get()).toEqual({ byte_length: values.reduce((total, value) => total + Buffer.byteLength(value, "utf8"), 0) });
-  expect((check.prepare("SELECT value FROM outbox ORDER BY sequence").all() as { value: string }[]).map(row => row.value)).toEqual(values);
-  check.close();
+  try {
+    expect(check.pragma("user_version", { simple: true })).toBe(journalVersion);
+    expect(String(check.pragma("encoding", { simple: true })).toLowerCase()).toBe(encoding.toLowerCase());
+    expect(check.prepare("SELECT byte_length FROM outbox_totals WHERE id=1").get()).toEqual({ byte_length: values.reduce((total, value) => total + Buffer.byteLength(value, "utf8"), 0) });
+    expect((check.prepare("SELECT value FROM outbox ORDER BY sequence").all() as { value: string }[]).map(row => row.value)).toEqual(values);
+  } finally { check.close(); }
   const prepare = vi.spyOn(Database.prototype, "prepare");
   expect(readControllerSnapshot(f.file)).toMatchObject({ executionId: f.ticket.executionId });
   expect(prepare.mock.calls.some(([statement]) => /^SELECT value FROM outbox ORDER BY sequence$/i.test(statement))).toBe(false);

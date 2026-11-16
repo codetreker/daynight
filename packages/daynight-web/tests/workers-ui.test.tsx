@@ -11,6 +11,7 @@ import { useWorkers } from '../src/features/workers/useWorkers';
 import { useWorker } from '../src/features/workers/useWorker';
 import { getFormats } from '../src/i18n/formats';
 import { renderWithLocale } from './helpers/renderWithLocale';
+import { toolPathActual, toolPathObservation, toolPathTelemetry } from './helpers/worker-tool-paths';
 
 vi.mock('../src/features/workers/useWorkers', () => ({ useWorkers: vi.fn() }));
 vi.mock('../src/features/workers/useWorker', () => ({ useWorker: vi.fn() }));
@@ -37,11 +38,52 @@ const listed = (items: readonly WorkerSummary[] = [summary()]): ReturnType<typeo
 const shown = (worker: WorkerDetail = detail()): ReturnType<typeof useWorker> => ({ snapshot: { observedAt, worker }, status: 'ready', refreshing: false, error: null, stale: false, serverMilliseconds: now, refresh });
 const showList = () => renderWithLocale(<WorkersPage readEnabled />, { locale: 'en' });
 const showDetail = () => renderWithLocale(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />, { locale: 'en' });
+const withTools = (entries: Parameters<typeof toolPathTelemetry>[0]) => {
+  const worker = detail();
+  return { ...worker, telemetry: { ...worker.telemetry, toolPaths: toolPathTelemetry(entries) } };
+};
 
 beforeEach(() => {
   refresh.mockReset(); listState = listed(); detailState = shown();
   vi.mocked(useWorkers).mockImplementation(() => listState);
   vi.mocked(useWorker).mockImplementation(() => detailState);
+});
+
+describe('Worker software summary', () => {
+  const empty = (tool: 'codex' | 'copilot' | 'herdr', context: 'web' | 'herdr') => toolPathObservation(tool, context, { state: 'not_checked', actual: null });
+  const row = (tool: string) => document.querySelector(`.worker-software-tool-paths[data-tool="${tool}"]`)!;
+  const lines = (tool: string) => Array.from(row(tool).querySelectorAll('.worker-tool-version'), element => element.textContent);
+
+  it('omits empty contexts in either direction, retains both real versions and keeps full details', () => {
+    detailState = shown(withTools([toolPathObservation(), empty('codex', 'herdr'), empty('copilot', 'web'), toolPathObservation('copilot', 'herdr', { actual: toolPathActual('copilot', { version: '2.0' }) }), empty('herdr', 'herdr')]));
+    const view = showDetail();
+    expect(lines('codex')).toEqual(['Web · 1.2.3']); expect(lines('copilot')).toEqual(['Herdr · 2.0']);
+    expect(lines('herdr')).toEqual([]); expect(row('herdr')).toHaveTextContent('Not checked');
+    fireEvent.click(within(row('codex') as HTMLElement).getByText('View actual paths'));
+    expect(row('codex').querySelector('[data-context="herdr"]')).not.toBeNull();
+    detailState = shown(withTools([toolPathObservation(), toolPathObservation('codex', 'herdr', { actual: toolPathActual('codex', { version: '2.0' }) })]));
+    view.rerender(<WorkerDetailPage userId="00000000-0000-4000-8000-000000000001" workerId={id(1)} readEnabled />);
+    expect(lines('codex')).toEqual(['Web · 1.2.3', 'Herdr · 2.0']);
+    expect(lines('copilot')).toEqual([]); expect(row('copilot')).toHaveTextContent('Not checked');
+  });
+
+  it.each(['checking', 'pending', 'error'] as const)('shows %s with or without an actual version in both languages', state => {
+    const failure = state === 'error' ? { code: 'not_found' as const, occurredAt: report } : null;
+    detailState = shown(withTools([toolPathObservation('codex', 'web', { state, error: failure }), toolPathObservation('codex', 'herdr', { state, actual: null, error: failure, candidate: toolPathActual('codex', { version: 'candidate' }) })]));
+    const view = showDetail();
+    const labels = { checking: ['Checking', '正在检查'], pending: ['Awaiting application', '等待应用'], error: ['Application failed', '应用失败'] }[state];
+    expect(lines('codex')).toEqual([`Web · 1.2.3 ${labels[0]}`, `Herdr · ${labels[0]}`]);
+    expect(row('codex').querySelectorAll(`.worker-tool-state.${state}`)).toHaveLength(2);
+    view.setLocale('zh-CN'); expect(lines('codex')).toEqual([`Web · 1.2.3 ${labels[1]}`, `Herdr · ${labels[1]}`]);
+  });
+
+  it('retains uncertain inventory and active-only contexts without claiming an actual version', () => {
+    const active = toolPathActual('codex', { version: 'active-only' });
+    detailState = shown(withTools([empty('codex', 'web'), { ...empty('codex', 'herdr'), activeSelectionCount: null, activeSelectionsComplete: false, activeObservationError: 'inventory_unavailable', activeSelections: [{ actual: active, executionCount: 1, instanceCount: 0, unconfirmedCount: 0 }] }]));
+    showDetail(); expect(lines('codex')).toEqual(['Herdr · Not checked']);
+    fireEvent.click(within(row('codex') as HTMLElement).getByText('View actual paths'));
+    expect(row('codex')).toHaveTextContent('active-only'); expect(row('codex')).toHaveTextContent('inventory');
+  });
 });
 
 describe('Worker list presentation', () => {

@@ -1,3 +1,4 @@
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, authRequestsPaused } from '../../api/client';
 import { AssistantTaskWriteUnknown, createAssistantTask, enableWatchdog, getAssistantTask, type CreateAssistantTaskInput } from '../../api/assistant-tasks';
@@ -55,11 +56,11 @@ export function AssistantTaskCreate({watchdog,bots,enabled,onClose,onCreated}: {
   };
   const close=()=>{if(!busy)onClose();};
   return <AssistantTaskDialog title={watchdog?m.watchdog:m.create} onClose={close}><form onSubmit={event=>{event.preventDefault();void submit();}}>
-    <div className="dialog-body assistant-task-form">{watchdog ? <><p>{m.watchdogDescription}</p><label>{m.selectBot}<select value={botId} onChange={event=>setBotId(event.target.value)} required><option value="" disabled>{m.selectBot}</option>{bots.map(bot=><option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label>{!bots.length?<p>{m.noBots}</p>:null}</> : <>
+    <div className="dialog-body assistant-task-form">{watchdog ? <><p>{m.watchdogDescription}</p><label>{m.selectBot}<NativeSelect density="form" layout="fill" value={botId} onChange={event=>setBotId(event.target.value)} required><option value="" disabled>{m.selectBot}</option>{bots.map(bot=><option key={bot.id} value={bot.id}>{bot.name}</option>)}</NativeSelect></label>{!bots.length?<p>{m.noBots}</p>:null}</> : <>
       <label>{m.name}<input required maxLength={200} value={name} onChange={event=>setName(event.target.value)} /></label>
       <label>{m.purpose}<textarea required value={purpose} onChange={event=>setPurpose(event.target.value)} /></label>
       <label>{m.scope}<textarea required value={range} onChange={event=>setRange(event.target.value)} /></label>
-      <label>{m.kind}<select value={kind} onChange={event=>setKind(event.target.value as 'continuous'|'once')}><option value="continuous">{m.continuous}</option><option value="once">{m.once}</option></select></label>
+      <label>{m.kind}<NativeSelect density="form" layout="fill" value={kind} onChange={event=>setKind(event.target.value as 'continuous'|'once')}><option value="continuous">{m.continuous}</option><option value="once">{m.once}</option></NativeSelect></label>
       <label>{m.body}<textarea required rows={8} value={body} onChange={event=>setBody(event.target.value)} /></label>
     </>}
     {pending ? <div role="alert" className="notice"><p>{m.unknown}</p><code>{pending.input.id}</code><button className="button" type="button" disabled={!enabled||busy} onClick={()=>void check()}>{m.check}</button>{checked?<><p>{m.checked}</p><button className="button" type="button" disabled={!enabled} onClick={()=>{remember(key,null);setPending(null);setError(null);if(checkedTarget)onCreated(checkedTarget);}}>{m.reviewed}</button></>:null}</div>:null}

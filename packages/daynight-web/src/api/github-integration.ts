@@ -10,6 +10,7 @@ export type GitHubStatus = {
   readonly version: string;
   readonly revision: string;
   readonly serviceAvailable: boolean;
+  readonly syncEnabled: boolean;
   readonly connection: "not_connected" | "connected" | "unavailable" | "disconnected";
   readonly repository: GitHubRepository | null;
   readonly installation: GitHubInstallation | null;
@@ -50,7 +51,7 @@ const parseStatus = (value: unknown, projectId: string): GitHubStatus => {
   if (typeof data.pollIntervalMinutes !== "number" || !isGitHubPollInterval(data.pollIntervalMinutes)) return malformed();
   const result: GitHubStatus = {
     projectId: id(data.projectId), version: decimal(data.version), revision: decimal(data.revision, false),
-    serviceAvailable: boolean(data.serviceAvailable), connection,
+    serviceAvailable: boolean(data.serviceAvailable), syncEnabled: boolean(data.syncEnabled), connection,
     repository: data.repository === null ? null : repository(data.repository), installation: data.installation === null ? null : installation(data.installation),
     pollIntervalMinutes: data.pollIntervalMinutes, initializing: boolean(data.initializing),
     poll: { running: boolean(poll.running), lastAttemptAt: nullableTimestamp(poll.lastAttemptAt), lastSuccessAt: nullableTimestamp(poll.lastSuccessAt), nextAttemptAt: nullableTimestamp(poll.nextAttemptAt), error: syncError(poll.error) },
@@ -111,6 +112,11 @@ export const saveGitHubSettings = (projectId: string, input: { readonly version:
   outgoingDecimal(input.version);
   if (!isGitHubPollInterval(input.pollIntervalMinutes)) throw new ApiError("protocol");
   return call(projectId, "/settings", signal, admission, mutationParser(input.version, (value) => value.pollIntervalMinutes === input.pollIntervalMinutes), "PATCH", input);
+};
+export const updateGitHubSync = (projectId: string, input: { readonly version: string; readonly syncEnabled: boolean }, signal: AbortSignal, admission: Admission): Promise<GitHubStatus> => {
+  outgoingDecimal(input.version);
+  if (typeof input.syncEnabled !== "boolean") throw new ApiError("protocol");
+  return call(projectId, "/sync", signal, admission, mutationParser(input.version, (value) => value.syncEnabled === input.syncEnabled), "PATCH", input);
 };
 
 export type GitHubPullRequestCounts = {

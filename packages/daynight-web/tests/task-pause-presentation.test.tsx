@@ -1,6 +1,7 @@
 import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
 import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,7 +26,7 @@ const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, '
 const time = '2026-11-04T00:00:00Z';
 const project: Project = { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, id: id(100), name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const summary = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({
-  tags: [], type: 'task', parentId: null, id: id(n), titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true,
+  tags: [], type: 'task', parentId: null, id: id(n), title: `Task ${n}`, titlePreview: `Task ${n}`, titleTruncated: false, assignedTo: null, requiredPlatform: null, allowAgents: true,
   version: 1n, properties: {}, status: 'todo', dependsOn: [], externalDependsOn: [], startedAt: null, completedAt: null, cancelledAt: null,
   createdAt: time, updatedAt: time, ...changes,
 });
@@ -34,14 +35,15 @@ const seeds = [summary(1, { status: 'done', properties: { paused: true } }), sum
 const snapshot = (tasks = seeds): GraphSnapshot => ({ ...projectSummaries(project, tasks, statesForSummaries(tasks), time), summaries: new Map(tasks.map((task) => [task.id, task])), observedAt: time, receivedMonotonic: 0, receivedAt: 0, revision: 1 });
 let sessionScope: TaskCacheScope;
 let sessionStore: TaskSessionSummaryStore;
-beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); });
-afterEach(() => { sessionStore.dispose(); sessionScope.dispose(); });
+let observationStore: ProjectTaskObservationsStore;
+beforeEach(() => { sessionScope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); sessionStore = new TaskSessionSummaryStore(sessionScope, project.id); observationStore = new ProjectTaskObservationsStore(sessionScope, project.id); });
+afterEach(() => { observationStore.dispose(); sessionStore.dispose(); sessionScope.dispose(); });
 const noop = () => {};
 const mutation = (changes: Partial<TaskMutationState> = {}): TaskMutationState => ({ operation: { action: 'unpause', version: 1n }, phase: 'idle', error: null, reconciling: false, reconciliationError: null, ...changes });
 
-const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView={activeView}
-  goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
-  unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
+const workspace = (value: GraphSnapshot, activeView: 'standalone' | 'chains', openChainId: string | null = null) => <TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} observationStore={observationStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView={activeView}
+  unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
+  unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
   chains={{ projectId: project.id, representativeIds: [id(1)], allRepresentativeIds: [id(1)], openGraphTarget: openChainId === null ? null : { kind: 'chain', witnessTaskId: openChainId, rootId: openChainId }, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
   standalone={{ projectId: project.id, taskIds: [id(3), id(4), id(5)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop }} /></TaskExecutionClockProvider>;
 
@@ -61,9 +63,9 @@ describe('paused task discovery', () => {
     const view = renderWithLocale(workspace(value, 'standalone'), { locale: 'zh-CN', taskCache: true });
     expect(screen.getByText('2 已暂停')).toBeVisible();
     const paused = document.getElementById(`standalone-task-${id(3)}`)!;
-    expect(within(paused).getByText('已暂停')).toBeVisible();
-    expect(document.getElementById(`standalone-task-${id(4)}`)).not.toHaveTextContent('已暂停');
-    expect(document.getElementById(`standalone-task-${id(5)}`)).not.toHaveTextContent('已暂停');
+    expect(within(paused.closest<HTMLElement>('.task-row')!).getByText('已暂停')).toBeVisible();
+    expect(document.getElementById(`standalone-task-${id(4)}`)!.closest('.task-row')).not.toHaveTextContent('已暂停');
+    expect(document.getElementById(`standalone-task-${id(5)}`)!.closest('.task-row')).not.toHaveTextContent('已暂停');
     view.rerender(workspace(snapshot(seeds.map((task) => ({ ...task, properties: { paused: false } }))), 'standalone'));
     expect(view.container.querySelector('.task-paused-badge')).toBeNull();
     expect(view.container.querySelector('.task-pause-count')).toBeNull();
@@ -71,9 +73,9 @@ describe('paused task discovery', () => {
 
   it('keeps project count across filtered and paginated lists', () => {
     const value = snapshot();
-    const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} snapshot={value} pausedTaskCount={pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).size} activeView="standalone"
-      goalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
-      unfinishedStandaloneTaskCount={3} unfinishedChainTaskCount={1} onViewChange={noop}
+    const view = renderWithLocale(<TaskExecutionClockProvider projectId={project.id} snapshot={value}><ProjectTaskWorkspace sessionStore={sessionStore} observationStore={observationStore} snapshot={value} pausedTasks={value.graph.tasks.filter((task) => pausedSummaryTaskIds(value.graph.tasks, value.pausedTaskIds).has(task.id))} onOpenPausedTask={noop} onPausedFocusFallback={noop} activeView="standalone"
+      unfinishedGoalCount={0} goals={{ projectId: project.id, goals: [], total: 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: noop, onOpenListChain: noop }}
+      unfinishedStandaloneTaskCount={3} unfinishedChainCount={1} onViewChange={noop}
       chains={{ projectId: project.id, representativeIds: [], allRepresentativeIds: [id(1)], openGraphTarget: null, onOpenChain: noop, onCloseChain: noop, onOpenTask: noop }}
       standalone={{ projectId: project.id, taskIds: [id(4)], allTaskIds: [id(3), id(4), id(5)], onSelectTask: noop,
         pagination: { page: 1, pageCount: 1, total: 1, start: 1, end: 1, onPageChange: noop } }} /></TaskExecutionClockProvider>, { locale: 'en', taskCache: true });
@@ -121,17 +123,27 @@ describe('paused task discovery', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停'));
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
     await waitFor(() => expect(headingCount()).toHaveTextContent('6 已暂停'));
+    const expectPausedTasks = (numbers: number[]) => {
+      fireEvent.click(headingCount()!);
+      const menu = screen.getByRole('menu', { name: '已暂停的任务' });
+      const rows = within(menu).getAllByRole('menuitem');
+      expect(rows).toHaveLength(numbers.length);
+      expect(rows.map((row) => row.textContent)).toEqual(numbers.map((number) => expect.stringContaining(`Task ${number}`)));
+      fireEvent.keyDown(menu, { key: 'Escape' });
+    };
+    expectPausedTasks([1, 2, 3, 4, 6, 100]);
     const selectAssignee = async (label: string | RegExp) => {
       fireEvent.click(screen.getByRole('button', { name: /^负责人:/ }));
       fireEvent.click(await screen.findByRole('option', { name: label }));
     };
     await selectAssignee('分配给我');
     expect(headingCount()).toHaveTextContent('3 已暂停');
+    expectPausedTasks([1, 6, 100]);
     const chain = document.getElementById(`task-root-${id(1)}`)!;
     expect(within(chain).getByText('2 已暂停')).toBeVisible();
     fireEvent.click(chain);
     expect(within(chain).getByText('2 已暂停')).toBeVisible();
-    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.goal-task-row')).toHaveTextContent('已暂停');
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('已暂停');
     fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'done' } });
     expect(headingCount()).toHaveTextContent('3 已暂停');
     fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
@@ -145,8 +157,10 @@ describe('paused task discovery', () => {
     expect(headingCount()).toHaveTextContent('3 已暂停');
     await selectAssignee('未分配');
     expect(headingCount()).toHaveTextContent('1 已暂停');
+    expectPausedTasks([4]);
     await selectAssignee(/^Other person/);
     expect(headingCount()).toHaveTextContent('2 已暂停');
+    expectPausedTasks([2, 3]);
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     expect(screen.getByRole('button', { name: /查看暂停任务/ })).toHaveTextContent('6 已暂停');
     fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
@@ -162,7 +176,7 @@ describe('paused task discovery', () => {
     expect(within(root).getByText('1 已暂停')).toBeVisible();
     expect(within(root).getByText('已暂停')).toBeVisible();
     fireEvent.click(root);
-    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.goal-task-row')).toHaveTextContent('已暂停');
+    expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('已暂停');
     view.rerender(workspace(value, 'chains', id(1)));
     const graph = await screen.findByRole('dialog');
     expect(graph.querySelectorAll('.task-node-paused')).toHaveLength(2);

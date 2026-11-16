@@ -15,6 +15,7 @@ import (
 )
 
 type operations interface {
+	EnableWatchdog(context.Context, core.Actor, string, string) (core.TaskResult, error)
 	Create(ctx context.Context, actor core.Actor, input core.CreateInput) (core.TaskResult, error)
 	Get(ctx context.Context, actor core.Actor, taskID string) (core.TaskResult, error)
 	List(ctx context.Context, actor core.Actor, input core.PageInput) (model.AssistantTaskPage[core.TaskResult], error)
@@ -85,6 +86,7 @@ func RegisterRoutes(mux *http.ServeMux, tasks operations, auth authentication, l
 			httpx.WriteJSON(w, r, logger, http.StatusOK, result)
 		}))
 	}
+	register("/api/v1/assistant-task-presets/watchdog", "POST", map[string]requestOperation{"POST": h.enableWatchdog})
 	const base = "/api/v1/assistant-tasks"
 	const task = base + "/{taskId}"
 	register(base, "GET, HEAD, POST", map[string]requestOperation{"GET": h.list, "POST": h.create})

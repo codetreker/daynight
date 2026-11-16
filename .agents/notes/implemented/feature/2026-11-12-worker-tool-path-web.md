@@ -32,6 +32,12 @@ separate. Current application requires matching cloud revision and choice,
 verified actual selection and an online observation. Missing or older facts
 remain readable without implying that the new target has applied. Bounded active
 groups expose incomplete inventory independently of target application.
+The software summary omits an unchecked context only when it has no actual,
+candidate, reason, error or active selections and the zero-count inventory is
+complete and error-free. Other contexts retain their reported state and actual
+version; checking, pending and error remain visible beside an older actual.
+An empty summary uses one tool-level not-checked label. Details still consume
+the complete snapshot, and a missing tool report uses the legacy probe.
 
 Tool states use the shared semantic palette: successful application, active
 checking, waiting and failure retain distinct labels and readable contrast.
@@ -59,6 +65,11 @@ granting a stale full-projection write.
 **Pair desired paths with legacy version probes.** A probe can refer to another
 installation or mode. Displaying that pair would invent a successful selection
 and hide older running instances.
+
+**Show every unchecked context in the summary.** Unused slots can remain
+unchecked indefinitely, making normal operation look like an unfinished check.
+Filtering only demonstrably empty slots avoids hiding uncertain inventory or
+diagnostic information, which remains available in the expanded details.
 
 **Use blank text as automatic.** This would adopt untouched null tools and erase
 the user's incomplete path edit. An explicit reset preserves the import and

@@ -77,7 +77,7 @@ func call(m *http.ServeMux, method, path string) *httptest.ResponseRecorder {
 func pointer[T any](v T) *T { return &v }
 func fixture() (githubpr.Connection, githubpr.PullRequestSummary) {
 	t := time.Date(2026, 1, 1, 4, 0, 0, 123, time.FixedZone("x", 3600))
-	return githubpr.Connection{ProjectID: projectID, Version: 9007199254740993, Revision: 9, Generation: 3, Enabled: true, InstallationID: pointer(int64(43)), InstallationAccountLogin: pointer("owner"), RepositoryID: pointer(int64(9007199254740995)), RepositoryFullName: pointer("owner/repo"), RepositoryPrivate: pointer(true), PollIntervalMinutes: 5, AccessState: "available", ClaimKind: pointer("poll"), LastFullGeneration: pointer(int64(2)), LastPollAttemptAt: &t, PollErrorCode: pointer("failure"), PollErrorMessage: pointer("failed"), PollErrorAt: &t}, githubpr.PullRequestSummary{Number: 9007199254740993, GitHubID: 9007199254740994, Title: "title", URL: "https://example.test", State: "open", BaseRef: "main", HeadSHA: "abc", GitHubCreatedAt: t, GitHubUpdatedAt: t, ObservedAt: t, Revision: 9}
+	return githubpr.Connection{ProjectID: projectID, Version: 9007199254740993, Revision: 9, Generation: 3, Enabled: true, SyncEnabled: true, InstallationID: pointer(int64(43)), InstallationAccountLogin: pointer("owner"), RepositoryID: pointer(int64(9007199254740995)), RepositoryFullName: pointer("owner/repo"), RepositoryPrivate: pointer(true), PollIntervalMinutes: 5, AccessState: "available", ClaimKind: pointer("poll"), LastFullGeneration: pointer(int64(2)), LastPollAttemptAt: &t, PollErrorCode: pointer("failure"), PollErrorMessage: pointer("failed"), PollErrorAt: &t}, githubpr.PullRequestSummary{Number: 9007199254740993, GitHubID: 9007199254740994, Title: "title", URL: "https://example.test", State: "open", BaseRef: "main", HeadSHA: "abc", GitHubCreatedAt: t, GitHubUpdatedAt: t, ObservedAt: t, Revision: 9}
 }
 func TestReadResponses(t *testing.T) {
 	c, pr := fixture()
@@ -244,12 +244,23 @@ func TestNextAttemptReflectsPersistedSchedule(t *testing.T) {
 		{"recovery without schedule", "unavailable", &earlier, nil, &later, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := githubpr.Connection{AccessState: tc.state, NextPollAt: tc.poll, NextAccessCheckAt: tc.access, NotBefore: tc.notBefore}
+			c := githubpr.Connection{SyncEnabled: true, AccessState: tc.state, NextPollAt: tc.poll, NextAccessCheckAt: tc.access, NotBefore: tc.notBefore}
 			got := nextAttempt(c)
 			if (got == nil) != (tc.want == nil) || (got != nil && !got.Equal(*tc.want)) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDisabledSyncStatusRetainsHistory(t *testing.T) {
+	c, _ := fixture()
+	c.SyncEnabled = false
+	now := time.Now()
+	c.NextPollAt = &now
+	got, err := statusResponse(coregithub.Status{Connection: c})
+	if err != nil || got.SyncEnabled || got.Initializing || got.Poll.Running || got.Webhook.Running || got.Poll.NextAttemptAt != nil || got.Poll.LastAttemptAt == nil || got.Poll.Error == nil {
+		t.Fatalf("disabled status: %+v, %v", got, err)
 	}
 }
 

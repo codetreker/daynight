@@ -180,8 +180,10 @@ describe("MCP setup guide", () => {
 
   it("retains the client across languages and resets it when reopened", () => {
     const view = renderGuide();
-    fireEvent.change(screen.getByRole("combobox", { name: "客户端" }), { target: { value: "copilot" } });
+    const client = screen.getByRole("combobox", { name: "客户端" });
+    fireEvent.change(client, { target: { value: "copilot" } });
     view.setLocale("en");
+    expect(screen.getByRole("combobox", { name: "Client" })).toBe(client);
     expect(screen.getByRole("combobox", { name: "Client" })).toHaveValue("copilot");
     expect(codeBlock("/mcp auth daynight").code).toBeVisible();
     view.unmount();

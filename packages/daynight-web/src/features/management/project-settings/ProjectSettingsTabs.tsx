@@ -4,7 +4,7 @@ import { useI18n } from '../../../i18n/LocaleProvider';
 import type { ProjectSettingsSectionState } from './section-state';
 import { settingsWorkspaceMessages } from './messages';
 
-export const tabs: readonly ProjectSettingsTab[] = ['execution', 'prompts', 'github', 'management'];
+export const tabs: readonly ProjectSettingsTab[] = ['execution', 'prompts', 'github', 'members', 'management'];
 export const ProjectSettingsTabs = ({ projectId, selected, states, onSelect }: {
   readonly projectId: string;
   readonly selected: ProjectSettingsTab | null;

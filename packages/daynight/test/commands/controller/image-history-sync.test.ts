@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { TimelineEntry } from "../../../src/session/protocol.js";
@@ -98,6 +98,57 @@ test("unacknowledged source waits, while a later source or connection requires a
     await syncControllerImageHistory({ ...f, request: server.request }); expect(server.rows.size).toBe(2);
     f.journal.recordRelayHistory("a-reconnected-history"); await syncControllerImageHistory({ ...f, request: server.request }); expect(server.rows.size).toBe(3);
   } finally { f.journal.close(); }
+});
+
+test("capture preparation cannot mistake an unacknowledged tail for a completed history upload", async () => {
+  const f = await fixture(), server = receiver(), entryId = randomUUID(), imageId = randomUUID();
+  const occurrence = { imageId, entryId, container: "content" as const, partId: null, sourceRevision: null, sourceTextSha256: null, callId: null, sourceKey: "original-native-part" };
+  f.journal.projectTimeline({ entryId, kind: "assistant_message", revision: "1", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "Native image", error: { code: "capture_pending", message: "Saving original image." } }] });
+  f.journal.registerImageOccurrence(occurrence, null); f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  f.journal.projectTimeline({ entryId: randomUUID(), kind: "assistant_message", revision: "1", content: [{ type: "text", text: "later native turn state" }] });
+  const requiredSourceThrough = f.journal.getLastSourceSequence();
+  const request = { captureId: randomUUID(), attemptId: randomUUID(), occurrence, nativeSource: null, locator: { kind: "local" as const, path: "/original.png", contextId: randomUUID() } };
+  const capture = vi.fn();
+  const bridge = createControllerCaptureBridge({ journal: f.journal, capture, beforeCapture: () => syncControllerImageHistory({ ...f, requiredSourceThrough, request: server.request }), provider: () => null, writable: () => true });
+  try {
+    await expect(bridge.providerOptions.prepareImageCapture!(request)).rejects.toMatchObject({ name: "ImageCaptureNotDispatchedError" });
+    expect(server.rows.size).toBe(0); expect(capture).not.toHaveBeenCalled();
+    expect(f.journal.hasImageHistoryCheckpoint(requiredSourceThrough)).toBe(false);
+    f.journal.acknowledgeEvents(requiredSourceThrough);
+    await bridge.providerOptions.prepareImageCapture!(request);
+    expect(server.rows.size).toBe(1); expect(capture).not.toHaveBeenCalled();
+    expect(f.journal.hasImageHistoryCheckpoint(requiredSourceThrough)).toBe(true);
+    expect(JSON.parse([...server.rows.values()][0]!.bytes.toString()).entries).toEqual(expect.arrayContaining([expect.objectContaining({ entryId, content: [expect.objectContaining({ imageId })] })]));
+  } finally { f.journal.close(); }
+});
+
+test("a required history checkpoint completes an older frozen upload before uploading the new image position", async () => {
+  const f = await fixture(), server = receiver();
+  const original = f.journal.prepareImageHistorySync()!, originalBytes = await readFile(original.filename);
+  const entryId = randomUUID(), imageId = randomUUID();
+  f.journal.projectTimeline({ entryId, kind: "assistant_message", revision: "1", imageProjectionError: null, content: [{ type: "image_unavailable", imageId, label: "Native image", error: { code: "capture_pending", message: "Saving original image." } }] });
+  f.journal.acknowledgeEvents(f.journal.getLastSourceSequence());
+  const requiredSourceThrough = f.journal.getLastSourceSequence();
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  let latestStarted = false, completed = false;
+  const request: typeof fetch = async (url, init) => {
+    if (init!.method === "PUT" && !String(url).includes(original.syncId)) { latestStarted = true; await barrier; }
+    return server.request(url, init);
+  };
+  const work = syncControllerImageHistory({ ...f, requiredSourceThrough, request }).then(() => { completed = true; });
+  try {
+    await vi.waitFor(() => expect(latestStarted).toBe(true));
+    expect(completed).toBe(false); expect(f.journal.hasImageHistoryCheckpoint(requiredSourceThrough)).toBe(false);
+    expect(server.rows.get(original.syncId)!.bytes).toEqual(originalBytes);
+    release(); await work;
+    expect(server.rows.size).toBe(2); expect(f.journal.hasImageHistoryCheckpoint(requiredSourceThrough)).toBe(true);
+    expect(JSON.parse([...server.rows.values()][1]!.bytes.toString()).entries).toEqual(expect.arrayContaining([expect.objectContaining({ entryId })]));
+    f.journal.recordRelayHistory("next-history-epoch");
+    expect(f.journal.hasImageHistoryCheckpoint(requiredSourceThrough)).toBe(false);
+    await syncControllerImageHistory({ ...f, requiredSourceThrough, request: server.request });
+    expect(f.journal.hasImageHistoryCheckpoint(requiredSourceThrough)).toBe(true); expect(server.rows.size).toBe(3);
+  } finally { release(); await work; f.journal.close(); }
 });
 
 test("a failed original synchronization can be retired but a conflicting receipt keeps its intent", async () => {

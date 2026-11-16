@@ -8,21 +8,39 @@ Project members need stable tag identities and a shared catalog that can be mana
 
 ## Decision
 
-The tag service uses the project write lock for authorization, original version checks, catalog changes and association cleanup. Rename and deletion touch associated Task and Goal versions as a set; deletion removes all associations, including retained deleted resources. Reads authorize and obtain the catalog and visible usage in one snapshot. Catalog pages bind their cursor to the principal, project, query, limit and catalog epoch. Batch resolution refuses invalid identities and oversized encoded results instead of returning a partial set. MCP catalog tools call the same service with exact decimal version strings, explicit delete confirmation and bounded Control permits. They preserve transaction completion facts instead of retrying an unknown write. The [server design](../../../../docs/design/daynight-server.md#领域模型与存储结构) owns the implementation structure.
+The tag service uses the project write lock for authorization, original version checks, catalog changes and association cleanup. Rename, color changes, and deletion touch associated Task and Goal versions as a set; deletion removes all associations, including retained deleted resources. Reads authorize and obtain the catalog and visible usage in one snapshot. Catalog pages bind their cursor to the principal, project, query, limit and catalog epoch. Name-reference resolution refuses invalid identities and oversized encoded results instead of returning a partial set. MCP catalog tools call the same service with exact decimal version strings, explicit delete confirmation and bounded Control permits. Full Tag results include color; creation accepts an optional color and versioned updates change name and color in one transaction. Committed receipts map the service result directly. Task Tag references remain ID and name only. They preserve transaction completion facts instead of retrying an unknown write. The [server design](../../../../docs/design/daynight-server.md#领域模型与存储结构) owns the implementation structure.
 
 The CLI manages this catalog by stable UUID. It collects each complete page under
 the same query, limit and epoch before publishing output, and preserves exact
 int64 versions for conditional writes. Deletion previews the current name and
 visible usage, then confirms removal of all associations. An explicit version
 remains the caller's original condition; an omitted version uses the preview.
-Unknown mutations are not replayed.
+Create accepts an optional color and leaves its default, validation and RGB
+normalization to the service. Set-color sends only color and the exact version;
+an omitted version is read once before writing. The existing strict REST Tag
+parser and CLI output fields remain unchanged. Successful ID/version receipts
+confirm the requested normalized color under the service write contract, without
+a subsequent read that could observe another mutation. Local output or cleanup
+failures preserve that confirmation. Unknown mutations are not replayed. The
+[color decision](../architecture/2026-11-15-tag-color-storage.md) records why
+REST color reads use a separate projection.
 
 The Web exposes the catalog as a member-accessible project section. It holds a
 single scope-owned page and checks the first page's epoch before retaining a
 later cursor, while refreshing usage separately because associations do not
-rotate the catalog epoch. Delete reads the current tag before confirmation;
+rotate the catalog epoch. Catalog requests omit `query` for an empty search,
+matching the service's distinction between an absent query and an invalid empty
+parameter; nonempty searches retain their original value. Delete reads the current tag before confirmation;
 conflict and unknown outcomes keep the draft for explicit observation. A write
 interrupted after dispatch remains unknown when the user returns to the section.
+The Web creates and edits colors with presets or an RGB input. Editing pairs a
+fresh Tag read with a color resolve at the same exact version before binding a
+draft or showing current state after a conflict. A bounded retry and an explicit
+retry on mismatch avoid pairing an older color with a newer version. Name and
+color share one conditional update; a confirmed write invalidates the shared
+color projection. Direct creation in Task and Goal pickers adds the Tag to the
+catalog immediately, and later cancellation does not undo it. New drafts use
+gray while edits made during an in-flight create remain intact.
 
 ## Alternatives
 
@@ -39,6 +57,11 @@ make the same name identify a different Tag, so writes use stable UUIDs instead.
 access can change independently of Task cache lifetime. A bounded page and batch
 ID resolution preserve selection without storing private names indefinitely.
 
+**Use the cached color with the catalog version.** The projection deliberately
+retains its last successful color during background reads, so its value may
+belong to an older Tag version. Matching fresh reads prevents overwriting a
+concurrent color change with that stale value.
+
 ## Consequences
 
-Catalog writes serialize with project association writes. Rename and deletion cost grows with the number of associated entries, but do not invalidate the project Task cache. Usage counts are snapshot hints rather than a deletion precondition; confirmation covers every association at commit. Tag version tracks identity and name, while catalog epoch tracks membership and ordering.
+Catalog writes serialize with project association writes. Rename and deletion cost grows with the number of associated entries, but do not invalidate the project Task cache. Usage counts are snapshot hints rather than a deletion precondition; confirmation covers every association at commit. Tag version also tracks color, and catalog epoch rotates on color changes as described in the [color decision](../architecture/2026-11-15-tag-color-storage.md).

@@ -1,7 +1,7 @@
 import type { PauseMessages } from '../pause';
 
 export const pause: PauseMessages = {
-  label: '已暂停', count: (count) => `${count} 已暂停`, openTask: (title) => `查看暂停任务：${title}`,
+  label: '已暂停', count: (count) => `${count} 已暂停`, openTask: (title) => `查看暂停任务：${title}`, listTitle: '已暂停的任务', truncated: '标题已截断',
   unpause: '解除暂停', unpausing: '处理中…', unavailable: '确认当前任务详情与访问权限前无法修改任务。',
   confirmed: '任务已解除暂停。',
   conflict: '任务已变化，请检查当前暂停状态后重试。',

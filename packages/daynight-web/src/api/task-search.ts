@@ -1,14 +1,27 @@
 import { ApiError, assertResponsePrincipal, request, responseSignal, requestId, type TaskResponseAdmission } from './client';
 import { jsonObjectSources } from './json-source';
 import { parseServerError } from './parse';
-import { array, count, id, malformed, nonemptyString, nullableId, record, taskStatusFields, string, timestamp } from './validation';
-import type { TaskStatus, TaskTag } from './types';
+import { array, count, id, malformed, nonemptyString, nullableId, record, taskStatusFields, taskTypeFields, string, timestamp } from './validation';
+import type { TaskStatus, TaskTag, TaskType } from './types';
 import { parseTaskTags } from './task-tags';
 
-export type TaskSearchFilters = { readonly status: TaskStatus | ''; readonly assignedTo: string };
+export type TaskSearchFilters = {
+  readonly status: TaskStatus | ''; readonly assignedTo: string; readonly type: TaskType;
+  /** null means all parents; a UUID restricts the search to direct children. */
+  readonly parentId: string | null; readonly tagIds: readonly string[];
+  readonly tagMatch: 'all' | 'any'; readonly untagged: boolean;
+};
+export const normalizeTaskSearchFilters = (filters: TaskSearchFilters): TaskSearchFilters => {
+  if ((filters.type !== 'task' && filters.type !== 'goal') ||
+      (filters.tagMatch !== 'all' && filters.tagMatch !== 'any') || typeof filters.untagged !== 'boolean') throw new ApiError('protocol');
+  const parentId = filters.parentId === null ? null : requestId(filters.parentId);
+  const tagIds = [...new Set(filters.tagIds.map(requestId))].sort();
+  if (filters.untagged && tagIds.length > 0 || filters.type === 'goal' && parentId !== null) throw new ApiError('protocol');
+  return { ...filters, parentId, tagIds };
+};
 export type TaskSearchField = 'id' | 'title' | 'description';
 export type TaskSearchItem = {
-  readonly id: string; readonly projectId: string; readonly title: string; readonly status: TaskStatus;
+  readonly id: string; readonly type: TaskType; readonly parentId: string | null; readonly projectId: string; readonly title: string; readonly status: TaskStatus;
   readonly assignedTo: string | null; readonly updatedAt: string; readonly cancelledAt: string | null;
   readonly tags: readonly TaskTag[];
   readonly context: { readonly taskId: string; readonly title: string } | null;
@@ -42,13 +55,16 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
   if (id(data.projectId) !== projectId) return malformed();
   const total = count(data.total);
   const items = array(data.items, (value): TaskSearchItem => {
-    const item = record(value), itemProject = id(item.projectId), itemTiming = taskStatusFields(item), itemStatus = itemTiming.status, assignedTo = nullableId(item.assignedTo);
-    if (itemProject !== projectId || filters.status !== '' && itemStatus !== filters.status) return malformed();
+    const item = record(value), itemProject = id(item.projectId), itemTiming = taskStatusFields(item), itemStatus = itemTiming.status, assignedTo = nullableId(item.assignedTo), { type, parentId } = taskTypeFields(item);
+    if (itemProject !== projectId || type !== filters.type || filters.parentId !== null && parentId !== filters.parentId || filters.status !== '' && itemStatus !== filters.status) return malformed();
     const assignment = filters.assignedTo === 'me' ? userId : filters.assignedTo === 'unassigned' ? null : filters.assignedTo === '' ? undefined : filters.assignedTo;
     if (assignment !== undefined && assignedTo !== assignment) return malformed();
     const rawContext = item.context === null ? null : record(item.context);
     const context = rawContext === null ? null : { taskId: id(rawContext.taskId), title: text(rawContext.title, true) };
-    return { id: id(item.id), projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, tags: parseTaskTags(item.tags), context, match: parseTaskSearchMatch(item.match) };
+    if (parentId === null ? context !== null : context?.taskId !== parentId) return malformed();
+    const tags = parseTaskTags(item.tags), ids = new Set(tags.map(tag => tag.id));
+    if (filters.untagged && tags.length !== 0 || filters.tagIds.length > 0 && !(filters.tagMatch === 'all' ? filters.tagIds.every(tag => ids.has(tag)) : filters.tagIds.some(tag => ids.has(tag)))) return malformed();
+    return { id: id(item.id), type, parentId, projectId: itemProject, title: text(item.title, true), status: itemStatus, assignedTo, updatedAt: timestamp(item.updatedAt), cancelledAt: itemTiming.cancelledAt, tags, context, match: parseTaskSearchMatch(item.match) };
   });
   if (items.length > limit || items.length > total || new Set(items.map(item => item.id)).size !== items.length) return malformed();
   const nextCursor = data.nextCursor === null ? null : text(data.nextCursor, true);
@@ -59,7 +75,7 @@ export const parseTaskSearchPage = (value: unknown, projectId: string, filters: 
 const integerSource = (sources: ReadonlyMap<string, string>, name: string): void => { if (!/^(?:0|[1-9][0-9]*)$/.test(sources.get(name) ?? '')) malformed(); };
 const searchError = (body: unknown, source: string, httpStatus: number, query: string): TaskSearchError => {
   const parsed = parseServerError(body);
-  const expected: Readonly<Record<string, number>> = { invalid_input: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
+  const expected: Readonly<Record<string, number>> = { invalid_input: 400, invalid_tag_filter: 400, invalid_search_expression: 400, search_changed: 409, search_timeout: 504 };
   if (expected[parsed.code] !== undefined && expected[parsed.code] !== httpStatus) return malformed();
   let syntax: SearchSyntax | undefined;
   if (parsed.code === 'invalid_search_expression') {
@@ -77,10 +93,11 @@ const searchError = (body: unknown, source: string, httpStatus: number, query: s
 
 export const searchTasks = async (projectId: string, query: string, filters: TaskSearchFilters, cursor: string | null, signal: AbortSignal, admission: TaskResponseAdmission, correlation?: { readonly requestId: string; readonly onResponseId: (requestId: string) => void }): Promise<TaskSearchPage> => {
   const project = requestId(projectId), userId = requestId(admission.userId);
-  if (!query.isWellFormed() || query.includes('\0') || filters.status !== '' && filters.status !== 'proposed' && filters.status !== 'todo' && filters.status !== 'in_progress' && filters.status !== 'done' && filters.status !== 'cancelled') throw new ApiError('protocol');
+  filters = normalizeTaskSearchFilters(filters);
+  if (query.trim() === '' || !query.isWellFormed() || query.includes('\0') || filters.status !== '' && filters.status !== 'proposed' && filters.status !== 'todo' && filters.status !== 'in_progress' && filters.status !== 'done' && filters.status !== 'cancelled') throw new ApiError('protocol');
   const assignedTo = filters.assignedTo === '' ? undefined : filters.assignedTo === 'me' || filters.assignedTo === 'unassigned' ? filters.assignedTo : requestId(filters.assignedTo);
   if (cursor !== null && (cursor.trim() === '' || !cursor.isWellFormed() || cursor.includes('\0'))) throw new ApiError('protocol');
-  const response = await request(`/api/v1/projects/${project}/tasks/search`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(correlation === undefined ? {} : { 'X-Request-ID': correlation.requestId }) }, body: JSON.stringify({ query, ...(filters.status === '' ? {} : { status: filters.status }), ...(assignedTo === undefined ? {} : { assignedTo }), limit: 15, ...(cursor === null ? {} : { cursor }) }) });
+  const response = await request(`/api/v1/projects/${project}/tasks/search`, signal, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(correlation === undefined ? {} : { 'X-Request-ID': correlation.requestId }) }, body: JSON.stringify({ query, type: filters.type, ...(filters.parentId === null ? {} : { parentId: filters.parentId }), tagIds: filters.tagIds, tagMatch: filters.tagMatch, untagged: filters.untagged, ...(filters.status === '' ? {} : { status: filters.status }), ...(assignedTo === undefined ? {} : { assignedTo }), limit: 15, ...(cursor === null ? {} : { cursor }) }) });
   const responseId = response.headers.get('X-Request-ID');
   if (responseId !== null && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(responseId)) correlation?.onResponseId(responseId);
   assertResponsePrincipal(response, userId, admission.onPrincipalMismatch);

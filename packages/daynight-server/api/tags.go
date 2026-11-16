@@ -28,3 +28,15 @@ type TagDeletionReceipt struct {
 	TagID     string `json:"tagId"`
 	Deleted   bool   `json:"deleted"`
 }
+
+type TagColorItem struct {
+	ID      string  `json:"id"`
+	State   string  `json:"state"`
+	Version *int64  `json:"version,omitempty"`
+	Color   *string `json:"color,omitempty"`
+}
+
+type TagColorPage struct {
+	CatalogEpoch string         `json:"catalogEpoch"`
+	Items        []TagColorItem `json:"items"`
+}

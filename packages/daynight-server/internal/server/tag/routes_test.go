@@ -29,13 +29,16 @@ const tagID = "30000000-0000-4000-8000-000000000001"
 const collection = "/api/v1/projects/" + projectID + "/tags"
 
 type operationMock struct {
-	t       *testing.T
-	list    func(context.Context, model.Principal, string, service.ListInput) (service.Page, error)
-	get     func(context.Context, model.Principal, string, string) (service.Item, error)
-	create  func(context.Context, model.Principal, string, string) (service.WriteResult, error)
-	rename  func(context.Context, model.Principal, string, string, int64, string) (service.WriteResult, error)
-	delete  func(context.Context, model.Principal, string, string, int64, bool) (service.WriteResult, error)
-	resolve func(context.Context, model.Principal, string, []string) ([]model.TagReference, error)
+	t             *testing.T
+	list          func(context.Context, model.Principal, string, service.ListInput) (service.Page, error)
+	get           func(context.Context, model.Principal, string, string) (service.Item, error)
+	create        func(context.Context, model.Principal, string, string) (service.WriteResult, error)
+	rename        func(context.Context, model.Principal, string, string, int64, string) (service.WriteResult, error)
+	delete        func(context.Context, model.Principal, string, string, int64, bool) (service.WriteResult, error)
+	resolve       func(context.Context, model.Principal, string, []string) ([]model.TagReference, error)
+	createColor   func(context.Context, model.Principal, string, string, *string) (service.WriteResult, error)
+	update        func(context.Context, model.Principal, string, string, int64, *string, *string) (service.WriteResult, error)
+	resolveColors func(context.Context, model.Principal, string, []string, *string) (service.ColorPage, error)
 }
 
 func (m *operationMock) List(c context.Context, p model.Principal, project string, i service.ListInput) (service.Page, error) {
@@ -50,17 +53,35 @@ func (m *operationMock) Get(c context.Context, p model.Principal, project, id st
 	}
 	return m.get(c, p, project, id)
 }
-func (m *operationMock) Create(c context.Context, p model.Principal, project, name string) (service.WriteResult, error) {
+func (m *operationMock) Create(c context.Context, p model.Principal, project, name string, color *string) (service.WriteResult, error) {
+	if m.createColor != nil {
+		return m.createColor(c, p, project, name, color)
+	}
+	if color != nil {
+		m.t.Fatal("legacy create supplied color")
+	}
 	if m.create == nil {
 		m.t.Fatal("unexpected Create")
 	}
 	return m.create(c, p, project, name)
 }
-func (m *operationMock) Rename(c context.Context, p model.Principal, project, id string, v int64, name string) (service.WriteResult, error) {
+func (m *operationMock) Update(c context.Context, p model.Principal, project, id string, v int64, name, color *string) (service.WriteResult, error) {
+	if m.update != nil {
+		return m.update(c, p, project, id, v, name, color)
+	}
+	if name == nil || color != nil {
+		m.t.Fatal("legacy rename must supply only name")
+	}
 	if m.rename == nil {
 		m.t.Fatal("unexpected Rename")
 	}
-	return m.rename(c, p, project, id, v, name)
+	return m.rename(c, p, project, id, v, *name)
+}
+func (m *operationMock) ResolveColors(c context.Context, p model.Principal, project string, ids []string, epoch *string) (service.ColorPage, error) {
+	if m.resolveColors == nil {
+		m.t.Fatal("unexpected ResolveColors")
+	}
+	return m.resolveColors(c, p, project, ids, epoch)
 }
 func (m *operationMock) Delete(c context.Context, p model.Principal, project, id string, v int64, confirm bool) (service.WriteResult, error) {
 	if m.delete == nil {
@@ -137,7 +158,7 @@ func decode[T any](t *testing.T, w *httptest.ResponseRecorder, status int) T {
 }
 func item() service.Item {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	return service.Item{Tag: model.Tag{ID: tagID, ProjectID: projectID, Name: "Alpha", Version: 7, CreatedAt: now, UpdatedAt: now}, Usage: model.TagUsage{Tasks: 2, Goals: 1}}
+	return service.Item{Tag: model.Tag{ID: tagID, ProjectID: projectID, Name: "Alpha", Color: "#123456", Version: 7, CreatedAt: now, UpdatedAt: now}, Usage: model.TagUsage{Tasks: 2, Goals: 1}}
 }
 func committed() service.WriteResult {
 	return service.WriteResult{Item: item(), ProjectID: projectID, TagID: tagID, Deleted: true, Phase: "commit", Outcome: store.TransactionCommitted}
@@ -177,6 +198,9 @@ func TestRoutesProjectInputAndResponses(t *testing.T) {
 	}
 	w := f.request("POST", collection, `{"name":"Alpha"}`, true)
 	created := decode[api.Tag](t, w, 201)
+	if strings.Contains(w.Body.String(), `"color"`) {
+		t.Fatalf("legacy tag response includes color: %s", w.Body)
+	}
 	if created.ID != tagID || w.Header().Get("Location") != collection+"/"+tagID {
 		t.Fatalf("creation: %+v %v", created, w.Header())
 	}
@@ -220,6 +244,16 @@ func TestRejectsBeforeBusinessCalls(t *testing.T) {
 	}{
 		{"POST", collection, `{"name":"a"}`, 401, false},
 		{"POST", collection, `{"name":"a","extra":1}`, 400, true},
+		{"POST", collection, `{"name":"a","color":null}`, 400, true},
+		{"POST", collection, `{"name":"a","color":"\ud800"}`, 400, true},
+		{"PATCH", collection + "/" + tagID, `{"version":7}`, 400, true},
+		{"PATCH", collection + "/" + tagID, `{"version":7,"color":null}`, 400, true},
+		{"PATCH", collection + "/" + tagID, `{"version":7,"name":null}`, 400, true},
+		{"POST", collection + "/colors/resolve", `{"tagIds":null}`, 400, true},
+		{"POST", collection + "/colors/resolve", `{"tagIds":[],"catalogEpoch":null}`, 400, true},
+		{"POST", collection + "/colors/resolve", `{"tagIds":[],"catalogEpoch":"\ud800"}`, 400, true},
+		{"POST", collection + "/colors/resolve", `{"tagIds":[null]}`, 400, true},
+		{"POST", collection + "/colors/resolve", `{"tagIds":[],"extra":1}`, 400, true},
 		{"POST", collection, `{"name":"\ud800"}`, 400, true},
 		{"PATCH", collection + "/" + tagID, `{"version":0,"name":"a"}`, 400, true},
 		{"DELETE", collection + "/" + tagID, `{"version":7}`, 400, true},
@@ -245,7 +279,7 @@ func TestErrorsAndUnknownCompletion(t *testing.T) {
 	cases := []struct {
 		code   string
 		status int
-	}{{"invalid_tag_name", 400}, {"tag_name_conflict", 409}, {"tag_not_found", 404}, {"catalog_changed", 409}, {"version_conflict", 409}, {"resource_limit_exceeded", 409}, {"permission_denied", 403}}
+	}{{"invalid_tag_name", 400}, {"invalid_tag_color", 400}, {"tag_name_conflict", 409}, {"tag_not_found", 404}, {"catalog_changed", 409}, {"version_conflict", 409}, {"resource_limit_exceeded", 409}, {"permission_denied", 403}}
 	for _, tc := range cases {
 		t.Run(tc.code, func(t *testing.T) {
 			f := newFixture(t)
@@ -395,6 +429,8 @@ func TestUnsupportedMethodsRequireAuthenticationAndAdvertiseAllowedMethods(t *te
 		{"PATCH", collection + "/resolve", "POST"},
 		{"DELETE", collection + "/resolve", "POST"},
 		{"PUT", collection + "/resolve", "POST"},
+		{"GET", collection + "/colors/resolve", "POST"},
+		{"PUT", collection + "/colors/resolve", "POST"},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			f := newFixture(t)

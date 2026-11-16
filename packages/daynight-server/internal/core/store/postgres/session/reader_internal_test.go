@@ -50,4 +50,7 @@ func TestSessionReaderWorkerPreservesJSONDecodeFailure(t *testing.T) {
 	if _, err := taskSessionWorker(`{"claimId":1}`); !errors.As(err, &invalid) {
 		t.Fatalf("typed decode cause lost: %v", err)
 	}
+	if worker, err := taskSessionWorker(`null`); err == nil || worker != nil {
+		t.Fatalf("stored null worker hidden: %#v %v", worker, err)
+	}
 }

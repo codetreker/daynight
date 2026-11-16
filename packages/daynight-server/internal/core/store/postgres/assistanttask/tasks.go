@@ -99,3 +99,8 @@ func (d *DAO) ClaimOperation(ctx context.Context, owner, task, id string) (model
 func (d *DAO) InsertClaimOperation(ctx context.Context, v model.AssistantTaskClaimOperation) error {
 	return d.execute(ctx, "insert assistant claim receipt", `INSERT INTO assistant_task_claim_operations(owner_user_id,task_id,operation_id,kind,actor_bot_id,request_fingerprint,admitted_at,resulting_version,resulting_generation,holder_bot_id,credential_operation_id,lease_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, v.OwnerUserID, v.TaskID, v.OperationID, v.Kind, v.ActorBotID, v.RequestFingerprint, v.AdmittedAt, v.ResultingVersion, v.ResultingGeneration, v.HolderBotID, v.CredentialOperationID, v.LeaseUntil)
 }
+
+// ApplicationTask reads the nondeleted singleton selected by its unique index.
+func (d *DAO) ApplicationTask(ctx context.Context, owner, application string) (model.AssistantTask, error) {
+	return one(d.tx.QueryRow(ctx, `SELECT `+taskColumns+` FROM assistant_tasks t WHERE t.owner_user_id=$1 AND t.application=$2 AND t.state<>'deleted'`, owner, application), "read assistant application task", scanTask)
+}

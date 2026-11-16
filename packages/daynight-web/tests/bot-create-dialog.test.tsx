@@ -267,6 +267,33 @@ it('keeps composition Escape inside the form without cancelling the draft', asyn
   expect(onClose).toHaveBeenCalledOnce();
 });
 
+it('leaves popup Escape to the native control while stopping the outer handler', async () => {
+  mount(); await flush(); advanced(); name('Kept draft');
+  const select = screen.getByRole('combobox', { name: 'Worker' });
+  const originalMatches = select.matches.bind(select);
+  const matches = vi.spyOn(select, 'matches').mockImplementation(query => query === ':open' || originalMatches(query));
+  const outer = vi.fn(); document.addEventListener('keydown', outer);
+  try {
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    fireEvent(select, escape); await flush();
+    expect(escape.defaultPrevented).toBe(false);
+    expect(outer).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(assistantNameInput()).toHaveValue('Kept draft');
+    expect(api.createBot).not.toHaveBeenCalled();
+  } finally {
+    document.removeEventListener('keydown', outer);
+    matches.mockRestore();
+  }
+});
+
+it('ignores an Escape reported as IME key code 229', async () => {
+  mount(); await flush(); name('Composition draft');
+  fireEvent.keyDown(assistantNameInput(), { key: 'Escape', keyCode: 229 }); await flush();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(assistantNameInput()).toHaveValue('Composition draft');
+});
+
 it('settles a confirmed creation during a pause and protects later edits on resume', async () => {
   const pending = deferred<api.BotDefinition>();
   vi.mocked(api.createBot).mockImplementationOnce((_input, _signal, admission) => { admission.onDispatch?.(); return pending.promise; });

@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { createWorkerBotHost } from "../../../src/commands/worker/bots/host.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import * as botEnvironment from "../../../src/commands/worker/bots/environment.js";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -26,7 +26,7 @@ import { controllerExecutionDirectory, controllerTicketPath } from "../../../src
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
 import { readControllerSnapshot, readControllerOperation, readProvenWindowsStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import { requestController } from "../../../src/commands/controller/local-client.js";
-import { confirmControllerProcessesStopped, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
+import { confirmControllerProcessesStopped, ControllerProcessIdentityConflictError, inspectProcessProof, stopControllerProcesses, type ProcessProof } from "../../../src/commands/controller/process-proof.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import { acquireControllerJobLease, inspectControllerJob, releaseControllerJobLease, type ControllerJobLease } from "../../../src/commands/controller/windows-job.js";
 import { createControllerJobLeases } from "../../../src/commands/worker/backends/controller-job-leases.js";
@@ -42,14 +42,56 @@ const failureDiagnostics: (() => Promise<void>)[] = [];
 // Job Object query. Proof acquisition, cooperative stop, joined observation,
 // escalation and failure diagnostics fit within this hook's separate budget.
 const cleanupHookTimeout = 180_000;
-const waitForProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], timeoutMs: number, lease?: ControllerJobLease): Promise<void> => {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await confirmControllerProcessesStopped(controller, native, deadline, lease)) return;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error("Original fixture processes did not stop within the observation window.");
-    await delay(Math.min(100, remaining));
+class FixtureStopTimeoutError extends Error {
+  constructor(conflict?: ControllerProcessIdentityConflictError) {
+    super("Original fixture processes did not stop within the observation window.", { cause: conflict });
   }
+}
+const waitForProcessesStopped = async (controller: ProcessProof, native: readonly ProcessProof[], timeoutMs: number, lease?: ControllerJobLease,
+  clock = { now: Date.now, wait: (ms: number) => delay(ms) }): Promise<void> => {
+  const deadline = clock.now() + timeoutMs;
+  let conflict: ControllerProcessIdentityConflictError | undefined;
+  const diagnosed = new Set<number>();
+  for (;;) {
+    try { if (await confirmControllerProcessesStopped(controller, native, deadline, lease)) return; }
+    catch (error) {
+      if (!(error instanceof ControllerProcessIdentityConflictError)) {
+        if (conflict !== undefined) throw new AggregateError([conflict, error], "Fixture identity and stop observation failed.", { cause: error });
+        throw error;
+      }
+      if (!diagnosed.has(error.pid) && diagnosed.size < 8) {
+        diagnosed.add(error.pid);
+        const { status, sameBirth, sameParent, sameGroup, sameCommand } = error.evidence;
+        console.error(JSON.stringify({ fixture: "bot-process-integration", stage: "stop-identity-conflict", pid: error.pid,
+          status: status?.slice(0, 32) ?? null, sameBirth, sameParent, sameGroup, sameCommand }));
+      }
+      conflict ??= error;
+    }
+    const remaining = deadline - clock.now();
+    if (remaining <= 0) throw new FixtureStopTimeoutError(conflict);
+    await clock.wait(Math.min(100, remaining));
+    if (clock.now() >= deadline) throw new FixtureStopTimeoutError(conflict);
+  }
+};
+const cleanupFixtureProcesses = async (controller: ProcessProof, native: readonly ProcessProof[], lease?: ControllerJobLease,
+  operations = { wait: waitForProcessesStopped, stop: stopControllerProcesses, confirm: confirmControllerProcessesStopped }): Promise<void> => {
+  let observationFailure: unknown;
+  try { await operations.wait(controller, native, 5000, lease); }
+  catch (error) {
+    if (!(error instanceof FixtureStopTimeoutError && error.cause === undefined)) observationFailure = error;
+    try { await operations.stop(controller, native, Date.now() + 10_000, lease); }
+    catch (stopError) {
+      if (observationFailure !== undefined) throw new AggregateError([observationFailure, stopError], "Fixture stop observation and escalation failed.", { cause: observationFailure });
+      throw stopError;
+    }
+  }
+  try {
+    if (!await operations.confirm(controller, native, undefined, lease)) throw new Error("Fixture process tree did not stop.");
+  } catch (confirmationError) {
+    if (observationFailure !== undefined) throw new AggregateError([observationFailure, confirmationError], "Fixture stop observation and confirmation failed.", { cause: observationFailure });
+    throw confirmationError;
+  }
+  if (observationFailure !== undefined) throw observationFailure;
 };
 const readEvidence = async (file: string) => {
   if (!existsSync(file)) return { file, exists: false };
@@ -123,6 +165,85 @@ test("joins the final process observation before rejecting its expired window", 
   await expect(waitForProcessesStopped(proof, [], 1)).rejects.toThrow("Original fixture processes did not stop within the observation window.");
   expect(active).toBe(0);
 });
+
+test("waits for complete stop after a transient process identity conflict", async () => {
+  let now = 0;
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const conflict = new ControllerProcessIdentityConflictError(1, { status: "Rs", sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  const confirm = vi.spyOn(processProof, "confirmControllerProcessesStopped").mockRejectedValueOnce(conflict).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  await expect(waitForProcessesStopped(proof, [], 1000, undefined, { now: () => now, wait: async ms => { now += ms; } })).resolves.toBeUndefined();
+  expect(confirm).toHaveBeenCalledTimes(3);
+});
+
+test("retains a persistent identity conflict at the observation deadline", async () => {
+  let now = 0;
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const conflict = new ControllerProcessIdentityConflictError(1, { status: "Rs", sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockRejectedValue(conflict);
+  const error = await waitForProcessesStopped(proof, [], 200, undefined, { now: () => now, wait: async ms => { now += ms; } }).catch(error => error);
+  expect(error.cause).toBe(conflict);
+});
+
+test("propagates unrelated stop observation errors", async () => {
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const failure = new Error("Process observation failed");
+  vi.spyOn(processProof, "confirmControllerProcessesStopped").mockRejectedValue(failure);
+  await expect(waitForProcessesStopped(proof, [], 1000)).rejects.toBe(failure);
+});
+
+test("preserves cleanup observation failures through escalation and confirmation", async () => {
+  const proof = { pid: 1, parentPid: 1, processGroupId: 1, startedAt: "controlled", commandHash: "controlled" };
+  const conflict = new ControllerProcessIdentityConflictError(1, { status: "Rs", sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  const failure = new FixtureStopTimeoutError(conflict), escalation = new Error("escalation failed");
+  const wait = vi.fn().mockRejectedValue(failure), stop = vi.fn().mockResolvedValue(undefined), confirm = vi.fn().mockResolvedValue(true);
+  await expect(cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm })).rejects.toBe(failure);
+  expect(stop).toHaveBeenCalledOnce(); expect(confirm).toHaveBeenCalledOnce();
+  stop.mockRejectedValueOnce(escalation);
+  const combined = await cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm }).catch(error => error);
+  expect(combined).toBeInstanceOf(AggregateError); expect(combined.errors).toEqual([failure, escalation]);
+  const ordinary = new FixtureStopTimeoutError();
+  wait.mockRejectedValueOnce(ordinary); stop.mockResolvedValueOnce(undefined);
+  await expect(cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm })).resolves.toBeUndefined();
+  const probeFailure = new Error("process observation failed");
+  wait.mockRejectedValueOnce(probeFailure); stop.mockResolvedValueOnce(undefined);
+  await expect(cleanupFixtureProcesses(proof, [], undefined, { wait, stop, confirm })).rejects.toBe(probeFailure);
+});
+
+test.skipIf(process.platform !== "darwin")("waits through a real same-birth command conflict before confirming the process group stopped", async () => {
+  const child = spawn(process.execPath, ["-e", `
+    process.on('message', message => {
+      if (message === 'change') { process.title = 'daynight-conflicting-title'; process.send('changed'); }
+      if (message === 'exit') { process.disconnect(); process.exit(0); }
+    });
+    process.send('ready');
+  `], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const exited = once(child, "exit", { signal: AbortSignal.timeout(15_000) });
+  void exited.catch(() => {});
+  cleanups.push(async () => {
+    if (child.exitCode === null && child.signalCode === null && !child.kill("SIGKILL")) throw new Error("Fixture process could not be killed.");
+    await exited;
+  });
+  expect((await once(child, "message", { signal: AbortSignal.timeout(5000) }))[0]).toBe("ready");
+  const proof = await processProof.captureProcessProof(child.pid!);
+  expect(proof.processGroupId).toBe(child.pid);
+  const changed = once(child, "message", { signal: AbortSignal.timeout(5000) });
+  child.send("change"); expect((await changed)[0]).toBe("changed");
+  const conflict = await confirmControllerProcessesStopped(proof, [], Date.now() + 5000).catch(error => error);
+  expect(conflict).toBeInstanceOf(ControllerProcessIdentityConflictError);
+  expect(conflict.evidence).toMatchObject({ sameBirth: true, sameParent: true, sameGroup: true, sameCommand: false });
+  let releaseWait!: () => void, enteredWait!: () => void;
+  const gate = new Promise<void>(resolve => { releaseWait = resolve; });
+  const entered = new Promise<void>(resolve => { enteredWait = resolve; });
+  const waiting = waitForProcessesStopped(proof, [], 10_000, undefined, { now: Date.now, wait: async () => { enteredWait(); await gate; } });
+  void waiting.catch(() => {});
+  try {
+    await Promise.race([entered, waiting.then(() => { throw new Error("Fixture stop was confirmed before the child exited."); })]);
+    expect(child.exitCode).toBeNull();
+    child.send("exit");
+    expect(await exited).toEqual([0, null]);
+  } finally { releaseWait(); }
+  await waiting;
+}, 20_000);
 
 const fixture = async (options: { rejectRole?: boolean; args?: string[]; aliases?: boolean; hosted?: boolean; managedTools?: boolean } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/bot-process-integration");
@@ -329,9 +450,8 @@ process.env.CODEX_TEST_MODELS = ${JSON.stringify(JSON.stringify([{ model, displa
           // that completion before escalating the exact retained process group.
           if (process.platform === "win32" && lease === undefined) stopped = readProvenWindowsStoppedControllerGeneration(record.intent!.journalPath, ticket).nativeStopped;
           else {
-            try { await waitForProcessesStopped(proof, native, 5000, lease); }
-            catch { await stopControllerProcesses(proof, native, Date.now() + 10_000, lease); }
-            stopped = await confirmControllerProcessesStopped(proof, native, undefined, lease);
+            await cleanupFixtureProcesses(proof, native, lease);
+            stopped = true;
           }
           expect(stopped).toBe(true);
         } else { stopped = false; throw new Error("Spawned fixture has no process proof; evidence retained."); }

@@ -49,6 +49,19 @@ type WriteResult struct {
 	CleanupFailed    bool
 }
 
+// ColorItem identifies a requested tag and, when found, its snapshot version and color.
+type ColorItem struct {
+	ID      string
+	Found   bool
+	Version int64
+	Color   string
+}
+
+type ColorPage struct {
+	CatalogEpoch string
+	Items        []ColorItem
+}
+
 func identity(p model.Principal, projectID string) (model.Principal, string, error) {
 	if err := model.RequirePrincipal(p); err != nil {
 		return p, "", err
@@ -201,7 +214,66 @@ func (s *Tags) Resolve(ctx context.Context, p model.Principal, projectID string,
 	return result, nil
 }
 
-func (s *Tags) Create(ctx context.Context, p model.Principal, projectID, name string) (WriteResult, error) {
+// ResolveColors returns one entry per distinct canonical ID from one authorized snapshot.
+func (s *Tags) ResolveColors(ctx context.Context, p model.Principal, projectID string, ids []string, catalogEpoch *string) (ColorPage, error) {
+	p, projectID, err := identity(p, projectID)
+	if err != nil {
+		return ColorPage{}, err
+	}
+	unique := make(map[string]struct{}, len(ids))
+	canonical := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id, err = tagID(id)
+		if err != nil {
+			return ColorPage{}, err
+		}
+		if _, ok := unique[id]; !ok {
+			unique[id] = struct{}{}
+			canonical = append(canonical, id)
+		}
+	}
+	var expected string
+	if catalogEpoch != nil {
+		expected, err = model.CanonicalID(*catalogEpoch)
+		if err != nil {
+			return ColorPage{}, err
+		}
+	}
+	var result ColorPage
+	err = s.store.ReadSnapshot(ctx, func(scope store.SnapshotScope) error {
+		if _, err := project.RequireProjectRead(ctx, scope.ProjectDAO(), p, projectID); err != nil {
+			return err
+		}
+		dao := scope.TagDAO()
+		epoch, err := dao.TagCatalogEpoch(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		if catalogEpoch != nil && expected != epoch {
+			return core.Fault("catalog_changed", "Tag catalog changed; restart the read.", nil)
+		}
+		items, err := dao.ResolveTags(ctx, projectID, canonical)
+		if err != nil {
+			return err
+		}
+		found := make(map[string]model.Tag, len(items))
+		for _, item := range items {
+			found[item.ID] = item
+		}
+		result = ColorPage{CatalogEpoch: epoch, Items: make([]ColorItem, 0, len(canonical))}
+		for _, id := range canonical {
+			item, ok := found[id]
+			result.Items = append(result.Items, ColorItem{ID: id, Found: ok, Version: item.Version, Color: item.Color})
+		}
+		return nil
+	})
+	if err != nil {
+		return ColorPage{}, err
+	}
+	return result, nil
+}
+
+func (s *Tags) Create(ctx context.Context, p model.Principal, projectID, name string, color *string) (WriteResult, error) {
 	result := WriteResult{Phase: "prepare", Outcome: store.TransactionNotCommitted}
 	p, projectID, err := identity(p, projectID)
 	if err != nil {
@@ -210,6 +282,13 @@ func (s *Tags) Create(ctx context.Context, p model.Principal, projectID, name st
 	name, key, err := core.Name(name)
 	if err != nil {
 		return result, err
+	}
+	value := core.DefaultColor
+	if color != nil {
+		value, err = core.Color(*color)
+		if err != nil {
+			return result, err
+		}
 	}
 	id, err := uuid.NewRandom()
 	if err != nil {
@@ -221,7 +300,7 @@ func (s *Tags) Create(ctx context.Context, p model.Principal, projectID, name st
 			return err
 		}
 		result.Phase = "write"
-		item, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: id.String(), ProjectID: projectID, Name: name, NameKey: key, CreatedAt: observed})
+		item, err := scope.TagDAO().InsertTag(ctx, model.Tag{ID: id.String(), ProjectID: projectID, Name: name, NameKey: key, Color: value, CreatedAt: observed})
 		if err != nil {
 			return core.Unique(err)
 		}
@@ -233,7 +312,7 @@ func (s *Tags) Create(ctx context.Context, p model.Principal, projectID, name st
 		return nil
 	})
 }
-func (s *Tags) Rename(ctx context.Context, p model.Principal, projectID, id string, version int64, name string) (WriteResult, error) {
+func (s *Tags) Update(ctx context.Context, p model.Principal, projectID, id string, version int64, name, color *string) (WriteResult, error) {
 	result := WriteResult{Phase: "prepare", Outcome: store.TransactionNotCommitted}
 	p, projectID, err := identity(p, projectID)
 	if err != nil {
@@ -246,9 +325,21 @@ func (s *Tags) Rename(ctx context.Context, p model.Principal, projectID, id stri
 	if err = core.Version(version); err != nil {
 		return result, err
 	}
-	name, key, err := core.Name(name)
-	if err != nil {
-		return result, err
+	if name == nil && color == nil {
+		return result, core.Fault("invalid_input", "At least one tag field is required.", nil)
+	}
+	var newName, key, newColor string
+	if name != nil {
+		newName, key, err = core.Name(*name)
+		if err != nil {
+			return result, err
+		}
+	}
+	if color != nil {
+		newColor, err = core.Color(*color)
+		if err != nil {
+			return result, err
+		}
 	}
 	return s.write(ctx, p, projectID, id, func(scope store.ProjectWriteScope, result *WriteResult) error {
 		dao := scope.TagDAO()
@@ -263,7 +354,13 @@ func (s *Tags) Rename(ctx context.Context, p model.Principal, projectID, id stri
 		if err != nil {
 			return err
 		}
-		if item.Name == name {
+		if name == nil {
+			newName, key = item.Name, item.NameKey
+		}
+		if color == nil {
+			newColor = item.Color
+		}
+		if item.Name == newName && item.Color == newColor {
 			result.Item = Item{Tag: item, Usage: usage}
 			return nil
 		}
@@ -275,7 +372,7 @@ func (s *Tags) Rename(ctx context.Context, p model.Principal, projectID, id stri
 			return err
 		}
 		result.Phase = "write"
-		item, err = dao.UpdateTag(ctx, id, version, name, key, observed)
+		item, err = dao.UpdateTag(ctx, id, version, newName, key, newColor, observed)
 		if err != nil {
 			return core.Unique(core.Lookup(err))
 		}
@@ -288,6 +385,9 @@ func (s *Tags) Rename(ctx context.Context, p model.Principal, projectID, id stri
 		result.Item = Item{Tag: item, Usage: usage}
 		return nil
 	})
+}
+func (s *Tags) Rename(ctx context.Context, p model.Principal, projectID, id string, version int64, name string) (WriteResult, error) {
+	return s.Update(ctx, p, projectID, id, version, &name, nil)
 }
 func (s *Tags) Delete(ctx context.Context, p model.Principal, projectID, id string, version int64, confirm bool) (WriteResult, error) {
 	result := WriteResult{Phase: "prepare", Outcome: store.TransactionNotCommitted}

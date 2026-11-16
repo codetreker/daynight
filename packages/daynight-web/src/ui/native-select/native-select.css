@@ -1,0 +1,83 @@
+/* Layout defaults yield to consumer width and flex/grid placement in either import order. */
+:where(.native-select[data-density]) {
+  display: inline-grid;
+  position: relative;
+  inline-size: fit-content;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  align-self: start;
+  vertical-align: middle;
+  color: #344258;
+  --native-select-height: 38px;
+  --native-select-font-size: 12px;
+  --native-select-focus: #8c8cf0;
+}
+
+.native-select[data-density="compact"] { --native-select-height: 24px; --native-select-font-size: 10px; }
+.native-select[data-density="filter"] { --native-select-height: 32px; --native-select-font-size: 11px; }
+:where(.native-select[data-layout="fill"]) { inline-size: 100%; }
+.native-select[data-focus-tone="task"] { --native-select-focus: #344054; }
+.native-select[data-density][hidden] { display: none; }
+
+.native-select[data-density] > .native-select__control {
+  box-sizing: border-box;
+  appearance: none;
+  inline-size: 100%;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin: 0;
+  border: 1px solid #dce0e8;
+  border-radius: 6px;
+  background: #fff;
+  color: #344258;
+  font-family: inherit;
+  font-size: var(--native-select-font-size);
+  font-weight: 400;
+  line-height: normal;
+  padding: 6px 10px;
+}
+
+.native-select[data-density][data-mode="popup"] > .native-select__control {
+  block-size: var(--native-select-height);
+  padding-block: 0;
+  padding-inline-end: 30px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.native-select[data-density] > .native-select__arrow {
+  position: absolute;
+  inline-size: 10px;
+  block-size: 10px;
+  inset-inline-end: 12px;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.native-select[data-pending="true"] > .native-select__control { border-color: #d4a04a; }
+.native-select[data-density] > .native-select__control[aria-invalid="true"] { border-color: #df9d96; }
+.native-select[data-density] > .native-select__control:disabled { color: #747d91; background: #f5f6f9; }
+.native-select[data-density]:has(> .native-select__control:disabled) { color: #747d91; }
+.native-select[data-density] > .native-select__control:focus-visible { outline: 3px solid var(--native-select-focus); outline-offset: 2px; }
+
+@media (max-width: 800px), (pointer: coarse) {
+  .native-select[data-touch-mode="responsive"] { --native-select-height: 44px; --native-select-font-size: 16px; }
+}
+
+@container native-select-region (max-width: 600px) {
+  .native-select[data-touch-mode="container"] { --native-select-height: 44px; }
+}
+
+@media (pointer: coarse) {
+  .native-select[data-touch-mode="container"] { --native-select-height: 44px; --native-select-font-size: 16px; }
+}
+
+@media (forced-colors: active) {
+  .native-select[data-density] { color: CanvasText; --native-select-focus: Highlight; }
+  .native-select[data-density] > .native-select__control,
+  .native-select[data-density] > .native-select__control[aria-invalid="true"] { color: CanvasText; background: Canvas; border-color: CanvasText; }
+  .native-select[data-density] > .native-select__control:disabled { color: GrayText; border-color: GrayText; background: Canvas; }
+  .native-select[data-density]:has(> .native-select__control:disabled) { color: GrayText; }
+}

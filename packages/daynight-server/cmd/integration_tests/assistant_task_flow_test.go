@@ -81,6 +81,7 @@ func createAssistantBots(t *testing.T, f *fixture) (string, string) {
 
 func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 	first, second := createAssistantBots(t, f)
+	serverAPIWatchdogPresetFlow(t, f, first, second)
 	firstClient, secondClient := assistantFixture(f, first), assistantFixture(f, second)
 	id := uuid.NewString()
 	base := "/api/v1/assistant-tasks/" + id
@@ -302,4 +303,35 @@ func serverAPIAssistantTaskFlow(t *testing.T, f *fixture) {
 			t.Fatal("deleted task remains in ordinary list")
 		}
 	}
+}
+
+func serverAPIWatchdogPresetFlow(t *testing.T, f *fixture, first, second string) {
+	const path = "/api/v1/assistant-task-presets/watchdog"
+	enable := func(id, bot string) api.AssistantTask {
+		return requestJSON[api.AssistantTask](t, f, http.MethodPost, path, map[string]any{"id": id, "targetBotId": bot}, http.StatusOK)
+	}
+	created := enable(uuid.NewString(), first)
+	if created.Application != "watchdog" || created.State != "active" || created.AssistantTaskClaim.State != "pending" || created.HolderBotID == nil || *created.HolderBotID != first || created.Takeover != "auto" {
+		t.Fatalf("preset differs: %+v", created)
+	}
+	again := enable(uuid.NewString(), first)
+	if again.ID != created.ID || again.Version != created.Version || again.Generation != created.Generation {
+		t.Fatalf("preset replaced singleton: %+v", again)
+	}
+	base := "/api/v1/assistant-tasks/" + created.ID
+	manual := requestJSON[api.AssistantTaskManual](t, f, http.MethodGet, base+"/manual", nil, http.StatusOK)
+	if string(manual.Rules) != "[]" || manual.Body == "" {
+		t.Fatalf("initial manual differs: %+v", manual)
+	}
+	requestJSON[api.AssistantTask](t, f, http.MethodPatch, base, map[string]any{"ifVersion": strconv.FormatInt(again.Version, 10), "state": "paused"}, http.StatusOK)
+	transferred := enable(uuid.NewString(), second)
+	if transferred.ID != created.ID || transferred.State != "active" || *transferred.HolderBotID != second || transferred.Generation != created.Generation+1 {
+		t.Fatalf("preset transfer differs: %+v", transferred)
+	}
+	requestJSON[api.AssistantTask](t, f, http.MethodDelete, base, map[string]any{"ifVersion": strconv.FormatInt(transferred.Version, 10)}, http.StatusOK)
+	replacement := enable(uuid.NewString(), first)
+	if replacement.ID == created.ID {
+		t.Fatal("deleted preset identity reused")
+	}
+	requestJSON[api.AssistantTask](t, f, http.MethodDelete, "/api/v1/assistant-tasks/"+replacement.ID, map[string]any{"ifVersion": strconv.FormatInt(replacement.Version, 10)}, http.StatusOK)
 }

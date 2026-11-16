@@ -22,6 +22,10 @@ func TestNameRules(t *testing.T) {
 		{"unicode preserved", "Éé", "Éé", "Éé", ""},
 		{"maximum", strings.Repeat("界", 64), strings.Repeat("界", 64), strings.Repeat("界", 64), ""},
 		{"too long", strings.Repeat("界", 65), "", "", "invalid_tag_name"},
+		{"supplementary maximum", strings.Repeat("😀", 64), strings.Repeat("😀", 64), strings.Repeat("😀", 64), ""},
+		{"supplementary too long", strings.Repeat("😀", 65), "", "", "invalid_tag_name"},
+		{"combining code points maximum", strings.Repeat("e\u0301", 32), strings.Repeat("e\u0301", 32), strings.Repeat("e\u0301", 32), ""},
+		{"combining code points too long", strings.Repeat("e\u0301", 32) + "e", "", "", "invalid_tag_name"},
 		{"empty", "\u2003 ", "", "", "invalid_tag_name"},
 		{"control", "a\nb", "", "", "invalid_tag_name"},
 		{"separator", "a\u2028b", "", "", "invalid_tag_name"},
@@ -33,6 +37,19 @@ func TestNameRules(t *testing.T) {
 				t.Fatalf("name=%q key=%q err=%v", got, key, err)
 			}
 		})
+	}
+}
+
+func TestColorRules(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"#abcdef", "#ABCDEF"}, {"#012345", "#012345"}, {"#FFFFFF", "#FFFFFF"},
+		{"#000000", "#000000"}, {"#12345", ""}, {"#1234567", ""},
+		{"123456", ""}, {"#12345g", ""}, {" #123456", ""}, {"", ""},
+	} {
+		got, err := Color(tc.input)
+		if got != tc.want || (err != nil) != (tc.want == "") || (err != nil && code(err) != "invalid_tag_color") {
+			t.Fatalf("Color(%q) = %q, %v", tc.input, got, err)
+		}
 	}
 }
 func TestCursorBindsEveryCatalogFact(t *testing.T) {

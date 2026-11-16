@@ -322,8 +322,16 @@ valid pending transactions; retry after they are consumed or expired. Do not run
 old login writers after migration. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
 Normal task writes, stop, restart, `up --build --force-recreate`, and `down` preserve
 the epoch and both data volumes. Retain the private deployment configuration and the
-corresponding UniAuth application registration separately from the application
-data. Stop the stack and retain all application data:
+corresponding UniAuth application registration separately from the application data.
+
+Before upgrading across GitHub synchronization migration 073, stop and drain all
+old server replicas and replace every replica with the new version before starting
+service. Startup applies the migration before accepting requests. Do not mix old
+and new servers: old code ignores the Project synchronization setting. Existing
+Projects retain their connection, PRs and history but synchronization defaults to
+off; an administrator must enable it again. See the [server upgrade guidance](../../packages/daynight-server/README.md).
+
+Stop the stack and retain all application data:
 
 ```bash
 docker compose down

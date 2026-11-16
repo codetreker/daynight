@@ -4,9 +4,10 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskAssigneeDemand } from '../task-assignees/TaskAssignees';
 import '../../styles/task-assignment.css';
 
-export const personName = (person: ProjectPerson | undefined, userId: string): string => person?.name ?? userId.slice(0, 8);
+type IdentityPerson = Pick<ProjectPerson, 'name' | 'avatarUrl' | 'hasProjectAccess'>;
+export const personName = (person: Pick<ProjectPerson, 'name'> | undefined, userId: string): string => person?.name ?? userId.slice(0, 8);
 
-export const AssigneeAvatar = ({ person, name }: { readonly person?: ProjectPerson; readonly name: string | null }) => {
+export const AssigneeAvatar = ({ person, name }: { readonly person?: Pick<ProjectPerson, 'avatarUrl'>; readonly name: string | null }) => {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   return <span className={`assignee-avatar${name === null ? ' assignee-avatar-empty' : ''}`} aria-hidden="true">
     {person?.avatarUrl !== null && person?.avatarUrl !== undefined && person.avatarUrl !== failedUrl
@@ -16,9 +17,13 @@ export const AssigneeAvatar = ({ person, name }: { readonly person?: ProjectPers
 };
 
 export const TaskAssigneeIdentity = ({ projectId, assignedTo, compact = false, id }: { readonly projectId: string; readonly assignedTo: string | null; readonly compact?: boolean; readonly id?: string }) => {
-  const { messages: { assignment: m } } = useI18n();
   const { people } = useTaskAssigneeDemand(projectId, [assignedTo]);
   const person = assignedTo === null ? undefined : people.get(assignedTo);
+  return <TaskAssigneeDisplay assignedTo={assignedTo} compact={compact} {...(id === undefined ? {} : { id })} {...(person === undefined ? {} : { person })} />;
+};
+
+export const TaskAssigneeDisplay = ({ assignedTo, person, compact = false, id }: { readonly assignedTo: string | null; readonly person?: IdentityPerson; readonly compact?: boolean; readonly id?: string }) => {
+  const { messages: { assignment: m } } = useI18n();
   const name = assignedTo === null ? m.unassigned : personName(person, assignedTo);
   const fullName = `${m.personLabel({ name })}${person?.hasProjectAccess === false ? ` · ${m.formerMember}` : ''}`;
   return <span className={`task-assignee-identity${compact ? ' task-assignee-identity-compact' : ''}`} title={fullName} aria-label={fullName}>

@@ -7,6 +7,7 @@ import { LocaleProvider } from '../src/i18n/LocaleProvider';
 
 const navigationDraft = vi.hoisted(() => ({ current: null as null | { isDirty: () => boolean; discard: () => void } }));
 vi.mock('../src/features/task-detail/TaskDraftNavigation', () => ({ useDirtyTaskDraft: (draft: typeof navigationDraft.current) => { navigationDraft.current = draft; } }));
+vi.mock('../src/features/task-tags/useTagColors', () => ({ useTagColors: () => ({ items: new Map(), loading: true, error: null, retry: vi.fn() }) }));
 vi.mock('../src/features/task-tags/TagPicker', () => ({ TagPicker: ({ value, onChange, onNameDirty }: { value: readonly TaskTag[]; onChange: (value: readonly TaskTag[]) => void; onNameDirty: (dirty: boolean) => void }) => <div><label>New name<input onChange={event => onNameDirty(event.currentTarget.value !== '')} /></label><span data-testid="draft">{value.map(tag => tag.name).join(',')}</span><button type="button" onClick={() => onChange([...value, { id: 'b', name: 'Beta' }])}>Add Beta</button></div> }));
 const detail: TaskDetail = { id: 'task', projectId: 'project', type: 'task', parentId: null, assignedTo: null, title: 'Task', description: '', status: 'todo', version: 1n, tags: [{ id: 'a', name: 'Alpha' }], allowAgents: false, requiredPlatform: null, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], properties: {}, startedAt: null, completedAt: null, cancelledAt: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
@@ -105,4 +106,20 @@ it.each(['Cancel', 'Escape'] as const)('offers recovery after %s closes an edito
   view.rerender(make(detail, { ...unknown, phase: 'reconciled', reconciledFrom: 'unknown', reconciliationError: null }, save, reconcile, true));
   fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
   expect(screen.getByTestId('draft')).toHaveTextContent('Alpha'); expect(save).toHaveBeenCalledOnce();
+});
+
+it('distinguishes an empty observed set from an unknown outcome and a failed check', () => {
+  const save = vi.fn(); const empty = { ...detail, tags: [] };
+  const view = render(make(empty, idle, save));
+  expect(screen.queryByText('None')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit tags' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  view.rerender(make(empty, { ...idle, operation, phase: 'unknown', reconciliationError: new Error('offline') }, save));
+  expect(screen.getByText('Last observed tags:')).toBeVisible();
+  expect(screen.getByText('None')).toBeVisible();
+  expect(screen.getByText(/outcome is unknown/)).toBeVisible();
+  expect(screen.getByText(/could not/i)).toBeVisible();
+  view.rerender(make({ ...empty, version: 2n }, { ...idle, operation, phase: 'conflict' }, save));
+  expect(screen.getByText('Currently saved tags:')).toBeVisible();
+  expect(screen.getByText('None')).toBeVisible();
 });

@@ -3,26 +3,28 @@ import { StandaloneTaskRow } from "./StandaloneTaskRow";
 import type { PaginationState } from "./usePagination";
 import { useLayoutEffect, useRef } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
-import type { TaskSummary } from "../../api/types";
+import type { TaskSummary, WorkerClaim } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 
 type StandaloneListProps = {
   readonly projectId: string;
   readonly index: GraphIndex;
-  readonly summaries?: ReadonlyMap<string, TaskSummary>;
+  readonly summaries: ReadonlyMap<string, TaskSummary>;
+  readonly workerMachines: ReadonlyMap<string, Pick<WorkerClaim, "state" | "machine">>;
   readonly taskIds: readonly string[];
   readonly allTaskIds: readonly string[];
   readonly onSelectTask: (id: string, trigger: HTMLElement) => void;
+  readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
   readonly pagination?: PaginationState;
 };
 
-export const StandaloneList = ({ projectId, index, summaries, taskIds, allTaskIds, onSelectTask, pagination }: StandaloneListProps) => {
+export const StandaloneList = ({ projectId, index, summaries, workerMachines, taskIds, allTaskIds, onSelectTask, onOpenSession, pagination }: StandaloneListProps) => {
   const { messages: { workspace: { standalone: m }, assignment } } = useI18n();
   const container = useRef<HTMLElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
     if (focusedControl.current !== null && !focusedControl.current.isConnected && document.activeElement === document.body) {
-      (container.current?.querySelector<HTMLElement>(".standalone-row") ?? container.current)?.focus({ preventScroll: true });
+      (container.current?.querySelector<HTMLElement>(".task-row-title") ?? container.current)?.focus({ preventScroll: true });
     }
   }, [taskIds]);
   return (
@@ -35,7 +37,7 @@ export const StandaloneList = ({ projectId, index, summaries, taskIds, allTaskId
       ) : taskIds.length === 0 ? (
         <div className="state-box"><h3>{assignment.noMatches}</h3></div>
       ) : (
-        <ul className="standalone-list">{taskIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} {...(summaries?.get(id) === undefined ? {} : { tags: summaries.get(id)!.tags })} instanceId={`standalone-task-${id}`} onSelectTask={onSelectTask} />)}</ul>
+        <ul className="standalone-list">{taskIds.map((id) => <StandaloneTaskRow key={id} projectId={projectId} task={index.nodes.get(id)!} summary={summaries.get(id)!} title={summaries.get(id)!.title} tags={summaries.get(id)!.tags} workerMachine={workerMachines.get(id)} instanceId={`standalone-task-${id}`} onSelectTask={onSelectTask} {...(onOpenSession === undefined ? {} : { onOpenSession })} />)}</ul>
       )}
       {pagination !== undefined && <ListPagination label={m.list} {...pagination} />}
     </section>

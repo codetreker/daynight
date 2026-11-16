@@ -167,7 +167,7 @@ describe("Project settings routes", () => {
   const path = `/projects/${projectId}/settings`;
 
   it("parses and builds each current section, preserving unrelated authentication parameters", () => {
-    for (const tab of ["execution", "prompts", "github", "management"] as ProjectSettingsTab[]) {
+    for (const tab of ["execution", "prompts", "github", "members", "management"] as ProjectSettingsTab[]) {
       const url = projectSettingsUrl(projectId, tab);
       expect(url).toBe(tab === "execution" ? path : `${path}?tab=${tab}`);
       expect(parseAuthRoute(path, `?tab=${tab}&authError=login_failed&other=value`)).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab } });
@@ -177,11 +177,11 @@ describe("Project settings routes", () => {
     expect(() => projectSettingsUrl("invalid", "execution")).toThrow();
   });
 
-  it("retains the project context for invalid selections and keeps the separate members route", () => {
-    for (const search of ["?tab=", "?tab=members", "?tab=unknown", "?tab=execution&tab=github", "?tab=%ZZ"]) {
+  it("retains project context for invalid selections and maps the legacy members route", () => {
+    for (const search of ["?tab=", "?tab=unknown", "?tab=execution&tab=github", "?tab=%ZZ"]) {
       expect(parseAuthRoute(path, search)).toEqual({ kind: "settings", projectId, selection: { kind: "invalid" } });
     }
-    expect(parseAuthRoute(`/projects/${projectId}/members`, "?tab=github")).toEqual({ kind: "members", projectId });
+    expect(parseAuthRoute(`/projects/${projectId}/members`, "?tab=github")).toEqual({ kind: "settings", projectId, selection: { kind: "tab", tab: "members" } });
     expect(parseAuthRoute("/projects/invalid/settings", "?tab=github")).toEqual({ kind: "notFound" });
   });
 });

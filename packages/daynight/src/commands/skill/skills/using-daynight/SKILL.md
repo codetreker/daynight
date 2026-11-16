@@ -26,4 +26,5 @@ current authorization.
 | Send an authorized message; recover its original result | [Session messages](references/session-messages.md); also Session reads if target/execution identity is unknown |
 | Configure Webhooks; inspect deliveries or receipts | [Webhooks](references/webhooks.md) |
 | Manage Workers; pause execution; complete an assigned claim | [Worker operations](references/worker-operations.md) |
+| Configure Worker tool paths; verify the selected installation; diagnose application or recovery failures | [Worker tool paths](references/worker-operations.md#tool-path-configuration), [observations and troubleshooting](references/worker-operations.md#observe-and-troubleshoot-tool-paths) |
 | Collaborate on assistant tasks, claims, manuals, records, inquiries and events | [Assistant tasks](references/assistant-tasks.md) |

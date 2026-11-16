@@ -1,13 +1,16 @@
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import { isTerminalStatus } from "../../api/task-status";
 import { ProjectAccessBoundary, useProjectAccess } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { GraphTask, Project, TaskStatus } from "../../api/types";
-import { navigate, taskDetailUrl } from "../../app/router";
+import { navigate } from "../../app/router";
 import { browserNavigation } from "../../app/navigation";
 import { useProjectHistory } from "../../app/use-page-history";
 import { ProjectDraftHost } from "../task-detail/TaskDraftNavigation";
 import { OverlayOwnerContext } from "../../app/overlay";
 import { canonicalId } from "../../api/validation";
+import { ApiError, isAbortError } from "../../api/client";
+import { resolveProjectTags } from "../../api/task-tags";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
@@ -24,7 +27,7 @@ import { focusProjectList, focusVisible, type ProjectListOrigin } from "./projec
 import { resolveProjectGraphTarget, type ProjectGraphTarget } from "./project-graph-target";
 import { useProjectAssigneeFilter, useProjectSection, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
-import { useTaskGraph } from "./useTaskGraph";
+import { useTaskGraph, type GraphSnapshot } from "./useTaskGraph";
 import { useProjectPageRead } from "./useProjectPageRead";
 import { compareTaskStatus } from "./task-order";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
@@ -34,6 +37,7 @@ import { pausedSummaryTaskIds } from "../task-pause/paused-summary";
 import { TaskSearchWorkspace, assigneeValue } from "../task-search/TaskSearchWorkspace";
 import { useTaskSearch } from "../task-search/useTaskSearch";
 import { ProjectTags } from "../task-tags/ProjectTags";
+import { TagFilter, useTagFilter, matchesTagFilter, type TagFilterValue } from "../task-tags/TagFilter";
 import { PullRequestWorkspace } from "../pull-requests/PullRequestWorkspace";
 import "../../styles/project.css";
 
@@ -45,7 +49,12 @@ const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
 
 const emptyIds: readonly string[] = [];
 
-type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" };
+const matchesTaskTags = (snapshot: GraphSnapshot, task: GraphTask, filter: TagFilterValue) => {
+  const summary = snapshot.summaries.get(task.id);
+  return summary === undefined ? filter.tagIds.length === 0 && !filter.untagged : matchesTagFilter(summary.tags, filter);
+};
+
+type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" | "overview-tag-check-failed" };
 
 const visibleTaskFilters = (tasks: readonly GraphTask[], assignee: AssigneeFilter, status: TaskStatus | "all", userId: string, every: boolean) => {
   const assigneeMatches = (task: GraphTask) => matchesAssignee(task.assignedTo, assignee, userId);
@@ -81,6 +90,23 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const [tagsMounted, setTagsMounted] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useTaskSearch(projectId, viewer, assigneeValue(assigneeFilter));
+  const tagFilter = useTagFilter(projectId, section === "tasks");
+  const childTagFilter = useTagFilter(projectId, section === "tasks" && activeView === "goals" && search.applied === null);
+  const overviewTagCheck = useRef<AbortController | null>(null);
+  useEffect(() => () => overviewTagCheck.current?.abort(), []);
+  useLayoutEffect(() => viewer.subscribe(event => {
+    if (event.projectId === projectId && (event.directAccessUncertain || event.accessRevoked || event.historyChanged || event.cacheGenerationChanged)) overviewTagCheck.current?.abort();
+  }), [viewer, projectId]);
+  const invalidReceipt = useRef({ projectId, viewer, revision: 0 });
+  if (invalidReceipt.current.projectId !== projectId || invalidReceipt.current.viewer !== viewer) invalidReceipt.current = { projectId, viewer, revision: 0 };
+  useLayoutEffect(() => {
+    search.setFilters({ ...search.filters, type: activeView === "goals" ? "goal" : "task", parentId: null, ...tagFilter.value }, tagFilter.invalid);
+  }, [activeView, tagFilter.value, tagFilter.invalid, search.setFilters]);
+  useEffect(() => {
+    if (invalidReceipt.current.revision === search.serverInvalidRevision) return;
+    invalidReceipt.current.revision = search.serverInvalidRevision;
+    if (search.filters.tagIds.length === tagFilter.value.tagIds.length && search.filters.tagIds.every((id, i) => id === tagFilter.value.tagIds[i])) tagFilter.markInvalid();
+  }, [search.serverInvalidRevision, search.filters.tagIds, tagFilter.value.tagIds, tagFilter.markInvalid]);
   const searchActive = search.applied !== null;
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
   const [pageNavigation, setPageNavigation] = useState<"overview" | TaskView | null>(null);
@@ -90,6 +116,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
+  const pausedOrigin = useRef<HTMLElement | null>(null);
   const listOrigin = useRef<ProjectListOrigin | null>(null);
   const lastGraphResource = useRef<string | null>(null);
   const restoreRequested = useRef(false);
@@ -104,7 +131,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (event.historyChanged && (currentSelection.current.detail !== null || currentSelection.current.projectGraphWitness !== null)) {
       const detail = currentSelection.current.detail;
       pendingRetirement.current = { summaryId: detail?.source === "summary" ? detail.id : null };
-      listOrigin.current = null; originalTrigger.current = null; lastGraphResource.current = null; closedDetail.current = null;
+      listOrigin.current = null; originalTrigger.current = null; pausedOrigin.current = null; lastGraphResource.current = null; closedDetail.current = null;
     }
   }), [viewer, projectId]);
   const suppressRestore = useRef(false);
@@ -123,6 +150,9 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const overviewPosition = useRef(0);
   const prPosition = useRef(0);
   const snapshot = graph.snapshot;
+  const overviewFence = useRef({ snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid });
+  overviewFence.current = { snapshot, assigneeFilter, statusFilter, value: tagFilter.value, invalid: tagFilter.invalid };
+  useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [selection, snapshot, assigneeFilter, statusFilter, tagFilter.value, tagFilter.invalid]);
   const snapshotReady = snapshot !== null;
   const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks" && !searchActive);
   useLayoutEffect(() => {
@@ -154,14 +184,19 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     .toReversed().sort((left, right) => compareTaskStatus(left.status, right.status)), [snapshot]);
   const matchesCurrentAssignee = (assignedTo: string | null) => matchesAssignee(assignedTo, assigneeFilter, viewer.userId);
   const assignedGoals = allGoals.filter((goal) => matchesCurrentAssignee(goal.assignedTo));
+  const unfinishedGoalCount = assignedGoals.filter((goal) => !isTerminalStatus(goal.status)).length;
   const goals = assignedGoals.filter((goal) =>
-    (statusFilter === "all" || goal.status === statusFilter));
-  const pausedTaskCount = useMemo(() => snapshot === null ? 0 : pausedSummaryTaskIds(
-    snapshot.graph.tasks.filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId)), snapshot.pausedTaskIds).size,
+    (statusFilter === "all" || goal.status === statusFilter) && !tagFilter.invalid && matchesTagFilter(goal.tags, tagFilter.value));
+  const pausedTasks = useMemo(() => {
+    if (snapshot === null) return [];
+    const ids = pausedSummaryTaskIds(snapshot.graph.tasks, snapshot.pausedTaskIds);
+    return snapshot.graph.tasks.filter((task) => ids.has(task.id) && matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId));
+  },
   [snapshot, assigneeFilter, viewer.userId]);
   const matchingTaskIds = useMemo(() => snapshot === null ? new Set<string>()
     : new Set([...snapshot.index.nodes.values()].filter((task) => matchesAssignee(task.assignedTo, assigneeFilter, viewer.userId) &&
-      (statusFilter === "all" || task.status === statusFilter)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId]);
+      (statusFilter === "all" || task.status === statusFilter) && !tagFilter.invalid &&
+      matchesTaskTags(snapshot, task, tagFilter.value)).map((task) => task.id)), [snapshot, assigneeFilter, statusFilter, viewer.userId, tagFilter.value, tagFilter.invalid]);
   const scopedChainIds = (categories?.chains ?? emptyIds).filter((id) => scopedMembers.has(id));
   const scopedStandaloneIds = (categories?.standalone ?? emptyIds).filter((id) => scope?.standaloneIds.includes(id));
   const unfinishedMatches = (id: string) => {
@@ -169,13 +204,21 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     return !isTerminalStatus(task.status) && matchesCurrentAssignee(task.assignedTo);
   };
   const unfinishedStandaloneTaskCount = scopedStandaloneIds.filter(unfinishedMatches).length;
-  const unfinishedChainTaskCount = [...new Set([...scopedMembers.values()].flat())].filter(unfinishedMatches).length;
+  const unfinishedChainCount = [...scopedMembers.values()].filter((memberIds) => memberIds.some(unfinishedMatches)).length;
   const rootIds = scopedChainIds.filter((id) => scopedMembers.get(id)!.some((member) => matchingTaskIds.has(member)));
   const standaloneIds = scopedStandaloneIds.filter((id) => matchingTaskIds.has(id));
   const chainPagination = usePagination(rootIds.length);
   const standalonePagination = usePagination(standaloneIds.length);
   const goalPagination = usePagination(goals.length);
+  const skipTagPageReset = useRef(false);
+  const resetTaskPages = useRef(() => {});
+  resetTaskPages.current = () => { chainPagination.onPageChange(1); standalonePagination.onPageChange(1); goalPagination.onPageChange(1); };
+  useEffect(() => {
+    if (skipTagPageReset.current) { skipTagPageReset.current = false; return; }
+    resetTaskPages.current();
+  }, [tagFilter.value, tagFilter.invalid]);
   const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1), 20);
+  useLayoutEffect(() => { overviewTagCheck.current?.abort(); }, [overviewPagination.page]);
   const pageRootIds = rootIds.slice(chainPagination.start - 1, chainPagination.end);
   const pageStandaloneIds = standaloneIds.slice(standalonePagination.start - 1, standalonePagination.end);
   const pageGoals = goals.slice(goalPagination.start - 1, goalPagination.end);
@@ -207,7 +250,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [graphWitness, openGraphTarget, section, activeView, snapshot, selection, history.select]);
   const onOpenListChain = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
     history.select({ ...selection, projectGraphWitness: id }, false, () => {
-      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger };
+      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger }; pausedOrigin.current = null;
       restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false;
     });
   }, [activeView, history.select, selection]);
@@ -228,25 +271,40 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onOpenTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: trigger.closest(".task-chain-dialog") !== null,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      restoreRequested.current = false; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
+      restoreRequested.current = false; pausedOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
     });
   }, [history.select, selection]);
   const onOpenListTask = useCallback((id: string, trigger: HTMLElement, sourceGoalId: string | null) => {
     history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: false,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger };
+      listOrigin.current = { view: activeView, sourceGoalId, resourceWitness: id, trigger }; pausedOrigin.current = null;
       restoreRequested.current = false; originalTrigger.current = null; searchTrigger.current = false; setNotice(null);
     });
   }, [activeView, history.select, selection]);
   const onOpenSearchTask = useCallback((id: string, trigger: HTMLElement) => {
     history.select({ ...selection, detail: { id, source: "direct", insideProjectGraph: false,
       navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
-      restoreRequested.current = false; listOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = true; setNotice(null);
+      restoreRequested.current = false; listOrigin.current = null; pausedOrigin.current = null; originalTrigger.current = trigger; searchTrigger.current = true; setNotice(null);
     });
   }, [history.select, selection]);
-  const onOpenSession = useCallback((id: string) => {
-    navigate(taskDetailUrl(projectId, id, { tab: "session", path: null }));
-  }, [projectId]);
+  const onOpenPausedTask = useCallback((id: string, trigger: HTMLElement) => {
+    history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: false,
+      navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+      restoreRequested.current = false; listOrigin.current = null; pausedOrigin.current = trigger; originalTrigger.current = trigger; searchTrigger.current = false; setNotice(null);
+    });
+  }, [history.select, selection]);
+  const onPausedFocusFallback = useCallback(() => {
+    if (!focusVisible(document.getElementById(`project-task-tab-${currentView.current}`)) &&
+      !focusVisible(document.getElementById("project-section-tab-tasks"))) focusVisible(heading.current);
+  }, []);
+  const onOpenSession = useCallback((id: string, trigger: HTMLElement) => {
+    const insideProjectGraph = trigger.closest(".task-chain-dialog") !== null;
+    history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph,
+      navigation: { tab: "session", path: null }, goalChildren: null } }, false, () => {
+      listOrigin.current = insideProjectGraph ? null : { view: activeView, sourceGoalId: trigger.closest<HTMLElement>("[data-goal-id]")?.dataset.goalId ?? null, resourceWitness: id, trigger };
+      restoreRequested.current = false; pausedOrigin.current = null; originalTrigger.current = insideProjectGraph ? trigger : null; searchTrigger.current = false; setNotice(null);
+    });
+  }, [activeView, history.select, selection]);
   const onSelectRelation = useCallback((id: string) => {
     history.select({ ...selection, detail: { id, source: detailSelection?.source === "direct" || snapshot === null ? "direct" : "summary",
       insideProjectGraph: detailSelection?.insideProjectGraph ?? false, navigation: { tab: "overview", path: null }, goalChildren: null } }, false);
@@ -270,6 +328,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         return focusVisible(document.getElementById(`task-graph-${openGraph.current.kind === "chain" ? openGraph.current.rootId : openGraph.current.goalId}`)?.querySelector<HTMLButtonElement>('.task-chain-close'));
       }
       if (fromSearch && (focusVisible(trigger) || focusVisible(searchInput.current))) return true;
+      if (pausedOrigin.current !== null) {
+        if (focusVisible(pausedOrigin.current)) return true;
+        if (focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return true;
+        if (focusVisible(document.getElementById("project-section-tab-tasks"))) return true;
+        return focusVisible(heading.current);
+      }
       if (origin === null && focusVisible(trigger)) return true;
       const detailWitness = !fromSearch && closedDetail.current?.source === "summary" && !closedDetail.current.insideProjectGraph ? closedDetail.current.id : null;
       if (focusProjectList(currentView.current, origin, resolveProjectGraphTarget(lastGraphResource.current, indexForFocus.current, summariesForFocus.current), indexForFocus.current, lastGraphResource.current, detailWitness)) return true;
@@ -333,6 +397,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onNavigateExternalTask = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
+    if (detailSelection === null) pausedOrigin.current = null;
     if (task.parentId === null && detailSelection === null && (activeView === "chains" || activeView === "goals") && openGraphTarget !== null) {
       const representative = snapshot.index.componentByTask.get(id)!;
       if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
@@ -355,6 +420,16 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       return;
     }
     const representative = snapshot.index.componentByTask.get(id)!;
+    const members = [...snapshot.index.components.get(representative)!.memberIds]
+      .map((member) => snapshot.index.nodes.get(member)!).filter((member) => member.parentId === null);
+    if (detailSelection !== null && (tagFilter.invalid || !members.some((member) => matchesTaskTags(snapshot, member, tagFilter.value)))) {
+      history.select({ ...selection, detail: { id, source: "summary", insideProjectGraph: detailSelection.insideProjectGraph && openGraphTarget !== null,
+        navigation: { tab: "overview", path: null }, goalChildren: null } }, false, () => {
+        if (originalTrigger.current === null) originalTrigger.current = trigger;
+        setNotice(null);
+      });
+      return;
+    }
     const view = snapshot.index.components.get(representative)!.memberIds.size === 1 ? "standalone" : "chains";
     const commit = () => {
       if (detailSelection !== null) suppressRestore.current = true;
@@ -367,11 +442,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     };
     if (section === "tasks" && activeView === view && graphWitness === null && detailSelection === null) commit();
     else history.select({ ...selection, section: "tasks", view, projectGraphWitness: null, detail: null }, false, commit);
-  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, section, saveSectionPosition, onSectionChange, onViewChange]);
+  }, [snapshot, detailSelection, activeView, openGraphTarget, graphWitness, history.select, selection, search.applied, search.clear, setAssigneeFilter, tagFilter.value, tagFilter.invalid, section, saveSectionPosition, onSectionChange, onViewChange]);
 
   const onNavigateExternalChain = useCallback((id: string, trigger: HTMLElement) => {
     const task = snapshot?.index.nodes.get(id);
     if (snapshot === null || task === undefined) { setNotice({ kind: "overview-target-unavailable" }); return; }
+    if (detailSelection === null) pausedOrigin.current = null;
     const representative = snapshot.index.componentByTask.get(id)!;
     if (snapshot.index.components.get(representative)!.memberIds.size === 1) {
       if (task.parentId !== null) onNavigateExternalTask(id, trigger);
@@ -409,30 +485,63 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [snapshot, onNavigateExternalTask, onOpenTask]);
 
   const onOverviewNavigate = useCallback((target: OverviewTaskTarget) => {
+    overviewTagCheck.current?.abort();
     if (target.kind === "chain" && snapshot?.index.nodes.get(target.taskId)?.parentId != null) {
       onNavigateExternalTask(target.taskId, document.activeElement instanceof HTMLElement ? document.activeElement : heading.current!);
       return;
     }
     const view = target.kind === "chain" ? "chains" : "standalone";
-    history.select({ ...selection, section: "tasks", view, projectGraphWitness: null }, false, () => {
+    const ids = snapshot === null ? [] : target.kind === "standalone" ? progress.recentStandaloneIds
+      : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
+    const tasks = snapshot === null ? [] : ids.map((id) => snapshot.index.nodes.get(id)!).filter((task) => task !== undefined && task.parentId === null);
+    const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
+    const matches = (task: GraphTask) => snapshot !== null && matchesAssignee(task.assignedTo, filters.assignee, viewer.userId) &&
+      (filters.status === "all" || task.status === filters.status) && matchesTaskTags(snapshot, task, tagFilter.value);
+    const tagBlocks = snapshot !== null && tasks.length > 0 && !(target.kind === "standalone" ? tasks.every(matches) : tasks.some(matches));
+    const navigateToTarget = (clearTags: boolean, blocked: boolean) => history.select({ ...selection, section: "tasks", view, projectGraphWitness: null }, false, () => {
       if (search.applied !== null) search.clear();
       setNotice(null);
       if (snapshot !== null) {
-        const ids = target.kind === "standalone" ? progress.recentStandaloneIds
-          : [...(snapshot.index.components.get(snapshot.index.componentByTask.get(target.taskId) ?? "")?.memberIds ?? [])];
-        const tasks = ids.map((id) => snapshot.index.nodes.get(id)!).filter((task) => task !== undefined && task.parentId === null);
-        const filters = visibleTaskFilters(tasks, assigneeFilter, statusFilter, viewer.userId, target.kind === "standalone");
         if (filters.assignee !== assigneeFilter || filters.status !== statusFilter) {
           chainPagination.onPageChange(1); standalonePagination.onPageChange(1);
           if (filters.assignee !== assigneeFilter) setAssigneeFilter(filters.assignee);
           setStatusFilter(filters.status);
         }
+        if (clearTags) {
+          skipTagPageReset.current = true;
+          if (view === "chains") standalonePagination.onPageChange(1); else chainPagination.onPageChange(1);
+          goalPagination.onPageChange(1);
+          tagFilter.update({ ...tagFilter.value, tagIds: [], untagged: false });
+        }
       }
-      setListTarget(target);
+      setListTarget(blocked ? null : target);
       if (view !== activeView) onViewChange(view);
       if (section !== "tasks") { saveSectionPosition(); onSectionChange("tasks"); }
     });
-  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer.userId, chainPagination.onPageChange, standalonePagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
+    if (tagFilter.invalid) { navigateToTarget(false, true); return; }
+    if (!tagBlocks || tagFilter.value.tagIds.length === 0) { navigateToTarget(tagBlocks, false); return; }
+    const controller = new AbortController(); overviewTagCheck.current = controller;
+    const signal = AbortSignal.any([controller.signal, viewer.signal]);
+    void (async () => {
+      let missing = false, verified = false;
+      try {
+        await viewer.ready(signal);
+        if (viewer.isProjectSuspended(projectId)) return;
+        await resolveProjectTags(projectId, tagFilter.value.tagIds, signal, { userId: viewer.userId, onPrincipalMismatch: viewer.principalMismatch });
+        verified = true;
+      } catch (error) {
+        if (signal.aborted || isAbortError(error)) return;
+        missing = error instanceof ApiError && error.code === "tag_not_found";
+      }
+      try { await viewer.ready(signal); } catch { return; }
+      const current = overviewFence.current;
+      if (signal.aborted || viewer.isInvalidated || viewer.isProjectSuspended(projectId) || currentSelection.current !== selection || current.snapshot !== snapshot ||
+        current.assigneeFilter !== assigneeFilter || current.statusFilter !== statusFilter || current.value !== tagFilter.value || current.invalid !== tagFilter.invalid) return;
+      if (missing) tagFilter.markInvalid();
+      if (!verified && !missing) { setNotice({ kind: "overview-tag-check-failed" }); return; }
+      navigateToTarget(verified, missing);
+    })();
+  }, [history.select, selection, snapshot, progress.recentStandaloneIds, assigneeFilter, setAssigneeFilter, statusFilter, viewer, projectId, tagFilter.invalid, tagFilter.value, tagFilter.update, tagFilter.markInvalid, chainPagination.onPageChange, standalonePagination.onPageChange, goalPagination.onPageChange, search.applied, search.clear, onNavigateExternalTask, activeView, onViewChange, section, saveSectionPosition, onSectionChange]);
 
   useEffect(() => {
     if (snapshot === null || (!window.location.hash.startsWith("#task=") && !window.location.hash.startsWith("#chain="))) return;
@@ -556,6 +665,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
               onClick={() => { setNotice(null); heading.current?.focus({ preventScroll: true }); }}><span aria-hidden="true">×</span></button>
           </div>}
           {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
+          {snapshot !== null && notice?.kind === "overview-tag-check-failed" && <p className="snapshot-notice" role="alert">{locale === "zh-CN" ? "无法核对选中的标签，请重试。" : "Could not check the selected tags. Try again."}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
             {section === "overview" && graphState}
@@ -564,18 +674,18 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             {section === "tasks" && graphState}
-            <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} />
+            <TaskSearchWorkspace projectId={projectId} search={search} inputRef={searchInput} onOpenTask={onOpenSearchTask} tagFilter={<TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />} />
             <div hidden={searchActive} inert={searchActive}>
-            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} pausedTaskCount={pausedTaskCount} active={section === "tasks" && !searchActive}
-              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<span className="task-status-select"><select value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></select><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg></span></label></div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
-              unfinishedChainTaskCount={unfinishedChainTaskCount} goalCount={assignedGoals.length} onViewChange={selectView}
-              chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, summaries: snapshot.summaries, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace snapshot={snapshot} sessionStore={graph.sessionStore} observationStore={graph.observationStore} pausedTasks={pausedTasks} onOpenPausedTask={onOpenPausedTask} onPausedFocusFallback={onPausedFocusFallback} active={section === "tasks" && !searchActive}
+              filter={<div className="task-list-filters"><TaskAssigneeFilter projectId={projectId} filter={assigneeFilter} onChange={changeAssigneeFilter} /><label className="task-status-filter">{m.statusFilter}<NativeSelect density="filter" focusTone="task" value={statusFilter} onChange={(event) => changeStatusFilter(event.currentTarget.value as TaskStatus | "all")}><option value="all">{m.allStatuses}</option><option value="proposed">{m.statusOptions.proposed}</option><option value="todo">{m.statusOptions.todo}</option><option value="in_progress">{m.statusOptions.in_progress}</option><option value="done">{m.statusOptions.done}</option><option value="cancelled">{m.statusOptions.cancelled}</option></NativeSelect></label>{!searchActive && <TagFilter controller={tagFilter} onManage={() => selectSection("tags")} />}{!searchActive && activeView === "goals" && <TagFilter controller={childTagFilter} child />}</div>} activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}
+              unfinishedChainCount={unfinishedChainCount} unfinishedGoalCount={unfinishedGoalCount} onViewChange={selectView}
+              chains={{ projectId, representativeIds: pageRootIds, allRepresentativeIds: scopedChainIds, scopedMembers, revealTaskId, onRevealed: () => setRevealTaskId(null), onGraphRootChange: setChainOverlay, openGraphTarget, onOpenChain: (id, trigger) => onOpenListChain(id, trigger, null), onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: (id, trigger) => trigger.closest(".task-chain-dialog") !== null ? onOpenChainTask(id, trigger) : onOpenListTask(id, trigger, null), onOpenSession,
                 pagination: { ...chainPagination, onPageChange: selectChainPage } }}
-              standalone={{ projectId, summaries: snapshot.summaries, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
+              standalone={{ projectId, taskIds: pageStandaloneIds, allTaskIds: scopedStandaloneIds, onOpenSession, onSelectTask: (id, trigger) => onOpenListTask(id, trigger, null),
                 pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }}
-              goals={{ projectId, goals: pageGoals, total: allGoals.length, onOpenGoal: onOpenTask, onOpenGoalGraph, onOpenGoalGraphTask: onOpenTask, graphError: graph.error, onRefreshGraph: graph.refresh, pagination: goalPagination,
-                summaries: snapshot.summaries, openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
+              goals={{ projectId, goals: pageGoals, childTagFilter, total: allGoals.length, onOpenGoal: onOpenTask, onOpenGoalGraph, onOpenGoalGraphTask: onOpenTask, graphError: graph.error, onRefreshGraph: graph.refresh, pagination: goalPagination,
+                openGraphTarget, onCloseChain, onRestoreGraphFocus: restoreGraphFocus, onNavigateExternalTask: onNavigateExternalChain,
                 onOpenTask: onOpenChainTask, onOpenListTask, onOpenListChain, onGraphRootChange: setChainOverlay, onOpenSession }} />}
             </div>
           </section>

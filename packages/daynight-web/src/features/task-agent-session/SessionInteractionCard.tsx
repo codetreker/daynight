@@ -1,4 +1,5 @@
 import { operationErrorMessage } from './operation-error';
+import { NativeSelect } from '../../ui/native-select/NativeSelect';
 import type { SessionState } from './state';
 import { useState, type FormEvent } from 'react';
 import type { InteractionResponse, SessionInteraction } from '../../api/types';
@@ -73,8 +74,8 @@ export function SessionInteractionCard({ interaction, enabled, readOnly = false,
         </fieldset>) : null}
         {interaction.kind === 'form' ? interaction.fields.map((field) => <label className="session-form-field" key={field.fieldId}><span>{field.label}{field.required ? ' *' : ''}</span>
           {field.type === 'text' || field.type === 'number' ? <input aria-label={field.label} autoComplete={field.type === 'text' && field.sensitive ? 'off' : undefined} type={field.type === 'number' ? 'number' : field.sensitive ? 'password' : 'text'} {...(field.type === 'number' ? { min: field.min ?? undefined, max: field.max ?? undefined, step: 'any' } : {})} value={String(values[field.fieldId] ?? '')} onChange={(event) => change(field.fieldId, event.target.value)} /> : null}
-          {field.type === 'boolean' || field.type === 'select' ? <select aria-label={field.label} value={String(values[field.fieldId] ?? '')} onChange={(event) => change(field.fieldId, event.target.value)}><option value="">{m.choose}</option>{field.type === 'boolean' ? <><option value="true">{m.yes}</option><option value="false">{m.no}</option></> : field.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select> : null}
-          {field.type === 'multiselect' ? <select multiple aria-label={field.label} value={(values[field.fieldId] ?? []) as string[]} onChange={(event) => change(field.fieldId, Array.from(event.target.selectedOptions, (o) => o.value))}>{field.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</select> : null}
+          {field.type === 'boolean' || field.type === 'select' ? <NativeSelect density="form" layout="fill" wrapperClassName="session-interaction-select" aria-label={field.label} value={String(values[field.fieldId] ?? '')} onChange={(event) => change(field.fieldId, event.target.value)}><option value="">{m.choose}</option>{field.type === 'boolean' ? <><option value="true">{m.yes}</option><option value="false">{m.no}</option></> : field.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</NativeSelect> : null}
+          {field.type === 'multiselect' ? <NativeSelect density="form" layout="fill" wrapperClassName="session-interaction-select" multiple aria-label={field.label} value={(values[field.fieldId] ?? []) as string[]} onChange={(event) => change(field.fieldId, Array.from(event.target.selectedOptions, (o) => o.value))}>{field.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}</NativeSelect> : null}
         </label>) : null}
         {interaction.kind !== 'approval' ? <div className="session-actions"><button className="button button-primary" type="submit" disabled={submitDisabled}>{m.submit}</button>{interaction.canDismiss ? <button className="button" type="button" disabled={submitDisabled} onClick={() => void respond({ kind: 'dismiss' })}>{m.dismiss}</button> : null}</div> : null}
       </fieldset>

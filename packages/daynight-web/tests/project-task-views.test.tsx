@@ -3,6 +3,7 @@ import { projectHistory, readProjectHistory } from '../src/app/page-history';
 import { summariesForGraph } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
 import { TEST_VIEWER_ID, taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, render as rawRender, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -16,6 +17,7 @@ import { ProjectPage } from '../src/features/projects/ProjectPage';
 import * as ProjectOverviewModule from '../src/features/projects/ProjectOverview';
 import * as TaskGraphModule from '../src/features/projects/useTaskGraph';
 import * as TaskAssigneeFilterModule from '../src/features/task-assignment/TaskAssigneeFilter';
+import * as TaskTagsApi from '../src/api/task-tags';
 import { buildGraphIndex, projectChain, type GraphIndex } from '../src/features/task-graph/model';
 import { LocaleProvider } from '../src/i18n/LocaleProvider';
 import { TestTaskCacheBoundary } from './helpers/taskCache';
@@ -50,19 +52,20 @@ const snapshot = (items = seeds, id = project): TaskGraph => {
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { ownership: { teamId: '00000000-0000-4000-8000-000000000701', version: 1n }, settings: { version: 1n, executionWarningMinutes: 60 }, id, name: id, repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp }, tasks,
-    summary: { proposed: 0, total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
+    summary: { proposed: tasks.filter((item) => item.status === 'proposed').length, total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length,
       done: tasks.filter((item) => item.status === 'done').length, cancelled: tasks.filter((item) => item.status === 'cancelled').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
       ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
 };
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
-const mockedSessionStores: { scope: TaskCacheScope; store: TaskSessionSummaryStore }[] = [];
+const mockedSessionStores: { scope: TaskCacheScope; store: TaskSessionSummaryStore; observationStore: ProjectTaskObservationsStore }[] = [];
 const mockSessionStore = () => {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
   const store = new TaskSessionSummaryStore(scope, project);
-  mockedSessionStores.push({ scope, store });
-  return store;
+  const observationStore = new ProjectTaskObservationsStore(scope, project);
+  mockedSessionStores.push({ scope, store, observationStore });
+  return { sessionStore: store, observationStore };
 };
-afterEach(() => { for (const { scope, store } of mockedSessionStores.splice(0)) { store.dispose(); scope.dispose(); } });
+afterEach(() => { for (const { scope, store, observationStore } of mockedSessionStores.splice(0)) { observationStore.dispose(); store.dispose(); scope.dispose(); } });
 const mockNavigationSnapshot = (tasks: GraphTask[], revision: number): TaskGraphModule.GraphSnapshot => {
   const graph = snapshot(tasks);
   return { graph, index: buildGraphIndex(graph), summaries: summariesForGraph(graph), workerMachines: new Map(), pausedTaskIds: new Set<string>(), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
@@ -169,14 +172,17 @@ describe('project task views', () => {
     graphRequest.mockResolvedValue(snapshot([...goals, ...children]));
     mount(); await findTab('chains'); fireEvent.click(tab('goals'));
     expect(document.querySelectorAll('.goal-list-row')).toHaveLength(20);
+    expect(tab('goals').querySelector('.graph-count-pill')).toHaveTextContent(/^21$/);
+    expect(document.querySelector('#project-goal-list .task-view-summary')).toHaveTextContent('21 / 21 个 Goal');
     const first = [...document.querySelectorAll<HTMLElement>('.goal-list-card')].map((element) => element.dataset.goalId);
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Goal分页' })).getByRole('button', { name: '下一页' }));
     const second = [...document.querySelectorAll<HTMLElement>('.goal-list-card')].map((element) => element.dataset.goalId);
     expect(second).toHaveLength(1);
     expect(new Set([...first, ...second]).size).toBe(21);
+    expect(tab('goals').querySelector('.graph-count-pill')).toHaveTextContent(/^21$/);
     const goalWithChildren = document.querySelector<HTMLElement>(`[data-goal-id="${goals[0]!.id}"]`)!;
     fireEvent.click(goalWithChildren.querySelector('.goal-list-toggle')!);
-    expect(goalWithChildren.querySelectorAll('.goal-task-main')).toHaveLength(25);
+    expect(goalWithChildren.querySelectorAll('.task-row-title')).toHaveLength(25);
     expect(document.querySelectorAll('.goal-list-card')).toHaveLength(1);
     expect(graphRequest).toHaveBeenCalledOnce();
   });
@@ -198,7 +204,7 @@ describe('project task views', () => {
     expect(document.querySelectorAll('.goal-list-card')).toHaveLength(1);
     const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
     fireEvent.click(card.querySelector('.goal-list-toggle')!);
-    const children = [...card.querySelectorAll('.goal-task-main')];
+    const children = [...card.querySelectorAll('.task-row-title')];
     expect(children).toHaveLength(3);
     expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${single}`);
     expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${member}`);
@@ -217,22 +223,22 @@ describe('project task views', () => {
     const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
     const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
     fireEvent.click(toggle);
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(3);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(3);
     expect(card).toHaveTextContent(`任务 ${c}`);
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(3);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(3);
     await act(async () => { resolve(snapshot(initial)); });
     await waitFor(() => expect(titleActions().getByRole('button', { name: '刷新' })).toBeEnabled());
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '刷新失败' });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(card.querySelectorAll('.goal-task-main')).toHaveLength(3);
+    expect(card.querySelectorAll('.task-row-title')).toHaveLength(3);
     fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
-    await waitFor(() => expect(card.querySelectorAll('.goal-task-main')).toHaveLength(2));
+    await waitFor(() => expect(card.querySelectorAll('.task-row-title')).toHaveLength(2));
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(card.querySelector('.root-toggle')).toBeNull();
-    const children = [...card.querySelectorAll('.goal-task-main')];
+    const children = [...card.querySelectorAll('.task-row-title')];
     expect(children).toHaveLength(2);
     expect(children.map((item) => item.textContent).join(' ')).toContain(`任务 ${c}`);
     expect(children.map((item) => item.textContent).join(' ')).not.toContain(`任务 ${b}`);
@@ -253,7 +259,7 @@ describe('project task views', () => {
       selectTasks(); await findTab('chains'); fireEvent.click(tab('goals'));
       const card = document.querySelector<HTMLElement>(`[data-goal-id="${goal}"]`)!;
       fireEvent.click(card.querySelector('.goal-list-toggle')!);
-      expect(card.querySelector('.goal-task-main')).toBeVisible();
+      expect(card.querySelector('.task-row-title')).toBeVisible();
       fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
       await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
       view.rerender(page(second));
@@ -319,6 +325,62 @@ describe('project task views', () => {
       else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scroll);
     }
   });
+  it.each([false, true])('opens an excluded external relation without clearing tags (invalid: %s)', async (invalid) => {
+    const goal = canonicalTask(500), child = canonicalTask(1), outside = canonicalTask(2), tagId = canonicalTask(800);
+    const tag = { id: tagId, name: 'backend', projectId: project, version: 1n, createdAt: timestamp, updatedAt: timestamp, usage: { tasks: 1, goals: 1 } };
+    vi.spyOn(TaskTagsApi, 'listProjectTags').mockResolvedValue({ items: [tag], catalogEpoch: canonicalTask(801), nextCursor: null });
+    vi.spyOn(TaskTagsApi, 'resolveProjectTags').mockImplementation(async () => {
+      if (invalid) throw new ApiError('server', 404, 'tag_not_found');
+      return [{ id: tagId, name: 'backend' }];
+    });
+    const tasks = [{ ...seed(goal), type: 'goal' as const }, { ...seed(child), parentId: goal }, seed(outside, 'todo', [child])];
+    const source = snapshot(tasks);
+    graphRequest.mockResolvedValue(source);
+    vi.mocked(getTaskSync).mockImplementation(async (id, query) => {
+      servedGraphs.set(id, source);
+      const sync = syncFixture.toSync(source, query);
+      for (const task of sync.tasks) servedVersions.set(`${id}/${task.id}`, task.version);
+      return taskSyncReadFixture({ ...sync, tasks: sync.tasks.map(task => ({ ...task, tags: task.id === goal || task.id === child ? [{ id: tagId, name: 'backend' }] : [] })) });
+    });
+    vi.mocked(getTask).mockImplementation(async (id, taskId) => {
+      const task = source.tasks.find(item => item.id === taskId)!;
+      return { ...task, tags: taskId === goal || taskId === child ? [{ id: tagId, name: 'backend' }] : [], projectId: id,
+        title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${id}/${taskId}`)! };
+    });
+    mount(); await findTab('chains');
+    fireEvent.click(screen.getByText('标签筛选', { selector: 'summary' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'backend' }));
+    if (invalid) await screen.findByText('选中的标签已不可用，请移除后重新查询。');
+    const originalList = document.getElementById('project-chain-list');
+    fireEvent.click(sectionTab('overview'));
+    const overviewTrigger = overviewProgress().getByRole('button', { name: new RegExp(`${child}，`) });
+    overviewTrigger.focus(); fireEvent.click(overviewTrigger);
+    const childDialog = await screen.findByRole('dialog', { name: `任务 ${child}` });
+    const relation = await within(childDialog).findByRole('button', { name: new RegExp(`任务 ${outside}，`) });
+    let dirty = true;
+    const navigation = browserNavigation();
+    const unregister = navigation.register({ scope: { identity: {}, projectId: project, taskId: child }, isDirty: () => dirty, discard: () => { dirty = false; }, survives: () => false });
+    try {
+      fireEvent.click(relation);
+      expect(navigation.decision()).not.toBeNull();
+      expect(screen.queryByRole('dialog', { name: `任务 ${outside}` })).toBeNull();
+      act(() => navigation.confirm());
+      const target = await screen.findByRole('dialog', { name: `任务 ${outside}` });
+      expect(dirty).toBe(false);
+      expect(readProjectHistory(navigation.snapshot().view, TEST_VIEWER_ID, project)?.detail?.id).toBe(outside);
+      act(() => window.history.back());
+      await screen.findByRole('dialog', { name: `任务 ${child}` });
+      expect(target.isConnected).toBe(false);
+      act(() => window.history.forward());
+      await screen.findByRole('dialog', { name: `任务 ${outside}` });
+      fireEvent.click(screen.getByRole('button', { name: '关闭任务详情' }));
+      await waitFor(() => expect(overviewTrigger).toHaveFocus());
+      selectTasks();
+      expect(document.getElementById('project-chain-list')).toBe(originalList);
+      expect(screen.getByRole('button', { name: '移除 backend' })).toBeVisible();
+      if (invalid) expect(screen.getByText('选中的标签已不可用，请移除后重新查询。')).toBeVisible();
+    } finally { unregister(); vi.restoreAllMocks(); }
+  });
   it('shows completed children of an unfinished Goal', async () => {
     graphRequest.mockResolvedValue(snapshot([
       seed(canonicalTask(1), 'done'),
@@ -331,11 +393,11 @@ describe('project task views', () => {
     expect(screen.queryByRole('checkbox', { name: '显示所有' })).toBeNull();
     fireEvent.click(goal);
     const list = document.getElementById(`goal-children-${canonicalTask(1)}`)!;
-    const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-main');
+    const childRows = list.querySelectorAll<HTMLAnchorElement>('.task-row-title');
     expect(childRows).toHaveLength(3);
     for (const [position, status] of ['进行中', '待处理', '已完成'].entries()) {
       expect(childRows[position]).toBeVisible();
-      expect(childRows[position]!.closest('.goal-task-row')!.querySelector('.root-status')).toHaveTextContent(status);
+      expect(childRows[position]!.closest('.task-row')!.querySelector('.root-status')).toHaveTextContent(status);
     }
     expect(goal.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     const completedChild = childRows[2]!;
@@ -383,7 +445,7 @@ describe('project task views', () => {
       seed('00000000-0000-4000-8000-000000000005', 'done'), seed('00000000-0000-4000-8000-000000000006', 'todo', ['00000000-0000-4000-8000-000000000005']), seed('00000000-0000-4000-8000-000000000007', 'done'),
     ]));
     mount(); await findTab('chains');
-    expectUnfinishedCounts(4, 1);
+    expectUnfinishedCounts(2, 1);
     const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
     expect(stats.querySelectorAll('.stat')).toHaveLength(7);
     expect(stats).toHaveTextContent('待处理5等待开始');
@@ -392,19 +454,19 @@ describe('project task views', () => {
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000003')).toBeNull();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000005')?.closest('.goal-header')!.querySelector('.root-status')).toHaveTextContent('进行中');
     fireEvent.click(tab('standalone'));
-    expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('待处理');
-    expect(row('00000000-0000-4000-8000-000000000004').querySelector('.root-status')).toHaveClass('graph-status-todo');
-    expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('可开始');
+    expect(row('00000000-0000-4000-8000-000000000004').closest('.task-row')).toHaveTextContent('待处理');
+    expect(row('00000000-0000-4000-8000-000000000004').closest('.task-row')!.querySelector('.root-status')).toHaveClass('graph-status-todo');
+    expect(row('00000000-0000-4000-8000-000000000004').closest('.task-row')).toHaveTextContent('可开始');
     expect(row('00000000-0000-4000-8000-000000000007')).toBeVisible();
-    expectUnfinishedCounts(4, 1);
+    expectUnfinishedCounts(2, 1);
   });
 
   it('shows confirmed platform requirements in standalone rows without changing readiness', async () => {
     graphRequest.mockResolvedValue(snapshot(seeds.map((task) => ({ ...task, requiredPlatform: task.id === '00000000-0000-4000-8000-000000000003' ? 'linux' : task.id === '00000000-0000-4000-8000-000000000005' ? 'windows' : null }))));
     mount(); await findTab('standalone'); fireEvent.click(tab('standalone'));
-    expect(row('00000000-0000-4000-8000-000000000003').querySelector('.task-platform')).toHaveTextContent('Linux');
-    expect(row('00000000-0000-4000-8000-000000000005').querySelector('.task-platform')).toHaveTextContent('Windows');
-    expect(row('00000000-0000-4000-8000-000000000003')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005')).toHaveTextContent('进行中');
+    expect(row('00000000-0000-4000-8000-000000000003').closest('.task-row')!.querySelector('.task-platform')).toHaveTextContent('Linux');
+    expect(row('00000000-0000-4000-8000-000000000005').closest('.task-row')!.querySelector('.task-platform')).toHaveTextContent('Windows');
+    expect(row('00000000-0000-4000-8000-000000000003').closest('.task-row')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005').closest('.task-row')).toHaveTextContent('进行中');
   });
 
   it('classifies complete dependencies independently from status and keeps summary and API order intact', async () => {
@@ -416,9 +478,9 @@ describe('project task views', () => {
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
     expect(screen.getByLabelText('显示 1 条，共 1 条任务链')).toHaveTextContent('1 / 1');
     fireEvent.click(tab('standalone'));
-    expect([...document.querySelectorAll('.standalone-row')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000005', 'standalone-task-00000000-0000-4000-8000-000000000003', 'standalone-task-00000000-0000-4000-8000-000000000004']);
+    expect([...document.querySelectorAll('#project-standalone-list .task-row-title')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000005', 'standalone-task-00000000-0000-4000-8000-000000000003', 'standalone-task-00000000-0000-4000-8000-000000000004']);
     expect(screen.queryByTestId('graph-node')).toBeNull();
-    expect(row('00000000-0000-4000-8000-000000000003')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005')).toHaveTextContent('进行中');
+    expect(row('00000000-0000-4000-8000-000000000003').closest('.task-row')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005').closest('.task-row')).toHaveTextContent('进行中');
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000002')).toBeNull();
     expect(screen.queryByRole('checkbox', { name: '显示所有' })).toBeNull();
     fireEvent.click(sectionTab('overview'));
@@ -437,34 +499,34 @@ describe('project task views', () => {
     expectUnfinishedCounts(0, 2);
     fireEvent.click(tab('standalone'));
     expect(row('00000000-0000-4000-8000-000000000001')).toBeVisible(); expect(row('00000000-0000-4000-8000-000000000002')).toBeVisible();
-    expect(row('00000000-0000-4000-8000-000000000001').querySelector('.task-ready')).toHaveTextContent('可开始');
-    expect(row('00000000-0000-4000-8000-000000000002').querySelector('.graph-blocked-badge')).toHaveTextContent('被阻塞');
-    expect(row('00000000-0000-4000-8000-000000000002').querySelector('.task-ready')).toBeNull();
-    expect(row('00000000-0000-4000-8000-000000000002').querySelector('.root-status')).toHaveTextContent('待处理');
+    expect(row('00000000-0000-4000-8000-000000000001').closest('.task-row')!.querySelector('.task-ready')).toHaveTextContent('可开始');
+    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.graph-blocked-badge')).toHaveTextContent('被阻塞');
+    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.task-ready')).toBeNull();
+    expect(row('00000000-0000-4000-8000-000000000002').closest('.task-row')!.querySelector('.root-status')).toHaveTextContent('待处理');
   });
 
-  it('counts unfinished tasks once across ordinary components and keeps both counts independent of visible rows', async () => {
+  it('counts each unfinished ordinary chain once and keeps both counts independent of visible rows', async () => {
     graphRequest.mockResolvedValue(snapshot([
       seed('00000000-0000-4000-8000-000000000001', 'done'), seed('00000000-0000-4000-8000-000000000002', 'done'), seed('00000000-0000-4000-8000-000000000003', 'in_progress', ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']), seed('00000000-0000-4000-8000-000000000004', 'todo', ['00000000-0000-4000-8000-000000000003']),
       seed('00000000-0000-4000-8000-000000000005'), seed('00000000-0000-4000-8000-000000000006', 'todo', ['00000000-0000-4000-8000-000000000005']), seed('00000000-0000-4000-8000-000000000007'), seed('00000000-0000-4000-8000-000000000008', 'in_progress'), seed('00000000-0000-4000-8000-000000000009', 'done'),
       seed('00000000-0000-4000-8000-000000000010', 'done'), seed('00000000-0000-4000-8000-000000000011', 'done', ['00000000-0000-4000-8000-000000000010']),
     ]));
     mount(); await findTab('chains');
-    expectUnfinishedCounts(4, 2);
-    expect(tab('chains').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务数');
+    expectUnfinishedCounts(2, 2);
+    expect(tab('chains').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务链数');
     expect(document.querySelectorAll('.root-toggle')).toHaveLength(3);
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000002')).toBeNull();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000010')).toBeVisible();
     expect(document.querySelectorAll('.root-toggle')).toHaveLength(3);
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     fireEvent.click(tab('standalone'));
-    expect([...document.querySelectorAll('.standalone-row')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000008', 'standalone-task-00000000-0000-4000-8000-000000000007', 'standalone-task-00000000-0000-4000-8000-000000000009']);
+    expect([...document.querySelectorAll('#project-standalone-list .task-row-title')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000008', 'standalone-task-00000000-0000-4000-8000-000000000007', 'standalone-task-00000000-0000-4000-8000-000000000009']);
     expect(tab('standalone').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务数');
     expect(row('00000000-0000-4000-8000-000000000009')).toBeVisible();
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     fireEvent.click(tab('chains'));
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
 
@@ -519,26 +581,26 @@ describe('project task views', () => {
     await waitFor(() => expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000003')).toBeNull());
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000005')).toBeNull();
-    expectUnfinishedCounts(3, 0);
+    expectUnfinishedCounts(1, 0);
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '刷新失败' });
     expect(await screen.findByText('任务 00000000-0000-4000-8000-000000000004')).toBeVisible();
-    expectUnfinishedCounts(3, 0);
+    expectUnfinishedCounts(1, 0);
     fireEvent.click(tab('chains'));
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
-    expectUnfinishedCounts(3, 0);
+    expectUnfinishedCounts(1, 0);
   });
 
   it('updates assignee counts after a topology and ownership refresh while retaining the last snapshot on failure', async () => {
     const goal = canonicalTask(500), first = canonicalTask(1), second = canonicalTask(2), third = canonicalTask(3), fourth = canonicalTask(4);
     const other = canonicalTask(900);
     const initial = snapshot([
-      { ...seed(goal, 'done'), type: 'goal', assignedTo: TEST_VIEWER_ID },
+      { ...seed(goal, 'todo'), type: 'goal', assignedTo: TEST_VIEWER_ID },
       { ...seed(first, 'done'), assignedTo: TEST_VIEWER_ID }, { ...seed(second, 'todo', [first]), assignedTo: other },
       { ...seed(third), assignedTo: TEST_VIEWER_ID }, { ...seed(fourth), assignedTo: other },
     ]);
     const changed = snapshot([
-      { ...seed(goal, 'done'), type: 'goal', assignedTo: other },
+      { ...seed(goal, 'todo'), type: 'goal', assignedTo: other },
       { ...seed(first, 'done'), assignedTo: TEST_VIEWER_ID }, { ...seed(second, 'todo', [first]), parentId: goal, assignedTo: TEST_VIEWER_ID },
       { ...seed(third, 'todo', [first]), assignedTo: TEST_VIEWER_ID }, { ...seed(fourth), assignedTo: TEST_VIEWER_ID },
     ]);
@@ -561,6 +623,35 @@ describe('project task views', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
     await waitFor(() => expectUnfinishedCounts(1, 1));
     expect(goalCount()).toHaveTextContent(/^0$/);
+  });
+
+  it('updates Goal count on completion, cancellation and reopening while retaining the last snapshot on failure', async () => {
+    const first = canonicalTask(500), second = canonicalTask(501);
+    const goals = (firstStatus: GraphTask['status'], secondStatus: GraphTask['status'], updatedAt: string) => {
+      const goal = (id: string, status: GraphTask['status']) => ({
+        ...seed(id, status), type: 'goal' as const, updatedAt,
+        startedAt: status === 'in_progress' ? updatedAt : null,
+        completedAt: status === 'done' ? updatedAt : null,
+        cancelledAt: status === 'cancelled' ? updatedAt : null,
+      });
+      return { ...snapshot([goal(first, firstStatus), goal(second, secondStatus)]), observedAt: updatedAt };
+    };
+    graphRequest.mockResolvedValueOnce(goals('todo', 'in_progress', '2026-10-20T12:00:01Z'))
+      .mockResolvedValueOnce(goals('done', 'cancelled', '2026-10-20T12:00:02Z'))
+      .mockRejectedValueOnce(new Error('Refresh failed'))
+      .mockResolvedValueOnce(goals('todo', 'in_progress', '2026-10-20T12:00:03Z'));
+    mount(); await findTab('chains'); fireEvent.click(tab('goals'));
+    const count = () => tab('goals').querySelector('.graph-count-pill');
+    expect(count()).toHaveTextContent(/^2$/);
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(count()).toHaveTextContent(/^0$/));
+    expect(document.querySelectorAll('.goal-list-card')).toHaveLength(2);
+    expect(document.querySelector('#project-goal-list .task-view-summary')).toHaveTextContent('2 / 2 个 Goal');
+    fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
+    await screen.findByRole('heading', { name: '刷新失败' });
+    expect(count()).toHaveTextContent(/^0$/);
+    fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
+    await waitFor(() => expect(count()).toHaveTextContent(/^2$/));
   });
 
   it('opens the real dialog directly and returns focus to its standalone row', async () => {
@@ -593,7 +684,10 @@ describe('project task views', () => {
 
   it('remembers the selected view while chain graphs reopen only after a click', async () => {
     let view = mount(); await findTab('chains');
-    await openChain(); closeChain();
+    expectUnfinishedCounts(1, 2);
+    await openChain();
+    expect(document.querySelector('#project-task-tab-chains .graph-count-pill')).toHaveTextContent(/^1$/);
+    closeChain(); expectUnfinishedCounts(1, 2);
     fireEvent.click(tab('standalone'));
     cleanup(); view = mount(); await findTab('standalone');
     expect(tab('standalone')).toHaveAttribute('aria-selected', 'true');
@@ -650,6 +744,7 @@ describe('project task views', () => {
     expect(tab('chains')).toBeVisible();
     fireEvent.click(tab('goals'));
     expect(screen.getByRole('heading', { name: '暂无 Goal' })).toBeVisible();
+    expect(tab('goals').querySelector('.graph-count-pill')).toHaveTextContent(/^0$/);
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -659,7 +754,7 @@ describe('project task views', () => {
     mount(); await findTab('standalone'); const { trigger, dialog } = await openStandalone(canonicalTask(3));
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     await screen.findByRole('heading', { name: '暂无独立任务' });
-    expectUnfinishedCounts(2, 0);
+    expectUnfinishedCounts(1, 0);
     expect(trigger.isConnected).toBe(false); expect(dialog).toBeVisible();
     expect(getTask).toHaveBeenCalledOnce();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
@@ -847,7 +942,7 @@ describe('project overview and task workspace', () => {
 
   it('resolves a retained overview task witness against its latest representative without reopening the graph or repeating navigation', async () => {
     const getNavigate = interceptOverviewNavigation();
-    const state = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const view = mountOverview();
     const navigate = getNavigate();
@@ -871,7 +966,7 @@ describe('project overview and task workspace', () => {
     ['standalone', [seeds[0]!, ...seeds.slice(2)]],
   ])('keeps the requested category focused when the overview chain is %s before navigation', async (_name, tasks) => {
     const getNavigate = interceptOverviewNavigation();
-    const state = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const view = mountOverview();
     const navigate = getNavigate();
@@ -890,7 +985,7 @@ describe('project overview and task workspace', () => {
 
   it('locates a chain completed after the overview was rendered', () => {
     const getNavigate = interceptOverviewNavigation();
-    const state = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const view = mountOverview();
     const navigate = getNavigate();
@@ -905,7 +1000,7 @@ describe('project overview and task workspace', () => {
 
   it('consumes an overview target when project access disappears and returns focus to the visible Tasks section', () => {
     const getNavigate = interceptOverviewNavigation();
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const view = mountOverview();
     const navigate = getNavigate();
@@ -1195,11 +1290,11 @@ describe('recent task browsing and pagination', () => {
     mount(); await screen.findByRole('heading', { name: project }); await waitForGraph();
     if (count === 0) {
       expect(tab('goals')).toBeVisible();
-      expect(document.querySelectorAll('.standalone-row, .goal-toggle')).toHaveLength(0);
+      expect(document.querySelectorAll('#project-standalone-list .task-row-title, .goal-toggle')).toHaveLength(0);
       return;
     }
     fireEvent.click(tab(category));
-    const selector = category === 'standalone' ? '.standalone-row' : '.goal-toggle';
+    const selector = category === 'standalone' ? '#project-standalone-list .task-row-title' : '.goal-toggle';
     const label = category === 'standalone' ? '独立任务列表' : '任务链列表';
     const seen: string[] = [];
     const pageCount = Math.ceil(count / 20);
@@ -1328,7 +1423,7 @@ describe('recent task browsing and pagination', () => {
       seed(source), seed(canonicalTask(101), 'todo', [source, first], [first]),
       seed(canonicalTask(200)), seed(canonicalTask(201), 'todo', [canonicalTask(200)])];
     const refreshed = [seed(replacement), ...initial.map((task) => task.id === source ? { ...task, dependsOn: [replacement] } : task)];
-    const state = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const view = mount(); await openChain(source);
     const removed = chainGraphButton(source);
@@ -1347,7 +1442,7 @@ describe('recent task browsing and pagination', () => {
   it('retains a Goal graph history witness through an incomplete cached preview', async () => {
     const goal = canonicalTask(500);
     const tasks = [{ ...seed(goal), type: 'goal' as const }];
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
@@ -1372,7 +1467,7 @@ describe('recent task browsing and pagination', () => {
     const goal = canonicalTask(500), source = canonicalTask(1), child = canonicalTask(2);
     const tasks = [{ ...seed(goal), type: 'goal' as const }, { ...seed(source), parentId: goal },
       { ...seed(child, 'todo', [source]), parentId: goal }];
-    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(tasks, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() });
     const first = localeRender(<ProjectPage projectId={project} />, { container: root, taskCache: { scope } });
@@ -1406,7 +1501,7 @@ describe('recent task browsing and pagination', () => {
     const refreshed = kind === 'singleton'
       ? initial.map((task) => task.id === dependency ? { ...task, dependsOn: [] } : task)
       : initial.filter((task) => task.id !== dependency).map((task) => task.id === canonicalTask(101) ? { ...task, dependsOn: [source], externalDependsOn: [] } : task);
-    const state = { sessionStore: mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    const state = { ...mockSessionStore(), snapshot: mockNavigationSnapshot(initial, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
     vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
     const view = mount(); await openChain(source);
     const trigger = chainGraphButton(source);
@@ -1492,20 +1587,20 @@ describe('recent task browsing and pagination', () => {
     mount(); await findTab('standalone'); fireEvent.click(tab('standalone'));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(1);
+    expect(document.querySelectorAll('#project-standalone-list .task-row-title')).toHaveLength(1);
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
-    await waitFor(() => expect(document.querySelectorAll('.standalone-row')).toHaveLength(20));
+    await waitFor(() => expect(document.querySelectorAll('#project-standalone-list .task-row-title')).toHaveLength(20));
     expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
     fireEvent.click(titleActions().getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页'));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(20);
+    expect(document.querySelectorAll('#project-standalone-list .task-row-title')).toHaveLength(20);
   });
 
   it('keeps every Goal child visible inside one top-level page entry', async () => {
     const root = canonicalTask(1);
     graphRequest.mockResolvedValue(snapshot([seed(root), ...Array.from({ length: 30 }, (_, position) => seed(canonicalTask(position + 2), 'todo', [root]))]));
     mount(); fireEvent.click(await findChainRow());
-    expect(document.querySelectorAll('.goal-task-row')).toHaveLength(30);
+    expect(document.querySelectorAll('.task-row')).toHaveLength(30);
     expect(screen.queryByRole('navigation', { name: '任务链列表分页' })).toBeNull();
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
@@ -1519,7 +1614,7 @@ describe('status-first project presentation', () => {
     status === 'done' ? completed(value, when) : seed(canonicalTask(value), status),
     status === 'done' ? completed(value + 1, when, [canonicalTask(value)]) : seed(canonicalTask(value + 1), 'todo', [canonicalTask(value)]),
   ];
-  const presentedIds = (view: 'chains' | 'standalone') => [...document.querySelectorAll(view === 'chains' ? '.root-toggle' : '.standalone-row')]
+  const presentedIds = (view: 'chains' | 'standalone') => [...document.querySelectorAll(view === 'chains' ? '.root-toggle' : '#project-standalone-list .task-row-title')]
     .map((item) => item.id.replace(view === 'chains' ? 'task-root-' : 'standalone-task-', ''));
   const overviewTitles = () => [...document.querySelectorAll('#project-overview-progress .overview-progress-title')]
     .map((item) => item.firstChild!.textContent);
@@ -1561,7 +1656,7 @@ describe('status-first project presentation', () => {
     fireEvent.click(tab('standalone'));
     expect(presentedIds('standalone')).toEqual([102, 101, 104, 103, 106, 105].map(canonicalTask));
     expect(JSON.stringify(value.tasks)).toBe(original);
-    expectUnfinishedCounts(7, 4);
+    expectUnfinishedCounts(4, 4);
     expect(graphRequest).toHaveBeenCalledOnce();
   });
 
@@ -1630,7 +1725,7 @@ describe('status-first project presentation', () => {
     expect(presentedIds('standalone')).toEqual([102, 103, 101].map(canonicalTask));
     fireEvent.click(tab('chains'));
     expect(presentedIds('chains')).toEqual([3, 5, 1].map(canonicalTask));
-    expectUnfinishedCounts(4, 2);
+    expectUnfinishedCounts(2, 2);
     expect(graphRequest).toHaveBeenCalledTimes(2);
   });
 });

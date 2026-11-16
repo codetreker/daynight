@@ -6,8 +6,9 @@ import { TaskExecutionClockProvider } from '../src/features/task-execution/TaskE
 import { ProjectTaskWorkspace } from '../src/features/projects/ProjectTaskWorkspace';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
-import { deriveTaskSyncBindings } from '../src/features/task-cache/execution-binding';
+import { deriveTaskSyncBindings, deriveTaskSyncVersions } from '../src/features/task-cache/execution-binding';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
+import { ProjectTaskObservationsStore } from '../src/features/task-session-summary/project-observations';
 import { detailFixture, graphFixture } from './helpers/taskDetail';
 import { renderWithLocale } from './helpers/renderWithLocale';
 import { taskSyncFromGraph, TEST_VIEWER_ID } from './helpers/taskSync';
@@ -30,7 +31,11 @@ const task = (taskId: string, changes: Partial<TaskDetail> = {}): TaskDetail => 
 
 const scopes: TaskCacheScope[] = [];
 const stores: TaskSessionSummaryStore[] = [];
-afterEach(() => { stores.splice(0).forEach((store) => store.dispose()); scopes.splice(0).forEach((scope) => scope.dispose()); });
+const observations: ProjectTaskObservationsStore[] = [];
+afterEach(() => { observations.splice(0).forEach((store) => store.dispose()); stores.splice(0).forEach((store) => store.dispose()); scopes.splice(0).forEach((scope) => scope.dispose()); });
+const observationMap = (sessions: TaskSync['sessions']): TaskSync['taskObservations'] => Object.fromEntries(Object.entries(sessions).map(([id, state]) => [id, {
+  taskVersion: 1n, state, observedAt: '2026-10-22T10:00:00Z', freshUntil: '2026-10-22T10:00:30Z', needsAttention: null, canOpen: true,
+}]));
 async function fixture(sessions: TaskSync['sessions'], rootActive = false, goalMode = false) {
   const tasks = [task(rootId, { ...(rootActive ? {} : { status: 'done', completedAt: '2026-10-22T10:00:01Z', properties: {} }), ...(goalMode ? { parentId: goalId } : {}) }),
     task(childId, { dependsOn: [rootId], ...(goalMode ? { parentId: goalId } : {}), ...(rootActive ? { status: 'todo' as const, startedAt: null, properties: {} } : {}) }),
@@ -45,22 +50,27 @@ async function fixture(sessions: TaskSync['sessions'], rootActive = false, goalM
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   const signal = new AbortController().signal;
   const ticket = await scope.beginSync(projectId, signal);
-  const sync = taskSyncFromGraph(graphFixture(tasks), { sessions, versionForTask: () => 1n, propertiesForTask: (node) => tasks.find((item) => item.id === node.id)!.properties });
+  const sync = { ...taskSyncFromGraph(graphFixture(tasks), { sessions, taskObservations: observationMap(sessions), versionForTask: () => 1n, propertiesForTask: (node) => tasks.find((item) => item.id === node.id)!.properties }), responseTaskAt: '2026-10-22T10:02:01Z' };
   const result = await scope.applySync(ticket, sync, signal);
   const store = new TaskSessionSummaryStore(scope, projectId); stores.push(store); store.start();
   store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions, receivedMonotonic: performance.now() });
+  const observationStore = new ProjectTaskObservationsStore(scope, projectId); observations.push(observationStore); observationStore.start();
+  observationStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), observedVersions: deriveTaskSyncVersions(ticket, sync), sync, receivedMonotonic: performance.now() });
   const snapshot: GraphSnapshot = { graph: result.project.graph, index: result.project.index, summaries: result.project.summaries, pausedTaskIds: result.project.pausedTaskIds,
     workerMachines: result.project.workerMachines, observedAt: sync.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 };
   const onOpenTask = vi.fn(); const onOpenSession = vi.fn(); const onOpenChain = vi.fn(); const noop = () => {};
   const fetch = vi.fn(); vi.stubGlobal('fetch', fetch);
-  const workspace = (active = true) => <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}><ProjectTaskWorkspace pausedTaskCount={0} snapshot={snapshot} sessionStore={store} active={active}
-    goalCount={goalMode ? 2 : 0} goals={{ projectId, goals: goalMode ? [result.project.summaries.get(goalId)!, result.project.summaries.get(otherGoalId)!] : [], total: goalMode ? 2 : 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: onOpenTask, onOpenListChain: noop, onOpenSession }}
-    activeView={goalMode ? 'goals' : 'chains'} unfinishedStandaloneTaskCount={0} unfinishedChainTaskCount={1} onViewChange={noop}
+  const workspace = (active = true) => <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}><ProjectTaskWorkspace pausedTasks={[]} onOpenPausedTask={() => {}} onPausedFocusFallback={() => {}} snapshot={snapshot} sessionStore={store} observationStore={observationStore} active={active}
+    unfinishedGoalCount={goalMode ? 2 : 0} goals={{ projectId, goals: goalMode ? [result.project.summaries.get(goalId)!, result.project.summaries.get(otherGoalId)!] : [], total: goalMode ? 2 : 0, onOpenGoal: noop, onOpenGoalGraph: noop, onOpenGoalGraphTask: noop, openGraphTarget: null, onCloseChain: noop, onOpenTask: noop, onOpenListTask: onOpenTask, onOpenListChain: noop, onOpenSession }}
+    activeView={goalMode ? 'goals' : 'chains'} unfinishedStandaloneTaskCount={0} unfinishedChainCount={1} onViewChange={noop}
     chains={{ projectId, representativeIds: [rootId], allRepresentativeIds: [rootId], openGraphTarget: null, onOpenChain, onCloseChain: noop, onOpenTask, onOpenSession }}
     standalone={{ projectId, taskIds: [], allTaskIds: [], onSelectTask: noop }} /></TaskExecutionClockProvider>;
   const view = renderWithLocale(workspace(), { taskCache: { scope }, locale: 'zh-CN' });
-  const replace = (next: TaskSync['sessions']) => act(() => store.replace({ project: result.project,
-    observedBindings: deriveTaskSyncBindings(ticket, sync), sessions: next, receivedMonotonic: performance.now() }));
+  const replace = (next: TaskSync['sessions']) => act(() => {
+    const receivedMonotonic = performance.now();
+    store.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), sessions: next, receivedMonotonic });
+    observationStore.replace({ project: result.project, observedBindings: deriveTaskSyncBindings(ticket, sync), observedVersions: deriveTaskSyncVersions(ticket, sync), sync: { ...sync, taskObservations: observationMap(next) }, receivedMonotonic });
+  });
   const header = () => document.querySelector<HTMLElement>(`[data-chain-id="${rootId}"] > .goal-header`)!;
   return { view, workspace, store, fetch, replace, header, onOpenTask, onOpenSession, onOpenChain };
 }
@@ -93,8 +103,8 @@ it('keeps chain expansion, Task details and pending Session shortcuts as separat
   expect(value.onOpenTask).not.toHaveBeenCalled(); expect(value.onOpenSession).not.toHaveBeenCalled();
   const main = document.getElementById(`chain-task-${rootId}-${childId}`)!;
   fireEvent.click(main); expect(value.onOpenTask).toHaveBeenCalledWith(childId, main);
-  const row = main.closest('.goal-task-row')!;
-  const shortcut = within(row as HTMLElement).getByRole('button', { name: /当前会话可访问.*打开 Session/ });
+  const row = main.closest('.task-row')!;
+  const shortcut = within(row as HTMLElement).getByRole('button', { name: /Session 待同步.*打开 Session/ });
   expect(shortcut.querySelector('.session-status-annotation')).toBeNull();
   fireEvent.pointerDown(shortcut, { pointerType: 'touch' }); fireEvent.click(shortcut);
   expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut); expect(value.onOpenTask).toHaveBeenCalledTimes(1);
@@ -103,18 +113,17 @@ it('keeps chain expansion, Task details and pending Session shortcuts as separat
   expect(value.onOpenChain).not.toHaveBeenCalled(); expect(value.fetch).not.toHaveBeenCalled();
 });
 
-it('keeps focused shortcut nodes and expanded state through Session updates, with accessible tooltip dismissal', async () => {
+it('keeps focused shortcut nodes and expanded state through Session updates', async () => {
   const value = await fixture({ [childId]: 'notice' });
   fireEvent.click(document.getElementById(`task-root-${rootId}`)!);
-  const row = document.getElementById(`chain-task-${rootId}-${childId}`)!.closest<HTMLElement>('.goal-task-row')!;
+  const row = document.getElementById(`chain-task-${rootId}-${childId}`)!.closest<HTMLElement>('.task-row')!;
   const shortcut = row.querySelector<HTMLButtonElement>('.session-status-action')!;
   const user = userEvent.setup();
   act(() => shortcut.focus());
-  expect(within(document.body).getByRole('tooltip')).toHaveTextContent('会话需要响应');
-  await user.keyboard('{Escape}'); expect(within(document.body).queryByRole('tooltip')).toBeNull();
+  expect(shortcut).toHaveAccessibleName(/Session 需要响应/);
   value.replace({ [childId]: 'working' });
   expect(row.querySelector('.session-status-action')).toBe(shortcut); expect(shortcut).toHaveFocus();
-  expect(shortcut).toHaveAccessibleName(/会话工作中/);
+  expect(shortcut).toHaveAccessibleName(/Session 工作中/);
   expect(document.getElementById(`task-root-${rootId}`)).toHaveAttribute('aria-expanded', 'true');
   await user.keyboard('{Enter}'); expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
   value.replace({}); expect(row.querySelector('.session-status-action')).toBeNull();
@@ -128,30 +137,30 @@ it('projects Session observations into independent Goal members and hides them w
   const firstToggle = firstGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   const secondToggle = secondGoal.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
   fireEvent.click(firstToggle); fireEvent.click(secondToggle);
-  const indicator = (goal: HTMLElement) => goal.querySelector('.goal-task-row [data-session-indicator]');
-  expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'warning');
-  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
+  const indicator = (goal: HTMLElement) => goal.querySelector('.task-row [data-session-state]');
+  expect(indicator(firstGoal)).toHaveAttribute('data-session-state', 'warning');
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-state', 'working');
   value.replace({ [childId]: 'notice', [otherId]: 'working', [externalId]: 'warning' });
-  expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'notice');
+  expect(indicator(firstGoal)).toHaveAttribute('data-session-state', 'notice');
   value.replace({ [childId]: 'working', [otherId]: 'warning' });
-  expect(indicator(firstGoal)).toHaveAttribute('data-session-indicator', 'working');
-  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'warning');
+  expect(indicator(firstGoal)).toHaveAttribute('data-session-state', 'working');
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-state', 'warning');
   value.replace({ [childId]: 'pending', [otherId]: 'working' });
-  const row = firstGoal.querySelector<HTMLElement>(`.goal-task-main[id$="-${childId}"]`)!.closest<HTMLElement>('.goal-task-row')!;
-  const shortcut = within(row).getByRole('button', { name: /当前会话可访问.*打开 Session/ });
+  const row = firstGoal.querySelector<HTMLElement>(`.task-row-title[id$="-${childId}"]`)!.closest<HTMLElement>('.task-row')!;
+  const shortcut = within(row).getByRole('button', { name: /Session 待同步.*打开 Session/ });
   fireEvent.click(shortcut);
   expect(value.onOpenSession).toHaveBeenCalledWith(childId, shortcut);
   expect(value.onOpenTask).not.toHaveBeenCalled();
   fireEvent.click(firstToggle);
-  expect(value.store.snapshot().has(childId)).toBe(false);
-  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
+  expect(value.store.snapshot().has(childId)).toBe(true);
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-state', 'working');
   expect(value.store.snapshot().has(otherId)).toBe(true);
   fireEvent.click(firstToggle);
   expect(value.store.snapshot().has(childId)).toBe(true);
   value.view.rerender(value.workspace(false));
   expect(value.store.snapshot().size).toBe(0);
-  expect(secondGoal.querySelector('[data-session-indicator]')).toBeNull();
+  expect(secondGoal.querySelector('[data-session-state="unobserved"]')).not.toBeNull();
   value.view.rerender(value.workspace());
-  expect(indicator(secondGoal)).toHaveAttribute('data-session-indicator', 'working');
+  expect(indicator(secondGoal)).toHaveAttribute('data-session-state', 'working');
   expect(value.fetch).not.toHaveBeenCalled();
 });

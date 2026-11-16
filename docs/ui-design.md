@@ -49,7 +49,7 @@ for input, or a condition requiring inspection. Red expresses an explicit
 failure or a dangerous action. Ordinary lifecycle backgrounds use neither role.
 An error feedback panel does not create a failed Task lifecycle state.
 
-Preserve the existing overdue precedence: eligible standalone Tasks and graph
+Preserve the existing overdue precedence: eligible ordinary Task rows and graph
 cards may use the attention background over their lifecycle background, while
 retaining the genuine in-progress label and overdue icon or explanation. This
 override does not propagate to chain or overview summaries. Blocked and paused
@@ -138,6 +138,47 @@ when controls also reflect them.
 When context does not explain why a control is disabled, its reason may be
 presented on demand near the control. Hover explanations must also be available
 through keyboard focus.
+
+## Share native selection presentation
+
+Use [NativeSelect](design/native-select.md) for native single-line, list and
+multiple selection controls. The common component owns the native element,
+decorative arrow, text clearance, font, border, background, density, focus,
+disabled, invalid, pending and touch presentation. A page chooses the public
+variant and supplies options, values, labels, constraints, events and real refs.
+Search pickers, navigation menus and action menus retain their own semantics.
+
+Consumer classes may set external width, margins and flex/grid placement through
+`wrapperClassName`, using statically resolvable string tokens or literal
+combinations. They must not restyle the internal control, add a second arrow,
+restore native single-line appearance or override common touch sizing. The common
+component is the only production owner of native select declarations; its CSS is
+the only owner of internal control and arrow presentation. Generic field and
+focus rules for input/textarea must not include select branches.
+
+The [ownership check](design/native-select.md#所有权检查) runs in the Web harness,
+ordinary Web tests and CI quality. It parses every production TS/TSX and CSS file,
+rejecting direct native creation and internal or wrapper skin overrides outside
+the common owner without a legacy exemption list. It does not infer arbitrary
+drawing intent. Keep complete option labels, shrink surrounding layouts when
+necessary and verify the actual rendered result in narrow rows and forms. The
+component imports its own CSS so public and authentication entries have the same
+appearance without requiring the workspace shell.
+
+Use the common compact, filter and form densities rather than per-page heights.
+Opt into responsive or named-container touch sizing where the interface calls
+for it; ordinary compact controls do not enlarge automatically. Native
+`:disabled`, including fieldset inheritance, remains the source of disabled
+presentation. Invalid and pending borders do not remove keyboard focus cues.
+List controls keep their native size, scrolling and multi-selection without a
+dropdown arrow or single-line height.
+
+Enclosing Escape handlers own their existing close and focus-restoration rules.
+They must respect prevented events and IME input, and use the shared native popup
+predicate to preserve an open system selector's first Escape cancellation.
+Stopping propagation for that case must retain the native default action and
+keep the outer dialog or draft open. The common component does not intercept
+selection or keyboard events.
 
 ## Keep rendered interfaces stable during background checks
 

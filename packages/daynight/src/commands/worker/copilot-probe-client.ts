@@ -21,13 +21,16 @@ export const withCopilotProbeClient = async <T>(options: CopilotProbeOptions, op
     return await withinOperation(Promise.race([read(client), runtime.failed]), operation);
   } catch (error) { failure = error; throw error; }
   finally {
-    const errors: unknown[] = [];
+    const gracefulErrors: unknown[] = [], cleanupErrors: unknown[] = [];
     if (client && started) {
-      try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot probe runtime shutdown", 1500); acknowledged = true; } catch (error) { errors.push(error); }
-      try { errors.push(...await copilotDeadline(client.stop(), "Copilot probe SDK stop", 3000)); } catch (error) { errors.push(error); }
+      try { await copilotDeadline(client.rpc.runtime.shutdown(), "Copilot probe runtime shutdown", 1500); acknowledged = true; } catch (error) { gracefulErrors.push(error); }
+      try { gracefulErrors.push(...await copilotDeadline(client.stop(), "Copilot probe SDK stop", 3000)); } catch (error) { gracefulErrors.push(error); }
     }
-    if (client && (!started || errors.length)) try { await copilotDeadline(client.forceStop(), "Copilot probe SDK transport shutdown", 1000); } catch (error) { errors.push(error); }
-    try { await runtime.close(acknowledged); } catch (error) { errors.push(error); }
-    if (errors.length) throw Object.assign(new AggregateError([...(failure === undefined ? [] : [failure]), ...errors], "Copilot probe cleanup is unconfirmed."), { code: "cleanup_unknown" as const });
+    if (client && (!started || gracefulErrors.length)) try { await copilotDeadline(client.forceStop(), "Copilot probe SDK transport shutdown", 1000); } catch (error) { cleanupErrors.push(error); }
+    try { await runtime.close(acknowledged); } catch (error) { cleanupErrors.push(error); }
+    // A lost graceful shutdown response does not invalidate a completed read
+    // after transport and owned-process cleanup succeed. The outer supervisor
+    // still verifies the complete probe process group before accepting results.
+    if (cleanupErrors.length) throw Object.assign(new AggregateError([...(failure === undefined ? [] : [failure]), ...gracefulErrors, ...cleanupErrors], "Copilot probe cleanup is unconfirmed."), { code: "cleanup_unknown" as const });
   }
 };

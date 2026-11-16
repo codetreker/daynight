@@ -106,6 +106,7 @@ func (d *mgmtWriteDAO) SaveConfiguration(_ context.Context, w store.GitHubConfig
 	d.c.Version = w.Version
 	d.c.Generation = w.Generation
 	d.c.Enabled = w.Enabled
+	d.c.SyncEnabled = w.SyncEnabled
 	return true, nil
 }
 
@@ -155,7 +156,7 @@ func TestManagerConnectProofAndFinalAuthorization(t *testing.T) {
 	s, r := mgmtFixture()
 	m := NewManager(s, r, 13)
 	out, err := m.Connect(context.Background(), mgmtPrincipal, mgmtProject, 1, 99)
-	if err != nil || !out.Connection.Enabled || s.writes != 1 || r.discover != 1 || r.verify != 1 || s.write.github.w == nil || s.write.github.w.NextPollAt == nil {
+	if err != nil || !out.Connection.Enabled || out.Connection.SyncEnabled || s.writes != 1 || r.discover != 1 || r.verify != 1 || s.write.github.w == nil || s.write.github.w.NextPollAt != nil {
 		t.Fatalf("connect: %+v %v", out, err)
 	}
 	for _, kind := range []string{"revoked", "changed", "version", "installation"} {

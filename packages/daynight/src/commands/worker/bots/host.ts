@@ -24,6 +24,8 @@ import { createAssistantTaskSessionTransport } from "./assistant-task-session.js
 import { prepareBotStateDirectory } from "./environment.js";
 import { ControllerIpcOutcomeUnknownError } from "../../controller/local-client.js";
 import { ASSISTANT_TASK_OPERATION_BYTES, ASSISTANT_TASK_RESPONSE_BYTES } from "./assistant-task-pages.js";
+import { createWatchdogApplication } from "./apps/watchdog.js";
+import { createWatchdogTransport } from "./apps/watchdog-transport.js";
 
 /** The Worker lock protects both stores until all Bot jobs and writers have joined. */
 export const createWorkerBotHost = (options: {
@@ -71,6 +73,9 @@ export const createWorkerBotHost = (options: {
       sessions: createAssistantTaskSessionTransport({ owner: options.owner, serverToken: options.serverToken, sessionApi }),
       onError: (message, botId) => options.emit({ kind: "bot-unavailable", message: botId === null ? message : `Bot ${botId}: ${message}` }),
     });
+    assistantTasks.registerApplication("watchdog", createWatchdogApplication(createWatchdogTransport(options), {
+      onError: error => options.emit({ kind: "bot-unavailable", message: error instanceof Error ? error.message : "Watchdog evaluation failed." }),
+    }));
     const runtime = createManagedAssistantRuntime({ owner: options.owner, store, remote, sessionApi, process: botProcess, deletion,
       assistantTasks,
       canAdmitNewExecution: options.canAdmitNewExecution,

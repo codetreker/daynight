@@ -55,7 +55,7 @@ func TestGitHubWebhookReceptionAndRecoveryWithStore(t *testing.T) {
 		b2Configure(t, db, id, 10, 20, 30)
 		mustQueryExec(t, db, `UPDATE project_github SET repository_full_name='owner/repo', next_poll_at=clock_timestamp()+interval '1 hour', next_access_check_at=clock_timestamp()+interval '1 hour' WHERE project_id=$1`, id)
 	}
-	mustQueryExec(t, db, `UPDATE project_github SET enabled=false WHERE project_id=$1`, disconnected.ID)
+	mustQueryExec(t, db, `UPDATE project_github SET enabled=false, sync_enabled=false WHERE project_id=$1`, disconnected.ID)
 	body := `{"installation":{"id":20},"repository":{"id":30},"number":7,"action":"closed"}`
 	h := githubWebhookHandler(t, db)
 	for _, delivery := range []string{"new", "new", "older"} {

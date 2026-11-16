@@ -89,6 +89,20 @@ type AddTeamMemberReceipt struct {
 	ActorRole  string     `json:"actorRole"`
 }
 
+type ResolveTeamMemberUser struct {
+	ExternalUserID string `json:"externalUserId"`
+}
+
+type ResolveTeamMemberRequest struct {
+	ExpectedUserID string                `json:"expectedUserId"`
+	User           ResolveTeamMemberUser `json:"user"`
+}
+
+type ResolveTeamMemberResponse struct {
+	Membership *TeamMember `json:"membership"`
+	ActorRole  string      `json:"actorRole"`
+}
+
 type SetTeamMemberRoleRequest struct {
 	Version        int64  `json:"version"`
 	Role           string `json:"role"`

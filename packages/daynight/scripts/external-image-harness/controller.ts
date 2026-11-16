@@ -102,7 +102,8 @@ const syncHistory = (): Promise<void> => {
 const bridge = createControllerCaptureBridge({
   journal, beforeCapture: syncHistory, provider: () => null, writable: () => !stopping && relay.connected(),
   capture: async (action, body) => {
-    if (action === "register") assert(journal.imageOccurrenceAcknowledged((body as { occurrence: { imageId: string } }).occurrence.imageId));
+    assert(action === "submit" || action === "query", "Direct source capture cannot call legacy quota controls.");
+    if (action === "submit") assert(journal.imageOccurrenceAcknowledged((body as { request: { occurrence: { imageId: string } } }).request.occurrence.imageId));
     const receipt = await relay.capture(action, body);
     mark("service-capture", { action, receipt, sourceAcknowledgedThrough: journal.getLastAcknowledgedSequence() });
     return receipt;

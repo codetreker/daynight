@@ -1,4 +1,5 @@
 import { useI18n } from "../../i18n/LocaleProvider";
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import { mcpConfiguration, type McpClient } from "./mcp-configuration";
 import { SetupCommand, type SetupCopyProps } from "./SetupCommand";
 
@@ -19,7 +20,7 @@ export const McpSetupGuide = ({ client, onClientChange, ...copyProps }: Props) =
         <li className="setup-step">
           <span className="setup-step-number" aria-hidden="true">1</span><div className="setup-step-content">
             <h3>{c.configure}</h3><p>{c.configureDescription}</p>
-            <div className="setup-client-field"><label htmlFor="setup-client">{c.client}</label><select id="setup-client" value={client} onChange={(event) => onClientChange(event.target.value as McpClient)}><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="copilot">Copilot CLI</option></select></div>
+            <div className="setup-client-field"><label htmlFor="setup-client">{c.client}</label><NativeSelect id="setup-client" value={client} onChange={(event) => onClientChange(event.target.value as McpClient)}><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="copilot">Copilot CLI</option></NativeSelect></div>
             <p className="setup-guide-tip">{c.scope}</p>
             <span className="setup-block-label">{c.endpoint}</span><SetupCommand text={endpoint} title={c.endpoint} {...copyProps} />
             <span className="setup-block-label">{c.terminal}</span><SetupCommand text={configuration.command} title={c.configure} {...copyProps} />

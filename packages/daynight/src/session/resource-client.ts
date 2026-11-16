@@ -346,10 +346,7 @@ export const createSessionResourceClient = (options: Options) => {
           )
             throw new Error("Session resource chunk identity mismatch.");
           const raw = atob(chunk.data);
-          bytes.set(
-            Uint8Array.from(raw, (c) => c.charCodeAt(0)),
-            offset,
-          );
+          for (let i = 0; i < raw.length; i++) bytes[offset + i] = raw.charCodeAt(i);
           offset += raw.length;
         } while (offset < bytes.length);
         live(readLifetime());

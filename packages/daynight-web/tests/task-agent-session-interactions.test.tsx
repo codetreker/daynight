@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { SessionInteractionCard } from '../src/features/task-agent-session/SessionInteractionCard';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -50,6 +50,49 @@ describe('native session interactions', () => {
     const respond = vi.fn();
     render(<SessionInteractionCard interaction={{ ...base, state: 'expired', kind: 'approval', detail: 'Expired', actions: ['allow_once'] }} enabled onRespond={respond} />);
     expect(screen.queryByRole('button')).toBeNull();
+  });
+  it('retains multiple selections as arrays and boolean false through pending and failed form responses', async () => {
+    const response = Promise.withResolvers<void>(), respond = vi.fn(() => response.promise);
+    const interaction: SessionInteraction = { ...base, kind: 'form', canDismiss: false, fields: [
+      { fieldId: 'regions', label: 'Regions', type: 'multiselect', required: true,
+        options: [{ id: 'eu', label: 'Europe' }, { id: 'us', label: 'Americas' }, { id: 'ap', label: 'Asia Pacific' }, { id: 'af', label: 'Africa' }, { id: 'oc', label: 'Oceania' }] },
+      { fieldId: 'flag', label: 'Enabled', type: 'boolean', required: true },
+    ] };
+    const view = render(<SessionInteractionCard interaction={interaction} enabled onRespond={respond} />);
+    const regions = screen.getByRole('listbox', { name: 'Regions' }) as HTMLSelectElement;
+    const flag = screen.getByRole('combobox', { name: 'Enabled' });
+    expect(regions).toHaveValue([]);
+    expect(regions.options).toHaveLength(5);
+    expect(regions).not.toBeRequired();
+    expect(regions.parentElement).toHaveAttribute('data-density', 'form');
+    expect(regions.parentElement).toHaveAttribute('data-layout', 'fill');
+    expect(regions.parentElement).toHaveAttribute('data-mode', 'list');
+    expect(regions.parentElement!.querySelector('svg')).toBeNull();
+    expect(flag.parentElement).toHaveAttribute('data-mode', 'popup');
+    fireEvent.submit(screen.getByRole('button', { name: 'Submit' }).closest('form')!);
+    expect(respond).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toBeVisible();
+    for (const option of regions.options) option.selected = ['eu', 'ap'].includes(option.value);
+    fireEvent.change(regions);
+    fireEvent.change(flag, { target: { value: 'false' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(respond).toHaveBeenCalledExactlyOnceWith({ kind: 'form', values: [
+      { fieldId: 'regions', value: ['eu', 'ap'] }, { fieldId: 'flag', value: false },
+    ] });
+    expect(regions).toBeDisabled();
+    expect(flag).toBeDisabled();
+    expect(regions.disabled).toBe(false);
+    expect(regions.closest('fieldset')).toBeDisabled();
+    expect(regions).toHaveValue(['eu', 'ap']);
+    await act(async () => response.reject(new Error('Response unavailable')));
+    await screen.findByText('Response unavailable');
+    expect(regions).toBeEnabled();
+    expect(flag).toHaveValue('false');
+    expect(regions).toHaveValue(['eu', 'ap']);
+    view.rerender(<SessionInteractionCard interaction={interaction} enabled onRespond={respond} />);
+    expect(screen.getByRole('listbox', { name: 'Regions' })).toBe(regions);
+    expect(regions).toHaveValue(['eu', 'ap']);
+    expect(respond).toHaveBeenCalledOnce();
   });
   it.each(['resolved', 'expired'] as const)('keeps %s approval requests collapsed, readable and non-actionable', state => {
     const respond = vi.fn();

@@ -6,6 +6,7 @@ const project: CommandOption = { names: ["--project"], description: "Project UUI
 const version: CommandOption = { names: ["--if-version"], description: "Submit this exact Tag version", value: { name: "version", kind: "text" } };
 const tagId = { name: "tag-id", description: "Tag UUID" };
 const name = { name: "name", description: "Tag name" };
+const color = { name: "color", description: "24-bit RGB color (#RRGGBB)" };
 
 export const tagDefinition: CommandDefinition = {
   name: "tag", description: "Manage a project's Tag catalog",
@@ -17,8 +18,9 @@ export const tagDefinition: CommandDefinition = {
       project, json, help,
     ], details: "Read all pages before printing. A cursor is bound to the project, identity, query, limit and catalog epoch. A changed catalog or failed page fails the whole command." },
     { name: "show", description: "Show a Tag by UUID", arguments: [tagId], options: [project, json, help] },
-    { name: "create", description: "Create a Tag", arguments: [name], options: [project, json, help], allowOptionsTerminator: true, details: "Names are validated by the server. Place options before -- for a dash-prefixed name. An unknown write outcome is not retried." },
+    { name: "create", description: "Create a Tag", arguments: [name], options: [{ names: ["--color"], description: "Tag color (#RRGGBB; server default #9AA3B2)", value: { name: "color", kind: "text" } }, project, json, help], allowOptionsTerminator: true, details: "Names and colors are validated by the server. Quote colors to protect # from shell comments. Omit --color to use the server default. Place options before -- for a dash-prefixed name. An unknown write outcome is not retried." },
     { name: "rename", description: "Rename a Tag", arguments: [tagId, name], options: [project, version, json, help], allowOptionsTerminator: true, details: "Without --if-version, read the current Tag version before submitting. An explicit version is submitted unchanged; conflicts and unknown writes are not retried. Place options before -- for a dash-prefixed name." },
+    { name: "set-color", description: "Set a Tag color", arguments: [tagId, color], options: [project, version, json, help], allowOptionsTerminator: true, details: "Colors are validated and normalized by the server. Quote #RRGGBB colors to protect # from shell comments. Without --if-version, read the current Tag version before submitting. An explicit version is submitted unchanged; conflicts and unknown writes are not retried. Output retains the existing Tag fields without color." },
     { name: "delete", description: "Delete a Tag and all its associations", arguments: [tagId], options: [project, version, { names: ["--confirm"], description: "Confirm deletion in non-interactive use" }, json, help], details: "Read the Tag and preview its name, version and visible Task and Goal counts. Deletion removes all associations, including associations added after the preview. Interactive use requires the exact name as a JSON string literal, even with --confirm; non-interactive use requires --confirm. The supplied version is submitted unchanged; otherwise use the preview version. Conflicts and unknown writes are not retried." },
   ], options: [help], details: "Without --project, resolve the current Git origin to its project. Run daynight tag <command> --help for command usage.",
 };

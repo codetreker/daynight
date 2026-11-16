@@ -196,3 +196,11 @@ func (m *operationMock) ClearAttention(ctx context.Context, actor core.Actor, ta
 	_, err := m.call(ctx, actor, "ClearAttention", target)
 	return err
 }
+
+func (m *operationMock) EnableWatchdog(ctx context.Context, actor core.Actor, id, target string) (core.TaskResult, error) {
+	value, err := m.call(ctx, actor, "EnableWatchdog", id, target)
+	if value == nil {
+		return core.TaskResult{}, err
+	}
+	return value.(core.TaskResult), err
+}

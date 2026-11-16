@@ -1,3 +1,4 @@
+import { NativeSelect } from "../../ui/native-select/NativeSelect";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, authRequestsPaused, authRequestsPauseRevision, isAbortError, subscribeAuthPause, waitForAuthRequests } from "../../api/client";
 import { canonicalId } from "../../api/validation";
@@ -34,7 +35,7 @@ const teamName = (team: TeamRef, personal: string) => team.kind === "personal" ?
 
 const TeamChoices = ({ value, onChange, disabled }: { readonly value: string; readonly onChange: (value: string) => void; readonly disabled: boolean }) => {
   const teams = useTeams(), { locale } = useI18n(), m = messages(locale === "zh-CN");
-  return <div className="field"><label htmlFor="transfer-known">{m.known}</label><select id="transfer-known" value={teams.list.items.some((team) => team.id === value) ? value : ""} disabled={disabled || teams.list.status === "loading"} onChange={(event) => onChange(event.target.value)}><option value="">{m.choose}</option>{teams.list.items.map((team) => <option key={team.id} value={team.id}>{teamName(team, m.personal)} · {team.membership.role}</option>)}</select>
+  return <div className="field"><label htmlFor="transfer-known">{m.known}</label><NativeSelect layout="fill" id="transfer-known" value={teams.list.items.some((team) => team.id === value) ? value : ""} disabled={disabled || teams.list.status === "loading"} onChange={(event) => onChange(event.target.value)}><option value="">{m.choose}</option>{teams.list.items.map((team) => <option key={team.id} value={team.id}>{teamName(team, m.personal)} · {team.membership.role}</option>)}</NativeSelect>
     {teams.list.status === "error" && <p role="alert">{m.noTeams} <button type="button" onClick={teams.refreshList}>{m.retry}</button></p>}
     {teams.list.status === "ready" && teams.list.error !== null && <p role="alert">{m.noTeams} <button type="button" onClick={teams.revalidateList}>{m.retry}</button></p>}
     {teams.list.cursor !== null && <button className="button" type="button" disabled={disabled || teams.list.more} onClick={teams.loadMore}>{teams.list.more ? m.loading : teams.list.moreError !== null ? m.retry : m.more}</button>}

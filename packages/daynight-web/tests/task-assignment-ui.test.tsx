@@ -89,7 +89,9 @@ describe('task assignment interface', () => {
     expect(screen.getByLabelText(`${prefix}${locale === 'en' ? 'Unassigned' : '未分配'}`)).toBeVisible();
     expect(await screen.findByLabelText(`${prefix}Former person · ${locale === 'en' ? 'No project access' : '已失去项目权限'}`)).toBeVisible();
     expect(await screen.findByLabelText(`${prefix}10000000`)).toBeVisible();
-    for (const row of document.querySelectorAll('.standalone-row')) expect(row.querySelectorAll('button')).toHaveLength(0);
+    const rows = document.querySelectorAll('.standalone-list .task-row');
+    expect(rows).toHaveLength(4);
+    for (const row of rows) expect(row.querySelector('button button, a button, button a, a a')).toBeNull();
     const identity = screen.getByLabelText(`${prefix}${longName}`);
     fireEvent.error(identity.querySelector('img')!);
     expect(identity.querySelector('img')).toBeNull();
@@ -160,7 +162,7 @@ describe('task assignment interface', () => {
     expect(screen.queryByRole('dialog', { name: 'Assignee' })).toBeNull();
     expect(document.activeElement).not.toBe(trigger);
     expect(detail).toContainElement(document.activeElement as HTMLElement);
-    expect(document.activeElement).toHaveClass('task-platform-select');
+    expect(within(detail).getByRole('combobox', { name: 'Execution platform' })).toHaveFocus();
   });
 
   it('marks an unknown write for verification while retaining the old assignee and hiding the old automation value', async () => {

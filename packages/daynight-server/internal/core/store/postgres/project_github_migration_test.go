@@ -128,3 +128,44 @@ func TestProjectGitHubPendingMigrationRollbackAndUpgrade(t *testing.T) {
 		t.Fatal("duplicate project and PR number was accepted")
 	}
 }
+
+func TestProjectGitHubSyncMigrationStopsExistingWorkAndPreservesFacts(t *testing.T) {
+	ctx := t.Context()
+	pool := emptyPool(t)
+	if len(schemaMigrations) < 73 || schemaMigrations[72].version != 73 {
+		t.Fatal("unexpected migration boundary")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:72]); err != nil {
+		t.Fatal(err)
+	}
+	db := &Store{Pool: pool}
+	project := projectBeforeSettings(t, db, 1)
+	missing := projectBeforeSettings(t, db, 2)
+	mustQueryExec(t, db, `INSERT INTO project_github(project_id,version,generation,revision,enabled,app_id,installation_id,repository_id,access_state,not_before,last_full_success_at,poll_error_code,next_poll_at,next_access_check_at,claim_token,claim_until,claim_kind,access_hint_id,access_delivery_id) VALUES($1,3,2,7,true,10,20,30,'available','2030-01-01','2020-01-01','retained',now(),now(),$2,now(),'poll',$3,'delivery')`, project.ID, queryID(11), queryID(12))
+	mustQueryExec(t, db, `INSERT INTO project_github_pending_prs(project_id,number,generation,request_id,delivery_id,received_at,next_attempt_at) VALUES($1,5,2,$2,'delivery',now(),now())`, project.ID, queryID(13))
+	mustQueryExec(t, db, `INSERT INTO project_pull_requests(project_id,number,github_id,url,title,state,draft,base_ref,head_sha,github_created_at,github_updated_at,description,observed_at,revision) VALUES($1,5,50,'url','title','open',false,'main','sha',now(),now(),'body',now(),7)`, project.ID)
+	mustQueryExec(t, db, `UPDATE project_github SET revision=9223372036854775807 WHERE project_id=$1`, project.ID)
+	if err := migrate(ctx, pool, schemaMigrations[:73]); err == nil {
+		t.Fatal("overflow must fail the migration")
+	}
+	var columnExists bool
+	var pending int
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='project_github' AND column_name='sync_enabled'), (SELECT count(*) FROM project_github_pending_prs)`).Scan(&columnExists, &pending); err != nil || columnExists || pending != 1 {
+		t.Fatalf("failed migration must roll back: column=%v pending=%d err=%v", columnExists, pending, err)
+	}
+	mustQueryExec(t, db, `UPDATE project_github SET revision=7 WHERE project_id=$1`, project.ID)
+	if err := migrate(ctx, pool, schemaMigrations[:73]); err != nil {
+		t.Fatal(err)
+	}
+	var preserved, cleared bool
+	if err := pool.QueryRow(ctx, `SELECT version=4 AND generation=3 AND revision=8 AND enabled AND NOT sync_enabled AND app_id=10 AND installation_id=20 AND repository_id=30 AND access_state='available' AND not_before='2030-01-01'::timestamptz AND last_full_success_at='2020-01-01'::timestamptz AND poll_error_code='retained', next_poll_at IS NULL AND next_access_check_at IS NULL AND claim_token IS NULL AND claim_until IS NULL AND claim_kind IS NULL AND access_hint_id IS NULL AND access_delivery_id IS NULL FROM project_github WHERE project_id=$1`, project.ID).Scan(&preserved, &cleared); err != nil || !preserved || !cleared {
+		t.Fatalf("upgraded facts: preserved=%t cleared=%t err=%v", preserved, cleared, err)
+	}
+	var prs, connections int
+	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM project_github_pending_prs), (SELECT count(*) FROM project_pull_requests WHERE project_id=$1 AND description='body'), (SELECT count(*) FROM project_github WHERE project_id=$2)`, project.ID, missing.ID).Scan(&pending, &prs, &connections); err != nil || pending != 0 || prs != 1 || connections != 0 {
+		t.Fatalf("retained data: pending=%d prs=%d missing connections=%d err=%v", pending, prs, connections, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE project_github SET enabled=false,sync_enabled=true WHERE project_id=$1`, project.ID); err == nil {
+		t.Fatal("sync without connection must violate constraint")
+	}
+}

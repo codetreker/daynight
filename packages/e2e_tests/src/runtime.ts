@@ -171,7 +171,15 @@ const main = async (): Promise<void> => {
     databaseURL: configuration.databaseURL, storageRoot: path.join(runDirectory, 'private', 'storage'),
     authURL, appId: credentials.appId, appSecret: credentials.appSecret, callbackURL: `${baseURL}/auth/callback`,
   });
-  launch('daynight', path.join(artifacts, 'daynight-server'), environment, ['--root', daynightRoot]);
+  const imageTemporaryDirectory = path.join(runDirectory, 'private', 'image-validation');
+  await mkdir(imageTemporaryDirectory, { recursive: true, mode: 0o700 });
+  launch('daynight', path.join(artifacts, 'daynight-server'), {
+    ...environment,
+    DAYNIGHT_IMAGE_NODE_PATH: process.execPath,
+    DAYNIGHT_IMAGE_HELPER_PATH: path.join(artifacts, 'image-validator', 'image-validation-helper.js'),
+    DAYNIGHT_IMAGE_MANIFEST_PATH: path.join(artifacts, 'image-validator', 'image-validation-manifest.json'),
+    DAYNIGHT_IMAGE_TEMP_DIRECTORY: imageTemporaryDirectory,
+  }, ['--root', daynightRoot]);
   await ended;
   if (failure !== undefined) throw failure;
 };

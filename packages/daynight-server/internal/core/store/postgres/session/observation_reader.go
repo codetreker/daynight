@@ -21,7 +21,7 @@ const taskObservationColumns = `t.project_id::text,t.id::text,t.version,t.status
  WHEN 'herdr' THEN jsonb_build_object(
  'sessionId',s.terminal_state->'Envelope'->'sessionId','claimId',s.terminal_state->'Envelope'->'claimId',
  'executionGeneration',s.terminal_state->'Envelope'->'executionGeneration','connectionEpoch',s.terminal_state->'ConnectionEpoch',
- 'identity',jsonb_build_object('projectId',s.terminal_state->'Owner'->'projectId','taskId',s.terminal_state->'Owner'->'taskId',
+ 'identity',jsonb_build_object('ownerUserId',s.terminal_state->'Owner'->'ownerUserId','projectId',s.terminal_state->'Owner'->'projectId','taskId',s.terminal_state->'Owner'->'taskId',
  'workerId',s.terminal_state->'Owner'->'workerId','worktreeId',s.terminal_state->'Owner'->'worktreeId',
  'provider',s.terminal_state->'Owner'->'provider','nativeSessionId',s.terminal_state->'Binding'->'nativeSessionId','agentControlMode','herdr'),
  'terminalFinalizationId',s.terminal_state->'FinalizationID') END,

@@ -51,9 +51,5 @@
 
 .task-list-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; margin-bottom: 12px; }
 .task-status-filter { display: flex; align-items: center; gap: 8px; color: #637087; font-size: 11px; }
-.task-status-select { position: relative; display: inline-flex; max-width: 100%; }
-.task-status-select select { appearance: none; height: 31px; max-width: 100%; padding: 0 29px 0 9px; border: 1px solid #e1e5ed; border-radius: 4px; background: white; color: #4e5b72; font: inherit; cursor: pointer; }
-.task-status-select svg { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: #8a92a4; pointer-events: none; }
-.task-status-filter select:focus-visible { outline: 3px solid var(--task-focus); outline-offset: 3px; }
 
 .assignee-option[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
