@@ -670,11 +670,12 @@ bash deployment/localhost/up.sh
 ```
 
 The command uses the public base YAML mounted read-only under the selected
-server root and requires the five authentication settings in that private file.
+server root and requires the configured origins and authentication settings in that private file.
 Explicit server environment variables override YAML. It builds the UI and server inside Docker, initializes or upgrades PostgreSQL and waits for
-`/readyz`. Open the configured public origin and log in through UniAuth. APIs and
-trusted attachment previews share that origin. For CLI access to this local test
-deployment, set `serverUrl` to its public origin in `~/.daynight/config.yml`,
+`/readyz`. Configure the same-site HTTPS origins, DNS, certificates and external
+proxy described in the deployment guide, then open the public origin and log in
+through UniAuth. APIs use the main origin and attachment previews use Task origins.
+For CLI access, set `serverUrl` to the public origin in `~/.daynight/config.yml`,
 remove any credential belonging to another origin, then run `daynight login`.
 Production CLI access defaults to `https://daynight.cc`; automation can provision
 an origin and its matching PAT through the same configuration file.

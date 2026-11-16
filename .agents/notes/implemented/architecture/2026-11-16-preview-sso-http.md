@@ -24,8 +24,8 @@ An explicit session-checked retry can replace a recoverable failed record; the
 Host dispatch reserves the entire preview namespace before the main mux and
 CORS policy. The exact bare preview host serves SSO. The [Task preview Host
 decision](2026-11-16-task-preview-host.md) owns direct attachment reads on
-canonical Task subdomains. Ordinary login and existing Web attachment readers
-continue to use the main origin.
+canonical Task subdomains. The [default preview decision](2026-11-16-default-task-preview.md)
+connects ordinary login to SSO and switches Web attachment readers.
 
 Production uses separate same-site HTTPS hostnames. Explicit local HTTP fixtures
 may use same-site DNS names or the same numeric loopback address on different

@@ -1,8 +1,7 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { ApiError } from '../../../api/client';
+import { useRef, useState } from 'react';
+import { ApiError, previewLoginUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import type { Attachment } from '../../../api/types';
-import { dialogFocusables } from '../focus';
 import { MarkdownContent } from '../MarkdownContent';
 import { attachmentKind, resolveAttachmentUrl } from './model';
 
@@ -13,12 +12,6 @@ export type AttachmentPreviewState = {
   readonly error: unknown;
 };
 
-export type AttachmentKeyboardOwner = {
-  readonly root: RefObject<HTMLElement | null>;
-  readonly onEscape: () => void;
-  readonly isActive?: () => boolean;
-};
-
 type AttachmentPreviewProps = {
   readonly attachment: Attachment;
   readonly preview: AttachmentPreviewState;
@@ -26,69 +19,15 @@ type AttachmentPreviewProps = {
   readonly url: string;
   readonly previewRoot: string;
   readonly onRetry: () => void;
-  readonly keyboardOwner?: AttachmentKeyboardOwner;
 };
 
-const TrustedFrame = ({ url, title, keyboardOwner, paused }: { readonly url: string; readonly title: string; readonly keyboardOwner: AttachmentKeyboardOwner | undefined; readonly paused: boolean }) => {
+const TrustedFrame = ({ url, title, paused }: { readonly url: string; readonly title: string; readonly paused: boolean }) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [loadedFrame, setLoadedFrame] = useState(false);
   const started = useRef(!paused);
   if (!paused) started.current = true;
-  const [frameDocument, setFrameDocument] = useState<Document | null>(null);
-  const owner = useRef(keyboardOwner);
-  owner.current = keyboardOwner;
-  const ownerRoot = keyboardOwner?.root;
-
-  useLayoutEffect(() => {
-    const frameWindow = frameDocument?.defaultView;
-    if (frameDocument === null || frameWindow === null || frameWindow === undefined || ownerRoot === undefined) return;
-    const pending = new Set<() => void>();
-    const keyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.key !== 'Escape' && event.key !== 'Tab') return;
-      const controller = new frameWindow.AbortController();
-      let timeout: number;
-      const release = () => {
-        window.clearTimeout(timeout);
-        controller.abort();
-        pending.delete(release);
-      };
-      const complete = (bubbled: KeyboardEvent) => {
-        if (bubbled !== event) return;
-        release();
-        if (event.defaultPrevented) return;
-        const currentOwner = owner.current!;
-        if (currentOwner.root.current === null || currentOwner.isActive?.() === false) return;
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          currentOwner.onEscape();
-        } else {
-          const inner = dialogFocusables(frameDocument);
-          const active = frameDocument.activeElement;
-          if (inner.length !== 0 && (event.shiftKey ? active !== inner[0] : active !== inner[inner.length - 1])) return;
-          const frame = frameRef.current!;
-          const outer = dialogFocusables(currentOwner.root.current!);
-          const index = outer.indexOf(frame);
-          const target = outer[(index + (event.shiftKey ? -1 : 1) + outer.length) % outer.length]!;
-          event.preventDefault();
-          target.focus();
-        }
-      };
-      // Register after the embedded application's current Window consumers. Abort
-      // releases the listener even after navigation makes its Window inaccessible.
-      pending.add(release);
-      frameWindow.addEventListener('keydown', complete, { signal: controller.signal });
-      timeout = window.setTimeout(release, 0);
-    };
-    frameDocument.addEventListener('keydown', keyDown);
-    return () => {
-      frameDocument.removeEventListener('keydown', keyDown);
-      for (const release of pending) release();
-    };
-
-  }, [frameDocument, ownerRoot]);
-
   const established = () => {
     const frame = frameRef.current;
     if (frame === null) return false;
@@ -100,7 +39,6 @@ const TrustedFrame = ({ url, title, keyboardOwner, paused }: { readonly url: str
   const loaded = () => {
     if (paused && !loadedFrame && !established()) return;
     setLoadedFrame(true);
-    setFrameDocument(frameRef.current!.contentDocument);
   };
 
   return <div className="attachment-native">
@@ -114,7 +52,7 @@ const NativeStatus = ({ status, onRetry }: { readonly status: 'loading' | 'ready
   const m = messages.inspection.attachments;
   return status === 'ready' ? null : status === 'loading'
     ? <p className="attachment-state attachment-native-state" role="status">{m.previewLoading}</p>
-    : <div className="attachment-state attachment-native-state attachment-error" role="alert"><p>{m.previewLoadError}</p><button className="button" type="button" onClick={onRetry}>{m.retryPreview}</button></div>;
+    : <div className="attachment-state attachment-native-state attachment-error" role="alert"><p>{m.previewLoadError}</p><div className="attachment-error-actions"><button className="button" type="button" onClick={onRetry}>{m.retryPreview}</button><a className="button" href={previewLoginUrl()} target="_blank" rel="noopener noreferrer">{m.previewSignIn}</a></div></div>;
 };
 
 const ImagePreview = ({ url, path, paused }: { readonly url: string; readonly path: string; readonly paused: boolean }) => {
@@ -123,7 +61,7 @@ const ImagePreview = ({ url, path, paused }: { readonly url: string; readonly pa
   return <div>{(!paused || status === 'ready') && <NativeStatus status={status} onRetry={() => { if (!paused) { setStatus('loading'); setRevision((value) => value + 1); } }} />}{status !== 'error' && (!paused || status === 'ready') && <img key={revision} className="attachment-image" src={url} alt={path} onLoad={() => setStatus('ready')} onError={() => setStatus('error')} />}</div>;
 };
 
-const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, keyboardOwner, paused = false }: AttachmentPreviewProps) => {
+const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, paused = false }: AttachmentPreviewProps) => {
   const { messages } = useI18n();
   const m = messages.inspection.attachments;
   const kind = attachmentKind(attachment);
@@ -141,7 +79,7 @@ const PreviewContent = ({ attachment, preview, url, previewRoot, onRetry, keyboa
   );
   if (kind === 'text') return <pre className="attachment-text">{preview.text}</pre>;
   if (kind === 'image') return <ImagePreview key={url} url={url} path={attachment.path} paused={paused} />;
-  if (kind === 'pdf' || kind === 'html') return <TrustedFrame key={url} url={url} title={m.frameTitle({ kind: kind === 'pdf' ? 'PDF' : 'HTML', path: attachment.path })} keyboardOwner={keyboardOwner} paused={paused} />;
+  if (kind === 'pdf' || kind === 'html') return <TrustedFrame key={url} url={url} title={m.frameTitle({ kind: kind === 'pdf' ? 'PDF' : 'HTML', path: attachment.path })} paused={paused} />;
   return <p className="attachment-state">{m.unsupportedPreview}</p>;
 };
 

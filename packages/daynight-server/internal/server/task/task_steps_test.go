@@ -288,7 +288,7 @@ func stepsMaterialFixture(t *testing.T, logs io.Writer) (*stepMaterialFixture, *
 	}
 	mux := http.NewServeMux()
 	taskhttp.TaskStepsRoutes(mux, taskservice.NewTaskSteps(f.store), auth, logger)
-	attachmenthttp.RegisterRoutes(mux, attachmentservice.NewAttachments(f.store, nil, files), &authhttp.Authentication{RequestAuthentication: auth}, logger)
+	attachmenthttp.RegisterRoutes(mux, attachmentservice.NewAttachments(f.store, nil, files), &authhttp.Authentication{RequestAuthentication: auth}, logger, "https://preview.daynight.example")
 	handler.Handler = httpx.RequestLogging(logger, mux)
 	f.handler = handler
 	f.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

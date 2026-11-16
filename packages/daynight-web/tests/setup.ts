@@ -49,6 +49,11 @@ const trackStorageOperation = (target: EventTarget, events: readonly string[]) =
 };
 
 beforeEach(() => {
+  document.head.querySelector('meta[name="daynight-preview-origin"]')?.remove();
+  const preview = document.createElement('meta');
+  preview.name = 'daynight-preview-origin';
+  preview.content = 'https://preview.daynight.test';
+  document.head.append(preview);
   window.history.replaceState(null, "", "/projects");
   cleaningStorage = false;
   mockSidebarMediaQuery();

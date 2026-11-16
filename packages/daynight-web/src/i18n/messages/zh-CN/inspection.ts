@@ -174,6 +174,7 @@ export const inspection: InspectionMessages = {
     fileActions: ({ path }) => `更多操作：${path}`, deleteTitle: "删除附件？", deleteConfirmation: "确认删除此附件？此操作无法撤销。", cancelDelete: "取消", confirmDelete: "删除附件",
     previewLoading: "正在加载预览…", previewLoadError: "无法加载文件预览，请重试或下载文件。", previewReadError: "无法读取文件预览，请重试或下载文件。",
     retryPreview: "重试预览", frameTitle: ({ kind, path }) => `${kind} 预览：${path}`, unsupportedPreview: "此文件暂不支持预览，请下载后打开。",
+    previewSignIn: "重新登录预览",
     markdownImageLoadError: "无法加载附件图片，请重试。", retryMarkdownImage: "重试图片",
   },
 };

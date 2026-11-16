@@ -108,6 +108,12 @@ const projectCheck = async (name: string, root: string) => {
     assert.equal(response.status, status, `${init?.method ?? 'GET'} ${route}`);
     return response;
   };
+  const previewRequest = async (taskId: string, route: string, status = 200) => {
+    const response = await authenticated.preview(taskId, route, { signal: AbortSignal.timeout(15_000) });
+    if (response.status !== status) await response.body?.cancel();
+    assert.equal(response.status, status, `preview GET ${route}`);
+    return response;
+  };
   const volumeCheck = async () => {
     const serverId = await composeCommand(['ps', '--quiet', 'server']);
     const [container] = JSON.parse(await command(['inspect', serverId]));
@@ -201,7 +207,8 @@ const projectCheck = async (name: string, root: string) => {
     assert.deepEqual(page, { items: metadata, nextCursor: null });
     for (const file of files) {
       for (const kind of ['attachments/files', 'preview']) {
-        const response = await request(`${prefix}/${kind}/${encode(file.path)}`);
+        const route = `${prefix}/${kind}/${encode(file.path)}`;
+        const response = kind === 'preview' ? await previewRequest(createdTask.id, route) : await request(route);
         assert.equal(Number(response.headers.get('content-length')), file.bytes.length);
         assert.equal(response.headers.get('content-type'), file.type);
         assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -209,8 +216,10 @@ const projectCheck = async (name: string, root: string) => {
         assert.equal(hash(new Uint8Array(await response.arrayBuffer())), hash(file.bytes));
       }
     }
-    const htmlUrl = new URL(`${origin}${prefix}/preview/mockup/index.html`);
-    const css = await request(new URL('./assets/style.css', htmlUrl).href);
+    const oldPreview = await request(`${prefix}/preview/mockup/index.html`, undefined, 302);
+    assert.match(oldPreview.headers.get('location')!, new RegExp(`^http://${createdTask.id}\\.127\\.0\\.0\\.1:`));
+    await oldPreview.body?.cancel();
+    const css = await previewRequest(createdTask.id, `${prefix}/preview/mockup/assets/style.css`);
     assert.equal(css.status, 200);
     assert.equal(hash(new Uint8Array(await css.arrayBuffer())), hash(files[3].bytes));
   };
@@ -287,7 +296,7 @@ const projectCheck = async (name: string, root: string) => {
     const peerName = name === 'primary' ? 'secondary' : 'primary';
     const peer = await waitFor(() => readJson(path.join(root, `${peerName}-ready.json`)), `${peerName} readiness`, 900_000) as Ready;
     await request(`/api/v1/projects/${peer.projectId}`, undefined, 404);
-    await request(`/api/v1/projects/${peer.projectId}/tasks/${peer.taskId}/preview/docs/nested/design.md`, undefined, 404);
+    await previewRequest(peer.taskId, `/api/v1/projects/${peer.projectId}/tasks/${peer.taskId}/preview/docs/nested/design.md`, 404);
     assert.ok(volumes.every(volume => !peer.volumes.includes(volume)));
     await composeCommand(['exec', '-T', 'server', 'test', '-f', `${storageRoot}/task-attachments/${createdProject.id}/${createdTask.id.slice(0, 2)}/${createdTask.id}/docs/nested/design.md`]);
     await composeCommand(['exec', '-T', 'server', 'sh', '-c', 'test ! -e "$1"', 'sh', `${storageRoot}/task-attachments/${peer.projectId}`]);

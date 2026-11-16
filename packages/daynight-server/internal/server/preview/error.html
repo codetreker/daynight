@@ -39,6 +39,7 @@
       <div class="notice {{if .NeedsLogin}}warning{{end}}" role="alert">
         <p>{{.Message}}</p>
         {{if .Retry}}<a class="button" id="retry-sso" href="{{.Retry}}">{{.RetryLabel}}</a>{{end}}
+        {{if .Continue}}<a class="button" href="{{.Continue}}">{{.ContinueLabel}}</a>{{end}}
         <a class="button" href="{{.Login}}" target="_blank" rel="noopener noreferrer">{{.LoginLabel}}</a>
       </div>
       <p class="details">{{.HomeLabel}} <a href="{{.Home}}">{{.ProjectsLabel}}</a><br>{{.RequestLabel}}: {{.RequestID}}</p>

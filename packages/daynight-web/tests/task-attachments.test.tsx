@@ -521,7 +521,7 @@ describe('task attachments', () => {
     await user.type(path, 'site/index.html');
     await user.click(screen.getByRole('button', { name: '上传文件' }));
     await waitFor(() => expect(screen.getByTitle('HTML 预览：site/index.html')).not.toBe(oldFrame));
-    expect(screen.getByTitle('HTML 预览：site/index.html')).toHaveAttribute('src', '/api/v1/projects/00000000-0000-4000-8000-000000000100/tasks/00000000-0000-4000-8000-000000000001/preview/site/index.html');
+    expect(screen.getByTitle('HTML 预览：site/index.html')).toHaveAttribute('src', 'https://00000000-0000-4000-8000-000000000001.preview.daynight.test/api/v1/projects/00000000-0000-4000-8000-000000000100/tasks/00000000-0000-4000-8000-000000000001/preview/site/index.html');
     expect(checkPreview).toHaveBeenCalledTimes(3);
   });
 

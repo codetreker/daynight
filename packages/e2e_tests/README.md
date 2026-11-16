@@ -45,7 +45,12 @@ Each run owns a dedicated internal database network, private ingress bridge,
 PostgreSQL 18.6 container and data volume, runtime image and application container. The application container runs
 the compiled Daynight Server, compiled UniAuth and a local OAuth provider. The
 compiled CLI and Playwright browser drive the system from the host through
-loopback-only published ports.
+loopback-only published ports. A run-local TLS gateway preserves Host for
+`app.daynight.localhost`, `preview.daynight.localhost` and Task subdomains.
+OpenSSL creates a temporary CA and certificate; the copied CLI trusts that CA
+through `NODE_EXTRA_CA_CERTS` and the browser accepts it in its own context.
+The Node test processes resolve those `.localhost` names to loopback; other
+names use the system resolver. No system trust store is modified.
 
 Server and UniAuth use their complete production entry points. The production
 Web is embedded in the Go binary. The CLI executes a copied compiled `dist`

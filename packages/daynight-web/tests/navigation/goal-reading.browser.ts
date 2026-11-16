@@ -44,7 +44,7 @@ test('Goal attachment image recovers from a network failure without rereading th
   await error.getByRole('button', { name: 'Retry image', exact: true }).click();
   await expect(error).toHaveCount(0);
   const image = description.getByRole('img', { name: 'Goal attachment', exact: true });
-  await expect(image).toHaveAttribute('src', `/api/v1/projects/${projectId}/tasks/${goalId}/preview/images/goal.svg?size=small#diagram`);
+  await expect(image).toHaveAttribute('src', `http://${goalId}.preview.localhost:8787/api/v1/projects/${projectId}/tasks/${goalId}/preview/images/goal.svg?size=small#diagram`);
   await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(120);
   expect(images).toHaveLength(2); expect(images[0]).toBe(images[1]);
   expect(detailReads).toBe(before);
@@ -628,7 +628,7 @@ test('Goal description resolves its image and attachment link to the Goal', asyn
   await page.goto(`/projects/${projectId}/tasks/${goalId}?tab=description`);
   const surface = page.locator('.goal-detail-surface');
   const image = surface.getByRole('img', { name: 'Goal image' });
-  await expect(image).toHaveAttribute('src', `/api/v1/projects/${projectId}/tasks/${goalId}/preview/image.png`);
+  await expect(image).toHaveAttribute('src', `http://${goalId}.preview.localhost:8787/api/v1/projects/${projectId}/tasks/${goalId}/preview/image.png`);
   await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.complete && element.naturalWidth > 0)).toBe(true);
   await surface.getByRole('link', { name: 'Read notes' }).click();
   await expect(surface.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');

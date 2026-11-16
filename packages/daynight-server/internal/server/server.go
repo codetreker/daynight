@@ -110,6 +110,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 		return nil, err
 	}
 	preview.RegisterMain(mux)
+	auth.BindPreviewLogin(preview.StartAfterLogin)
 	granthttp.RegisterRoutes(mux, app.OAuthGrants, auth, logger)
 	projecthttp.NewMembershipRoutes(app.Memberships, auth, logger).RegisterRoutes(mux)
 	projecthttp.RegisterRoutes(mux, app.Projects, auth, logger)
@@ -135,7 +136,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	taskhttp.TaskStepsRoutes(mux, app.TaskSteps, auth, logger)
 	taskhttp.TaskThreadRoutes(mux, app.TaskThreads, auth, logger)
 	taskhttp.TaskSyncRoutes(mux, app.TaskSync.Get, auth, logger, config.TaskSync.Overlap)
-	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger)
+	attachmenthttp.RegisterRoutes(mux, app.Attachments, auth, logger, config.Server.PreviewOrigin)
 	taskPreviewMux := http.NewServeMux()
 	attachmenthttp.RegisterPreviewRoutes(taskPreviewMux, app.Attachments, preview.Require, logger)
 	if app.Webhooks != nil {

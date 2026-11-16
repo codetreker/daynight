@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, attachmentPageUrl, checkAttachmentPreview, attachmentContentType, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../src/api/client";
+import { ApiError, attachmentPageUrl, checkAttachmentPreview, attachmentContentType, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl, attachmentPreviewHeadUrl, previewLoginUrl, listAttachments, putAttachment, readAttachmentText, removeAttachment } from "../src/api/client";
 import { isAttachmentPath, parseAttachment, parseAttachmentPage } from "../src/api/parse";
 
 const project = "10000000-0000-0000-0000-00000000000a";
@@ -45,10 +45,24 @@ describe("attachment transport", () => {
     expect(attachmentPageUrl(project, task, "%2F")).toBe(`/projects/${project}/tasks/${task}/attachments/%252F`);
     expect(() => attachmentPageUrl("bad", task, "file")).toThrow(ApiError);
     expect(() => attachmentPageUrl(project, task, "a/../file")).toThrow(ApiError);
-    expect(attachmentPreviewRoot(project, task)).toBe(`${base}/preview/`);
-    expect(attachmentPreviewUrl(project, task, item.path)).toBe(`${base}/preview/${encoded}`);
+    expect(attachmentPreviewRoot(project, task)).toBe(`https://${task}.preview.daynight.test${base}/preview/`);
+    expect(attachmentPreviewUrl(project, task, item.path)).toBe(`https://${task}.preview.daynight.test${base}/preview/${encoded}`);
+    expect(previewLoginUrl()).toBe("https://preview.daynight.test/auth/sso/start");
     expect(attachmentDownloadUrl(project, task, "%2F")).toBe(`${base}/attachments/files/%252F`);
     expect(() => attachmentDownloadUrl("bad", task, "file")).toThrow(ApiError);
+  });
+  it.each(["http://127.0.0.1:8081", "http://[::1]:8081"])("does not fall back to a numeric preview host %s", (origin) => {
+    document.querySelector<HTMLMetaElement>('meta[name="daynight-preview-origin"]')!.content = origin;
+    expect(() => attachmentPreviewRoot(project, task)).toThrow(ApiError);
+  });
+  it("fails closed when the public preview origin is missing or malformed", () => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="daynight-preview-origin"]')!;
+    for (const value of ['https://example.test/path', 'https://user@example.test', 'javascript:alert(1)', '']) {
+      meta.content = value;
+      expect(() => attachmentPreviewRoot(project, task)).toThrow(ApiError);
+    }
+    meta.remove();
+    expect(() => previewLoginUrl()).toThrow(ApiError);
   });
   it("lists metadata with opaque cursors and no-store", async () => {
     const fetcher = mock(json({ items: [item], nextCursor: null }));
@@ -134,7 +148,7 @@ describe("native preview availability", () => {
     const fetcher = mock(response);
     const abortSignal = signal();
     await expect(checkAttachmentPreview(project, task, item.path, abortSignal)).resolves.toBeUndefined();
-    expect(fetcher).toHaveBeenCalledExactlyOnceWith(attachmentPreviewUrl(project, task, item.path), { method: "HEAD", signal: expect.any(AbortSignal), cache: "no-store", credentials: "same-origin", redirect: "error" });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(attachmentPreviewHeadUrl(project, task, item.path), { method: "HEAD", signal: expect.any(AbortSignal), cache: "no-store", credentials: "same-origin", redirect: "error" });
     expect(parse).not.toHaveBeenCalled();
   });
   it("retains status and safe request IDs without expecting an error response body", async () => {

@@ -106,7 +106,7 @@ test('narrow description keeps long code and diagrams locally scrollable and ope
   await diagram.focus(); await page.keyboard.press('ArrowRight');
   await expect.poll(() => diagram.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
   const link = description.getByRole('link', { name: 'Read plan' });
-  await expect(link).toHaveAttribute('href', `${root}/preview/plan.md`); await link.click();
+  await expect(link).toHaveAttribute('href', `http://${taskId}.preview.localhost:8787${root}/preview/plan.md`); await link.click();
   await expect(page.getByRole('tab', { name: 'Attachments', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.attachment-preview-pane')).toBeFocused();
   await expect(page.getByRole('heading', { name: 'Plan', exact: true })).toBeVisible();

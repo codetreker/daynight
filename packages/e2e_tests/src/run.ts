@@ -37,7 +37,7 @@ process.once("SIGTERM", terminate);
 
 const registerAuth = async (environment: Environment): Promise<{ appId: string; appSecret: string }> => {
   const { chromium, expect } = await import("@playwright/test");
-  const browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost" } });
+  const browser = await chromium.launch({ proxy: { server: environment.proxyURL, bypass: "127.0.0.1,localhost,*.localhost" } });
   try {
     const context = await browser.newContext({ ignoreHTTPSErrors: true, locale: "en-US" });
     const page = await context.newPage();
@@ -104,9 +104,10 @@ try {
   await mkdir(descriptor.cliConfigDirectory);
   await writeFile(path.join(descriptor.cliConfigDirectory, "config.yml"), `serverUrl: ${environment.baseURL}\n`, { mode: 0o600 });
   await writeFile(path.join(runDirectory, "environment.json"), `${JSON.stringify(descriptor, null, 2)}\n`, { mode: 0o600 });
+  const resolver = path.join(repository, "packages/e2e_tests/src/resolve-local.cjs");
   await runCommand("pnpm", ["--filter", "@codetreker/daynight-e2e", "exec", "playwright", "test"], {
     cwd: repository,
-    env: { ...process.env, DAYNIGHT_E2E_RUN_DIRECTORY: runDirectory },
+    env: { ...process.env, DAYNIGHT_E2E_RUN_DIRECTORY: runDirectory, NODE_EXTRA_CA_CERTS: path.join(artifacts.directory, "daynight-ca.pem"), NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --require=${JSON.stringify(resolver)}` },
     signal: cancellation.signal,
     timeoutMs: 300_000,
   });

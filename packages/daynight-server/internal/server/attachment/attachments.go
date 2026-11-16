@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"strings"
 	"time"
 
 	authhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/auth"
@@ -22,6 +23,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 	taskhttp "github.com/codetreker/daynight/packages/daynight-server/internal/server/task"
 	attachmentservice "github.com/codetreker/daynight/packages/daynight-server/internal/service/attachment"
+	"github.com/google/uuid"
 )
 
 type attachmentHandler struct {
@@ -37,9 +39,9 @@ type attachmentOperations struct {
 	Open        func(context.Context, model.Principal, string, string, string) (model.Attachment, filestorage.Object, error)
 }
 
-func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger) {
+func RegisterRoutes(mux *http.ServeMux, attachments *attachmentservice.Attachments, auth *authhttp.Authentication, logger *slog.Logger, previewOrigin string) {
 	handler := newAttachmentHandler(attachments, logger)
-	handler.registerRoutes(mux, auth.Require)
+	handler.registerRoutes(mux, auth.Require, previewOrigin)
 }
 
 // RegisterPreviewRoutes exposes only attachment reads on a Task preview host.
@@ -60,16 +62,51 @@ func newAttachmentHandler(attachments *attachmentservice.Attachments, logger *sl
 	}
 }
 
-func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, require func(httpx.AuthenticatedHandler) http.HandlerFunc) {
+func (handler *attachmentHandler) registerRoutes(mux *http.ServeMux, require func(httpx.AuthenticatedHandler) http.HandlerFunc, previewOrigin string) {
 	const base = "/api/v1/projects/{projectId}/tasks/{taskId}"
 	mux.HandleFunc("GET "+base+"/attachments", require(handler.list))
 	mux.HandleFunc("PUT "+base+"/attachments/files/{path...}", require(handler.put))
 	mux.HandleFunc("GET "+base+"/attachments/files/{path...}", require(handler.download))
 	mux.HandleFunc("DELETE "+base+"/attachments/files/{path...}", require(handler.delete))
-	mux.HandleFunc("GET "+base+"/preview/{path...}", require(handler.preview))
+	redirect := handler.redirectPreview(previewOrigin)
+	head := require(handler.preview)
+	mux.HandleFunc("GET "+base+"/preview/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			head(w, r)
+			return
+		}
+		redirect(w, r)
+	})
 	mux.HandleFunc(base+"/attachments", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
 	mux.HandleFunc(base+"/attachments/files/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD, PUT, DELETE")))
 	mux.HandleFunc(base+"/preview/{path...}", require(httpx.ResourceMethodNotAllowed(handler.logger, "GET, HEAD")))
+}
+
+func (h *attachmentHandler) redirectPreview(origin string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		projectID, err := model.CanonicalID(r.PathValue("projectId"))
+		if err == nil && projectID != "" {
+			var taskID string
+			taskID, err = model.CanonicalID(r.PathValue("taskId"))
+			if err == nil && taskID != uuid.Nil.String() {
+				parts := strings.Split(r.URL.EscapedPath(), "/")
+				parts[6] = taskID
+				target := strings.Replace(origin, "://", "://"+taskID+".", 1) + strings.Join(parts, "/")
+				if r.URL.ForceQuery || r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				httpx.CloseUnreadBody(w, r)
+				w.Header().Set("Location", target)
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+		}
+		if err == nil {
+			err = httpx.InvalidInput("task ID must be a nonzero UUID")
+		}
+		httpx.WriteError(w, r, h.logger, "attachment", "redirect", err)
+	}
 }
 
 func attachmentResponse(attachment model.Attachment) api.Attachment {
@@ -176,6 +213,9 @@ func (h *attachmentHandler) preview(w http.ResponseWriter, request *http.Request
 
 func (h *attachmentHandler) content(w http.ResponseWriter, request *http.Request, principal model.Principal, disposition, phase string) {
 	w.Header().Set("Cache-Control", "no-store")
+	if disposition == "attachment" {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+	}
 	projectID, taskID, logger, err := h.resource(request, principal)
 	if err != nil {
 		httpx.WriteError(w, request, logger, "attachment", phase, err)

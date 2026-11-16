@@ -428,6 +428,39 @@ func TestCallbackNavigatesThroughCompletion(t *testing.T) {
 	}
 }
 
+func TestCallbackStartsPreviewAfterIssuingMainSession(t *testing.T) {
+	identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/auth/callback" }}}
+	identity.complete = func(_ context.Context, _ url.Values, _ string) (identitycore.LoginCompletion, error) {
+		return identitycore.LoginCompletion{LoginID: "login", Session: model.Session{ExpiresAt: time.Now().Add(time.Hour)}, Secret: "secret", ReturnPath: "/projects?view=1#part"}, nil
+	}
+	h, err := NewAuthentication(identity, authconfig.AuthSettings{PublicOrigin: "https://daynight.example"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	h.BindPreviewLogin(func(w http.ResponseWriter, _ *http.Request, target string) {
+		calls++
+		want := "https://daynight.example/auth/complete?" + (url.Values{"returnPath": {"/projects?view=1#part"}, "callbackPath": {"/auth/callback"}}).Encode()
+		if target != want || !strings.Contains(w.Header().Get("Set-Cookie"), "daynight_login_") || len(w.Header().Values("Set-Cookie")) != 2 {
+			t.Fatalf("target %q, cookies %v", target, w.Header().Values("Set-Cookie"))
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	r := httptest.NewRequest(http.MethodGet, "/auth/callback?state=state&code=code", nil)
+	r.AddCookie(&http.Cookie{Name: h.bindingCookieName("state"), Value: "binding"})
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if calls != 1 || w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("preview hook calls=%d status=%d", calls, w.Code)
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 2 || cookies[1].Name != h.SessionCookieName() || cookies[1].Value != "secret" {
+		t.Fatalf("main session lost after SSO failure: %+v", cookies)
+	}
+}
+
 func TestCallbackPreservesActualEscapedBase(t *testing.T) {
 	identity := &completionIdentity{strictIdentity: &strictIdentity{t: t, callback: func() string { return "https://daynight.example/custom/callback" }}}
 	identity.complete = func(_ context.Context, _ url.Values, _ string) (identitycore.LoginCompletion, error) {

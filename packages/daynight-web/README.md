@@ -44,8 +44,8 @@ the project index. Team settings share one page shell: `/teams/{teamId}/settings
 opens General, and `/teams/{teamId}/members` opens Members & invitations. Business
 APIs require a browser session or PAT; project resources also require current membership, while Worker resources belong to the
 current account and filter their saved task observations by current project access. The Go service
-retains loopback-only listening. Trusted same-origin previews, relative resources
-and keyboard behavior remain unchanged.
+retains loopback-only listening. Task-specific preview origins preserve ordinary
+iframe and relative-resource behavior.
 The [Web workspace decision](../../.agents/notes/archived/feature/2026-10-22-web-auth-workspace.md) records the rationale for the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/archived/architecture/2026-10-22-authentication-activation.md) records the rationale for production composition and credential-private acceptance.
 
@@ -476,8 +476,8 @@ PAT values and invitation links are displayed only after creation. Copy failure
 keeps a recoverable action; closing the secret dialog requires confirmation. The
 invitation entry removes its fragment immediately, uses tab-local temporary
 storage across login, and clears it when the workflow ends. Inspection does not
-accept an invitation. The UI retains ordinary same-origin attachment iframes,
-relative resources and their existing keyboard bridge.
+accept an invitation. Attachment iframes use Task-specific origins and retain
+relative resource behavior.
 
 The login page reads `GET /api/v1/auth/providers` with response
 `{providers: [providerId, ...]}`. The production backend uses public UniAuth SDK
@@ -2074,8 +2074,7 @@ The dialog locks background focus and scrolling, supports its close button,
 backdrop, Escape and Tab, and restores a surviving original trigger or a
 visible control in the active task view on close. Focusable controls are
 enumerated with `tabbable` 6.5.0 using its normal browser visibility checks.
-Same-origin preview frames bridge Escape and first/last Tab boundaries back
-into the active reading container. Passive unmount restoration remains
+Cross-origin preview frames use native keyboard behavior. Passive unmount restoration remains
 responsible for focusing a surviving trigger after DOM removal.
 
 The title-bar Enter fullscreen/Exit fullscreen button fills the browser content
@@ -2259,16 +2258,12 @@ as a JSON body. The frame then performs normal resource requests. HEAD success
 does not prove that native content has rendered; integrated acceptance must
 observe actual HTML interaction and PDF output.
 
-HTML loads the fixed same-origin
-`/api/v1/projects/{projectId}/tasks/{taskId}/preview/{path...}` URL. Its CSS, JS,
-images and relative fetches follow normal browser URL rules. HTML is trusted
-project code with main-origin privileges; the ordinary iframe has no sandbox.
-There is no separate preview modal, session token, domain or Service Worker.
-The [authentication architecture](../../docs/design/daynight-auth.md) enforces
-credentials at HTTP admission and project membership in the pre-I/O snapshot.
-Admitted operations may finish without a later membership recheck, retaining
-this trusted same-origin execution model, relative resources, keyboard behavior
-and the K1 filesystem/PostgreSQL limitation.
+HTML loads the Task-specific origin generated from the public preview metadata.
+CSS, JS, images and relative fetches follow browser URL rules. Files of one Task
+share an origin, isolated from the main application and other Tasks. The ordinary
+iframe is not sandboxed. The [authentication architecture](../../docs/design/daynight-auth.md)
+checks credentials at HTTP admission and membership in the pre-I/O snapshot.
+Admitted operations may finish without a later membership recheck.
 Other formats show metadata and a download link. Files and metadata can diverge
 after a failed write under the accepted K1 limitation; the UI reports errors and
 does not implement reconciliation or rollback.
@@ -2299,16 +2294,8 @@ and operation feedback in the shared floating layer. Status, permission and
 platform use the same confirmation/review owner; assignment uses the same mutation
 gate and review freshness. File deletion keeps its own
 modal confirmation. These interactions remain available in either container.
-Ordinary standalone mode retains native page and frame keys. Fullscreen supplies
-an `AttachmentKeyboardOwner` with the active reading root, layer eligibility and `onEscape`; the
-already-loaded same-origin frame updates its listeners without reloading. The
-bridge adds a final Window handler for each Escape/Tab event after the child
-application's current Window consumers, so consumed shortcuts retain precedence
-while boundary Tab remains synchronous. Abortable cleanup also works after the
-frame navigates cross-origin. Exiting releases the standalone bridge; ordinary page
-Escape does not navigate or close the window. Native PDF readers may not expose
-a controllable document: HTML keyboard proof does not establish PDF key behavior,
-and explicit exit/return controls remain available.
+Standalone and dialog frames retain native keyboard behavior in all modes; explicit
+exit and return controls remain available.
 
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview for ordinary Tasks and
 Description for Goals. The existing

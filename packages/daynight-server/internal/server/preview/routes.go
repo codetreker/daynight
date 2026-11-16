@@ -69,6 +69,17 @@ func (h *Routes) RegisterMain(mux *http.ServeMux) {
 	mux.HandleFunc(RetryPath, h.navigation("retry", h.retry))
 }
 
+// StartAfterLogin keeps the already-issued main session if preview SSO fails.
+func (h *Routes) StartAfterLogin(w http.ResponseWriter, r *http.Request, target string) {
+	securityHeaders(w)
+	login, err := h.ops.Create(r.Context(), target)
+	if err != nil {
+		h.failWithContinuation(w, r, "login_create", err, "", target)
+		return
+	}
+	h.redirect(w, r, "login", h.preview.String()+StartPath+"?"+url.Values{"login": {login.ID}}.Encode())
+}
+
 func (h *Routes) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.EscapedPath() {

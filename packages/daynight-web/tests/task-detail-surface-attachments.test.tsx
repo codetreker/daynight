@@ -196,7 +196,7 @@ describe('full-detail attachment surface', () => {
     await act(async () => next.resolve({ items: [], nextCursor: null }));
     await screen.findByRole('heading', { name: 'Full document' });
     expect(screen.getByRole('table')).toHaveTextContent('UIReady');
-    expect(screen.getByRole('img', { name: 'Figure' })).toHaveAttribute('src', `/api/v1/projects/${projectId}/tasks/${taskId}/preview/images/a%20b.svg`);
+    expect(screen.getByRole('img', { name: 'Figure' })).toHaveAttribute('src', `https://${taskId}.preview.daynight.test/api/v1/projects/${projectId}/tasks/${taskId}/preview/images/a%20b.svg`);
     expect(screen.getByText('<script>unsafe()</script>')).toBeVisible();
     expect(document.querySelector('script')).toBeNull();
     expect(screen.getByRole('heading', { name: item.path })).toHaveAttribute('title', item.path);
