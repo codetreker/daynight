@@ -173,10 +173,10 @@ async function install(page: Page, locale: 'en' | 'zh-CN' = 'en', ownerName = 'L
     const worker = { claimId: firstId, state: 'active' as const, userId: TEST_VIEWER_ID, workerId: secondId, machine: { id: singleId, name: 'long-machine-name-'.repeat(12) }, platform: 'linux' as const, agent: 'codex', agentControlMode: 'web' as const, worktreeId: otherTaskId, phase: 'executing' as const, herdr: null, nativeSessionId: null, claimedAt: time };
     details = [goal, ...statuses.map((status, i) => detailFixture(projectId,
       `00000000-0000-4000-8000-${String(900 + i).padStart(12, '0')}`,
-      { parentId: goalId, title: 'Long title 中文长标题 '.repeat(12), status, assignedTo: TEST_VIEWER_ID,
+      { parentId: goalId, title: 'Long title 中文长标题 '.repeat(12).trim(), status, assignedTo: TEST_VIEWER_ID,
         startedAt: status === 'in_progress' ? time : null, completedAt: status === 'done' ? time : null,
         cancelledAt: status === 'cancelled' ? time : null, properties: status === 'in_progress' ? { worker } : {},
-        tags: [{ id: layoutChildId, name: 'Long tag '.repeat(6) }, { id: layoutWorkerId, name: 'Second tag 标签' }] }))];
+        tags: [{ id: layoutChildId, name: 'Long tag '.repeat(6).trim() }, { id: layoutWorkerId, name: 'Second tag 标签' }] }))];
     currentGraph = graphFixture(details);
   }, taggedAndEmptyGoals: () => {
     details = [goal, ...[first, second, single].map(item => ({ ...item, tags: [{ id: layoutChildId, name: 'Tagged' }] })),
