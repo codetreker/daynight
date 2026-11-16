@@ -212,4 +212,45 @@ describe('GitHub App management', () => {
     expect(mocks.get).toHaveBeenCalledOnce(); expect(mocks.create).toHaveBeenCalledOnce();
   });
 
+  it('keeps the retry available when a foreground impact refresh fails with projects expanded', async () => {
+    const project = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' };
+    const impact = { appId: id, grantId: null, version: app.version, impactVersion: '4', totalProjects: '2', visibleProjects: '2', hiddenProjects: '0', teams: [], nextCursor: null };
+    mocks.impact.mockResolvedValue(impact); mocks.projects.mockImplementation(async (_id, cursor) => cursor === null ? { items: [project], hiddenProjects: '0', nextCursor: 'next' } : { items: [{ ...project, id: 'a7d416e6-fac3-4f72-a696-31c016bd90b9', name: 'Second project' }], hiddenProjects: '0', nextCursor: null });
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    try {
+      render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Delete App' })); const dialog = screen.getByRole('dialog');
+      fireEvent.click(await within(dialog).findByRole('button', { name: 'View accessible projects' })); await within(dialog).findByText(/Private project/);
+      const projectReads = mocks.projects.mock.calls.length; mocks.impact.mockRejectedValueOnce(new ApiError('network'));
+      focus.mockReturnValue(false); fireEvent.blur(window); focus.mockReturnValue(true); fireEvent.focus(window);
+      const retry = await within(dialog).findByRole('button', { name: 'Retry' });
+      expect(within(dialog).getByText(/Private project/)).toBeVisible();
+      const more = within(dialog).getByRole('button', { name: 'Load more' }); expect(more).toHaveAttribute('aria-disabled', 'true'); fireEvent.click(more);
+      expect(mocks.projects).toHaveBeenCalledTimes(projectReads); expect(retry).toBeVisible();
+      expect(within(dialog).getByRole('button', { name: 'Delete App and stop connections' })).toHaveAttribute('aria-disabled', 'true'); expect(mocks.remove).not.toHaveBeenCalled();
+      fireEvent.click(retry);
+      await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Retry' })).toBeNull());
+      await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Delete App and stop connections' })).toHaveAttribute('aria-disabled', 'false'));
+      expect(within(dialog).getByText(/Private project/)).toBeVisible(); expect(more).toHaveAttribute('aria-disabled', 'false');
+      fireEvent.click(more); await within(dialog).findByText(/Second project/); expect(mocks.projects).toHaveBeenCalledTimes(projectReads + 2); expect(mocks.remove).not.toHaveBeenCalled();
+    } finally { focus.mockRestore(); }
+  });
+
+  it('rechecks expanded Project permissions after retrying a failed impact refresh', async () => {
+    const project = { id: 'a7d416e6-fac3-4f72-a696-31c016bd90b8', name: 'Private project', repoUrl: 'https://example.test/private' };
+    const impact = { appId: id, grantId: null, version: app.version, impactVersion: '4', totalProjects: '1', visibleProjects: '1', hiddenProjects: '0', teams: [], nextCursor: null };
+    mocks.impact.mockResolvedValue(impact); mocks.projects.mockResolvedValue({ items: [project], hiddenProjects: '0', nextCursor: null });
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    try {
+      render(subject()); fireEvent.click(await screen.findByRole('button', { name: 'Delete App' })); const dialog = screen.getByRole('dialog');
+      fireEvent.click(await within(dialog).findByRole('button', { name: 'View accessible projects' })); await within(dialog).findByText(/Private project/);
+      const checks = mocks.projectAccess.mock.calls.length; mocks.impact.mockRejectedValueOnce(new ApiError('network'));
+      focus.mockReturnValue(false); fireEvent.blur(window); focus.mockReturnValue(true); fireEvent.focus(window);
+      const retry = await within(dialog).findByRole('button', { name: 'Retry' });
+      mocks.projectAccess.mockRejectedValue(new ApiError('server', 403, 'forbidden')); fireEvent.click(retry);
+      await within(dialog).findByText(/Project access changed/); expect(mocks.projectAccess).toHaveBeenCalledTimes(checks + 1);
+      expect(within(dialog).queryByText(/Private project/)).toBeNull(); expect(within(dialog).queryByText(/example.test\/private/)).toBeNull();
+      expect(mocks.remove).not.toHaveBeenCalled();
+    } finally { focus.mockRestore(); }
+  });
+
 });

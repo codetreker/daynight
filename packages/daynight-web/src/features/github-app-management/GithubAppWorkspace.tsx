@@ -156,7 +156,7 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
   useEffect(() => { if (!active || admissionBlocked) return; void load(); return () => { read.current?.abort(); read.current = null; impactRead.current?.abort(); setImpactLoading(false); }; }, [active, admissionBlocked, load]);
   useTeamForeground(active && !admissionBlocked, () => { void load(); if (modal === 'delete') void refreshImpact(); });
   const loadImpact = async (more = false) => {
-    if (!active || admissionBlocked || unavailable || more && (!impact || !impact.nextCursor)) return;
+    if (!active || admissionBlocked || unavailable || more && (!impact || !impact.nextCursor)) return false;
     impactRead.current?.abort(); const controller = new AbortController(); impactRead.current = controller;
     const signal = AbortSignal.any([controller.signal, admission.signal]), revision = epoch.current;
     impactFresh.current = false; setImpactLoading(true); setImpactError(null);
@@ -167,7 +167,7 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
       let value: GitHubAppImpact | null = more ? impact : null;
       do {
         await admission.ready(signal); const page = await getGitHubAppRemovalImpact(id, cursor, signal, auth(admission, onIdentityMismatch)); await admission.ready(signal);
-        if (signal.aborted || admission.isInvalidated || epoch.current !== revision) return;
+        if (signal.aborted || admission.isInvalidated || epoch.current !== revision) return false;
         if (projects && (projects.hiddenProjects !== page.hiddenProjects || impact && (impact.version !== page.version || impact.impactVersion !== page.impactVersion))) { projectsFresh.current = false; setProjects(null); projectCursor.current = null; }
         if (value && (value.version !== page.version || value.impactVersion !== page.impactVersion)) throw new ApiError('protocol');
         if (page.nextCursor !== null && page.nextCursor === cursor) throw new ApiError('protocol');
@@ -176,12 +176,12 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
       } while (pages < target && cursor !== null);
       if (impact && (impact.version !== value!.version || impact.impactVersion !== value!.impactVersion)) { setProjects(null); projectsFresh.current = false; projectCursor.current = null; setChanged(true); }
       else if (projects && projects.hiddenProjects !== value!.hiddenProjects) { setProjects(null); projectsFresh.current = false; projectCursor.current = null; }
-      impactPages.current = pages; impactFresh.current = true; setImpact({ ...value!, teams: rows });
-    } catch (failure) { if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) { if (denied(failure)) loseAccess(); else if (conflict(failure)) { setImpact(null); setProjects(null); setChanged(true); } setImpactError(failure); } }
+      impactPages.current = pages; impactFresh.current = true; setImpact({ ...value!, teams: rows }); return true;
+    } catch (failure) { if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) { if (denied(failure)) loseAccess(); else if (conflict(failure)) { setImpact(null); setProjects(null); setChanged(true); } setImpactError(failure); } return false; }
     finally { if (impactRead.current === controller) { impactRead.current = null; if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) setImpactLoading(false); } }
   };
   const loadProjects = async (more = false) => {
-    if (!active || admissionBlocked || !impact || more && (!projects || !projects.nextCursor)) return;
+    if (!active || admissionBlocked || !impact || !impactFresh.current || more && (!projects || !projects.nextCursor)) return;
     impactRead.current?.abort(); const controller = new AbortController(); impactRead.current = controller;
     const signal = AbortSignal.any([controller.signal, admission.signal]), revision = epoch.current;
     setImpactLoading(true); setImpactError(null);
@@ -199,7 +199,7 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
     } catch (failure) { if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) { if (failure instanceof ProjectVisibilityChanged || denied(failure) || conflict(failure)) { projectsFresh.current = false; setProjects(null); projectCursor.current = null; } if (denied(failure)) loseAccess(); else if (conflict(failure)) { setImpact(null); setChanged(true); } setImpactError(failure); } }
     finally { if (impactRead.current === controller) { impactRead.current = null; if (!signal.aborted && !admission.isInvalidated && epoch.current === revision) setImpactLoading(false); } }
   };
-  const refreshImpact = async () => { const revision = epoch.current; await loadImpact(); if (epoch.current === revision && projects) await loadProjects(); };
+  const refreshImpact = async () => { const revision = epoch.current; if (await loadImpact() && epoch.current === revision && projects) await loadProjects(); };
   useEffect(() => { if (active && !admissionBlocked && modal === 'delete' && !op.pending && !op.result) void refreshImpact(); }, [active, admissionBlocked]);
   const close = () => { epoch.current++; impactRead.current?.abort(); setImpactLoading(false); setModal(null); setName(''); setKey(''); setSecret(''); setImpact(null); setProjects(null); impactPages.current = 0; projectCursor.current = null; impactFresh.current = false; projectsFresh.current = false; setInvalid(false); if (op.result?.kind !== 'unknown') { op.clear(); setChecked(false); } };
   const edit = () => { if (!app || op.guarded()) return; op.clear(); setChanged(false); setInvalid(false); setName(app.name); setKey(''); setSecret(''); setNotice(''); setModal('edit'); };
@@ -220,7 +220,7 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
       onDeleted(); onUnavailable(id); if (revision !== epoch.current) return; setModal(null); setName(''); setKey(''); setSecret(''); current.current = null; setApp(null); if (activeRef.current) navigate('/github-apps');
     }, failure => { if (revision !== epoch.current) return; if (denied(failure)) loseAccess(); else if (conflict(failure)) { setChanged(true); setImpact(null); setProjects(null); fresh.current = false; } });
   };
-  const review = () => { void (async () => { const next = await load(); if (next || deniedRef.current) { setChecked(true); if (next && op.result?.kind !== 'unknown') { op.clear(); setChanged(false); if (modal === 'delete') void loadImpact(); } } })(); };
+  const review = () => { void (async () => { const next = await load(); if (next || deniedRef.current) { setChecked(true); if (next && op.result?.kind !== 'unknown') { op.clear(); setChanged(false); if (modal === 'delete') void refreshImpact(); } } })(); };
   const unknown = op.result?.kind === 'unknown';
   const [copyStatus, setCopyStatus] = useState('');
   const copy = () => { if (!app || !active || admissionBlocked) return; const revision = epoch.current; void navigator.clipboard.writeText(app.webhookUrl).then(() => { if (revision === epoch.current && activeRef.current && !admission.isInvalidated) setCopyStatus(m.copied); }, () => { if (revision === epoch.current && activeRef.current && !admission.isInvalidated) setCopyStatus(m.copyFailed); }); };
@@ -245,7 +245,7 @@ const AppDetail = ({ id, active, admission, admissionBlocked, onIdentityMismatch
         <div className="field"><label htmlFor={`app-key-${id}`}>{m.privateKey}</label><textarea id={`app-key-${id}`} value={key} disabled={op.pending || unknown} onChange={e => setKey(e.target.value)} /><p>{m.secretHint}</p></div>
         <div className="field"><label htmlFor={`app-secret-${id}`}>Webhook secret</label><input id={`app-secret-${id}`} type="password" autoComplete="off" value={secret} disabled={op.pending || unknown} onChange={e => setSecret(e.target.value)} /><p>{m.secretHint}</p></div>
         <p>Webhook URL: <code>{app.webhookUrl}</code></p><p>{m.webhookHint}</p></form>{invalid && <div className="notice error" role="alert">{m.invalid}</div>}</> : <div className="github-app-impact"><p><strong>{app.name}</strong> · App ID {app.githubAppId}</p><p>{m.deleteBody}</p><h3>{m.impact}</h3>{impactLoading && !impact && <p role="status">{m.loading}</p>}
-        {impact && <><ul>{impact.teams.map(row => <li key={row.team.id}><strong>{row.team.kind === 'personal' ? m.personal : row.team.name}</strong><p><code>{row.team.id}</code></p><p>{row.projects} {m.connections}</p></li>)}</ul>{impact.nextCursor && <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked} onClick={() => { if (!impactLoading && !admissionBlocked) void loadImpact(true); }}>{m.more}</button>}<p><strong>{m.total}: {impact.totalProjects}</strong></p><p>{projectsFresh.current && projects ? projects.hiddenProjects : impact.hiddenProjects} {m.hidden}</p><h3>{m.visible}</h3>{projects && projectsFresh.current ? <><ul>{projects.items.map(project => <li key={project.id}>{project.name} · {project.repoUrl}</li>)}</ul>{projects.nextCursor && <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked} onClick={() => { if (!impactLoading && !admissionBlocked) void loadProjects(true); }}>{m.more}</button>}</> : <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked} onClick={() => { if (!impactLoading && !admissionBlocked) void loadProjects(); }}>{m.projects}</button>}</>}
+        {impact && <><ul>{impact.teams.map(row => <li key={row.team.id}><strong>{row.team.kind === 'personal' ? m.personal : row.team.name}</strong><p><code>{row.team.id}</code></p><p>{row.projects} {m.connections}</p></li>)}</ul>{impact.nextCursor && <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked} onClick={() => { if (!impactLoading && !admissionBlocked) void loadImpact(true); }}>{m.more}</button>}<p><strong>{m.total}: {impact.totalProjects}</strong></p><p>{projectsFresh.current && projects ? projects.hiddenProjects : impact.hiddenProjects} {m.hidden}</p><h3>{m.visible}</h3>{projects && projectsFresh.current ? <><ul>{projects.items.map(project => <li key={project.id}>{project.name} · {project.repoUrl}</li>)}</ul>{projects.nextCursor && <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked || !impactFresh.current} onClick={() => { if (!impactLoading && !admissionBlocked && impactFresh.current) void loadProjects(true); }}>{m.more}</button>}</> : <button className="button" type="button" aria-disabled={impactLoading || admissionBlocked || !impactFresh.current} onClick={() => { if (!impactLoading && !admissionBlocked && impactFresh.current) void loadProjects(); }}>{m.projects}</button>}</>}
         {impactError !== null && <div className="notice error" role="alert">{impactError instanceof ProjectVisibilityChanged ? m.projectChanged : conflict(impactError) ? m.conflict : m.failed} <button className="button" type="button" onClick={review}>{m.retry}</button></div>}<p>{m.deleteFooter}</p></div>}
       {op.result && <div className="notice error" role="alert">{unknown ? m.unknown : conflict(op.result.error) ? m.conflict : m.rejected}</div>}{changed && <div className="notice warning" role="alert">{m.conflict}</div>}{checked && <><p role="status">{m.checked}</p>{unknown && <button className="button" type="button" onClick={() => { op.clear(); close(); setChecked(false); }}>{m.dismiss}</button>}</>}<OperationPublicationError operation={op} zh={zh} />
     </ManagementDialog>}
