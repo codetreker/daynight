@@ -16,6 +16,7 @@ import { retryImageDraftScopeCleanup } from '../src/features/task-agent-session/
 import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import * as taskGraphHook from '../src/features/projects/useTaskGraph';
 import { navigate, parseRoute } from "../src/app/router";
+import { browserNavigation } from "../src/app/navigation";
 import userEvent from "@testing-library/user-event";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { invitationStorageKey, teamInvitationStorageKey } from "../src/features/auth/invitation";
@@ -1546,4 +1547,54 @@ it('automatically rereads Project after task sync denial even when the cache bec
   await act(async () => pending.resolve(json(project())));
   expect(await screen.findByRole('heading', { name: '私有项目' })).toBeVisible();
   expect(screen.getByRole('link', { name: '项目设置' })).toBeVisible();
+});
+
+describe('retains GitHub App acceptance across SPA navigation', () => {
+  it.each(['confirmed', 'unknown', 'rejected'] as const)('reports %s after leaving and lets the user return without replay', async kind => {
+    const appId = '59cb4a41-9b96-43cd-8fe3-cbaf394a51e8', secret = `dn_gai_${'A'.repeat(43)}`, pending = Promise.withResolvers<Response>();
+    const inspection = { app: { id: appId, githubAppId: '23', name: 'Release App', githubName: 'Release', githubSlug: 'release' }, expiresAt: '2099-01-01T00:00:00Z', membership: null };
+    window.history.replaceState(null, '', `/github-app-admin-invitations#${secret}`);
+    const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+      if (url === '/api/v1/github-app-admin-invitations/inspect') return Promise.resolve(json(inspection));
+      if (url === '/api/v1/github-app-admin-invitations/accept') return pending.promise;
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal('fetch', fetcher); render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole('button', { name: '接受邀请' })); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1));
+    expect(window.location.hash).toBe(''); act(() => navigate('/projects')); expect(await screen.findByText('正在接受 App 管理员邀请。')).toBeVisible();
+    if (kind === 'confirmed') await act(async () => pending.resolve(json({ appId, membership: { appId, userId, membershipVersion: '1', createdAt: now, updatedAt: now }, joined: true })));
+    else if (kind === 'rejected') await act(async () => pending.resolve(fail(409, 'conflict')));
+    else await act(async () => pending.reject(new TypeError('network')));
+    expect(await screen.findByText(kind === 'confirmed' ? 'App 管理员邀请已接受。' : kind === 'rejected' ? 'App 管理员邀请未被接受。' : '邀请接受结果未知。请返回核对，勿重复提交。')).toBeVisible();
+    expect(document.body.textContent).not.toContain(secret); expect(JSON.stringify(sessionStorage)).not.toContain(secret); expect(JSON.stringify(localStorage)).not.toContain(secret);
+    fireEvent.click(screen.getByRole('button', { name: '返回邀请' }));
+    if (kind === 'confirmed') expect(await screen.findByText('你已成为此 App 的管理员。')).toBeVisible();
+    else if (kind === 'rejected') expect(await screen.findByText(/操作失败，请核对当前状态后重试/)).toBeVisible();
+    else { await screen.findByText('接受结果尚未确认，请核对当前状态后再决定后续操作。'); fireEvent.click(screen.getByRole('button', { name: '核对当前状态' })); await screen.findByText(/不能确认原操作的结果/); }
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1);
+  });
+});
+
+
+describe('retains GitHub App acceptance when another invitation arrives', () => {
+  it.each(['pending', 'confirmed', 'cleanup failure'] as const)('does not replace the existing outcome: %s', async kind => {
+    const appId = '59cb4a41-9b96-43cd-8fe3-cbaf394a51e8', first = `dn_gai_${'A'.repeat(43)}`, second = `dn_gai_${'B'.repeat(42)}A`, pending = Promise.withResolvers<Response>();
+    const inspection = { app: { id: appId, githubAppId: '23', name: 'Release App', githubName: 'Release', githubSlug: 'release' }, expiresAt: '2099-01-01T00:00:00Z', membership: null };
+    window.history.replaceState(null, '', `/github-app-admin-invitations#${first}`);
+    const fetcher = vi.fn((url: string, _options?: RequestInit) => {
+      if (url === '/api/v1/github-app-admin-invitations/inspect') return Promise.resolve(json(inspection));
+      if (url === '/api/v1/github-app-admin-invitations/accept') return pending.promise;
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal('fetch', fetcher); render(<AuthenticatedApp />); fireEvent.click(await screen.findByRole('button', { name: '接受邀请' })); await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1));
+    act(() => navigate('/projects')); await screen.findByText('正在接受 App 管理员邀请。');
+    if (kind === 'confirmed') { await act(async () => pending.resolve(json({ appId, membership: { appId, userId, membershipVersion: '1', createdAt: now, updatedAt: now }, joined: true }))); await screen.findByText('App 管理员邀请已接受。'); }
+    const owner = browserNavigation(); const clear = kind === 'cleanup failure' ? vi.spyOn(owner, 'clearFragment').mockImplementation(() => {}) : null;
+    act(() => navigate(`/github-app-admin-invitations#${second}`)); expect(await screen.findByText('请先结束当前邀请的核对，再重新打开新邀请链接。')).toBeVisible();
+    if (kind === 'cleanup failure') { expect(screen.getByText('无法清除邀请链接，请重新打开邀请。')).toBeVisible(); expect(window.location.hash).toBe(`#${second}`); clear!.mockRestore(); act(() => owner.clearFragment()); }
+    else expect(window.location.hash).toBe('');
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/inspect')).every(([, options]) => !String(options?.body).includes(second))).toBe(true);
+    if (kind !== 'confirmed') await act(async () => pending.resolve(json({ appId, membership: { appId, userId, membershipVersion: '1', createdAt: now, updatedAt: now }, joined: true })));
+    expect(await screen.findByText('你已成为此 App 的管理员。')).toBeVisible(); expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/accept'))).toHaveLength(1);
+  });
 });

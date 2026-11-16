@@ -88,12 +88,11 @@ func TestGitHubWebhookProductionRouteAssembly(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/api/v1/github/webhook",
-		"/api/v1/github/apps/58484824-12a6-42f3-914a-052a6673403b/admin-invitations",
 	} {
 		res = httptest.NewRecorder()
 		root.ServeHTTP(res, httptest.NewRequest(http.MethodPost, path, nil))
 		if res.Code != http.StatusNotFound {
-			t.Fatalf("retired or unavailable route %s returned %d", path, res.Code)
+			t.Fatalf("retired route %s returned %d", path, res.Code)
 		}
 	}
 }

@@ -40,6 +40,7 @@ type App struct {
 	GitHubRead           *coregithub.Reader
 	GitHubApps           *githubservice.AppManager
 	GitHubConfig         *githubservice.ConfigManager
+	GitHubAdmins         *githubservice.AdminManager
 	GitHubGrants         *githubservice.GrantManager
 	GitHubProject        *githubservice.ProjectAppManager
 	GitHubWebhook        *githubservice.AppWebhookReceiver

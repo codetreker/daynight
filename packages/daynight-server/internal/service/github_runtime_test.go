@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/config"
+	coregithub "github.com/codetreker/daynight/packages/daynight-server/internal/core/github"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres"
 )
@@ -21,6 +23,7 @@ var _ githubAppStore = (*postgres.Store)(nil)
 type unusedGitHubCapabilities struct {
 	store.GitHubAppStore
 	store.GitHubAppConfigStore
+	store.GitHubAppAdminStore
 	store.GitHubGrantStore
 	store.GitHubAppImpactStore
 	store.GitHubProjectAppStore
@@ -36,7 +39,17 @@ func (unusedGitHubCapabilities) DueGitHubAppProjects(context.Context, time.Time,
 type githubAssemblyStore struct {
 	store.Transactions
 	unusedGitHubCapabilities
-	scans chan struct{}
+	scans      chan struct{}
+	adminReads *int
+}
+
+var errAssemblyAdminRead = errors.New("controlled administrator store")
+
+func (s githubAssemblyStore) ReadGitHubAppAdmins(context.Context, func(store.GitHubAppAdminReader) error) error {
+	if s.adminReads != nil {
+		*s.adminReads++
+	}
+	return errAssemblyAdminRead
 }
 
 func (s githubAssemblyStore) DueGitHubAppProjects(ctx context.Context, _ time.Time, limit int) ([]string, error) {
@@ -51,14 +64,19 @@ func (s githubAssemblyStore) DueGitHubAppProjects(ctx context.Context, _ time.Ti
 }
 func TestGitHubProductionAssemblyStartsAndDrains(t *testing.T) {
 	scans := make(chan struct{}, 1)
-	db := githubAssemblyStore{scans: scans}
+	adminReads := 0
+	db := githubAssemblyStore{scans: scans, adminReads: &adminReads}
 	app := NewModules(config.Config{}, db, func(context.Context) error { return nil }, nil, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	if err := app.assembleGitHub(db, logger); err != nil {
 		t.Fatal(err)
 	}
-	if app.GitHubApps == nil || app.GitHubConfig == nil || app.GitHubGrants == nil || app.GitHubProject == nil || app.GitHubWebhook == nil || app.githubRuntime == nil || app.githubRuntime.provider == nil {
+	if app.GitHubApps == nil || app.GitHubConfig == nil || app.GitHubAdmins == nil || app.GitHubGrants == nil || app.GitHubProject == nil || app.GitHubWebhook == nil || app.githubRuntime == nil || app.githubRuntime.provider == nil {
 		t.Fatal("production dependencies not assembled")
+	}
+	_, err := app.GitHubAdmins.ListAdmins(context.Background(), model.Principal{}, "", coregithub.ListAppsInput{})
+	if !errors.Is(err, errAssemblyAdminRead) || adminReads != 1 {
+		t.Fatalf("administrator manager was not bound to the assembly store: reads=%d err=%v", adminReads, err)
 	}
 	if err := app.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -217,10 +235,27 @@ func TestGitHubSupervisorRecordsFailureAndStartupFailure(t *testing.T) {
 	}
 }
 
+// This fixture has every runtime capability except administrator storage.
+type githubAssemblyWithoutAdminStore struct {
+	store.Transactions
+	store.GitHubAppStore
+	store.GitHubAppConfigStore
+	store.GitHubGrantStore
+	store.GitHubAppImpactStore
+	store.GitHubProjectAppStore
+	store.GitHubAppCredentialReader
+	store.GitHubAppWebhookStore
+	store.GitHubAppWorkReader
+	store.GitHubAppWorkWriter
+}
+
 func TestGitHubAssemblyRejectsMissingDependencies(t *testing.T) {
 	app := NewModules(config.Config{}, nil, func(context.Context) error { return nil }, nil, nil)
 	if err := app.assembleGitHub(nil, slog.Default()); err == nil {
 		t.Fatal("missing App store accepted")
+	}
+	if err := app.assembleGitHub(githubAssemblyWithoutAdminStore{}, slog.Default()); err == nil {
+		t.Fatal("missing administrator store accepted")
 	}
 	if app.githubRuntime != nil || app.GitHubWebhook != nil {
 		t.Fatal("partial assembly published")
