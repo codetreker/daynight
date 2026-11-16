@@ -960,8 +960,9 @@ test('standalone Goal external Expand enters an unowned chain through the projec
   await expect(page.locator('.task-chain-dialog')).toHaveCount(0);
 });
 
-test('Goal write errors identify refusals without exposing internal diagnostics', async ({ page }) => {
+test('Goal write errors identify refusals without exposing internal diagnostics', async ({ page, context }) => {
   const fixture = await install(page); fixture.rejectWrites();
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
   await page.getByRole('tab', { name: /^Goal/ }).click();
@@ -977,6 +978,12 @@ test('Goal write errors identify refusals without exposing internal diagnostics'
   await page.getByRole('alertdialog', { name: 'Delete this Goal?' }).getByRole('button', { name: 'Delete Goal' }).click();
   await expect(dialog.locator('p[role=alert]').filter({ hasText: 'goal-write-4' })).toContainText('You do not have permission');
   await expect(dialog).not.toContainText('secret SQL detail');
+  await dialog.getByRole('button', { name: 'Close task details' }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  await card.getByRole('button', { name: 'Copy Goal ID' }).click();
+  await expect(card.getByRole('status')).toHaveText('Copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(goalId);
+  await expect(card.locator('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'false');
 });
 
 for (const mode of ['pending', 'conflict', 'unknown'] as const) test(`Goal editing preserves its draft on ${mode} result`, async ({ page }) => {
@@ -1978,6 +1985,8 @@ for (const width of [1440, 320]) for (const locale of ['en', 'zh-CN'] as const) 
   await page.keyboard.press('Tab');
   await expect(card.locator('.goal-list-title')).toBeFocused();
   await page.keyboard.press('Tab');
+  await expect(card.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' })).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(detail).toBeFocused();
   await expect(detail).toHaveCSS('outline-color', 'rgb(52, 64, 84)');
   await page.keyboard.press('Enter');
@@ -2259,6 +2268,8 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await page.keyboard.press('Tab');
   await expect(row.locator('.goal-list-title')).toBeFocused();
   await page.keyboard.press('Tab');
+  await expect(row.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' })).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(status).toBeFocused();
   await expect(status).toHaveAttribute('aria-expanded', 'false');
   await page.keyboard.press('Enter');
@@ -2269,6 +2280,67 @@ for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as co
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   expect(await page.locator('button button, button a, a button').count()).toBe(0);
+});
+
+for (const width of [1440, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`Goal list ID remains selectable and independently copyable at ${width}px in ${locale}`, async ({ page, context }) => {
+  await page.setViewportSize({ width, height: 900 });
+  const fixture = await install(page, locale);
+  fixture.setGoalTitle('LongGoal名称'.repeat(20));
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(`/projects/${projectId}`);
+  await page.getByRole('tab', { name: /^(Task list|任务列表)$/ }).click();
+  await page.getByRole('tab', { name: /^Goal/ }).click();
+  const card = page.locator(`[data-goal-id="${goalId}"]`);
+  const toggle = card.locator('.goal-list-toggle');
+  const id = card.locator('.goal-list-id .task-row-id');
+  const copy = card.getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' });
+  const initialUrl = page.url();
+  await expect(id).toHaveText(goalId);
+  await expect(id).toHaveCSS('font-size', '11px');
+  await expectCopyButtonSkin(page, copy);
+  await card.locator('.goal-list-title').focus(); await page.keyboard.press('Tab');
+  await expect(copy).toBeFocused();
+  await id.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  const box = await id.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const rect = range.getClientRects()[0]!; return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
+  await page.mouse.move(box.x + 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + Math.min(box.width - 2, 80), box.y + box.height / 2, { steps: 6 }); await page.mouse.up();
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(selected.length).toBeGreaterThan(0); expect(goalId).toContain(selected);
+  await page.keyboard.press('Control+C');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
+  await copy.focus(); await page.keyboard.press('Enter');
+  await expect(card.getByRole('status')).toHaveText(locale === 'en' ? 'Copied' : '已复制');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(goalId);
+  await toggle.click(); await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await page.evaluate(() => {
+    const clipboard = navigator.clipboard;
+    const original = clipboard.writeText.bind(clipboard);
+    Object.defineProperty(clipboard, 'writeText', { configurable: true, value: () => { Object.defineProperty(clipboard, 'writeText', { configurable: true, value: original }); return Promise.reject(new Error('denied')); } });
+  });
+  await copy.focus(); await page.keyboard.press('Space');
+  await expect(card.getByRole('alert')).toHaveText(locale === 'en' ? 'Could not copy the Goal ID. Select and copy it manually.' : '无法复制 Goal ID，请选中并手动复制。');
+  expect(await card.locator('.goal-list-row').evaluate(row => {
+    const bounds = row.getBoundingClientRect();
+    return ['.goal-list-id .task-row-id', '.task-copy-button', '[role=alert]'].every(selector => {
+      const rect = row.querySelector(selector)!.getBoundingClientRect();
+      return rect.width > 0 && rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1 && rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1;
+    }) && document.documentElement.scrollWidth <= innerWidth;
+  })).toBe(true);
+  await copy.click(); await expect(card.getByRole('status')).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(goalId);
+  const end = await card.locator('.goal-list-progress').boundingBox();
+  const start = await id.boundingBox();
+  await page.mouse.move(start!.x + 2, start!.y + start!.height / 2); await page.mouse.down();
+  await page.mouse.move(end!.x + end!.width / 2, end!.y + end!.height / 2, { steps: 8 }); await page.mouse.up();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await card.locator('.goal-list-progress').click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('.goal-detail-surface, .task-chain-dialog')).toHaveCount(0);
+  expect(page.url()).toBe(initialUrl);
+  expect(fixture.statusWrites()).toEqual([]); expect(fixture.edits()).toEqual([]);
 });
 
 for (const width of [1440, 740, 600, 390, 320]) for (const locale of ['en', 'zh-CN'] as const) test(`project Goal list expands scoped work at ${width}px in ${locale}`, async ({ page }, testInfo) => {

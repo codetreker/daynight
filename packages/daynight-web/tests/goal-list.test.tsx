@@ -7,7 +7,7 @@ vi.mock('../src/app/router', async (importOriginal) => ({
 }));
 import { TagFilter, useTagFilter } from '../src/features/task-tags/TagFilter';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskSummary, TaskSync, WorkerClaim } from '../src/api/types';
 import { createTaskCacheScope } from '../src/features/task-cache/project-cache';
 import { deriveTaskSyncBindings, deriveTaskSyncVersions } from '../src/features/task-cache/execution-binding';
@@ -33,6 +33,7 @@ beforeEach(() => {
   vi.mocked(listProjectTags).mockReset().mockResolvedValue({ items: [], catalogEpoch: 'epoch', nextCursor: null });
   vi.mocked(resolveProjectTags).mockReset().mockResolvedValue([]);
 });
+afterEach(() => vi.unstubAllGlobals());
 
 const time = '2026-10-20T12:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000101';
@@ -62,6 +63,73 @@ const list = (value: GraphSnapshot, onOpenGoal = vi.fn(), onOpenListTask = vi.fn
 </TaskExecutionClockProvider></TaskPauseProvider>;
 
 describe('Goal list', () => {
+  it.each(['en', 'zh-CN'] as const)('copies each readable Goal ID with localized feedback in %s without toggling or opening it', async locale => {
+    let reject!: (error: Error) => void;
+    const write = vi.fn().mockReturnValueOnce(new Promise<void>((_resolve, fail) => { reject = fail; })).mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText: write } });
+    const openGoal = vi.fn(), openGraph = vi.fn();
+    createLocaleRender(locale, { taskCache: true })(list(snapshot(tasks), openGoal, vi.fn(), vi.fn(), openGraph));
+    const card = document.querySelector<HTMLElement>('[data-goal-id="goal"]')!;
+    const toggle = card.querySelector<HTMLButtonElement>('.goal-list-toggle')!;
+    const id = card.querySelector<HTMLElement>('.goal-list-id .task-row-id')!;
+    const copy = within(card).getByRole('button', { name: locale === 'en' ? 'Copy Goal ID' : '复制 Goal ID' });
+    expect(id).toHaveTextContent(goal.id);
+    expect(fireEvent.mouseDown(id)).toBe(true);
+    fireEvent.click(id);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(copy); fireEvent.click(copy);
+    expect(copy).toBeDisabled(); expect(write).toHaveBeenCalledExactlyOnceWith(goal.id);
+    await act(async () => reject(new Error('denied')));
+    expect(within(card).getByRole('alert')).toHaveTextContent(locale === 'en' ? 'Could not copy the Goal ID. Select and copy it manually.' : '无法复制 Goal ID，请选中并手动复制。');
+    fireEvent.click(within(card).getByRole('alert'));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(id).toHaveTextContent(goal.id);
+    fireEvent.click(copy);
+    expect(await within(card).findByRole('status')).toHaveTextContent(locale === 'en' ? 'Copied' : '已复制');
+    fireEvent.click(within(card).getByRole('status'));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(write).toHaveBeenCalledTimes(2);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(id); fireEvent.click(copy);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(openGoal).not.toHaveBeenCalled(); expect(openGraph).not.toHaveBeenCalled();
+  });
+
+  it('keeps empty and completed Goal IDs readable when clipboard is unavailable', async () => {
+    vi.stubGlobal('navigator', {});
+    createLocaleRender('en', { taskCache: true })(list(snapshot(tasks)));
+    for (const id of [other.id, empty.id]) {
+      const card = document.querySelector<HTMLElement>(`[data-goal-id="${id}"]`)!;
+      expect(card.querySelector('.goal-list-id .task-row-id')).toHaveTextContent(id);
+      fireEvent.click(within(card).getByRole('button', { name: 'Copy Goal ID' }));
+      expect(await within(card).findByRole('alert')).toHaveTextContent('Could not copy the Goal ID. Select and copy it manually.');
+      expect(card.querySelector('.goal-list-toggle')).toHaveAttribute('aria-expanded', 'false');
+    }
+  });
+
+  it.each(['resolve', 'reject'] as const)('does not apply an old Goal copy %s after its row is replaced', async result => {
+    let resolve!: () => void, reject!: (error: Error) => void;
+    const write = vi.fn().mockReturnValueOnce(new Promise<void>((done, fail) => { resolve = done; reject = fail; })).mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText: write } });
+    const tree = (item: TaskSummary) => {
+      const value = snapshot([item]);
+      return <TaskPauseProvider taskIds={new Set()}><TaskExecutionClockProvider projectId={projectId} snapshot={value}>
+        <GoalList summaries={value.summaries} projectId={projectId} index={value.index} goals={[item]} total={1} workerMachines={value.workerMachines} onOpenGoal={noop} onOpenGoalGraph={noop} onOpenGoalGraphTask={noop} onOpenListTask={noop} onOpenListChain={noop} openGraphTarget={null} onCloseChain={noop} onOpenTask={noop} />
+      </TaskExecutionClockProvider></TaskPauseProvider>;
+    };
+    const view = createLocaleRender('en', { taskCache: true })(tree(goal));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Goal ID' }));
+    expect(screen.getByRole('button', { name: 'Copy Goal ID' })).toBeDisabled();
+    view.rerender(tree(other));
+    await act(async () => { if (result === 'resolve') resolve(); else reject(new Error('denied')); });
+    expect(screen.queryByRole('status')).toBeNull(); expect(screen.queryByRole('alert')).toBeNull();
+    const copy = screen.getByRole('button', { name: 'Copy Goal ID' });
+    expect(copy).toBeEnabled(); fireEvent.click(copy);
+    expect(await screen.findByRole('status')).toHaveTextContent('Copied');
+    expect(write).toHaveBeenLastCalledWith(other.id);
+  });
+
   it('filters every Goal direct scope with one condition while retaining the complete chain context', async () => {
     vi.mocked(listProjectTags).mockResolvedValue({ items: ['alpha', 'beta'].map((name, i) => ({ id: i === 0 ? 'tag-a' : 'tag-b', name, projectId, version: 1n, createdAt: time, updatedAt: time, usage: { tasks: 0, goals: 0 } })), catalogEpoch: 'epoch', nextCursor: null });
     vi.mocked(resolveProjectTags).mockImplementation(async (_project, ids) => ids.map(id => ({ id, name: id === 'tag-a' ? 'alpha' : 'beta' })));

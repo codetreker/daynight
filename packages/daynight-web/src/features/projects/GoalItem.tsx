@@ -18,6 +18,8 @@ import { useCompletionHint } from '../task-completion/useCompletionHint';
 import { CompletionTimeLabel } from '../task-completion/CompletionTimeLabel';
 import { TaskPauseCount, usePausedTaskIds } from '../task-pause/TaskPause';
 import { pausedSummaryTaskIds } from '../task-pause/paused-summary';
+import { ValueCopyButton } from '../../ui/copy-button/ValueCopyButton';
+import '../task-row/task-row.css';
 import '../../styles/task-status-rows.css';
 
 export const GoalItem = ({ projectId, index, goal, summaries, childTagFilter, workerMachines, onOpenGoal, onOpenGoalGraph, onOpenListTask, onOpenSession }: {
@@ -32,7 +34,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, childTagFilter, wo
   readonly onOpenListTask: (id: string, trigger: HTMLElement, sourceGoalId: string | null) => void;
   readonly onOpenSession?: (id: string, trigger: HTMLElement) => void;
 }) => {
-  const { messages: { workspace: { goals: m }, graph, assignment } } = useI18n();
+  const { messages: { workspace: { goals: m }, graph, assignment, inspection: { detail } } } = useI18n();
   const completion = useCompletionTime(completedAtFor(goal));
   const hint = useCompletionHint(completion);
   const scope = useMemo(() => projectTaskScope(index, goal.id), [index, goal.id]);
@@ -50,6 +52,7 @@ export const GoalItem = ({ projectId, index, goal, summaries, childTagFilter, wo
   const content = useRef<HTMLDivElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const focusedSession = useRef<HTMLElement | null>(null);
+  const idPointer = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
   useLayoutEffect(() => {
     const control = focusedSession.current;
     if (control === null || control.isConnected) return;
@@ -68,17 +71,21 @@ export const GoalItem = ({ projectId, index, goal, summaries, childTagFilter, wo
   };
   const isInteractive = (target: EventTarget | null, row: HTMLElement) => {
     if (!(target instanceof Element)) return false;
-    const control = target.closest('button, a, input, select, textarea, summary, audio[controls], video[controls], [role=button], [role=link], [role=tooltip], [contenteditable]:not([contenteditable=false]), [tabindex]:not([tabindex="-1"])');
+    const control = target.closest('.goal-list-id, button, a, input, select, textarea, summary, audio[controls], video[controls], [role=button], [role=link], [role=tooltip], [contenteditable]:not([contenteditable=false]), [tabindex]:not([tabindex="-1"])');
     return control !== null && (row.contains(control) || control.matches('[role=tooltip]'));
   };
   return <li ref={visibilityRef} className="goal-list-card" data-goal-id={goal.id} data-task-status={goal.status} onFocusCapture={(event) => {
     focusedSession.current = event.target instanceof HTMLElement && event.target.classList.contains('session-status-action') && event.target.closest('.goal-list-row') !== null ? event.target : null;
   }} onBlurCapture={(event) => { if (event.relatedTarget !== null) focusedSession.current = null; }}>
-    <div className="goal-list-row task-status-surface" data-task-status={goal.status} onMouseDown={(event) => { if (!isInteractive(event.target, event.currentTarget)) event.preventDefault(); }} onClick={(event) => { if (!isInteractive(event.target, event.currentTarget)) toggleExpanded(); }}>
+    <div className="goal-list-row task-status-surface" data-task-status={goal.status}
+      onPointerDown={(event) => { idPointer.current = event.button === 0 && event.target instanceof Element && event.target.closest('.goal-list-id') !== null ? { x: event.clientX, y: event.clientY, dragged: false } : null; }}
+      onPointerMove={(event) => { if (idPointer.current !== null && (Math.abs(event.clientX - idPointer.current.x) > 3 || Math.abs(event.clientY - idPointer.current.y) > 3)) idPointer.current.dragged = true; }}
+      onClickCapture={(event) => { if (event.detail > 0 && idPointer.current?.dragged) { event.preventDefault(); event.stopPropagation(); } idPointer.current = null; }}
+      onMouseDown={(event) => { if (!isInteractive(event.target, event.currentTarget)) event.preventDefault(); }} onClick={(event) => { if (!isInteractive(event.target, event.currentTarget)) toggleExpanded(); }}>
       <div className="goal-list-summary">
       <button ref={toggle} className="goal-list-toggle" type="button" aria-label={m.toggle({ title, expanded })} aria-expanded={expanded} aria-controls={childrenId} aria-describedby={`project-goal-in-progress-${goal.id}${pausedCount > 0 ? ` ${pauseCountId}` : ''} project-goal-assignee-${goal.id} project-goal-worker-${goal.id} project-goal-composition-${goal.id} project-goal-progress-${goal.id} project-goal-status-${goal.id}${goal.tags.length > 0 ? ` project-goal-tags-${goal.id}` : ''}`} onClick={toggleExpanded}><svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
       </button><svg className="goal-list-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><circle cx="8" cy="8" r="3" /><circle cx="8" cy="8" r=".6" /></svg>
-      <span className="goal-list-main"><span className="goal-title-line"><button className="goal-list-title" id={`project-goal-${goal.id}`} type="button" aria-haspopup="dialog" onClick={(event) => onOpenGoal(goal.id, event.currentTarget)}>{title}</button><span className="goal-in-progress" id={`project-goal-in-progress-${goal.id}`}>{graph.inProgressCount({ count: inProgressCount })}</span>{pausedCount > 0 && <span id={pauseCountId}><TaskPauseCount count={pausedCount} /></span>}</span>
+      <span className="goal-list-main"><span className="goal-title-line"><button className="goal-list-title" id={`project-goal-${goal.id}`} type="button" aria-haspopup="dialog" onClick={(event) => onOpenGoal(goal.id, event.currentTarget)}>{title}</button><span className="goal-list-id task-row-id-group"><span className="task-row-id">{goal.id}</span><ValueCopyButton key={goal.id} value={goal.id} label={detail.copyGoalId} feedback={(state) => state === 'copied' ? <span className="task-row-copy-feedback" role="status">{detail.copied}</span> : state === 'failed' ? <span className="task-row-copy-feedback task-row-copy-error" role="alert">{detail.copyGoalIdFailed}</span> : null} /></span><span className="goal-in-progress" id={`project-goal-in-progress-${goal.id}`}>{graph.inProgressCount({ count: inProgressCount })}</span>{pausedCount > 0 && <span id={pauseCountId}><TaskPauseCount count={pausedCount} /></span>}</span>
         <TaskTagList projectId={projectId} id={`project-goal-tags-${goal.id}`} tags={goal.tags} /><span className="goal-list-meta"><TaskAssigneeIdentity id={`project-goal-assignee-${goal.id}`} projectId={projectId} assignedTo={goal.assignedTo} /><span id={`project-goal-worker-${goal.id}`}><ActiveWorkerIndicator memberIds={memberIds} workerMachines={workerMachines} /></span><span id={`project-goal-composition-${goal.id}`}>{m.composition({ count })}</span><CompletionTimeLabel value={completion} {...hint.labelEvents} /></span></span>
       <span className="goal-list-progress" id={`project-goal-progress-${goal.id}`}><span>{graph.progress({ done: progress.displayDone, total: progress.displayTotal })}</span><span className="goal-list-track" aria-hidden="true"><i style={{ width: `${progress.widthPercent}%` }} /></span></span>
       </div>
