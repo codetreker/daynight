@@ -59,7 +59,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "team" | "teamSettings" | "teamMembers" | "teamGitHubApps"; readonly teamId: string }
   | { readonly kind: "sharedProjects" | "myTasks" }
   | { readonly kind: "githubApps"; readonly appId: string | null }
-  | { readonly kind: "githubAppAdmins"; readonly appId: string }
+  | { readonly kind: "githubAppAdmins" | "githubAppTeams"; readonly appId: string }
   | { readonly kind: "bots" }
   | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals"; readonly recordId?: string; readonly eventId?: string }
   | { readonly kind: "bot"; readonly botId: string }
@@ -113,6 +113,11 @@ export const parseRoute = (pathname: string, search = ""): Route => {
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/webhooks") return webhookRoute(search);
   if (pathname === "/github-apps") return { kind: "githubApps", appId: null };
+  const githubTeams = /^\/github-apps\/([^/]+)\/teams$/.exec(pathname);
+  if (githubTeams !== null) {
+    try { const appId = canonicalId(decodeURIComponent(githubTeams[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubAppTeams", appId }; }
+    catch { return { kind: "notFound" }; }
+  }
   const githubAdmins = /^\/github-apps\/([^/]+)\/admins$/.exec(pathname);
   if (githubAdmins !== null) {
     try { const appId = canonicalId(decodeURIComponent(githubAdmins[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubAppAdmins", appId }; }

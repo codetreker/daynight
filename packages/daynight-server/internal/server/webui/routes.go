@@ -14,7 +14,7 @@ func (ui *UI) RegisterRoutes(mux *http.ServeMux, logger *slog.Logger) {
 	page := uiHandler(logger, ui.Page)
 	asset := uiHandler(logger, ui.Asset)
 	for _, pattern := range []string{
-		"/{$}", "/login", "/webhooks", "/github-apps", "/github-apps/{appId}", "/github-apps/{appId}/admins", "/projects", "/teams/{teamId}", "/teams/{teamId}/settings", "/teams/{teamId}/members", "/teams/{teamId}/github-apps", "/shared-projects", "/my-tasks", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
+		"/{$}", "/login", "/webhooks", "/github-apps", "/github-apps/{appId}", "/github-apps/{appId}/admins", "/github-apps/{appId}/teams", "/projects", "/teams/{teamId}", "/teams/{teamId}/settings", "/teams/{teamId}/members", "/teams/{teamId}/github-apps", "/shared-projects", "/my-tasks", "/projects/{projectId}", "/projects/{projectId}/members", "/projects/{projectId}/settings",
 		"/projects/{projectId}/tasks/{taskId}", "/test-sessions", "/test-sessions/{sessionId}", "/bots", "/bots/{botId}", "/workers", "/workers/{workerId}",
 		"/projects/{projectId}/tasks/{taskId}/attachments/{path...}", "/account", "/invitations", "/team-invitations", "/github-app-admin-invitations", "/device", "/setup", "/auth/complete",
 	} {
