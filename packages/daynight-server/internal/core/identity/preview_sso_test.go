@@ -241,3 +241,92 @@ func TestPreviewAuthorizationCountsCleanupTime(t *testing.T) {
 		t.Fatalf("cleanup timing: %v %v %v", lockTime, auth.ExpiresAt, err)
 	}
 }
+
+func TestPreviewCreateRejectsTargetAndStorageFailures(t *testing.T) {
+	s := previewFixture(t)
+	ctx, now := context.Background(), time.Now()
+	if result, err := s.Create(ctx, previewDAO{}, "https://evil.example/", now); err == nil || result.ID != "" {
+		t.Fatalf("invalid target: %+v %v", result, err)
+	}
+	failure := errors.New("storage unavailable")
+	for _, tc := range []struct {
+		name string
+		dao  previewDAO
+	}{
+		{"cleanup", previewDAO{cleanup: func(context.Context, time.Time) error { return failure }}},
+		{"insert", previewDAO{
+			cleanup: func(context.Context, time.Time) error { return nil },
+			insert:  func(context.Context, model.PreviewSSOLogin) error { return failure },
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := s.Create(ctx, tc.dao, previewMain+"/projects", now)
+			if !errors.Is(err, failure) || result.ID != "" {
+				t.Fatalf("create: %+v %v", result, err)
+			}
+		})
+	}
+}
+
+func TestPreviewStartAndCompleteRejectUnusableRecords(t *testing.T) {
+	s := previewFixture(t)
+	ctx, now := context.Background(), time.Now()
+	credential := secret.Random(previewSecretPrefix)
+	if start, err := s.Start(ctx, previewDAO{}, "bad-id", now); err == nil || start.State != "" {
+		t.Fatalf("invalid start ID: %+v %v", start, err)
+	}
+	if target, err := s.Complete(ctx, previewDAO{}, previewLogin, "bad-secret", now); err == nil || target != "" {
+		t.Fatalf("invalid completion credential: %q %v", target, err)
+	}
+	if principal, expiry, err := s.Authenticate(ctx, previewDAO{}, "bad-secret", now); err == nil || principal != (model.Principal{}) || !expiry.IsZero() {
+		t.Fatalf("invalid preview credential: %+v %v %v", principal, expiry, err)
+	}
+	for _, cause := range []error{model.ErrNotFound, context.Canceled} {
+		d := previewDAO{start: func(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error) {
+			return model.PreviewSSOLogin{}, cause
+		}}
+		if start, err := s.Start(ctx, d, previewLogin, now); !errors.Is(err, cause) || start.State != "" {
+			t.Errorf("start failed lookup: %+v %v", start, err)
+		}
+	}
+	bad := model.PreviewSSOLogin{ID: previewLogin, ReturnURL: "https://evil.example/"}
+	d := previewDAO{
+		start:    func(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error) { return bad, nil },
+		complete: func(context.Context, string, []byte, time.Time) (model.PreviewSSOLogin, error) { return bad, nil },
+	}
+	if start, err := s.Start(ctx, d, previewLogin, now); err == nil || start.State != "" {
+		t.Errorf("start with invalid stored target: %+v %v", start, err)
+	}
+	if target, err := s.Complete(ctx, d, previewLogin, credential, now); err == nil || target != "" {
+		t.Errorf("complete with invalid stored target: %q %v", target, err)
+	}
+}
+
+func TestPreviewReturnTargetRequiresConfiguredPort(t *testing.T) {
+	s, err := NewPreviewSSO("http://main.local:8080", "http://preview.local:8081", "http://main.local:8080/api/v1/auth/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := "http://" + previewTask + ".preview.local:8081/api/v1/projects/" + previewProject + "/tasks/" + previewTask + "/preview/a%20b.html?x=%2F"
+	if err := s.ValidateReturnURL(target); err != nil {
+		t.Fatalf("configured preview port: %v", err)
+	}
+	for _, invalid := range []string{strings.Replace(target, ":8081", ":8082", 1), strings.Replace(target, ":8081", "", 1)} {
+		if err := s.ValidateReturnURL(invalid); err == nil {
+			t.Errorf("accepted different preview port: %q", invalid)
+		}
+	}
+}
+
+func TestPreviewSSORejectsInvalidConfiguration(t *testing.T) {
+	for _, tc := range []struct{ main, preview, callback string }{
+		{"https://daynight.cc/path", previewBase, previewCallback},
+		{previewMain, "https://preview.daynight.cc?extra=1", previewCallback},
+		{previewMain, previewBase, "https://evil.example/api/v1/auth/callback"},
+		{previewMain, previewBase, previewCallback + "?query=1"},
+	} {
+		if result, err := NewPreviewSSO(tc.main, tc.preview, tc.callback); err == nil || result != nil {
+			t.Errorf("invalid configuration accepted: %+v %v", result, err)
+		}
+	}
+}

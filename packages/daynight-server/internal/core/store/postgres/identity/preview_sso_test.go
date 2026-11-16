@@ -268,3 +268,46 @@ func TestPreviewAuthorizationChecksExpiryAfterLockWait(t *testing.T) {
 	requireNoError(t, blocker.Commit(ctx))
 	requireMissing(t, testutil.ReceiveQueryResult(t, ctx, result))
 }
+
+func TestPreviewAuthorizationRejectsInvalidFacts(t *testing.T) {
+	f := newPreviewFixture(t)
+	ctx := t.Context()
+	previewWrite(t, f, func(d store.PreviewSSODAO) error {
+		if err := d.InsertPreviewSSO(ctx, f.login); err != nil {
+			return err
+		}
+		_, err := d.StartPreviewSSO(ctx, f.login.ID, f.state, f.now)
+		return err
+	})
+	otherKind := f.principal
+	otherKind.Kind = model.PATCredential
+	otherOwner := f.principal
+	otherOwner.UserID = uuid.NewString()
+	for _, tc := range []struct {
+		name, id  string
+		state     []byte
+		principal model.Principal
+	}{
+		{"missing login", uuid.NewString(), f.state, f.principal},
+		{"non-session credential", f.login.ID, f.state, otherKind},
+		{"different owner", f.login.ID, f.state, otherOwner},
+		{"wrong state", f.login.ID, hash("other-state"), f.principal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stamp time.Time
+			completion, err := f.db.WritePreviewSSO(ctx, func(d store.PreviewSSODAO) error {
+				var err error
+				stamp, err = d.LockPreviewAuthorization(ctx, tc.id, tc.state, tc.principal, f.now)
+				return err
+			})
+			requireMissing(t, err)
+			if completion.Outcome != store.TransactionNotCommitted || !stamp.IsZero() {
+				t.Fatalf("rejected authorization returned usable result: %+v %v", completion, stamp)
+			}
+			var clean bool
+			if err := f.db.Pool.QueryRow(ctx, `SELECT code_hash IS NULL AND session_id IS NULL AND state_hash=$2 FROM preview_sso_logins WHERE id=$1`, f.login.ID, f.state).Scan(&clean); err != nil || !clean {
+				t.Fatalf("rejected authorization changed login: %v %v", clean, err)
+			}
+		})
+	}
+}
