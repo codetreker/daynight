@@ -968,7 +968,9 @@ preview Domain Cookie, completion check and retry behavior are described in the
 The ordinary login callback and existing attachment reads do not automatically
 enter this flow. The bare preview host serves only SSO; Task subdomains are
 reserved and currently return 404. Configure preview DNS/TLS and preserve the
-original Host before deploying, without adding a startup network probe. Proxy
+original Host before deploying, without adding a startup network probe. Container readiness uses numeric loopback listener URLs
+with `Host: localhost` to select the main namespace independently of public
+ports, while the preview namespace remains SSO-only. Proxy
 access logs must omit code/state query values, Cookie headers and credentials;
 the service correlates safe SSO stage/results by request ID. For local DNS names,
 configure a loopback resolver or browser host mapping. Explicit HTTP socket tests

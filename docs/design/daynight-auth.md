@@ -383,7 +383,7 @@ Identity 模块通过 `Application.IdentityOperations.PreviewSSO()` 提供预览
 
 SSO 只有普通 GET 导航，没有 CORS 交换、Provider、同步接口或后台轮询。所有响应使用 no-store、no-referrer；错误页按 Accept-Language 提供中英文、请求 ID、手动重新 SSO 和主站入口。主站未登录时，可在新标签页登录并返回重试原授权页；Cookie 未写入时不会自动在两个域循环，主站已建立的 session 继续有效。返回目标仅由 Identity 保存和校验，跳转链传递短 ID、state 和 code，保留原始 escaped path/query 及原 `/auth/complete` 两参数。直接 URL 的 fragment 由浏览器按导航继承。
 
-Host 分发在主站 CORS/mux 之前保留整个 preview 命名空间：bare host 仅服务三个 SSO 路径，Task 子域和畸形 preview Host 均拒绝；其他 Host 和 loopback 健康探针保留主站处理。此处尚未提供 Task 附件服务。请求日志仅记录请求 ID、阶段和结果分类，不输出 code/state 查询、Cookie、秘密或完整返回地址；代理访问日志也必须排除这些信息。
+Host 分发在主站 CORS/mux 之前保留整个 preview 命名空间：bare host 仅服务三个 SSO 路径，Task 子域和畸形 preview Host 均拒绝；其他 Host 保留主站处理；部署健康探针使用数值 loopback URL 和显式 `Host: localhost`，在内部端口与公开 origin 端口不同或重合时仍进入主站健康处理。此处尚未提供 Task 附件服务。请求日志仅记录请求 ID、阶段和结果分类，不输出 code/state 查询、Cookie、秘密或完整返回地址；代理访问日志也必须排除这些信息。
 
 ### 主站 session 与 PAT
 

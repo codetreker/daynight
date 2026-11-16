@@ -19,6 +19,8 @@ enabled. See the [authentication design](../../docs/design/daynight-auth.md#æ˜¾å
 Proxy access logs must omit code/state queries, Cookie headers and credentials.
 The bundled stream proxy does not produce HTTP request access logs. Startup
 validates configured origins without probing external DNS or certificates.
+Readiness probes connect to numeric loopback URLs with `Host: localhost`, so
+internal and published ports can differ while preview remains SSO-only.
 ## Configure and start
 
 From the repository root, copy the local configuration template:

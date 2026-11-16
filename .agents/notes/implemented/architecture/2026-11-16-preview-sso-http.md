@@ -28,6 +28,11 @@ Production uses separate same-site HTTPS hostnames. Explicit local HTTP fixtures
 may use same-site DNS names or the same numeric loopback address on different
 ports. Separate DNS browser checks own production Cookie semantics.
 
+Container readiness probes connect to numeric loopback listener URLs and send
+`Host: localhost` to select the main namespace. The public origin can therefore
+use a different published port, even when an internal probe port equals the
+preview origin port. The bare preview namespace still serves only SSO.
+
 ## Alternatives
 
 **Use general API authentication.** It also accepts bearer credentials; granting
@@ -36,6 +41,14 @@ a browser credential requires the main-site session Cookie explicitly.
 **Rewrite every socket fixture to DNS hosts.** Existing process, integration and
 E2E clients would require shared resolver or proxy infrastructure. Distinct
 loopback ports already provide distinct same-site HTTP origins for those tests.
+
+**Serve health paths on a numeric preview origin.** That mixes internal probe
+traffic with the preview namespace when their ports coincide. An explicit
+loopback Host keeps the same namespace rule for DNS and numeric origins.
+
+**Fall back to the main mux for unknown loopback ports.** That would also expose
+main API routing through authorities reserved for preview. Probe authority is
+selected by its actual caller without widening runtime dispatch.
 
 **Return immediately after setting the Cookie.** The browser may reject it.
 Completion detects this and displays an actionable error without restarting.

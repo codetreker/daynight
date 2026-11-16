@@ -113,3 +113,42 @@ func TestExplicitLoopbackOriginsKeepMainAndPreviewPortsSeparate(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopbackHealthCallersSelectMainNamespace(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "[::1]"} {
+		t.Run(host, func(t *testing.T) {
+			h, err := New(&operations{}, func(*http.Request) (model.Principal, error) {
+				t.Fatal("unexpected authentication")
+				return model.Principal{}, nil
+			}, "http://"+host+":32000", "http://"+host+":8787", slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			delegated := 0
+			handler := h.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				delegated++
+				if r.Host != "localhost" {
+					t.Fatalf("probe authority changed: %q", r.Host)
+				}
+				w.Header().Set("Probe-Method", r.Method)
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				for _, path := range []string{"/healthz", "/readyz"} {
+					r := httptest.NewRequest(method, "http://"+host+":8787"+path, nil)
+					r.Host = "localhost"
+					before := delegated
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, r)
+					if w.Code != http.StatusAccepted || delegated != before+1 || w.Header().Get("Probe-Method") != method {
+						t.Fatalf("main probe %s%s = %d", method, path, w.Code)
+					}
+					w = request(handler, method, "http://"+host+":8787"+path)
+					if w.Code != http.StatusNotFound || delegated != before+1 {
+						t.Fatalf("preview probe %s%s escaped to main: %d", method, path, w.Code)
+					}
+				}
+			}
+		})
+	}
+}
