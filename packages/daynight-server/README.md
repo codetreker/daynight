@@ -638,8 +638,9 @@ project task versions change. Task list pages use item-count continuation, and
 Task graph summary and full views return the complete selected graph. They do
 not apply domain read-byte or graph-size admission. Successful MCP reads use
 ordinary encoding without runtime output-schema validation or shared result-byte
-admission; advertised schemas are verified by protocol tests. Input, concurrency
-and deadline rules remain. `task_list`, `task_show` and normal `task_graph` reads
+admission; protocol tests validate result fixtures against the full internal
+output definitions. The current discovery response also advertises output
+schemas. Input, concurrency and deadline rules remain. `task_list`, `task_show` and normal `task_graph` reads
 include Session observations with `meta.observedAt`, `partial` and resource
 references. `task_work_list` calls the work-overview use case, including its
 dedicated response budget. Session module registration advertises only
@@ -2168,8 +2169,10 @@ physical persistence.
 ### MCP protocol tests
 
 `internal/server/mcp` tests execute the actual Entry, HTTP transport, SDK,
-schemas and tool response encoding. Most use controlled direct service/use-case
-operations; Project, Team and Invitation organization scenarios also execute
+schemas and tool response encoding. Result contract fixtures use the original
+internal output definitions; discovery assertions separately check the currently
+advertised output schemas and other tool metadata. Most use controlled direct
+service/use-case operations; Project, Team and Invitation organization scenarios also execute
 real Service and Core with controlled DAO facts through a host registering only
 their adapters. Bot's completed-response loss test also uses real Service and
 Core, the SDK and socket through a Bot-only host; its later reads use explicitly

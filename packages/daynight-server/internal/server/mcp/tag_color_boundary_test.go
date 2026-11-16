@@ -130,6 +130,6 @@ func TestTagColorInvalidReachesRealServiceWithoutWrite(t *testing.T) {
 		if tc.tool == "tag_update" && object(t, failure["refs"])["tagId"] != testTargetID {
 			t.Fatalf("update refs: %+v", failure)
 		}
-		validateDiscoveredResult(t, client, tc.tool, result)
+		validateToolResult(t, arrayResultDefinition(t, tagToolsJSON, tc.tool), result)
 	}
 }

@@ -86,8 +86,11 @@ func TestProjectResolveProtocol(t *testing.T) {
 					tool = candidate
 				}
 			}
-			if tool == nil || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
+			if tool == nil || tool.OutputSchema == nil || tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
 				t.Fatalf("annotations: %+v", tool)
+			}
+			if _, err := resolveSchema(tool.OutputSchema); err != nil {
+				t.Fatalf("published output schema: %v", err)
 			}
 			inputBytes, err := json.Marshal(tool.InputSchema)
 			if err != nil {
@@ -123,17 +126,7 @@ func TestProjectResolveProtocol(t *testing.T) {
 			if result.IsError || seen != address || !reflect.DeepEqual(data, want) || object(t, doc["meta"])["outcome"] != nil {
 				t.Fatalf("success: %+v", doc)
 			}
-			outputSchema, err := resolveSchema(tool.OutputSchema)
-			if err != nil {
-				t.Fatal(err)
-			}
-			encoded, err := json.Marshal(doc)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := validateJSON(outputSchema, encoded); err != nil {
-				t.Fatalf("success does not satisfy advertised output schema: %v", err)
-			}
+			validateToolResult(t, arrayResultDefinition(t, projectToolsJSON, "project_resolve"), result)
 			result = call(map[string]any{"repoUrl": address + "é"})
 			if !result.IsError || object(t, structured(t, result)["error"])["code"] != "invalid_input" {
 				t.Fatalf("byte limit: %+v", result)

@@ -18,8 +18,10 @@ the direct-operation boundary used by these tests.
 
 ## Decision
 
-MCP tests execute the actual authenticated Entry, HTTP parser, SDK, advertised
-tool schemas, response envelopes and resource permits. Inputs and writes retain
+MCP tests execute the actual authenticated Entry, HTTP parser, SDK, discovery
+metadata, response envelopes and resource permits. Result fixtures are checked
+against the original internal output definitions; discovery checks retain the
+currently advertised output schemas separately. Inputs and writes retain
 their encoded boundaries; successful reads use ordinary canonical output without
 read-schema or byte admission. Consumer-owned operation contracts
 accept the existing production services directly. Tests configure operation
