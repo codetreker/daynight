@@ -736,6 +736,8 @@ for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] 
   await search.focus(); await search.fill('Unbroken');
   await expect(filter.getByText(childLongName, { exact: true })).toBeVisible();
   const option = filter.getByLabel(childLongName); await option.check();
+  const colorDot = option.locator('..').locator('.task-tag-dot');
+  await expect(colorDot).toHaveCSS('background-color', 'rgb(18, 164, 205)');
   const contentGeometry = await option.evaluate(input => {
     const panel = input.closest('.tag-filter-panel')!, row = input.closest('label')!, chip = row.querySelector('.task-tag')!;
     const box = (element: Element) => ({ width: element.clientWidth, scrollWidth: element.scrollWidth });
@@ -779,8 +781,14 @@ for (const width of [1280, 736, 390, 320]) for (const locale of ['en', 'zh-CN'] 
     expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
     await expect(option).toBeChecked();
     await expect(card.locator(`#chain-task-goal-${goal.id}-${child.id}`)).toBeVisible();
+    // The catalog response stays unchanged; its completion invalidates the color
+    // projection, whose visible update provides a barrier after React processes it.
+    state.colors.set(id(93), '#BA1335');
+    await expect(colorDot).toHaveCSS('background-color', 'rgb(18, 164, 205)');
+    const catalogResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/v1/projects/${projectId}/tags`);
     state.releaseCatalog();
-    await expect.poll(() => state.heldCatalog).toBe(false);
+    expect((await catalogResponse).ok()).toBe(true);
+    await expect(colorDot).toHaveCSS('background-color', 'rgb(186, 19, 53)');
     await expect(search).toHaveValue('Unbroken'); await expect(search).toBeFocused();
     expect(await search.evaluate(element => element === (window as unknown as { filterSearchBeforeRefresh: Element }).filterSearchBeforeRefresh)).toBe(true);
     expect(await search.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd])).toEqual([1, 4]);
