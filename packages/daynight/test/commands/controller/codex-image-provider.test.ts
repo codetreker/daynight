@@ -1,3 +1,5 @@
+import { imageQualificationFingerprint } from "../../../src/commands/controller/providers/image-qualification.js";
+import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { authorizeNativeImageInput } from "../../../src/commands/controller/providers/image-admission.js";
 import { expect, test, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -18,7 +20,7 @@ import { NativeRpcError, NativeRpcTimeoutError } from "../../../src/commands/con
 // and the installed executable profile require separate real-provider evidence.
 vi.mock("../../../src/commands/controller/providers/codex-image-profile.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../../../src/commands/controller/providers/codex-image-profile.js")>();
-  return { ...actual, codexImageProfile: (value: any, native: any) => value.userAgent === "controlled-fixture" ? { modelProvider: native.modelProvider, modelId: native.model, geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } } : null };
+  return { ...actual, codexImageProfile: (value: any, native: any) => value.userAgent === "controlled-fixture" ? { qualification: controlledImageQualification("codex", native.model), modelProvider: native.modelProvider, modelId: native.model, geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } } : null };
 });
 const rpcPolicy = vi.hoisted(() => ({ timeoutMs: 30_000 }));
 vi.mock("../../../src/commands/controller/providers/codex-rpc.js", async importOriginal => {
@@ -48,7 +50,7 @@ const fixture = async (mode = "normal", history: unknown[] = []) => {
     intents.set(operationId, { sha256: createHash("sha256").update(JSON.stringify(payload)).digest("hex"), state: "dispatching", command: { operationId, kind: "send_message", payload } });
     const value = { content: content.map(part => part.type === "image" ? { ...part, validated: { mediaType: part.mediaType as "image/png", byteLength: part.byteLength, sha256: part.sha256, width: 1, height: 1, frameCount: 1 } } : part) };
     const caps = states.at(-1)?.images;
-    return { operationId, value: caps ? authorizeNativeImageInput(value, { ...caps, revision: "7", providerRevision: "1" }, () => {}) : value, expectedTurnId };
+    return { operationId, value: caps ? authorizeNativeImageInput(value, { ...caps, revision: "7", providerRevision: "1" }, () => {}, imageQualificationFingerprint(caps)) : value, expectedTurnId };
   };
   const requests = async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
   return { root, options, image, input, requests, entries, states, observations, captures, state, child: () => child, cleanup: () => rm(root, { recursive: true, force: true }) };
@@ -60,7 +62,7 @@ test.each(["second-geometry", "qualification-revoked"])("Codex sends nothing whe
     const prepared = f.input([await f.image(), await f.image()]);
     let allowed = true;
     const current = f.states.at(-1)!.images!;
-    const input = authorizeNativeImageInput(prepared.value, { ...current, revision: "7", providerRevision: "1" }, () => { if (!allowed) throw new NativeRpcError(-32602, "Qualification revoked during verification."); });
+    const input = authorizeNativeImageInput(prepared.value, { ...current, revision: "7", providerRevision: "1" }, () => { if (!allowed) throw new NativeRpcError(-32602, "Qualification revoked during verification."); }, imageQualificationFingerprint(current));
     if (failure === "second-geometry") Object.assign(input.content[1]!, { validated: { ...(input.content[1] as NativeImagePart).validated!, width: 1025 } });
     const sending = provider.send(input, prepared.operationId, null);
     if (failure === "qualification-revoked") allowed = false;

@@ -1,3 +1,4 @@
+import { controlledImageQualification } from "../../helpers/image-qualification.js";
 import { expect, test } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { codexImageProfile, supportsCodexImageProfile, type CodexImageProfile } 
 import { parseProviderImageCapabilities } from "../../../src/session/image-values.js";
 
 const initialized = { userAgent: "daynight/0.167.0 (Mac OS 27.2.0; arm64) dumb (daynight; 0.50.0)", platformOs: "macos" };
-const controlledProfile = (modelId: string): CodexImageProfile => ({ modelId, modelProvider: "controlled", geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } });
+const controlledProfile = (modelId: string): CodexImageProfile => ({ qualification: controlledImageQualification("codex", modelId), modelId, modelProvider: "controlled", geometry: { version: 1, known: true, maxWidth: 1024, maxHeight: 1024, maxPixels: 1_048_576, maxFrames: 1 } });
 
 test("the native image profile rejects unverified executable versions and platforms", () => {
   const native = { userAgent: "daynight/0.167.0 (Mac OS 27.2.0; arm64) dumb (daynight; 0.50.0)", platformOs: "macos" };

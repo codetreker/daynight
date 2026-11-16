@@ -253,7 +253,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     try {
       const status = await call(client.getStatus(), "Copilot version profile");
       const sdk = JSON.parse(readFileSync(new URL("../package.json", import.meta.resolve("@github/copilot-sdk")), "utf8")) as { version?: unknown };
-      imageProfile = options.imageRuntime ? copilotImageProfile(sdk.version, status.version) : null;
+      imageProfile = options.imageRuntime ? copilotImageProfile(sdk.version, status.version, controls.imageModelId()) : null;
     } catch { imageProfile = null; }
     if (options.validateNativeSelection && !options.resumeNativeSessionId) await controls.validateSelection({ model: options.model, ...(args.effort === undefined ? {} : { effort: args.effort }) });
     await runtime.authority?.install(nativeId);
@@ -296,7 +296,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
         if (inputImages.length) {
           await verifyNativeImageFiles(inputImages); await controls!.refresh(false);
           const capability = controls!.imageCapabilities(imageInputs.profileAllowed ? imageProfile : null, verified ? nativeId : null);
-          if (capability.send !== "supported" || steering && capability.steer !== "supported" || inputImages.length > capability.maxImagesPerMessage || inputImages.some(image => !capability.inputMediaTypes.includes(image.mediaType as "image/png") || BigInt(image.byteLength) > BigInt(capability.maxImageBytes))) throw new NativeRpcError(-32602, "Copilot image capability is unavailable or changed before dispatch.");
+          if ((steering ? capability.steer : capability.send) !== "supported" || inputImages.length > capability.maxImagesPerMessage || inputImages.some(image => !capability.inputMediaTypes.includes(image.mediaType as "image/png") || BigInt(image.byteLength) > BigInt(capability.maxImageBytes))) throw new NativeRpcError(-32602, "Copilot image capability is unavailable or changed before dispatch.");
           if (closed || disconnected || currentTurnId !== expectedTurnId || interactions.waiting) throw new NativeRpcError(-32602, "Native Copilot turn changed before image dispatch.");
           assertNativeImageAdmission(inputValue, capability, expectedTurnId);
           imageInputs.prepare(inputValue, operationId, expectedTurnId);

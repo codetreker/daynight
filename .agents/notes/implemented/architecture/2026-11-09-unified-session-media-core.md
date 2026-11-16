@@ -41,6 +41,13 @@ preparation and native encoding end with another qualification check; a failed
 image refuses the complete input. Historical reads remain independent of current
 input qualification.
 
+The [qualification-boundary decision](2026-11-16-image-qualification-boundaries.md)
+keeps these limits attached to the original input and separates native internal
+processing from application-original retention. Service capability synthesis
+intersects the Provider report with installed components; new image operations
+also require current complete history in their authorization transaction. The
+service revision remains independent of the Controller's state projection.
+
 Resource reads require both Session access and a publishing reference. Message
 references and committed archive closures permit shared reads; a private upload
 requires its original actor and matching complete receipt. Operation, unknown,

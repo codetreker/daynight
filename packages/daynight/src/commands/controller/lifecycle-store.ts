@@ -1,3 +1,4 @@
+import { imageQualificationFingerprint } from "./providers/image-qualification.js";
 import { createNativeInputPublication } from "./media/native-publication.js";
 import { createImageCaptureSource } from "./media/capture-source.js";
 import { createMarkdownSourceStore } from "./markdown/store.js";
@@ -308,10 +309,14 @@ const createControllerLifecycleStore = (file: string, ticket: ControllerLaunchTi
       const row = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images'").get() as { value: string } | undefined;
       const previous = row ? parseProviderImageCapabilities(JSON.parse(row.value)) : null;
       const candidate = parseProviderImageCapabilities({ ...value, revision: previous?.revision ?? "1" });
-      if (previous && canonicalImageJson(candidate) === canonicalImageJson(previous)) return previous;
+      const fingerprint = imageQualificationFingerprint(value);
+      const priorFingerprint = db.prepare("SELECT value FROM image_runtime_state WHERE key='provider_images_qualification'").get() as { value: string } | undefined;
+      if (previous && (priorFingerprint?.value ?? null) === fingerprint && canonicalImageJson(candidate) === canonicalImageJson(previous)) return previous;
       const next = { ...candidate, revision: previous ? String(BigInt(previous.revision) + 1n) : "1" };
       parseProviderImageCapabilities(next);
       db.prepare("INSERT INTO image_runtime_state VALUES('provider_images',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(next));
+      if (fingerprint === null) db.prepare("DELETE FROM image_runtime_state WHERE key='provider_images_qualification'").run();
+      else db.prepare("INSERT INTO image_runtime_state VALUES('provider_images_qualification',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(fingerprint);
       return next;
     }),
     recordRelayHistory: (historyEpoch: string): void => atomic(() => {

@@ -1,3 +1,4 @@
+import { bindImageQualification, qualifiedImageLimits } from "./image-qualification.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, opendir } from "node:fs/promises";
@@ -28,13 +29,16 @@ export class CodexControls {
     const modalities = matches.length === 1 && Array.isArray(matches[0]!.inputModalities) ? matches[0]!.inputModalities : null;
     const stable = !this.settingInFlight && this.pending.size === 0 && this.store.value.settingsError === null;
     const bound = profile !== null && profile.modelProvider !== null && profile.modelProvider === this.native.modelProvider && profile.modelId === model;
-    const geometry = bound ? profile.geometry : unknownCodexGeometry;
+    const qualification = bound && profile.qualification?.identity.modelId === model ? profile.qualification : null;
+    const geometry = qualification ? qualifiedImageLimits(qualification).geometry : unknownCodexGeometry;
     const support = !profile || !stable || !model || !modalities ? "unknown" : !modalities.includes("image") ? "unsupported" : geometry.known ? "supported" : "unknown";
     const activeUnknown = this.turn() !== null && this.turnModel !== model;
-    return { expectedNativeSessionId: this.session() || null, modelId: model, controlsRevision: this.store.value.revision, send: support, steer: activeUnknown ? "unknown" : support,
-      reasonCode: !profile ? "profile_disabled" : !stable || activeUnknown || support === "unknown" ? "capability_unknown" : support === "unsupported" ? "model_unsupported" : null,
+    const send = support === "supported" && !qualification?.send ? "unsupported" : support;
+    const steer = activeUnknown ? "unknown" : support === "supported" && !qualification?.steer ? "unsupported" : support;
+    return bindImageQualification({ expectedNativeSessionId: this.session() || null, modelId: model, controlsRevision: this.store.value.revision, send, steer,
+      reasonCode: activeUnknown ? "capability_unknown" : send === "supported" || steer === "supported" ? null : !profile || qualification && !qualification.send && !qualification.steer ? "profile_disabled" : !stable || activeUnknown || support === "unknown" ? "capability_unknown" : support === "unsupported" ? "model_unsupported" : null,
       inputMediaTypes: support === "supported" ? ["image/png", "image/jpeg", "image/webp"] : [], maxImageBytes: String(IMAGE_LIMITS.imageBytes), maxMessageImageBytes: String(IMAGE_LIMITS.messageBytes), maxImagesPerMessage: IMAGE_LIMITS.images,
-      geometry };
+      ...(qualification ? qualifiedImageLimits(qualification) : {}), geometry }, qualification);
   }
   seed(value: unknown) { const raw = record(value); this.observe({ ...raw, ...(raw.sandbox ? { sandboxPolicy: raw.sandbox } : {}), ...(raw.reasoningEffort ? { effort: raw.reasoningEffort } : {}) }); }
   observe(value: unknown) {
