@@ -59,6 +59,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "team" | "teamSettings" | "teamMembers" | "teamGitHubApps"; readonly teamId: string }
   | { readonly kind: "sharedProjects" | "myTasks" }
   | { readonly kind: "githubApps"; readonly appId: string | null }
+  | { readonly kind: "githubAppAdmins"; readonly appId: string }
   | { readonly kind: "bots" }
   | { readonly kind: "assistantTask"; readonly taskId: string; readonly tab: "manual" | "records" | "proposals"; readonly recordId?: string; readonly eventId?: string }
   | { readonly kind: "bot"; readonly botId: string }
@@ -66,7 +67,7 @@ export type ProtectedRoute = Route
   | { readonly kind: "worker"; readonly workerId: string }
   | { readonly kind: "testSessions" }
   | { readonly kind: "testSession"; readonly sessionId: string }
-  | { readonly kind: "account" | "invitations" | "teamInvitations" }
+  | { readonly kind: "account" | "invitations" | "teamInvitations" | "githubAppInvitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "oauthConsent"; readonly requestId: string | null }
   | { readonly kind: "settings"; readonly projectId: string; readonly selection: ProjectSettingsSelection };
@@ -112,6 +113,11 @@ export const parseRoute = (pathname: string, search = ""): Route => {
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
   if (pathname === "/webhooks") return webhookRoute(search);
   if (pathname === "/github-apps") return { kind: "githubApps", appId: null };
+  const githubAdmins = /^\/github-apps\/([^/]+)\/admins$/.exec(pathname);
+  if (githubAdmins !== null) {
+    try { const appId = canonicalId(decodeURIComponent(githubAdmins[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubAppAdmins", appId }; }
+    catch { return { kind: "notFound" }; }
+  }
   const githubApp = /^\/github-apps\/([^/]+)$/.exec(pathname);
   if (githubApp !== null) {
     try { const appId = canonicalId(decodeURIComponent(githubApp[1]!)); return appId === null ? { kind: "notFound" } : { kind: "githubApps", appId }; }
@@ -151,6 +157,7 @@ const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
     catch { return { kind: "notFound" }; }
   }
   if (pathname === "/account") return { kind: "account" };
+  if (pathname === "/github-app-admin-invitations") return { kind: "githubAppInvitations" };
   if (pathname === "/invitations") return { kind: "invitations" };
   if (pathname === "/team-invitations") return { kind: "teamInvitations" };
   if (pathname === "/oauth/consent") {

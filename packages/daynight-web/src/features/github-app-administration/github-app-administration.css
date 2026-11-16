@@ -1,0 +1,15 @@
+.github-app-admin-list { list-style: none; padding: 0; margin: 0; }
+.github-app-admin-list > li { display: flex; align-items: center; gap: 14px; padding: 16px 24px; border-top: 1px solid #e4e8ef; }
+.github-app-admin-list > li > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.github-app-admin-list p { margin: 5px 0 0; color: #556176; overflow-wrap: anywhere; }
+.github-app-admin-list img { border-radius: 50%; width: 40px; height: 40px; object-fit: cover; }
+.github-app-admin-hint { padding: 16px 24px; color: #556176; border-top: 1px solid #e4e8ef; }
+.github-app-admin-more { padding: 16px 24px; }
+.github-app-admin-link { width: 100%; min-height: 100px; overflow-wrap: anywhere; }
+.github-app-admin-invitation { max-width: 640px; margin: 24px auto; }
+.github-app-admin-invitation p, .github-app-admin-invitation code { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .github-app-admin-list > li { align-items: flex-start; flex-wrap: wrap; padding: 16px; }
+  .github-app-admin-list > li > div { min-width: 110px; }
+  .github-app-admin-list > li > button { margin-left: 54px; }
+}

@@ -32,6 +32,7 @@ type githubRuntime struct {
 type githubAppStore interface {
 	store.GitHubAppStore
 	store.GitHubAppConfigStore
+	store.GitHubAppAdminStore
 	store.GitHubGrantStore
 	store.GitHubAppImpactStore
 	store.GitHubProjectAppStore
@@ -67,6 +68,7 @@ func (a *App) assembleGitHub(db store.Transactions, logger *slog.Logger) error {
 	}
 	a.GitHubApps = githubservice.NewAppManager(backend)
 	a.GitHubConfig = githubservice.NewConfigManager(backend)
+	a.GitHubAdmins = githubservice.NewAdminManager(backend)
 	a.GitHubGrants = githubservice.NewGrantManager(backend, backend)
 	a.GitHubProject = githubservice.NewProjectAppManager(backend, provider)
 	a.GitHubWebhook = receiver

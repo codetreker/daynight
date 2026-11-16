@@ -117,6 +117,7 @@ func New(app *service.App, config configpkg.Config, logger *slog.Logger) (Handle
 	taghttp.RegisterRoutes(mux, app.Tags, auth, logger)
 	githubhttp.RegisterPullRequestRoutes(mux, app.GitHubRead, auth, logger)
 	githubhttp.RegisterAppRoutes(mux, app.GitHubApps, auth, config.Server.PublicOrigin, logger, app.GitHubConfig)
+	githubhttp.RegisterAdminRoutes(mux, app.GitHubAdmins, auth, config.Server.PublicOrigin, logger)
 	githubhttp.RegisterGrantRoutes(mux, app.GitHubGrants, auth, logger)
 	githubhttp.RegisterProjectAppRoutes(mux, app.GitHubProject, auth, logger)
 	if app.GitHubWebhook != nil {

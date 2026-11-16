@@ -62,10 +62,19 @@ describe("route parsing", () => {
   });
 });
 
+describe("GitHub App invitation route", () => {
+  it("preserves a fragment-free destination through login", () => {
+    expect(parseAuthRoute("/github-app-admin-invitations")).toEqual({ kind: "githubAppInvitations" });
+    expect(isLoginReturnPath("/github-app-admin-invitations")).toBe(true);
+    expect(isLoginReturnPath("/github-app-admin-invitations#dn_gai_secret")).toBe(false);
+  });
+});
+
 describe("GitHub App management routes", () => {
   it("supports the list and canonical detail, including login returns", () => {
     expect(parseAuthRoute("/github-apps")).toEqual({ kind: "githubApps", appId: null });
     expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}`)).toEqual({ kind: "githubApps", appId: taskId });
+    expect(parseAuthRoute(`/github-apps/${taskId.toUpperCase()}/admins`)).toEqual({ kind: "githubAppAdmins", appId: taskId });
     expect(isLoginReturnPath(`/github-apps/${taskId}`)).toBe(true);
     for (const path of ["/github-apps/", "/github-apps/bad", `/github-apps/${taskId}/extra`]) expect(parseAuthRoute(path)).toEqual({ kind: "notFound" });
   });
