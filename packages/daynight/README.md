@@ -2983,8 +2983,9 @@ removal. If a retry-state write fails, the current process retains bounded
 backoff and both errors without claiming that the latest decision is durable.
 
 A known incomplete Web archive enters a durable repair-required state. Every
-15 minutes the Worker checks the original stopped generation without loading
-pending timeline content or resource bytes. The claim and source remain reserved; a confirmed stopped execution no longer
+15 minutes the Worker checks the original stopped generation and SQL projection
+error markers without materializing the complete timeline or reading resource bytes.
+The claim and source remain reserved; a confirmed stopped execution no longer
 occupies capacity. A recovered receipt still enters the normal remote receipt validation;
 its presence alone neither clears the repair classification nor releases resources.
 Confirmed complete source conditions clear the saved repair classification before
@@ -2994,6 +2995,25 @@ backfill retry. A failed classification write preserves the repair wait; success
 classification changes still retain cleanup responsibility until complete cleanup
 succeeds; execution capacity follows the original stop observation. Repeated checks do not repair missing history or clear
 its completeness flags.
+
+For failed Markdown image analysis on a retained terminal Web execution, run
+`daynight worker repair-markdown TASK --project PROJECT --claim-id CLAIM --session-id SESSION --worktree-id WORKTREE`
+on its original Worker machine. The command verifies the current owner and
+unchanged execution, stopping evidence, launch ticket and worktree. It can run
+beside the Worker using the stopped Controller storage permit. It neither
+restarts an Agent nor repeats input. Only preserved complete source blocks are
+reanalyzed; original failed projections, text and prior image references remain
+retained. Newly discovered local images require the original directory root,
+ordinary in-root traversal and validated bytes. External downloads, changed
+roots, missing sources and ambiguous blocks remain repair failures.
+
+The command reports per-entry repair failures with the original source retained.
+After restoring the reported source or context, rerun the same explicit target.
+Successful repair follows the existing archive upload and receipt verification;
+the Worker retains cleanup ownership. An existing archive intent or receipt is
+reconciled without rewriting its frozen source. Verify the original Session's
+content archive separately from its lifecycle. A successful retry cannot identify
+the original parse failure when its detailed cause was never saved.
 
 The Worker prepares each selected or retained repository by converting legacy
 ownership into durable manifests before admitting file operations. Conversion

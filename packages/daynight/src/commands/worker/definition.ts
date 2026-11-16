@@ -76,6 +76,12 @@ export const workerDefinition: CommandDefinition = {
       details: "Read resources list first. Only the matching terminal claim with confirmed original stop may be disposed. Abandon stops archive retry and keeps files. Delete removes only the original source and worktree through ownership checks. Neither action manufactures ready/unavailable or changes remote archive history. Reuse the same operation ID to reconcile an interrupted decision.",
     }],
   }, {
+    name: "repair-markdown",
+    description: "Repair failed Markdown images in one stopped original Web execution and archive it",
+    arguments: task,
+    options: [claim, { ...project, required: true }, { names: ["--session-id"], description: "Original Session UUID", value: { name: "session-id", kind: "text" }, required: true }, { names: ["--worktree-id"], description: "Original worktree UUID", value: { name: "worktree-id", kind: "text" }, required: true }, help],
+    details: "Select the original completed claim, Session and retained worktree. The command verifies the stopped Controller and takes its storage lock; the Worker may remain running. It reanalyses saved complete Markdown inputs and authorizes local image reads only inside the original verified worktree. Missing, changed or forbidden sources retain the original failure and report the next action. It never starts an Agent, replays user input or changes Task status. Successful repair follows the existing archive protocol; the Worker owns later cleanup.",
+  }, {
     name: "retry",
     description: "Attempt recovery once for an active original claim",
     arguments: task,

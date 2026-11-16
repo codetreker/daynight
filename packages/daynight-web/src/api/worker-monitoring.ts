@@ -21,6 +21,7 @@ const causes = {
   'native-identity-missing': 'The original native execution identity is missing.', 'worktree-validation-failed': 'The worktree failed ownership validation.',
   'ownership-unconfirmed': 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.',
   'branch-mismatch': 'The worktree branch does not match the recorded owner.', 'recovery-blocked': 'Recovery is blocked and needs attention.',
+  'markdown-projection-repair': 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.',
   'outcome-unknown': 'The operation outcome is unknown.', unknown: 'The operation failed; inspect local Worker diagnostics for details.',
 } as const;
 
