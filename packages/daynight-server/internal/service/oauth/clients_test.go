@@ -51,6 +51,7 @@ func TestNewClientsBindsDefaultOperationsAndAdmissionInstance(t *testing.T) {
 		t.Fatal("constructor wiring incomplete")
 	}
 	sameFunction(t, first.operations.parseMetadata, core.ParseClientMetadata)
+	sameFunction(t, first.operations.parseClientIDDocument, core.ParseClientIDMetadataDocument)
 	sameFunction(t, first.operations.parseStoredMetadata, core.ParseStoredClientMetadata)
 	sameFunction(t, first.operations.freezeClient, core.FreezeClient)
 	for _, item := range []struct {
@@ -437,7 +438,7 @@ func TestClientsResolveCIMDUsesValidationCallbackAndDeadline(t *testing.T) {
 			want.ClientName = metadata.ClientName
 			want.Redirects = append([]string(nil), metadata.RedirectURIs...)
 			want.MetadataDeadline = deadline
-			c.operations.parseMetadata = func(data []byte, id string) (core.ClientMetadata, error) {
+			c.operations.parseClientIDDocument = func(data []byte, id string) (core.ClientMetadata, error) {
 				f.step("parse")
 				f.equal(data, raw)
 				f.equal(id, requestedID)
@@ -490,6 +491,61 @@ func TestClientsResolveCIMDUsesValidationCallbackAndDeadline(t *testing.T) {
 					wantErr = failure
 				}
 				checkAuthorizationError(t, err, wantErr)
+			}
+		})
+	}
+}
+
+func TestClientsResolvePublicCLIMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, raw, redirect string
+	}{
+		{
+			name:     "Copilot CLI additional grant",
+			id:       "https://github.com/copilot/cli/client-metadata.json",
+			raw:      `{"client_id":"https://github.com/copilot/cli/client-metadata.json","client_name":"GitHub Copilot CLI","client_uri":"https://github.com/features/copilot","application_type":"native","grant_types":["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:device_code"],"response_types":["code"],"token_endpoint_auth_method":"none","redirect_uris":["http://127.0.0.1/","http://127.0.0.1/callback"]}`,
+			redirect: "http://127.0.0.1:58082/callback",
+		},
+		{
+			name:     "Claude Code localhost port",
+			id:       "https://claude.ai/oauth/claude-code-client-metadata",
+			raw:      `{"client_id":"https://claude.ai/oauth/claude-code-client-metadata","client_name":"Claude Code","redirect_uris":["http://localhost/callback","http://127.0.0.1/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`,
+			redirect: "http://localhost:3118/callback",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOAuthFixture(t, "writer client", "scope client", "read client", "callback returned", "writer returned", "fetch")
+			f.client.read = func(id string, lock bool) (store.OAuthClient, error) {
+				f.equal(id, tc.id)
+				f.equal(lock, true)
+				return store.OAuthClient{}, model.ErrNotFound
+			}
+			f.plan("client", true, model.ErrNotFound, store.TransactionNotCommitted, model.ErrNotFound)
+			clients, err := NewClients(f, core.PublicAdmission{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := f.now.Add(time.Hour)
+			clients.fetch = metadataCallback{call: func(ctx context.Context, id string, validate func([]byte) error) ([]byte, time.Time, error) {
+				f.context(ctx)
+				f.step("fetch")
+				f.equal(id, tc.id)
+				raw := []byte(tc.raw)
+				if err := validate(raw); err != nil {
+					return nil, time.Time{}, err
+				}
+				return raw, deadline, nil
+			}}
+			client, err := clients.Resolve(f.ctx, tc.id, tc.redirect)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.equal(client.ClientID, tc.id)
+			f.equal(client.Provenance, "cimd")
+			f.equal(client.SelectedExactRedirect, tc.redirect)
+			f.equal(client.MetadataDeadline, deadline)
+			if client.MetadataDigest == "" {
+				t.Fatal("resolved metadata was not frozen")
 			}
 		})
 	}

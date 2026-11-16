@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -126,5 +127,30 @@ func TestLargeRegisteredMetadataCanBeParsedAndFrozenAfterEncoding(t *testing.T) 
 	got, err := FreezeClient(id, "dcr", stored, deadline, redirect)
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("large frozen client = %+v, %v; want complete registered metadata", got, err)
+	}
+}
+
+func TestLocalhostPortExceptionFreezesExactCodeRedirect(t *testing.T) {
+	const id = "https://client.example/metadata.json"
+	const redirect = "http://localhost:3118/callback"
+	client, err := FreezeClient(id, "cimd", ClientMetadata{ClientID: id, RedirectURIs: []string{"http://localhost/callback"}, TokenEndpointAuthMethod: "none"}, time.Time{}, redirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.SelectedExactRedirect != redirect {
+		t.Fatalf("selected redirect = %q; want %q", client.SelectedExactRedirect, redirect)
+	}
+	verifier := strings.Repeat("a", 43)
+	hash := sha256.Sum256([]byte(verifier))
+	authorization := NewAuthorization(AuthorizationRequest{ClientID: id, RedirectURI: client.SelectedExactRedirect, Resource: "https://server.example/mcp", Scope: Scope, Challenge: base64.RawURLEncoding.EncodeToString(hash[:])}, time.Now())
+	for _, requested := range []string{redirect, "http://localhost:3119/callback", "http://localhost/callback", "http://127.0.0.1:3118/callback"} {
+		err := CheckAuthorizationCodeBinding(authorization, CodeBinding{ClientID: id, RedirectURI: requested, Resource: authorization.Resource, Verifier: verifier})
+		if requested == redirect {
+			if err != nil {
+				t.Fatalf("exact redirect rejected: %v", err)
+			}
+		} else if !errors.Is(err, ErrInvalidGrant) {
+			t.Fatalf("code binding accepted changed redirect %q: %v", requested, err)
+		}
 	}
 }

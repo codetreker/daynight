@@ -28,6 +28,18 @@ authorization-server metadata 描述公开注册、授权、令牌、撤销、co
 `oauth.preregistered_clients` 配置识别；YAML 使用以 client ID 为键的 mapping，
 `DAYNIGHT_OAUTH_PREREGISTERED_CLIENTS` 可用 JSON 对象覆盖，值为对应公开 metadata 文档。服务启动时校验这些文档及其 ID，拒绝无效配置。
 
+远程 CIMD 的 `grant_types` 描述客户端能力：显式列表须包含 `authorization_code`，
+可同时声明其他语法有效的 grant；省略时采用默认值。额外声明不启用服务端对应流程，
+例如 `device_code` 仍不受支持。DCR、预注册配置和已存储注册仍只接受服务端支持的
+grant。两种解析入口共享客户端身份、公开认证方式和 redirect 校验，CIMD 拉取仍受
+原有 SSRF 防护约束。
+
+HTTP 回调仅对同一 loopback IP 或精确的 `localhost` 主机允许端口不同，路径、查询和
+其他 URL 部分仍须匹配；`localhost` 与 `127.0.0.1` 不能互换，别名和子域名不适用。
+HTTPS 回调仍精确匹配。授权请求冻结实际选定的完整回调地址，令牌兑换必须提交该地址，
+不能再次套用端口放宽规则。[客户端兼容性决策](../../.agents/notes/implemented/bug-fix/2026-11-16-mcp-cimd-client-compatibility.md)
+记录与原有客户端解析策略的关系。
+
 授权入口验证客户端及回调后冻结请求参数，使用独立 HttpOnly 浏览器绑定并进入同源
 `/oauth/consent`。登录返回路径只接受本地路由。浏览器读取安全展示字段；决定操作要求
 当前 Session、精确 Origin、绑定和显示账户的 `expectedUserId`。浏览器不从状态读取恢复

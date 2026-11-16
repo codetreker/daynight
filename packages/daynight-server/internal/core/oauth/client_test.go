@@ -76,7 +76,7 @@ func TestRedirectMatching(t *testing.T) {
 		{"http://127.0.0.1:123/cb?x=1", "http://127.0.0.1:456/cb?x=1", true},
 		{"http://[::1]:123/cb", "http://[::1]:456/cb", true},
 		{"http://127.0.0.1:123/cb?x=1", "http://127.0.0.1:456/cb?x=2", false},
-		{"http://localhost:123/cb", "http://localhost:456/cb", false},
+		{"http://localhost:123/cb", "http://localhost:456/cb", true},
 		{"http://localhost:123/cb", "http://localhost:123/cb", true},
 		{"http://evil.example/cb", "http://evil.example/cb", false},
 		{"https://user@client.example/cb", "https://user@client.example/cb", false},
@@ -128,5 +128,38 @@ func TestLoopbackRedirectWithoutPath(t *testing.T) {
 	}
 	if MatchRedirect("http://127.0.0.1:123", "http://127.0.0.1:456/") {
 		t.Fatal("empty and slash paths differ")
+	}
+}
+
+func TestLocalhostRedirectPortKeepsOtherComponentsExact(t *testing.T) {
+	for _, tc := range []struct {
+		registered, requested string
+		match                 bool
+	}{
+		{"http://localhost/callback", "http://localhost:3118/callback", true},
+		{"http://localhost:3118/callback", "http://localhost/callback", true},
+		{"http://localhost/callback?x=1", "http://localhost:3118/callback?x=1", true},
+		{"http://localhost", "http://localhost:3118", true},
+		{"http://localhost/callback", "http://127.0.0.1:3118/callback", false},
+		{"http://127.0.0.1/callback", "http://localhost:3118/callback", false},
+		{"http://localhost/callback", "http://[::1]:3118/callback", false},
+		{"http://localhost/callback", "http://LOCALHOST:3118/callback", false},
+		{"http://localhost/callback", "http://localhost.:3118/callback", false},
+		{"http://localhost/callback", "http://[localhost]:3118/callback", false},
+		{"http://[localhost]/callback", "http://localhost:3118/callback", false},
+		{"http://localhost/callback", "http://sub.localhost:3118/callback", false},
+		{"http://localhost/callback", "http://localhost.example:3118/callback", false},
+		{"http://localhost/callback", "https://localhost:3118/callback", false},
+		{"https://localhost/callback", "https://localhost:3118/callback", false},
+		{"http://localhost/callback", "http://localhost:3118/other", false},
+		{"http://localhost/callback", "http://localhost:3118/%63allback", false},
+		{"http://localhost/callback?x=1", "http://localhost:3118/callback?x=2", false},
+		{"http://localhost", "http://localhost:3118/", false},
+		{"http://localhost/callback", "http://user@localhost:3118/callback", false},
+		{"http://localhost/callback", "http://localhost:3118/callback#fragment", false},
+	} {
+		if got := MatchRedirect(tc.registered, tc.requested); got != tc.match {
+			t.Errorf("MatchRedirect(%q, %q) = %v; want %v", tc.registered, tc.requested, got, tc.match)
+		}
 	}
 }

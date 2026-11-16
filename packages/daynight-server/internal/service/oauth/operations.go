@@ -10,10 +10,11 @@ import (
 )
 
 type clientOperations struct {
-	take                func(context.Context, string, string, string) (bool, error)
-	parseMetadata       func([]byte, string) (core.ClientMetadata, error)
-	parseStoredMetadata func([]byte, string) (core.ClientMetadata, error)
-	freezeClient        func(string, string, core.ClientMetadata, time.Time, string) (core.ValidatedClient, error)
+	take                  func(context.Context, string, string, string) (bool, error)
+	parseMetadata         func([]byte, string) (core.ClientMetadata, error)
+	parseClientIDDocument func([]byte, string) (core.ClientMetadata, error)
+	parseStoredMetadata   func([]byte, string) (core.ClientMetadata, error)
+	freezeClient          func(string, string, core.ClientMetadata, time.Time, string) (core.ValidatedClient, error)
 }
 
 type authorizationOperations struct {

@@ -49,7 +49,17 @@ type ValidatedClient struct {
 // ParseClientMetadata accepts only the supported grants and public method. An
 // omitted method is deliberately replaced with none by this server.
 func ParseClientMetadata(data []byte, expectedID string) (ClientMetadata, error) {
-	return parseClientMetadata(data, expectedID, MetadataLimit)
+	return parseClientMetadata(data, expectedID, MetadataLimit, false)
+}
+
+// ParseClientIDMetadataDocument accepts a client's shared grant capabilities,
+// including grants this server does not implement, when authorization_code is
+// supported. This does not register those additional grants with this server.
+func ParseClientIDMetadataDocument(data []byte, expectedID string) (ClientMetadata, error) {
+	if expectedID == "" {
+		return ClientMetadata{}, ErrInvalidClientMetadata
+	}
+	return parseClientMetadata(data, expectedID, MetadataLimit, true)
 }
 
 // ParseStoredClientMetadata reads a previously validated DCR document after
@@ -58,10 +68,10 @@ func ParseStoredClientMetadata(data []byte, expectedID string) (ClientMetadata, 
 	if expectedID == "" {
 		return ClientMetadata{}, ErrInvalidClientMetadata
 	}
-	return parseClientMetadata(data, expectedID, 2*MetadataLimit+1024)
+	return parseClientMetadata(data, expectedID, 2*MetadataLimit+1024, false)
 }
 
-func parseClientMetadata(data []byte, expectedID string, limit int) (ClientMetadata, error) {
+func parseClientMetadata(data []byte, expectedID string, limit int, clientIDDocument bool) (ClientMetadata, error) {
 	var m ClientMetadata
 	if len(data) == 0 || len(data) > limit || !jsonunicode.Valid(data) {
 		return m, ErrInvalidClientMetadata
@@ -127,10 +137,19 @@ func parseClientMetadata(data []byte, expectedID string, limit int) (ClientMetad
 	if raw, exists := fields["grant_types"]; exists && (len(m.GrantTypes) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))) {
 		return ClientMetadata{}, ErrInvalidClientMetadata
 	}
+	codeGrant := len(m.GrantTypes) == 0 // Omitted grant_types defaults to authorization_code.
 	for _, g := range m.GrantTypes {
-		if g != "authorization_code" && g != "refresh_token" {
+		if clientIDDocument {
+			if !validClientGrantType(g) {
+				return ClientMetadata{}, ErrInvalidClientMetadata
+			}
+		} else if g != "authorization_code" && g != "refresh_token" {
 			return ClientMetadata{}, ErrInvalidClientMetadata
 		}
+		codeGrant = codeGrant || g == "authorization_code"
+	}
+	if clientIDDocument && !codeGrant {
+		return ClientMetadata{}, ErrInvalidClientMetadata
 	}
 	if raw, exists := fields["response_types"]; exists && (len(m.ResponseTypes) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))) {
 		return ClientMetadata{}, ErrInvalidClientMetadata
@@ -151,6 +170,30 @@ func parseClientMetadata(data []byte, expectedID string, limit int) (ClientMetad
 		seen[uri] = true
 	}
 	return m, nil
+}
+
+// Grant names use OAuth name characters; extension grants use absolute URIs.
+func validClientGrantType(grant string) bool {
+	if grant == "" {
+		return false
+	}
+	name := true
+	for _, r := range grant {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '.' || r == '_') {
+			name = false
+			if !strings.ContainsRune("~:/?[]@!$&'()*+,;=%", r) {
+				return false
+			}
+		}
+	}
+	if name {
+		return true
+	}
+	if _, err := url.PathUnescape(grant); err != nil {
+		return false
+	}
+	u, err := url.Parse(grant)
+	return err == nil && u.IsAbs()
 }
 
 // ValidRedirect permits HTTPS and local HTTP callbacks, without credentials or fragments.
@@ -181,7 +224,8 @@ func ValidRedirect(raw string) bool {
 	return true
 }
 
-// MatchRedirect preserves exact bytes except the port of a literal loopback IP.
+// MatchRedirect preserves exact bytes except the HTTP port of the same literal
+// loopback IP or the exact localhost hostname. Names and IPs are not interchangeable.
 func MatchRedirect(registered, requested string) bool {
 	if !ValidRedirect(registered) || !ValidRedirect(requested) {
 		return false
@@ -194,9 +238,18 @@ func MatchRedirect(registered, requested string) bool {
 	if a.Scheme != "http" || b.Scheme != "http" {
 		return false
 	}
-	ip, err := netip.ParseAddr(a.Hostname())
-	if err != nil || !ip.Unmap().IsLoopback() || a.Hostname() != b.Hostname() {
+	if a.Hostname() != b.Hostname() {
 		return false
+	}
+	if a.Hostname() == "localhost" {
+		if strings.HasPrefix(a.Host, "[") || strings.HasPrefix(b.Host, "[") {
+			return false
+		}
+	} else {
+		ip, err := netip.ParseAddr(a.Hostname())
+		if err != nil || !ip.Unmap().IsLoopback() {
+			return false
+		}
 	}
 	return redirectSuffix(registered) == redirectSuffix(requested)
 }

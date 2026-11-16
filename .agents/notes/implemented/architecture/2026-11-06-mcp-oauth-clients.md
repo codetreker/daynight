@@ -14,8 +14,13 @@ an application. Client cleanup must not race initial grant issuance.
 Client resolution accepts configured clients, dynamic public registrations,
 and HTTPS client metadata documents. It freezes the validated metadata digest,
 provenance, allowed redirects, selected exact redirect, and metadata deadline for
-an authorization request. HTTPS redirects match exactly; literal loopback HTTP
-redirects may differ only in port. Names remain self asserted.
+an authorization request. HTTPS redirects match exactly; HTTP redirects to the
+same literal loopback IP or exact `localhost` host may differ only in port.
+Names remain self asserted. The original implementation limited this exception
+to IP literals and shared strict grant validation with registration. The
+[CIMD compatibility decision](../bug-fix/2026-11-16-mcp-cimd-client-compatibility.md)
+extends localhost handling and separates remote capability declarations from
+registration policy.
 
 CIMD retrieval rejects unsafe DNS answers and connects to a validated address
 with the original TLS hostname, no proxy or redirect. Per-instance concurrency,
