@@ -4,6 +4,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
 import { parse as parseYaml } from "yaml";
 import { inspectInstalledSkill } from "../fixtures/skill-contract.js";
 import { loadSqliteSequence } from "../../src/platform/sqlite-sql.js";
@@ -108,11 +110,18 @@ describe("packaged resource copy", () => {
     expect((metadata.description as string).trim()).not.toBe("");
     expect(manual).toContain("daynight task thread read");
     expect(manual).toContain("daynight task thread post");
-    const localLinks = [...manual.matchAll(/\[[^\]]*\]\(([^)]+)\)/gu)].map((match) => match[1]!)
+    const targets: string[] = [];
+    const collectLinks = (node: { type: string; url?: string; children?: unknown[] }): void => {
+      if ((node.type === "link" || node.type === "image" || node.type === "definition") && node.url !== undefined) targets.push(node.url);
+      for (const child of node.children ?? []) collectLinks(child as typeof node);
+    };
+    collectLinks(unified().use(remarkParse).parse(manual));
+    expect(manual).toContain("[Task details](task.md)");
+    const localLinks = targets
       .filter((target) => !target.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/iu.test(target));
     expect(localLinks).toEqual([]);
     const anchors = new Set([...manual.matchAll(/<a id="([^"]+)"><\/a>/gu)].map((match) => match[1]!));
-    for (const match of manual.matchAll(/\[[^\]]*\]\(#([^)]+)\)/gu)) expect(anchors.has(match[1]!), `Missing aggregate anchor ${match[1]}`).toBe(true);
+    for (const target of targets.filter((target) => target.startsWith("#"))) expect(anchors.has(target.slice(1)), `Missing aggregate anchor ${target.slice(1)}`).toBe(true);
   });
 
   it("rejects a directory at a required topic path before copying resources", () => {
