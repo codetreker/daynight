@@ -1543,7 +1543,10 @@ it.each(["ordinary", "markdown_projection_failed"] as const)("routes a terminal 
     const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions & { archiveMaintenance: { request: (shouldYield: () => boolean) => void } };
     expect(options.monitoring!.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", phase: "archive-backfill", scope: expect.objectContaining({ claimId: task.claimId }) })]));
     const identity = { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, executionId: task.webExecution.executionId, executionGeneration: task.webExecution.executionGeneration, launchId: task.webExecution.launchId };
-    if (kind === "markdown_projection_failed") expect(options.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: kind, nextAttemptAt: now + 900_000 });
+    if (kind === "markdown_projection_failed") {
+      expect(options.store.getArchiveBackfillSchedule(identity)).toMatchObject({ archiveRepairCode: kind, nextAttemptAt: now + 900_000 });
+      expect(options.monitoring!.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "archive", error: expect.objectContaining({ code: "markdown-projection-repair" }) })]));
+    }
     mocks.completed.mockReturnValue([task]);
     options.archiveMaintenance.request(() => false);
     await new Promise(resolve => setImmediate(resolve));

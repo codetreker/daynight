@@ -673,6 +673,7 @@ it.each([
   ["archive timeout", new DOMException("archive timeout", "TimeoutError")],
   ["incomplete", new ArchiveRepairRequiredError("archive_incomplete")],
   ["projection gap", new ArchiveRepairRequiredError("projection_gap")],
+  ["Markdown projection", new ArchiveRepairRequiredError("markdown_projection_failed")],
   ["unknown", { unexpected: true }],
 ])("cleans the stopped worktree after %s archive failure", async (_label, archiveError) => {
   const f = await fixture();
