@@ -1,3 +1,4 @@
+import { selectStatus } from './helpers/statusFilter';
 import { statesForSummaries } from './helpers/taskSync';
 import { createTaskCacheScope, type TaskCacheScope } from '../src/features/task-cache/project-cache';
 import { TaskSessionSummaryStore } from '../src/features/task-session-summary/store';
@@ -144,9 +145,9 @@ describe('paused task discovery', () => {
     fireEvent.click(chain);
     expect(within(chain).getByText('2 已暂停')).toBeVisible();
     expect(document.getElementById(`chain-task-${id(1)}-${id(2)}`)!.closest('.task-row')).toHaveTextContent('已暂停');
-    fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'done' } });
+    selectStatus('done');
     expect(headingCount()).toHaveTextContent('3 已暂停');
-    fireEvent.change(screen.getByRole('combobox', { name: '状态' }), { target: { value: 'all' } });
+    selectStatus('all');
     fireEvent.click(screen.getByRole('tab', { name: '独立任务' }));
     expect(headingCount()).toHaveTextContent('3 已暂停');
     const pagination = screen.getByRole('navigation', { name: '独立任务列表分页' });

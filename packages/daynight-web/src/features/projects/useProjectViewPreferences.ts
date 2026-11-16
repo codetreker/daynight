@@ -1,6 +1,8 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { canonicalId } from "../../api/validation";
 import type { AssigneeFilter } from "../task-assignment/TaskAssigneeFilter";
+import type { TaskStatus } from "../../api/types";
+import { ALL_TASK_STATUSES, decodeTaskStatuses, equalTaskStatuses, normalizeTaskStatuses } from "./task-status-filter";
 
 type PreferenceIssue = { readonly kind: "read" | "invalid" | "write"; readonly cause: unknown };
 type InitialPreference<Value> = {
@@ -107,6 +109,39 @@ export const useProjectAssigneeFilter = (projectId: string, userId: string) => {
       writeIssue = { kind: "write", cause };
     }
     setStored((previous) => previous.key === key ? { ...previous, filter, initialIssue: writeIssue === null ? null : previous.initialIssue, writeIssue } : previous);
+  }, [key]);
+  return { filter: current.filter, onFilterChange, issue: current.writeIssue ?? current.initialIssue };
+};
+
+export const useProjectStatusFilter = (projectId: string, userId: string) => {
+  const key = `daynight:task-status-filter:${JSON.stringify([projectId, userId])}`;
+  const currentKey = useRef(key);
+  currentKey.current = key;
+  const load = () => {
+    const initial = readPreference(key, decodeTaskStatuses);
+    return { key, filter: initial.value ?? ALL_TASK_STATUSES, initialIssue: initial.issue, writeIssue: null as PreferenceIssue | null };
+  };
+  const [stored, setStored] = useState(load);
+  let current = stored;
+  if (stored.key !== key) {
+    current = load();
+    setStored(current);
+  }
+  const onFilterChange = useCallback((filter: readonly TaskStatus[]) => {
+    if (currentKey.current !== key) return;
+    const normalized = normalizeTaskStatuses(filter);
+    let writeIssue: PreferenceIssue | null = null;
+    try {
+      window.localStorage.setItem(key, JSON.stringify(normalized));
+    } catch (cause) {
+      writeIssue = { kind: "write", cause };
+    }
+    setStored((previous) => previous.key === key ? {
+      ...previous,
+      filter: equalTaskStatuses(previous.filter, normalized) ? previous.filter : normalized,
+      initialIssue: writeIssue === null ? null : previous.initialIssue,
+      writeIssue,
+    } : previous);
   }, [key]);
   return { filter: current.filter, onFilterChange, issue: current.writeIssue ?? current.initialIssue };
 };

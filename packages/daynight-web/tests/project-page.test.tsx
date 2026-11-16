@@ -1,3 +1,4 @@
+import { selectStatus, statusLabel, statusTrigger } from './helpers/statusFilter';
 import { browserNavigation } from "../src/app/navigation";
 import { taskSyncReadFixture, createGraphSyncFixture } from "./helpers/taskSync";
 import { useEffect } from "react";
@@ -213,13 +214,13 @@ describe("project dashboard", () => {
       await findListButton("已完成根");
       fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
-      fireEvent.change(screen.getByRole("combobox", { name: "状态" }), { target: { value: "todo" } });
+      selectStatus('todo');
       expect(chainList().queryByRole("button", { name: "已完成根" })).toBeNull();
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
       fireEvent.click(within(document.getElementById("project-overview-progress")!).getByRole("button", { name: /已完成根.*前往任务列表/ }));
       await waitFor(() => expect(listButton("已完成根")).toHaveFocus());
       expect(screen.queryByRole("button", { name: "移除 后端" })).toBeNull();
-      expect(screen.getByRole("combobox", { name: "状态" })).toHaveValue("todo");
+      expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
       expect(screen.getByTestId("root-list")).toHaveAttribute("data-index-roots", expect.stringContaining(C));
     } finally { HTMLElement.prototype.scrollIntoView = scroll; }
   });
@@ -245,12 +246,12 @@ describe("project dashboard", () => {
       await findListButton("已完成根");
       fireEvent.click(screen.getByText("标签筛选", { selector: "summary" }));
       fireEvent.click(await screen.findByRole("checkbox", { name: "后端" }));
-      fireEvent.change(screen.getByRole("combobox", { name: "状态" }), { target: { value: "todo" } });
+      selectStatus('todo');
       fireEvent.click(sectionTabs().getByRole("tab", { name: "概览" }));
       fireEvent.click(within(document.getElementById("project-overview-progress")!).getByRole("button", { name: /已完成根.*前往任务列表/ }));
       await waitFor(() => expect(listButton("已完成根")).toHaveFocus());
       expect(screen.getByRole("button", { name: "移除 后端" })).toBeVisible();
-      expect(screen.getByRole("combobox", { name: "状态" })).toHaveValue("todo");
+      expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
 
       missing = true;
       vi.mocked(listProjectTags).mockResolvedValue({ items: [], catalogEpoch: F, nextCursor: null });
@@ -532,8 +533,7 @@ describe("project dashboard", () => {
     vi.mocked(searchTasks).mockResolvedValueOnce({ projectId, total: 1, items: [hit], nextCursor: null }).mockReturnValueOnce(pending.promise);
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await findListButton("另一任务链");
-    const ordinaryStatus = screen.getByLabelText("状态");
-    fireEvent.change(ordinaryStatus, { target: { value: "todo" } });
+    selectStatus('todo');
     const input = searchForm().getByRole("textbox", { name: "搜索任务 ID、标题和描述" });
     await user.type(input, "缓存{Enter}");
     await screen.findByRole("button", { name: "打开任务：搜索命中" });
@@ -550,7 +550,7 @@ describe("project dashboard", () => {
     expect(document.querySelector(".task-search-results")).toBeNull();
     expect(document.querySelector(".task-search-filters")).toBeNull();
     expect(taskTabs().getByRole("tab", { name: "任务链" })).toBeVisible();
-    expect(screen.getByLabelText("状态")).toHaveValue("todo");
+    expect(statusTrigger()).toHaveTextContent(statusLabel('todo'));
     expect(listButton("另一任务链")).toBeTruthy();
     await act(async () => { pending.resolve({ projectId, total: 1, items: [{ ...hit, title: "迟到结果" }], nextCursor: null }); });
     expect(screen.queryByRole("button", { name: "打开任务：迟到结果" })).toBeNull();

@@ -1,3 +1,4 @@
+import { selectStatus, statusButton } from './status-filter';
 import { expectTextContrast, roleColors } from './color-roles';
 import type { TaskStep } from '../../src/api/task-steps';
 import { expect, test, type Page } from '@playwright/test';
@@ -117,6 +118,45 @@ async function openDialog(page: Page) {
   const dialog = page.locator('.task-detail-dialog');
   await expect(dialog).toHaveAccessibleName('Target task');
   return dialog;
+}
+
+for (const width of [320, 1280]) for (const kind of ['detail', 'graph'] as const) {
+  test(`keyboard-opened ${kind} covers the open status filter at ${width}px`, async ({ page }) => {
+    const writes = await install(page, false, kind === 'graph');
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`/projects/${projectId}`);
+    await page.locator('#project-section-tab-tasks').click();
+    if (kind === 'detail') await page.locator('#project-task-tab-standalone').click();
+    const filter = statusButton(page);
+    await filter.focus(); await page.keyboard.press('Enter');
+    await expect(filter).toHaveAttribute('aria-expanded', 'true');
+    const target = page.locator(kind === 'detail' ? `#standalone-task-${taskId}` : `#task-chain-graph-${taskId}`);
+    for (let i = 0; i < 40 && !await target.evaluate(element => element === document.activeElement); i++) await page.keyboard.press('Tab');
+    await expect(target).toBeFocused();
+    const panel = page.locator('.task-status-filter-panel');
+    const bounds = await panel.boundingBox();
+    expect(bounds).not.toBeNull();
+    await page.keyboard.press('Enter');
+    const modal = page.locator(kind === 'detail' ? '.task-detail-dialog' : '.task-chain-dialog');
+    await expect(modal).toBeVisible();
+    const covered = await page.evaluate(({ x, y, width: w, height, kind }) => {
+      const top = document.elementFromPoint(x + w / 2, y + height / 2);
+      return top !== null && top.closest(kind === 'detail' ? '.task-detail-backdrop' : '.task-chain-backdrop') !== null;
+    }, { ...bounds!, kind });
+    expect(covered).toBe(true);
+    if (kind === 'detail') {
+      const steps = modal.getByRole('tab', { name: 'Steps', exact: true });
+      await steps.focus(); await page.keyboard.press('Enter'); await expect(steps).toHaveAttribute('aria-selected', 'true');
+    } else {
+      await expect(modal.locator('.task-chain-close')).toBeFocused();
+    }
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0); await expect(target).toBeFocused();
+    await expect(filter).toHaveAttribute('aria-expanded', 'true');
+    await page.keyboard.press('Escape');
+    await expect(filter).toHaveAttribute('aria-expanded', 'false'); await expect(filter).toBeFocused();
+    expect(writes).toEqual([]);
+  });
 }
 
 test('ID search keeps long results readable and opens the correct task on narrow screens', async ({ page }) => {
@@ -558,7 +598,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     await expect(standaloneTab.locator('.graph-count-pill')).toHaveAttribute('title', locale === 'en' ? 'Unfinished task count' : '未完成任务数');
     await expect(chainTab.locator('.graph-count-pill')).toHaveAttribute('title', locale === 'en' ? 'Unfinished task chain count' : '未完成任务链数');
     const filter = page.locator('.task-assignee-filter .assignee-trigger');
-    const status = page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true });
+    const status = statusButton(page);
     await expect.poll(() => status.evaluate(select => {
       const owner = document.querySelector('.task-assignee-filter')!.getBoundingClientRect(); const box = select.getBoundingClientRect();
       return (owner.right <= box.left + 1 || box.right <= owner.left + 1 || owner.bottom <= box.top + 1 || box.bottom <= owner.top + 1) && owner.left >= 0 && box.left >= 0 && owner.right <= innerWidth && box.right <= innerWidth && document.documentElement.scrollWidth <= innerWidth;
@@ -577,7 +617,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [320, 390]) {
     await page.keyboard.press('ArrowLeft'); await expect(standaloneTab).toBeFocused();
     const row = page.locator(`#standalone-task-${taskId}`);
     await expect(row).toBeVisible(); await expect(page.locator(`#standalone-task-${previousId}`)).toHaveCount(0);
-    const identity = row.locator('.task-assignee-identity');
+    const identity = row.locator('xpath=ancestor::li').locator('.task-assignee-identity');
     await expect(identity).toHaveAccessibleName(`${locale === 'en' ? 'Assignee: ' : '负责人：'}${longName}`);
     await expect(identity.locator('.assignee-avatar img')).toHaveCount(0); await expect(identity.locator('.assignee-avatar')).toHaveText('A');
     expect(await identity.locator('.assignee-name').evaluate(name => getComputedStyle(name).textOverflow === 'ellipsis' && name.scrollWidth > name.clientWidth)).toBe(true);
@@ -665,7 +705,7 @@ for (const locale of ['en', 'zh-CN'] as const) {
     expect(preserved!.after.allowAgents).toBe(preserved!.before.allowAgents); expect(preserved!.after.assignedTo).toBe(preserved!.before.assignedTo);
     expect(preserved!.after.startedAt).toBe(preserved!.before.startedAt); expect(preserved!.after.completedAt).toBe(preserved!.before.completedAt);
     await dialog.getByRole('button', { name: locale === 'en' ? 'Close task details' : '关闭任务详情', exact: true }).click();
-    await page.getByRole('combobox', { name: locale === 'en' ? 'Status' : '状态', exact: true }).selectOption('cancelled');
+    await selectStatus(page, 'cancelled', locale);
     await expect(page.locator(`[data-chain-id="${taskId}"] .root-progress-label`)).toContainText(locale === 'en' ? '0/1 completed' : '0/1 已完成');
     await expect(page.locator(`#chain-task-${taskId}-${previousId}`)).toBeVisible();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
