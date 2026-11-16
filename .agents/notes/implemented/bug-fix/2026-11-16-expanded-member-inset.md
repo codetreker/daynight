@@ -4,28 +4,34 @@ Status: implemented
 
 ## Problem
 
-Expanded Goal and chain members shared the parent's leading edge, obscuring
-their hierarchy even though the member rows have their own backgrounds and borders.
+The original inset decision addressed expanded Goal and chain members sharing
+the parent's leading edge, which was considered insufficient to express their
+hierarchy even though the member rows had their own backgrounds and borders.
 
 ## Decision
 
-The shared `goal-task-list` owns a logical leading inset of 16px above a
-600px viewport and 12px at or below it. It moves the whole member row while
-keeping its trailing edge aligned. Goal overrides only the list's bottom padding;
-chains retain their 5px bottom space. The [flat Goal list](../simplification/2026-11-13-goal-flat-list.md)
-and [Goal card seams](2026-11-14-goal-card-seams.md) decisions retain their
-membership and outline rationale.
+The original implementation gave the shared `goal-task-list` a logical leading
+inset of 16px above a 600px viewport and 12px at or below it. It moved the whole
+member row while keeping its trailing edge aligned. The [member edge alignment
+decision](2026-11-16-expanded-member-edge-alignment.md) supersedes that inset:
+the shared list now has no leading padding at any viewport width. Goal still
+overrides only the list's bottom padding; chains retain their 5px bottom space.
+The [flat Goal list](../simplification/2026-11-13-goal-flat-list.md) and
+[Goal card seams](2026-11-14-goal-card-seams.md) decisions retain their membership
+and outline rationale.
 
 ## Alternatives
 
-**Indent row contents.** Changing the shared TaskRow padding would leave the
-background and border aligned with the parent and affect standalone and personal rows.
+**Indent row contents.** This was rejected for the original hierarchy treatment
+because changing the shared TaskRow padding would leave the background and border
+aligned with the parent and affect standalone and personal rows.
 
-**Indent each consumer separately.** Goal, full chains and scoped chains share
+**Indent each consumer separately.** Goal, full chains and scoped chains shared
 the same list structure; separate rules could diverge at the viewport boundary.
 
 ## Consequences
 
-The neutral leading space makes hierarchy visible without adding an action.
-Rows have less available width, so their wrapping and focus must remain usable
-at narrow widths. Empty states retain their own padding.
+The inset expressed hierarchy without adding an action, at the cost of a neutral
+leading strip and less available row width. The later alignment decision removes
+that strip and relies on the parent heading, disclosure control and content
+divider for hierarchy. Empty states retain their own padding.
