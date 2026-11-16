@@ -88,6 +88,16 @@ it("retires an unstarted claim when the correct task has no current worker", asy
   expect(f.herdr.lifecycle!.responsibilities()).toEqual([]);
   expect(f.git.removeWorktree).not.toHaveBeenCalled();
 });
+it("reads one original lifecycle even when another stored record is corrupt", () => {
+  const f = fixture(), healthy = f.register(0), broken = f.register(1);
+  const database = new Database(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"));
+  try { database.prepare("UPDATE executions SET data = ? WHERE identity = ?").run("{}", [broken.projectId, broken.taskId, broken.claimId].join("/")); }
+  finally { database.close(); }
+  expect(f.herdr.lifecycle!.neverStarted!.isCandidate!(healthy)).toBe(true);
+  expect(f.herdr.lifecycle!.migration!.getLifecycle!(healthy)).toMatchObject({ claimId: healthy.claimId, owner: { worktreeId: healthy.worktreeId } });
+  expect(() => f.herdr.lifecycle!.neverStarted!.isCandidate!(broken)).toThrow();
+  expect(() => f.herdr.lifecycle!.migration!.getLifecycle!(broken)).toThrow();
+});
 it("keeps an unstarted claim with no current worker until its owner and local absence are verified", async () => {
   const f = fixture(), owner = f.register(0), task = f.tasks.get(owner.taskId)!;
   f.tasks.set(owner.taskId, { ...task, status: "todo", properties: {} });

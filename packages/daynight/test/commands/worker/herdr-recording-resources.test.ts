@@ -9,6 +9,7 @@ import { ApiError } from "../../../src/api/client.js";
 import type { Task } from "../../../src/api/types.js";
 import { createHerdrRecordingArchive } from "../../../src/commands/worker/herdr/recording-archive.js";
 import { createHerdrRecordingResources } from "../../../src/commands/worker/herdr/recording-resources.js";
+import { herdrLedgerHash } from "../../../src/commands/worker/herdr/lifecycle-store.js";
 import type { HerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
 import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/lifecycle-types.js";
 import type { SessionV2Archive } from "../../../src/session/v2/types.js";
@@ -23,9 +24,9 @@ const setup = (remote?: Pick<WorkerRemote, "readTask" | "currentUserId">) => {
   const record: HerdrLifecycleRecord = { owner: doc.owner, sessionId: doc.sessionId, claimId: doc.claimId, cwd, registrationId: doc.finalizationId, connectionEpoch: "1", registrationRequest: null, ledgerRequest: null, publishedLedgerHash: "a".repeat(64), controlEpoch: "1", initialAssignment: "transport_completed", initialPrompt: null, automationBlocked: true, preparation: null, runs: doc.runs.map(run => ({ run, phase: "stopped_confirmed", nativeLaunch: "observed", instanceDirectory: root, daemon: null, processes: [], stopOperationId: run.stopProof!.recordId, stopReason: "terminal", error: null, admission: null })), segments: doc.segments.map(segment => ({ ...segment, gap: null })), version: 1 };
   const owner = { projectId: doc.owner.projectId, taskId: doc.owner.taskId, claimId: doc.claimId, worktreeId: doc.owner.worktreeId }, target = { ...owner, sessionId: doc.sessionId };
   const archive = createHerdrRecordingArchive({ directory: path.join(root, "archives"), api: { state: async () => { throw new Error("offline"); } } as unknown as HerdrArchiveApi });
-  let user = doc.owner.ownerUserId, readFailure: unknown, publishFailure: unknown, active = false, published = 0;
-  const resource = createHerdrRecordingResources({ directory, archive, list: () => [record], get: () => record, source: () => { throw new Error("not recording a new source"); }, publishStopped: async () => { published++; if (publishFailure) throw publishFailure; }, currentUserId: async () => user, readTask: async () => { if (readFailure) throw readFailure; return { id: owner.taskId, projectId: owner.projectId, status: active ? "in_progress" : "done", properties: active ? { worker: { claimId: owner.claimId, state: "active", userId: user, workerId: doc.owner.workerId, worktreeId: owner.worktreeId, machine: { id: "00000000-0000-4000-8000-000000000033", name: "test" }, platform: "macos", agent: "codex", agentControlMode: "herdr", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-03T10:00:00Z" } } : {} } as Task; }, ...remote });
-  return { root, directory, source, cwd, record, owner, target, archive, resource, active: (value: boolean) => { active = value; }, user: (value: string) => { user = value; }, failure: (value: unknown) => { readFailure = value; }, publishFailure: (value: unknown) => { publishFailure = value; }, published: () => published };
+  let user = doc.owner.ownerUserId, readFailure: unknown, publishFailure: unknown, active = false, published = 0, onPublish: (() => void) | undefined;
+  const resource = createHerdrRecordingResources({ directory, archive, list: () => [record], get: () => record, source: () => { throw new Error("not recording a new source"); }, publishStopped: async () => { published++; if (publishFailure) throw publishFailure; onPublish?.(); }, currentUserId: async () => user, readTask: async () => { if (readFailure) throw readFailure; return { id: owner.taskId, projectId: owner.projectId, status: active ? "in_progress" : "done", properties: active ? { worker: { claimId: owner.claimId, state: "active", userId: user, workerId: doc.owner.workerId, worktreeId: owner.worktreeId, machine: { id: "00000000-0000-4000-8000-000000000033", name: "test" }, platform: "macos", agent: "codex", agentControlMode: "herdr", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: "2026-11-03T10:00:00Z" } } : {} } as Task; }, ...remote });
+  return { root, directory, source, cwd, record, owner, target, archive, resource, active: (value: boolean) => { active = value; }, user: (value: string) => { user = value; }, failure: (value: unknown) => { readFailure = value; }, publishFailure: (value: unknown) => { publishFailure = value; }, onPublish: (value: () => void) => { onPublish = value; }, published: () => published };
 };
 describe("Herdr retained recording resources", () => {
   it("reports actual source bytes and stop evidence without restarting an execution", () => {
@@ -159,6 +160,80 @@ describe("Herdr retained recording resources", () => {
     const s = setup(), op = createOperation(); s.publishFailure(new Error("ledger network failure"));
     try { const before = Date.now(); expect(await s.resource.advance(s.owner, op)).toBe(false); const state = s.archive.inspect(s.record)!; expect(state.state).toBe("pending"); expect(state.nextAttemptAt).toBeGreaterThanOrEqual(before + 5000); expect(state.finalization).toBeNull(); }
     finally { op.dispose(); }
+  });
+  it("retries segment closure before starting archive finalization", async () => {
+    const s = setup(), op = createOperation(), segment = s.record.segments[0]!, end = segment.endedAt;
+    segment.endedAt = null;
+    s.onPublish(() => { segment.endedAt = end; });
+    try {
+      expect(s.resource.resources()[0]!.stopped).toBe(true);
+      expect(await s.resource.advance(s.owner, op)).toBe(false);
+      expect(s.published()).toBe(1); expect(segment.endedAt).toBe(end);
+      expect(s.archive.inspect(s.record)).toMatchObject({ state: "pending", receipt: null });
+    } finally { op.dispose(); }
+  });
+  it("retries stopped-ledger publication even when archive content has failed", async () => {
+    const s = setup(), op = createOperation();
+    const state = { ...s.archive.defer(s.record, new Error("offline")), state: "failed" as const, error: "recording corrupt" };
+    vi.spyOn(s.archive, "inspect").mockReturnValue(state);
+    vi.spyOn(s.archive, "advance").mockResolvedValue(state);
+    try { expect(await s.resource.advance(s.owner, op)).toBe(false); expect(s.published()).toBe(1); expect(state.receipt).toBeNull(); }
+    finally { op.dispose(); vi.restoreAllMocks(); }
+  });
+  it.each(["failed", "permission_denied"] as const)("maintains pending stop ledger without retrying a %s archive", async stateName => {
+    const s = setup(), op = createOperation();
+    const state = { ...s.archive.defer(s.record, new Error("offline")), state: stateName, nextAttemptAt: null, error: "archive unavailable" };
+    vi.spyOn(s.archive, "inspect").mockReturnValue(state);
+    const attempt = vi.spyOn(s.archive, "advance");
+    s.onPublish(() => { s.record.publishedLedgerHash = herdrLedgerHash(s.record); });
+    try {
+      expect(s.resource.resources()[0]).toMatchObject({ state: stateName, stoppedLedgerPending: true });
+      expect(await s.resource.advance(s.owner, op)).toBe(false);
+      expect(s.published()).toBe(1); expect(attempt).not.toHaveBeenCalled();
+      expect(s.resource.resources()[0]).toMatchObject({ state: stateName, stoppedLedgerPending: false });
+    } finally { op.dispose(); vi.restoreAllMocks(); }
+  });
+  it("retains pending stopped-ledger maintenance when publication fails", async () => {
+    const s = setup(), op = createOperation();
+    const state = { ...s.archive.defer(s.record, new Error("offline")), state: "failed" as const, nextAttemptAt: null, error: "archive corrupt" };
+    vi.spyOn(s.archive, "inspect").mockReturnValue(state);
+    const attempt = vi.spyOn(s.archive, "advance"); s.publishFailure(new Error("ledger unavailable"));
+    try {
+      await expect(s.resource.advance(s.owner, op)).rejects.toThrow("ledger unavailable");
+      expect(s.resource.resources()[0]).toMatchObject({ state: "failed", stoppedLedgerPending: true });
+      expect(s.published()).toBe(1); expect(attempt).not.toHaveBeenCalled();
+    } finally { op.dispose(); vi.restoreAllMocks(); }
+  });
+  it("maintains stopped segments without altering an unreadable archive journal", async () => {
+    const s = setup(), op = createOperation(), segment = s.record.segments[0]!, end = segment.endedAt;
+    const journal = path.join(s.root, "archives", `${s.record.sessionId}.archive-state.json`);
+    writeFileSync(journal, "invalid archive journal"); segment.endedAt = null;
+    s.onPublish(() => { segment.endedAt = end; });
+    try {
+      expect(s.resource.resources()[0]).toMatchObject({ stopped: true, state: "failed", nextAttemptAt: 0 });
+      await expect(s.resource.advance(s.owner, op)).rejects.toThrow();
+      expect(s.published()).toBe(1); expect(segment.endedAt).toBe(end);
+      expect(readFileSync(journal, "utf8")).toBe("invalid archive journal");
+    } finally { op.dispose(); }
+  });
+  it("retains both journal and stopped-ledger failures", async () => {
+    const s = setup(), op = createOperation();
+    const journal = path.join(s.root, "archives", `${s.record.sessionId}.archive-state.json`);
+    writeFileSync(journal, "invalid archive journal"); s.publishFailure(new Error("ledger unavailable"));
+    try {
+      await expect(s.resource.advance(s.owner, op)).rejects.toMatchObject({ errors: [expect.any(Error), expect.objectContaining({ message: "ledger unavailable" })] });
+      expect(readFileSync(journal, "utf8")).toBe("invalid archive journal");
+    } finally { op.dispose(); }
+  });
+  it("allows authorized retry to close a stopped segment before archive retry", async () => {
+    const s = setup(), op = createOperation(), segment = s.record.segments[0]!, end = segment.endedAt;
+    s.archive.defer(s.record, new Error("offline")); segment.endedAt = null;
+    s.onPublish(() => { segment.endedAt = end; });
+    try {
+      const result = await s.resource.retry(s.target, op);
+      expect(result.stopped).toBe(true); expect(segment.endedAt).toBe(end); expect(s.published()).toBe(2);
+      expect(s.archive.inspect(s.record)?.receipt).toBeNull();
+    } finally { op.dispose(); }
   });
   it("rejects replacement source directories after an interrupted original disposal", async () => {
     const s = setup(), op = createOperation(), request = { ...s.target, operationId: "00000000-0000-4000-8000-000000000090", action: "delete" as const, confirmed: true as const };
