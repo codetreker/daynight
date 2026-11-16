@@ -188,6 +188,11 @@ func TestAppScopeAtomicityCountsAndPagination(t *testing.T) {
 		}
 	}
 	if err := db.ReadGitHubApps(ctx, func(r store.GitHubAppReadDAO) error {
+		for _, limit := range []int{0, 101} {
+			if _, err := r.List(ctx, store.GitHubAppQuery{ActorID: actor, Limit: limit}); err == nil {
+				t.Fatalf("invalid limit %d was accepted", limit)
+			}
+		}
 		got, err := r.Get(ctx, input.ID, actor)
 		if err != nil || got.Administrators != 2 || got.AuthorizedTeams != 1 || got.ConnectedProjects != 1 {
 			t.Fatalf("counts: %+v %v", got, err)
@@ -210,5 +215,11 @@ func TestAppScopeAtomicityCountsAndPagination(t *testing.T) {
 	}
 	if err := db.ReadGitHubApps(ctx, func(r store.GitHubAppReadDAO) error { _, err := r.Get(ctx, input.ID, actor); return err }); err == nil {
 		t.Fatal("missing live credentials must fail")
+	}
+	if err := db.ReadGitHubApps(ctx, func(r store.GitHubAppReadDAO) error {
+		_, err := r.List(ctx, store.GitHubAppQuery{ActorID: actor, Limit: 10})
+		return err
+	}); err == nil {
+		t.Fatal("list must fail when a live app has missing credentials")
 	}
 }

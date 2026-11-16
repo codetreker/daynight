@@ -350,3 +350,35 @@ func TestAppGetHiddenForNonAdministrator(t *testing.T) {
 		t.Fatalf("reads=%d gets=%d status=%d headers=%v body=%s", db.reads, db.gets, w.Code, w.Header(), w.Body)
 	}
 }
+
+type appCancelAfterHeader struct {
+	*httptest.ResponseRecorder
+	cancel context.CancelFunc
+	writes int
+}
+
+func (w *appCancelAfterHeader) WriteHeader(status int) {
+	w.ResponseRecorder.WriteHeader(status)
+	w.cancel()
+}
+
+func (w *appCancelAfterHeader) Write(data []byte) (int, error) {
+	w.writes++
+	return w.ResponseRecorder.Write(data)
+}
+
+func TestAppCreateCancelledAfterResponseHeader(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs bytes.Buffer
+	calls := 0
+	h := appMux(t, appOps{t: t, create: func(context.Context, model.Principal, core.CreateAppInput) (core.AppMetadata, error) {
+		calls++
+		return appMetadata(), nil
+	}}, &logs)
+	w := &appCancelAfterHeader{ResponseRecorder: httptest.NewRecorder(), cancel: cancel}
+	h.ServeHTTP(w, appRequest(http.MethodPost, appPath, appBody).WithContext(ctx))
+	if calls != 1 || w.Code != http.StatusCreated || w.writes != 0 || w.Body.Len() != 0 || !strings.Contains(logs.String(), "write_outcome_unknown") {
+		t.Fatalf("calls=%d status=%d writes=%d body=%s logs=%s", calls, w.Code, w.writes, w.Body, logs.String())
+	}
+}
