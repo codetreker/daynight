@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	usage "github.com/codetreker/daynight/packages/daynight-server/internal/core/credentialusage"
@@ -378,40 +379,64 @@ func TestCommittedCleanupErrorAndCancellation(t *testing.T) {
 		}
 	})
 	t.Run("cancel work", func(t *testing.T) {
-		started := make(chan struct{}, 1)
-		canceled := make(chan struct{}, 1)
-		w := writerFunc(func(ctx context.Context, _ []model.CredentialUsageEvent) (store.Completion, error) {
-			select {
-			case started <- struct{}{}:
-			default:
+		synctest.Test(t, func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			canceled := make(chan struct{}, 1)
+			w := writerFunc(func(ctx context.Context, _ []model.CredentialUsageEvent) (store.Completion, error) {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+				<-ctx.Done()
+				select {
+				case canceled <- struct{}{}:
+				default:
+				}
+				return store.Completion{Outcome: store.TransactionNotCommitted}, ctx.Err()
+			})
+			r, err := New(w, logger(), nil)
+			if err != nil {
+				t.Fatal(err)
 			}
-			<-ctx.Done()
-			select {
-			case canceled <- struct{}{}:
-			default:
+			work, cancelWork := context.WithCancel(context.Background())
+			if err := r.Start(work); err != nil {
+				cancelWork()
+				t.Fatal(err)
 			}
-			return store.Completion{Outcome: store.TransactionNotCommitted}, ctx.Err()
+			t.Cleanup(func() {
+				cancelWork()
+				join, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+				defer cancel()
+				err := r.Stop(join)
+				var de *DrainError
+				if err != nil && (!errors.As(err, &de) || !de.Drained()) {
+					t.Errorf("cleanup stop: %v", err)
+				}
+				select {
+				case <-r.workerDone:
+				default:
+					t.Error("cleanup: worker did not exit")
+				}
+				select {
+				case <-r.diagnosticDone:
+				default:
+					t.Error("cleanup: diagnostics did not exit")
+				}
+			})
+			if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
+				t.Fatal(err)
+			}
+			wait(t, started)
+			r.CancelWork()
+			wait(t, canceled)
+			join, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			err = r.Drain(join)
+			var de *DrainError
+			if !errors.As(err, &de) || !de.Drained() || de.Unpersisted != 1 || !errors.Is(err, context.Canceled) {
+				t.Fatalf("drain: %v", err)
+			}
 		})
-		r, err := New(w, logger(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := r.Start(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := r.Record(request(context.Background(), "req"), event(1, time.Now())); err != nil {
-			t.Fatal(err)
-		}
-		wait(t, started)
-		r.CancelWork()
-		wait(t, canceled)
-		join, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-		defer cancel()
-		err = r.Drain(join)
-		var de *DrainError
-		if !errors.As(err, &de) || !de.Drained() || de.Unpersisted != 1 || !errors.Is(err, context.Canceled) {
-			t.Fatalf("drain: %v", err)
-		}
 	})
 }
 
