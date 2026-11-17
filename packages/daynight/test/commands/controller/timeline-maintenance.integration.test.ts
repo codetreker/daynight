@@ -9,9 +9,7 @@ import { maintainControllerTimeline } from "../../../src/commands/controller/con
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import { sessionBinding, type TimelineEntry } from "../../../src/session/protocol.js";
-import { controllerMetadataBudget, CONTROLLER_METADATA_BYTES } from "../../../src/commands/controller/media/metadata-budget.js";
 import { openTimelineStore } from "../../../src/commands/controller/content/timeline-store.js";
-import { assertControllerStorageCapacity } from "../../../src/commands/controller/storage-capacity.js";
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { readSqliteDatabase, type SqliteMigrationEvent } from "../../../src/platform/sqlite-access.js";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
@@ -296,7 +294,7 @@ test("a held v9 WAL snapshot prevents retirement and retains original files unti
 
 test("an incident source beyond the ordinary metadata ceiling imports and settles after retirement", () => {
   const f = fixture();
-  fs.truncateSync(f.old, CONTROLLER_METADATA_BYTES + 1048576);
+  fs.truncateSync(f.old, 129 * 1048576);
   try {
     expect(prepareControllerStorage(f.request, f.permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
     expect(fs.existsSync(f.old)).toBe(false);
@@ -357,7 +355,7 @@ test("an unknown successful marker COMMIT is read back before a later settlement
   } finally { db.close(); f.permit.release(); }
 });
 
-test("a metadata settlement refusal leaves the actual cleared marker available for a later retry", () => {
+test("settlement completes when retained metadata grows beyond the former cumulative limit", () => {
   const f = fixture(), db = upgrade(f), exec = db.exec.bind(db);
   const history = `${f.file}.history-sync`, retained = path.join(history, "retained.json");
   try {
@@ -365,14 +363,13 @@ test("a metadata settlement refusal leaves the actual cleared marker available f
       const result = exec(source);
       if (source === "COMMIT") {
         fs.mkdirSync(history, { mode: 0o700 }); fs.writeFileSync(retained, "", { mode: 0o600 });
-        fs.truncateSync(retained, CONTROLLER_METADATA_BYTES + 1048576);
+        fs.truncateSync(retained, 129 * 1048576);
       }
       return result;
     });
-    expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
-    expect(marker(db)).toBe(0);
-    restoreMocks(); fs.unlinkSync(retained);
     expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
+    expect(marker(db)).toBe(0);
+    expect(fs.statSync(retained).size).toBe(129 * 1048576);
   } finally { db.close(); f.permit.release(); }
 });
 
@@ -382,7 +379,6 @@ test.each(["maintenance", "preparation"] as const)("completed cleanup admits %s 
     expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
     expect(marker(db)).toBe(0);
     const statfs = vi.spyOn(fs, "statfsSync").mockReturnValue({ bsize: 4096n, bavail: 0n } as never);
-    expect(() => assertControllerStorageCapacity(f.file, db)).not.toThrow();
     const result = entry === "maintenance"
       ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
       : prepareControllerStorage(f.request, f.permit, () => {});
@@ -392,19 +388,16 @@ test.each(["maintenance", "preparation"] as const)("completed cleanup admits %s 
   } finally { db.close(); f.permit.release(); }
 });
 
-test.each(["maintenance", "preparation"] as const)("completed cleanup preserves actual old metadata when ordinary admission refuses it through %s", entry => {
+test.each(["maintenance", "preparation"] as const)("completed cleanup preserves old metadata above the former cumulative limit through %s", entry => {
   const f = fixture(), db = upgrade(f);
   try {
     expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
-    fs.writeFileSync(f.old, "retained source", { mode: 0o600 }); fs.truncateSync(f.old, CONTROLLER_METADATA_BYTES + 1048576);
-    const retainedBytes = controllerMetadataBudget(f.file, db).bytes();
-    expect(retainedBytes).toBeGreaterThan(CONTROLLER_METADATA_BYTES);
+    fs.writeFileSync(f.old, "retained source", { mode: 0o600 }); fs.truncateSync(f.old, 129 * 1048576);
     const result = entry === "maintenance"
       ? maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })
       : prepareControllerStorage(f.request, f.permit, () => {});
-    expect(result).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
-    expect(marker(db)).toBe(0); expect(fs.existsSync(f.old)).toBe(true);
-    expect(controllerMetadataBudget(f.file, db).bytes()).toBe(retainedBytes);
+    expect(result).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(marker(db)).toBe(0); expect(fs.statSync(f.old).size).toBe(129 * 1048576);
   } finally { db.close(); f.permit.release(); }
 });
 
@@ -587,17 +580,17 @@ test("stopped archive storage preserves a held legacy reader and completes maint
   } finally { reader.close(); f.permit.release(); }
 });
 
-test("completed stopped settlement retains its 8 MiB allowance while a replacement writer still waits for normal admission", () => {
+test("completed stopped settlement and replacement writer proceed beyond the former metadata limit", () => {
   const f = fixture(), db = upgrade(f);
   expect(maintainControllerTimeline({ db, request: f.request, storagePermit: f.permit, onMigration: () => {} })).toMatchObject({ kind: "prepared" });
   db.close(); f.permit.release();
-  const retained = path.join(`${f.file}.pending-content`, "retained-metadata"); fs.writeFileSync(retained, "", { mode: 0o600 }); fs.truncateSync(retained, CONTROLLER_METADATA_BYTES + 1048576);
+  const retained = path.join(`${f.file}.pending-content`, "retained-metadata"); fs.writeFileSync(retained, "", { mode: 0o600 }); fs.truncateSync(retained, 129 * 1048576);
   expect(withStoppedControllerStorage({ journalPath: f.file, ticket: f.ticket, assertOriginal: connection => expect(marker(connection)).toBe(0) }, connection => openTimelineStore(connection, { assertWrite: () => {} }).totals().entryCount)).toBe(1);
   const permit = acquireControllerStoragePermit(f.file);
   try {
     const ticket = { ...f.ticket, launchId: randomUUID(), controllerInstanceId: randomUUID(), executionGeneration: "2", resumeNativeSessionId: f.snapshot.nativeSessionId };
-    expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket }, permit, () => {})).toMatchObject({ kind: "waiting", reason: "physical_capacity" });
-    expect(fs.statSync(retained).size).toBe(CONTROLLER_METADATA_BYTES + 1048576);
+    expect(prepareControllerStorage({ journalFile: f.file, mode: "writer", ticket }, permit, () => {})).toMatchObject({ kind: "prepared", legacyTimelineCleanupPending: false });
+    expect(fs.statSync(retained).size).toBe(129 * 1048576);
   } finally { permit.release(); }
 });
 

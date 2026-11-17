@@ -86,7 +86,7 @@ before a local release can begin. The [media ledger
 removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
 supersedes cumulative media accounting and its initialization failures. The later
 [free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)
-removes disk predictions; metadata admission remains independently owned. Typed storage, metadata-capacity
+removes disk predictions; the [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission. Typed storage
 and local reader-busy failures remain separate from identity, format, safety and
 native-use refusals. Only that release-specific response keeps the original
 durable service request pending for cleanup under the same request ID, body and

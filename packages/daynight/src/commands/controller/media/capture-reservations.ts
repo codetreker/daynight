@@ -16,7 +16,7 @@ export type CaptureSourceLease = {
 export const captureSourceReservations = (options: {
   db: Database.Database; transactions: Transactions; root: string;
   checkOpen(): void; assertDirectories(): void; assertAttempt(captureId: string, attemptId: string): void;
-  checkPreparationMetadata(): void; assertMetadata(): void; sync(): void;
+  sync(): void;
   acquireBlock(): { close(): void } | null;
   joinStage(captureId: string, attemptId: string): Promise<void>;
   stageRetained(captureId: string, attemptId: string): boolean;
@@ -32,7 +32,6 @@ export const captureSourceReservations = (options: {
     return value;
   });
   const save = (value: Reservation) => transactions.write(() => {
-    options.assertMetadata();
     db.prepare("INSERT INTO image_runtime_state VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key(value.captureId, value.attemptId), JSON.stringify(value));
   });
   const release = async (captureId: string, attemptId: string): Promise<void> => {
@@ -50,8 +49,7 @@ export const captureSourceReservations = (options: {
       if (existsSync(path.join(root, value.source))) unlinkSync(path.join(root, value.source));
       if (!options.stageRetained(captureId, attemptId) && existsSync(path.join(root, value.stage))) unlinkSync(path.join(root, value.stage));
       options.sync(); value.released = true; save(value);
-      // Durable release returns the shared slot even if metadata admission fails.
-      try { options.checkPreparationMetadata(); } finally { closeBlock(); }
+      closeBlock();
     })();
     if (!running) return work;
     const tracked = work.finally(() => { if (running.releasing === tracked) running.releasing = null; });
@@ -74,7 +72,6 @@ export const captureSourceReservations = (options: {
       const block = options.acquireBlock();
       if (!block) throw Object.assign(new Error("source_capacity: Controller media block capacity is unavailable."), { code: "source_capacity" });
       try {
-        options.checkPreparationMetadata();
         const value: Reservation = { captureId, attemptId, source: `${randomUUID()}.part`, stage: `${randomUUID()}.part`, released: false };
         save(value);
         const outputPath = path.join(root, value.source);

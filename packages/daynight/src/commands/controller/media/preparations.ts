@@ -2,7 +2,6 @@ import { createImageCaptureSource } from "./capture-source.js";
 import { captureSourceReservations } from "./capture-reservations.js";
 export type { CaptureSourceLease } from "./capture-reservations.js";
 import { openNativeMediaSpool, type NativeMediaSpool } from "./native-spool.js";
-import { controllerMetadataBudget } from "./metadata-budget.js";
 import { ImageReleaseStorageError, isImageReleaseStorageFailure } from "./release-error.js";
 import type Database from "better-sqlite3";
 import { constants, chmodSync, closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, linkSync, mkdirSync, openSync, readSync, unlinkSync, writeSync } from "node:fs";
@@ -51,8 +50,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     const fd = openSync(ownerFile, constants.O_RDONLY | constants.O_NOFOLLOW);
     try { const stat = fstatSync(fd), bytes = Buffer.alloc(stat.size); if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino || stat.size > 16384 || readSync(fd, bytes, 0, bytes.length, 0) !== bytes.length || canonicalImageJson(JSON.parse(bytes.toString("utf8"))) !== canonicalImageJson(owner)) throw new Error("Media preparation owner identity differs."); } finally { closeSync(fd); }
   } else writeDurableJson(ownerFile, owner);
-  const metadataBudget = controllerMetadataBudget(file, db);
-  const captureSource = createImageCaptureSource(db, transactions, snapshot, metadataBudget);
+  const captureSource = createImageCaptureSource(db, transactions, snapshot);
   let closed = false, cleanupComplete = false;
   const decoderAdmission = controllerDecoderAdmission();
   const inFlight = new Map<string, { controller: AbortController; promise: Promise<LocalImagePreparation> }>();
@@ -76,7 +74,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     const row = db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(uploadId) as { value: string } | undefined;
     if (!row) throw new Error("Image preparation is unavailable."); return JSON.parse(row.value) as Preparation;
   });
-  const put = (p: Preparation) => transactions.write(() => { metadataBudget.assert(16384, p.receipt.state !== "receiving" || p.decoding); return db.prepare("INSERT INTO image_preparations VALUES(?,?) ON CONFLICT(upload_id) DO UPDATE SET value=excluded.value").run(p.spec.uploadId, JSON.stringify(p)); });
+  const put = (p: Preparation) => transactions.write(() => db.prepare("INSERT INTO image_preparations VALUES(?,?) ON CONFLICT(upload_id) DO UPDATE SET value=excluded.value").run(p.spec.uploadId, JSON.stringify(p)));
   const assertTarget = (spec: ImageUploadSpec) => {
     const { actorUserId: _actor, ...target } = spec.target; void _actor;
     if (canonicalImageJson(target) !== canonicalImageJson(snapshotTarget(ticket, snapshot()))) throw new Error("Image preparation target_changed.");
@@ -98,14 +96,9 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     } catch (cause) { closeSync(fd); throw cause; }
   };
   const openPreparation = (p: Preparation, writable = false): number => openPrivateImage(privatePreparationPath(p), writable);
-  const checkPreparationMetadata = () => transactions.read(() => {
-    metadataBudget.assert(16384);
-    const rows = db.prepare("SELECT value FROM image_preparations").all() as { value: string }[];
-    if (rows.length >= 10000 || rows.reduce((sum, row) => sum + Buffer.byteLength(row.value), 0) + 16384 > 128 * 1024 * 1024) throw new Error("Image preparation metadata budget exceeded.");
-  });
-  const sourceReservations = captureSourceReservations({ db, transactions, root, checkOpen, assertDirectories, checkPreparationMetadata, acquireBlock: tryAcquireMediaBlock,
+  const sourceReservations = captureSourceReservations({ db, transactions, root, checkOpen, assertDirectories, acquireBlock: tryAcquireMediaBlock,
     assertAttempt: (captureId, attemptId) => { captureSource.assertImageCaptureAttempt(captureId, attemptId); },
-    assertMetadata: () => { metadataBudget.assert(16384, true); }, sync: () => syncDirectory(root),
+    sync: () => syncDirectory(root),
     joinStage: async (captureId, attemptId) => { await captureInFlight.get(`${captureId}:${attemptId}`)?.promise.catch(() => {}); },
     stageRetained: (captureId, attemptId) => transactions.read(() => !!db.prepare("SELECT 1 FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`)),
   });
@@ -144,7 +137,6 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     checkOpen(); const spec = parseImageUploadSpec(input); assertTarget(spec);
     const old = transactions.read(() => db.prepare("SELECT value FROM image_preparations WHERE upload_id=?").get(spec.uploadId) as { value: string } | undefined);
     if (old) { const p = JSON.parse(old.value) as Preparation; if (canonicalImageJson(p.spec) !== canonicalImageJson(spec)) throw new Error("Image preparation upload_conflict."); return p.receipt; }
-    checkPreparationMetadata();
     const filename = `${randomUUID()}.part`;
     const receipt: LocalImagePreparation = { uploadId: spec.uploadId, imageId: spec.imageId, target: spec.target, state: "receiving", acceptedOffset: "0", validated: null, error: null };
     // Record the exact private path before creating bytes. A failed create or
@@ -257,7 +249,6 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
     if (old) { const result = JSON.parse(old.validated) as ValidatedImage; if (old.image_id !== input.imageId || result.sha256 !== input.sha256 || result.byteLength !== input.byteLength || input.declaredMediaType != null && result.mediaType !== input.declaredMediaType) throw new Error("Image capture identity conflict."); return result; }
     const pending = captureInFlight.get(captureKey); if (pending) throw new Error("Image capture is already in progress; query the original capture.");
     const reservedStage = sourceReservations.stagePath(input.captureId, input.attemptId, input.inputPath);
-    checkPreparationMetadata();
     const filename = reservedStage ? path.basename(reservedStage) : `${randomUUID()}.part`, targetPath = path.join(root, filename), controller = new AbortController();
     const admitted = decoderAdmission.acquire(controller.signal);
     const promise = (async () => {
@@ -281,7 +272,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         if (input.declaredMediaType != null && validated.mediaType !== input.declaredMediaType) throw Object.assign(new Error("Image capture format differs from the declared source type."), { code: "invalid_image" });
         if (controller.signal.aborted) throw controller.signal.reason;
         const fd = openSync(targetPath, constants.O_RDWR | constants.O_NOFOLLOW); try { chmodSync(targetPath, 0o400); fsyncSync(fd); } finally { closeSync(fd); } syncDirectory(root);
-        transactions.write(() => { captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId, input.imageId); metadataBudget.assert(16384, true); db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(captureKey, input.imageId, filename, JSON.stringify(validated)); });
+        transactions.write(() => { captureSource.assertImageCaptureAttempt(input.captureId, input.attemptId, input.imageId); db.prepare("INSERT INTO image_captures VALUES(?,?,?,?)").run(captureKey, input.imageId, filename, JSON.stringify(validated)); });
         retained = true; return validated;
       } finally {
         try { if (!retained) { assertDirectories(); if (existsSync(targetPath)) { unlinkSync(targetPath); syncDirectory(root); } } }
@@ -362,7 +353,6 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         } finally { lease.close(); }
         return;
       }
-      checkPreparationMetadata();
       content.importResourceFile(resource, path.join(root, row.filename));
     } finally { block.close(); }
   };
@@ -398,7 +388,6 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
         if (canonicalImageJson(input.target) !== canonicalImageJson(p.spec.target) || p.receipt.state !== "validated" || !p.receipt.validated || image.imageId !== p.spec.imageId || image.sha256 !== p.spec.sha256 || image.byteLength !== p.spec.byteLength) throw new Error("Native image preparation is unavailable or differs from its original intent.");
         return { image, p, metadata: p.receipt.validated };
       });
-      checkPreparationMetadata();
       for (const { image, p, metadata } of preparations) {
         const resource: SessionResource = { resourceId: image.resourceId, status: "available", name: p.spec.name, mediaType: metadata.mediaType, byteLength: metadata.byteLength, sha256: metadata.sha256, error: null, revision: "1", width: metadata.width, height: metadata.height, frameCount: metadata.frameCount };
         parseSessionResource(resource); if (!content.resources.has(image.resourceId)) imported.add(image.resourceId); content.importResourceFile(resource, path.join(root, p.filename));
@@ -463,8 +452,7 @@ export const openControllerMediaStore = (file: string, ticket: ControllerLaunchT
       } finally { closeSync(fd); }
     },
     reserveCaptureSource: sourceReservations.reserve, releaseCaptureSource: sourceReservations.release, tryAcquireMediaBlock,
-    nativeIndexDirectory: (): string => { checkOpen(); metadataBudget.assert(16384); const directory = `${file}.native-index`; mkdirSync(directory, { recursive: true, mode: 0o700 }); assertPrivateDirectory(directory); return directory; },
-    reserveNativeIndex: (additional: number): void => { checkOpen(); metadataBudget.assert(additional); },
+    nativeIndexDirectory: (): string => { checkOpen(); const directory = `${file}.native-index`; mkdirSync(directory, { recursive: true, mode: 0o700 }); assertPrivateDirectory(directory); return directory; },
     captureStatus: (captureId: string, attemptId: string): ValidatedImage | null => {
       checkOpen(); imageId(attemptId); captureSource.assertImageCaptureAttempt(captureId, attemptId);
       return transactions.read(() => { const row = db.prepare("SELECT validated FROM image_captures WHERE capture_id=?").get(`${captureId}:${attemptId}`) as { validated: string } | undefined; return row ? JSON.parse(row.validated) as ValidatedImage : null; });

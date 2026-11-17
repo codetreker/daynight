@@ -16,7 +16,6 @@ import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js"
 import * as launchTickets from "../../../src/commands/controller/launch-ticket.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import * as launchObservation from "../../../src/commands/controller/launch-observation.js";
-import * as storagePreparation from "../../../src/commands/controller/storage-preparation.js";
 import * as storageLock from "../../../src/commands/controller/storage-lock.js";
 import { InstanceLockHeldError } from "../../../src/platform/instance-lock.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
@@ -38,12 +37,11 @@ it("waits before initial Web intent when readiness changes during worktree prepa
   expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
 });
 
-it.each(["lock_busy", "physical_capacity"] as const)("keeps the stopped generation and recovery allowance while storage waits (%s)", async reason => {
+it("keeps the stopped generation and recovery allowance while storage ownership is held", async () => {
   const f = await recoveryFixture();
   f.store.pauseRecovery(f.task, "Original failure", 8);
   const authorized = f.store.authorizeRecoveryRetry(f.task, 9);
-  if (reason === "lock_busy") vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementationOnce(() => { throw new Error("Storage ownership held.", { cause: new InstanceLockHeldError(process.pid) }); });
-  else vi.mocked(storagePreparation.prepareControllerStorage).mockReturnValueOnce({ kind: "waiting", reason: "physical_capacity", cause: new Error("Storage reservation unavailable.") });
+  vi.spyOn(storageLock, "acquireControllerStoragePermit").mockImplementationOnce(() => { throw new Error("Storage ownership held.", { cause: new InstanceLockHeldError(process.pid) }); });
   expect(await f.backend.advanceResult(authorized, new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "storage_maintenance" });
   const waiting = f.store.getTask(f.task)!;
   expect(waiting.webExecution).toMatchObject({ executionGeneration: "1", launchId: authorized.webExecution!.launchId });

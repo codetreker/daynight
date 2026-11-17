@@ -10,7 +10,7 @@ vi.mock("../../../src/commands/controller/providers/claude-live.js", async origi
 import { openClaudeProvider as openProvider } from "../../../src/commands/controller/providers/claude.js";
 const openClaudeProvider = (options: ProviderOptions) => {
   const saved = new Map<string, unknown>();
-  return openProvider({ imageRuntime: { getIntent: () => null, readState: key => saved.get(key) ?? null, writeState: (key, value) => { saved.set(key, structuredClone(value)); }, indexDirectory: () => "/private/test-index", reserveIndex() {}, acquireIndexReservation: () => ({ release() {} }), createSpool: () => { throw new Error("This controlled fixture has no image source."); } }, ...options });
+  return openProvider({ imageRuntime: { getIntent: () => null, readState: key => saved.get(key) ?? null, writeState: (key, value) => { saved.set(key, structuredClone(value)); }, indexDirectory: () => "/private/test-index", acquireIndexLease: () => ({ release() {} }), createSpool: () => { throw new Error("This controlled fixture has no image source."); } }, ...options });
 };
 const historyFixture = (nativeSessionId: string, messages: unknown[]) => ({
   snapshot: { nativeSessionId }, nextPage: async () => ({ done: true, cursor: "cursor", records: messages.map(message => ({ value: { ...message as object, session_id: nativeSessionId }, media: [], assistantBlockOffset: null })) }), acknowledge: async () => {}, close: async () => {},

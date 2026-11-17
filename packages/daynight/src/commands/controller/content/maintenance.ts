@@ -9,8 +9,7 @@ import { serializeSqliteError, SqliteAccessError, type SqliteOutcome } from "../
 import { currentSqliteVersion, inspectSqlite } from "../../../platform/sqlite-format.js";
 import { parseStoredTimelineEntry } from "../../../session/protocol.js";
 import { controllerJournalFormat } from "../journal-format.js";
-import { controllerJournalPhysicalBytes, controllerMetadataBudget } from "../media/metadata-budget.js";
-import { assertControllerStorageCapacity, isControllerStorageCapacityError } from "../storage-capacity.js";
+import { controllerJournalPhysicalBytes } from "../storage-metrics.js";
 import { assertControllerStoragePermit, type ControllerStoragePermit } from "../storage-lock.js";
 import { assertControllerStorageRole, controllerStorageExecutionRow, controllerTimelineCleanupPending, observeControllerStorage, reportControllerStorageEvent, type ControllerStorageObservation, type ControllerStoragePreparation, type ControllerStorageRequest } from "../storage-preparation.js";
 import { openTimelineStore } from "./timeline-store.js";
@@ -206,7 +205,7 @@ export const maintainControllerTimeline = (options: {
   try {
     const totals = validateCommitted(db);
     if (!controllerTimelineCleanupPending(db)) {
-      assertAccess(); assertControllerStorageCapacity(request.journalFile, db);
+      assertAccess();
       report(phase, "completed", { ...totals, pending: false });
       return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false };
     }
@@ -214,7 +213,6 @@ export const maintainControllerTimeline = (options: {
     if (snapshot === null) throw new Error("Controller timeline cleanup has no original execution.");
     phase = "legacy-timeline-retirement"; report(phase, "started", { ...totals });
     const sources = retirementSources(request.journalFile, snapshot.sessionId);
-    const before = controllerMetadataBudget(request.journalFile, db).bytes();
     const first = checkpoint(db, request.deadline);
     report(phase, "started", { ...first, remainingFrames: first.logFrames - first.checkpointedFrames, oldFileBytes: sources.reduce((sum, source) => sum + source.bytes, 0) });
     retireLegacyTimelineReferences(request.journalFile, snapshot.sessionId);
@@ -231,7 +229,7 @@ export const maintainControllerTimeline = (options: {
     if (physical.databaseBytes !== pageBytes || physical.walBytes !== 0 || physical.journalBytes !== 0) throw new Error("Controller journal compaction has not reached the physical database file.");
     validateCommitted(db);
     if (retirementSources(request.journalFile, snapshot.sessionId).length !== 0) throw new Error("Controller timeline sources reappeared during compaction.");
-    report(phase, "completed", { ...physical, preCheckpointBusy: pre.busy, preCheckpointLogFrames: pre.logFrames, preCheckpointedFrames: pre.checkpointedFrames, preCheckpointRemainingFrames: pre.logFrames - pre.checkpointedFrames, postCheckpointBusy: post.busy, postCheckpointLogFrames: post.logFrames, postCheckpointedFrames: post.checkpointedFrames, postCheckpointRemainingFrames: post.logFrames - post.checkpointedFrames, reclaimedBytes: before - controllerMetadataBudget(request.journalFile, db).bytes() });
+    report(phase, "completed", { ...physical, preCheckpointBusy: pre.busy, preCheckpointLogFrames: pre.logFrames, preCheckpointedFrames: pre.checkpointedFrames, preCheckpointRemainingFrames: pre.logFrames - pre.checkpointedFrames, postCheckpointBusy: post.busy, postCheckpointLogFrames: post.logFrames, postCheckpointedFrames: post.checkpointedFrames, postCheckpointRemainingFrames: post.logFrames - post.checkpointedFrames });
     phase = "storage-admission"; report(phase, "started");
     try { runSqliteImmediate(db, () => { db.prepare("UPDATE execution SET legacy_timeline_cleanup_pending=0 WHERE id=1 AND legacy_timeline_cleanup_pending=1").run(); }); }
     catch (cause) {
@@ -248,17 +246,16 @@ export const maintainControllerTimeline = (options: {
     }
     validateCommitted(db);
     if (controllerTimelineCleanupPending(db)) throw new Error("Controller timeline cleanup marker did not commit.");
-    assertAccess(); assertControllerStorageCapacity(request.journalFile, db);
+    assertAccess();
     report(phase, "completed", { ...controllerJournalPhysicalBytes(request.journalFile, db), pending: false });
     return { kind: "prepared", snapshot, legacyTimelineCleanupPending: false };
   } catch (cause) {
-    if (cause instanceof TimelineReaderBusyError || isControllerStorageCapacityError(cause)) observation.roleResult = "waiting";
+    if (cause instanceof TimelineReaderBusyError) observation.roleResult = "waiting";
     let pendingObservation: boolean | string = "unknown";
     try { if (db.open && !db.inTransaction) pendingObservation = controllerTimelineCleanupPending(db); }
     catch (observation) { warn("Controller timeline failure marker observation failed.", observation); }
     report(phase, "failed", { pending: pendingObservation, ...(cause instanceof TimelineReaderBusyError ? { checkpointBusy: cause.busy, logFrames: cause.logFrames, checkpointedFrames: cause.checkpointedFrames, remainingFrames: cause.logFrames - cause.checkpointedFrames } : {}) }, cause instanceof SqliteAccessError ? cause.outcome : maintenanceOutcome, cause);
     if (cause instanceof TimelineReaderBusyError) return { kind: "waiting", reason: "reader_busy", cause };
-    if (isControllerStorageCapacityError(cause)) return { kind: "waiting", reason: "physical_capacity", cause };
     throw cause;
   }
 };

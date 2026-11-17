@@ -6,7 +6,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import { currentSqliteVersion } from "../../../src/platform/sqlite-format.js";
 import { loadSqliteSequence } from "../../../src/platform/sqlite-sql.js";
 import { acquireControllerStoragePermit } from "../../../src/commands/controller/storage-lock.js";
-import { controllerMetadataBudget } from "../../../src/commands/controller/media/metadata-budget.js";
 import { upgradeControllerJournal } from "../../../src/commands/controller/storage-preparation.js";
 import { readControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
@@ -60,8 +59,7 @@ test("pure upgrade ignores an execution above its physical capacity", async () =
   const f = await fixture(), snapshot = stoppedSnapshot(f.ticket); createV10(f, snapshot, 0);
   const index = `${f.file}.native-index`; await mkdir(index, { mode: 0o700 });
   const file = path.join(index, "retained"); await writeFile(file, ""); await truncate(file, 2_306_867_201);
-  const db = new Database(f.file, { readonly: true });
-  try { expect(controllerMetadataBudget(f.file, db).bytes()).toBeGreaterThan(2_306_867_200); } finally { db.close(); }
+  expect((await stat(file)).size).toBeGreaterThan(2_306_867_200);
   const permit = acquireControllerStoragePermit(f.file);
   try {
     expect(upgradeControllerJournal(f.file, permit, { onMigration: () => {} })).toEqual({ version: currentSqliteVersion(controllerJournalFormat), legacyTimelineCleanupPending: false });

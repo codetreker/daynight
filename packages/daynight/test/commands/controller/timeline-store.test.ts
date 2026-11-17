@@ -56,23 +56,6 @@ it("requires the original write boundary and rejects changed identity or stale r
   expect(f.store.totals().entryCount).toBe(1);
 });
 
-it("asks the original owner for the exact incoming JSON write allowance before mutation", () => {
-  const f = fixture(), original = entry(), requests: number[] = [];
-  let rejectGrowth = false;
-  const store = openTimelineStore(f.db, { assertWrite: additionalBytes => {
-    f.context.assertWrite(); requests.push(additionalBytes);
-    if (rejectGrowth && additionalBytes > 0) throw new Error("Reserved write capacity exhausted.");
-  } });
-  f.write(() => store.save(original));
-  expect(requests).toEqual([0, Buffer.byteLength(JSON.stringify(original)) + 16_384]);
-  requests.length = 0;
-  f.write(() => store.save(original));
-  expect(requests).toEqual([0]);
-  const priorTotals = store.totals(); rejectGrowth = true;
-  expect(() => f.write(() => store.save(entry("1", "2", "replacement", original.entryId)))).toThrow("Reserved write capacity exhausted");
-  expect(store.get(original.entryId)).toEqual(original); expect(store.totals()).toEqual(priorTotals);
-});
-
 it("rolls back both body and totals when updating totals fails", () => {
   const f = fixture(), original = entry(); f.write(() => f.store.save(original));
   const totals = f.store.totals();

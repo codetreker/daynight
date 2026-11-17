@@ -23,13 +23,13 @@ permit through local work and validate its owner, path and unreleased state.
 
 Preparation separates format upgrade, maintenance of a proven stopped generation,
 and admission of a new writer. The numbered SQL sequence is the single schema
-owner, now ending at canonical 010. A local migration context supplies the original
+owner, now ending at canonical 013. A local migration context supplies the original
 permit; current-format reads require neither. The [capacity-free conversion decision](2026-11-16-controller-capacity-free-upgrades.md) separates format conversion from capacity admission. The
 [SQL activation decision](2026-11-12-session-sqlite-activation.md) adopts current
 body rows while preserving message origins. The
 [SQL content components](2026-11-12-session-sqlite-content-components.md) reuse the
 permit and role owners for historical import and stopped maintenance; pending
-cleanup and ordinary metadata admission finish before a new writer
+cleanup finishes before a new writer
 commits its generation. The
 [protocol design](../../../../docs/design/task-session-protocol.md#controller-与原生会话)
 owns the role, capacity and failure contracts.
@@ -40,10 +40,7 @@ and closes constructed resources through one scope. Its permit is released last,
 after journal and media closure is confirmed. Other writers use short local
 phases; archive and stopped-tail transport hold no journal ownership while the
 network is awaited. Each returning acknowledgement reacquires ownership and
-checks the original stopped identity and frozen source. Stopped batch and
-acknowledgement settlement retain the existing 8 MiB reserve above ordinary
-metadata admission; normal stopped-maintenance is required before the next
-writer, while numbered migrations do not apply capacity admission.
+checks the original stopped identity and frozen source. Normal stopped-maintenance is required before the next writer. The [metadata admission removal](../simplification/2026-11-16-controller-metadata-admission-removal.md) removes cumulative metadata admission from settlement and ordinary writes.
 
 Stopped recording holds the permit while verifying the original process boundary
 outside a SQL transaction, then compares snapshot, ticket hash and owner PID in a
@@ -79,7 +76,7 @@ budget consumption. Process-state uncertainty, unknown transactions and failed
 handle closure remain visible and retain the evidence needed for recovery.
 
 Local ownership adds short gate operations around writable phases; maintenance
-and ordinary writes retain metadata admission. The [media ledger
+and ordinary writes retain their ownership gates. The [media ledger
 removal](../simplification/2026-11-16-controller-media-ledger-removal.md)
 supersedes cumulative media reservations; the later
 [free-space and peak admission removal](../simplification/2026-11-16-controller-free-space-admission-removal.md)

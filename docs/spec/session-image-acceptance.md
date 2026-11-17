@@ -26,7 +26,7 @@
 | 服务存储准入 | 不为未来原件、正文、索引、归档或暂存预留额度，也不按卷空闲水位拒绝旧容量申请。实际存储不足或写入失败必须明确返回，保留原身份和清理责任，不删除历史原件腾空间。 |
 | 上传身份与保留 | 上传准备资格为 24 小时；GET 或重传不续期。身份 tombstone 保留原查询和去重职责，不以累计数量作为容量申请拒绝条件。过期不清除 operation unknown、消息、记录或 native/resume 的有效引用。 |
 | 服务传输 | 图片块最多 524,288 原字节；同 Session 全方向和全部连接代次合计最多 2 个媒体块在途，账户最多 8、部署最多 64。归档文件块 1–1,048,576 bytes，同 Session 最多 1 个，仍占公共媒体额度。控制、查询、删除和回执在块边界可进展。 |
-| Controller | 不设每 execution 或 stateDirectory 的媒体累计额度，不按卷剩余空间或未来写入峰值拒绝操作；实际文件系统与 SQLite 写入决定是否成功。控制元数据 128 MiB 加 8 MiB 结算余量；已提交正文及原身份匹配的完整同步文件提供实际字节对应的额外空间，未登记孤儿不豁免。当前正文替换只计最新版本，DB/WAL/SHM、未退休旧文件和同步文件仍计真实占用。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
+| Controller | 不设媒体或元数据累计额度，也不按卷剩余空间或未来写入峰值拒绝操作；实际文件系统与 SQLite 写入决定是否成功。单条内容和协议限制、运行时并发与背压仍生效。原生协议解析和子进程另计实际占用；不能由小块传输推断内存有界。 |
 | 通用完整解码 | 单轴最多 16,384，画布最多 33,554,432 像素，最多 256 帧，累计最多 67,108,864 像素，RGBA8 输出最多 268,435,456 bytes，单图最多 15 秒。完整遍历所有帧；静态为 1 帧。每解码子进程 512 MiB RSS 为监控目标，不能称为硬内存隔离。 |
 | 浏览器持久草稿 | 每账户 256 MiB，总量 512 MiB；editable 和 frozen 引用不因淘汰页面缓存而被删除。配额、事务或 Blob 错误明确阻止含图发送并保留实际编辑状态。 |
 | 浏览器页面原件 | 页面 128 MiB/32 项、owner 64 MiB/16 项；前景保留 40 MiB/2 槽，后台 88 MiB/30 项、owner 后台 24 MiB/14 项；在途缓冲计入。背景满时一个 10 MiB 预览和一个下载仍有前景准入。 |
@@ -112,7 +112,7 @@ Codex 接受必须关联原 start 返回的合法 turn.id，或 steer 返回的�
 
 容量和有界性验证记录空载与负载对照、最坏并发、RSS（含子进程和 native allocation）、heap、FD、队列、对象 URL、文件/数据库用量及控制回执/历史请求进展。媒体忙碌不能饿死原控制操作；首次打开不全量载入图片原件。沿已确认准入值验证，不擅自增加毫秒 SLA，也不把监控目标、Node heap 或画布估算当作硬内存上限。来源结算 60 秒到期不能证明 writer 停止或 commit 未发生。
 
-Controller 当前正文采用的容量验收还须验证重复累计更新仅保留一行、无新候选文件，重开后的完整字节/hash/seq/revision/totals 一致；精确 128 MiB/100000 上界、+1 拒绝和替换不累计，同时满足当前元数据准入。准备、上传/封存、历史同步和维护须在模拟卷空闲低于 512 MiB 或预计峰值不足、实际写入仍可成功时继续，并确认没有容量预测 `statfs` 调用。真实 ENOSPC、权限、SQLite 写入/提交/关闭故障保留原确定或未知结果、原身份和待清理源；reader busy、lock busy、原 writer 未停止和身份不匹配仍按其原机制拒绝或等待。大体积、989 版本和 100000 条探针独立于普通 CI，记录生成数据的内容/顺序、outbox/ACK、reader 条件和 DB/WAL/SHM 实测峰值。生成探针不能冒充未取得的原事故 trace，也不能与隔离模型宣称等同性能。
+Controller 当前正文采用的容量验收还须验证重复累计更新仅保留一行、无新候选文件，重开后的完整字节/hash/seq/revision/totals 一致；精确 128 MiB/100000 上界、+1 拒绝和替换不累计，同时保留单条和协议限制。准备、上传/封存、历史同步和维护须在模拟卷空闲低于 512 MiB 或预计峰值不足、实际写入仍可成功时继续，并确认没有容量预测 `statfs` 调用。真实 ENOSPC、权限、SQLite 写入/提交/关闭故障保留原确定或未知结果、原身份和待清理源；reader busy、lock busy、原 writer 未停止和身份不匹配仍按其原机制拒绝或等待。大体积、989 版本和 100000 条探针独立于普通 CI，记录生成数据的内容/顺序、outbox/ACK、reader 条件和 DB/WAL/SHM 实测峰值。生成探针不能冒充未取得的原事故 trace，也不能与隔离模型宣称等同性能。
 
 正式结果记录 caseId、requirementIds、layer、result、reason、productionCommit、testCommit、combinedTree、platform、nativeVersion、sdkVersion、backend、effectiveModel、capabilityProfile、fixtureSha256、byteLength、mediaType、dimensions、imageOrder、nativeCallCount、receiptEvidence、historyEvidence、archiveHashes、measuredLimits 和 limitations。输入样本字段指向 Daynight 原件，原生内部转换结果另附观察；传输、接受和视觉结论分别说明，未观察到转换结果不能填为原件摘要相同。未知事实写 null 并解释；稳定脱敏身份须保持关联，不能记录认证令牌、全量 Base64、敏感路径或未授权正文。此为验收结果格式，不是产品 API。
 
