@@ -157,6 +157,10 @@ func (d *configurationDAO) SetWorkerConfiguration(context.Context, string, strin
 	configurationUnexpected(d.calls.t, "SetWorkerConfiguration")
 	return model.WorkerDesiredConfiguration{}, nil
 }
+func (d *configurationDAO) SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error) {
+	configurationUnexpected(d.calls.t, "SetWorkerConfigurationRaw")
+	return model.WorkerDesiredConfiguration{}, nil
+}
 func (d *configurationDAO) SetWorkerConfigurationObservation(context.Context, string, string, int64, model.WorkerConfigurationObservation) error {
 	configurationUnexpected(d.calls.t, "SetWorkerConfigurationObservation")
 	return nil

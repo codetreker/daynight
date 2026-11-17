@@ -377,7 +377,7 @@ it.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_HERDR_NATIVE_CLE
     git("init", "--initial-branch=main"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "fixture");
     const repoUrl = "https://example.test/owner/repo.git", bare = path.join(f.paths.stateDirectory, "origin.git");
     git("remote", "add", "origin", repoUrl); execFileSync("git", ["clone", "--bare", repository, bare], { timeout: 10_000 }); git("config", `url.${bare}.insteadOf`, repoUrl);
-    const empty = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    const empty = { listSchedules: () => [], listWebTasks: () => [] };
     manager = createWorkerGitManager({ temporaryDirectory: path.join(f.paths.stateDirectory, "tmp"), prepareFormat: async (_project, repo, op) => { await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op, sources: empty }); } });
     const project = { projectId: f.context.projectId, repoUrl, localPath: repository };
     await manager.prepareRepository(project, active); const binding = await manager.prepareWorktree(project, f.context, active);

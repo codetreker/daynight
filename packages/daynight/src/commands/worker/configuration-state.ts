@@ -7,7 +7,7 @@ import { prepareWorkerReport, WORKER_CONFIGURATION_REPORT_BYTES } from "../../ap
 import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport } from "../../api/worker-configuration.js";
 import type { ToolPaths } from "../../platform/tool-path-choice.js";
-import { applicableConfigurationDesired, configurationDesired, configurationCapabilities, configurationKey, configurationSupportsMode, freezeConfiguration, sameConfigurationValue } from "./configuration-model.js";
+import { applicableConfigurationDesired, configurationAuthority, configurationDesired, configurationDesiredRevision, configurationCapabilities, configurationKey, configurationSupportsMode, freezeConfiguration, sameConfigurationValue } from "./configuration-model.js";
 import type { ConfigurationProjection, ConfigurationProjectionOptions, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationSnapshot, WorkerConfigurationToolTargets, WorkerNativeProof } from "./configuration-model.js";
 
 export const allConfigurationItems = (cache: WorkerConfigurationCache): readonly TrackedConfigurationItem[] => [...cache.currentItems, ...cache.retainedItems];
@@ -33,7 +33,7 @@ export const configurationToolTargets = (cache: WorkerConfigurationCache, local:
   return { source: "cloud", revision: cache.authority.applicationRevision, choices: { codex: choices.codex, copilot: choices.copilot, herdr: choices.herdr } };
 };
 export const configurationProjects = (cache: WorkerConfigurationCache): readonly WorkerCloudProject[] | null =>
-  applicableConfigurationDesired(configurationDesired(cache))?.value.projects ?? null;
+  cache.authority.pendingApplication ? null : applicableConfigurationDesired(configurationDesired(cache))?.value.projects ?? null;
 export const resolveWorkerCloudProjectNative = (native: WorkerCloudNative, project: WorkerCloudProject): WorkerCloudNative => {
   const overrides = project.nativeOverrides, agent = overrides.agent === undefined ? native.agent : overrides.agent;
   return { agent, model: Object.hasOwn(overrides, "model") ? overrides.model! : agent === native.agent ? native.model : null,
@@ -41,6 +41,7 @@ export const resolveWorkerCloudProjectNative = (native: WorkerCloudNative, proje
 };
 export const configurationTarget = (cache: WorkerConfigurationCache, key: WorkerCloudItemKey): WorkerCloudItem["appliedValue"] => {
   if (key.kind === "projectRemoval") return true;
+  if (cache.authority.pendingApplication) return null;
   const desired = applicableConfigurationDesired(configurationDesired(cache));
   if (desired === null) return null;
   if (key.kind === "agentControlMode") return desired.value.agentControlMode === undefined ? null : desired.value.agentControlMode;
@@ -63,7 +64,7 @@ const unfinishedRemovalProjects = (cache: WorkerConfigurationCache): ReadonlySet
 ].map(item => projectOf(item)!));
 
 export const pruneConfigurationRetained = (cache: WorkerConfigurationCache, runningRecordIds: ReadonlySet<string>): WorkerConfigurationCache => {
-  if (configurationDesired(cache) !== null && configurationProjects(cache) === null) return cache;
+  if (configurationAuthority(cache) !== null && configurationProjects(cache) === null) return cache;
   const records = new Map(allConfigurationItems(cache).map(item => [item.recordId, item]));
   const cleared = (item: TrackedConfigurationItem): TrackedConfigurationItem => {
     const blocker = item.blockedByRemovalId === null ? undefined : records.get(item.blockedByRemovalId);
@@ -89,20 +90,21 @@ export const transitionConfigurationDesired = (
   cache: WorkerConfigurationCache, received: ReceivedWorkerDesired | null,
   runningRecordIds: ReadonlySet<string>, newId: () => string, previousOverride?: WorkerCloudDesired | null, preserveRetained = false,
 ): WorkerConfigurationCache => {
-  const previousDesired = previousOverride === undefined ? configurationDesired(cache) : previousOverride, desired = received?.known ?? null;
+  const previousAuthority = configurationAuthority(cache);
+  const previousDesired = previousOverride === undefined ? cache.authority.pendingApplication ? null : previousAuthority?.known ?? null : previousOverride, desired = received?.known ?? null;
   let hidden = cache.hiddenCapabilitySources;
-  if (previousDesired !== null && desired !== null) {
+  if (previousAuthority !== null && received !== null) {
     const previous = desiredCapabilitySources(cache.authority.desiredJson!), current = desiredCapabilitySources(received!.json);
-    if (desired.revision === previousDesired.revision && !configurationDesiredSourcesComparable(cache.authority.desiredJson!, received!.json)) throw new ProtocolError();
-    if (BigInt(desired.revision) < BigInt(previousDesired.revision)) hidden = undefined;
+    if (received.revision === previousAuthority.revision && !configurationDesiredSourcesComparable(cache.authority.desiredJson!, received.json)) throw new ProtocolError();
+    if (BigInt(received.revision) < BigInt(previousAuthority.revision)) hidden = undefined;
     else {
       const entries = { ...hidden };
       for (const key of workerCapabilityKeys) {
         const before = previous.get(key), after = current.get(key), saved = entries[key];
         if (after !== undefined) {
-          if (before === undefined && saved?.revision === desired.revision && !configurationSourceFragmentsEqual(saved.json, after)) throw new ProtocolError();
+          if (before === undefined && saved?.revision === received.revision && !configurationSourceFragmentsEqual(saved.json, after)) throw new ProtocolError();
           delete entries[key];
-        } else if (before !== undefined) entries[key] = { revision: previousDesired.revision, json: before };
+        } else if (before !== undefined) entries[key] = { revision: previousAuthority.revision, json: before };
       }
       hidden = Object.keys(entries).length === 0 ? undefined : entries;
     }
@@ -111,17 +113,18 @@ export const transitionConfigurationDesired = (
     const { hiddenCapabilitySources: _previous, ...rest } = value;
     return hidden === undefined ? rest : { ...rest, hiddenCapabilitySources: hidden };
   };
-  if (desired !== null && applicableConfigurationDesired(desired) === null) {
-    if (cache.authority.desiredJson === received!.json) return cache;
+  if (received !== null && (desired === null || applicableConfigurationDesired(desired) === null)) {
+    if (cache.authority.desiredJson === received!.json && cache.authority.pendingApplication) return cache;
     // Keep the ledger while raw authority cannot be applied; its projects do not authorize removals.
-    return withHidden({ ...cache, authority: { ...cache.authority, generation: newId(), desiredJson: received!.json }, projectionCursor: null });
+    return withHidden({ ...cache, authority: { ...cache.authority, generation: newId(), desiredJson: received!.json, pendingApplication: true }, projectionCursor: null });
   }
-  if (sameConfigurationValue(previousDesired?.value ?? null, desired?.value ?? null) && !(previousDesired !== null && desired !== null && BigInt(desired.revision) < BigInt(previousDesired.revision))) {
+  if (received === null && previousAuthority === null && previousOverride === undefined && cache.authority.pendingApplication) return cache;
+  if (!cache.authority.pendingApplication && (previousAuthority === null || previousDesired !== null) && sameConfigurationValue(previousDesired?.value ?? null, desired?.value ?? null) && !(previousDesired !== null && desired !== null && BigInt(desired.revision) < BigInt(previousDesired.revision))) {
     if (cache.authority.desiredJson === (received?.json ?? null)) return cache;
     return withHidden({ ...cache, authority: { ...cache.authority, desiredJson: received?.json ?? null } });
   }
   const generation = newId();
-  const next = withHidden({ ...cache, authority: { ...cache.authority, generation, desiredJson: received?.json ?? null, applicationRevision: desired?.revision ?? null }, currentItems: [], retainedItems: [...cache.retainedItems, ...cache.currentItems] });
+  const next = withHidden({ ...cache, authority: { ...cache.authority, generation, desiredJson: received?.json ?? null, applicationRevision: desired?.revision ?? null, pendingApplication: received === null }, currentItems: [], retainedItems: [...cache.retainedItems, ...cache.currentItems] });
   if (desired === null) return pruneConfigurationRetained({ ...next, authority: { ...next.authority, observationRevision: "0" } }, runningRecordIds);
   const previousSelected = new Set(applicableConfigurationDesired(previousDesired)?.value.projects.map(project => project.projectId)
     ?? cache.currentItems.flatMap(item => item.value.key.kind === "projectPreparation" ? [item.value.key.projectId] : []));
@@ -179,7 +182,7 @@ export const configurationSnapshot = (
   localTools: ToolPaths, proofFor: (cache: WorkerConfigurationCache, native: WorkerCloudNative) => WorkerNativeProof,
 ): WorkerConfigurationSnapshot => {
   const desired = configurationDesired(cache);
-  synchronized = synchronized && applicableConfigurationDesired(desired) !== null;
+  synchronized = synchronized && !cache.authority.pendingApplication && applicableConfigurationDesired(desired) !== null;
   const failures = latestFailures(cache);
   const retainedRecoveryLimit = configurationInheritanceSources(cache).get(configurationKey({ kind: "recoveryLimit" }))?.value.appliedValue;
   const current = new Map(cache.currentItems.map(item => [configurationKey(item.value.key), item]));
@@ -201,7 +204,7 @@ export const configurationSnapshot = (
   const projects = selectedProjects !== null ? selectedProjects.map(project => ({ projectId: project.projectId, native: native({ kind: "projectNative", projectId: project.projectId }),
     ready: current.get(configurationKey({ kind: "projectPreparation", projectId: project.projectId }))?.value.state === "applied" && applied({ kind: "projectPreparation", projectId: project.projectId }) === true && !unfinishedRemovals.has(project.projectId) })) : [];
   const globalNative = native({ kind: "native" });
-  return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, selectedProjects, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null, retainedArchiveSessions,
+  return freezeConfiguration({ generation: cache.authority.generation, synchronized, desired, desiredRevision: configurationDesiredRevision(cache), selectedProjects, applicationRevision: cache.authority.applicationRevision, observationRevision: cache.authority.observationRevision, retainedRecoveryLimit: typeof retainedRecoveryLimit === "number" ? retainedRecoveryLimit : null, retainedArchiveSessions,
     items: cache.currentItems.map(item => publicItem(item, failures)), toolTargets: synchronized ? configurationToolTargets(cache, localTools) : null, effective: {
       agentControlMode: synchronized && desired?.value.agentControlMode === "web" ? "web" : null,
       maxConcurrent: scalar("maxConcurrent"), pollIntervalMs: scalar("pollIntervalMs"), recoveryLimit: scalar("recoveryLimit"), preferPlatformSpecificTasks: synchronized && desired !== null && typeof preference === "boolean" ? preference : null,
@@ -224,12 +227,19 @@ const removalSeverity = (item: TrackedConfigurationItem): number => item.value.s
 export const projectConfigurationReport = (cache: WorkerConfigurationCache, options: ConfigurationProjectionOptions): ConfigurationProjection => {
   const desired = configurationDesired(cache);
   const bootstrapSource = options.bootstrap === null ? null : (({ enableSudoCleanup: _sudo, ...rest }) => rest)(options.bootstrap);
-  const bootstrap = desired === null && bootstrapSource !== null ? parseWorkerCloudValue(bootstrapSource, true, configurationCapabilities(bootstrapSource)) : null;
+  const bootstrap = cache.authority.desiredJson === null && bootstrapSource !== null ? parseWorkerCloudValue(bootstrapSource, true, configurationCapabilities(bootstrapSource)) : null;
+  const cloudTools = options.synchronized && !cache.authority.pendingApplication && applicableConfigurationDesired(desired) !== null ? desired?.value.toolPaths : undefined;
+  // The current wire requires all three choices, while the server adopts each null
+  // slot independently. Only send a cloud candidate if its Herdr choice is real.
+  const toolPathsBootstrap = bootstrap?.toolPaths !== undefined ? parseToolPathsBootstrap(bootstrap.toolPaths)
+    : cloudTools?.herdr != null && (cloudTools.codex === null || cloudTools.copilot === null)
+      ? { codex: cloudTools.codex ?? options.localTools.codex, copilot: cloudTools.copilot ?? options.localTools.copilot, herdr: cloudTools.herdr }
+      : null;
   const base: WorkerCloudReport = {
-    controlModeBootstrap: "web",
-    toolPathsBootstrap: bootstrap !== null && bootstrap.toolPaths !== undefined ? parseToolPathsBootstrap(bootstrap.toolPaths) : options.localTools,
+    controlModeBootstrap: cache.authority.desiredJson !== null && desired === null ? null : "web",
+    toolPathsBootstrap,
     bootstrap,
-    observation: options.synchronized && applicableConfigurationDesired(desired) !== null ? { baseRevision: cache.authority.observationRevision, desiredRevision: desired!.revision, items: [] } : null,
+    observation: options.synchronized && !cache.authority.pendingApplication && applicableConfigurationDesired(desired) !== null ? { baseRevision: cache.authority.observationRevision, desiredRevision: desired!.revision, items: [] } : null,
   };
   const envelope = options.telemetry === undefined ? { configuration: base } : prepareWorkerReport({ ...options.telemetry, configuration: base }, WORKER_CONFIGURATION_REPORT_BYTES).value;
   let requestBytes = Buffer.byteLength(stringifyApiJson(envelope), "utf8");

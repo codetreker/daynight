@@ -7,11 +7,12 @@ import { createOperation } from "../../../src/api/operation.js";
 import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { migrateLegacyWorktrees } from "../../../src/commands/worker/worktrees/migration.js";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 
 const roots: string[] = [];
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000, env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))) }).trim();
 const worktreePaths = (cwd: string): string[] => git(cwd, "worktree", "list", "--porcelain", "-z").split("\0").filter(field => field.startsWith("worktree ")).map(field => path.normalize(field.slice("worktree ".length)));
-const emptySources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+const emptySources = { listSchedules: () => [], listWebTasks: () => [] };
 const fixture = async () => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/current-worktrees");
   await mkdir(scratch, { recursive: true });
@@ -64,9 +65,13 @@ it("uses a migrated taskId directory without rewriting the existing checkout", a
     const marker = `daynight-worker:${JSON.stringify({ ...f.owner, leaf: "1:1", root: "1:1", common: "1:1" })}`;
     git(f.repository, "worktree", "add", "--lock", "--reason", marker, "-b", `daynight/${f.owner.taskId}`, old, "HEAD");
     const before = await readFile(path.join(old, ".git"));
+    const web = openWebExecutionStore(path.join(f.root, "web.sqlite"), { onMigration: () => {} });
+    const task = web.register({ ...f.owner, project: f.project, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(),
+      configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 } }, 1);
+    web.bindWorktree(task, { repositoryPath: f.repository, commonDirectory: git(f.repository, "rev-parse", "--absolute-git-dir"), worktreePath: old, branch: `daynight/${f.owner.taskId}` }, 2);
     const adapter = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "temp-migration"), prepareFormat: async (_project, repo, op) => {
       await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
-        sources: { ...emptySources, listSchedules: () => [f.owner] } });
+        sources: { listSchedules: () => [f.owner], listWebTasks: () => web.listUnfinishedTasks() } });
     } });
     try {
       await adapter.prepareRepository(f.project, operation);
@@ -76,7 +81,7 @@ it("uses a migrated taskId directory without rewriting the existing checkout", a
       expect(git(f.repository, "worktree", "list", "--porcelain")).not.toContain("locked");
       await adapter.removeWorktree(f.project, f.owner, operation);
       await adapter.retireWorktreeManifest(f.project, f.owner, operation);
-    } finally { await adapter.dispose(); }
+    } finally { await adapter.dispose(); web.close(); }
   } finally { operation.dispose(); await f.adapter.dispose(); }
 }, 30_000);
 

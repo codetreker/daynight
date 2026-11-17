@@ -129,18 +129,23 @@ func TestWorkerConfigurationStoredDecodeErrors(t *testing.T) {
 	if _, err := scanWorkerConfiguration(workerSnapshotRow(func(...any) error { return sentinel })); !errors.Is(err, sentinel) {
 		t.Fatalf("scan error lost: %v", err)
 	}
-	for _, test := range []struct{ desired, observation string }{{`{"native":"bad"}`, `null`}, {`{}`, `{"items":"bad"}`}} {
-		_, err := scanWorkerConfiguration(workerSnapshotRow(func(destinations ...any) error {
+	row := func(desired, observation string) workerSnapshotRow {
+		return func(destinations ...any) error {
 			revision := int64(1)
 			stamp := time.Now().UTC()
 			*destinations[0].(**int64) = &revision
 			*destinations[1].(**time.Time) = &stamp
-			*destinations[2].(*[]byte) = []byte(test.desired)
-			*destinations[4].(*[]byte) = []byte(test.observation)
+			*destinations[2].(*[]byte) = []byte(desired)
+			*destinations[4].(*[]byte) = []byte(observation)
 			return nil
-		}))
-		if err == nil {
-			t.Fatal("typed stored corruption hidden")
 		}
+	}
+	const raw = `{"native":"bad"}`
+	got, err := scanWorkerConfiguration(row(raw, `null`))
+	if err != nil || got.Desired == nil || string(got.Desired.Raw) != raw || got.Desired.ValueValid || got.Desired.ArchiveSessions == nil || *got.Desired.ArchiveSessions {
+		t.Fatalf("incompatible target was not retained: %+v, %v", got.Desired, err)
+	}
+	if _, err := scanWorkerConfiguration(row(`{}`, `{"items":"bad"}`)); err == nil {
+		t.Fatal("invalid stored observation was accepted")
 	}
 }

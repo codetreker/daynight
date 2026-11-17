@@ -9,7 +9,7 @@ Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额
 
 任务执行采用 `herdr` 或 `web` 中的一种控制方式。两者复用现有任务资格、认领、worktree、managed assignment、进度及完成规则。模式在执行开始前确定，同一 claim 不热切换、不双启动，也不因连接失败自动降级。
 
-- `herdr`：worker 通过 Herdr 启动原生终端会话，Task Session 提供只读终端观察和明确授权的控制；Herdr 承载终端通道。
+- `herdr`：worker 通过 Herdr 启动原生终端会话，Task Session 只展示已上传的历史录像或不可用状态。
 - `web`：worker 直接启动 Daynight controller，由 controller 持有私有原生会话，经 Daynight server 将结构化事件和操作连接到 Task Session。整个生命周期不依赖 Herdr 安装或服务。
 
 模式由 Worker 云端配置的已应用 agentControlMode 决定。首次采纳读取 `~/.daynight/config.yml` 的 `worker.agentControlMode`，缺省为 `herdr`，已有本地 `web` 保持其值；旧服务继续使用本地模式。模式变更仅用于新 claim，原 claim 保持冻结模式、native 配置和执行身份，不提供 repository 级模式覆盖。Codex、Claude、Copilot 均属于两模式的支持范围。Codex Web 使用私有 app-server stdio；Claude Web 使用 Agent SDK；Copilot Web 使用 SDK 连接 Controller 自己启动的私有 headless runtime，不连接 shared runtime 或原生 TUI。
@@ -22,11 +22,11 @@ Session 消息、归档、长轮询、SSE 和 WebSocket 保留各自的协议额
 
 服务端保存 claim 的实际模式；支持扩展 Worker 协议的客户端获得显式 mode，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；release 后的 task 按普通资格创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
 
-Task 的 Session 页签按真实会话生命周期自动呈现，不提供常驻执行记录选择器或记录列表刷新行。已有 claim 时按其身份定位真实 Session：活动 Web 执行使用结构化会话，Herdr 使用终端视图；已认领但尚未注册时保持可辨认、可恢复的等待状态，不能用时间最近的旧记录冒充当前会话。任务完成后，主阅读区自动展示该 claim 对应的只读记录，不提供发送、审批回复、设置修改、执行命令、Interrupt 或终端控制。任务完成、会话 draining 与归档 ready 分别判断；pending、failed、unavailable 和读取失败如实显示，保留既有恢复入口，不伪造完整历史。
+Task 的 Session 页签按真实会话生命周期自动呈现，不提供常驻执行记录选择器或记录列表刷新行。已有 claim 时按其身份定位真实 Session：活动 Web 执行使用结构化会话，旧 Herdr claim 按 claimId 在历史目录中定位只读录像；已认领但尚未注册时保持可辨认、可恢复的等待状态，不能用时间最近的旧记录冒充当前会话。任务完成后，主阅读区自动展示该 claim 对应的只读记录，不提供发送、审批回复、设置修改、执行命令、Interrupt 或终端控制。任务完成、会话 draining 与归档 ready 分别判断；pending、failed、unavailable 和读取失败如实显示，保留既有恢复入口，不伪造完整历史。
 
 没有当前 claim 时，可自动呈现最近实际 Session 的只读历史。只有确认任务不存在任何 Session 时才隐藏 Session 页签；首次读取、权限失败、启动待注册或其他未知结果都不能作为无会话证明。任务退回 todo 不删除已有历史入口；仍保留的 completed claim 继续展示其原会话的只读记录；release 后从历史目录读取原会话。原执行记录继续经“附件 → Session 记录”查阅；同一 claim 内恢复保持原 Session 归属，不增加一次可选执行，不同 claim 的记录不合并、不删除。
 
-打开页面、刷新、恢复焦点和传输重连只读取或重新连接原会话，不创建 native conversation、不重发 assignment、不重放用户输入。旧执行记录下拉选择的浏览器缓存不得覆盖自动定位，只清理本功能拥有的选择键。账号、项目、任务、claim 切换及权限撤销严格隔离内容和迟到响应；普通后台检查保持已显示内容、阅读位置、焦点、草稿、显示模式和全屏状态，不因短暂检查隐藏或重挂阅读区。真实身份或生命周期变化沿用相应切换规则。终端的画面和输入准入要求见 [Session v2](session-v2.md#控制与输入)。
+打开页面、刷新、恢复焦点和传输重连只读取或重新连接原会话，不创建 native conversation、不重发 assignment、不重放用户输入。旧执行记录下拉选择的浏览器缓存不得覆盖自动定位，只清理本功能拥有的选择键。账号、项目、任务、claim 切换及权限撤销严格隔离内容和迟到响应；普通后台检查保持已显示内容、阅读位置、焦点、草稿、显示模式和全屏状态，不因短暂检查隐藏或重挂阅读区。真实身份或生命周期变化沿用相应切换规则。历史终端录像的格式和验证要求见 [Session v2](session-v2.md)。
 
 ## 旧客户端兼容
 
@@ -44,7 +44,7 @@ Daynight 提交的通知输入通过可选的 `origin: "daynight"` 标记来源�
 
 Session 与 Task Overview、Attachments 并列，弹窗和独立详情页共享内容。基础能力包括消息、Markdown、reasoning 展开、工具参数/结果/错误、长输出、历史分页、流式合并、滚动跟随、文本草稿及输入法处理。
 
-具有当前项目访问权限的成员可以阅读活动 Session、历史、资源和归档；只有该 Session 持久记录的 owner 可以发送消息、回答审批、问题和表单、停止当前 turn、修改设置、执行命令或刷新原生控制目录。Herdr 的人工输入、取得和维护控制租约、处置初始提交及恢复自动执行同样只允许原 Session owner。项目管理员和通过 Team 继承访问的其他用户只读，当前 Task assignee 不替代 Session owner。非 owner 保留实时内容、分页、资源、显示模式、刷新和全屏阅读，全部执行交互禁用；活动 Session 的只读权限不能被误判为已结束归档。
+具有当前项目访问权限的成员可以阅读活动 Session、历史、资源和归档；只有该 Session 持久记录的 owner 可以发送消息、回答审批、问题和表单、停止当前 turn、修改设置、执行命令或刷新原生控制目录。旧 Herdr 记录只读，不提供终端控制或输入。项目管理员和通过 Team 继承访问的其他用户只读，当前 Task assignee 不替代 Session owner。非 owner 保留实时内容、分页、资源、显示模式、刷新和全屏阅读，全部执行交互禁用；活动 Session 的只读权限不能被误判为已结束归档。
 
 Copilot 新会话没有原生待办时，初始化及后续空待办读取不得单独产生合成空 todo 条目。已投影待办后清空必须更新同一条目；恢复会话必须投影当前待办，包括空列表，以清除可能保留的旧内容。此规则属于 Provider 投影，不改变 Session 显示模式过滤。
 
@@ -115,11 +115,11 @@ Session View 使用同一选择规则呈现当前状态：终态先采用归档�
 
 ## Task 详情的完整 Current 读取
 
-只有 Task 详情的 Session tab 被选中且文档可见时，该详情才允许发起完整 `sessions/current`。Overview、尚未选择或已隐藏的 Session tab 和隐藏文档不预取完整当前会话；native、Herdr、直接详情及完成任务入口遵守同一读取可见性要求。
+只有 Task 详情的 Session tab 被选中且文档可见时，该详情才允许发起完整 `sessions/current`。Overview、尚未选择或已隐藏的 Session tab 和隐藏文档不预取完整当前会话；native 的直接详情及完成任务入口遵守同一读取可见性要求；旧 Herdr claim 的历史发现也受可见性门禁约束。
 
 可见 tab 内的首次发现、显式刷新、未注册发现、启动和恢复观察、重连及归档最终身份核验保持原有功能与节奏。native 的现有 3 秒 current 观察不因隐藏前保留的健康连接而取消；重新可见后继续观察，而非无条件重启连接。Worker 报告、完整 current 响应、目录、实时传输及操作规则保持各自职责。
 
-隐藏仅取消或延后完整 current 及其定时读取，不代表失去执行所有权。native 健康 channel、已显示内容、草稿和阅读位置保留，账户变化时立即停止远端传输；Herdr 保持隐藏时的 channel 和 control lease 释放政策。取消的 current 在实际 settle 前仍占用读取名额，快速隐藏和重开不得产生重叠请求或发布取消后的旧结果。恢复需重新核对当前执行、请求、身份与读取可见性。
+隐藏仅取消或延后完整 current 及其定时读取，不代表失去执行所有权。native 健康 channel、已显示内容、草稿和阅读位置保留，账户变化时立即停止远端传输。取消的 current 在实际 settle 前仍占用读取名额，快速隐藏和重开不得产生重叠请求或发布取消后的旧结果。恢复需重新核对当前执行、请求、身份与读取可见性。
 
 归档 ready 后的最终 current 核验可延后到可见，但不得跳过原执行身份和正文验证。完成任务的发现先等待现有身份准入，随后在发 HTTP 前及每次等待结束后复验 tab、文档、原请求和任务绑定。独立 Test/Bot 的现有 authority observation 不受 Task tab 门禁改变。
 
@@ -259,7 +259,7 @@ Task、独立 Test 和 Bot 的归档 ready 后，结束状态只在 Session 头�
 
 ## 验收
 
-验证模式冻结、旧记录迁移、非法组合、当前执行页面入口、首次输入门控、跨浏览器并发、审批失效、断线恢复、未知结果及进程清理。权限矩阵覆盖原 owner、其他项目管理员、普通成员与 Team 继承成员：非 owner 可读且全部交互拒绝，owner 保留项目访问时不因角色降为 member 失去交互权，凭据或项目访问撤销仍拒绝。验证直接 API、browser channel 的权限投影、排队与重连操作、terminal 控制派发、旧租约和迟到 ACK。Web 须在没有 Herdr 的环境运行；Herdr 须在没有 Session relay 的环境保持原行为。
+验证模式冻结、旧记录迁移、非法组合、当前执行页面入口、首次输入门控、跨浏览器并发、审批失效、断线恢复、未知结果及进程清理。权限矩阵覆盖原 owner、其他项目管理员、普通成员与 Team 继承成员：非 owner 可读且全部交互拒绝，owner 保留项目访问时不因角色降为 member 失去交互权，凭据或项目访问撤销仍拒绝。验证 v1 直接 API、browser channel 的权限投影、排队与重连操作，以及 v2 浏览器控制入口拒绝和保留的内部控制规则。Web 须在没有 Herdr 的环境运行；Herdr 须在没有 Session relay 的环境保持原行为。
 
 自动入口验收覆盖首次读取、确认无记录、启动待注册、活动会话、断线恢复、完成到归档 ready、pending/failed/unavailable、权限拒绝及恢复。组合多个历史、当前 Session 同时出现在历史页、旧选择缓存、新 claim 尚未注册、释放后重执行、退回 todo 和切换账号/任务。弹窗、独立详情和全屏在中英文、390px 与桌面宽度均不显示记录选择行，附件历史入口仍可达；后台检查保留草稿与阅读位置。通过实际请求观测确认打开和恢复不发出 native launch、assignment 或输入重放，完成态不存在写请求；模拟组件与交互原型证据不能代替原生生命周期验收。
 

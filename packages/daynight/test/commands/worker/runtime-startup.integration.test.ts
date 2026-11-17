@@ -587,7 +587,7 @@ describe("worker cloud-first startup", () => {
       expect(remote.configuration).toHaveBeenCalledTimes(2);
       expect(remote.configuration).toHaveBeenLastCalledWith(workerId, operation.signal, operation);
       expect(JSON.parse(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).authority.desiredJson)).toEqual(upgraded);
-      expect(channel!.capture(reportSample).toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
+      expect(channel!.capture(reportSample)).toMatchObject({ controlModeBootstrap: "web", toolPathsBootstrap: null });
 
       await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: upgraded, observationRevision: "0", observationAccepted: false }), operation);
       await channel!.prepare!(operation);
@@ -1094,7 +1094,7 @@ describe("real runtime resource isolation", () => {
     const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
     const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async (_project, repo, operation) => {
       await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation,
-        sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] } });
+        sources: { listSchedules: () => [], listWebTasks: () => [] } });
     } });
     await mkdir(f.repository.path);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, stdio: "pipe", timeout: 10000 });

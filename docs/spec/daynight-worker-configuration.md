@@ -15,7 +15,7 @@
 
 ## 目标配置
 
-基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。非 null 目标在直接配置响应中始终提供 enableSudoCleanup；写入可省略，省略时按下述规则保留或初始化。独立能力协商分别决定 agentControlMode、toolPaths 和 archiveSessions 的必需字段。服务端输入拒绝未知、重复、其他必填字段缺失、非法 UTF-8/NUL、错误类型和尾随 JSON。Worker 对成功响应的未知内容遵循下述保留规则，已知字段校验保持严格。
+基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。非 null 目标在直接配置响应中始终提供 enableSudoCleanup；写入可省略，省略时按下述规则保留或初始化。独立能力协商分别决定 agentControlMode、toolPaths 和 archiveSessions 的必需字段。服务端输入拒绝未知、重复、其他必填字段缺失、非法 UTF-8/NUL、错误类型和尾随 JSON。Worker 对成功响应的原始目标遵循下述保留规则；只有通过当前已知字段校验的目标才能形成可应用视图。
 
 | 字段 | 语义 |
 | --- | --- |
@@ -46,9 +46,9 @@ path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控�
 
 Worker 对配置 GET、普通报告回执及 prompts 联合回执使用配置专用源文本载体，完整保留 desired 与外层未知元数据，持久目标只保存 desired 原始 JSON。native、projects、nativeOverrides 与 toolPaths 已知对象中的未知兄弟同样保留。未知数字不经普通 number 解码后回写；合法负数、小数、指数和超安全整数保持数据含义。字符串、boolean/null、数组顺序和对象成员均保持，空白排版不构成保证。重复解码键、深度和原有字节边界继续有效。
 
-known 仅从已知路径投影并按原合同严格验证，未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
+known 仅从已知路径投影并按当前合同严格验证。目标 JSON 结构合法但已知字段的类型或值不受当前 Worker 支持时，Worker 保留完整原文、真实 revision 和时间，记录不可应用状态，不推断默认值、不生成部分 known 目标，也不将其当作 desired:null 发起首次导入；合法新目标到达后再按正常规则协调。schema 9 持久记录 pendingApplication，以区分尚未协调的目标与已协调的 Web 目标；该标志不表示各项应用成功，恢复时不能把不支持目标之前的账本直接视为新目标已应用。目标和回执外壳、revision、时间、重复解码键、深度、观察版本关系及能力协商边界仍严格校验；违例明确拒绝。未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
 
-仅未知字段、更高 revision 或 updatedAt 变化时，Worker 更新完整目标并保持已知应用身份、applicationRevision 与在途工作；已知目标变化才正常应用。报告 observation.desiredRevision 使用最新收到版本，item.targetRevision 仍为真实应用目标版本。同 revision 的 desired 必须在双方可见内容上 JSON 语义相等：对象成员顺序无关，数组顺序有关，等值十进制数字写法相等且不经浮点舍入。既有能力协商可使 agentControlMode 或 toolPaths 仅在一方出现；双方均可见时仍完整比较，包括未知子树。支持归档能力的客户端应对 archiveSessions 使用相同的同版本投影规则。此前收到、因同版本投影被隐藏的字段保留为历史源事实，不作为当前目标或应用证据；同版本再次出现时核对该事实，版本变化或权威重置不得将旧事实当作新目标。其他语义差异为协议错误。投影变化按当前收到的目标重新协调已知项。迟到较低回执不回退目标；回执暴露较低目标或观测计数时 Worker 重新执行认证 GET，以确认并恢复服务状态。缓存格式、应用版本消费者和恢复由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#云端接收与本机提交)拥有。
+可应用目标中仅未知字段、更高 revision 或 updatedAt 变化时，Worker 更新完整目标并保持已知应用身份、applicationRevision 与在途工作；已知目标变化才正常应用。报告 observation.desiredRevision 使用最新收到版本，item.targetRevision 仍为真实应用目标版本。同 revision 的 desired 必须在双方可见内容上 JSON 语义相等：对象成员顺序无关，数组顺序有关，等值十进制数字写法相等且不经浮点舍入。既有能力协商可使 agentControlMode 或 toolPaths 仅在一方出现；双方均可见时仍完整比较，包括未知子树。支持归档能力的客户端应对 archiveSessions 使用相同的同版本投影规则。此前收到、因同版本投影被隐藏的字段保留为历史源事实，不作为当前目标或应用证据；同版本再次出现时核对该事实，版本变化或权威重置不得将旧事实当作新目标。其他语义差异为协议错误。投影变化按当前收到的目标重新协调已知项。迟到较低回执不回退目标；回执暴露较低目标或观测计数时 Worker 重新执行认证 GET，以确认并恢复服务状态。缓存格式、应用版本消费者和恢复由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#云端接收与本机提交)拥有。
 
 本项未知内容保留不新增能力协商；既有 agentControlMode/toolPaths 的发送准入与服务端严格输入合同继续有效；archiveSessions 同样使用独立能力协商。支持扩展容忍的客户端必须先实际采用，服务随后才能直接增加新字段；未打补丁的旧严格客户端不因此取得兼容能力。
 

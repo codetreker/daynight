@@ -71,7 +71,3 @@ func adoptToolPaths(value, bootstrap model.WorkerToolPaths) model.WorkerToolPath
 	}
 	return value
 }
-
-func clearsToolPaths(current, value model.WorkerToolPaths) bool {
-	return current.Codex != nil && value.Codex == nil || current.Copilot != nil && value.Copilot == nil || current.Herdr != nil && value.Herdr == nil
-}

@@ -41,13 +41,195 @@ func normalizeStoredConfiguration(value model.WorkerConfiguration) (model.Worker
 	return normalized, err
 }
 
-func configurationProjects(ctx context.Context, dao store.WorkerWriteDAO, userID string, current *model.WorkerDesiredConfiguration, value model.WorkerConfiguration) error {
-	retained := map[string]model.WorkerProjectConfiguration{}
-	if current != nil {
-		for _, project := range current.Value.Projects {
-			retained[project.ProjectID] = project
+// storedConfigurationFields keeps the persisted JSON independent of admission.
+func storedConfigurationFields(desired *model.WorkerDesiredConfiguration) (map[string]json.RawMessage, error) {
+	raw := desired.Raw
+	if raw == nil {
+		var err error
+		raw, err = json.Marshal(desired.Value)
+		if err != nil {
+			return nil, invalidInput("Stored Worker configuration is invalid.")
 		}
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, invalidInput("Stored Worker configuration is invalid.")
+	}
+	return fields, nil
+}
+
+func storedArchive(desired *model.WorkerDesiredConfiguration) *bool {
+	if desired.Raw != nil || desired.ArchiveSessions != nil {
+		return desired.ArchiveSessions
+	}
+	return desired.Value.ArchiveSessions
+}
+
+// Each stored project is checked independently of unrelated unknown fields.
+func retainedProjects(desired *model.WorkerDesiredConfiguration) map[string]model.WorkerProjectConfiguration {
+	retained := map[string]model.WorkerProjectConfiguration{}
+	if desired == nil {
+		return retained
+	}
+	fields, err := storedConfigurationFields(desired)
+	if err != nil {
+		return retained
+	}
+	var projects []json.RawMessage
+	if json.Unmarshal(fields["projects"], &projects) != nil {
+		return retained
+	}
+	duplicates := map[string]bool{}
+	seen := map[string]bool{}
+	for _, raw := range projects {
+		var identity struct {
+			ProjectID string `json:"projectId"`
+		}
+		if err := json.Unmarshal(raw, &identity); err != nil {
+			continue
+		}
+		id, err := model.CanonicalID(identity.ProjectID)
+		if err != nil {
+			continue
+		}
+		if seen[id] {
+			delete(retained, id)
+			duplicates[id] = true
+			continue
+		}
+		seen[id] = true
+		f, err := configurationObject(raw, "project", false, "projectId", "nativeOverrides")
+		if err != nil {
+			continue
+		}
+		_, overrides, err := configurationNative(f["nativeOverrides"], true, false)
+		if err != nil {
+			continue
+		}
+		if !duplicates[id] {
+			retained[id] = model.WorkerProjectConfiguration{ProjectID: id, NativeOverrides: overrides}
+		}
+	}
+	return retained
+}
+
+func storedModeAndPaths(fields map[string]json.RawMessage, value *model.WorkerConfiguration) error {
+	mode := fields["agentControlMode"]
+	if value.PreserveAgentControlMode {
+		if len(mode) != 0 && !configurationNull(mode) {
+			parsed, err := configurationControlMode(mode)
+			if err != nil {
+				return err
+			}
+			value.AgentControlMode = parsed
+		} else {
+			value.AgentControlMode = nil
+		}
+		value.PreserveAgentControlMode = false
+	} else if value.AgentControlMode == nil && len(mode) != 0 && !configurationNull(mode) {
+		return invalidInput("An adopted agent control mode cannot be cleared.")
+	}
+	paths := fields["toolPaths"]
+	if value.PreserveToolPaths {
+		if len(paths) != 0 && !configurationNull(paths) {
+			parsed, err := parseToolPaths(paths, true)
+			if err != nil {
+				return err
+			}
+			value.ToolPaths = parsed
+		} else {
+			value.ToolPaths = model.WorkerToolPaths{}
+		}
+		value.PreserveToolPaths = false
+	} else if len(paths) != 0 && !configurationNull(paths) {
+		var slots map[string]json.RawMessage
+		if json.Unmarshal(paths, &slots) != nil || slots == nil {
+			if value.ToolPaths.Codex == nil || value.ToolPaths.Copilot == nil || value.ToolPaths.Herdr == nil {
+				return invalidInput("Stored tool paths are invalid.")
+			}
+			return nil
+		}
+		for tool, choice := range map[string]*model.ToolPathChoice{"codex": value.ToolPaths.Codex, "copilot": value.ToolPaths.Copilot, "herdr": value.ToolPaths.Herdr} {
+			if raw := slots[tool]; choice == nil && len(raw) != 0 && !configurationNull(raw) {
+				return invalidInput("Adopted tool paths cannot be cleared.")
+			}
+		}
+	}
+	return nil
+}
+
+func sameStoredConfiguration(desired *model.WorkerDesiredConfiguration, fields map[string]json.RawMessage, value model.WorkerConfiguration) bool {
+	// The archive capability is stored exclusively in its own column.
+	// A JSONB member with that name is still a stored fact to replace.
+	if _, exists := fields["archiveSessions"]; exists {
+		return false
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return false
+	}
+	stored, err := parseWorkerConfiguration(raw, false)
+	if err != nil {
+		return false
+	}
+	stored.ArchiveSessions = storedArchive(desired)
+	return reflect.DeepEqual(stored, value)
+}
+
+// Bootstrap adopts only empty slots and preserves all other stored fields.
+func adoptRawConfiguration(desired *model.WorkerDesiredConfiguration, input model.WorkerConfigurationExchange) (json.RawMessage, bool, error) {
+	fields, err := storedConfigurationFields(desired)
+	if err != nil {
+		return nil, false, err
+	}
+	changed := false
+	if input.ControlModeBootstrap != nil && (len(fields["agentControlMode"]) == 0 || configurationNull(fields["agentControlMode"])) {
+		fields["agentControlMode"], err = json.Marshal(input.ControlModeBootstrap)
+		if err != nil {
+			return nil, false, err
+		}
+		changed = true
+	}
+	if input.ToolPathsBootstrap != nil {
+		var slots map[string]json.RawMessage
+		if len(fields["toolPaths"]) == 0 || configurationNull(fields["toolPaths"]) {
+			slots = map[string]json.RawMessage{"codex": json.RawMessage("null"), "copilot": json.RawMessage("null"), "herdr": json.RawMessage("null")}
+		} else if err := json.Unmarshal(fields["toolPaths"], &slots); err != nil || slots == nil {
+			return nil, false, invalidInput("Stored tool paths are invalid.")
+		}
+		pathsChanged := false
+		for tool, choice := range map[string]*model.ToolPathChoice{"codex": input.ToolPathsBootstrap.Codex, "copilot": input.ToolPathsBootstrap.Copilot, "herdr": input.ToolPathsBootstrap.Herdr} {
+			if choice != nil && (len(slots[tool]) == 0 || configurationNull(slots[tool])) {
+				slots[tool], err = json.Marshal(choice)
+				if err != nil {
+					return nil, false, err
+				}
+				pathsChanged = true
+			}
+		}
+		if pathsChanged {
+			fields["toolPaths"], err = json.Marshal(slots)
+			if err != nil {
+				return nil, false, err
+			}
+			changed = true
+		}
+	}
+	if !changed {
+		return nil, false, nil
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(raw)) > MaxConfigurationJSONBytes {
+		return nil, false, invalidInput("Worker configuration exceeds its size limit.")
+	}
+	return raw, true, nil
+}
+
+func configurationProjects(ctx context.Context, dao store.WorkerWriteDAO, userID string, current *model.WorkerDesiredConfiguration, value model.WorkerConfiguration) error {
+	retained := retainedProjects(current)
 	for _, project := range value.Projects {
 		if previous, exists := retained[project.ProjectID]; exists && reflect.DeepEqual(previous, project) {
 			continue
@@ -79,28 +261,28 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if actual != expected {
 		return model.WorkerConfigurationResource{}, &model.Fault{Code: "version_conflict", Message: "Worker configuration revision does not match."}
 	}
-	current.Desired.Value, err = normalizeStoredConfiguration(current.Desired.Value)
+	fields, err := storedConfigurationFields(current.Desired)
 	if err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	if value.PreserveAgentControlMode {
-		value.AgentControlMode = current.Desired.Value.AgentControlMode
-		value.PreserveAgentControlMode = false
-	} else if value.AgentControlMode == nil && current.Desired.Value.AgentControlMode != nil {
-		return model.WorkerConfigurationResource{}, invalidInput("An adopted agent control mode cannot be cleared.")
+	if current.Desired.Raw != nil && (value.PreserveAgentControlMode || value.PreserveToolPaths || value.PreserveSudoCleanup) {
+		return putWithPreservedRaw(ctx, dao, principal, workerID, current, fields, actual, value)
 	}
-	if value.PreserveToolPaths {
-		value.ToolPaths = current.Desired.Value.ToolPaths
-		value.PreserveToolPaths = false
-	} else if clearsToolPaths(current.Desired.Value.ToolPaths, value.ToolPaths) {
-		return model.WorkerConfigurationResource{}, invalidInput("Adopted tool paths cannot be cleared.")
+	if err := storedModeAndPaths(fields, &value); err != nil {
+		return model.WorkerConfigurationResource{}, err
 	}
 	if value.PreserveArchiveSessions {
-		value.ArchiveSessions = current.Desired.Value.ArchiveSessions
+		value.ArchiveSessions = storedArchive(current.Desired)
 		value.PreserveArchiveSessions = false
 	}
 	if value.PreserveSudoCleanup {
-		value.EnableSudoCleanup = current.Desired.Value.EnableSudoCleanup
+		if raw := fields["enableSudoCleanup"]; len(raw) != 0 {
+			if err := configurationDecode(raw, &value.EnableSudoCleanup); err != nil {
+				return model.WorkerConfigurationResource{}, err
+			}
+		} else {
+			value.EnableSudoCleanup = false
+		}
 		value.PreserveSudoCleanup = false
 	}
 	value, err = NormalizeConfiguration(value)
@@ -113,7 +295,7 @@ func PutConfiguration(ctx context.Context, dao store.WorkerWriteDAO, principal m
 	if err := configurationProjects(ctx, dao, principal.UserID, current.Desired, value); err != nil {
 		return model.WorkerConfigurationResource{}, err
 	}
-	if reflect.DeepEqual(current.Desired.Value, value) {
+	if sameStoredConfiguration(current.Desired, fields, value) {
 		return current, nil
 	}
 	if actual == math.MaxInt64 {
@@ -134,7 +316,27 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 	if err != nil {
 		return nil, err
 	}
-	if current.Desired != nil || input.Bootstrap != nil {
+	if current.Desired != nil && current.Desired.Raw != nil {
+		raw, changed, err := adoptRawConfiguration(current.Desired, input)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			revision, _ := strconv.ParseInt(current.Desired.Revision, 10, 64)
+			if revision == math.MaxInt64 {
+				return nil, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
+			}
+			archive := storedArchive(current.Desired)
+			if archive == nil {
+				return nil, invalidInput("Stored archive setting is invalid.")
+			}
+			desired, err := dao.SetWorkerConfigurationRaw(ctx, principal.UserID, workerID, revision+1, raw, *archive)
+			if err != nil {
+				return nil, err
+			}
+			current.Desired = &desired
+		}
+	} else if current.Desired != nil || input.Bootstrap != nil {
 		var value model.WorkerConfiguration
 		revision := int64(0)
 		if current.Desired != nil {
@@ -197,4 +399,90 @@ func ExchangeConfiguration(ctx context.Context, dao store.WorkerWriteDAO, princi
 		receipt.ObservationAccepted = true
 	}
 	return receipt, nil
+}
+
+func putWithPreservedRaw(ctx context.Context, dao store.WorkerWriteDAO, principal model.Principal, workerID string, current model.WorkerConfigurationResource, fields map[string]json.RawMessage, actual int64, value model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
+	preserveMode, preservePaths, preserveSudo := value.PreserveAgentControlMode, value.PreserveToolPaths, value.PreserveSudoCleanup
+	if preserveMode {
+		value.AgentControlMode = nil
+		value.PreserveAgentControlMode = false
+	}
+	if preservePaths {
+		value.ToolPaths = model.WorkerToolPaths{}
+		value.PreserveToolPaths = false
+	}
+	if preserveSudo {
+		value.EnableSudoCleanup = false
+		value.PreserveSudoCleanup = false
+	}
+	if value.PreserveArchiveSessions {
+		value.ArchiveSessions = storedArchive(current.Desired)
+		value.PreserveArchiveSessions = false
+	}
+	checks := map[string]json.RawMessage{}
+	if !preserveMode {
+		checks["agentControlMode"] = fields["agentControlMode"]
+	}
+	if !preservePaths {
+		checks["toolPaths"] = fields["toolPaths"]
+	}
+	if err := storedModeAndPaths(checks, &value); err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	value, err := NormalizeConfiguration(value)
+	if err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	if _, err := workerprotocol.EncodeConfiguration(io.Discard, value, MaxConfigurationJSONBytes); err != nil {
+		return model.WorkerConfigurationResource{}, InputLimit(err)
+	}
+	if err := configurationProjects(ctx, dao, principal.UserID, current.Desired, value); err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	var candidate map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &candidate); err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	comparison := make(map[string]json.RawMessage, len(fields))
+	for key, raw := range fields {
+		comparison[key] = raw
+	}
+	for key, preserve := range map[string]bool{"agentControlMode": preserveMode, "toolPaths": preservePaths, "enableSudoCleanup": preserveSudo} {
+		if !preserve {
+			continue
+		}
+		comparison[key] = candidate[key]
+		if raw, exists := fields[key]; exists {
+			candidate[key] = raw
+		} else {
+			delete(candidate, key)
+		}
+	}
+	if sameStoredConfiguration(current.Desired, comparison, value) {
+		return current, nil
+	}
+	if actual == math.MaxInt64 {
+		return model.WorkerConfigurationResource{}, &model.Fault{Code: "version_exhausted", Message: "Worker configuration revision is exhausted."}
+	}
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	if int64(len(raw)) > MaxConfigurationJSONBytes {
+		return model.WorkerConfigurationResource{}, invalidInput("Worker configuration exceeds its size limit.")
+	}
+	archive := true
+	if value.ArchiveSessions != nil {
+		archive = *value.ArchiveSessions
+	}
+	desired, err := dao.SetWorkerConfigurationRaw(ctx, principal.UserID, workerID, actual+1, raw, archive)
+	if err != nil {
+		return model.WorkerConfigurationResource{}, err
+	}
+	current.Desired = &desired
+	return current, nil
 }

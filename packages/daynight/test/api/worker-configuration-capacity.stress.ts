@@ -32,7 +32,7 @@ describe("Worker configuration report body capacity", () => {
     const input: WorkerCloudReport = { bootstrap: null, observation: { baseRevision: "0", desiredRevision: "1", items: [applied] } };
     expect(Buffer.byteLength(stringifyApiJson(applied))).toBeGreaterThan(1_048_576);
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
-    await expect(api(fetch).reportWorkerConfiguration(workerId, report, input)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), known: receipt.configuration.desired } } });
+    await expect(api(fetch).reportWorkerConfiguration(workerId, report, input)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), revision: receipt.configuration.desired.revision, updatedAt: receipt.configuration.desired.updatedAt, known: receipt.configuration.desired } } });
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).configuration).toEqual(input);
   });
   it("rejects an oversized complete observation at the body envelope without dropping applied values", async () => {
@@ -55,7 +55,7 @@ describe("Worker configuration report body capacity", () => {
     const input = { ...report, runtimeConfiguration };
     expect(Buffer.byteLength(stringifyApiJson({ ...input, configuration: observation }))).toBeGreaterThan(1_048_576);
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
-    await expect(api(fetch).reportWorkerConfiguration(workerId, input, observation)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), known: receipt.configuration.desired } } });
+    await expect(api(fetch).reportWorkerConfiguration(workerId, input, observation)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), revision: receipt.configuration.desired.revision, updatedAt: receipt.configuration.desired.updatedAt, known: receipt.configuration.desired } } });
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ ...input, configuration: observation });
     expect(input.runtimeConfiguration.projects).toHaveLength(128);
   });
@@ -70,7 +70,7 @@ describe("Worker configuration report body capacity", () => {
     expect(Buffer.byteLength(stringifyApiJson({ ...required, configuration: observation }))).toBe(9 * 1_048_576);
     expect(Buffer.byteLength(stringifyApiJson({ ...input, configuration: observation }))).toBeGreaterThan(9 * 1_048_576);
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(receipt));
-    await expect(api(fetch).reportWorkerConfiguration(workerId, input, observation)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), known: receipt.configuration.desired } } });
+    await expect(api(fetch).reportWorkerConfiguration(workerId, input, observation)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), revision: receipt.configuration.desired.revision, updatedAt: receipt.configuration.desired.updatedAt, known: receipt.configuration.desired } } });
     expect(fetch).toHaveBeenCalledOnce();
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body))).toEqual({ ...required, configuration: observation });
     expect(input.runtimeConfiguration).toEqual(runtimeConfiguration);
@@ -83,10 +83,10 @@ describe("Worker configuration report body capacity", () => {
     const input = { ...base, workingDirectory: "Ã¤Â¸Â­".repeat(Math.floor(padding / 3)) + "a".repeat(padding % 3) };
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => response(receipt));
     const client = api(fetch);
-    await expect(client.reportWorkerConfiguration(workerId, input, configuration)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), known: receipt.configuration.desired } } });
+    await expect(client.reportWorkerConfiguration(workerId, input, configuration)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), revision: receipt.configuration.desired.revision, updatedAt: receipt.configuration.desired.updatedAt, known: receipt.configuration.desired } } });
     expect(Buffer.byteLength(String(fetch.mock.calls[0]![1]!.body))).toBe(9 * 1_048_576);
     expect(JSON.parse(String(fetch.mock.calls[0]![1]!.body)).runtimeConfiguration).toEqual(runtimeConfiguration);
-    await expect(client.reportWorkerConfiguration(workerId, { ...input, workingDirectory: input.workingDirectory + "a" }, configuration)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), known: receipt.configuration.desired } } });
+    await expect(client.reportWorkerConfiguration(workerId, { ...input, workingDirectory: input.workingDirectory + "a" }, configuration)).resolves.toEqual({ ...receipt, configuration: { ...receipt.configuration, json: JSON.stringify(receipt.configuration), desired: receipt.configuration.desired === null ? null : { json: JSON.stringify(receipt.configuration.desired), revision: receipt.configuration.desired.revision, updatedAt: receipt.configuration.desired.updatedAt, known: receipt.configuration.desired } } });
     expect(JSON.parse(String(fetch.mock.calls[1]![1]!.body))).not.toHaveProperty("runtimeConfiguration");
   });
 

@@ -126,7 +126,7 @@ switching. Verify actual groups rather than assuming one topology on every OS.
 
 New executions freeze their selected files and interpreter, including automatic
 choices. Target/PATH edits affect later executions; they do not restart an old
-Session, release its claim or replace its worktree. Recovery, retry and attach
+Session, release its claim or replace its worktree. Recovery and retry
 keep the original selection and identity. Replacing a file or symlink can produce
 `tool_identity_changed`: restore the matching installation if recovery is needed;
 the new configured path cannot substitute for it. Daynight does not archive every
@@ -176,10 +176,8 @@ manifest before another attempt.
 Missing journals, a successor claim or another Worker never authorize adoption.
 Restore the original Worker and Controller journals from backup; a completed Task,
 missing process or Git marker cannot replace them. Unfinished Web executions use
-normal Worker reconciliation after their original evidence is restored. Herdr
-recording recovery retains `worker resources list`, `retry` and `dispose` with
-their original Session and stop-evidence requirements. Successful observation
-clears repaired monitoring failures; recovery does not create a new execution.
+normal Worker reconciliation after their original evidence is restored. Successful
+observation clears repaired monitoring failures; recovery does not create a new execution.
 
 ## Repair stopped Markdown image projections
 

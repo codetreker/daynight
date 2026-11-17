@@ -2,19 +2,25 @@ import { randomUUID } from "node:crypto";
 import { canonicalId, ProtocolError } from "../../api/validation.js";
 import { configurationJsonChunks } from "./configuration-json.js";
 import { parseWorkerCloudItem, parseWorkerCloudRevision, parseConfigurationDesired } from "./configuration-storage-wire.js";
-import { receiveWorkerDesired, validateHiddenCapabilitySource, validateWorkerRemoteObservation, workerCapabilityKeys } from "./configuration-storage-source.js";
+import { receiveStoredDesired9, receiveWorkerDesired, validateHiddenCapabilitySource, validateWorkerRemoteObservation, workerCapabilityKeys } from "./configuration-storage-source.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, AgentControlMode, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity } from "./configuration-storage-types.js";
 
 type DecodedTracked = Omit<TrackedConfigurationItem, "nativeMode"> & { readonly nativeMode?: AgentControlMode | null };
-type DecodedStorageCache = Omit<WorkerConfigurationCache, "schemaVersion" | "currentItems" | "retainedItems"> & {
+type DecodedStorageCache = Omit<WorkerConfigurationCache, "schemaVersion" | "authority" | "currentItems" | "retainedItems"> & {
   readonly schemaVersion: 8 | 9;
+  readonly authority: WorkerConfigurationCache["authority"] & { readonly pendingApplication: boolean };
   readonly currentItems: readonly DecodedTracked[];
   readonly retainedItems: readonly DecodedTracked[];
 };
-type DecodedCache = { readonly cache: DecodedStorageCache; readonly migration: { readonly received: { readonly json: string; readonly known: WorkerCloudDesired }; readonly previousDesired: WorkerCloudDesired } | null };
+type DecodedCache = { readonly cache: DecodedStorageCache; readonly migration: { readonly received: { readonly json: string; readonly revision: string; readonly updatedAt: string; readonly known: WorkerCloudDesired }; readonly previousDesired: WorkerCloudDesired } | null };
 const configurationRetryDelays = [5_000, 10_000, 20_000, 40_000, 60_000] as const;
 const configurationKey = (key: WorkerCloudItemKey): string => `${key.kind}:${"projectId" in key ? key.projectId : ""}`;
 const configurationSupportsMode = (desired: WorkerCloudDesired | null): boolean => desired !== null && Object.hasOwn(desired.value, "agentControlMode");
+const isApplicableWeb = (desired: WorkerCloudDesired | null): boolean => {
+  if (desired?.value.agentControlMode !== "web") return false;
+  try { parseConfigurationDesired(desired, true); return true; }
+  catch (error) { if (!(error instanceof ProtocolError)) throw error; return false; }
+};
 
 type Cache5 = Omit<DecodedStorageCache, "schemaVersion" | "authority" | "remoteObservation" | "hiddenCapabilitySources"> & {
   readonly schemaVersion: 5;
@@ -214,6 +220,7 @@ const upgradeSchema5 = (cache: Cache5): DecodedStorageCache => ({
     desiredJson: cache.authority.desired === null ? null : [...configurationJsonChunks(cache.authority.desired)].join(""),
     applicationRevision: cache.authority.desired?.revision ?? null,
     observationRevision: cache.authority.observationRevision,
+    pendingApplication: !isApplicableWeb(cache.authority.desired),
   },
   remoteObservation: null,
 });
@@ -221,10 +228,12 @@ const upgradeSchema5 = (cache: Cache5): DecodedStorageCache => ({
 const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigurationIdentity, legacy = false, webOnly = false): DecodedCache => {
   const data = exact(source, ["schemaVersion", "identity", "authority", "remoteObservation", "nextFailureId", "projectionCursor", "currentItems", "retainedItems", ...(Object.hasOwn(source, "hiddenCapabilitySources") ? ["hiddenCapabilitySources"] : [])]);
   identityMatches(data.identity, identity);
-  const authority = exact(data.authority, ["generation", "desiredJson", "applicationRevision", "observationRevision"]);
+  const authority = exact(data.authority, ["generation", "desiredJson", "applicationRevision", "observationRevision", ...(webOnly ? ["pendingApplication"] : [])]);
   if (authority.desiredJson !== null && typeof authority.desiredJson !== "string") throw new TypeError("Worker configuration cache has an invalid desired source.");
-  const received = authority.desiredJson === null ? null : receiveWorkerDesired(authority.desiredJson);
-  const desired = received?.known ?? null;
+  const legacyReceived = authority.desiredJson === null || webOnly ? null : receiveWorkerDesired(authority.desiredJson);
+  const currentReceived = authority.desiredJson === null || !webOnly ? null : receiveStoredDesired9(authority.desiredJson);
+  const desired = legacyReceived?.known ?? currentReceived?.known ?? null;
+  const rawRevision = legacyReceived?.known.revision ?? currentReceived?.revision ?? null;
   const applicationRevision = authority.applicationRevision === null ? null : parseWorkerCloudRevision(authority.applicationRevision);
   if (!webOnly && ((desired === null) !== (applicationRevision === null) || applicationRevision !== null && desired !== null && BigInt(applicationRevision) > BigInt(desired.revision))) throw new TypeError("Worker configuration cache has an invalid application revision.");
   // The execution ledger belongs to the last known target change, even when a
@@ -240,17 +249,16 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   const previousDesired = desired === null ? null : { ...desired, value: { ...desired.value } };
   if (missingSudo) delete (previousDesired!.value as { enableSudoCleanup?: boolean }).enableSudoCleanup;
   if (missingArchive) delete (previousDesired!.value as { archiveSessions?: boolean }).archiveSessions;
-  let applicableWeb = false;
-  if (webOnly && desired?.value.agentControlMode === "web") {
-    try { parseConfigurationDesired(desired, true); applicableWeb = true; }
-    catch (error) { if (!(error instanceof ProtocolError)) throw error; }
-  }
+  const applicableWeb = isApplicableWeb(desired);
+  if (webOnly && typeof authority.pendingApplication !== "boolean") throw new TypeError("Worker configuration cache has an invalid pending application flag.");
+  const pendingApplication = webOnly ? authority.pendingApplication as boolean : !applicableWeb || applicationRevision === null;
+  if (webOnly && !pendingApplication && (!applicableWeb || applicationRevision === null)) throw new TypeError("Worker configuration cache has an invalid applied target.");
   const checked = parseSchema5({
     schemaVersion: 5, identity: data.identity,
     authority: { generation: authority.generation, desired: previousDesired, observationRevision: authority.observationRevision },
     nextFailureId: data.nextFailureId, projectionCursor: data.projectionCursor, currentItems: data.currentItems, retainedItems: data.retainedItems,
   }, identity, applicationRevision ?? undefined, data.schemaVersion === 6, webOnly,
-  !webOnly || applicableWeb && applicationRevision !== null);
+  !webOnly || !pendingApplication);
   let remoteObservation: WorkerConfigurationCache["remoteObservation"] = null;
   if (data.remoteObservation !== null) {
     const remote = exact(data.remoteObservation, ["observationRevision", "json"]);
@@ -262,26 +270,26 @@ const parseCurrent = (source: Record<string, unknown>, identity: WorkerConfigura
   }
   let hiddenCapabilitySources: WorkerConfigurationCache["hiddenCapabilitySources"];
   if (Object.hasOwn(data, "hiddenCapabilitySources")) {
-    if (desired === null || typeof data.hiddenCapabilitySources !== "object" || data.hiddenCapabilitySources === null || Array.isArray(data.hiddenCapabilitySources)) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
+    if (rawRevision === null || typeof data.hiddenCapabilitySources !== "object" || data.hiddenCapabilitySources === null || Array.isArray(data.hiddenCapabilitySources)) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
     const sources = data.hiddenCapabilitySources as Record<string, unknown>;
     if (Object.keys(sources).length === 0 || Object.keys(sources).some(key => !workerCapabilityKeys.includes(key as typeof workerCapabilityKeys[number]))) throw new TypeError("Worker configuration cache has invalid hidden capability sources.");
     const parsed: NonNullable<WorkerConfigurationCache["hiddenCapabilitySources"]> = {};
     for (const key of workerCapabilityKeys) {
       if (!Object.hasOwn(sources, key)) continue;
       const source = exact(sources[key], ["revision", "json"]), revision = parseWorkerCloudRevision(source.revision);
-      if (typeof source.json !== "string" || BigInt(revision) > BigInt(desired.revision)) throw new TypeError("Worker configuration cache has an invalid hidden capability source.");
-      validateHiddenCapabilitySource(authority.desiredJson as string, key, source.json);
+      if (typeof source.json !== "string" || BigInt(revision) > BigInt(rawRevision)) throw new TypeError("Worker configuration cache has an invalid hidden capability source.");
+      validateHiddenCapabilitySource(authority.desiredJson as string, key, source.json, webOnly);
       Object.assign(parsed, { [key]: { revision, json: source.json } });
     }
     hiddenCapabilitySources = parsed;
   }
   const parsed: DecodedStorageCache = {
     ...checked, schemaVersion: webOnly ? 9 : 8,
-    authority: { generation: checked.authority.generation, desiredJson: authority.desiredJson, applicationRevision, observationRevision: checked.authority.observationRevision },
+    authority: { generation: checked.authority.generation, desiredJson: authority.desiredJson, applicationRevision, observationRevision: checked.authority.observationRevision, pendingApplication },
     remoteObservation,
     ...(hiddenCapabilitySources === undefined ? {} : { hiddenCapabilitySources }),
   };
-  return { cache: parsed, migration: missingSudo || missingArchive ? { received: received!, previousDesired: previousDesired! } : null };
+  return { cache: parsed, migration: missingSudo || missingArchive ? { received: { ...legacyReceived!, revision: legacyReceived!.known.revision, updatedAt: legacyReceived!.known.updatedAt }, previousDesired: previousDesired! } : null };
 };
 
 export const decodeConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): DecodedCache & { readonly migrated: boolean } => {

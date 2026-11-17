@@ -1296,7 +1296,7 @@ export const createApiClient = (options: {
           if (response.archiveSessionsHeader !== null && response.archiveSessionsHeader !== "1" || archive && response.archiveSessionsHeader !== "1") { workerArchiveSessions.supported = false; throw new ProtocolError("The server did not confirm the requested Worker archive sessions capability."); }
           const receipt = parseReceivedWorkerConfigurationReportReceipt(sync === undefined ? value : sync.native, { controlMode: supported && response.controlModeHeader === "1", toolPaths: toolsSupported && response.toolPathsHeader === "1", archiveSessions: archive && response.archiveSessionsHeader === "1" });
           workerControlMode.supported = supported && response.controlModeHeader === "1";
-          if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.known.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
+          if (receipt.configuration.observationAccepted && (parsed.observation === null || receipt.configuration.desired === null || BigInt(receipt.configuration.observationRevision) !== BigInt(parsed.observation.baseRevision) + 1n || BigInt(parsed.observation.desiredRevision) > BigInt(receipt.configuration.desired.revision))) throw new ProtocolError("The configuration receipt does not acknowledge the submitted observation.");
           if (sync === undefined || promptSelectors === undefined) return receipt;
           let prompts: WorkerPromptResults;
           try {

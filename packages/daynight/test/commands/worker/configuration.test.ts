@@ -107,13 +107,14 @@ describe("Worker cloud configuration application", () => {
     const original = desired("1", "original", false);
     await manager.receive(receivedDesired(original)); await manager.settle();
     expect(manager.current().toolTargets).toEqual({ source: "local", revision: null, choices: localToolPaths });
-    expect(manager.report()).toMatchObject({ bootstrap: null, toolPathsBootstrap: localToolPaths });
+    expect(manager.report()).toMatchObject({ bootstrap: null, controlModeBootstrap: "web", toolPathsBootstrap: null });
     await manager.receive(receivedDesired({ ...original, revision: "2", value: { ...original.value, toolPaths: { codex: { kind: "auto" }, copilot: null, herdr: null } } }));
     expect(manager.current().toolTargets).toEqual({ source: "cloud", revision: "2", choices: { codex: { kind: "auto" }, copilot: null, herdr: null } });
+    expect(manager.report()).toMatchObject({ controlModeBootstrap: "web", toolPathsBootstrap: null });
     const cloud: ToolPaths = { codex: { kind: "auto" }, copilot: { kind: "path", path: "/cloud/copilot" }, herdr: { kind: "auto" } };
     await manager.receive(receivedDesired({ ...original, revision: "3", value: { ...original.value, toolPaths: cloud } })); await manager.settle();
     expect(manager.current().toolTargets).toEqual({ source: "cloud", revision: "3", choices: cloud });
-    expect(manager.report()).toMatchObject({ toolPathsBootstrap: localToolPaths });
+    expect(manager.report()).toMatchObject({ toolPathsBootstrap: null });
   });
 
   it.each([

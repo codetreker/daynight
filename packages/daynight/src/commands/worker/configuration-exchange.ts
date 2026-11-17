@@ -49,7 +49,7 @@ export type WorkerConfigurationExchange = {
 };
 
 type ExchangeManager = {
-  current(): { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly synchronized: boolean };
+  current(): { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly desiredRevision: string | null; readonly observationRevision: string; readonly synchronized: boolean };
   hasAuthority(): boolean;
   waitReady(signal?: AbortSignal): Promise<void>;
   receive(desired: ReceivedWorkerDesired | null, revision?: string, signal?: AbortSignal, syncId?: string, remoteObservation?: { readonly observationRevision: string; readonly json: string } | null): Promise<void>;
@@ -113,7 +113,7 @@ export const createWorkerConfigurationExchange = (options: {
   const acknowledgements = new WeakMap<WorkerCloudReport, "persisted" | "ignored">();
   const source = (): WorkerConfigurationExchangeSource => {
     const current = manager.current();
-    return Object.freeze({ state: !manager.hasAuthority() ? "unread" : current.desired === null ? "uninitialized" : "initialized", generation: current.generation, desiredRevision: current.desired?.revision ?? null, observationRevision: current.observationRevision });
+    return Object.freeze({ state: !manager.hasAuthority() ? "unread" : current.desiredRevision === null ? "uninitialized" : "initialized", generation: current.generation, desiredRevision: current.desiredRevision, observationRevision: current.observationRevision });
   };
   const prepareStage = async (syncId: string, phase: WorkerConfigurationExchangePhase, action: () => Promise<void>, received?: () => WorkerConfigurationReceivedAuthority | undefined): Promise<void> => {
     const previousSource = source();
@@ -133,24 +133,24 @@ export const createWorkerConfigurationExchange = (options: {
     source,
     waitReady: operation => manager.waitReady(operation.signal),
     prepare: async (operation, syncId = randomUUID()) => {
-      if (needsRead || !manager.current().synchronized || manager.current().desired === null) {
+      if (needsRead || !manager.current().synchronized || manager.current().desiredRevision === null) {
         needsRead = true;
         let received: WorkerConfigurationReceivedAuthority | undefined;
         await prepareStage(syncId, "authority-read", async () => {
           const resource = await options.read(operation);
-          received = Object.freeze({ desiredRevision: resource.desired?.known.revision ?? null, observationRevision: resource.observationRevision });
+          received = Object.freeze({ desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision });
           await manager.receive(resource.desired, resource.observationRevision, operation.signal, syncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
           needsRead = false;
         }, () => received);
       }
-      if (manager.current().desired !== null) {
+      if (manager.current().desiredRevision !== null) {
         bootstrap = null;
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
       } else if (options.bootstrap !== undefined) {
         await prepareStage(syncId, "bootstrap-prepare", async () => { bootstrap = await options.bootstrap!.prepare(operation); });
       }
     },
-    capture: report => manager.report(manager.current().desired === null ? bootstrap : null, report),
+    capture: report => manager.report(manager.current().desiredRevision === null ? bootstrap : null, report),
     reportContext: report => manager.reportContext(report),
     isCurrent: report => manager.isCurrentReport(report),
     send: async (report, captured, operation, selectors) => {
@@ -170,9 +170,9 @@ export const createWorkerConfigurationExchange = (options: {
       // Only an authenticated read can distinguish them.
       if (
         BigInt(receipt.observationRevision) < BigInt(current.observationRevision)
-        || current.desired !== null && (receipt.desired === null || BigInt(receipt.desired.known.revision) < BigInt(current.desired.revision))
+        || current.desiredRevision !== null && (receipt.desired === null || BigInt(receipt.desired.revision) < BigInt(current.desiredRevision))
       ) needsRead = true;
-      if (current.desired !== null) {
+      if (current.desiredRevision !== null) {
         bootstrap = null;
         if (options.bootstrap !== undefined) await waitForConfigurationOperation(options.bootstrap.clear(), operation.signal);
       }
@@ -246,7 +246,7 @@ export const syncWorkerConfigurationOnce = async (options: {
       throw error;
     }
     remoteOutcome = "success"; observationAccepted = receipt.configuration.observationAccepted;
-    received = Object.freeze({ desiredRevision: receipt.configuration.desired?.known.revision ?? null, observationRevision: receipt.configuration.observationRevision }); emit("succeeded");
+    received = Object.freeze({ desiredRevision: receipt.configuration.desired?.revision ?? null, observationRevision: receipt.configuration.observationRevision }); emit("succeeded");
     phase = "receipt-accept"; localOutcome = "pending"; emit("started");
     let acceptance: "persisted" | "ignored" | void;
     try { acceptance = await configuration.accept(captured, receipt.configuration, operation, syncId); }

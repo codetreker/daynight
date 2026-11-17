@@ -1,6 +1,6 @@
 // Preserve and validate historical JSON sources without projecting through network DTOs.
 import { jsonContainerSources, jsonObjectSources } from "../../api/json-source.js";
-import { malformed, timestamp } from "../../api/validation.js";
+import { malformed, ProtocolError, timestamp } from "../../api/validation.js";
 import { parseWorkerCloudDesired, parseWorkerCloudObservation, parseWorkerCloudRevision, workerConfigurationCapabilities } from "./configuration-storage-wire.js";
 import type { WorkerConfigurationCapabilityInput } from "./configuration-storage-wire.js";
 import type { WorkerCloudDesired } from "./configuration-storage-types.js";
@@ -42,6 +42,22 @@ export const receiveWorkerDesired = (json: string, options?: WorkerConfiguration
   if (!enabled.controlMode && members.has("agentControlMode") || !enabled.toolPaths && members.has("toolPaths") || !enabled.archiveSessions && members.has("archiveSessions")) return malformed();
   return { json, known: parseWorkerCloudDesired(knownJson(desiredProjection(json, capabilities, recognizeSudo)), false, capabilities) };
 };
+
+// Schema 9 preserves an authority that a newer server can describe even when
+// this binary cannot interpret its value. Validate the envelope independently.
+export const receiveStoredDesired9 = (json: string): { readonly json: string; readonly revision: string; readonly updatedAt: string; readonly known: WorkerCloudDesired | null } => {
+  const root = jsonObjectSources(json), revisionSource = root.get("revision"), updatedAtSource = root.get("updatedAt"), value = root.get("value");
+  if (revisionSource === undefined || updatedAtSource === undefined || value === undefined) return malformed();
+  jsonObjectSources(value);
+  const revision = parseWorkerCloudRevision(knownJson(revisionSource));
+  const updatedAt = timestamp(knownJson(updatedAtSource));
+  if (/^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(updatedAt)) return malformed();
+  try { return { json, revision, updatedAt, known: receiveWorkerDesired(json).known }; }
+  catch (error) {
+    if (!(error instanceof ProtocolError) && !(error instanceof SyntaxError)) throw error;
+    return { json, revision, updatedAt, known: null };
+  }
+};
 const failure = (source: string): string => nullable(source, value => project(value, ["code", "category", "phase", "occurredAt"]));
 const observationProjection = (source: string, options: WorkerConfigurationCapabilityInput, recognizeSudo = true): string => project(source, ["baseRevision", "desiredRevision", "items", "reportedAt"], {
   items: source => {
@@ -80,8 +96,12 @@ export const desiredCapabilitySources = (json: string): ReadonlyMap<string, stri
   return jsonObjectSources(value);
 };
 
-export const validateHiddenCapabilitySource = (desired: string, key: WorkerCapabilityKey, source: string): void => {
+export const validateHiddenCapabilitySource = (desired: string, key: WorkerCapabilityKey, source: string, independent = false): void => {
   const root = jsonObjectSources(desired), value = desiredCapabilitySources(desired);
   if (value.has(key)) return malformed();
+  if (independent) {
+    jsonObjectSources(`{"value":${source}}`);
+    return;
+  }
   receiveWorkerDesired(objectSource([...root].map(([name, part]) => [name, name === "value" ? objectSource([...value, [key, source]]) : part])));
 };

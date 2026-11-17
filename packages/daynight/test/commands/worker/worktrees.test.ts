@@ -69,7 +69,7 @@ const operation = (): Operation => { const result = createOperation(); operation
 const manager = (root: string, options: Partial<Parameters<typeof createWorkerGitManager>[0]> = {}) => {
   const raw = createWorkerGitManager({ temporaryDirectory: path.join(root, "temporary"), prepareFormat: async (_project, repo, op) => {
     await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation: op,
-      sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] } });
+      sources: { listSchedules: () => [], listWebTasks: () => [] } });
   }, ...options });
   const prepared = new Map<string, string>();
   const pathKey = (project: WorkerProject) => path.normalize(project.localPath);
@@ -625,7 +625,7 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       expect((await adapter.scanWorktrees(f.project, operation())).quarantined).toEqual([]);
     });
 
-    it.each(["marker", "unknown-marker", "pointer", "duplicate", "unreadable", "commondir"])("keeps %s damage unknown while preserving healthy observations", async kind => {
+    it.each(["marker", "unknown-marker", "pointer", "duplicate", "unreadable", "commondir"])("isolates %s damage while preserving healthy observations", async kind => {
       const f = await fixture(), adapter = manager(f.root);
       const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
       const admin = administrativeDirectory(binding.worktreePath);
@@ -638,9 +638,14 @@ describe("worker repositories and task worktrees", { timeout: 30_000 }, () => {
       if (kind === "duplicate") cpSync(admin, `${admin}-duplicate`, { recursive: true });
       if (kind === "unreadable") { await rm(path.join(admin, "gitdir")); await mkdir(path.join(admin, "gitdir")); }
       const result = await adapter.scanWorktrees(f.project, operation());
-      expect(result.unknown.length).toBeGreaterThan(0);
-      if (kind !== "unreadable") {
+      if (kind === "marker" || kind === "unknown-marker") {
+        expect(result.unknown).toEqual([]);
+        expect(result.quarantined).toEqual([{ owner: f.owner, error: expect.objectContaining({ message: expect.stringMatching(/Legacy Worker lock/) }) }]);
+      } else {
+        expect(result.unknown.length).toBeGreaterThan(0);
         expect(result.quarantined).toEqual([]);
+      }
+      if (kind !== "unreadable") {
         expect(result.validated).toEqual([{ owner: siblingOwner, binding: sibling }]);
         await expect(adapter.verifyWorktree(f.project, siblingOwner, operation())).resolves.toEqual(sibling);
       }

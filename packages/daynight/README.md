@@ -142,11 +142,9 @@ daynight worker list [--json]        # Query this account's remote Workers
 daynight worker show <worker-id> [--json]
 daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
-daynight worker attach              # Connect to an existing Herdr task runtime
 daynight worker repo list [--json]
 daynight worker repo add [--project <project-id>]
 daynight worker repo remove [--project <project-id>]
-daynight worker resources list       # Inspect retained Herdr recordings and stop evidence
 daynight worker resources recover <task-id> --project <project-id> --claim-id <claim-id> [--worktree-id <worktree-id>] [--confirm]
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
@@ -1484,8 +1482,7 @@ objects, preserving every entry still needed.
 The writable boolean property `paused` controls periodic worker continuation
 pings. The macOS durable Herdr path also checks it before every automatic input.
 Set it to `true` to suppress those inputs, or set it to `false` or remove it to
-restore the usual policy. Observation, original-run stopping and human attach
-remain available. An absent key remains absent in reads. The
+restore the usual policy. Observation and original-run stopping remain available. An absent key remains absent in reads. The
 property can change during an active claim without changing task status,
 execution ownership or timing:
 
@@ -2087,10 +2084,10 @@ whether the service actually rolled back. Desired content
 under the same revision must be semantically equal wherever both negotiated
 projections expose it. Existing mode and tool fields may be absent from one
 projection; conflicting visible content still fails as a protocol error. Known target changes and authority rollback renew the local
-generation. Changes confined to unknown fields, a newer revision or update time
-preserve application records, jobs and `applicationRevision`. An unsupported
-known target remains visible as authority with new admission closed until a valid
-target arrives. Configuration enrollment does not depend on active claims or
+generation. For an applicable target, changes confined to unknown fields, a newer revision
+or update time preserve application records, jobs and `applicationRevision`. A structurally
+valid raw target with an unsupported known value or type remains visible with its
+true revision and new admission closed until a valid target arrives. It is not treated as an uninitialized target or imported again. Configuration enrollment does not depend on active claims or
 alter task/claim formats, permission or recovery rules.
 
 When the cloud target is uninitialized, including after an initialized target
@@ -2392,7 +2389,7 @@ Herdr startup verifies the original shell, helper/native process tree, launch
 receipt, binding and readiness before a single initial input. Startup succeeds
 only after the official integration reports the original native Session to the
 same pane. Missing or unknown results never permit replay or a replacement
-Session. Original-claim recovery and attach keep their frozen recipes. Windows
+Session. Original-claim recovery keeps its frozen recipes. Windows
 uses system PowerShell 5 as the root shell with owned ExternalScript mappings;
 PowerShell 7 is not supported by this path. See the
 [Herdr tool launch design](../../docs/design/herdr-tool-launch.md).
@@ -2444,12 +2441,18 @@ scheduler, merged triggers and finite prompt batches.
 The Worker stores configuration facts in one schema 9
 `worker/configuration.json`, scoped to the service origin, authenticated user and
 Worker ID. Its authority retains the full `desiredJson`, `applicationRevision`,
-observation revision and local generation. The executable known view derives from
-the original JSON. Unknown fields, nested values, large integers, negative numbers
+observation revision and local generation. The required `pendingApplication` flag
+is true when the current raw target has not been reconciled, including null or
+unsupported authority. False means the Web ledger was reconciled, not that every
+application has succeeded. It persists across restart; a later supported target
+is reconciled even if its values match the target before an unsupported interval.
+The executable known view derives from the original JSON. Unknown fields, nested values, large integers, negative numbers
 and exponents survive receive, cache and restart without conversion through
-JavaScript numbers. Known fields retain their strict validation; duplicate keys,
-depth and existing response limits still apply. Unknown targets create no jobs or
-pending/applied records. `remoteObservation` independently retains the last
+JavaScript numbers. The executable view requires strict known-field validation;
+an unsupported value or type retains the raw source and revision without creating
+a partial or default target. Invalid JSON, envelope, revision, timestamps,
+negotiated fields, depth and existing response limits still cause rejection.
+Unsupported targets create no new jobs or pending/applied records. `remoteObservation` independently retains the last
 explicit GET's complete observation and revision, including unknown item kinds;
 receipts do not import those remote facts into the execution ledger. A service
 rollback or null reset retains that independent snapshot under its original
@@ -2854,7 +2857,7 @@ failures remain visible and send no ping. The last service read and native
 submission are separate operations; pausing does not retract input already sent.
 The legacy path applies this property to periodic continuation. The macOS
 durable path also checks it before initial, deferred and resumed automatic
-input. Observation, original-run stopping and human attach remain available;
+input. Observation and original-run stopping remain available;
 pausing does not terminate a native process.
 
 Web execution sends the initial assignment before patrol. On Worker restart or
@@ -2883,24 +2886,6 @@ restarting does not bypass durable unknown-input or stop restrictions. Terminal 
 resource identity, original deadline and retry schedule across restart. A failed
 resume of a known ID remains an error. Web recovery follows the persistent
 rules below.
-
-For human input, use another interactive terminal:
-
-```bash
-daynight worker attach
-```
-
-Attach needs no Daynight credential or service request and does not take the
-worker lock or start a replacement daemon. On macOS with a lifecycle journal,
-it reads the current schema without migration or recovery, selects among
-unfinished recorded runs, and verifies the original daemon plus both socket
-peers before connecting. Paused tasks remain attachable. An unreadable journal
-or missing runtime is an error. Without a lifecycle journal, attach reads the
-shared instance journal. Both paths verify and use the original frozen Herdr
-client recipe; missing historical identity or changed files prohibit a new client.
-Detaching preserves execution. Task panes retain their
-native XDG and private HISTFILE; client routing uses the original instance's
-attachment descriptor.
 
 Every fresh or resumed native process uses fixed full access and task-folder
 trust. Copilot receives `--allow-all --no-ask-user --no-sandbox` and per-workspace
@@ -2957,7 +2942,7 @@ pane and agent cwd metadata to agree. A human workspace at the same cwd does not
 of a separately owned task workspace. Actual creation errors come from
 `workspace.create`. Original workspace/pane/terminal binding, final task
 authorization, process-stop evidence and prompt receipts remain checked. Missing credentials, integration failures and launch errors
-stay visible. Use attach for business input. Reconnecting an already alive agent
+stay visible. Reconnecting an already alive agent
 does not promise to resend an input lost across a process interruption.
 
 When the original claim is absent from a successful complete inventory, the
@@ -2987,8 +2972,7 @@ retains the original recording source and Session identity for sealing and
 upload; its failure remains visible without blocking a successor after the
 worktree is settled. Unknown stop, conflicting ownership or Git failure still
 retains the corresponding cleanup responsibility.
-See [retained recordings](#retained-herdr-recordings) for inspection and explicit
-recovery or disposal.
+See [retained recordings](#retained-herdr-recordings) for the archive and resource limits.
 
 For Linux/Windows legacy Herdr and Web, when the original claim is absent from a
 successful complete inventory, the worker asks its agent to release attributable
@@ -3186,7 +3170,7 @@ known session ID. After credential redaction, the terminal renderer shortens eac
 full hyphenated GUID in context, messages and error chains to its first eight
 hexadecimal characters, preserving case. Other text stays unchanged. JSONL keeps
 complete IDs in fields, messages and errors for precise lookup. Startup prints
-the log location and attach guidance. Routine observations report the first
+the log location. Routine observations report the first
 connection and changes to a claim’s waiting or executing phase, terminal or native
 session. Unchanged polls stay quiet, including
 the first poll after a successful start. Claims are tracked independently.
@@ -3451,9 +3435,7 @@ the supported behavior and verification boundary.
 Stop `daynight worker run` before retry, release or resource management.
 Each command acquires the same instance lock; an occupied lock returns an
 instruction to stop the runner. Retry and release synchronously handle
-one specified claim without a background request queue. Resource disposal
-persists its explicit decision so an interrupted deletion can resume against
-the original identity.
+one specified claim without a background request queue.
 
 ### Completed Web resources
 
@@ -3478,19 +3460,10 @@ the reservation after verified resource removal.
 
 ### Retained Herdr recordings
 
-Inspect retained macOS Herdr resources before choosing a retry or disposal:
-
-```bash
-daynight worker resources list
-```
-
-The JSON result identifies the original Session, project/task/claim/worktree,
-stop evidence, source and worktree paths, source byte count, archive state,
-retry time and any disposal decision. Inspection never starts an Agent. A
-confirmed original stop releases execution capacity even if archival failed,
+A confirmed original stop releases execution capacity even if archival failed,
 provided no quarantined resource responsibility remains. Quarantine retains its
-reservation until revalidation; `stop_unknown` still consumes capacity. The old worktree continues to reserve
-its task path until verified removal.
+reservation until revalidation; `stop_unknown` still consumes capacity. The old
+worktree continues to reserve its task path until verified removal.
 
 New claims are blocked at 20 retained worktrees or 2 GiB of pending recording
 source, or when the worker filesystem has less than 1 GiB available. Each round
@@ -3501,37 +3474,7 @@ enabled, ready local sources remain and consume actual disk space. Disabling it
 selects settled recordings for local deletion, including ready copies, without
 changing their cloud receipts.
 
-After restoring the original owner's access or resolving a transient cause,
-request another archive attempt with the identities from inspection:
-
-```bash
-daynight worker resources retry <task-id> --project <project-id> \
-  --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id>
-```
-
-Archive retry preserves the original operation and source. It never resumes an
-Agent, switches archive owner or converts corrupt source into a partial or
-unavailable archive. Normal worktree cleanup is independent of the archive
-receipt; the reported worktree result reflects verified Git and filesystem
-state, not archive status.
-
-For an irrecoverable failure, explicitly choose `abandon` to stop retries while
-retaining files, or `delete` to remove that original worktree and recording
-source. Deletion discards local recording evidence. Both choices require the
-original execution to be confirmed stopped and its claim to be terminal:
-
-```bash
-daynight worker resources dispose <task-id> --project <project-id> \
-  --claim-id <claim-id> --session-id <session-id> --worktree-id <worktree-id> \
-  --operation-id <new-operation-uuid> --action abandon --confirm
-```
-
-Use `--action delete` only after reviewing the exact paths and consequences.
-The stable operation UUID identifies this explicit choice; reuse it with the
-same action after an interrupted result. Identity mismatches, active claims,
-unknown stop evidence and missing confirmation are refused. Disposal preserves
-the archive's historical failure and never manufactures a successful receipt.
-Worktree deletion retains the existing ownership and resource-use checks.
+Normal worktree cleanup is independent of the archive receipt.
 
 ### Active claim management
 

@@ -9,7 +9,7 @@ import { parseToolPathsBootstrap } from "../../api/worker-tool-paths.js";
 import { parseLocalToolPaths, type Tool, type ToolPaths } from "../../platform/tool-path-choice.js";
 import { createWorkerConfigurationPersistence, waitForConfigurationOperation, type ConfigurationPersistenceContext, type ConfigurationPersistenceEvent } from "./configuration-persistence.js";
 import { classifyConfigurationFailure } from "./configuration-failure.js";
-import { applicableConfigurationDesired, configurationDesired, configurationKey as keyOf, configurationRetryDelays as retryDelays, freezeConfiguration as freeze, sameConfigurationValue as equal } from "./configuration-model.js";
+import { applicableConfigurationDesired, configurationAuthority, configurationDesired, configurationDesiredRevision, configurationKey as keyOf, configurationRetryDelays as retryDelays, freezeConfiguration as freeze, sameConfigurationValue as equal } from "./configuration-model.js";
 import type { ConfigurationProjection, TrackedConfigurationItem, WorkerConfigurationCache, WorkerConfigurationIdentity, WorkerConfigurationReportContext, WorkerConfigurationSnapshot, WorkerConfigurationSource, WorkerConfigurationToolTargets, WorkerNativeProof } from "./configuration-model.js";
 import { acceptConfigurationProjection, allConfigurationItems, configurationHasUnfinishedRemoval as hasUnfinishedRemoval, configurationInheritanceSources, configurationProjects, configurationSnapshot as snapshot, configurationTarget as target, configurationToolTargets as toolTargets, findConfigurationRecord as findRecord, findCurrentConfigurationItem as findItem, projectConfigurationReport, pruneConfigurationRetained, replaceConfigurationRecord as replaceItem, transitionConfigurationDesired as desiredTransition } from "./configuration-state.js";
 
@@ -53,7 +53,7 @@ export type WorkerConfigurationManagerOptions = {
   readonly onNativeApplication?: (event: WorkerNativeApplicationEvent) => void;
   readonly onApplication?: (event: WorkerConfigurationApplicationEvent) => void;
   readonly onError?: (error: unknown) => void;
-  readonly onInvalidDesired?: (revision: string, reason: "unsupported_mode" | "limits") => void;
+  readonly onInvalidDesired?: (revision: string, reason: "unsupported_mode" | "unsupported_configuration" | "limits") => void;
   readonly onStorageState?: (event: ConfigurationPersistenceEvent) => void;
   readonly now?: () => number;
   readonly persist?: (file: string, chunks: () => Iterable<string>) => Promise<void>;
@@ -103,7 +103,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   let validatedNative = new Map<string, WorkerNativeProof>();
   let synchronized = false, stopped = false, queued = false, applyingScalars = false;
   const supportsDesired = (desired: WorkerCloudDesired | null): boolean => applicableConfigurationDesired(desired) !== null;
-  const usable = (): boolean => synchronized && supportsDesired(configurationDesired(cache));
+  const usable = (): boolean => synchronized && !cache.authority.pendingApplication && supportsDesired(configurationDesired(cache));
   let fatal: { error: unknown } | undefined;
   let stopping: Promise<void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined, jobCursor: string | null = null;
@@ -114,7 +114,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
     try { options.onApplication?.(Object.freeze(event)); }
     catch (error) { diagnosticFailures.push(error); }
   };
-  const sourceFor = (current: WorkerConfigurationCache): WorkerConfigurationSource => ({ state: !synchronized ? "unread" : configurationDesired(current) === null ? "uninitialized" : "initialized", generation: current.authority.generation, desiredRevision: configurationDesired(current)?.revision ?? null, observationRevision: current.authority.observationRevision });
+  const sourceFor = (current: WorkerConfigurationCache): WorkerConfigurationSource => ({ state: !synchronized ? "unread" : current.authority.desiredJson === null ? "uninitialized" : "initialized", generation: current.authority.generation, desiredRevision: configurationDesiredRevision(current), observationRevision: current.authority.observationRevision });
   const reportContextFor = (projection: ConfigurationProjection): WorkerConfigurationReportContext => freeze({
     reportId: projection.reportId, generation: projection.generation, baseRevision: projection.baseRevision,
     recordIds: [...projection.recordIds], failures: projection.failures.map(token => ({ ...token })),
@@ -141,8 +141,8 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
   };
   const check = (): void => { if (fatal !== undefined) throw fatal.error; };
   const reconcile = (current: WorkerConfigurationCache, desired: ReceivedWorkerDesired | null, observationRevision: string, receipt = false, capturedRevision: string | null = null, capturedBaseRevision = current.authority.observationRevision): WorkerConfigurationCache => {
-    const previous = configurationDesired(current);
-    const stale = receipt && previous !== null && (desired !== null ? BigInt(desired.known.revision) < BigInt(previous.revision) : (capturedRevision !== null && BigInt(capturedRevision) < BigInt(previous.revision) || capturedBaseRevision !== current.authority.observationRevision));
+    const previous = configurationDesiredRevision(current);
+    const stale = receipt && previous !== null && (desired !== null ? BigInt(desired.revision) < BigInt(previous) : (capturedRevision !== null && BigInt(capturedRevision) < BigInt(previous) || capturedBaseRevision !== current.authority.observationRevision));
     const next = stale ? current : desiredTransition(current, desired, runningIds(), randomUUID);
     const observed = receipt && (stale || desired !== null) && BigInt(observationRevision) < BigInt(current.authority.observationRevision) ? current.authority.observationRevision : observationRevision;
     const reset = !receipt && BigInt(observed) < BigInt(current.authority.observationRevision);
@@ -190,8 +190,11 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         validatedNative = nextValidatedNative;
         const firstAuthority = confirm && !synchronized && !stopped;
         if (confirm && !stopped) synchronized = true;
-        const desired = configurationDesired(next);
-        if (desired !== null && (firstAuthority || !equal(desired, configurationDesired(current))) && desired.value.agentControlMode !== null && desired.value.agentControlMode !== undefined && !supportsDesired(desired)) options.onInvalidDesired?.(desired.revision, desired.value.agentControlMode === "herdr" ? "unsupported_mode" : "limits");
+        const authority = configurationAuthority(next), desired = authority?.known ?? null;
+        if (authority !== null && (firstAuthority || next.authority.desiredJson !== current.authority.desiredJson)) {
+          if (desired === null) options.onInvalidDesired?.(authority.revision, "unsupported_configuration");
+          else if (desired.value.agentControlMode !== null && desired.value.agentControlMode !== undefined && !supportsDesired(desired)) options.onInvalidDesired?.(authority.revision, desired.value.agentControlMode === "herdr" ? "unsupported_mode" : "limits");
+        }
         options.onChange?.(snapshot(cache, usable(), validatedNative, localTools, proofFor));
         kick();
       } };
@@ -409,7 +412,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
         if (stopped) return current;
         let next = reconcile(current, parsed, revision ?? (parsed === null ? "0" : current.authority.observationRevision));
         if (remoteObservation !== undefined) next = { ...next, remoteObservation };
-        if (!synchronized && parsed !== null) next = { ...next, currentItems: next.currentItems.map(item => item.value.key.kind === "native" || item.value.key.kind === "projectNative" || item.value.key.kind === "projectPreparation"
+        if (!synchronized && parsed?.known != null && supportsDesired(parsed.known)) next = { ...next, currentItems: next.currentItems.map(item => item.value.key.kind === "native" || item.value.key.kind === "projectNative" || item.value.key.kind === "projectPreparation"
           ? { ...item, value: { ...item.value, state: "pending", error: null, nextAttemptAt: null } } : item) };
         return next;
       }, true, undefined, [], { kind: "authority-read", ...(syncId === undefined ? {} : { syncId }) }), signal);
@@ -431,7 +434,7 @@ export const createWorkerConfigurationManager = async (options: WorkerConfigurat
       if (stopping !== undefined) throw new Error("Worker configuration manager is stopped.");
       const parsed = parseReceivedWorkerConfigurationReceipt(receipt), captured = sentProjections.get(sent);
       if (captured === undefined) throw new Error("Worker configuration report was not captured by this manager.");
-      if (parsed.observationAccepted && (sent.observation === null || BigInt(parsed.observationRevision) !== BigInt(captured.baseRevision) + 1n || parsed.desired === null || BigInt(parsed.desired.known.revision) < BigInt(sent.observation.desiredRevision))) throw new Error("Worker configuration receipt does not acknowledge the submitted observation.");
+      if (parsed.observationAccepted && (sent.observation === null || BigInt(parsed.observationRevision) !== BigInt(captured.baseRevision) + 1n || parsed.desired === null || BigInt(parsed.desired.revision) < BigInt(sent.observation.desiredRevision))) throw new Error("Worker configuration receipt does not acknowledge the submitted observation.");
       let acknowledged = false;
       const context = reportContextFor(captured);
       const owned = commit(current => {

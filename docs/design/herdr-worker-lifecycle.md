@@ -33,7 +33,7 @@ lifecycle SQLite 格式 4 保留 preparation/run 的冻结双 launch 与实际�
 
 格式 3 的转换在 `executions` 和 `never_started_retirements` 中独立映射 `runs[].nativeLaunch`，不调用 lifecycle 或 Session 业务 parser，也不核对 SQL identity/version 与 JSON、retirement 与主记录的关系。映射只读取必要容器及 `processes[].role`、`phase`、`daemon`、`stopOperationId`、`admission`、`run.segmentIds`：含 agent 时为 observed；否则 launch_requested 为 requested；否则 prepared、daemon 非 null、唯一 process 为 shell、stopOperationId/admission 均为 null 且 segmentIds 为空时为 not_submitted；其余可操作 run 为 unknown。其他字段直接携带，不修改停止证明、待确认 ledger、版本或哈希。
 
-必要 JSON 无法解析或 root/runs 不可操作时保留原字符串；单个 run 的必要容器不可访问时保留该 run，其余 run 继续映射。转换只在源文本中插入或替换必要的 `nativeLaunch` 字段值，其他 token、重复键及无法用 JavaScript 数字精确表示的原数值保持，不通过整行重新序列化来丢弃证据。没有字段变化时保留原字符串，不生成空 runs、不删除 retirement 或修复关系。转换不执行输入/输出的 8 MiB 门槛或普通字段、条数容量政策；真实 SQL、IO 和提交错误仍使转换失败或结果未知。业务读取继续执行严格 JSON 语法、lifecycle 结构、身份、版本及关系校验，只解除已存行的总字节门槛，使有效超 8 MiB 映射结果可重开和只读 attach。普通新写入仍执行原 8 MiB 及字段/列表限制。旧二进制不能读取新格式，attach 仍只读且不执行迁移。转换职责与取舍见[局部映射决策](../../.agents/notes/implemented/bug-fix/2026-11-16-herdr-local-native-launch-mapping.md)。
+必要 JSON 无法解析或 root/runs 不可操作时保留原字符串；单个 run 的必要容器不可访问时保留该 run，其余 run 继续映射。转换只在源文本中插入或替换必要的 `nativeLaunch` 字段值，其他 token、重复键及无法用 JavaScript 数字精确表示的原数值保持，不通过整行重新序列化来丢弃证据。没有字段变化时保留原字符串，不生成空 runs、不删除 retirement 或修复关系。转换不执行输入/输出的 8 MiB 门槛或普通字段、条数容量政策；真实 SQL、IO 和提交错误仍使转换失败或结果未知。业务读取继续执行严格 JSON 语法、lifecycle 结构、身份、版本及关系校验，只解除已存行的总字节门槛，使有效超 8 MiB 映射结果可重开并只读。普通新写入仍执行原 8 MiB 及字段/列表限制。旧二进制不能读取新格式。转换职责与取舍见[局部映射决策](../../.agents/notes/implemented/bug-fix/2026-11-16-herdr-local-native-launch-mapping.md)。
 
 只有本次明确成功取得的新 claim 能通过 `lifecycle.registerClaim` 创建空运行记录。顺序为主索引 pending、持久启动来源、active、资源创建。完整库存只能找回 claim，远端摘要为空不能证明该 claim 从未启动；缺少 lifecycle 记录的旧 claim 保持未知，不自动补建运行。
 
@@ -92,13 +92,11 @@ Coordinator 将未结算的本机行、清理计划、真实停止责任与 work
 
 Ctrl+C 先取消并等待调度、报告和 job，再停止原运行并封段。保留 active claim、同一 Session、原 native ID、未完成本机行和工作区，不发布最终 ready。终态 claim 的普通收尾同样使用停止 journal；建议性提示受持久输入仲裁约束，停止不等待 lease 释放。终态停止证明提交后释放执行槽；确认原运行、选择清理及在途本地操作结束后，安全删除原 worktree 并核验目录和 Git 注册，再结算本机行与清理计划。独立队列继续保存原源、封段、发布 ledger、冻结并核对不可变归档回执；这些步骤的失败不阻断文件清理。重启从原停止证明、实际 Git 状态、本机行和计划收敛清单退休；已确认后继的目录不能被旧责任删除。显式 delete 的持久处置记录保持独立。
 
-`worker attach` 在 macOS 有 lifecycle journal 时只读校验当前 schema 并读取未停止的原运行；多个候选交互显示 task、claim 和 provider。连接前后核对原 daemon 以及 API/client 两个端点，再校验并使用原实例目录及冻结 Herdr launch 打开 client。缺少原工具身份或文件变化时拒绝新 client，不使用当前目标替代；已有 endpoint 的停止和归档不依赖 executable 仍可启动。不恢复数据库、不迁移、不增加 epoch、不请求服务端放行，也不需要解除任务暂停。journal 不可读或没有候选时拒绝，不转接未知旧 daemon；没有 lifecycle journal 时只读共享实例的原 launch 和 daemon 证明；缺历史工具身份时拒绝新 client。
-
 ## 实现接口与验证
 
 - `herdr/durable.ts` 组合 lifecycle store、Session 客户端、原生进程控制与现有 Herdr adapter；`WorkerHerdrLifecycle` 向协调器提供登记、准入、责任查询、条件 cleanup、停止和停止确认；`WorkerHerdrInput` 提供控制状态、授权控制请求及输入操作入口。
 - `herdr/agents.ts` 提供分离的 `launch`、`processInfo`、`submitInitialPrompt` 和 `submitPrompt`；共享路径的 `start` 同样消费冻结 mapping，并在单次初始输入后确认官方 Session。
-- `herdr/lifecycle-store.ts` 校验不可变身份、状态迁移和追加历史，并提供 attach 专用只读读取；`session-connection.ts` 拥有注册、读回和 ledger 确认。
+- `herdr/lifecycle-store.ts` 校验不可变身份、状态迁移和追加历史，并提供只读读取；`session-connection.ts` 拥有注册、读回和 ledger 确认。
 - `herdr/native-macos.ts` 拥有原进程身份与独占停止；`execution.ts`、`cleanup.ts`、`coordinator.ts` 消费持久准入和停止结果。
 
-验证应覆盖旧 prepared 的保守迁移、准备停止与零帧收尾、准备证明不授予恢复、两类停止证明独立校验、先记录身份后输入、注册与 ledger 丢响应、准备/启动/停止/封段崩溃、未知输入不重放、重连与运行换代、替代实例保护、终态同步、归档失败时安全工作区清理与重启收敛、只读 attach，以及 Web/legacy 回归。模拟故障证明状态机与拒绝语义；macOS 真实 daemon、socket 与进程身份实验分别证明支持范围。二者不能互相替代，也不等同于 provider 登录或完整业务交付验收。
+验证应覆盖旧 prepared 的保守迁移、准备停止与零帧收尾、准备证明不授予恢复、两类停止证明独立校验、先记录身份后输入、注册与 ledger 丢响应、准备/启动/停止/封段崩溃、未知输入不重放、重连与运行换代、替代实例保护、终态同步、归档失败时安全工作区清理与重启收敛以及 Web/legacy 回归。模拟故障证明状态机与拒绝语义；macOS 真实 daemon、socket 与进程身份实验分别证明支持范围。二者不能互相替代，也不等同于 provider 登录或完整业务交付验收。

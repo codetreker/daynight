@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { receiveWorkerDesired, parseWorkerCloudDesired } from "../../api/worker-configuration.js";
 import { ProtocolError } from "../../api/validation.js";
-import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
+import type { ReceivedWorkerDesired, WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import type { AgentControlMode, WorkerReport } from "../../api/types.js";
 import type { Tool, ToolPathChoice, ToolPaths } from "../../platform/tool-path-choice.js";
 import type { ToolSelectionTargets } from "./tool-selection.js";
@@ -25,7 +25,7 @@ export type TrackedConfigurationItem = {
 export type WorkerConfigurationCache = {
   readonly schemaVersion: 9;
   readonly identity: WorkerConfigurationIdentity;
-  readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string };
+  readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string; readonly pendingApplication: boolean };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;
   readonly hiddenCapabilitySources?: Readonly<Partial<Record<"agentControlMode" | "toolPaths" | "archiveSessions", { readonly revision: string; readonly json: string }>>>;
   readonly nextFailureId: number;
@@ -37,6 +37,7 @@ export type WorkerConfigurationSnapshot = {
   readonly generation: string;
   readonly synchronized: boolean;
   readonly desired: WorkerCloudDesired | null;
+  readonly desiredRevision: string | null;
   readonly selectedProjects: readonly WorkerCloudProject[] | null;
   readonly applicationRevision: string | null;
   readonly observationRevision: string;
@@ -100,11 +101,13 @@ export const freezeConfiguration = <T>(value: T): T => {
   return value;
 };
 
-const derivedDesired = new WeakMap<WorkerConfigurationCache["authority"], WorkerCloudDesired | null>();
-export const configurationDesired = (cache: WorkerConfigurationCache): WorkerCloudDesired | null => {
-  if (!derivedDesired.has(cache.authority)) derivedDesired.set(cache.authority, cache.authority.desiredJson === null ? null : freezeConfiguration(receiveWorkerDesired(cache.authority.desiredJson).known));
+const derivedDesired = new WeakMap<WorkerConfigurationCache["authority"], ReceivedWorkerDesired | null>();
+export const configurationAuthority = (cache: WorkerConfigurationCache): ReceivedWorkerDesired | null => {
+  if (!derivedDesired.has(cache.authority)) derivedDesired.set(cache.authority, cache.authority.desiredJson === null ? null : freezeConfiguration(receiveWorkerDesired(cache.authority.desiredJson)));
   return derivedDesired.get(cache.authority)!;
 };
+export const configurationDesired = (cache: WorkerConfigurationCache): WorkerCloudDesired | null => configurationAuthority(cache)?.known ?? null;
+export const configurationDesiredRevision = (cache: WorkerConfigurationCache): string | null => configurationAuthority(cache)?.revision ?? null;
 
 // Raw authority remains readable even when this binary cannot apply it.
 const applicableDesired = new WeakMap<WorkerCloudDesired, WorkerCloudDesired | null>();

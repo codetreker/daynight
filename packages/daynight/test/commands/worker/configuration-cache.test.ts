@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { configurationCacheChunks, createConfigurationCache, parseConfigurationCache, readConfigurationCache } from "../../../src/commands/worker/configuration-cache.js";
+import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
+import { receiveWorkerDesired } from "../../../src/api/worker-configuration.js";
 import type { TrackedConfigurationItem, WorkerConfigurationCache } from "../../../src/commands/worker/configuration-storage-types.js";
 import type { WorkerConfigurationCache as ActiveCache } from "../../../src/commands/worker/configuration-model.js";
 import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey } from "../../../src/api/worker-configuration.js";
@@ -63,7 +65,7 @@ afterEach(async () => { for (const folder of directories.splice(0)) await rm(fol
 describe("Worker configuration cache", () => {
   it("creates an immutable uninitialized cache with a fresh local generation", () => {
     const first = createConfigurationCache(identity), second = createConfigurationCache(identity);
-    expect(first).toMatchObject({ schemaVersion: 9, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
+    expect(first).toMatchObject({ schemaVersion: 9, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
     expect(first.authority.generation).not.toBe(second.authority.generation);
     expect(Object.isFrozen(first.authority)).toBe(true);
     expect(parseConfigurationCache(first, identity)).toEqual({ cache: first, migrated: false });
@@ -82,7 +84,7 @@ describe("Worker configuration cache", () => {
     const source = { ...cache(), schemaVersion: 6 };
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache).toEqual({ ...source, schemaVersion: 9, authority: { ...source.authority, generation: expect.any(String) }, projectionCursor: null, currentItems: withoutModeItems(source.currentItems) });
+    expect(result.cache).toEqual({ ...source, schemaVersion: 9, authority: { ...source.authority, generation: expect.any(String), pendingApplication: false }, projectionCursor: null, currentItems: withoutModeItems(source.currentItems) });
     expect(result.cache.currentItems.some(item => item.value.key.kind === "enableSudoCleanup")).toBe(false);
   });
 
@@ -175,7 +177,7 @@ describe("Worker configuration cache", () => {
     const stopped = { ...withoutMode(tracked(70, { kind: "projectRemoval", projectId }, "10")), started: true,
       value: { ...tracked(70, { kind: "projectRemoval", projectId }, "10").value, state: "pending" as const, appliedValue: null }, actualSource: null };
     const raw = JSON.stringify({ ...desired, revision: "2", value: { ...desired.value, agentControlMode: "herdr", projects: [] } });
-    const saved = { ...previous, authority: { ...previous.authority, desiredJson: raw }, retainedItems: [stopped] };
+    const saved = { ...previous, authority: { ...previous.authority, desiredJson: raw, pendingApplication: true }, retainedItems: [stopped] };
     expect(parseConfigurationCache(saved, identity)).toEqual({ cache: saved, migrated: false });
     expect(parseConfigurationCache({ ...saved, authority: { ...saved.authority, applicationRevision: null }, currentItems: [] }, identity).cache.retainedItems).toEqual([stopped]);
   });
@@ -194,15 +196,109 @@ describe("Worker configuration cache", () => {
   it("does not select projects from an over-limit web target", () => {
     const previous = parseConfigurationCache(cache(), identity).cache;
     const raw = JSON.stringify({ ...desired, revision: "11", value: { ...desired.value, maxConcurrent: 65, projects: [] } });
-    const source = { ...previous, authority: { ...previous.authority, desiredJson: raw } };
+    const source = { ...previous, authority: { ...previous.authority, desiredJson: raw, pendingApplication: true } };
     expect(parseConfigurationCache(source, identity)).toEqual({ cache: source, migrated: false });
     expect(source.currentItems.some(item => item.value.key.kind === "projectPreparation" && item.value.key.projectId === projectId)).toBe(true);
+  });
+
+  it("round-trips an unknown raw target and its hidden sources without replacing the execution ledger", async () => {
+    const previous = parseConfigurationCache(cache(), identity).cache;
+    const stop = { ...withoutMode(tracked(70, { kind: "projectRemoval", projectId }, "10")), started: true,
+      value: { ...tracked(70, { kind: "projectRemoval", projectId }, "10").value, state: "pending" as const, appliedValue: null }, actualSource: null };
+    const currentItems = previous.currentItems.map(item => item.value.key.kind === "projectPreparation" ? { ...item, blockedByRemovalId: stop.recordId } : item);
+    const raw = '{"revision":"12","updatedAt":"2026-11-04T00:00:00Z","value":{"native":{"agent":"future-agent"},"projects":{"newShape":true},"future":1e+999}}';
+    const hiddenCapabilitySources = {
+      agentControlMode: { revision: "10", json: '"future-control"' },
+      toolPaths: { revision: "10", json: '{"codex":{"kind":"future","future":1e1000},"copilot":null,"herdr":null}' },
+      archiveSessions: { revision: "10", json: '{"policy":"future","cutoff":-1.0}' },
+    };
+    const source = { ...previous, authority: { ...previous.authority, desiredJson: raw, pendingApplication: true }, currentItems, retainedItems: [stop], hiddenCapabilitySources };
+    const file = path.join(await directory(), "unknown.json");
+    await replaceFileAtomicallyFromChunks(file, configurationCacheChunks(source), 0o600);
+    const reopened = await readConfigurationCache(file, identity, new AbortController().signal);
+    expect(reopened).toEqual({ cache: source, migrated: false });
+    expect(reopened.cache.authority.desiredJson).toBe(raw);
+    expect(reopened.cache.currentItems.find(item => item.value.key.kind === "projectPreparation")?.blockedByRemovalId).toBe(stop.recordId);
+    const { agentControlMode: _mode, ...knownValue } = desired.value;
+    const knownRaw = JSON.stringify({ ...desired, revision: "12", value: knownValue });
+    const restoredKnown = { ...source, authority: { ...source.authority, desiredJson: knownRaw } };
+    expect(parseConfigurationCache(restoredKnown, identity)).toEqual({ cache: restoredKnown, migrated: false });
+  });
+
+  it("rejects malformed schema 9 envelopes and hidden sources even for unknown raw targets", () => {
+    const previous = parseConfigurationCache(cache(), identity).cache;
+    const invalid = [
+      '{"revision":"0","updatedAt":"2026-11-04T00:00:00Z","value":{"native":{"agent":"future"}}}',
+      '{"revision":"12","updatedAt":"bad","value":{"native":{"agent":"future"}}}',
+      '{"revision":"12","updatedAt":"2026-11-04T00:00:00Z","value":{"x":1,"x":2}}',
+      '{"revision":"12","updatedAt":"2026-11-04T00:00:00Z","value":null}',
+    ];
+    for (const raw of invalid) expect(() => parseConfigurationCache({ ...previous, authority: { ...previous.authority, desiredJson: raw } }, identity)).toThrow();
+    const raw = '{"revision":"12","updatedAt":"2026-11-04T00:00:00Z","value":{"native":{"agent":"future"}}}';
+    const source = { ...previous, authority: { ...previous.authority, desiredJson: raw, pendingApplication: true }, hiddenCapabilitySources: { archiveSessions: { revision: "10", json: '{"invalid":}' } } };
+    expect(() => parseConfigurationCache(source, identity)).toThrow();
+    expect(() => parseConfigurationCache({ ...source, hiddenCapabilitySources: { archiveSessions: { revision: "13", json: '"future"' } } }, identity)).toThrow();
+    expect(() => parseConfigurationCache({ ...source, authority: { ...source.authority, desiredJson: raw.replace('"value":{', '"value":{"archiveSessions":true,') }, hiddenCapabilitySources: { archiveSessions: { revision: "10", json: '"future"' } } }, identity)).toThrow();
+    expect(() => parseConfigurationCache({ ...cache(), authority: { ...cache().authority, desiredJson: raw } }, identity)).toThrow();
   });
 
   it("strictly rejects legacy mode fields and mode items in schema 9", () => {
     const current = parseConfigurationCache(cache(), identity).cache;
     expect(() => parseConfigurationCache({ ...current, currentItems: [{ ...current.currentItems[0], nativeMode: null }, ...current.currentItems.slice(1)] }, identity)).toThrow();
     expect(() => parseConfigurationCache({ ...current, retainedItems: [withoutMode(tracked(90, { kind: "agentControlMode" }))] }, identity)).toThrow();
+  });
+
+  it("persists an unadopted target separately from the prior application ledger", () => {
+    const previous = parseConfigurationCache(cache(), identity).cache;
+    const raw = JSON.stringify({ ...desired, revision: "12", value: { ...desired.value, projects: [] } });
+    const source = { ...previous, authority: { ...previous.authority, desiredJson: raw, pendingApplication: true } };
+    expect(parseConfigurationCache(source, identity)).toEqual({ cache: source, migrated: false });
+    expect(() => parseConfigurationCache({ ...source, authority: { ...source.authority, pendingApplication: false } }, identity)).toThrow();
+    const { pendingApplication: _pending, ...withoutPending } = source.authority;
+    expect(() => parseConfigurationCache({ ...source, authority: withoutPending }, identity)).toThrow();
+    expect(() => parseConfigurationCache({ ...source, authority: { ...source.authority, pendingApplication: "true" } }, identity)).toThrow();
+  });
+
+  it("restarts after a null authority while retaining started removal responsibility", async () => {
+    const root = await directory(), file = path.join(root, "configuration.json"), signal = new AbortController().signal;
+    const options = { file, identity, signal, applyNative: async () => {} };
+    await replaceFileAtomicallyFromChunks(file, configurationCacheChunks(createConfigurationCache(identity)), 0o600);
+    const emptyManager = await createWorkerConfigurationManager(options);
+    await emptyManager.receive(null, "0");
+    await emptyManager.stop();
+    const emptyRestart = await createWorkerConfigurationManager(options);
+    expect(emptyRestart.current().desired).toBeNull();
+    await emptyRestart.stop();
+    expect((await readConfigurationCache(file, identity, signal)).cache.authority).toMatchObject({ desiredJson: null, applicationRevision: null, pendingApplication: true });
+
+    let removing = false;
+    const manager = await createWorkerConfigurationManager(options);
+    let original!: ActiveCache["currentItems"][number];
+    try {
+      await manager.configureProjectAdapters({ prepare: async () => {}, remove: async (_projectId, jobSignal) => {
+        removing = true;
+        await new Promise<void>(resolve => { if (jobSignal.aborted) resolve(); else jobSignal.addEventListener("abort", () => resolve(), { once: true }); });
+        jobSignal.throwIfAborted();
+      } });
+      await manager.receive(receiveWorkerDesired(JSON.stringify(desired)), "0");
+      await manager.settle();
+      const removed = { ...desired, revision: "11", value: { ...desired.value, projects: [] } };
+      await manager.receive(receiveWorkerDesired(JSON.stringify(removed)), "0");
+      await vi.waitFor(() => expect(removing).toBe(true), { timeout: 3000 });
+      const before = await readConfigurationCache(file, identity, signal);
+      original = before.cache.currentItems.find(item => item.value.key.kind === "projectRemoval")!;
+      expect(original.started).toBe(true);
+      await manager.receive(null, "0");
+      const cleared = await readConfigurationCache(file, identity, signal);
+      expect(cleared.cache.authority).toMatchObject({ desiredJson: null, applicationRevision: null, pendingApplication: true });
+      expect(cleared.cache.retainedItems).toContainEqual(expect.objectContaining({ recordId: original.recordId, started: true }));
+    } finally { await manager.stop(); }
+    const reopened = await createWorkerConfigurationManager(options);
+    expect(reopened.current().desired).toBeNull();
+    await reopened.stop();
+    const after = await readConfigurationCache(file, identity, signal);
+    expect(after.cache.authority).toMatchObject({ desiredJson: null, applicationRevision: null, pendingApplication: true });
+    expect(after.cache.retainedItems).toContainEqual(expect.objectContaining({ recordId: original.recordId, started: true }));
   });
 
   it("preserves observed success provenance and a cursor whose record has retired", () => {
@@ -225,7 +321,7 @@ describe("Worker configuration cache", () => {
     const result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
     expect(result.cache).toEqual({
-      ...original, schemaVersion: 9, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String) },
+      ...original, schemaVersion: 9, projectionCursor: null, authority: { ...original.authority, generation: expect.any(String), desiredJson: expect.any(String), pendingApplication: false },
       currentItems: withoutModeItems(currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item)), retainedItems: [withoutMode(stop)],
     });
     expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(desired);

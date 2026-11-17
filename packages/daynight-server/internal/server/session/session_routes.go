@@ -32,20 +32,19 @@ const relayWriteTimeout = 5 * time.Second
 const relayMaxConnections = 1024
 
 type Routes struct {
-	history         HistoryReader
-	service         serviceCalls
-	auth            *authhttp.RequestAuthentication
-	logger          *slog.Logger
-	instance        string
-	pingInterval    time.Duration
-	mutex           sync.Mutex
-	closing         bool
-	reserved        int
-	connections     map[*websocket.Conn]context.CancelFunc
-	terminalViewers map[string]*websocket.Conn
-	active          sync.WaitGroup
-	drained         chan struct{}
-	drainErr        error
+	history      HistoryReader
+	service      serviceCalls
+	auth         *authhttp.RequestAuthentication
+	logger       *slog.Logger
+	instance     string
+	pingInterval time.Duration
+	mutex        sync.Mutex
+	closing      bool
+	reserved     int
+	connections  map[*websocket.Conn]context.CancelFunc
+	active       sync.WaitGroup
+	drained      chan struct{}
+	drainErr     error
 }
 
 func NewRoutes(s *sessionservice.Service, auth *authhttp.Authentication, logger *slog.Logger, history ...HistoryReader) *Routes {

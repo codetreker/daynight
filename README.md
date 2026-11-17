@@ -255,14 +255,15 @@ The Worker runs in the foreground with one execution slot by default and stores
 state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). Each
 workspace shows its task title and stable ownership suffix. Ctrl+C cancels and
 joins Worker jobs and stops owned Web execution while preserving claims,
-worktrees, native history and unfinished local rows. Unconfirmed stopping retains
+worktrees, native history and unfinished local rows. It sends no cleanup prompt
+and does not wait for a cleanup turn. Unconfirmed stopping retains
 responsibility and blocks replacement; external temporary resources may remain.
 
 Web retains its original execution evidence and recovery pause across restarts.
 An exhausted or paused Web execution keeps its claim and slot, reports waiting,
 and requires explicit retry with the original native identity and complete stop
-proof. Legacy Herdr runtime code and manual commands remain in the repository;
-their presence does not establish automatic handling of historical Herdr claims
+proof. Legacy Herdr runtime code remains in the repository;
+its presence does not establish automatic handling of historical Herdr claims
 or resources. Those resources remain the user's responsibility. See the
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 for the current configuration and recovery boundaries.

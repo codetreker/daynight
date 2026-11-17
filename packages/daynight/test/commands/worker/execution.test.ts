@@ -452,7 +452,7 @@ describe("execution from current Herdr resources", () => {
     git(repo, "remote", "add", "origin", f.input.project.repoUrl);
     git(repo, "config", `url.${path.join(root, "origin.git")}.insteadOf`, f.input.project.repoUrl);
     if (sessionId !== null) git(repo, "branch", `daynight/${f.input.owner.taskId}`);
-    const sources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    const sources = { listSchedules: () => [], listWebTasks: () => [] };
     const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-temp"), prepareFormat: async (_project, repository, operation) => { await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources }); } });
     const operation = createOperation();
     try {
@@ -475,7 +475,7 @@ describe("execution from current Herdr resources", () => {
     git(root, "clone", "--bare", repo, "origin.git");
     git(repo, "remote", "add", "origin", f.input.project.repoUrl);
     git(repo, "config", `url.${path.join(root, "origin.git")}.insteadOf`, f.input.project.repoUrl);
-    const sources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    const sources = { listSchedules: () => [], listWebTasks: () => [] };
     const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-temp"), prepareFormat: async (_project, repository, operation) => { await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources }); } });
     const operation = createOperation();
     try {
@@ -897,7 +897,7 @@ describe("execution from current Herdr resources", () => {
     await f.driver.advance(f.input);
     await f.driver.advance(f.input);
     expect(f.events.map((event) => event.kind)).toEqual(["waiting"]);
-    expect(f.events[0]!.message).toContain("daynight worker attach");
+    expect(f.events[0]!.message).toBe("The native agent is waiting for input.");
 
     current.agent_status = "working";
     await f.driver.advance(f.input);
@@ -1008,7 +1008,7 @@ describe("execution from current Herdr resources", () => {
     await f.driver.advance(f.input);
     expect(f.events.map((event) => event.kind)).toEqual(["waiting"]);
     expect(f.events[0]!.message).toContain("The first managed input");
-    expect(f.events[0]!.message).toContain("daynight worker attach");
+    expect(f.events[0]!.message).toBe("The first managed input is waiting in this worker process.");
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(0);
 
     f.agents[0]!.agent_status = "idle";

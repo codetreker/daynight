@@ -3,8 +3,8 @@
 ## 范围与消费方
 
 Session v2 为受管 Herdr 执行提供独立完整画面、终端控制、运行代次账本、
-最终封存和不可变历史文件的共同交换契约。Worker、服务端和浏览器必须消费相同
-类型和正反例。终端画面不具备消息、turn、结构化审批或 `provider_accepted`
+最终封存和不可变历史文件的共同交换契约。Worker 与服务端使用共同类型和正反例；
+Web 仅读取已上传的历史录像。终端画面不具备消息、turn、结构化审批或 `provider_accepted`
 语义；`native_timeline` 保留现有 Web Session 语义。
 
 本规范约束交换值及其生产和消费责任。契约库不负责注册授权、持久化、租约计时、
@@ -23,7 +23,7 @@ subprotocol。未选择时采用 `daynight.session.v1`；显式未知值必须�
 |---|---|
 | 旧 Web/CLI 与新服务端 | v1 Web 行为、字段和历史读取保持不变；未选择 v2 的 Herdr 查询维持 `not_applicable` |
 | 新 Web 与旧服务端或 Worker | Web 保持 v1；Herdr 显示不可用原因，不尝试宽松解析或按名称输入 |
-| v2 服务端、Worker、Web | 独立检查观察、控制和归档能力；原生严格 attach 支持验证通过才能开放控制 |
+| v2 服务端、Worker、Web | 保留历史与归档读取；浏览器控制入口拒绝，Worker 协议仍独立检查能力 |
 | 未知 `contentKind` | 返回 `unsupported_content_kind`，不解释为普通聊天消息 |
 | v1 历史文件 | 使用原 schema、hash、权限读取，不原地升级或追加 v2 字段 |
 | v2 terminal 文件 | 支持 `terminal_recording` 和完整性字段的 reader 才能读取 |
@@ -84,17 +84,12 @@ complete，也不能伪造一个不存在的采集段。
 
 ## 控制与输入
 
-页面默认只读；所有当前具有项目访问权的成员可查看，只有持久 Session owner
-可以提交人工输入、取得或维护控制租约、处置初始提交和恢复自动执行。其他项目
-管理员、普通成员与 Team 继承读者不能交互。owner 身份不能由项目角色、当前
-Task assignee 或 browserClientId 替代；服务端在接纳、派发、lease 重检和 ACK
-授租时重新核对原 actor。旧非 owner 操作、租约和迟到 ACK 不得恢复控制。
-查看、刷新、回放或获取 lease 不得 native attach。明确提交
-`paste`/`keys` 才能严格 `AttachTerminal(terminalId)`，等待完整基线和键盘模式，
-再次校验 binding 与当前准入条件，然后发送并 Detach。目标消失不能按名称回退。
-attach 本身可能重应用尺寸或恢复 pending agent，不能承诺无副作用。
-
-终端已有画面在页面隐藏、身份后台检查和恢复连接等待期间保持可读，草稿、同一控制身份的确认及滚动位置不因等待重置，也不插入临时加载或过期行。隐藏或检查期间停止 channel、自动回执查询和 lease 续约，立即禁止输入；恢复读取成功后仍须等待与当前 fence 和控制代次匹配的新鲜 channel 状态才能重新准入。真实断线、权限失败和其他错误继续可见；控制身份或目标实际变化时旧确认失效。未知操作保留原结果，不自动重放。
+Web 对旧 Herdr 会话只提供历史录像阅读。服务端拒绝 v2 浏览器 commands、
+operation 和 channel，不将这些请求转给控制业务；v1 同路径保持原有行为。
+以下规则约束仍保留的 Worker 和服务端内部控制状态，不重新开放浏览器入口。
+只有明确提交的 `paste`/`keys` 才能严格 `AttachTerminal(terminalId)`，等待完整基线和
+键盘模式，再次校验 binding 与当前准入条件，然后发送并 Detach。目标消失不能按名称回退。
+attach 可能重应用尺寸或恢复 pending agent，不能承诺无副作用。
 
 所有 Daynight 输入由 Worker 的同一个持久仲裁器管理，包括初始 assignment、
 continuation、网页输入和 cleanup prompt。`manual` 期间禁止自动输入；普通释放、

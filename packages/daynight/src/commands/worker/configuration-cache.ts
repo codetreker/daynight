@@ -9,7 +9,7 @@ import { transitionConfigurationDesired } from "./configuration-state.js";
 type CacheRead = { readonly cache: WorkerConfigurationCache; readonly migrated: boolean };
 
 export const createConfigurationCache = (identity: WorkerConfigurationIdentity): WorkerConfigurationCache => freezeConfiguration({
-  schemaVersion: 9, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null,
+  schemaVersion: 9, identity: { ...identity }, authority: { generation: randomUUID(), desiredJson: null, applicationRevision: null, observationRevision: "0", pendingApplication: true }, remoteObservation: null,
   nextFailureId: 1, projectionCursor: null, currentItems: [], retainedItems: [],
 });
 export const parseConfigurationCache = (source: unknown, identity: WorkerConfigurationIdentity): CacheRead => {

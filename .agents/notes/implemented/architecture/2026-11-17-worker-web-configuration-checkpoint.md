@@ -21,6 +21,17 @@ service may accept a partial observation and omitted mode evidence remains unkno
 An omitted local mode produces a Web bootstrap candidate; an explicit local
 Herdr candidate is rejected with a correction, without rewriting the file.
 
+GET and report receipts can carry a structurally valid raw target whose known
+field type or value this Worker cannot decode. The complete source and validated
+revision remain authoritative, while the known view is unavailable; this state
+is not null authority and does not trigger a new bootstrap. JSON, envelope,
+timestamp, revision, negotiated capability and observation relation failures
+remain protocol errors. Schema 9 persists `pendingApplication` to distinguish
+unreconciled raw authority, including null or unsupported targets, from a Web
+target whose ledger has been reconciled. The flag does not claim that individual
+side effects succeeded. After restart or recovery from an unsupported target, a
+valid Web target is reconciled even when its values match an earlier target.
+
 Schema 9 distinguishes the Web ledger from deployed schemas 1–8. The frozen
 storage decoder validates the original format before conversion. Migration drops
 mode items and `nativeMode`; only native actual values proven to have used Web

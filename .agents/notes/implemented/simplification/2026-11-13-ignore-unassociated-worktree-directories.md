@@ -11,9 +11,9 @@ each preparation attempt, although the directory supplied no Worker ownership.
 
 ## Decision
 
-Migration collects worktrees from existing resource records, manifests and Worker
-Git registrations. It validates those resources without enumerating unrelated
-namespace directories. Unassociated directories remain untouched and do not
+Migration validates Web-recorded worktrees without enumerating unrelated
+namespace directories. The [Web responsibility decision](../architecture/2026-11-17-web-worktree-migration.md)
+limits which records may establish a migration candidate. Unassociated directories remain untouched and do not
 block preparation, regardless of their names or contents.
 
 This narrows the namespace checks introduced by the
