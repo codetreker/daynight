@@ -12,11 +12,16 @@ scope other than the selected sidebar Team.
 ## Decision
 
 The sidebar groups the current Team or Personal space, My, and Tools in one
-scrolling navigation. A type label distinguishes the selected scope, and project
-lists use the neutral Projects title with the confirmed scope separately. Direct
-Project breadcrumbs do not infer ownership from the sidebar. Account and tool
+scrolling navigation. Project lists use the neutral Projects title with the
+confirmed scope separately. Direct Project breadcrumbs do not infer ownership
+from the sidebar. Account and tool
 entries retain their own resource scopes; Webhooks keeps its independent owner
 selection and catalog gate.
+
+The original design used a visible type label to distinguish the selected scope.
+The [single-line selector decision](../simplification/2026-11-17-single-line-team-selector.md)
+replaces that label while retaining the known type in the accessible name and
+title.
 
 `WorkspaceSidebar` owns layout and drawer lifecycle, `WorkspaceNavigation`
 composes the fixed routes and derives their active state, and
