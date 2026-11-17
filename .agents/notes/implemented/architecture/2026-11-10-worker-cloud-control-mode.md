@@ -13,29 +13,22 @@ valid under the other mode.
 
 ## Decision
 
-The Worker configuration resource retains the negotiated global
-`agentControlMode` wire and nullable adoption state. The original implementation
-defaulted a new local candidate to Herdr and validated mode with native settings;
-the [Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md) replaces those Worker application semantics
-with Web-only qualification, without changing the existing service contract.
-`Daynight-Worker-Control-Mode: 1` is independent of configuration protocol versions
-1 and 2. A response must echo the capability before a client exchanges the new
-fields. Old responses omit the mode and its observation item. An old full PUT
-preserves the current mode inside the existing row lock and target CAS. A
-separate bootstrap candidate can fill an unadopted mode without replacing any
-other cloud setting. A previously saved non-null choice wins over late candidates.
+The original Worker configuration resource negotiated a global
+`agentControlMode` wire and nullable adoption state. `Daynight-Worker-Control-Mode: 1`
+was independent of configuration protocol versions 1 and 2. Old full PUTs
+preserved the current mode inside the row lock and target CAS; a bootstrap
+candidate filled an unadopted mode without replacing another cloud setting.
 
-Persisted observation items remain readable by the pre-capability service. The
-mode item and its original index occupy a private `controlModeObservation` slot
-in the existing JSONB; new readers reconstruct the public item list, while old
-struct decoders ignore the extension. One protocol codec owns both persistence
-and the stored-byte budget. An old service replacing the observation discards
-that extension; after upgrade its absence means no current mode evidence, not
-permission to revive a stale applied result.
+The mode item and its original index occupied a private `controlModeObservation`
+slot in JSONB, keeping older struct decoders from exposing an unknown item. An
+older service replacing an observation discarded that extension, so its absence
+could not revive stale evidence. The [two-tool protocol decision](2026-11-17-worker-two-tool-protocol.md)
+replaces the public mode configuration and adoption; the service retains the
+historical slot decoder to preserve stored observations and archive positions.
 
 The [tool-path configuration decision](2026-11-11-worker-tool-path-configuration.md)
-extends independent negotiation and locked adoption to each tool, and adds
-selection-aware inputs to native qualification without replacing mode evidence.
+originally extended independent negotiation and locked adoption to each tool,
+and added selection-aware inputs to native qualification alongside mode evidence.
 
 The original grouped mode and native application prevented a new mode from
 being published with arguments validated for another mode. It validated mode and
@@ -65,7 +58,7 @@ the original reasons remain relevant to understanding mode-bearing checkpoints.
 This decision partially supersedes the local mode ownership in the archived
 [cloud application decision](../../archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md).
 Keeping mode local originally avoided changing its strict wire representation
-and launch-validation boundary. Cloud ownership now requires explicit rollout
+and launch-validation boundary. Cloud ownership originally required explicit rollout
 negotiation, adoption and grouped validation; the earlier rationale remains
 useful for understanding those costs. The [configuration contract](../../../../docs/spec/daynight-worker-configuration.md)
 and [Worker design](../../../../docs/design/daynight-worker.md#配置与目录)
@@ -102,12 +95,11 @@ mode to prevent a similar admission gap.
 
 ## Consequences
 
-The service still accepts the negotiated field and preserves existing stored
-observations. The current Worker applies only adopted Web and does not create
-a mode observation; omitted evidence remains unknown in form feedback.
+The service rejects the retired capability and preserves existing stored
+observations for historical decoding. New Workers do not report mode evidence.
 
-The rollout adds a capability distinction, an unadopted target state and a cache
-migration. Tests must preserve old strict envelopes, concurrent adoption, failure
-retention, mode-specific native qualification and frozen claim continuity.
+The original rollout added a capability distinction, an unadopted target state
+and a cache migration. Historical observations and frozen claim continuity remain
+separate from the retired configuration behavior.
 Service or component tests cannot establish actual Worker side effects; isolated
 Worker execution and browser observations retain their separate evidence scope.

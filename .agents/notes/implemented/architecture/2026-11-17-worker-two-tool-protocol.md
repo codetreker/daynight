@@ -17,10 +17,14 @@ and the archive capability retain their separate responsibilities. List, Task
 and historical reads do not gain this gate. Old raw targets remain visible and
 unsupported; an explicit complete replacement removes old mode and tool fields.
 The archive column is projected independently and sudo retains its existing
-semantics. The Worker does not report a mode bootstrap or observation.
+semantics. The service no longer adopts, validates or writes mode configuration
+or observations. Its historical observation decoder restores mode before the
+archive slot to preserve the original item positions; public projections omit
+the mode item. The Worker does not report a mode bootstrap or observation.
 
 This partially supersedes the [negotiated configuration decision](2026-11-11-worker-tool-path-configuration.md)
 and the [Web editing decision](../feature/2026-11-12-worker-tool-path-web.md).
+It also replaces the configuration behavior in the [cloud mode decision](2026-11-10-worker-cloud-control-mode.md).
 
 ## Alternatives
 

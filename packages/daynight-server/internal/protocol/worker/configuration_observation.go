@@ -12,7 +12,6 @@ import (
 
 type storedConfigurationObservation struct {
 	model.WorkerConfigurationReportedObservationWire
-	ControlModeObservation     *storedConfigurationItemSlot `json:"controlModeObservation,omitempty"`
 	ArchiveSessionsObservation *storedConfigurationItemSlot `json:"archiveSessionsObservation,omitempty"`
 }
 
@@ -30,12 +29,7 @@ func EncodeObservation(w io.Writer, value model.WorkerConfigurationReportedObser
 	for index, item := range value.Items {
 		switch item.Key.Kind {
 		case "agentControlMode":
-			if stored.ControlModeObservation != nil {
-				return 0, fmt.Errorf("duplicate stored worker control mode observation")
-			}
-			// The old decoder ignores the archive slot; its index refers to that
-			// projection, not the original sequence containing archive evidence.
-			stored.ControlModeObservation = &storedConfigurationItemSlot{Index: len(stored.Items), Item: item}
+			return 0, fmt.Errorf("worker control mode observations are no longer supported")
 		case "archiveSessions":
 			if stored.ArchiveSessionsObservation != nil {
 				return 0, fmt.Errorf("duplicate stored worker archive sessions observation")
@@ -89,6 +83,8 @@ func DecodeStoredObservation(encoded []byte) (*model.WorkerConfigurationReported
 		value.Items = slices.Insert(value.Items, *slot.Index, *slot.Item)
 		return nil
 	}
+	// Historical mode indices exclude the archive slot; restore mode first so
+	// that the archive index still addresses the original observation.
 	if err := insertSlot(stored.ControlModeObservation, "agentControlMode"); err != nil {
 		return nil, err
 	}

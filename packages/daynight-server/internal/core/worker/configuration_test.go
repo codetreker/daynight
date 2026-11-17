@@ -864,9 +864,8 @@ func TestRawStoredReportAndBootstrapPreserveUnknownFields(t *testing.T) {
 	if err != nil || d.desiredWrites != 0 || !receipt.ObservationAccepted {
 		t.Fatalf("report changed desired or failed: %+v %d %v", receipt, d.desiredWrites, err)
 	}
-	web := model.AgentControlModeWeb
 	choice := &model.ToolPathChoice{Kind: "auto"}
-	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{ControlModeBootstrap: &web, ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice}})
+	receipt, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice}})
 	if err != nil || receipt.Desired.Revision != "8" || d.desiredWrites != 1 || d.rawArchive {
 		t.Fatalf("bootstrap: %+v %d %v %v", receipt, d.desiredWrites, d.rawArchive, err)
 	}
@@ -874,11 +873,11 @@ func TestRawStoredReportAndBootstrapPreserveUnknownFields(t *testing.T) {
 	if err := json.Unmarshal(d.rawWritten, &written); err != nil {
 		t.Fatal(err)
 	}
-	if string(written["future"]) != string(fields["future"]) || string(written["maxConcurrent"]) != `"unknown"` || string(written["agentControlMode"]) != `"web"` {
+	if string(written["future"]) != string(fields["future"]) || string(written["maxConcurrent"]) != `"unknown"` {
 		t.Fatalf("bootstrap changed unrelated facts: %s", d.rawWritten)
 	}
 	d.current.Desired = receipt.Desired
-	_, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{ControlModeBootstrap: &web, ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice}})
+	_, err = ExchangeConfiguration(ctx, d, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &model.WorkerToolPaths{Codex: choice}})
 	if err != nil || d.desiredWrites != 1 {
 		t.Fatalf("repeated bootstrap wrote again: %d %v", d.desiredWrites, err)
 	}
@@ -894,7 +893,6 @@ func TestLegacyPutPreservesUnsupportedHiddenFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	fields["agentControlMode"] = json.RawMessage(`{"future":"mode"}`)
 	fields["toolPaths"] = json.RawMessage(`{"codex":{"kind":"auto","future":true},"unknown":42}`)
 	fields["enableSudoCleanup"] = json.RawMessage(`{"future":true}`)
 	raw, err = json.Marshal(fields)
@@ -906,7 +904,6 @@ func TestLegacyPutPreservesUnsupportedHiddenFields(t *testing.T) {
 	d.current.Desired.Raw = raw
 	d.current.Desired.ArchiveSessions = &archive
 	value.ArchiveSessions = nil
-	value.PreserveAgentControlMode = true
 	value.PreserveToolPaths = true
 	value.PreserveSudoCleanup = true
 	value.PreserveArchiveSessions = true
@@ -923,7 +920,7 @@ func TestLegacyPutPreservesUnsupportedHiddenFields(t *testing.T) {
 	if err := json.Unmarshal(d.rawWritten, &saved); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"agentControlMode", "toolPaths", "enableSudoCleanup"} {
+	for _, key := range []string{"toolPaths", "enableSudoCleanup"} {
 		if string(saved[key]) != string(fields[key]) {
 			t.Fatalf("lost hidden %s: %s", key, d.rawWritten)
 		}

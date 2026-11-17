@@ -169,7 +169,7 @@ func TestWorkerToolPathsHTTPDetailAndPut(t *testing.T) {
 	calls := 0
 	f.operations.put = func(ctx context.Context, p model.Principal, id, revision string, input model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
 		calls++
-		if ctx != f.requestContext || p != f.handler.principal || id != f.worker || revision != "7" || input.PreserveToolPaths || input.PreserveAgentControlMode || input.ToolPaths.Codex == nil || input.ToolPaths.Codex.Path != "/cloud/codex" {
+		if ctx != f.requestContext || p != f.handler.principal || id != f.worker || revision != "7" || input.PreserveToolPaths || input.ToolPaths.Codex == nil || input.ToolPaths.Codex.Path != "/cloud/codex" {
 			t.Fatalf("PUT propagation: %+v", input)
 		}
 		return model.WorkerConfigurationResource{}, &model.Fault{Code: "version_conflict", Message: "Worker configuration revision does not match."}

@@ -22,9 +22,11 @@ func TestArchiveObservationLegacyReplacementDoesNotReviveEvidence(t *testing.T) 
 	mode := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "agentControlMode"}, TargetRevision: "7", AppliedValue: json.RawMessage(`"web"`), State: "applied"}
 	basic := model.WorkerConfigurationItem{Key: model.WorkerConfigurationItemKey{Kind: "maxConcurrent"}, TargetRevision: "7", AppliedValue: json.RawMessage(`3`), State: "applied"}
 	observation := model.WorkerConfigurationObservation{BaseRevision: "0", DesiredRevision: "7", Items: []model.WorkerConfigurationItem{archive, mode, basic}}
-	if err := testutil.WriteWorker(database, ctx, func(scope WorkerScope) error {
-		return scope.WorkerDAO().SetWorkerConfigurationObservation(ctx, user, worker, 1, observation)
-	}); err != nil {
+	legacyBytes, err := json.Marshal(map[string]any{"baseRevision": "0", "desiredRevision": "7", "items": []model.WorkerConfigurationItem{basic}, "reportedAt": time.Now().UTC(), "controlModeObservation": map[string]any{"index": 0, "item": mode}, "archiveSessionsObservation": map[string]any{"index": 0, "item": archive}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET configuration_observation_revision=1,configuration_observation=$3 WHERE user_id=$1 AND worker_id=$2`, user, worker, legacyBytes); err != nil {
 		t.Fatal(err)
 	}
 	read := func() model.WorkerConfigurationResource {

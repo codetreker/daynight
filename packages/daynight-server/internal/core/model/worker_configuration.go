@@ -17,13 +17,10 @@ type WorkerProjectConfiguration struct {
 }
 
 type WorkerConfiguration struct {
-	ArchiveSessions         *bool                   `json:"-"`
-	PreserveArchiveSessions bool                    `json:"-"`
-	AgentControlMode        *WorkerAgentControlMode `json:"agentControlMode,omitempty"`
-	ToolPaths               WorkerToolPaths         `json:"toolPaths"`
-	PreserveToolPaths       bool                    `json:"-"`
-	// Legacy replacements retain the locked cloud mode without synthesizing a default.
-	PreserveAgentControlMode    bool                         `json:"-"`
+	ArchiveSessions             *bool                        `json:"-"`
+	PreserveArchiveSessions     bool                         `json:"-"`
+	ToolPaths                   WorkerToolPaths              `json:"toolPaths"`
+	PreserveToolPaths           bool                         `json:"-"`
 	PreserveSudoCleanup         bool                         `json:"-"`
 	EnableSudoCleanup           bool                         `json:"enableSudoCleanup"`
 	PreferPlatformSpecificTasks bool                         `json:"preferPlatformSpecificTasks"`
@@ -79,10 +76,9 @@ type WorkerConfigurationReportedObservation struct {
 }
 
 type WorkerConfigurationExchange struct {
-	ToolPathsBootstrap   *WorkerToolPaths                `json:"toolPathsBootstrap,omitempty"`
-	ControlModeBootstrap *WorkerAgentControlMode         `json:"controlModeBootstrap,omitempty"`
-	Bootstrap            *WorkerConfiguration            `json:"bootstrap"`
-	Observation          *WorkerConfigurationObservation `json:"observation"`
+	ToolPathsBootstrap *WorkerToolPaths                `json:"toolPathsBootstrap,omitempty"`
+	Bootstrap          *WorkerConfiguration            `json:"bootstrap"`
+	Observation        *WorkerConfigurationObservation `json:"observation"`
 }
 
 type WorkerConfigurationResource struct {

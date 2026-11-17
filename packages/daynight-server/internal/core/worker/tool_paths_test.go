@@ -48,8 +48,8 @@ func TestToolPathsTelemetryRetainsObservation(t *testing.T) {
 	}
 }
 
-func TestToolPathsBootstrapCombinesModeIntoOneWrite(t *testing.T) {
-	document := map[string]any{"bootstrap": configurationInputDocument(), "observation": nil, "controlModeBootstrap": "web", "toolPathsBootstrap": map[string]any{"codex": map[string]any{"kind": "path", "path": "/opt/codex"}, "copilot": map[string]any{"kind": "auto"}, "herdr": map[string]any{"kind": "auto"}}}
+func TestToolPathsBootstrapPersistsOneWrite(t *testing.T) {
+	document := map[string]any{"bootstrap": configurationInputDocument(), "observation": nil, "toolPathsBootstrap": map[string]any{"codex": map[string]any{"kind": "path", "path": "/opt/codex"}, "copilot": map[string]any{"kind": "auto"}, "herdr": map[string]any{"kind": "auto"}}}
 	exchange, err := ParseWorkerConfigurationExchange(configurationInputJSON(t, document))
 	if err != nil {
 		t.Fatalf("tool bootstrap rejected: %v", err)
@@ -68,15 +68,13 @@ func TestToolPathsIndependentAdoptionAndLegacyCAS(t *testing.T) {
 	bootstrap := model.WorkerToolPaths{Codex: path("/local/codex"), Copilot: path(`C:\Tools\copilot.exe`), Herdr: auto}
 	dao := configuredDAO("7")
 	dao.current.Desired.Value.ToolPaths.Codex = path("/cloud/codex")
-	web := model.AgentControlModeWeb
-	receipt, err := ExchangeConfiguration(ctx, dao, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &bootstrap, ControlModeBootstrap: &web})
-	if err != nil || receipt.Desired.Revision != "8" || dao.desiredWrites != 1 || *receipt.Desired.Value.ToolPaths.Codex != *path("/cloud/codex") || *receipt.Desired.Value.ToolPaths.Copilot != *bootstrap.Copilot || receipt.Desired.Value.AgentControlMode == nil {
+	receipt, err := ExchangeConfiguration(ctx, dao, principal, "worker", model.WorkerConfigurationExchange{ToolPathsBootstrap: &bootstrap})
+	if err != nil || receipt.Desired.Revision != "8" || dao.desiredWrites != 1 || *receipt.Desired.Value.ToolPaths.Codex != *path("/cloud/codex") || *receipt.Desired.Value.ToolPaths.Copilot != *bootstrap.Copilot {
 		t.Fatalf("independent adoption: %+v %v writes=%d", receipt, err, dao.desiredWrites)
 	}
 	dao.current.Desired = receipt.Desired
 	value := configurationFixture()
 	value.PreserveToolPaths = true
-	value.PreserveAgentControlMode = true
 	_, err = PutConfiguration(ctx, dao, principal, "worker", 7, value)
 	requireFault(t, err, "version_conflict")
 	result, err := PutConfiguration(ctx, dao, principal, "worker", 8, value)

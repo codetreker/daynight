@@ -108,7 +108,7 @@ func TestWorkerControlModeHTTPRefusesWrites(t *testing.T) {
 	calls := 0
 	f.operations.put = func(_ context.Context, _ model.Principal, _ string, _ string, input model.WorkerConfiguration) (model.WorkerConfigurationResource, error) {
 		calls++
-		if input.PreserveAgentControlMode || input.PreserveToolPaths {
+		if input.PreserveToolPaths {
 			t.Fatalf("replacement preserves removed fields: %+v", input)
 		}
 		return model.WorkerConfigurationResource{ObservationRevision: "0"}, nil
@@ -124,14 +124,22 @@ func TestWorkerControlModeHTTPRefusesWrites(t *testing.T) {
 	if response.Code != 400 || calls != 1 {
 		t.Fatalf("mode accepted: %d %s", response.Code, response.Body)
 	}
-	response = controlModeRequest(t, f, "GET", "/configuration", "", http.Header{controlModeHeader: {"1"}})
-	if response.Code != 400 {
-		t.Fatalf("legacy mode protocol accepted: %d", response.Code)
-	}
 	report := configurationHTTPReportBody(nil, nil)
 	report["configuration"].(map[string]any)["controlModeBootstrap"] = "web"
 	response = controlModeRequest(t, f, "POST", "/report", jsonBody(t, report), http.Header{workerConfigurationHeader: {"1"}})
 	if response.Code != 400 {
 		t.Fatalf("mode bootstrap accepted: %d", response.Code)
+	}
+}
+
+func TestWorkerRejectsRetiredControlModeHeader(t *testing.T) {
+	for _, endpoint := range []struct{ method, suffix string }{{"GET", ""}, {"GET", "/configuration"}, {"PUT", "/configuration"}, {"POST", "/report"}} {
+		for _, values := range [][]string{{"1"}, {""}, {"2"}, {"1", "1"}} {
+			f := newCapacityReportOperationFixture(t, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+			response := controlModeRequest(t, f, endpoint.method, endpoint.suffix, `{}`, http.Header{controlModeHeader: values})
+			if response.Code != 400 || !strings.Contains(response.Body.String(), "upgrade") || response.Header().Get(controlModeHeader) != "" {
+				t.Fatalf("%s %s header %v: %d %s", endpoint.method, endpoint.suffix, values, response.Code, response.Body)
+			}
+		}
 	}
 }
