@@ -82,7 +82,10 @@ completion, and Web reload. A second Task is claimed, registered, released and
 claimed again through the real service; CLI reads both Session identities and the
 Web shows the retained history without the old current claim. These API registrations
 do not start a Worker process. A registered Worker's monitoring read returns an
-absent observation through the real Redis-backed Server. The same resource IDs and content cross the clients
+absent observation through the real Redis-backed Server. Separately, a real
+compiled Worker with no selected Projects reports to that Server and Redis; the
+production Web reads the same Worker's observation, capacity and timestamps.
+The journey starts no native agent and does not replace normal tool preflight. The same resource IDs and content cross the clients
 and persist in the real database.
 
 The same authenticated journey launches the compiled CLI's public Test Session

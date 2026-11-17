@@ -10,8 +10,8 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { validateServerToken, validateTokenTransport } from "../../config/server-token.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import type { ProjectIdentity } from "./types.js";
-import type { MonitoringRead, MonitoringReceipt } from "../../api/worker-monitoring.js";
-import type { Observation } from "./monitoring/types.js";
+import type { DirectReceipt } from "../../api/worker-monitoring.js";
+import type { DirectObservation } from "./monitoring/types.js";
 
 export type WorkerInventory = {
   readonly tasks: readonly Task[];
@@ -26,8 +26,7 @@ export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
   report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
-  readMonitoring(workerId: string, operation: Operation, requestId: string): Promise<MonitoringRead>;
-  writeMonitoring(workerId: string, expectedRevision: string | null, observation: Observation, operation: Operation, requestId: string): Promise<MonitoringReceipt>;
+  writeMonitoring(workerId: string, observation: DirectObservation, operation: Operation, requestId: string): Promise<DirectReceipt>;
   configuration(workerId: string, signal: AbortSignal, operation?: Operation): Promise<WorkerCloudResource>;
   reportConfiguration(workerId: string, report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
@@ -102,13 +101,9 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       operation.check();
       return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
-    readMonitoring: (workerId, operation, requestId) => {
+    writeMonitoring: (workerId, observation, operation, requestId) => {
       operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).readWorkerMonitoring(workerId, requestId);
-    },
-    writeMonitoring: (workerId, revision, observation, operation, requestId) => {
-      operation.check();
-      return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, revision, observation, requestId);
+      return createApiClient({ workerControlMode, workerToolPaths, serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).writeWorkerMonitoring(workerId, observation, requestId);
     },
     configuration: (workerId, signal, operation) => operation === undefined
       ? request(signal, api => api.getWorkerConfiguration(workerId))

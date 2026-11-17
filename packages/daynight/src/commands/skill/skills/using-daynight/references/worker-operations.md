@@ -6,6 +6,10 @@ status are separate; an active claim identifies execution, not extra authority.
 Determine assignment from the Task, Worker, claim, worktree and original runtime,
 not status or directory alone.
 
+Current execution monitoring uses direct POST with fresh observations; it does not
+read or replay an earlier snapshot. Deploy a compatible Server before upgrading a
+Worker. A monitoring failure does not establish that execution or cleanup stopped.
+
 ## Tool path configuration
 
 Worker-level choices cover `codex`, `copilot` and `herdr`; they do not configure

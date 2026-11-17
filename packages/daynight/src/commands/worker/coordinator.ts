@@ -205,7 +205,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const current = ending.get(key(owner)), index = publishedReservations.findIndex(item => item.identity === key(owner));
     if (!current || !hasWorktreeIdentity(current) || current.worktreeId !== owner.worktreeId || index < 0) return;
     observe(m => {
-      const snapshot = m.capture("0"), capacity = snapshot.capacity;
+      const snapshot = m.capture(), capacity = snapshot.capacity;
       if (capacity === null || capacity.quality !== "current") return;
       publishedReservations[index] = { ...publishedReservations[index]!, occupied: false };
       m.setCapacity({ limit: capacity.limit, occupied: publishedReservations.filter(item => item.occupied).length, observedAt: capacity.observedAt,

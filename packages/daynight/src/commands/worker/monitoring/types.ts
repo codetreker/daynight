@@ -18,10 +18,10 @@ export type FailureComponent = "runtime" | "scheduler" | "configuration" | "inve
 export type FailureWorktree = { kind: "project-relative"; path: string } | { kind: "unavailable"; reason: "different-volume" | "invalid-path" | "limit-exceeded" };
 export type Failure = { worktree?: FailureWorktree; operationId: string; component: FailureComponent; phase: string; scope: Scope; error: StructuredCause; firstObservedAt: string; lastObservedAt: string; occurrencesInRun: number; retryState: RetryState; nextAttemptAt: string | null };
 export type RecoverySummary = { operationId: string; component: FailureComponent; scope: Scope; observedAt: string; explanation: "The operation recovered."; explanationTruncated: false };
-export type DeliveryPhase = "read" | "write" | "reconcile" | "shutdown";
+export type DeliveryPhase = "write" | "shutdown";
 export type DeliveryFailure = { observedAt: string; phase: DeliveryPhase; error: StructuredCause; requestId: string | null };
-export type Observation = {
-  runId: string; sequence: string; capturedAt: string; lifecycle: "starting" | "running" | "stopping" | "stopped";
+export type DirectObservation = {
+  capturedAt: string; lifecycle: "starting" | "running" | "stopping" | "stopped";
   scheduler: { phase: SchedulerPhase; coverage: Coverage; cycleId: string | null; lastCompletedAt: string | null; lastSuccessfulAt: string | null; lastOutcome: "completed" | "failed" | "cancelled" | null; nextPollAt: string | null };
   capacity: { observedAt: string; quality: "current" | "stale"; limit: number; occupied: number; available: number; breakdown?: { active: number; retained: number }; detailCoverage: DetailCoverage } | null;
   admission: { observedAt: string; coverage: Coverage; reasons: readonly AdmissionReason[] };

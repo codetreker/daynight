@@ -25,8 +25,9 @@ protocol, budgets and deployment constraints.
 This changes the universal ordering premise of the [storage decision](../architecture/2026-11-09-worker-current-monitoring.md)
 while retaining its isolation, single-frame storage and legacy CAS guarantees.
 The [capture decision](../architecture/2026-11-09-worker-monitoring-capture.md)
-records the existing producer lifecycle; the Server capability does not itself
-change deployed producers.
+records the producer lifecycle. New CLI Workers capture fresh observations for
+direct POST without reading or reconciling old snapshots; existing running
+Workers retain their original protocol until upgraded.
 
 ## Alternatives
 

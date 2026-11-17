@@ -335,7 +335,7 @@ export const runWorker = async (options: {
     const { serverUrl, serverToken } = local;
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     lock = await acquireWorkerInstanceLock(paths);
-    monitoring = createMonitoringObserver({ onDirty: () => monitoringSender?.markDirty() });
+    monitoring = createMonitoringObserver();
     signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
@@ -356,9 +356,8 @@ export const runWorker = async (options: {
     };
     const userId = await verifyWorkerPrincipal(() => remote.currentUserId(signal), signal, configurationDiagnostics.exchange);
     const observer = monitoring;
-    monitoringSender = createMonitoringSender({ runId: observer.runId, capture: observer.capture,
-      read: (operation, requestId) => remote.readMonitoring(workerId, operation, requestId),
-      write: (revision, observation, operation, requestId) => remote.writeMonitoring(workerId, revision, observation, operation, requestId),
+    monitoringSender = createMonitoringSender({ capture: observer.capture,
+      write: (observation, operation, requestId) => remote.writeMonitoring(workerId, observation, operation, requestId),
       deliverySuccess: observer.deliverySuccess, deliveryFailure: observer.deliveryFailure, emit });
     observeMonitoring(m => m.setPhase("configuration"));
     const currentPromptSource = createWorkerPromptSource({ serverOrigin: serverUrl, userId, workerId });
@@ -969,8 +968,6 @@ export const runWorker = async (options: {
     }
     await botRun;
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
-    observeMonitoring(m => { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); });
-    try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
     try { await bots?.close(); } catch (error) { failures.push(error); }
     try { await web?.jobLeases.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
@@ -979,6 +976,8 @@ export const runWorker = async (options: {
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
+    observeMonitoring(m => { m.clearActivities(); m.setLifecycle("stopped"); m.setPhase("stopped"); });
+    try { await monitoringSender?.finish(); } catch { /* Monitoring delivery does not change shutdown. */ }
     try { await diagnostics?.close(); } catch (error) { failures.push(error); }
     failures.push(...configurationDiagnostics?.errors() ?? []);
     try { await lock?.release(); } catch (error) { failures.push(error); }

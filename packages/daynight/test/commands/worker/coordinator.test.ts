@@ -2074,18 +2074,18 @@ describe("minimal worker resource reconciliation", () => {
     const monitor = createMonitoringObserver(), coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
     try {
       await coordinator.tick();
-      const failure = monitor.capture("1").currentFailures.find(item => item.error.code === "ownership-unconfirmed")!;
+      const failure = monitor.capture().currentFailures.find(item => item.error.code === "ownership-unconfirmed")!;
       expect(failure.scope).toEqual({ kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId });
       const scan = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
       vi.mocked(f.git.listWorktrees).mockRejectedValueOnce(new Error("Repository unavailable"));
       f.worktrees.clear();
       await coordinator.tick();
-      expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
-      expect(monitor.capture("2").capacity).toMatchObject({ quality: "stale", occupied: 1 });
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
+      expect(monitor.capture().capacity).toMatchObject({ quality: "stale", occupied: 1 });
       vi.mocked(f.git.listWorktrees).mockImplementation(scan);
       await coordinator.tick();
-      expect(monitor.capture("3").currentFailures).toEqual([]);
-      expect(monitor.capture("3").capacity).toMatchObject({ occupied: 0, breakdown: { active: 0, retained: 0 } });
+      expect(monitor.capture().currentFailures).toEqual([]);
+      expect(monitor.capture().capacity).toMatchObject({ occupied: 0, breakdown: { active: 0, retained: 0 } });
       expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
     } finally { await coordinator.shutdown(); }
   });
@@ -2751,12 +2751,12 @@ it("routes Web claims without Herdr, freezes launch settings, and keeps interact
     expect(row).toMatchObject({ agentControlMode: "web", sessionId: uuid(880) });
     expect(f.herdr.ensureInstance).not.toHaveBeenCalled(); expect(f.tasks.listResources).not.toHaveBeenCalled();
     expect(vi.mocked(f.remote.update).mock.calls[0]![1]).toEqual({ phase: "executing", nativeSessionId: uuid(880), herdr: null });
-    expect(monitor.capture("1").activities).toEqual([expect.objectContaining({ kind: "execution", phase: "waiting", status: "waiting", waitReason: "native-input" })]);
+    expect(monitor.capture().activities).toEqual([expect.objectContaining({ kind: "execution", phase: "waiting", status: "waiting", waitReason: "native-input" })]);
     controllerActivity = "working";
     webConfiguration.model = "changed-model";
     Object.assign(webConfiguration, { agentControlMode: "herdr", args: ["--search"] });
     await coordinator.tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(2));
-    await eventually(() => expect(monitor.capture("2").activities).toEqual([expect.objectContaining({ kind: "execution", phase: "executing", status: "running", waitReason: null })]));
+    await eventually(() => expect(monitor.capture().activities).toEqual([expect.objectContaining({ kind: "execution", phase: "executing", status: "running", waitReason: null })]));
     expect(webStore.getTask(row)?.configuration?.model).toBe("frozen-model");
     expect(verifyWebUnregistered).toHaveBeenCalledOnce();
   } finally { await coordinator.shutdown(); webStore.close(); }
@@ -2932,8 +2932,8 @@ it("keeps an authorized Web retry waiting until a healthy observation after conf
     const row = f.store.listTasks()[0]!;
     webStore.pauseRecovery(row, "Recovery exhausted.", 6);
     await coordinator.tick();
-    await eventually(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-blocked" }) })));
-    const recovery = monitor.capture("1").currentFailures.find(item => item.error.code === "recovery-blocked")!;
+    await eventually(() => expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-blocked" }) })));
+    const recovery = monitor.capture().currentFailures.find(item => item.error.code === "recovery-blocked")!;
     webStore.beginCleanup(row, { kind: "shutdown", deadline: 9 }, 7);
 
     await coordinator.advanceRetry(row);
@@ -2942,11 +2942,11 @@ it("keeps an authorized Web retry waiting until a healthy observation after conf
     expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)?.phase).toBe("waiting");
     await coordinator.tick();
     await eventually(() => expect(advance.mock.calls.length).toBeGreaterThanOrEqual(3));
-    expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: recovery.operationId }));
+    expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: recovery.operationId }));
     starting = false;
     await coordinator.tick();
     await eventually(() => expect(readWorkerClaim(f.grants.get(row.claimId)!.properties)?.phase).toBe("executing"));
-    await eventually(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: recovery.operationId }));
+    await eventually(() => expect(monitor.capture().lastRecovery).toMatchObject({ operationId: recovery.operationId }));
     expect(webStore.getTask(row)?.recovery.count).toBe(1);
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
@@ -3593,8 +3593,8 @@ describe("worker monitoring of coordinator jobs", () => {
     const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
     try {
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      const failure = monitor.capture("1").currentFailures[0]!;
+      await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      const failure = monitor.capture().currentFailures[0]!;
       const claim = [...f.grants.values()][0]!;
       expect(failure).toMatchObject({ phase: "worktree-preparation", worktree: { kind: "project-relative", path: `.worktrees/daynight/${readWorkerClaim(claim.properties)!.worktreeId}` } });
       expect(JSON.stringify(failure)).not.toContain(f.project.localPath);
@@ -3612,15 +3612,15 @@ describe("worker monitoring of coordinator jobs", () => {
     f.tasks.stopAndClose.mockRejectedValueOnce(new Error("old workspace retained")).mockRejectedValueOnce(new Error("old workspace retained"));
     const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
     try {
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      const failure = monitor.capture("1").currentFailures[0]!;
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      const failure = monitor.capture().currentFailures[0]!;
       expect(failure).toMatchObject({ component: "execution", phase: "observation", occurrencesInRun: 1 });
       await coordinator.tick(); await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledTimes(2));
-      await eventually(() => expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, occurrencesInRun: 2 })));
-      expect(monitor.capture("2").lastRecovery).toBeNull();
+      await eventually(() => expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, occurrencesInRun: 2 })));
+      expect(monitor.capture().lastRecovery).toBeNull();
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: failure.operationId }));
-      expect(monitor.capture("3").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
+      await eventually(() => expect(monitor.capture().lastRecovery).toMatchObject({ operationId: failure.operationId }));
+      expect(monitor.capture().currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failure.operationId }));
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3631,13 +3631,13 @@ describe("worker monitoring of coordinator jobs", () => {
     vi.mocked(f.remote.ownInventory).mockImplementationOnce(async (_projects, _worker, _signal, _onUnavailable, onFailure) => { onFailure?.(f.project.projectId, failure); throw failure; });
     try {
       await expect(coordinator.tick()).rejects.toBe(failure);
-      const failed = monitor.capture("1");
+      const failed = monitor.capture();
       expect(failed.currentFailures).toHaveLength(1);
       expect(failed.currentFailures[0]).toMatchObject({ component: "inventory", phase: "inventory", scope: { kind: "project", projectId: f.project.projectId } });
       expect(JSON.stringify(failed)).not.toContain("private inventory failure");
       f.candidates.splice(0); await coordinator.tick();
-      expect(monitor.capture("2").currentFailures).toHaveLength(0);
-      expect(monitor.capture("2").lastRecovery).toMatchObject({ operationId: failed.currentFailures[0]!.operationId });
+      expect(monitor.capture().currentFailures).toHaveLength(0);
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: failed.currentFailures[0]!.operationId });
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3649,15 +3649,15 @@ describe("worker monitoring of coordinator jobs", () => {
       const failure = mode === "handled" ? new HerdrAgentActionError("private name error", "workspace.rename", "unknown") : new Error("private name error");
       f.tasks.syncWorkspaceName.mockRejectedValueOnce(failure);
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      const failed = monitor.capture("1").currentFailures[0]!;
+      await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      const failed = monitor.capture().currentFailures[0]!;
       expect(failed).toMatchObject({ component: "execution", phase: "observation" });
-      expect(JSON.stringify(monitor.capture("1"))).not.toContain("private name error");
+      expect(JSON.stringify(monitor.capture())).not.toContain("private name error");
       if (mode === "handled") await eventually(() => expect(f.tasks.observe).toHaveBeenCalled());
-      expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: failed.operationId }));
-      expect(monitor.capture("3").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
+      await eventually(() => expect(monitor.capture().lastRecovery).toMatchObject({ operationId: failed.operationId }));
+      expect(monitor.capture().currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3673,11 +3673,11 @@ describe("worker monitoring of coordinator jobs", () => {
     try {
       f.tasks.syncWorkspaceName.mockRejectedValueOnce(new Error("private naming failure"));
       await restarted.tick();
-      await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      expect(monitor.capture("1").currentFailures[0]).toMatchObject({ phase: "observation", worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } });
+      await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      expect(monitor.capture().currentFailures[0]).toMatchObject({ phase: "observation", worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } });
       expect(worktreePath).toHaveBeenCalledWith(owner);
       await restarted.tick();
-      await eventually(() => expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }), worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } })));
+      await eventually(() => expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }), worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } })));
     } finally { await restarted.shutdown(); await f.coordinator.shutdown(); }
   });
 
@@ -3692,8 +3692,8 @@ describe("worker monitoring of coordinator jobs", () => {
     const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
     try {
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      expect(monitor.capture("1").currentFailures[0]).toMatchObject({ phase: "observation", worktree: { kind: "project-relative", path: "../retained-worktree" } });
+      await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      expect(monitor.capture().currentFailures[0]).toMatchObject({ phase: "observation", worktree: { kind: "project-relative", path: "../retained-worktree" } });
       expect(worktreePath).toHaveBeenCalledWith(owner);
       expect(f.git.prepareWorktree).not.toHaveBeenCalled();
     } finally { await coordinator.shutdown(); }
@@ -3707,8 +3707,8 @@ describe("worker monitoring of coordinator jobs", () => {
       f.tasks.syncWorkspaceName.mockRejectedValueOnce(new HerdrAgentActionError("rename failed", "workspace.rename", "unknown"));
       f.tasks.observe.mockRejectedValueOnce(new Error("observation failed"));
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(2));
-      expect(monitor.capture("1").currentFailures.map(item => item.phase).sort()).toEqual(["agent-observation", "observation"]);
+      await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(2));
+      expect(monitor.capture().currentFailures.map(item => item.phase).sort()).toEqual(["agent-observation", "observation"]);
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3721,9 +3721,9 @@ describe("worker monitoring of coordinator jobs", () => {
       coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
       f.tasks.stopAndClose.mockRejectedValueOnce(new Error("unconfirmed stop"));
       await expect(coordinator.stopProject(f.project.projectId)).rejects.toThrow("Project execution stop was not confirmed");
-      expect(monitor.capture("1").activities).toContainEqual(expect.objectContaining({ kind: "execution", status: "waiting", waitReason: "resource-stop", scope: expect.objectContaining({ claimId: owner.claimId }) }));
+      expect(monitor.capture().activities).toContainEqual(expect.objectContaining({ kind: "execution", status: "waiting", waitReason: "resource-stop", scope: expect.objectContaining({ claimId: owner.claimId }) }));
       await coordinator.stopProject(f.project.projectId);
-      expect(monitor.capture("2").activities.some(activity => activity.kind === "execution" && activity.scope.kind === "claim" && activity.scope.claimId === owner.claimId)).toBe(false);
+      expect(monitor.capture().activities.some(activity => activity.kind === "execution" && activity.scope.kind === "claim" && activity.scope.claimId === owner.claimId)).toBe(false);
       expect(f.store.getTask(owner)?.status).toBe("active");
     } finally { await coordinator.shutdown(); }
   });
@@ -3735,13 +3735,13 @@ describe("worker monitoring of coordinator jobs", () => {
     vi.mocked(f.remote.candidates).mockImplementationOnce(async function* () { throw failure; });
     try {
       await expect(coordinator.tick()).rejects.toBe(failure);
-      const failed = monitor.capture("1");
+      const failed = monitor.capture();
       expect(failed.currentFailures).toHaveLength(1);
       expect(failed.currentFailures[0]).toMatchObject({ component: "scheduler", phase: "claim-search", scope: { kind: "project", projectId: f.project.projectId } });
       expect(JSON.stringify(failed)).not.toContain("secret project path");
       f.candidates.splice(0); await coordinator.tick();
-      expect(monitor.capture("2").currentFailures).toHaveLength(0);
-      expect(monitor.capture("2").lastRecovery).toMatchObject({ operationId: failed.currentFailures[0]!.operationId });
+      expect(monitor.capture().currentFailures).toHaveLength(0);
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: failed.currentFailures[0]!.operationId });
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3754,14 +3754,14 @@ describe("worker monitoring of coordinator jobs", () => {
       f.tasks.observe.mockRejectedValueOnce(failure);
       await coordinator.tick(); await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: failure })));
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }), retryState: "manual", occurrencesInRun: 1 })));
-      expect(monitor.capture("1").activities).toContainEqual(expect.objectContaining({ kind: "execution", status: "paused", waitReason: "recovery-blocked" }));
+      await eventually(() => expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }), retryState: "manual", occurrencesInRun: 1 })));
+      expect(monitor.capture().activities).toContainEqual(expect.objectContaining({ kind: "execution", status: "paused", waitReason: "recovery-blocked" }));
       await coordinator.tick(); await coordinator.tick();
-      expect(monitor.capture("2").currentFailures.filter(item => item.error.code === "recovery-limit")).toMatchObject([{ occurrencesInRun: 1 }]);
+      expect(monitor.capture().currentFailures.filter(item => item.error.code === "recovery-limit")).toMatchObject([{ occurrencesInRun: 1 }]);
       const resumed = { ...configuration, recoveryLimit: 5 };
       coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: resumed }], globalConfiguration: resumed, maxConcurrent: 1, preferPlatformSpecificTasks: false });
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("3").currentFailures).toHaveLength(0));
+      await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(0));
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3771,15 +3771,15 @@ describe("worker monitoring of coordinator jobs", () => {
     try {
       await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
       f.tasks.syncWorkspaceName.mockRejectedValueOnce(new Error("naming failed"));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }), retryState: "manual" })));
-      await eventually(() => expect(monitor.capture("2").currentFailures).toHaveLength(1));
-      expect(monitor.capture("2").currentFailures[0]!.error.code).toBe("recovery-limit");
+      await eventually(() => expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }), retryState: "manual" })));
+      await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      expect(monitor.capture().currentFailures[0]!.error.code).toBe("recovery-limit");
       const resumed = { ...configuration, recoveryLimit: 5 };
       coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: resumed }], globalConfiguration: resumed, maxConcurrent: 1, preferPlatformSpecificTasks: false });
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("3").currentFailures).toHaveLength(0));
-      expect(monitor.capture("3").lastRecovery?.component).toBe("execution");
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(0));
+      expect(monitor.capture().lastRecovery?.component).toBe("execution");
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3791,18 +3791,18 @@ describe("worker monitoring of coordinator jobs", () => {
       await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
       const observe = f.tasks.observe.getMockImplementation()!;
       f.tasks.observe.mockRejectedValueOnce(new Error("observation failed"));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
       f.tasks.syncWorkspaceName.mockRejectedValueOnce(new Error("naming failed"));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("2").currentFailures).toHaveLength(2));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }) })));
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(2));
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }) })));
       const resumed = { ...configuration, recoveryLimit: 5 };
       coordinator.updateConfiguration({ repositories: [{ project: f.project, configuration: resumed }], globalConfiguration: resumed, maxConcurrent: 1, preferPlatformSpecificTasks: false });
       f.tasks.observe.mockImplementationOnce(async (...args) => { await gate; return observe(...args); });
       await coordinator.tick(); await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(2));
-      const pending = monitor.capture("4");
+      const pending = monitor.capture();
       expect(pending.currentFailures).toContainEqual(expect.objectContaining({ phase: "agent-observation" }));
       expect(pending.currentFailures).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ code: "recovery-limit" }) }));
-      release(); await eventually(() => expect(monitor.capture("5").currentFailures).toHaveLength(0));
+      release(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(0));
     } finally { release(); await coordinator.shutdown(); }
   });
 
@@ -3837,7 +3837,7 @@ describe("worker monitoring of coordinator jobs", () => {
       f.clock(900_999); await coordinator.tick(); expect(archive.advance).toHaveBeenCalledTimes(1);
       f.clock(901_000); await coordinator.tick(); await eventually(() => expect(archive.advance).toHaveBeenCalledTimes(2));
       f.clock(1_801_000); await coordinator.tick(); expect(archive.advance).toHaveBeenCalledTimes(2);
-      expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ phase: "archive" }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ phase: "archive" }));
       expect(archive.cleaned).not.toHaveBeenCalled();
     } finally { await coordinator.shutdown(); }
   });
@@ -3855,7 +3855,7 @@ describe("worker monitoring of coordinator jobs", () => {
       const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true, ...(enabled ? { monitoring: monitor } : {}) });
       try {
         await coordinator.tick();
-        if (enabled) expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ phase: "archive", worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } }));
+        if (enabled) expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ phase: "archive", worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } }));
         return resources.mock.calls.length;
       } finally { await coordinator.shutdown(); }
     };
@@ -3874,11 +3874,11 @@ describe("worker monitoring of coordinator jobs", () => {
     try {
       await coordinator.tick(); await eventually(() => expect(archive.advance).toHaveBeenCalledOnce());
       f.clock(2000); await coordinator.tick();
-      const failed = monitor.capture("1"), failure = failed.currentFailures[0]!;
+      const failed = monitor.capture(), failure = failed.currentFailures[0]!;
       expect(failure).toMatchObject({ component: "cleanup", phase: "archive", retryState: "scheduled", nextAttemptAt: new Date(6000).toISOString(), occurrencesInRun: 1, worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } });
       expect(JSON.stringify(failed)).not.toContain("private path");
-      f.clock(3000); await coordinator.tick(); expect(monitor.capture("2").currentFailures[0]!.occurrencesInRun).toBe(1);
-      f.clock(6000); await coordinator.tick(); await eventually(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: failure.operationId }));
+      f.clock(3000); await coordinator.tick(); expect(monitor.capture().currentFailures[0]!.occurrencesInRun).toBe(1);
+      f.clock(6000); await coordinator.tick(); await eventually(() => expect(monitor.capture().lastRecovery).toMatchObject({ operationId: failure.operationId }));
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3891,12 +3891,12 @@ describe("worker monitoring of coordinator jobs", () => {
     Object.assign(f.herdr, { lifecycle: { responsibilities: () => [], isStopped: () => true, archive, stop: vi.fn() } });
     const coordinator = createWorkerCoordinator({ ...f.options, hasHerdrJournal: true, monitoring: monitor });
     try {
-      await coordinator.tick(); const failure = monitor.capture("1").currentFailures[0]!;
+      await coordinator.tick(); const failure = monitor.capture().currentFailures[0]!;
       expect(failure).toMatchObject({ component: "cleanup", phase: "worktree-removal", worktree: { kind: "project-relative", path: "../wrong/path" } });
       retained.worktreePath = f.bind(owner).worktreePath;
       await coordinator.tick();
-      expect(monitor.capture("2").lastRecovery).toMatchObject({ operationId: failure.operationId });
-      expect(monitor.capture("2").activities).toHaveLength(0);
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: failure.operationId });
+      expect(monitor.capture().activities).toHaveLength(0);
     } finally { await coordinator.shutdown(); }
   });
 
@@ -3908,7 +3908,7 @@ describe("worker monitoring of coordinator jobs", () => {
     const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
     try {
       await coordinator.tick();
-      expect(monitor.capture("1").admission).toMatchObject({ coverage: "complete", reasons: [{ code: "retained-resource-conflict", scope: { kind: "project", projectId: f.project.projectId } }] });
+      expect(monitor.capture().admission).toMatchObject({ coverage: "complete", reasons: [{ code: "retained-resource-conflict", scope: { kind: "project", projectId: f.project.projectId } }] });
       expect(f.grants.size).toBe(0);
     } finally { await coordinator.shutdown(); }
   });
@@ -3925,13 +3925,13 @@ describe("worker monitoring of coordinator jobs", () => {
       vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, owner) => { await gate; f.worktrees.delete(owner.claimId); return { kind: "absent", effectErrors: [] }; });
       await coordinator.tick();
       await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledOnce());
-      const activities = monitor.capture("1").activities;
+      const activities = monitor.capture().activities;
       expect(activities).toContainEqual(expect.objectContaining({ kind: "cleanup", status: "running", scope: expect.objectContaining({ claimId: ending!.claimId }) }));
       expect(activities).toContainEqual(expect.objectContaining({ kind: "execution", scope: expect.objectContaining({ claimId: active!.claimId }) }));
       expect(new Set(activities.map(activity => activity.operationId)).size).toBe(activities.length);
       release(); await eventually(() => expect(f.store.getTask(ending!)?.status).toBe("done"));
       await coordinator.tick();
-      expect(monitor.capture("2").activities.some(activity => activity.kind === "cleanup" && activity.scope.kind === "claim" && activity.scope.claimId === ending!.claimId)).toBe(false);
+      expect(monitor.capture().activities.some(activity => activity.kind === "cleanup" && activity.scope.kind === "claim" && activity.scope.claimId === ending!.claimId)).toBe(false);
     } finally { release(); await coordinator.shutdown(); }
   });
 
@@ -3945,7 +3945,7 @@ describe("worker monitoring of coordinator jobs", () => {
       f.grants.clear(); f.resources.clear(); f.stoppedRuns.add(owner.claimId); f.candidates.splice(0);
       vi.mocked(f.git.removeWorktree).mockRejectedValue(new Error("secret prompt /private/path"));
       await coordinator.tick(); await eventually(() => expect(f.events.some(event => event.kind === "cleanup-error")).toBe(true));
-      const failed = monitor.capture("1");
+      const failed = monitor.capture();
       const error = failed.currentFailures.find(value => value.component === "cleanup")!;
       expect(error).toMatchObject({ phase: "worktree-removal", scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId }, retryState: "scheduled", nextAttemptAt: new Date(2000).toISOString(), occurrencesInRun: 1, worktree: { kind: "project-relative", path: `.worktrees/daynight/${owner.worktreeId}` } });
       expect(JSON.stringify(failed)).not.toContain("secret prompt");
@@ -3953,10 +3953,10 @@ describe("worker monitoring of coordinator jobs", () => {
       f.clock(1999); await coordinator.tick(); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
       vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, identity) => { await gate; f.worktrees.delete(identity.claimId); return { kind: "absent", effectErrors: [] }; });
       f.clock(2000); await coordinator.tick(); await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledTimes(2));
-      expect(monitor.capture("2").currentFailures[0]).toEqual({ ...error, retryState: "running", nextAttemptAt: null });
+      expect(monitor.capture().currentFailures[0]).toEqual({ ...error, retryState: "running", nextAttemptAt: null });
       release(); await eventually(() => expect(f.store.getTask(owner)?.status).toBe("done"));
-      await eventually(() => expect(monitor.capture("2").lastRecovery).toMatchObject({ operationId: error.operationId }));
-      const recovered = monitor.capture("2");
+      await eventually(() => expect(monitor.capture().lastRecovery).toMatchObject({ operationId: error.operationId }));
+      const recovered = monitor.capture();
       expect(recovered.currentFailures).not.toContainEqual(expect.objectContaining({ operationId: error.operationId }));
       expect(recovered.lastRecovery).toMatchObject({ operationId: error.operationId, component: "cleanup", scope: error.scope, explanation: "The operation recovered." });
     } finally { release(); await coordinator.shutdown(); }
@@ -3977,51 +3977,51 @@ describe("worker monitoring of coordinator jobs", () => {
     const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, onUnattributed: (identity, operation, value) => monitor.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operation}`, value) });
     const failure = new Error("private ticket path");
     grantObserver!.ticketFailed(record, failure);
-    expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
+    expect(monitor.capture()).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
     grantObserver!.ticketVerified(record);
-    expect(monitor.capture("2")).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
+    expect(monitor.capture()).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
     grantObserver!.ticketFailed(record, failure); grantObserver!.failed(record, failure, true);
     grantObserver!.ticketVerified(record);
-    expect(monitor.capture("2").detailCoverage).toBe("partial");
+    expect(monitor.capture().detailCoverage).toBe("partial");
     grantObserver!.ticketFailed(record, failure); grantObserver!.ticketFailed(record, failure);
     grantObserver!.started(record);
     let coordinatorHooks: Parameters<typeof backend.setMonitoringObserver>[0] | undefined;
     const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async task => task), cleanup: vi.fn(), setMonitoringObserver: value => { coordinatorHooks = value; backend.setMonitoringObserver(value); } } });
     try {
-      expect(monitor.capture("3")).toMatchObject({ detailCoverage: "partial", currentFailures: [] });
+      expect(monitor.capture()).toMatchObject({ detailCoverage: "partial", currentFailures: [] });
       await coordinator.tick();
-      const verified = monitor.capture("4");
+      const verified = monitor.capture();
       expect(verified.detailCoverage).toBe("complete"); expect(verified.currentFailures).toHaveLength(2);
       expect(verified.currentFailures.map(value => value.occurrencesInRun).sort()).toEqual([1, 2]);
       const retrying = verified.currentFailures.find(value => value.occurrencesInRun === 1)!;
       expect(retrying.retryState).toBe("running");
       grantObserver!.settled(record);
-      expect(monitor.capture("4").currentFailures.find(value => value.operationId === retrying.operationId)?.retryState).toBe("none");
+      expect(monitor.capture().currentFailures.find(value => value.operationId === retrying.operationId)?.retryState).toBe("none");
       expect(verified.currentFailures.every(value => value.scope.kind === "claim" && value.scope.claimId === owner.claimId)).toBe(true);
       const ticket = verified.currentFailures.find(value => value.occurrencesInRun === 2)!;
       grantObserver!.ticketVerified(record);
-      expect(monitor.capture("5").lastRecovery).toMatchObject({ operationId: ticket.operationId });
-      expect(monitor.capture("5").currentFailures).toHaveLength(1);
-      expect(JSON.stringify(monitor.capture("5"))).not.toContain("private ticket path");
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: ticket.operationId });
+      expect(monitor.capture().currentFailures).toHaveLength(1);
+      expect(JSON.stringify(monitor.capture())).not.toContain("private ticket path");
       backend.setMonitoringObserver({});
       grantObserver!.ticketFailed(record, failure);
-      expect(monitor.capture("6").detailCoverage).toBe("partial");
+      expect(monitor.capture().detailCoverage).toBe("partial");
       backend.setMonitoringObserver(coordinatorHooks!);
-      expect(monitor.capture("7").detailCoverage).toBe("complete");
-      expect(monitor.capture("7").currentFailures).toHaveLength(2);
-      const lastRecovery = monitor.capture("7").lastRecovery;
+      expect(monitor.capture().detailCoverage).toBe("complete");
+      expect(monitor.capture().currentFailures).toHaveLength(2);
+      const lastRecovery = monitor.capture().lastRecovery;
       const successor = { ...record, webExecution: { ...record.webExecution!, executionGeneration: "2", launchId: uuid(999) } };
       grantObserver!.ticketVerified(successor);
-      expect(monitor.capture("8").currentFailures).toEqual([]);
-      expect(monitor.capture("8").lastRecovery).toEqual(lastRecovery);
+      expect(monitor.capture().currentFailures).toEqual([]);
+      expect(monitor.capture().lastRecovery).toEqual(lastRecovery);
       grantObserver!.failed(record, failure, true);
-      expect(monitor.capture("9").currentFailures).toEqual([]);
+      expect(monitor.capture().currentFailures).toEqual([]);
       grantObserver!.failed(successor, failure, true);
-      const newFailure = monitor.capture("10").currentFailures[0]!;
+      const newFailure = monitor.capture().currentFailures[0]!;
       grantObserver!.refreshed(record);
-      expect(monitor.capture("11").currentFailures).toContainEqual(expect.objectContaining({ operationId: newFailure.operationId }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: newFailure.operationId }));
       grantObserver!.refreshed(successor);
-      expect(monitor.capture("12").lastRecovery).toMatchObject({ operationId: newFailure.operationId });
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: newFailure.operationId });
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
@@ -4045,7 +4045,7 @@ describe("worker monitoring of coordinator jobs", () => {
     const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, onUnattributed: (identity, operation, value) => monitor.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operation}`, value) });
     const failure = new Error("grant unavailable"); grant.mockRejectedValueOnce(failure);
     await expect(launcher.refreshGrant(record, ticket, new AbortController().signal)).rejects.toBe(failure);
-    expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [] });
+    expect(monitor.capture()).toMatchObject({ detailCoverage: "partial", currentFailures: [] });
     const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>(), cancellation = new AbortController();
     grant.mockImplementationOnce(async () => { entered.resolve(); await gate.promise; return { token: "late", expiresAt: new Date(901_000).toISOString() }; });
     const retry = launcher.refreshGrant(record, ticket, cancellation.signal); void retry.catch(() => {});
@@ -4053,14 +4053,14 @@ describe("worker monitoring of coordinator jobs", () => {
     const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async task => task), cleanup: vi.fn(async task => ({ task, complete: true })), setMonitoringObserver: backend.setMonitoringObserver } });
     try {
       await coordinator.tick();
-      const observed = monitor.capture("2").currentFailures[0]!;
+      const observed = monitor.capture().currentFailures[0]!;
       expect(observed).toMatchObject({ phase: "preparing", retryState: "running", occurrencesInRun: 1 });
       cancellation.abort(new Error("cancelled")); gate.resolve(); await expect(retry).rejects.toThrow("cancelled");
-      expect(monitor.capture("3").currentFailures[0]).toMatchObject({ operationId: observed.operationId, retryState: "none" });
-      expect(monitor.capture("3").lastRecovery).toBeNull();
+      expect(monitor.capture().currentFailures[0]).toMatchObject({ operationId: observed.operationId, retryState: "none" });
+      expect(monitor.capture().lastRecovery).toBeNull();
       grant.mockResolvedValueOnce({ token: "renewed", expiresAt: new Date(901_000).toISOString() });
       await launcher.refreshGrant(record, ticket, new AbortController().signal);
-      expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: observed.operationId });
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: observed.operationId });
     } finally { gate.resolve(); cancellation.abort(); await Promise.allSettled([retry]); await coordinator.shutdown(); webStore.close(); }
   });
 
@@ -4076,12 +4076,12 @@ describe("worker monitoring of coordinator jobs", () => {
     const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn(), setGrantObserver: (value: GrantObserver | undefined) => { grantObserver = value; } };
     const backend = createWebExecutionBackend({ homeDirectory: f.root, store: webStore, git: f.git, launcher, platform: "linux", buildPrompt: () => "managed", emit: () => {}, now: () => 1000, onUnattributed: (identity, operation, value) => monitor.setUnattributed(`web-renewal/${identity.projectId}/${identity.taskId}/${identity.claimId}/${operation}`, value) });
     grantObserver!.identityUnknown(record);
-    expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
+    expect(monitor.capture()).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
     const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async task => task), cleanup: vi.fn(), setMonitoringObserver: backend.setMonitoringObserver } });
     try {
-      expect(monitor.capture("2").detailCoverage).toBe("partial");
+      expect(monitor.capture().detailCoverage).toBe("partial");
       if (loss === "inventory") await coordinator.tick(); else coordinator.invalidateProject(f.project.projectId);
-      expect(monitor.capture("3")).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
+      expect(monitor.capture()).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
@@ -4094,9 +4094,9 @@ describe("worker monitoring of coordinator jobs", () => {
     const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async task => task), cleanup: vi.fn(), setMonitoringObserver: value => { hooks = value; } } });
     try {
       hooks!.observeFailure?.({ projectId: f.project.projectId, taskId: uuid(30), claimId: uuid(31) }, { kind: "execution", phase: "preparing" }, new Error("private"), "grant-ticket");
-      expect(monitor.capture("1")).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
+      expect(monitor.capture()).toMatchObject({ detailCoverage: "partial", currentFailures: [], lastRecovery: null });
       await coordinator.tick();
-      expect(monitor.capture("2")).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
+      expect(monitor.capture()).toMatchObject({ detailCoverage: "complete", currentFailures: [], lastRecovery: null });
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
@@ -4119,27 +4119,27 @@ describe("worker monitoring of coordinator jobs", () => {
     const webBackend = { observeExecutionStop: unknownStop, advance, cleanup: vi.fn(), setMonitoringObserver: (value: Monitoring) => { hooks = value; } };
     const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend });
     try {
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      const first = monitor.capture("1").currentFailures[0]!; expect(first).toMatchObject({ component: "execution", phase: "preparing", occurrencesInRun: 1 });
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("2").currentFailures[0]).toMatchObject({ operationId: first.operationId, occurrencesInRun: 2 }));
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      const first = monitor.capture().currentFailures[0]!; expect(first).toMatchObject({ component: "execution", phase: "preparing", occurrencesInRun: 1 });
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures[0]).toMatchObject({ operationId: first.operationId, occurrencesInRun: 2 }));
       await coordinator.tick(); await eventually(() => expect(advance).toHaveBeenCalledTimes(3));
-      expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ operationId: first.operationId, occurrencesInRun: 2, retryState: "none" }));
-      expect(monitor.capture("3").lastRecovery).toBeNull();
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: first.operationId, occurrencesInRun: 2, retryState: "none" }));
+      expect(monitor.capture().lastRecovery).toBeNull();
       const identity = f.store.listTasks()[0]!;
       hooks!.observeRetry?.(identity, operationKey, true);
-      expect(monitor.capture("3").currentFailures[0]!.retryState).toBe("running");
+      expect(monitor.capture().currentFailures[0]!.retryState).toBe("running");
       hooks!.observeRetry?.(identity, operationKey, false);
-      expect(monitor.capture("3").currentFailures[0]!.retryState).toBe("none");
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: first.operationId }));
-      expect(monitor.capture("4").currentFailures).toEqual([]);
+      expect(monitor.capture().currentFailures[0]!.retryState).toBe("none");
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().lastRecovery).toMatchObject({ operationId: first.operationId }));
+      expect(monitor.capture().currentFailures).toEqual([]);
       const row = f.store.listTasks()[0]!;
       hooks!.observeFailure?.(row, { kind: "execution", phase: "preparing" }, failure, operationKey);
-      const background = monitor.capture("5").currentFailures[0]!; expect(background.phase).toBe("preparing");
+      const background = monitor.capture().currentFailures[0]!; expect(background.phase).toBe("preparing");
       hooks!.observeSuccess?.(row, { kind: "execution", phase: "agent-observation" });
-      expect(monitor.capture("6").currentFailures).toContainEqual(expect.objectContaining({ operationId: background.operationId }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: background.operationId }));
       hooks!.observeSuccess?.(row, { kind: "execution", phase: "preparing" }, operationKey);
-      expect(monitor.capture("7").lastRecovery).toMatchObject({ operationId: background.operationId });
-      expect(JSON.stringify(monitor.capture("7"))).not.toContain("private grant failure");
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: background.operationId });
+      expect(JSON.stringify(monitor.capture())).not.toContain("private grant failure");
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
@@ -4151,10 +4151,10 @@ describe("worker monitoring of coordinator jobs", () => {
     const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: web }], globalConfiguration: web, webStore, monitoring: monitor, verifyWebServer: vi.fn(async () => {}), verifyWebUnregistered: vi.fn(async () => {}), webBackend: { observeExecutionStop: unknownStop, advance, cleanup: vi.fn() } });
     try {
       await coordinator.tick(); await eventually(() => expect(advance).toHaveBeenCalledOnce());
-      await eventually(() => expect(monitor.capture("1").activities).toContainEqual(expect.objectContaining({ kind: "execution", phase: "paused", status: "paused", waitReason: "recovery-blocked" })));
+      await eventually(() => expect(monitor.capture().activities).toContainEqual(expect.objectContaining({ kind: "execution", phase: "paused", status: "paused", waitReason: "recovery-blocked" })));
       await coordinator.tick();
       expect(advance).toHaveBeenCalledOnce();
-      expect(monitor.capture("2").activities).toContainEqual(expect.objectContaining({ kind: "execution", phase: "paused", status: "paused", waitReason: "recovery-blocked" }));
+      expect(monitor.capture().activities).toContainEqual(expect.objectContaining({ kind: "execution", phase: "paused", status: "paused", waitReason: "recovery-blocked" }));
     } finally { await coordinator.shutdown(); webStore.close(); }
   });
 
@@ -4169,20 +4169,20 @@ describe("worker monitoring of coordinator jobs", () => {
       const submit = f.tasks.submitPrompt.getMockImplementation()!;
       f.tasks.submitPrompt.mockRejectedValue(failure);
       await coordinator.tick(); await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: failure })));
-      const failed = monitor.capture("1").currentFailures.find(item => item.component === "execution")!;
+      const failed = monitor.capture().currentFailures.find(item => item.component === "execution")!;
       expect(failed.phase).toBe("input-submission");
       pane.status = "working";
       const current = f.grants.get(row.claimId)!;
       f.grants.set(row.claimId, { ...current, properties: { ...current.properties, worker: { ...readWorkerClaim(current.properties)!, phase: "waiting" } } });
       const updates = vi.mocked(f.remote.update).mock.calls.length;
       await coordinator.tick(); await eventually(() => expect(vi.mocked(f.remote.update).mock.calls.length).toBeGreaterThan(updates));
-      expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
-      expect(monitor.capture("2").lastRecovery).toBeNull();
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
+      expect(monitor.capture().lastRecovery).toBeNull();
       pane.status = "idle";
       f.tasks.submitPrompt.mockImplementation(submit);
       await coordinator.tick();
-      await eventually(() => expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: failed.operationId, component: "execution" }));
-      expect(monitor.capture("3").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
+      await eventually(() => expect(monitor.capture().lastRecovery).toMatchObject({ operationId: failed.operationId, component: "execution" }));
+      expect(monitor.capture().currentFailures).not.toContainEqual(expect.objectContaining({ operationId: failed.operationId }));
     } finally { await coordinator.shutdown(); }
   });
 
@@ -4195,22 +4195,22 @@ describe("worker monitoring of coordinator jobs", () => {
       pane.status = "idle";
       const submit = f.tasks.submitPrompt.getMockImplementation()!;
       f.tasks.submitPrompt.mockRejectedValueOnce(new HerdrAgentActionError("input failed", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" }));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      const inputFailure = monitor.capture("1").currentFailures[0]!;
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      const inputFailure = monitor.capture().currentFailures[0]!;
       expect(inputFailure.phase).toBe("input-submission");
       f.tasks.observe.mockRejectedValueOnce(new Error("observation failed"));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("2").currentFailures).toHaveLength(2));
-      const failures = monitor.capture("2").currentFailures;
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(2));
+      const failures = monitor.capture().currentFailures;
       const observationFailure = failures.find(item => item.phase === "agent-observation")!;
       expect(observationFailure.operationId).not.toBe(inputFailure.operationId);
       expect(failures).toContainEqual(expect.objectContaining({ operationId: inputFailure.operationId, phase: "input-submission", occurrencesInRun: 1 }));
       pane.status = "working";
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("3").currentFailures).toHaveLength(1));
-      expect(monitor.capture("3").currentFailures[0]).toMatchObject({ operationId: inputFailure.operationId, phase: "input-submission" });
-      expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: observationFailure.operationId });
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      expect(monitor.capture().currentFailures[0]).toMatchObject({ operationId: inputFailure.operationId, phase: "input-submission" });
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: observationFailure.operationId });
       pane.status = "idle"; f.tasks.submitPrompt.mockImplementation(submit);
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("4").currentFailures).toHaveLength(0));
-      expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: inputFailure.operationId });
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(0));
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: inputFailure.operationId });
     } finally { await coordinator.shutdown(); }
   });
 
@@ -4221,12 +4221,12 @@ describe("worker monitoring of coordinator jobs", () => {
       await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
       const row = f.store.listTasks()[0]!, pane = f.resources.get(row.claimId)!.panes[0]!; pane.status = "idle";
       f.tasks.submitPrompt.mockRejectedValueOnce(new HerdrAgentActionError("input failed", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" }));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
       f.tasks.observe.mockRejectedValueOnce(new Error("observation failed"));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("2").currentFailures).toHaveLength(2));
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(2));
       if (loss === "project") coordinator.invalidateProject(f.project.projectId);
       else { f.grants.clear(); f.candidates.splice(0); await coordinator.tick(); }
-      expect(monitor.capture("3").currentFailures.filter(item => item.component === "execution")).toHaveLength(0);
+      expect(monitor.capture().currentFailures.filter(item => item.component === "execution")).toHaveLength(0);
     } finally { await coordinator.shutdown(); }
   });
 
@@ -4241,28 +4241,28 @@ describe("worker monitoring of coordinator jobs", () => {
       resource.panes[0]!.status = "idle"; f.resources.set(owner.claimId, resource);
       f.grants.clear(); f.candidates.splice(0);
       vi.mocked(f.git.removeWorktree).mockRejectedValueOnce(new Error("worktree deletion failed"));
-      await coordinator.tick(); await eventually(() => expect(monitor.capture("1").currentFailures).toHaveLength(1));
-      const removal = monitor.capture("1").currentFailures[0]!; expect(removal.phase).toBe("worktree-removal");
+      await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(1));
+      const removal = monitor.capture().currentFailures[0]!; expect(removal.phase).toBe("worktree-removal");
       f.resources.set(owner.claimId, structuredClone(resource));
       f.tasks.stopAndClose.mockRejectedValueOnce(new Error("stop failed"));
-      f.clock(2000); await coordinator.tick(); await eventually(() => expect(monitor.capture("2").currentFailures).toHaveLength(2));
-      const stop = monitor.capture("2").currentFailures.find(item => item.phase === "agent-stop")!;
+      f.clock(2000); await coordinator.tick(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(2));
+      const stop = monitor.capture().currentFailures.find(item => item.phase === "agent-stop")!;
       expect(stop.operationId).not.toBe(removal.operationId);
-      expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: removal.operationId, occurrencesInRun: 1 }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: removal.operationId, occurrencesInRun: 1 }));
       const stopOriginal = f.tasks.stopAndClose.getMockImplementation()!;
       f.tasks.stopAndClose.mockImplementationOnce(async (...args) => { await stopGate; return stopOriginal(...args); });
       vi.mocked(f.git.removeWorktree).mockImplementation(async (_project, current) => { await gate; f.worktrees.delete(current.claimId); return { kind: "absent", effectErrors: [] }; });
       f.clock(4000); await coordinator.tick();
       await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledTimes(3));
-      expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ operationId: stop.operationId, retryState: "running" }));
-      expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ operationId: removal.operationId, retryState: "scheduled" }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: stop.operationId, retryState: "running" }));
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: removal.operationId, retryState: "scheduled" }));
       releaseStop();
       await eventually(() => expect(f.git.removeWorktree).toHaveBeenCalledTimes(2));
-      expect(monitor.capture("3").currentFailures).toContainEqual(expect.objectContaining({ operationId: removal.operationId, retryState: "running" }));
-      expect(monitor.capture("3").currentFailures).not.toContainEqual(expect.objectContaining({ operationId: stop.operationId }));
-      expect(monitor.capture("3").lastRecovery).toMatchObject({ operationId: stop.operationId });
-      release(); await eventually(() => expect(monitor.capture("4").currentFailures).toHaveLength(0));
-      expect(monitor.capture("4").lastRecovery).toMatchObject({ operationId: removal.operationId });
+      expect(monitor.capture().currentFailures).toContainEqual(expect.objectContaining({ operationId: removal.operationId, retryState: "running" }));
+      expect(monitor.capture().currentFailures).not.toContainEqual(expect.objectContaining({ operationId: stop.operationId }));
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: stop.operationId });
+      release(); await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(0));
+      expect(monitor.capture().lastRecovery).toMatchObject({ operationId: removal.operationId });
     } finally { releaseStop(); release(); await coordinator.shutdown(); }
   });
 });
@@ -4293,7 +4293,7 @@ describe("real Git resource isolation", () => {
         coordinator = createWorkerCoordinator({ ...f.options, git, monitoring: monitor });
         await coordinator.tick();
         await coordinator.tick();
-        const first = monitor.capture("1");
+        const first = monitor.capture();
         expect(first.capacity).toMatchObject({ occupied: 6, available: 0 });
         expect(first.reservations.filter(item => item.occupied)).toHaveLength(6);
         expect(f.remote.claim).not.toHaveBeenCalled();
@@ -4309,7 +4309,7 @@ describe("real Git resource isolation", () => {
           await access(path.join(f.project.localPath, ".worktrees", "daynight", owner.worktreeId));
         }
         await coordinator.tick();
-        expect(monitor.capture("2").currentFailures.filter(item => item.error.code === "ownership-unconfirmed").map(item => item.operationId)).toEqual(first.currentFailures.filter(item => item.error.code === "ownership-unconfirmed").map(item => item.operationId));
+        expect(monitor.capture().currentFailures.filter(item => item.error.code === "ownership-unconfirmed").map(item => item.operationId)).toEqual(first.currentFailures.filter(item => item.error.code === "ownership-unconfirmed").map(item => item.operationId));
         await coordinator.shutdown(); coordinator = undefined;
       }
     } finally { await coordinator?.shutdown(); op.dispose(); await git.dispose(); }
@@ -4343,10 +4343,10 @@ describe("real Git resource isolation", () => {
         f.store.registerPending({ ...owner, agent: "codex" });
         f.grant(task(owner.projectId, owner.taskId), { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, agent: "codex", machine: f.options.machine, platform: "linux" });
       }
-      const monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+      const monitor = createMonitoringObserver({ now: () => 1000 });
       let admission: ReturnType<typeof monitor.capture> | undefined;
       const claim = vi.mocked(f.remote.claim).getMockImplementation()!;
-      vi.mocked(f.remote.claim).mockImplementation(async (...args) => { admission = monitor.capture("admission"); return claim(...args); });
+      vi.mocked(f.remote.claim).mockImplementation(async (...args) => { admission = monitor.capture(); return claim(...args); });
       const coordinator = createWorkerCoordinator({ ...f.options, git, monitoring: monitor });
       try {
         expect(f.resources.size).toBe(0);
@@ -4354,8 +4354,8 @@ describe("real Git resource isolation", () => {
         if (proof === "conflicting" || proof.endsWith("wrong-cwd")) {
           expect(f.remote.claim).not.toHaveBeenCalled();
           expect(f.tasks.start).not.toHaveBeenCalled();
-          expect(monitor.capture("1").capacity?.quality).not.toBe("current");
-          expect(monitor.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "resources", scope: { kind: "project", projectId: owner.projectId } })]));
+          expect(monitor.capture().capacity?.quality).not.toBe("current");
+          expect(monitor.capture().currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "resources", scope: { kind: "project", projectId: owner.projectId } })]));
         } else {
           if (proof === "capacity-full") expect(f.remote.claim).not.toHaveBeenCalled();
           else {
@@ -4363,7 +4363,7 @@ describe("real Git resource isolation", () => {
             await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
             expect(f.tasks.start.mock.calls[0]![0].taskId).not.toBe(owner.taskId);
           }
-          const observation = admission ?? monitor.capture("1");
+          const observation = admission ?? monitor.capture();
           expect(observation.capacity).toMatchObject({ quality: "current", occupied: 1, available: proof === "capacity-full" ? 0 : 1 });
           expect(observation.reservations.filter(item => item.scope.kind === "claim" && item.scope.claimId === owner.claimId)).toEqual([
             expect.objectContaining({ roles: expect.arrayContaining(["pending-stop", "resource-owner", "unresolved"]) }),
@@ -4439,7 +4439,7 @@ describe("real Git resource isolation", () => {
         Object.assign(f.herdr, { lifecycle: { responsibilities: () => [owner], isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {} } });
       }
       if (proof === "claim-unconfirmed") vi.spyOn(f.remote, "claim").mockRejectedValue(new Error("Grant not confirmed"));
-      const monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+      const monitor = createMonitoringObserver({ now: () => 1000 });
       const coordinator = createWorkerCoordinator({ ...f.options, git, monitoring: monitor, ...(proof === "unselected" ? { readyProjectIds: [] } : {}) });
       try {
         await coordinator.tick();
@@ -4448,10 +4448,10 @@ describe("real Git resource isolation", () => {
           expect(f.store.getTask(owner)?.status).toBe("pending");
           await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
           expect(f.tasks.start.mock.calls[0]![0].taskId).not.toBe(owner.taskId);
-          expect(monitor.capture("1").currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "resources", scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId } })]));
+          expect(monitor.capture().currentFailures).toEqual(expect.arrayContaining([expect.objectContaining({ component: "resources", scope: { kind: "claim", projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId } })]));
         } else if (proof === "claim-unconfirmed") {
           expect(f.remote.claim).toHaveBeenCalledOnce();
-          expect(monitor.capture("1").admission.reasons).toEqual(expect.arrayContaining([
+          expect(monitor.capture().admission.reasons).toEqual(expect.arrayContaining([
             expect.objectContaining({ code: "retained-resource-conflict", scope: expect.objectContaining({ kind: "claim", claimId: owner.claimId }) }),
             expect.objectContaining({ code: "claim-unconfirmed" }),
           ]));
@@ -4459,17 +4459,17 @@ describe("real Git resource isolation", () => {
         if (proof.startsWith("manual-") && !separateManualTarget || proof.startsWith("pointer-")) {
           expect(f.tasks.start).not.toHaveBeenCalled();
           expect(f.store.getTask(owner)?.status).toBe("pending");
-          expect(monitor.capture("1").capacity?.quality).not.toBe("current");
+          expect(monitor.capture().capacity?.quality).not.toBe("current");
           if (proof === "manual-missing-case") await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
           else await access(binding.worktreePath);
         }
-        if (["capacity-full", "stopped", "unselected"].includes(proof)) expect(monitor.capture("1").capacity).toMatchObject({ quality: "current", occupied: 1, available: 0 });
+        if (["capacity-full", "stopped", "unselected"].includes(proof)) expect(monitor.capture().capacity).toMatchObject({ quality: "current", occupied: 1, available: 0 });
         if (proof === "stopped" || proof === "unselected") {
           expect(f.store.getTask(owner)?.status).toBe("done");
           execFileSync("git", ["checkout", binding.branch], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
           await coordinator.tick();
-          expect(monitor.capture("2").capacity).toMatchObject({ occupied: 0 });
-          expect(monitor.capture("2").currentFailures.filter(failure => failure.component === "resources")).toEqual([]);
+          expect(monitor.capture().capacity).toMatchObject({ occupied: 0 });
+          expect(monitor.capture().currentFailures.filter(failure => failure.component === "resources")).toEqual([]);
         }
       } finally { await coordinator.shutdown(); }
     } finally { op.dispose(); await git.dispose(); }
@@ -4487,7 +4487,7 @@ describe("real Git resource isolation", () => {
     run(["branch", `daynight/${owner.taskId}`]);
     const git = createWorkerGitManager({ temporaryDirectory: path.join(f.root, "git-temp"), prepareFormat });
     const op = createOperation();
-    let monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+    let monitor = createMonitoringObserver({ now: () => 1000 });
     let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
     try {
       await git.prepareRepository(f.project, op);
@@ -4506,25 +4506,25 @@ describe("real Git resource isolation", () => {
         coordinator = createWorkerCoordinator(options);
         await coordinator.tick();
         expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
-        expect(monitor.capture("1").capacity).toMatchObject({ quality: "current", occupied: 1, available: 1 });
-        expect(monitor.capture("1").admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "retained-resource-conflict", scope: expect.objectContaining({ kind: "claim", claimId: owner.claimId }) })]));
+        expect(monitor.capture().capacity).toMatchObject({ quality: "current", occupied: 1, available: 1 });
+        expect(monitor.capture().admission.reasons).toEqual(expect.arrayContaining([expect.objectContaining({ code: "retained-resource-conflict", scope: expect.objectContaining({ kind: "claim", claimId: owner.claimId }) })]));
         await coordinator.shutdown();
-        monitor = createMonitoringObserver({ runId: uuid(998), now: () => 1000 });
+        monitor = createMonitoringObserver({ now: () => 1000 });
         coordinator = createWorkerCoordinator({ ...options, monitoring: monitor });
         await coordinator.tick();
-        expect(monitor.capture("2").capacity).toMatchObject({ quality: "current", occupied: 1 });
+        expect(monitor.capture().capacity).toMatchObject({ quality: "current", occupied: 1 });
         const manifest = path.join(f.project.localPath, ".git", "daynight", "worktrees", `${owner.worktreeId}.json`);
         const original = await readFile(manifest, "utf8");
         await writeFile(manifest, "{");
         await coordinator.tick();
-        expect(monitor.capture("3").capacity?.quality).not.toBe("current");
-        expect(monitor.capture("3").currentFailures.some(failure => failure.scope.kind === "claim" && failure.scope.claimId === owner.claimId)).toBe(true);
+        expect(monitor.capture().capacity?.quality).not.toBe("current");
+        expect(monitor.capture().currentFailures.some(failure => failure.scope.kind === "claim" && failure.scope.claimId === owner.claimId)).toBe(true);
         expect(f.remote.claim).not.toHaveBeenCalled();
         await writeFile(manifest, original);
         execFileSync("git", ["checkout", binding.branch], { cwd: binding.worktreePath, timeout: 10000, stdio: "pipe" });
         await coordinator.tick();
-        expect(monitor.capture("4").currentFailures.filter(failure => failure.component === "resources")).toEqual([]);
-        expect(monitor.capture("4").capacity).toMatchObject({ quality: "current", occupied: 0 });
+        expect(monitor.capture().currentFailures.filter(failure => failure.component === "resources")).toEqual([]);
+        expect(monitor.capture().capacity).toMatchObject({ quality: "current", occupied: 0 });
       } finally { await coordinator?.shutdown(); webStore.close(); }
     } finally { op.dispose(); await git.dispose(); }
   }, 20000);
@@ -4575,14 +4575,14 @@ describe("real Git resource isolation", () => {
         }] } }),
         isStopped: () => true, registerClaim: () => {}, assertCanAdvance: () => {}, stop: async () => {},
       } });
-      const monitor = createMonitoringObserver({ runId: uuid(999), now: () => 1000 });
+      const monitor = createMonitoringObserver({ now: () => 1000 });
       const coordinator = createWorkerCoordinator({ ...f.options, git, webStore, monitoring: monitor });
       try {
         expect((await git.scanWorktrees(f.project, op, false, true)).validated.map(item => item.owner)).toEqual([owner]);
         await coordinator.tick();
         expect(f.remote.claim).not.toHaveBeenCalled();
         expect(f.tasks.start).not.toHaveBeenCalled();
-        expect(monitor.capture("1").capacity?.quality).not.toBe("current");
+        expect(monitor.capture().capacity?.quality).not.toBe("current");
         expect(await readFile(path.join(movedLeaf, ".git"), "utf8")).toContain(movedAdmin);
       } finally { await coordinator.shutdown(); }
     } finally { webStore.close(); op.dispose(); await git.dispose(); }
