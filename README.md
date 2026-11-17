@@ -208,11 +208,11 @@ daynight worker setup
 daynight worker run
 ```
 
-Setup reports missing tools or integration settings with repair instructions.
-It previews the selected Projects, paths and native-setting resets before saving
-the agent and complete selection together. Existing Projects are preselected on
-repeat setup before enrollment. Missing native prerequisites can be repaired after
-saving; the command explicitly reports when the environment still needs attention.
+Setup checks the operating system, Node.js and Git and reports missing prerequisites
+with repair instructions. It previews the selected Projects, paths and native-setting
+resets before saving the agent and complete selection together. Existing Projects are
+preselected on repeat setup before enrollment. The Controller verifies native
+authentication and capabilities before dispatching task input.
 
 The first run imports local managed settings only when no cloud target exists.
 After enrollment the cloud configuration resource owns concurrency, Project

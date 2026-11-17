@@ -248,6 +248,7 @@ describe("interactive worker setup", () => {
       expect.objectContaining({ message: "Save this worker configuration?", default: true }),
     ]);
     expect(f.dependencies.inspectEnvironment).toHaveBeenCalledTimes(2);
+    expect(f.dependencies.inspectEnvironment.mock.calls[0]![0]).toEqual({ workingDirectory: f.homeDirectory, signal: expect.any(AbortSignal) });
     expect(f.dependencies.inspectEnvironment.mock.calls[1]![0]).toMatchObject({ configuration: { agent: "codex", model: null, args: [] } });
     expect(f.dependencies.save).toHaveBeenCalledOnce();
     expect((await readWorkerConfiguration(f.paths)).repositories).toHaveLength(2);
@@ -266,11 +267,11 @@ describe("interactive worker setup", () => {
 
   it("reports missing prerequisites and saves configuration with an explicit repair instruction", async () => {
     const f = await fixture();
-    f.dependencies.inspectEnvironment.mockResolvedValue([{ label: "Herdr", status: "missing", detail: "Not installed", remedy: "Install Herdr." }]);
+    f.dependencies.inspectEnvironment.mockResolvedValue([{ label: "Git", status: "missing", detail: "Not installed", remedy: "Install Git." }]);
     await runWorkerSetup(f.context, f.dependencies);
     expect(f.dependencies.save).toHaveBeenCalledOnce();
-    expect(f.output.join("")).toContain("[missing] Herdr: Not installed");
-    expect(f.output.join("")).toContain("Install Herdr.");
+    expect(f.output.join("")).toContain("[missing] Git: Not installed");
+    expect(f.output.join("")).toContain("Install Git.");
     expect(f.output.join("")).toContain("Repair the missing prerequisites above");
   });
 

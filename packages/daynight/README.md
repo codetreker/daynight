@@ -2175,13 +2175,11 @@ require changing those values in the cloud instead. Writers check enrollment
 before interaction and final persistence; a missing local cache does not mean
 the Worker is unenrolled.
 
-Local diagnostics inspect tools and integration settings without starting Herdr
-or native agents. Missing prerequisites are reported together; selected-agent
-checks use effective retained native arguments in the setup launch directory.
-Missing native dependencies allow saving with a repair-needed result. Versions,
-fixed launch-argument capabilities and hook configuration do not prove provider
-authentication, hook execution, live Herdr protocol, Git access or completed
-delivery.
+Local diagnostics check the operating system, Node.js and Git without starting
+native agents. Missing prerequisites are reported together and do not prevent
+saving; setup indicates when repairs are needed. The Controller verifies native
+authentication, capabilities and working-directory identity before dispatching
+task input. Setup does not verify Git transport or task-specific tools.
 Setup does not install tools, edit provider configuration, sign in, clone, open
 worker state or acquire tasks. Unconfirmed probe-process cleanup is a failure,
 including during cancellation.
