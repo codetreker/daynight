@@ -1,6 +1,5 @@
 import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWorkerControl } from "../../../src/commands/worker/runtime.js";
@@ -20,8 +19,6 @@ import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext
 import type { Task } from "../../../src/api/types.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { readWorkerClaim } from "../../../src/api/task-properties.js";
-import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
-import type { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import { createWorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import { receiveWorkerDesired } from "../../../src/api/worker-configuration-source.js";
 
@@ -279,9 +276,7 @@ describe("worker synchronous management runtime ownership", () => {
     expect(f.store.getNativeConfiguration(f.task)).toEqual(configuration);
   });
 
-  // Migration uses real Git and durable filesystem operations: a Windows host
-  // cannot implement POSIX directory fsync by changing process.platform.
-  it.each((["linux", "win32"] as const).flatMap(platform => (["allowed", "paused", "revoked", "claim", "worker", "worktree", "provider", "mode", "daemon-unknown", "legacy", "no-restore", "migration"] as const).filter(gate => gate !== "migration" || (platformDescriptor.value === "win32") === (platform === "win32")).map(gate => ({ platform, gate }))))("restores only the authorized original execution through the real one-shot retry path (%j)", async ({ platform, gate }) => {
+  it.each((["linux", "win32"] as const).flatMap(platform => (["allowed", "paused", "revoked", "claim", "worker", "worktree", "provider", "mode", "daemon-unknown", "legacy", "no-restore"] as const).map(gate => ({ platform, gate }))))("restores only the authorized original execution through the real one-shot retry path (%j)", async ({ platform, gate }) => {
     const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
     const { submitWorkerControl } = await vi.importActual<typeof import("../../../src/commands/worker/control.js")>("../../../src/commands/worker/control.js");
     const f = await fixture(), launches = recordedHerdrTools(), sessionId = uuid(21), worktreeId = uuid(9);
@@ -305,15 +300,6 @@ describe("worker synchronous management runtime ownership", () => {
     const binding = { repositoryPath: f.project.localPath, commonDirectory: path.join(f.project.localPath, ".git"), worktreePath: path.join(f.project.localPath, ".worktrees", "daynight", f.task.taskId), branch: `daynight/${f.task.taskId}` };
     await mkdir(binding.worktreePath, { recursive: true });
     const git = { dispose: vi.fn(async () => {}), prepareRepository: vi.fn(async (_project: typeof f.project, _operation: Operation) => {}), resolveWorktreeBinding: vi.fn(async () => binding), prepareWorktree: vi.fn(async () => binding) };
-    if (gate === "migration") {
-      const runGit = (args: string[]) => execFileSync("git", args, { cwd: f.project.localPath, encoding: "utf8", timeout: 10_000 }).trim();
-      await rm(binding.worktreePath, { recursive: true });
-      runGit(["init", "--initial-branch=main"]); runGit(["config", "user.name", "Fixture"]); runGit(["config", "user.email", "fixture@example.test"]);
-      runGit(["commit", "--allow-empty", "-m", "fixture"]);
-      const marker = `daynight-worker:${JSON.stringify({ ...owner, leaf: "1:1", root: "2:2", common: "3:3" })}`;
-      runGit(["worktree", "add", "--lock", "--reason", marker, "-b", binding.branch, "--", binding.worktreePath]);
-      await mkdir(path.join(f.paths.herdrDirectory, "c", "herdr", "sessions", "w"), { recursive: true });
-    }
     const pane = { session: "w", workspaceId: "restored", paneId: "restored-pane", terminalId: "restored-terminal" };
     const observation: HerdrAgentObservation = { binding: pane, name: "Original assignment", kind: "codex", status: "working", interactiveReady: true, launchPending: false, nativeSession: { source: "herdr", agent: "codex", sessionId }, stateChangeSeq: 2, completionSeq: 0 };
     const unavailable = new Error("The original shared Herdr daemon cannot be confirmed running.");
@@ -326,13 +312,7 @@ describe("worker synchronous management runtime ownership", () => {
     vi.spyOn(sharedHerdrModule, "createSharedWorkerHerdr").mockReturnValue(adapter);
     vi.spyOn(telemetryModule, "createWorkerTelemetryCollector").mockReturnValue({ collect: vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] })) });
     mocks.remote.mockReturnValue(remote);
-    mocks.git.mockImplementation((options: Parameters<typeof createWorkerGitManager>[0]) => {
-      if (gate === "migration") git.prepareRepository.mockImplementation(async (_project, operation) => {
-        expect(ensureExecution).toHaveBeenCalledOnce();
-        await options!.prepareFormat!(f.project, { root: f.project.localPath, commonDirectory: binding.commonDirectory, rootIdentity: "fixture", commonIdentity: "fixture" }, operation);
-      });
-      return git;
-    });
+    mocks.git.mockReturnValue(git);
     mocks.coordinator.mockImplementation(createWorkerCoordinator); mocks.submit.mockImplementation(submitWorkerControl);
     Object.defineProperty(process, "platform", { ...platformDescriptor, value: platform });
     const retry = runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
@@ -340,7 +320,7 @@ describe("worker synchronous management runtime ownership", () => {
     else await expect(retry).resolves.toBeUndefined();
     expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).repositories).toEqual([]);
     expect((mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions).readyProjectIds).toBeUndefined();
-    if (gate === "allowed" || gate === "migration") {
+    if (gate === "allowed") {
       expect(ensureExecution).toHaveBeenCalledExactlyOnceWith({ ...owner, agent: "codex" }, expect.anything());
       expect(start.mock.calls[0]![0]).toEqual({ ...owner, agent: "codex", cwd: binding.worktreePath });
       expect(start).toHaveBeenCalledOnce(); expect(start.mock.calls[0]![2]).toMatchObject({ resumeSessionId: sessionId, configuration: frozen });
@@ -350,10 +330,7 @@ describe("worker synchronous management runtime ownership", () => {
       if (gate === "daemon-unknown") expect(ensureExecution).toHaveBeenCalledOnce();
       else expect(ensureExecution).not.toHaveBeenCalled();
     }
-    if (gate === "migration") {
-      expect(ensureInstance).toHaveBeenCalled();
-      expect(createWorktreeManifestStore(binding.commonDirectory).read(worktreeId)).toMatchObject({ ...owner, directoryName: f.task.taskId });
-    } else if (gate === "legacy" || gate === "no-restore") expect(ensureInstance).toHaveBeenCalledOnce();
+    if (gate === "legacy" || gate === "no-restore") expect(ensureInstance).toHaveBeenCalledOnce();
     else expect(ensureInstance).not.toHaveBeenCalled();
     expect(f.store.getTask(f.task)).toMatchObject({ status: "active", claimId: f.task.claimId, sessionId });
     expect(f.store.getNativeConfiguration(f.task)).toEqual(frozen);

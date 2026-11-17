@@ -19,7 +19,6 @@ import { resolveWorkerPaths } from "./paths.js";
 import { tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { openWorkerStore } from "./store.js";
 import { workerStoreFormat } from "./store-format.js";
-import { readHerdrLifecycleRecords } from "./herdr/lifecycle-store.js";
 import { createWorkerRemote } from "./remote.js";
 import { createWorkerGitManager } from "./worktrees.js";
 import type { WorktreeBinding } from "./types.js";
@@ -82,11 +81,6 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
     currentEvidence(webFile, webExecutionStoreFormat);
     store = openWorkerStore(paths.databaseFile);
     web = openWebExecutionStore(webFile);
-    const herdrFile = path.join(paths.workerDirectory, "herdr-executions.sqlite");
-    let hasHerdr = false;
-    try { await ordinaryFile(herdrFile); hasHerdr = true; }
-    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
-    if (hasHerdr && readHerdrLifecycleRecords(herdrFile).some(record => record.owner.projectId === options.request.projectId && record.owner.taskId === options.request.taskId && record.claimId === options.request.claimId)) throw new Error("The original claim has conflicting Herdr and Web execution evidence; recovery is prohibited.");
     const project = store.getProject(options.request);
     if (project === null) throw new Error("Restore the original Project repository mapping before resource recovery.");
     const root = await lstat(project.localPath);
@@ -114,7 +108,7 @@ export const runCompletedWebResourceRecovery = async (options: { homeDirectory: 
       serverOrigin: serverUrl, workerId, project, currentUserId: remote.currentUserId, getRecord: web.getTask, readTask: remote.readTask, readProject: remote.project,
       inspectWorktree: async owner => {
         const scan = await git!.scanWorktrees(project, operation);
-        if (!scan.enumerationComplete || scan.unknown.length > 0 || scan.quarantined.length > 0) throw new Error("Original Git resource enumeration is incomplete or conflicting.");
+        if (!scan.enumerationComplete || scan.unknown.length > 0 || scan.quarantined.some(value => value.owner.worktreeId === owner.worktreeId || value.owner.projectId === owner.projectId && value.owner.taskId === owner.taskId && value.owner.claimId === owner.claimId)) throw new Error("Original Git resource enumeration is incomplete or conflicting.");
         const matches = scan.validated.filter(value => value.owner.projectId === owner.projectId && value.owner.taskId === owner.taskId && value.owner.claimId === owner.claimId);
         if (matches.length !== 1 || matches[0]!.owner.worktreeId !== owner.worktreeId) throw new Error("The original claim does not have one matching worktree.");
         await verifyDirectories(matches[0]!.binding);

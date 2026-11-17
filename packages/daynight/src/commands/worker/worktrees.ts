@@ -187,7 +187,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     return manifest;
   };
   // Old Worker lock parsing is confined to the one-time migration.
-  const readers = { directory, ordinaryFile, markerOwner: (_marker: string): ResourceOwner => { throw new Error("Legacy Worker lock remains in the current worktree format."); } };
+  const readers = { directory, ordinaryFile, markerOwner: (_marker: string): ResourceOwner => { throw new WorktreeValidationError("Legacy Worker lock remains in the current worktree format."); } };
   const registrations = async (repository: WorkerRepository, target: string, operation: Operation, index?: RegistrationIndex): Promise<Registration[]> =>
     registrationsFor(index ?? await readRegistrationIndex(repository, readers, operation), target, readers);
   const inspectWorktree = async (project: WorkerProject, identity: ResourceOwner, repository: WorkerRepository, operation: Operation, terminal: boolean, index?: RegistrationIndex, observedPointer?: string | null, original?: WorktreeManifest) => {
