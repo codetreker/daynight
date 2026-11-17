@@ -65,8 +65,9 @@ it("imports local choices while preserving the legacy cloud report projection", 
   const codex = path.resolve("/tools/codex");
   const source = stringify({ worker: { toolPaths: { codex } } });
   const bootstrap = await parseWorkerCloudBootstrap(source, paths, async () => { throw new Error("No Projects configured."); }, new AbortController().signal);
+  expect(parseWorkerLocalConfiguration(source, paths).toolPaths.codex).toEqual({ kind: "path", path: codex });
   const legacy = {
-    agentControlMode: "herdr", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
+    agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3,
     preferPlatformSpecificTasks: false, native: { agent: "copilot", model: null, args: [] }, projects: [],
   };
   expect(bootstrap).toEqual({ ...legacy, archiveSessions: true, toolPaths: { ...automatic, codex: { kind: "path", path: codex } } });
