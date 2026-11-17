@@ -7,7 +7,7 @@ Session 和 Test Session 的专用 cursor 在 base64 解码前检查原有较小
 
 [需求](../spec/task-sessions.md)定义 Session 的执行与历史读取。认领服务保存实际模式，CLI 冻结执行配置，Web 读取同一字段。共享纯 TypeScript 协议位于 `packages/daynight/src/session/`；CLI 发布时随包编译，Web 从同一源码消费类型与解析，避免产生独立发布包或重复协议副本。模块不得依赖 Node 进程、文件系统或认证配置。
 
-Herdr 终端内容的[显式 v2 契约](session-v2-contract.md)使用独立严格解析器、运行代次账本和完整帧归档；其页面与控制由 [Herdr Session Web 设计](herdr-session-web.md)说明。Web producer、relay 路由与 v1 文件行为保持本页所述；v2 类型可用本身不代表运行端具备对应能力。
+Herdr 终端内容的[显式 v2 契约](session-v2-contract.md)使用独立严格解析器、运行代次账本和完整帧归档；历史读取由 [终端 Session 服务端设计](terminal-session-server.md)说明，网页只呈现已上传录像。Web producer、relay 路由与 v1 文件行为保持本页所述；v2 类型可用本身不代表运行端具备对应能力。
 
 Worker 通过 Web backend 支持 Codex、Claude、Copilot，并启动独立的 `daynight controller <provider> --launch-id <id>`。服务端 Session relay 与 Task Session 页面承载 Web 模式的历史和控制；Web 执行不初始化、启动或探测 Herdr。旧 Herdr claim 及资源由用户处理。独立[运行快照上报](daynight-worker-reporting.md)只读私有端点版本，不初始化 Herdr 执行 backend。
 

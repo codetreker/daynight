@@ -17,10 +17,9 @@ TS 的 `strict-json.ts` 拥有通用严格 JSON 解码；`session/v2/values.ts` 
 文件入口和测试清单一起构成可执行交换契约，不能各自在服务端、Worker、Web
 复制另一套字段。
 
-服务端消费 registration/ledger/finalization 时仍须在事务与 Session 锁下核对
-认证用户、原 claim 和已登记的运行身份。Worker 负责 durable 写入、原生能力、
-单调时限和资源责任。浏览器只在验证过的内容上呈现画面，不把解析成功视为授权。
-HTTP/WebSocket 路由启用、原生适配器、持久录制及 UI 分别由其实现模块负责；
+服务端只向 v2 暴露历史列表、归档状态和正文读取；活动注册、控制、恢复和
+归档写入不再接入 HTTP。下文的活动消息规则描述仍存的内部协议和历史格式，
+不构成网络能力声明。浏览器只在验证过的内容上呈现画面，不把解析成功视为授权。
 本包提供纯协议选择函数，不自行注册服务端路由。
 
 Web 的 `TerminalRecordingView` 以[公共原生选择组件](native-select.md)的 `filter/content` 呈现本地录制缩放，继续用原受控值改变 `--terminal-text-scale`，不产生控制请求、回执或归档修改。播放器与所在 Session 的全屏根保持同一子树；`useSessionFullscreen` 的共享 React/document 键盘处理器尊重已消费事件与 IME，并在缩放原生 popup 打开时只停止 Escape 传播，保留原生取消和当前全屏。非 popup Escape 沿原退出与回焦点逻辑处理。播放、暂停、时间轴和归档完整性仍由各自原机制拥有。

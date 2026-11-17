@@ -25,45 +25,29 @@ func TestCallsFromServiceKeepsDirectBindings(t *testing.T) {
 		}
 	}
 	expected := map[string]any{
-		"ArchiveStatus":              service.ArchiveStatus,
-		"AuthenticateController":     service.AuthenticateController,
-		"BindTerminalConnection":     service.BindTerminalConnection,
-		"BrowserPoll":                service.BrowserPoll,
-		"Connect":                    service.ConnectWithContentRead,
-		"Current":                    service.Current,
-		"CurrentTerminal":            service.CurrentTerminal,
-		"CurrentWithStartup":         service.CurrentWithStartup,
-		"Disconnect":                 service.Disconnect,
-		"DisconnectTerminal":         service.DisconnectTerminal,
-		"FinalizeTerminal":           service.FinalizeTerminal,
-		"Grant":                      service.Grant,
-		"Handle":                     service.Handle,
-		"HandleTerminalControl":      service.HandleTerminalControl,
-		"ListTest":                   service.ListTest,
-		"Operation":                  service.Operation,
-		"Poll":                       service.Poll,
-		"PollTerminal":               service.PollTerminal,
-		"Register":                   service.Register,
-		"RegisterTerminal":           service.RegisterTerminal,
-		"RegisterTest":               service.RegisterTest,
-		"Resource":                   service.Resource,
-		"SourceSeq":                  service.SourceSeq,
-		"StopTest":                   service.StopTest,
-		"Submit":                     service.Submit,
-		"TerminalArchiveState":       service.TerminalArchiveState,
-		"TerminalArchiveStatus":      service.TerminalArchiveStatus,
-		"TerminalAutomationRecovery": service.TerminalAutomationRecovery,
-		"TerminalHistory":            service.TerminalHistory,
-		"TerminalReceipt":            service.TerminalReceipt,
-		"TerminalRecordingEvidence":  service.TerminalRecordingEvidence,
-		"TerminalState":              service.TerminalState,
-		"TestSnapshot":               service.TestSnapshot,
-		"Timeline":                   service.Timeline,
-		"UpdateArchive":              service.UpdateArchive,
-		"UpdateTerminalArchive":      service.UpdateTerminalArchive,
-		"UpdateTerminalLedger":       service.UpdateTerminalLedger,
-		"UpdateTerminalRecording":    service.UpdateTerminalRecording,
-		"UpdateTerminalRecovery":     service.UpdateTerminalRecovery,
+		"ArchiveStatus":          service.ArchiveStatus,
+		"AuthenticateController": service.AuthenticateController,
+		"BrowserPoll":            service.BrowserPoll,
+		"Connect":                service.ConnectWithContentRead,
+		"Current":                service.Current,
+		"CurrentWithStartup":     service.CurrentWithStartup,
+		"Disconnect":             service.Disconnect,
+		"Grant":                  service.Grant,
+		"Handle":                 service.Handle,
+		"ListTest":               service.ListTest,
+		"Operation":              service.Operation,
+		"Poll":                   service.Poll,
+		"Register":               service.Register,
+		"RegisterTest":           service.RegisterTest,
+		"Resource":               service.Resource,
+		"SourceSeq":              service.SourceSeq,
+		"StopTest":               service.StopTest,
+		"Submit":                 service.Submit,
+		"TerminalArchiveStatus":  service.TerminalArchiveStatus,
+		"TerminalHistory":        service.TerminalHistory,
+		"TestSnapshot":           service.TestSnapshot,
+		"Timeline":               service.Timeline,
+		"UpdateArchive":          service.UpdateArchive,
 	}
 	for name, want := range expected {
 		if got := actual.FieldByName(name).Pointer(); got != reflect.ValueOf(want).Pointer() {
@@ -116,12 +100,12 @@ func TestArchiveOperationCallPassesRequestAndReservation(t *testing.T) {
 			calls := 0
 			begin := archiveOperationCall(func(actual context.Context, p model.Principal, project, task, id string, mode sessioncore.ArchiveMode, token *sessioncore.ArchivePreflightReservation) (*sessioncore.ArchiveOperation, error) {
 				calls++
-				if actual != ctx || p != principal || project != "project" || task != "task" || id != "session" || mode != sessioncore.ArchiveV2Upload || token != reservation {
+				if actual != ctx || p != principal || project != "project" || task != "task" || id != "session" || mode != sessioncore.ArchiveV1Upload || token != reservation {
 					t.Fatal("archive request or reservation changed")
 				}
 				return scenario.result, scenario.err
 			})
-			result, err := begin(ctx, principal, "project", "task", "session", sessioncore.ArchiveV2Upload, reservation)
+			result, err := begin(ctx, principal, "project", "task", "session", sessioncore.ArchiveV1Upload, reservation)
 			if calls != 1 || result != archiveOperation(scenario.result) || err != scenario.err {
 				t.Fatal("archive operation result or error changed", calls, result, err)
 			}

@@ -1,23 +1,15 @@
 package session
 
 import (
-	"context"
-	"errors"
-	"io"
-	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-
-	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
 )
 
 func sessionSubprotocols(r *http.Request) []string {
@@ -65,61 +57,13 @@ func selectedSessionProtocol(r *http.Request) (string, error) {
 }
 func terminalFault(code, message string) error { return &model.Fault{Code: code, Message: message} }
 func (h *Routes) registerTerminalRoutes(mux *http.ServeMux) {
-	for path, method := range map[string]string{
-		sessionBase: "GET", sessionBase + "/{sessionId}/state": "GET",
-		sessionBase + "/{sessionId}/worker-messages":                  "POST",
-		sessionBase + "/{sessionId}/worker-channel":                   "GET",
-		sessionBase + "/{sessionId}/archive/receipt":                  "GET",
-		sessionBase + "/{sessionId}/archive/state":                    "GET",
-		sessionBase + "/{sessionId}/recording-evidence/{evidenceId}":  "GET",
-		sessionBase + "/{sessionId}/automation-recovery/{recoveryId}": "GET",
-	} {
-		mux.HandleFunc(method+" "+path, h.auth.Require(h.Parameters(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
-			h.Failure(w, r, terminalFault("unsupported_protocol", "This endpoint requires daynight.session.v2."))
-		})))
-		if path != sessionBase {
-			fallback := h.auth.Require(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
-				httpx.MethodNotAllowed(h.logger, method)(w, r)
-			})
-			mux.HandleFunc(path, fallback)
-			if path != sessionBase+"/{sessionId}/state" {
-				mux.HandleFunc("HEAD "+path, fallback)
-			}
-		}
-	}
+	mux.HandleFunc("GET "+sessionBase, h.auth.Require(h.Parameters(func(w http.ResponseWriter, r *http.Request, _ model.Principal) {
+		h.Failure(w, r, terminalFault("unsupported_protocol", "This endpoint requires daynight.session.v2."))
+	})))
 }
-func terminalEpoch(r *http.Request) (string, error) {
-	values := r.Header.Values("Daynight-Connection-Epoch")
-	if len(values) != 1 {
-		return "", httpx.InvalidInput("A terminal connection epoch is required.")
-	}
-	n, err := strconv.ParseInt(values[0], 10, 64)
-	if err != nil || n < 1 || strconv.FormatInt(n, 10) != values[0] {
-		return "", httpx.InvalidInput("Invalid terminal connection epoch.")
-	}
-	return values[0], nil
-}
-func terminalBody(w http.ResponseWriter, r *http.Request) (v2.Message, error) {
-	if _, err := httpx.QueryValues(r); err != nil {
-		return v2.Message{}, err
-	}
-	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || media != "application/json" || params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8") {
-		return v2.Message{}, httpx.InvalidInput("Content-Type must be application/json with UTF-8 encoding.")
-	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4*1024*1024))
-	if err != nil {
-		return v2.Message{}, terminalFault("invalid_payload", "Unable to read bounded terminal message.")
-	}
-	m, err := v2.DecodeMessage(raw)
-	if err != nil {
-		return v2.Message{}, terminalFault("invalid_payload", "Invalid terminal message.")
-	}
-	if id := r.PathValue("sessionId"); id != "" && id != m.SessionID {
-		return v2.Message{}, terminalFault("stale_fence", "Session identity does not match the route.")
-	}
-	return m, nil
-}
+
+// terminalRoute retains only historical directory and archive reads. The
+// archive preflight surrounding the content route owns its reservation.
 func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	if r.Method == http.MethodHead {
 		httpx.MethodNotAllowed(h.logger, "GET")(w, r)
@@ -129,276 +73,46 @@ func (h *Routes) terminalRoute(w http.ResponseWriter, r *http.Request, p model.P
 		h.Failure(w, r, terminalFault("unsupported_protocol", "Terminal Sessions require a task."))
 		return
 	}
-	switch r.Pattern {
-	case "POST " + sessionBase + "/{sessionId}/commands",
-		"GET " + sessionBase + "/{sessionId}/operations/{operationId}",
-		"GET " + sessionBase + "/{sessionId}/channel":
-		h.Failure(w, r, terminalFault("unsupported_content_kind", "This endpoint does not serve terminal content."))
-		return
-	}
 	project, task, id := r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId")
-	path := r.URL.Path
 	var result any
 	var err error
-	switch {
-	case strings.HasSuffix(path, "/worker-channel"):
-		h.terminalWorkerChannel(w, r, p)
+	switch r.Pattern {
+	case "GET " + sessionBase:
+		values, queryErr := httpx.QueryValues(r, "cursor", "limit")
+		if queryErr != nil {
+			err = queryErr
+			break
+		}
+		limit := 50
+		if values.Get("limit") != "" {
+			limit, err = strconv.Atoi(values.Get("limit"))
+			if err != nil {
+				err = httpx.InvalidInput("Invalid history limit.")
+				break
+			}
+		}
+		result, err = h.service.TerminalHistory(r.Context(), p, project, task, values.Get("cursor"), limit)
+	case "GET " + sessionBase + "/{sessionId}/archive":
+		if _, err = httpx.QueryValues(r); err == nil {
+			result, err = h.service.TerminalArchiveStatus(r.Context(), p, project, task, id)
+		}
+	case "GET " + sessionBase + "/{sessionId}/archive/content":
+		if _, err = httpx.QueryValues(r); err != nil {
+			break
+		}
+		content, contentErr := h.service.TerminalArchiveContentReserved(r.Context(), p, project, task, id, archiveReservation(r))
+		if contentErr != nil {
+			err = contentErr
+			break
+		}
+		// The immutable receipt hashes these exact bytes, including JSON whitespace.
+		h.sendArchive(w, r, content.Data, 120*time.Second, content)
 		return
-	case r.Method == http.MethodGet:
-		switch {
-		case strings.HasSuffix(path, "/sessions"):
-			values, e := httpx.QueryValues(r, "cursor", "limit")
-			if e != nil {
-				err = e
-				break
-			}
-			limit := 50
-			if values.Get("limit") != "" {
-				limit, err = strconv.Atoi(values.Get("limit"))
-				if err != nil {
-					err = httpx.InvalidInput("Invalid history limit.")
-					break
-				}
-			}
-			result, err = h.service.TerminalHistory(r.Context(), p, project, task, values.Get("cursor"), limit)
-		case strings.HasSuffix(path, "/current"):
-			if _, err = httpx.QueryValues(r); err == nil {
-				result, err = h.service.CurrentTerminal(r.Context(), p, project, task)
-			}
-		case r.PathValue("recoveryId") != "":
-			if _, err = httpx.QueryValues(r); err == nil {
-				result, err = h.service.TerminalAutomationRecovery(r.Context(), p, project, task, id, r.PathValue("recoveryId"))
-			}
-		case r.PathValue("evidenceId") != "":
-			values, e := httpx.QueryValues(r, "generation")
-			if e != nil {
-				err = e
-				break
-			}
-			result, err = h.service.TerminalRecordingEvidence(r.Context(), p, project, task, id, values.Get("generation"), r.PathValue("evidenceId"))
-		case strings.HasSuffix(path, "/archive/content"):
-			if _, err = httpx.QueryValues(r); err != nil {
-				break
-			}
-			content, contentErr := h.service.TerminalArchiveContentReserved(r.Context(), p, project, task, id, archiveReservation(r))
-			if contentErr != nil {
-				err = contentErr
-				break
-			}
-			// The immutable receipt hashes these exact bytes, including JSON whitespace.
-			h.sendArchive(w, r, content.Data, 120*time.Second, content)
-			return
-		case strings.HasSuffix(path, "/archive/receipt"):
-			if _, err = httpx.QueryValues(r); err == nil {
-				result, err = h.service.TerminalReceipt(r.Context(), p, project, task, id)
-			}
-		case strings.HasSuffix(path, "/archive/state"):
-			if _, err = httpx.QueryValues(r); err == nil {
-				result, err = h.service.TerminalArchiveState(r.Context(), p, project, task, id)
-			}
-		case strings.HasSuffix(path, "/archive"):
-			if _, err = httpx.QueryValues(r); err == nil {
-				result, err = h.service.TerminalArchiveStatus(r.Context(), p, project, task, id)
-			}
-		case r.Pattern == "GET "+sessionBase+"/{sessionId}/state":
-			if _, err = httpx.QueryValues(r); err == nil {
-				result, err = h.service.TerminalState(r.Context(), p, project, task, id)
-			}
-		default:
-			err = terminalFault("unsupported_content_kind", "This endpoint does not serve terminal content.")
-		}
-	case r.Method == http.MethodPut && strings.HasSuffix(path, "/archive"):
-		if err = validateArchiveBody(r); err != nil {
-			httpx.CloseUnreadBody(w, r)
-			break
-		}
-		var op archiveOperation
-		op, err = h.service.BeginArchiveReserved(r.Context(), p, project, task, id, sessioncore.ArchiveV2Upload, archiveReservation(r))
-		if err != nil {
-			httpx.CloseUnreadBody(w, r)
-			break
-		}
-		defer func() {
-			if op != nil {
-				h.closeArchive(r, op)
-			}
-		}()
-		var body []byte
-		body, err = archiveBody(w, r)
-		if err != nil {
-			err = archiveCleanupError(err, op.Close())
-			op = nil
-			httpx.WriteBodyError(w, r, h.logger, "session", "archive", err)
-			return
-		}
-		result, err = op.PutTerminalArchive(r.Context(), body)
-		if err != nil {
-			err = archiveCleanupError(err, op.Close())
-			op = nil
-			h.Failure(w, r, err)
-			return
-		}
-		lease := op
-		op = nil
-		h.archiveResult(w, r, result, lease)
-		return
-	case r.Method == http.MethodPost:
-		var m v2.Message
-		m, err = terminalBody(w, r)
-		if err != nil {
-			break
-		}
-		switch {
-		case strings.HasSuffix(path, "/sessions"):
-			result, err = h.service.RegisterTerminal(r.Context(), p, project, task, m)
-		case strings.HasSuffix(path, "/archive"):
-			result, err = h.service.UpdateTerminalArchive(r.Context(), p, project, task, id, m)
-		case strings.HasSuffix(path, "/worker-messages"):
-			var epoch string
-			epoch, err = terminalEpoch(r)
-			if err == nil {
-				result, err = h.terminalWorkerMessage(r.Context(), p, project, task, id, epoch, m)
-			}
-		default:
-			err = terminalFault("unsupported_content_kind", "This endpoint does not accept terminal operations.")
-		}
 	default:
-		err = terminalFault("unsupported_content_kind", "Unsupported terminal endpoint.")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			httpx.CloseUnreadBody(w, r)
+		}
+		err = terminalFault("unsupported_content_kind", "This endpoint does not serve terminal content.")
 	}
 	h.Result(w, r, http.StatusOK, result, err)
-}
-func (h *Routes) terminalWorkerMessage(ctx context.Context, p model.Principal, project, task, id, epoch string, m v2.Message) (v2.Message, error) {
-	switch m.Type {
-	case "automation_recovery_prepare", "automation_recovery":
-		return h.service.UpdateTerminalRecovery(ctx, p, project, task, id, epoch, m)
-	case "generation_ledger":
-		return h.service.UpdateTerminalLedger(ctx, p, project, task, id, epoch, m)
-	case "finalization":
-		return h.service.FinalizeTerminal(ctx, p, project, task, id, epoch, m)
-	case "recording_responsibility", "recording_evidence":
-		return h.service.UpdateTerminalRecording(ctx, p, project, task, id, epoch, m)
-	default:
-		return h.service.HandleTerminalControl(ctx, p, project, task, id, epoch, m)
-	}
-}
-func terminalChannelProtocol(r *http.Request) error {
-	for _, p := range sessionSubprotocols(r) {
-		if p == v2.Protocol {
-			return nil
-		}
-	}
-	return terminalFault("unsupported_protocol", "Terminal channels require the daynight.session.v2 WebSocket subprotocol.")
-}
-func readTerminal(ctx context.Context, c *websocket.Conn) (v2.Message, error) {
-	read, cancel := context.WithTimeout(ctx, 35*time.Second)
-	defer cancel()
-	kind, raw, err := c.Read(read)
-	if err != nil {
-		return v2.Message{}, err
-	}
-	if kind != websocket.MessageText {
-		return v2.Message{}, errors.New("terminal messages must be text")
-	}
-	return v2.DecodeMessage(raw)
-}
-func (h *Routes) terminalWorkerChannel(w http.ResponseWriter, r *http.Request, p model.Principal) {
-	if p.Kind != model.PATCredential {
-		h.Failure(w, r, terminalFault("permission_denied", "Worker channels require the original owner's credential."))
-		return
-	}
-	if _, err := httpx.QueryValues(r); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	if err := terminalChannelProtocol(r); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	if err := h.origin(r, false); err != nil {
-		h.Failure(w, r, err)
-		return
-	}
-	conn, ctx, cleanup, err := h.accept(w, r)
-	if err != nil {
-		return
-	}
-	defer cleanup()
-	conn.SetReadLimit(4 * 1024 * 1024)
-	first, err := readTerminal(ctx, conn)
-	project, task, id := r.PathValue("projectId"), r.PathValue("taskId"), r.PathValue("sessionId")
-	if err != nil || first.Type != "registration" || first.SessionID != id {
-		return
-	}
-	ack, err := h.service.RegisterTerminal(ctx, p, project, task, first)
-	if err != nil {
-		return
-	}
-	epoch := ack.Payload.(v2.RegistrationAck).ConnectionEpoch
-	channelFence := first.Envelope
-	if err = h.service.BindTerminalConnection(ctx, p, project, task, id, first.Envelope, epoch); err != nil {
-		return
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), relayWriteTimeout)
-		defer cancel()
-		h.recordDrainError(h.service.DisconnectTerminal(ctx, p, project, task, id, channelFence, epoch))
-	}()
-	if err = relayWrite(ctx, conn, ack); err != nil {
-		return
-	}
-	type incoming struct {
-		m   v2.Message
-		err error
-	}
-	input := make(chan incoming, 1)
-	done := make(chan struct{})
-	readCtx, cancel := context.WithCancel(ctx)
-	go func() {
-		defer close(done)
-		for {
-			m, e := readTerminal(readCtx, conn)
-			select {
-			case input <- incoming{m, e}:
-			case <-readCtx.Done():
-				return
-			}
-			if e != nil {
-				return
-			}
-		}
-	}()
-	defer func() { cancel(); _ = conn.CloseNow(); <-done }()
-	tick := time.NewTicker(sessioncore.PollInterval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case in := <-input:
-			if in.err != nil || in.m.SessionID != id || in.m.ClaimID != first.ClaimID || in.m.Type != "generation_ledger" && in.m.ExecutionGeneration != channelFence.ExecutionGeneration {
-				return
-			}
-			result, e := h.terminalWorkerMessage(ctx, p, project, task, id, epoch, in.m)
-			if e != nil {
-				return
-			}
-			if in.m.Type == "generation_ledger" {
-				// Only the transactional ledger grant can advance the channel fence.
-				channelFence = result.Envelope
-			}
-			if e = relayWrite(ctx, conn, result); e != nil {
-				return
-			}
-		case <-tick.C:
-			offers, e := h.service.PollTerminal(ctx, p, project, task, id, channelFence, epoch)
-			if e != nil {
-				return
-			}
-			for _, offer := range offers {
-				if e = relayWrite(ctx, conn, offer); e != nil {
-					return
-				}
-			}
-		}
-	}
 }

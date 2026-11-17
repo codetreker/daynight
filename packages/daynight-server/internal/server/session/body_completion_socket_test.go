@@ -12,9 +12,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
-	sessioncore "github.com/codetreker/daynight/packages/daynight-server/internal/core/session"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
-	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol/v2"
 )
 
 type sessionDeadlineObserver struct {
@@ -51,7 +49,6 @@ func TestSessionConsumedBodyRejectionKeepsSocketReusable(t *testing.T) {
 	}{
 		{"session", "POST", f.base, "Content-Type: application/json\r\n", "{}", "invalid_input", 400},
 		{"session chunked", "POST", f.base, "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n", "2\r\n{}\r\n0\r\n\r\n", "invalid_input", 400},
-		{"terminal", "POST", f.base, "Content-Type: application/json\r\n" + v2.ProtocolHeader + ": " + v2.Protocol + "\r\n", "{}", "invalid_payload", 400},
 		{"archive", "PUT", f.base + "/" + f.snapshot.SessionID + "/archive", "Content-Type: application/json\r\n", "{}", "invalid_input", 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,14 +64,6 @@ func TestSessionConsumedBodyRejectionKeepsSocketReusable(t *testing.T) {
 			}
 		})
 	}
-	terminal := archiveHTTPSetup(t)
-	terminal.ExpectedMode = sessioncore.ArchiveV2Upload
-	terminal.auth.ExpectCalls(2)
-	terminal.Expect(map[string]int{"TryReserveArchivePreflight": 1, "BeginArchiveReserved": 1})
-	terminal.SetUploadResult(sp.ArchiveStatus{}, &model.Fault{Code: "source_corrupt", Message: "Invalid terminal archive."})
-	testConsumedBodySocket(t, terminal.handler.Handler, terminal.handler.token, "PUT", terminal.base+"/"+terminal.snapshot.SessionID+"/archive", "Content-Type: application/json\r\n"+v2.ProtocolHeader+": "+v2.Protocol+"\r\n", "{}", "source_corrupt", 409, true)
-	terminal.AssertBody(t, []byte("{}"))
-	terminal.AssertReleased(t)
 }
 
 func testConsumedBodySocket(t *testing.T, handler http.Handler, token, method, path, headers, body, code string, status int, bounded bool) {

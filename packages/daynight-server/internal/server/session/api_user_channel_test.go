@@ -629,14 +629,12 @@ func TestAPIUserChannelUpgradeFailureReleasesReservation(t *testing.T) {
 
 func TestAPIUserChannelProducerMarkersDoNotSelectAPIAuthentication(t *testing.T) {
 	f := newAPIChannelFixture(t, time.Now().Add(time.Hour))
-	for _, path := range []string{"/api/v1/controller-channel", "/api/v1/projects/" + f.project + "/tasks/" + f.task + "/sessions/" + f.session + "/worker-channel"} {
-		conn, response, err := f.dial(path, []string{sp.Protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
-		if conn != nil {
-			conn.CloseNow()
-		}
-		if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
-			t.Fatal(response, err)
-		}
+	conn, response, err := f.dial("/api/v1/controller-channel", []string{sp.Protocol, "daynight.authorization." + f.token}, http.Header{"Origin": {apiChannelOrigin}})
+	if conn != nil {
+		conn.CloseNow()
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatal(response, err)
 	}
 	if f.apiCalls.Load() != 0 {
 		t.Fatal("producer selected browser API verifier")
