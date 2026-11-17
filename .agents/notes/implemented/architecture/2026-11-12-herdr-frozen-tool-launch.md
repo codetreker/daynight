@@ -12,6 +12,8 @@ daemon can also abandon live agents or uncertain startup and shutdown work.
 
 ## Decision
 
+The later [Web-only runtime decision](2026-11-17-worker-web-runtime-composition.md) removes this admission and instance ownership from the Worker runtime. The following records the original design and its rationale.
+
 Each new execution freezes both Agent and Herdr recipes. A private, owner-bound
 manifest maps the existing bare-kind interface to a fixed Node helper, which
 starts the verified command with structured arguments and records intent and

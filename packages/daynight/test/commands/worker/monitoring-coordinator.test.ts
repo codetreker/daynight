@@ -6,6 +6,7 @@ import { createMemoryDatabase } from "../../helpers/sqlite.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { Task } from "../../../src/api/types.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
@@ -14,8 +15,9 @@ import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 let project = { projectId: uuid(10), repoUrl: "https://example.test/a/b.git", localPath: "" };
 const stores: ReturnType<typeof openWorkerStore>[] = [];
+const webStores: ReturnType<typeof openWebExecutionStore>[] = [];
 const roots: string[] = [];
-afterEach(() => { for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const store of webStores.splice(0)) store.close(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 const fixture = (settings: { prepareProject?: () => Promise<void> } = {}) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/monitoring-coordinator"); mkdirSync(base, { recursive: true });
@@ -29,7 +31,10 @@ const fixture = (settings: { prepareProject?: () => Promise<void> } = {}) => {
   const candidates = vi.fn(async function* (): AsyncGenerator<Task> { /* Full successful search has no candidates. */ });
   const claim = vi.fn();
   const remote = { serverOrigin: "https://example.test", currentUserId: vi.fn(async () => uuid(2)), ownInventory, candidates, claim } as unknown as WorkerRemote;
-  const coordinator = createWorkerCoordinator({ store, git, remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
+  const webStore = openWebExecutionStore(createMemoryDatabase()); webStores.push(webStore);
+  const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in monitoring fixture."); };
+  const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unexpectedBackendCall };
+  const coordinator = createWorkerCoordinator({ store, webStore, webBackend, git, remote, serverOrigin: remote.serverOrigin, workerId: uuid(1), platform: "linux", machine: { id: uuid(3), name: "host" }, repositories: [{ project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 } }], globalConfiguration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 1 }, maxConcurrent: 1, preferPlatformSpecificTasks: false, emit: () => {}, now: () => clock, monitoring: monitor, ...(settings.prepareProject === undefined ? {} : { prepareProject: settings.prepareProject }) });
   return { coordinator, monitor, ownInventory, candidates, claim, clock: (value: number) => { clock = value; } };
 };
 

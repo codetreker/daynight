@@ -21,7 +21,7 @@ import { createWorkerCoordinator as createCoordinator } from "../../../src/comma
 import type { CleanupTarget, StopObservation } from "../../../src/commands/worker/execution-stop.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
-import type { WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
 import { createMonitoringObserver } from "../../../src/commands/worker/monitoring/observer.js";
 import { createWebArchiveMaintenance } from "../../../src/commands/worker/web-archive-backfill.js";
@@ -94,11 +94,12 @@ const createWorkerCoordinator = (options: Parameters<typeof createCoordinator>[0
   const coordinator = createCoordinator(options); const shutdown = coordinator.shutdown.bind(coordinator);
   let closing: ReturnType<typeof shutdown> | undefined; coordinator.shutdown = () => closing ??= shutdown(); coordinators.push(coordinator); return coordinator;
 };
+const webStores: WebExecutionStore[] = [];
 const directories: string[] = [], stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => {
   const shutdowns = await Promise.allSettled(coordinators.splice(0).map(coordinator => coordinator.shutdown()));
   polling.onSchedule = undefined; polling.requested.length = 0; gitProcess.wrapper = undefined; gitProcess.helper = undefined; gitProcess.child = undefined; gitProcess.stopHelper = undefined; gitProcess.childClosed = false; gitProcess.stdoutClosed = false; gitProcess.stderrClosed = false; gitProcess.helperClosed = false; gitProcess.helperStdoutClosed = false; gitProcess.diagnostics.length = 0; gitProcess.stdoutBytes = 0; gitProcess.stderrBytes = 0;
-  vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close();
+  vi.restoreAllMocks(); for (const store of webStores.splice(0)) store.close(); for (const store of stores.splice(0)) store.close();
   await Promise.all(directories.splice(0).map(root => rm(root, { recursive: true, force: true })));
   const errors = shutdowns.flatMap(result => result.status === "rejected" ? [result.reason] : []); if (errors.length) throw new AggregateError(errors, "Coordinator fixture shutdown failed.");
 });
@@ -137,7 +138,10 @@ const fixture = async (maxConcurrent = 1) => {
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find(value => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
     update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...readWorkerClaim(current.properties)!, ...update } } }; grants.set(readWorkerClaim(current.properties)!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
-  const options = { store, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const webStore = openWebExecutionStore(createMemoryDatabase()); webStores.push(webStore);
+  const unexpectedBackendCall = async (): Promise<never> => { throw new Error("Unexpected Web backend call in coordinator fixture."); };
+  const webBackend = { advance: unexpectedBackendCall, cleanup: unexpectedBackendCall, observeExecutionStop: unknownStop };
+  const options = { store, webStore, webBackend, git, remote, serverOrigin: origin, workerId, userId: uuid(2), platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, preferPlatformSpecificTasks: false, emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   const reopenStore = () => { stores.splice(stores.indexOf(store), 1); store.close(); store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); options.store = store; return store; };
   return { root, get store() { return store; }, reopenStore, project, candidates, grants, grant, worktrees, manifests, git, remote, events, options, clock: (value: number) => { clock = value; }, bind };
 };
