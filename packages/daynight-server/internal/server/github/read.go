@@ -57,11 +57,18 @@ func (h *handler) run(w http.ResponseWriter, r *http.Request, p model.Principal,
 }
 func (h *handler) list(w http.ResponseWriter, r *http.Request, p model.Principal) {
 	h.run(w, r, p, "list", func(id string) (any, error) {
-		v, err := query(r, "state", "q", "limit", "cursor")
+		v, err := query(r, "state", "q", "limit", "cursor", "authorId")
 		if err != nil {
 			return nil, err
 		}
 		input := coregithub.ListRequest{State: "active", Limit: 20}
+		if x, ok := v["authorId"]; ok {
+			n, e := strconv.ParseInt(x[0], 10, 64)
+			if e != nil || n <= 0 || strconv.FormatInt(n, 10) != x[0] {
+				return nil, httpx.InvalidInput("authorId must be a positive decimal integer")
+			}
+			input.AuthorID = &n
+		}
 		if x, ok := v["state"]; ok {
 			input.State = x[0]
 		}
@@ -241,6 +248,10 @@ func summaryResponse(c githubpr.Connection, p githubpr.PullRequestSummary) (api.
 }
 func pageResponse(p coregithub.Page) (api.PullRequestPage, error) {
 	out := api.PullRequestPage{ProjectID: p.Connection.ProjectID, Revision: decimal(p.Connection.Revision), Items: make([]api.PullRequestSummary, 0, len(p.Items)), Total: decimal(p.Total), Counts: api.PullRequestCounts{Active: decimal(p.Counts.Active), Closed: decimal(p.Counts.Closed), Merged: decimal(p.Counts.Merged), All: decimal(p.Counts.All)}, NextCursor: p.NextCursor, PreviousCursor: p.PreviousCursor}
+	if p.AuthorID != nil {
+		out.AuthorID = optionalDecimal(p.AuthorID)
+		out.ProjectTotal = optionalDecimal(&p.Counts.ProjectTotal)
+	}
 	for _, item := range p.Items {
 		v, err := summaryResponse(p.Connection, item)
 		if err != nil {

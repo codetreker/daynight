@@ -88,9 +88,17 @@ func TestReadResponses(t *testing.T) {
 	if e := json.Unmarshal(w.Body.Bytes(), &page); e != nil || w.Code != 200 {
 		t.Fatalf("page %d %s %v", w.Code, w.Body, e)
 	}
-	if s.input.State != "all" || s.input.Query != "#hello" || s.input.Limit != 6 || s.input.Cursor != "token" || page.Total != "1" || page.Counts.Active != "1" || page.Items[0].Number != "9007199254740993" || page.Items[0].Author != nil || page.Items[0].Head.RepositoryID != nil || strings.Contains(w.Body.String(), "description") {
+	if s.input.State != "all" || s.input.Query != "#hello" || s.input.Limit != 6 || s.input.Cursor != "token" || page.Total != "1" || page.Counts.Active != "1" || page.Items[0].Number != "9007199254740993" || page.Items[0].Author != nil || page.Items[0].Head.RepositoryID != nil || strings.Contains(w.Body.String(), "description") || strings.Contains(w.Body.String(), "authorId") || strings.Contains(w.Body.String(), "projectTotal") {
 		t.Fatalf("page %s input %+v", w.Body, s.input)
 	}
+	author := int64(9007199254740993)
+	s.page.AuthorID = &author
+	s.page.Counts.ProjectTotal = 7
+	w = call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests?authorId=9007199254740993")
+	if w.Code != 200 || s.input.AuthorID == nil || *s.input.AuthorID != author || !strings.Contains(w.Body.String(), `"authorId":"9007199254740993"`) || !strings.Contains(w.Body.String(), `"projectTotal":"7"`) {
+		t.Fatalf("author page %d %s input %+v", w.Code, w.Body, s.input)
+	}
+	s.page.AuthorID = nil
 	w = call(m, "GET", "/api/v1/projects/"+projectID+"/pull-requests/9007199254740993")
 	if w.Code != 200 || s.number != 9007199254740993 || !strings.Contains(w.Body.String(), `"description":""`) {
 		t.Fatalf("detail %d %s", w.Code, w.Body)
@@ -108,7 +116,7 @@ func TestProtocolRejectsBeforeReading(t *testing.T) {
 	s := &readerStub{}
 	m := newMux(s)
 	base := "/api/v1/projects/" + projectID
-	for _, path := range []string{base + "/pull-requests?state=bad", base + "/pull-requests?state=", base + "/pull-requests?limit=0", base + "/pull-requests?limit=101", base + "/pull-requests?limit=x", base + "/pull-requests?limit=01", base + "/pull-requests?q=%00", base + "/pull-requests?q=" + strings.Repeat("a", 1025), base + "/pull-requests?cursor=", base + "/pull-requests?state=all&state=all", base + "/pull-requests?other=x", base + "/pull-requests?q=%FF", base + "/pull-requests?q=%GG", base + "/pull-requests/0", base + "/pull-requests/01", base + "/pull-requests/-1", base + "/pull-requests/9223372036854775808", "/api/v1/projects/invalid/pull-requests"} {
+	for _, path := range []string{base + "/pull-requests?authorId=", base + "/pull-requests?authorId=0", base + "/pull-requests?authorId=-1", base + "/pull-requests?authorId=%2B1", base + "/pull-requests?authorId=01", base + "/pull-requests?authorId=1.0", base + "/pull-requests?authorId=9223372036854775808", base + "/pull-requests?authorId=1&authorId=1", base + "/pull-requests?state=bad", base + "/pull-requests?state=", base + "/pull-requests?limit=0", base + "/pull-requests?limit=101", base + "/pull-requests?limit=x", base + "/pull-requests?limit=01", base + "/pull-requests?q=%00", base + "/pull-requests?q=" + strings.Repeat("a", 1025), base + "/pull-requests?cursor=", base + "/pull-requests?state=all&state=all", base + "/pull-requests?other=x", base + "/pull-requests?q=%FF", base + "/pull-requests?q=%GG", base + "/pull-requests/0", base + "/pull-requests/01", base + "/pull-requests/-1", base + "/pull-requests/9223372036854775808", "/api/v1/projects/invalid/pull-requests"} {
 		w := call(m, "GET", path)
 		if w.Code != 400 || s.calls != 0 {
 			t.Errorf("%q: %d %s calls %d", path, w.Code, w.Body, s.calls)

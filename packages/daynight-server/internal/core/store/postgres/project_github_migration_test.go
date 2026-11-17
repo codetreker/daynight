@@ -169,3 +169,43 @@ func TestProjectGitHubSyncMigrationStopsExistingWorkAndPreservesFacts(t *testing
 		t.Fatal("sync without connection must violate constraint")
 	}
 }
+
+func TestPullRequestAuthorIndexMigrationRollbackAndUpgrade(t *testing.T) {
+	ctx := t.Context()
+	pool := emptyPool(t)
+	if len(schemaMigrations) < 78 || schemaMigrations[77].version != 78 {
+		t.Fatal("unexpected migration boundary")
+	}
+	if err := migrate(ctx, pool, schemaMigrations[:77]); err != nil {
+		t.Fatal(err)
+	}
+	db := &Store{Pool: pool}
+	project := projectBeforeSettings(t, db, 1)
+	mustQueryExec(t, db, `INSERT INTO project_pull_requests(project_id,number,github_id,url,title,author_id,author_login,state,draft,base_ref,head_sha,github_created_at,github_updated_at,observed_at,revision) VALUES($1,5,50,'url','title',9007199254740997,'author','open',false,'main','sha',now(),now(),now(),7)`, project.ID)
+	snapshot := func() string {
+		t.Helper()
+		var result string
+		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object('prs',(SELECT jsonb_agg(to_jsonb(p) ORDER BY number) FROM project_pull_requests p),'ledger',(SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM schema_migrations m WHERE version<=77))::text`).Scan(&result); err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	before := snapshot()
+	mustQueryExec(t, db, `CREATE INDEX project_pull_requests_author_number ON project_pull_requests (number)`)
+	if err := migrate(ctx, pool, schemaMigrations[:78]); err == nil {
+		t.Fatal("expected conflicting index to fail migration")
+	}
+	var ledger int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=78`).Scan(&ledger); err != nil || ledger != 0 || snapshot() != before {
+		t.Fatalf("failed migration changed facts or ledger: ledger=%d err=%v", ledger, err)
+	}
+	mustQueryExec(t, db, `DROP INDEX project_pull_requests_author_number`)
+	if err := migrate(ctx, pool, schemaMigrations[:78]); err != nil {
+		t.Fatal(err)
+	}
+	var valid bool
+	var definition, checksum string
+	if err := pool.QueryRow(ctx, `SELECT i.indisvalid AND i.indisready, pg_get_indexdef(c.oid), (SELECT checksum FROM schema_migrations WHERE version=78) FROM pg_class c JOIN pg_index i ON i.indexrelid=c.oid WHERE c.relnamespace=current_schema()::regnamespace AND c.relname='project_pull_requests_author_number'`).Scan(&valid, &definition, &checksum); err != nil || !valid || checksum != schemaMigrations[77].checksum() || snapshot() != before {
+		t.Fatalf("upgrade changed facts or index invalid: valid=%v definition=%q checksum=%q err=%v", valid, definition, checksum, err)
+	}
+}

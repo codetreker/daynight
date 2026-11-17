@@ -154,17 +154,23 @@ func numericSearch(q string) string {
 func (r *reader) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store.GitHubPRPage, error) {
 	page := store.GitHubPRPage{Items: []githubpr.PullRequestSummary{}, UpperNumber: q.UpperNumber}
 	numeric := numericSearch(q.Query)
+	authorFilter := ` AND $5::bigint IS NULL`
+	if q.AuthorID != nil {
+		// A direct equality keeps the partial author index usable with a generic plan.
+		authorFilter = ` AND author_id=$5::bigint`
+	}
+	where := filter + authorFilter
 	// Total covers the entire matching collection, independently of page and upper bound.
-	if err := r.tx.QueryRow(ctx, `SELECT count(*) FROM project_pull_requests WHERE `+filter, q.ProjectID, q.State, q.Query, numeric).Scan(&page.Total); err != nil {
+	if err := r.tx.QueryRow(ctx, `SELECT count(*) FROM project_pull_requests WHERE `+where, q.ProjectID, q.State, q.Query, numeric, q.AuthorID).Scan(&page.Total); err != nil {
 		return store.GitHubPRPage{}, pg.QueryError("count github pull requests", err)
 	}
 	order, comparison := "DESC", "<"
 	if q.Previous {
 		order, comparison = "ASC", ">"
 	}
-	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+` FROM project_pull_requests WHERE `+filter+
-		` AND ($5::bigint IS NULL OR number <= $5) AND ($6::bigint IS NULL OR number `+comparison+` $6)
-		 ORDER BY number `+order+` LIMIT $7`, q.ProjectID, q.State, q.Query, numeric, q.UpperNumber, q.AnchorNumber, q.Limit+1)
+	rows, err := r.tx.Query(ctx, `SELECT `+summaryFields+` FROM project_pull_requests WHERE `+where+
+		` AND ($6::bigint IS NULL OR number <= $6) AND ($7::bigint IS NULL OR number `+comparison+` $7)
+		 ORDER BY number `+order+` LIMIT $8`, q.ProjectID, q.State, q.Query, numeric, q.AuthorID, q.UpperNumber, q.AnchorNumber, q.Limit+1)
 	if err != nil {
 		return store.GitHubPRPage{}, pg.QueryError("list github pull requests", err)
 	}
@@ -195,11 +201,14 @@ func (r *reader) PullRequests(ctx context.Context, q store.GitHubPRQuery) (store
 	return page, nil
 }
 
-func (r *reader) PullRequestCounts(ctx context.Context, id string) (store.GitHubPRCounts, error) {
+func (r *reader) PullRequestCounts(ctx context.Context, q store.GitHubPRCountsQuery) (store.GitHubPRCounts, error) {
 	var counts store.GitHubPRCounts
-	err := r.tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state='open'), count(*) FILTER (WHERE state='closed'),
-	 count(*) FILTER (WHERE state='merged'), count(*) FROM project_pull_requests WHERE project_id=$1`, id).
-		Scan(&counts.Active, &counts.Closed, &counts.Merged, &counts.All)
+	err := r.tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE ($2::bigint IS NULL OR author_id=$2) AND state='open'),
+	 count(*) FILTER (WHERE ($2::bigint IS NULL OR author_id=$2) AND state='closed'),
+	 count(*) FILTER (WHERE ($2::bigint IS NULL OR author_id=$2) AND state='merged'),
+	 count(*) FILTER (WHERE $2::bigint IS NULL OR author_id=$2), count(*)
+	 FROM project_pull_requests WHERE project_id=$1`, q.ProjectID, q.AuthorID).
+		Scan(&counts.Active, &counts.Closed, &counts.Merged, &counts.All, &counts.ProjectTotal)
 	if err != nil {
 		return store.GitHubPRCounts{}, pg.QueryError("count github pull request states", err)
 	}
