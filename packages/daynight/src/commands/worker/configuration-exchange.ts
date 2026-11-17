@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
 import type { Operation } from "../../api/operation.js";
 import { parseWorkerCloudReport } from "../../api/worker-configuration.js";
-import type { WorkerCloudDesired, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource, WorkerCloudValue, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
+import type { WorkerCloudDesired, ReceivedWorkerDesired, ReceivedWorkerConfigurationReceipt, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource, WorkerCloudValue, WorkerPromptSelector, WorkerPromptResults } from "../../api/worker-configuration.js";
 import type { WorkerReport } from "../../api/types.js";
 import type { WorkerPromptSource } from "./prompt-source.js";
 import { waitForConfigurationOperation } from "./configuration-persistence.js";
@@ -40,8 +40,8 @@ export type WorkerConfigurationExchange = {
   capture(report: WorkerReport): WorkerCloudReport;
   reportContext?(report: WorkerCloudReport): WorkerConfigurationReportContext | undefined;
   isCurrent?(report: WorkerCloudReport): boolean;
-  send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults }>;
-  accept(sent: WorkerCloudReport, receipt: WorkerCloudReceipt, operation: Operation, syncId?: string): Promise<"persisted" | "ignored" | void>;
+  send(report: WorkerReport, configuration: WorkerCloudReport, operation: Operation, selectors?: readonly WorkerPromptSelector[]): Promise<ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults }>;
+  accept(sent: WorkerCloudReport, receipt: ReceivedWorkerConfigurationReceipt, operation: Operation, syncId?: string): Promise<"persisted" | "ignored" | void>;
   acceptanceOutcome?(sent: WorkerCloudReport): "persisted" | "ignored" | undefined;
   markNeedsRead?(): void;
   observe?(event: WorkerConfigurationExchangeEvent): void;
@@ -52,11 +52,11 @@ type ExchangeManager = {
   current(): { readonly generation: string; readonly desired: WorkerCloudDesired | null; readonly observationRevision: string; readonly synchronized: boolean };
   hasAuthority(): boolean;
   waitReady(signal?: AbortSignal): Promise<void>;
-  receive(desired: WorkerCloudDesired | null, revision?: string, signal?: AbortSignal, syncId?: string): Promise<void>;
+  receive(desired: ReceivedWorkerDesired | null, revision?: string, signal?: AbortSignal, syncId?: string, remoteObservation?: { readonly observationRevision: string; readonly json: string } | null): Promise<void>;
   report(bootstrap?: WorkerCloudValue | null, report?: WorkerReport): WorkerCloudReport;
   isCurrentReport(report: WorkerCloudReport): boolean;
   reportContext(report: WorkerCloudReport): WorkerConfigurationReportContext | undefined;
-  acknowledge(report: WorkerCloudReport, receipt: WorkerCloudReceipt, signal?: AbortSignal, syncId?: string): Promise<"persisted" | "ignored">;
+  acknowledge(report: WorkerCloudReport, receipt: ReceivedWorkerConfigurationReceipt, signal?: AbortSignal, syncId?: string): Promise<"persisted" | "ignored">;
 };
 
 export type WorkerConfigurationBootstrapProvider = {
@@ -100,7 +100,7 @@ const immutable = <T>(value: T): T => {
 
 export const createWorkerConfigurationExchange = (options: {
   manager: ExchangeManager;
-  read(operation: Operation): Promise<WorkerCloudResource>;
+  read(operation: Operation): Promise<ReceivedWorkerConfigurationResource>;
   send: WorkerConfigurationExchange["send"];
   bootstrap?: WorkerConfigurationBootstrapProvider;
   prompts?: WorkerPromptSource;
@@ -138,8 +138,8 @@ export const createWorkerConfigurationExchange = (options: {
         let received: WorkerConfigurationReceivedAuthority | undefined;
         await prepareStage(syncId, "authority-read", async () => {
           const resource = await options.read(operation);
-          received = Object.freeze({ desiredRevision: resource.desired?.revision ?? null, observationRevision: resource.observationRevision });
-          await manager.receive(resource.desired, resource.observationRevision, operation.signal, syncId);
+          received = Object.freeze({ desiredRevision: resource.desired?.known.revision ?? null, observationRevision: resource.observationRevision });
+          await manager.receive(resource.desired, resource.observationRevision, operation.signal, syncId, resource.observationJson === null ? null : { observationRevision: resource.observationRevision, json: resource.observationJson });
           needsRead = false;
         }, () => received);
       }
@@ -233,14 +233,14 @@ export const syncWorkerConfigurationOnce = async (options: {
     if (configuration.isCurrent?.(captured) === false) return dropped();
     const source = configuration.prompts;
     const promptCapture = source?.captureBatch() ?? null;
-    let receipt: WorkerCloudReportReceipt & { readonly prompts?: WorkerPromptResults };
+    let receipt: ReceivedWorkerConfigurationReportReceipt & { readonly prompts?: WorkerPromptResults };
     try { receipt = await configuration.send(report, sent, operation, source === undefined ? undefined : promptCapture?.selectors ?? []); }
     catch (error) {
       remoteOutcome = failedConfigurationRequestOutcome(error);
       throw error;
     }
     remoteOutcome = "success"; observationAccepted = receipt.configuration.observationAccepted;
-    received = Object.freeze({ desiredRevision: receipt.configuration.desired?.revision ?? null, observationRevision: receipt.configuration.observationRevision }); emit("succeeded");
+    received = Object.freeze({ desiredRevision: receipt.configuration.desired?.known.revision ?? null, observationRevision: receipt.configuration.observationRevision }); emit("succeeded");
     phase = "receipt-accept"; localOutcome = "pending"; emit("started");
     let acceptance: "persisted" | "ignored" | void;
     try { acceptance = await configuration.accept(captured, receipt.configuration, operation, syncId); }

@@ -1,3 +1,4 @@
+import { receivedDesired, receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -8,7 +9,7 @@ import { ProtocolError } from "../../../src/api/parse.js";
 import { OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport } from "../../../src/api/types.js";
-import type { WorkerCloudDesired, WorkerCloudReport, WorkerCloudReportReceipt } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt } from "../../../src/api/worker-configuration.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { Observation } from "../../../src/commands/worker/monitoring/types.js";
@@ -91,7 +92,7 @@ const configurationManager = (): WorkerConfigurationManager => mocks.configurati
 let target: WorkerCloudDesired;
 let observationRevision: bigint;
 let collect: ReturnType<typeof vi.fn<(operation: Operation) => Promise<WorkerTelemetrySample>>>;
-let report: ReturnType<typeof vi.fn<(workerId: string, value: WorkerReport, configuration: WorkerCloudReport, operation: Operation) => Promise<WorkerCloudReportReceipt>>>;
+let report: ReturnType<typeof vi.fn<(workerId: string, value: WorkerReport, configuration: WorkerCloudReport, operation: Operation) => Promise<ReceivedWorkerConfigurationReportReceipt>>>;
 let prepare: ReturnType<typeof vi.fn>;
 let shutdown: ReturnType<typeof vi.fn>;
 let dispose: ReturnType<typeof vi.fn>;
@@ -115,11 +116,11 @@ beforeEach(async () => {
   report = vi.fn(async (_workerId, _body, configuration) => {
     const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
     if (observationAccepted) observationRevision++;
-    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(observationRevision), observationAccepted } };
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: String(observationRevision), observationAccepted }) };
   });
   prepare = vi.fn(async () => {}); shutdown = vi.fn(async () => true); dispose = vi.fn(async () => {}); update = vi.fn();
   mocks.telemetry.mockReturnValue({ collect }); mocks.probe.mockResolvedValue("0.164.0");
-  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
+  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "0", observation: null }))), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
@@ -227,7 +228,7 @@ describe("worker runtime monitoring isolation", () => {
       await vi.advanceTimersByTimeAsync(5_000); await retryStarted.promise;
       const generation = configurationManager().current().generation;
       target = { ...target, revision: "5", value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: { agent: matches ? "claude" : "copilot" } }] } };
-      await configurationManager().receive(target, "0");
+      await configurationManager().receive(receivedDesired(target), "0");
       expect(configurationManager().current().desired).toEqual(target);
       expect(configurationManager().current().generation).not.toBe(generation);
       if (!matches) {
@@ -455,7 +456,7 @@ describe("worker runtime monitoring isolation", () => {
       await configurationManager().settle();
       const generation = configurationManager().current().generation;
       target = { ...target, revision: "5" };
-      await configurationManager().receive(target, "0");
+      await configurationManager().receive(receivedDesired(target), "0");
       expect(configurationManager().current().desired).toEqual(target);
       expect(configurationManager().current().generation).not.toBe(generation);
       await vi.advanceTimersByTimeAsync(5_000); await realignedStarted.promise;
@@ -494,7 +495,7 @@ describe("worker runtime monitoring isolation", () => {
       await eventuallyWithoutAdvancingTime(() => expect(monitor.capture("1").currentFailures).toContainEqual(expect.objectContaining({ component: "project", retryState: "scheduled" })));
       const failure = monitor.capture("1").currentFailures.find(item => item.component === "project")!;
       await configurationManager().settle();
-      if (realigned) { target = { ...target, revision: "5" }; await configurationManager().receive(target, "0"); }
+      if (realigned) { target = { ...target, revision: "5" }; await configurationManager().receive(receivedDesired(target), "0"); }
       await vi.advanceTimersByTimeAsync(5_000); await retryStarted.promise;
       expect(monitor.capture("2").currentFailures).toContainEqual(expect.objectContaining({ operationId: failure.operationId, retryState: "running" }));
       f.signal.abort(); retryRelease.resolve(); await running;
@@ -530,7 +531,7 @@ describe("worker runtime monitoring isolation", () => {
     const f = await fixture(), recover = deferred<void>(), reading = deferred<void>(), writes: Observation[] = [];
     const original = new ApiError({ operation: "worker.configuration" }, "response", { status: 500, cause: new Error("private configuration payload") });
     const remote = mocks.remote(); mocks.remote.mockClear();
-    const readConfiguration = vi.fn().mockRejectedValueOnce(original).mockImplementation(async () => { reading.resolve(); await recover.promise; return { desired: target, observationRevision: "0", observation: null }; });
+    const readConfiguration = vi.fn().mockRejectedValueOnce(original).mockImplementation(async () => { reading.resolve(); await recover.promise; return receivedResource({ desired: target, observationRevision: "0", observation: null }); });
     mocks.remote.mockReturnValue({ ...remote, configuration: readConfiguration, readMonitoring: vi.fn(async () => { await reading.promise; return { state: "absent" }; }), writeMonitoring: vi.fn(async (_worker: string, _revision: string | null, observation: Observation) => {
       writes.push(observation); return { revision: uuid(8), runId: observation.runId, sequence: observation.sequence };
     }) });

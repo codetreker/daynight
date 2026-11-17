@@ -1,3 +1,4 @@
+import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import * as durableHerdr from "../../../src/commands/worker/herdr/durable.js";
 import { execFileSync } from "node:child_process";
@@ -15,7 +16,7 @@ import * as cloudConfiguration from "../../../src/commands/worker/configuration.
 import * as configurationCache from "../../../src/commands/worker/configuration-cache.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
-import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
@@ -68,7 +69,7 @@ const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): Wo
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
   value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
-const resource = (target: WorkerCloudDesired | null): WorkerCloudResource => ({ desired: target, observationRevision: "0", observation: null });
+const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {
   const parent = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-startup-tests");
   await mkdir(parent, { recursive: true });
@@ -186,7 +187,7 @@ describe("worker cloud-first startup", () => {
     await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: target, observationRevision: "0", nextFailureId: 1, items }));
     let revision = 0n, reporterOptions: ReporterOptions | undefined;
     const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(revision), observation: null }));
+    remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: String(revision), observation: null })));
     mocks.reporter.mockImplementation((options: ReporterOptions) => { reporterOptions = options; return reporter(); });
     const stopProject = vi.fn(async (_projectId: string, _signal: AbortSignal) => {}), tick = vi.fn(async () => {});
     mocks.coordinator.mockImplementation(() => ({ stopProject, tick, archiveYield: () => false, updateConfiguration: vi.fn(), shutdown: vi.fn(async () => true) }));
@@ -200,8 +201,8 @@ describe("worker cloud-first startup", () => {
             expect(reporterOptions).toBeDefined();
             expect(stopProject).toHaveBeenCalledTimes(2);
             const saved = observed.current();
-            expect(saved.schemaVersion).toBe(5);
-            expect(saved.authority.desired).toEqual(target);
+            expect(saved.schemaVersion).toBe(6);
+            expect(JSON.parse(saved.authority.desiredJson!)).toEqual(target);
             if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
             for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
             expect(reporterOptions!.configuration!.capture(reportSample).observation!.items.length).toBeLessThanOrEqual(1025);
@@ -213,7 +214,7 @@ describe("worker cloud-first startup", () => {
             expect(sent.observation!.items.length).toBeLessThanOrEqual(1025);
             for (const item of sent.observation!.items) if (item.key.kind === "projectRemoval" && item.state === "applied") acknowledged.add(item.key.projectId);
             const operation = createOperation();
-            try { await reporterOptions!.configuration!.accept(sent, { desired: target, observationRevision: String(++revision), observationAccepted: true }, operation); }
+            try { await reporterOptions!.configuration!.accept(sent, receivedReceipt({ desired: target, observationRevision: String(++revision), observationAccepted: true }), operation); }
             finally { operation.dispose(); }
             const saved = observed.current();
             remaining = [...saved.currentItems, ...saved.retainedItems].filter(item => item.value.key.kind === "projectRemoval").length;
@@ -247,8 +248,8 @@ describe("worker cloud-first startup", () => {
       queueMicrotask(() => { void (async () => {
         try {
           const installed = observed.current();
-          expect(installed.schemaVersion).toBe(5);
-          expect(installed.authority.desired).toEqual(next);
+          expect(installed.schemaVersion).toBe(6);
+          expect(JSON.parse(installed.authority.desiredJson!)).toEqual(next);
           expect(installed.currentItems.length).toBeGreaterThan(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,
             value: { key: { kind: "projectRemoval", projectId: uuid(10) }, targetRevision: "1" } });
@@ -268,10 +269,10 @@ describe("worker cloud-first startup", () => {
             expect(sent.observation?.desiredRevision).toBe("2");
             expect(sent.observation!.items.every(item => BigInt(item.targetRevision) <= 2n)).toBe(true);
             const operation = createOperation();
-            try { await options.configuration!.accept(sent, { desired: next, observationRevision: String(BigInt(sent.observation!.baseRevision) + 1n), observationAccepted: true }, operation); }
+            try { await options.configuration!.accept(sent, receivedReceipt({ desired: next, observationRevision: String(BigInt(sent.observation!.baseRevision) + 1n), observationAccepted: true }), operation); }
             finally { operation.dispose(); }
             const saved = observed.current();
-            expect(saved.authority.desired).toEqual(next);
+            expect(JSON.parse(saved.authority.desiredJson!)).toEqual(next);
             removed = ![...saved.currentItems, ...saved.retainedItems].some(entry => entry.value.key.kind === "projectRemoval" && entry.value.key.projectId === uuid(10));
             if (removed) break;
           }
@@ -332,7 +333,7 @@ describe("worker cloud-first startup", () => {
       expect(sent.bootstrap).toMatchObject({ maxConcurrent: 2, native: { model: "local-model", args: ["-c", 'model_reasoning_effort="low"'] }, projects: [{ projectId: uuid(1) }, { projectId: uuid(2) }] });
       expect(sent.observation).toBeNull();
       const operation = createOperation();
-      try { await reporterOptions!.configuration!.accept(sent, { desired: { ...desired([uuid(1), uuid(2)], 2), value: sent.bootstrap! }, observationRevision: "0", observationAccepted: false }, operation); }
+      try { await reporterOptions!.configuration!.accept(sent, receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)], 2), value: sent.bootstrap! }, observationRevision: "0", observationAccepted: false }), operation); }
       finally { operation.dispose(); }
       await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
       await vi.waitFor(() => {
@@ -478,7 +479,7 @@ describe("worker cloud-first startup", () => {
       expect(options!.configurationComplete!()).toBe(false);
       if (initiallySelected) {
         const operation = createOperation();
-        try { await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false }, operation); }
+        try { await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: { ...desired([uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false }), operation); }
         finally { operation.dispose(); }
         expect(options!.configurationComplete!()).toBe(false);
       }
@@ -581,15 +582,15 @@ describe("worker cloud-first startup", () => {
       await vi.waitFor(() => expect(channel).toBeDefined());
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledOnce();
-      await channel!.accept(channel!.capture(reportSample), { desired: initial, observationRevision: "0", observationAccepted: false }, operation);
+      await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: initial, observationRevision: "0", observationAccepted: false }), operation);
 
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledTimes(2);
       expect(remote.configuration).toHaveBeenLastCalledWith(workerId, operation.signal, operation);
-      expect(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).authority.desired).toEqual(upgraded);
+      expect(JSON.parse(JSON.parse(await readFile(f.paths.configurationFile, "utf8")).authority.desiredJson)).toEqual(upgraded);
       expect(channel!.capture(reportSample).toolPathsBootstrap).toEqual({ codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } });
 
-      await channel!.accept(channel!.capture(reportSample), { desired: upgraded, observationRevision: "0", observationAccepted: false }, operation);
+      await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: upgraded, observationRevision: "0", observationAccepted: false }), operation);
       await channel!.prepare!(operation);
       expect(remote.configuration).toHaveBeenCalledTimes(2);
       expect(remote.reportConfiguration).not.toHaveBeenCalled();
@@ -688,7 +689,7 @@ describe("worker cloud-first startup", () => {
         expect(sent.bootstrap).toMatchObject({ maxConcurrent: 7, projects: [{ projectId: uuid(1), nativeOverrides: {} }] });
         expect(sent.observation).toBeNull();
         const operation = createOperation();
-        try { await options.configuration!.accept(sent, { desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false }, operation); }
+        try { await options.configuration!.accept(sent, receivedReceipt({ desired: desired([uuid(1)], 3), observationRevision: "0", observationAccepted: false }), operation); }
         finally { operation.dispose(); }
       })().catch(error => { assertionFailure = error; cancellation.abort(error); });
       return reporter();
@@ -748,7 +749,7 @@ describe("worker cloud-first startup", () => {
         const captured = channel!.capture(reportSample);
         expect(captured.observation).not.toBeNull();
         remote.project.mockResolvedValue({ id: uuid(1), repoUrl: remoteUrl });
-        await channel!.accept(captured, { desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false }, operation);
+        await channel!.accept(captured, receivedReceipt({ desired: { ...desired(), revision: "2" }, observationRevision: "0", observationAccepted: false }), operation);
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);
@@ -778,12 +779,12 @@ describe("worker cloud-first startup", () => {
       try {
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(1) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         const captured = channel!.capture(reportSample);
-        await channel!.accept(captured, { desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false }, operation);
+        await channel!.accept(captured, receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)]), revision: "2" }, observationRevision: "0", observationAccepted: false }), operation);
         options.onInventory!(inventory);
         expect(reported.publishInventory).toHaveBeenLastCalledWith(null);
         await vi.waitFor(() => expect(mocks.emit.mock.calls.some(([event]) => event.kind === "worker-configuration" && event.message.includes(`\"projectId\":\"${uuid(2)}\"`) && event.message.includes('"state":"error"'))).toBe(true), { timeout: 5000, interval: 10 });
         secondAvailable = true;
-        await channel!.accept(channel!.capture(reportSample), { desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false }, operation);
+        await channel!.accept(channel!.capture(reportSample), receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)]), revision: "3" }, observationRevision: "0", observationAccepted: false }), operation);
         await vi.waitFor(() => expect(options.store.getProject({ projectId: uuid(2) })).not.toBeNull(), { timeout: 5000, interval: 10 });
         await vi.waitFor(() => expect(options.configurationComplete!()).toBe(true), { timeout: 5000, interval: 10 });
         options.onInventory!(inventory);

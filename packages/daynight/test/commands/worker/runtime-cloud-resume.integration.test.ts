@@ -1,3 +1,4 @@
+import { receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import { buildHerdrAgentArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import path from "node:path";
@@ -9,7 +10,7 @@ import * as configurationFiles from "../../../src/config/files.js";
 import * as configurationSource from "../../../src/commands/worker/configuration-source.js";
 import { ApiError } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
-import type { WorkerCloudDesired, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { runWorker as runWorkerRuntime } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -52,7 +53,7 @@ const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): Wo
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
   value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
-const resource = (target: WorkerCloudDesired | null): WorkerCloudResource => ({ desired: target, observationRevision: "0", observation: null });
+const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {
   const parent = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-startup-tests");
   await mkdir(parent, { recursive: true });

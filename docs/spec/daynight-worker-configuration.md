@@ -15,7 +15,7 @@
 
 ## 目标配置
 
-基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。独立能力协商分别决定 agentControlMode 和 toolPaths 的必需字段。未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON 明确拒绝。
+基础配置完整值包含 maxConcurrent、pollIntervalMs、recoveryLimit、preferPlatformSpecificTasks、native 与 projects，均必填。独立能力协商分别决定 agentControlMode 和 toolPaths 的必需字段。服务端输入拒绝未知、重复、缺失字段、非法 UTF-8/NUL、错误类型和尾随 JSON。Worker 对成功响应的未知内容遵循下述保留规则，已知字段校验保持严格。
 
 | 字段 | 语义 |
 | --- | --- |
@@ -39,6 +39,16 @@ model 最多 256 UTF-8 字节；args 最多 128 项，每项最多 4096 UTF-8 �
 toolPaths 的三个键均必填。每项 null 表示尚未采纳；`{kind:"auto"}` 表示明确恢复自动；`{kind:"path",path:string}` 表示完整文件路径。旧存储缺少 toolPaths 时读取为三个 null，不能推断为 auto。已采纳 choice 不能清回 null。自动来源由工具及执行模式决定，Web Copilot 的内置来源与 Herdr Copilot 的命令环境发现分别保留。
 
 path 最多 4096 UTF-8 字节，必须是有效 Unicode、非空白且不含控制字符的绝对路径；保留原始空格、大小写和词法路径，不 trim、不展开环境变量或 `~`、不拆参数、不交给 shell。服务和浏览器只校验远端路径语法，不访问文件；真实存在性、入口种类、解释器与协议由 Worker 验证。不能用服务所在操作系统的路径规则拒绝另一平台的合法路径。
+
+## Worker 响应的未知内容保留
+
+Worker 对配置 GET、普通报告回执及 prompts 联合回执使用配置专用源文本载体，完整保留 desired 与外层未知元数据，持久目标只保存 desired 原始 JSON。native、projects、nativeOverrides 与 toolPaths 已知对象中的未知兄弟同样保留。未知数字不经普通 number 解码后回写；合法负数、小数、指数和超安全整数保持数据含义。字符串、boolean/null、数组顺序和对象成员均保持，空白排版不构成保证。重复解码键、深度和原有字节边界继续有效。
+
+known 仅从已知路径投影并按原合同严格验证，未知 observation kind 只保留在完整远端观测中，不套用已知 appliedValue 枚举，也不进入 Worker 本机 currentItems/retainedItems。未知目标不生成执行、pending 或 applied；Worker 只报告自身真正处理的已知项。显式 GET 的远端观测和报告 receipt 的接纳事实分别保留，后者不能伪造前者已被重新读取。
+
+仅未知字段、更高 revision 或 updatedAt 变化时，Worker 更新完整目标并保持已知应用身份、applicationRevision 与在途工作；已知目标变化才正常应用。报告 observation.desiredRevision 使用最新收到版本，item.targetRevision 仍为真实应用目标版本。同 revision 的 desired 必须完整 JSON 语义相等：对象成员顺序无关，数组顺序有关，等值十进制数字写法相等且不经浮点舍入。语义不同为协议错误。迟到较低回执不回退目标；已认证 GET 仍可执行服务状态回退恢复。缓存格式、应用版本消费者和恢复由[Worker 需求](daynight-worker.md#w-01前台运行配置与平台)与[设计](../design/daynight-worker.md#云端接收与本机提交)拥有。
+
+本项未知内容保留不新增能力协商；既有 agentControlMode/toolPaths 的发送准入与服务端严格输入合同继续有效。支持扩展容忍的客户端必须先实际采用，服务随后才能直接增加新字段；未打补丁的旧严格客户端不因此取得兼容能力。
 
 ## 首次导入与编辑
 

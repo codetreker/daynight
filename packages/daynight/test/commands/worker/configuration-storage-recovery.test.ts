@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { receivedDesired, receivedReceipt } from "../../helpers/worker-received-configuration.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerCloudDesired, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudReport } from "../../../src/api/worker-configuration.js";
@@ -85,7 +86,7 @@ describe("Worker configuration manager storage recovery", () => {
     clock();
     const failure = ioFailure(); let failed = false;
     const f = await fixture({ beforePersist: async ({ cache }) => { if (!failed && record(cache, { kind: "native" })?.value.state === "applied") { failed = true; throw failure; } } });
-    await f.manager.receive(desired());
+    await f.manager.receive(receivedDesired(desired()));
     const blocked = await f.blocked, native = record(await f.raw(), { kind: "native" })!;
     expect(blocked).toMatchObject({ kind: "blocked", phase: "persist", error: failure, recordIds: expect.arrayContaining([native.recordId]) });
     expect(f.manager.isReady()).toBe(false); expect(f.applyNative).toHaveBeenCalledOnce();
@@ -108,7 +109,7 @@ describe("Worker configuration manager storage recovery", () => {
     clock();
     const projectId = id(10), key = { kind: "projectRemoval" as const, projectId }, failure = ioFailure(); let armed = false, failed = false;
     const f = await fixture({ beforePersist: async ({ cache }) => { if (armed && !failed && record(cache, key)?.value.state === "applied") { failed = true; throw failure; } } });
-    await f.manager.receive(desired()); await f.manager.settle();
+    await f.manager.receive(receivedDesired(desired())); await f.manager.settle();
     const remove = vi.fn(async (_projectId: string, _signal: AbortSignal) => {});
     await f.manager.configureProjectAdapters({ remove }); armed = true;
     await f.manager.ensureProjectRemoval(projectId); await f.blocked;
@@ -144,7 +145,7 @@ describe("Worker configuration manager storage recovery", () => {
     let failedStops = 0;
     const remove = vi.fn(async (projectId: string) => { if (projectId === failedId && ++failedStops === 1) throw new Error("Stop temporarily unavailable"); });
     await f.manager.configureProjectAdapters({ remove });
-    const target = desired(); await f.manager.receive(target); await f.manager.settle();
+    const target = desired(); await f.manager.receive(receivedDesired(target)); await f.manager.settle();
     await f.manager.ensureProjectRemoval(completedId); await f.manager.ensureProjectRemoval(failedId); await f.manager.settle();
     const before = await f.disk(), capturedNative = record(before, { kind: "native" })!, capturedStop = record(before, { kind: "projectRemoval", projectId: failedId })!;
     const capturedCompleted = record(before, { kind: "projectRemoval", projectId: completedId })!;
@@ -162,7 +163,7 @@ describe("Worker configuration manager storage recovery", () => {
     const post = vi.fn(async (_sent: WorkerCloudReport, current: Operation) => { current.check(); return receipt; });
     const op = operation({ limits: { totalMs: 15_000 } });
     const remoteResult = await post(sent, op);
-    const accepting = f.manager.acknowledge(sent, remoteResult, op.signal).catch(error => error);
+    const accepting = f.manager.acknowledge(sent, receivedReceipt(remoteResult), op.signal).catch(error => error);
     const blocked = await f.blocked;
     expect(blocked.context).toMatchObject({ kind: "receipt-accept", source: { state: "initialized", desiredRevision: "1", observationRevision: "0" }, report: capturedContext });
     expect(Object.isFrozen(blocked.context)).toBe(true);
@@ -194,21 +195,21 @@ describe("Worker configuration manager storage recovery", () => {
     clock();
     let failed = false;
     const f = await fixture({ beforePersist: async ({ cache }) => { if (!failed && record(cache, { kind: "native" })?.value.state === "applied") { failed = true; throw ioFailure(); } } });
-    await f.manager.receive(desired()); await f.blocked;
+    await f.manager.receive(receivedDesired(desired())); await f.blocked;
     const cancellation = new AbortController(), reason = new Error("Old exchange cancelled"), op = operation({ signal: cancellation.signal, limits: { totalMs: 15_000 } });
-    const obsolete = f.manager.receive(desired("2", "obsolete"), "0", op.signal).catch(error => error);
+    const obsolete = f.manager.receive(receivedDesired(desired("2", "obsolete")), "0", op.signal).catch(error => error);
     const canceledReady = f.manager.waitReady(op.signal).catch(error => error);
-    const latest = f.manager.receive(desired("3", "latest"));
+    const latest = f.manager.receive(receivedDesired(desired("3", "latest")));
     const ready = f.manager.waitReady();
     cancellation.abort(reason);
     expect(await obsolete).toMatchObject({ name: "OperationError", kind: "cancelled", cause: reason });
     expect(await canceledReady).toMatchObject({ name: "OperationError", kind: "cancelled", cause: reason });
-    expect(f.attempts.some(({ cache }) => cache.authority.desired?.revision === "2")).toBe(false);
+    expect(f.attempts.some(({ cache }) => (cache.authority.desiredJson === null ? null : JSON.parse(cache.authority.desiredJson).revision) === "2")).toBe(false);
     await advance(5_000); await Promise.all([latest, ready]); await f.manager.settle();
     expect(f.manager.current().desired?.revision).toBe("3"); expect(f.manager.current().effective.native?.model).toBe("latest");
     expect(f.snapshots.some(snapshot => snapshot.desired?.revision === "2")).toBe(false);
-    expect(f.attempts.some(({ cache }) => cache.authority.desired?.revision === "2")).toBe(false);
-    expect((await f.disk()).authority.desired?.revision).toBe("3");
+    expect(f.attempts.some(({ cache }) => (cache.authority.desiredJson === null ? null : JSON.parse(cache.authority.desiredJson).revision) === "2")).toBe(false);
+    expect(JSON.parse((await f.disk()).authority.desiredJson!).revision).toBe("3");
     expect(vi.mocked(f.applyNative).mock.calls.map(([native]) => native.model)).toEqual(["original", "latest"]);
   });
 
@@ -217,7 +218,7 @@ describe("Worker configuration manager storage recovery", () => {
     const entered = deferred(), release = deferred(); let stopped = false;
     const f = await fixture({ beforePersist: async ({ cache }) => { if (record(cache, { kind: "native" })?.value.state === "applied") { entered.resolve(); await release.promise; } } });
     f.entry.releases.push(() => release.resolve());
-    await f.manager.receive(desired()); await entered.promise;
+    await f.manager.receive(receivedDesired(desired())); await entered.promise;
     f.manager.beginDrain(); const stopping = f.manager.stop().then(() => { stopped = true; });
     await advance(6_000);
     expect(stopped).toBe(false); expect(f.manager.isReady()).toBe(false); expect(f.applyNative).toHaveBeenCalledOnce();
@@ -236,7 +237,7 @@ describe("Worker configuration manager storage recovery", () => {
     const failure = new TypeError(`Invalid ${kind}`);
     const f = await fixture({ beforePersist: async ({ cache }) => { if (kind === "format" && record(cache, { kind: "native" })?.value.state === "applied") throw failure; },
       onChange: snapshot => { if (kind === "publication" && item(snapshot, { kind: "native" })?.state === "applied") throw failure; } });
-    await f.manager.receive(desired());
+    await f.manager.receive(receivedDesired(desired()));
     const settling = f.manager.settle().catch(error => error);
     expect(await settling).toBe(failure); f.entry.expectedStopError = failure;
     expect(f.manager.isReady()).toBe(false); expect(f.errors).toEqual([failure]); expect(f.states).toEqual([]);

@@ -145,12 +145,13 @@ Worker instance lock 下的 `copilot-tool-materializer.ts` 在 `<workerDirectory
 
 [配置协议](../spec/daynight-worker-configuration.md)拥有服务端目标与观测 CAS，[本机配置决策](../../.agents/notes/archived/architecture/2026-11-04-worker-cloud-runtime-configuration.md)记录 cloud-first 与单提交 owner 的理由。配置模块只认识 Worker、Project 和运行参数，不导入 Task/claim，不查询执行资格，也不在任务 SQLite 保存配置状态。
 
-configuration.json 使用 schemaVersion=5，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
+configuration.json 使用 schemaVersion=6，保持单个 JSON 对象、原路径与受限权限。配置模块按下列责任组织：
 
 | 模块 | 责任 |
 | --- | --- |
-| configuration-model.ts | 缓存、记录与捕获的完整类型及共用值规则 |
-| configuration-cache.ts | 当前格式严格校验、版本 1–4 显式升级与冻结编码 factory |
+| configuration-model.ts | 缓存、记录与捕获的完整类型、从原始目标派生的 known 视图及共用值规则 |
+| api/worker-configuration-source.ts | 配置专用源文本载体、已知路径投影、完整资源/回执解析与无损 JSON 语义比较 |
+| configuration-cache.ts | schema 6 严格校验、版本 1–4→5→6 显式升级与冻结编码 factory |
 | configuration-json.ts | 单遍分块 JSON 与缓存专用增量词法 guard |
 | configuration-state.ts | 当前/保留记录转换、快照、报告选择和准确确认 |
 | configuration-persistence.ts | 初始化读取、串行冻结检查点、存储 readiness、I/O 重试及关闭所有权 |
@@ -158,15 +159,17 @@ configuration.json 使用 schemaVersion=5，保持单个 JSON 对象、原路径
 | configuration-exchange.ts | foreground/管理路径共用的准备、采样、代次围栏、单次发送及回执编排 |
 | configuration-bootstrap.ts | 当前文件一致候选、root 有界准备、source/auth scoped 解析复用与取消收尾 |
 
-authority 保存本机 generation UUID、已接纳的 desired 与 observationRevision；generation 不是服务端 epoch。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，表示当前目标的完整本机应用与核验；retainedItems 保存仍有工作、停止、未知结果、失败或必要实际值的原记录。两组 recordId 全局唯一。每项 origin 记录原 generation、targetRevision 与 application/schema4 来源，actualSource 单独表达实际值的本机观察出处；复用值只复制原来源元组，不修改旧历史。旧格式已经丢失的成功版本使用 schema4/successRevision:null 明确为未知，不能由新的目标版本推断。nativeMode 留在对应记录中，执行资格只由本次进程的 recordId 证明提供。blockedByRemovalId 必须指向同项目的移除记录且无环。
+authority 保存本机 generation UUID、完整 desiredJson、applicationRevision 与 observationRevision；generation 不是服务端 epoch。desiredJson 是唯一持久目标，known 从同一源文本按已知路径严格派生。applicationRevision 标识最近已知目标变化，可以小于最新 desired.revision；currentItems 的必需已知项对应这个锚点。工具目标 revision、native/tool preparation 的比较与证明、confirmProjectPrepared、延后准备确认和新增移除 origin 均消费该锚点；报告 envelope 使用最新 desiredRevision，item 保留原 targetRevision。remoteObservation 单独存储最后一次明确 GET 的 {observationRevision,json}，可落后 authority.observationRevision，服务回退或 null 重置也保留此前快照，独立按其原 base/版本验证；receipt 不将本机新报告伪装成已读取的远端事实。desired:null 使用观察基线 "0" 与空当前集合，原保留事实仍在 retainedItems。currentItems 具有唯一 key，retainedItems 保存原工作、停止、未知结果、失败或必要实际值。recordId 全局唯一，origin 保留原 generation、targetRevision 与 application/schema4 来源且不可改写；actualSource 独立表达真实来源，复用值不修改旧历史。schema4/successRevision:null 保留历史未知版本；nativeMode 不授予进程资格，blockedByRemovalId 必须同项目且无环。
 
-版本 1–3 保留原升级规则后进入版本 4→5 的显式升级，正常运行只处理 5。版本 1 仍补入 preferPlatformSpecificTasks:false 与已初始化目标的同名 pending/null 项；原 value、failureId/lastFailure、backoffStep 与期限、started 和 nativeMode 保留，applying 重启为待核验。升级身份生成和结果冻结发生在写入前，重复编码不重新生成 UUID 或时间。格式、scope 和故障继续严格拒绝，不因迁移或历史结构超过新业务容量限制而清空责任。
+版本 1–4 经原结构转换并严格验证为 schema 5，再与既有 schema 5 一起转为 schema 6；正常运行只处理 6。已验证旧 desired 编码为 desiredJson，applicationRevision 取旧目标版本，无目标则均为 null；remoteObservation 为 null。原 identity、generation、recordId、origin、actualSource、失败预算、期限、游标和引用关系保持，applying 沿原重启规则恢复；版本 1 继续补 preferPlatformSpecificTasks:false 及已初始化目标的同名 pending/null 项。格式、scope 和损坏仍拒绝，历史结构超过新业务容量限制不清空责任。结果在原子保存前冻结，重试不重新生成身份，失败保留原文件与原错误。
 
-读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
+读取使用一个文件描述符、fatal UTF-8 解码和固定 @discoveryjs/json-ext 1.1.0 JSON 模式。词法 guard 在交给 parser 前拒绝重复解码 key、非规范非负整数、过深容器、BOM、尾随内容及非法属性；未知目标与远端观测位于普通 JSON 字符串内部，guard 不解释其中的任意数字或键。真实 EOF、完整结构和身份通过后关闭读句柄，才允许迁移替换。提交队首从最新已提交状态计算下一状态并冻结，以可重新创建的 chunk iterator 写入同目录独占临时文件；逐块完整写、权限设置、fsync 和关闭后 rename，成功后发布同一个不可变引用。rename 只保证文件完整性，不能阻止旧快照覆盖较新目标。容器和文件不形成全量文本，单 token 仍受 JavaScript 表示限制，领域对象仍需要与保留事实相应的内存。损坏、身份不符及持久化错误沿原链传播，未提交结果不发布为成功。
 
-当前 origin、principal 与 workerId 验证通过的 GET，或本机当前捕获对应的合法报告回执，完整安装服务端 desired 和准确 observationRevision，不以数值大小选择权威；较低 revision、同版本异内容、旧待应用目标及 null 都服从该规范状态。null 的基线固定为 "0"。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威，快照保持不可准入，不继续采用旧本地意图。每次权威安装更新本机 generation；相同目标保留仍有效的记录和 job，job 适用性由 recordId、内容及证明决定，不能仅按 revision 判断。
+当前 origin、principal 与 workerId 验证通过的 GET 完整安装服务端 desired 与 observationRevision，包括较低计数与 null，回退建立围栏并保留原资源责任。同 revision 的完整目标按无损 JSON 语义比较，不同则报协议错误。匹配捕获的 receipt 可更新目标，较低 desired revision 只结算其捕获而不回退新目标。仅未知字段、更高 revision 或 updatedAt 变化更新源文本，保留 applicationRevision、generation、记录身份和 job；已知目标变化或认证权威回退才重新协调。结构合法但超出本机业务支持范围的目标仍持久保存为当前权威并关闭新准入。job 的适用性核对原 recordId、内容和证明。
 
-目标变化建立新的当前核验身份，原工作和停止记录保留 origin。高版本原停止在服务端回退后继续拥有原操作；新目标仍排除项目时建立当前目标的停止核验，原 job 真正结束后通过同一适配器再观察资源。新目标重选项目时，准备等待原停止结束，不能提前 ready；原记录不直接作为较低目标的 observation，也不改写成该目标的历史成功。native 与准备 job 共享该项目实际停止槽，不能与尚未结束的停止重叠。启动后的真实本机项目映射仅在已认证且可用的目标下登记当前停止核验；ensureProjectRemoval 在串行提交时反馈该目标仍可用且项目已被选中或停止核验已登记，runtime 才记为已覆盖。未读取、null 或不支持目标不能完成这次覆盖；权威变为不可用时重置覆盖及其轮次身份，后续合法状态重新登记。每个覆盖轮次在等待 manager 前捕获该身份，等待后的进度与最终完成都必须仍属于同一轮次；旧结果即使在权威恢复后才返回，也不能完成新轮次或恢复旧进度。正常已同步 ACK 更新的配置 generation 不重置该轮次，避免持续报告阻断必要核验。缓存 applied 停止结果不能代替新 coordinator 的资源观察。没有原工作、待确认失败、停止或必要实际值的旧记录可收敛，不要求本机全部记录占用一次 wire 名额。
+配置 GET、普通 report receipt 及 prompts 联合 receipt 使用显式 Received 包装；完整 JSON 先经既有源工具校验语法、重复解码键和深度，再只提取已知路径调用原严格解析器。未知数字不进入普通 number；native/projects/overrides/toolPaths 中的未知兄弟留在 desired 原文。远端未知 observation kind 留在 observationJson，不进入本机账本或上报。对象比较忽略成员顺序，数组保留顺序，数字按符号、有效数字串及 BigInt 十进制指数比较，不展开巨大指数。该配置局部机制不修改全局 API serializer。
+
+已知目标变化建立新的当前核验身份，原工作和停止记录保留 origin。高版本原停止在服务端回退后继续拥有原操作；新目标仍排除项目时建立当前目标的停止核验，原 job 真正结束后通过同一适配器再观察资源。新目标重选项目时，准备等待原停止结束，不能提前 ready；原记录不直接作为较低目标的 observation，也不改写成该目标的历史成功。native 与准备 job 共享该项目实际停止槽，不能与尚未结束的停止重叠。启动后的真实本机项目映射仅在已认证且可用的目标下登记当前停止核验；ensureProjectRemoval 在串行提交时反馈该目标仍可用且项目已被选中或停止核验已登记，runtime 才记为已覆盖。未读取、null 或不支持目标不能完成这次覆盖；权威变为不可用时重置覆盖及其轮次身份，后续合法状态重新登记。每个覆盖轮次在等待 manager 前捕获该身份，等待后的进度与最终完成都必须仍属于同一轮次；旧结果即使在权威恢复后才返回，也不能完成新轮次或恢复旧进度。正常已同步 ACK 更新的配置 generation 不重置该轮次，避免持续报告阻断必要核验。缓存 applied 停止结果不能代替新 coordinator 的资源观察。没有原工作、待确认失败、停止或必要实际值的旧记录可收敛，不要求本机全部记录占用一次 wire 名额。
 
 每次启动保留 native 实际值供观察，但重建本次运行证明。全局与项目 native 优先验证当前目标；目标失败后才在兼容的原 mode 下验证历史元组。schema 1/2 没有历史模式证明，按本机兼容模式重新验证，不能将该模式当作旧成功出处。本次验证证明归属于实际接受验证结果的记录，后续目标从实际提供复用值的前一当前或保留记录继承匹配证明，actualSource 保持原实际值来源。证明只随仍存在的记录保留，历史来源引用不能延长证明寿命。全局 mode 变化在继承前撤销所有项目旧资格，包括本代将被退休的原记录；同模式全局 native 失败不阻止健康项目独立验证。历史恢复只取得本进程资格，保持失败目标的非 applied 状态；正在验证目标时，未经本进程验证的历史保持 unavailable。已验证实际值在后续目标应用期间继续可用，相关工具选择变化使对应 native 必须重验，无关 Provider 的健康证明保持。结果提交仍检查原记录绑定、目标内容、mode 与选择，取消或被取代的结果不能授予新执行资格。
 
@@ -174,7 +177,7 @@ native 参数校验、版本探测与项目适配等外部 I/O 在提交队列�
 
 `configuration-exchange.ts` 统一 foreground reporter 与实际配置管理调用者：先等待持久化就绪，准备当前权威及候选，再收集新 telemetry、捕获并验证 generation，发送一次，最后由 manager 接收并保存回执。prepare 后和发送前的代次围栏丢弃过期样本，不把旧工具 targetRevision 带入新目标。正常同步轮次不新增 GET；启动、未知结果、400/协议失败或能力重发现先读取；null 期间每轮先读取，以便竞争目标优先。单飞、触发合并与有限 prompt 批次由[采集设计](daynight-worker-reporting.md#配置快照与回执)拥有。
 
-同一份实际 WorkerReport 用于 capture 预算与 send。捕获在本机保存随机 reportId、generation、精确 baseRevision、observation、实际 recordId/失败来源及下一个游标；token 不进入网络正文，也不能由等值报告重建。同 key 的最近待确认失败可以来自 current 或 retained，捕获保留真实 sourceRecordId/failureId，不复制失败所有权。当前代 observationAccepted=true 先确认该捕获实际发送且仍匹配的失败，再安装回执规范状态；false 且 observation 非空仍安装完整规范状态，下一轮基于它生成新报告，不能确认旧失败。observation:null 的 false 是正常未提交观察。旧 generation 的回执不改变当前目标、基线、失败或游标；远端已知成功、明确拒绝与未知继续各自保留原含义。
+同一份实际 WorkerReport 用于 capture 预算与 send。捕获在本机保存随机 reportId、generation、精确 baseRevision、observation、实际 recordId/失败来源及下一个游标；token 不进入网络正文，也不能由等值报告重建。同 key 的最近待确认失败可以来自 current 或 retained，捕获保留真实 sourceRecordId/failureId，不复制失败所有权。当前代 observationAccepted=true 先确认该捕获实际发送且仍匹配的失败，再按目标版本安装回执规范状态；false 且 observation 非空仍按目标版本安装规范状态，下一轮基于它生成新报告，不能确认旧失败。较低 desired revision 不回退最新原始目标。observation:null 的 false 是正常未提交观察。旧 generation 的回执不改变当前目标、基线、失败或游标；远端已知成功、明确拒绝与未知继续各自保留原含义。
 
 projectionCursor 是持久化的 recordId 字典序位置。投影先固定一项真实未完成或失败移除核验，其优先级包含被阻塞的原停止错误；wire 仍表达当前核验的真实 pending/error 状态。其余合格项从游标后选择连续前缀，首个放不下的项是下批起点，不跳过大项填小项。每批同时满足 1025 个非 mode 项、协商后的 1026 个总项、Go HTML/U+2028/U+2029 转义加 512 字节存储包装余量的 4 MiB，以及实际整包 9 MiB。请求碰到预算时对实际候选报告重新准备可选工具/来源观测，完整配置项与必需清单不截断。结构合法但当前 wire 无法表示的历史值继续保留本机，错误结构仍明确失败。
 
@@ -521,7 +524,7 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 本地工具路径测试执行真实 YAML 解析与两个配置入口，验证三项缺省值、null、未知键、相对路径、控制字符、非法 Unicode、4096 字节边界及原字符串保留。POSIX 与 Windows path API 的纯语法测试不证明另一操作系统能启动对应文件；文件、解释器、shim 和子进程行为须由共享解析器在对应平台验证。云端 bootstrap 和 API 协商测试保证旧服务不接收工具扩展，明确 auto 不会重新读取本地旧路径。
 
-配置验证使用受控时间、请求屏障、延后 I/O 与真实缓存读写，覆盖运行期/重启后的较低或同版本异内容权威、null 重新导入及当前文件快照、未知响应先读、旧 generation ACK、原高版本停止与重新选择、cloud-first 和无 picker 的空项目启动、原始覆盖意图、身份/损坏/持久化拒绝、mode/native 成组提交与项目同模式重验、单提交 owner 的 receive/apply/ACK 竞争、旧目标晚完成、快速恢复及飞行期间新失败。coordinator/runtime 测试观察实际并发、下一次轮询、恢复上限和 native 参数消费者；长应用与任务清单失败期间报告继续，健康进程不能因参数变更重启。项目没有已确认准备结果时保持 pending，不用 native 验证代替准备或停止证明。
+配置验证使用受控时间、请求屏障、延后 I/O 与真实缓存读写，覆盖未知 JSON 与远端未知 kind 的接收→保存→重启、schema 1–5 转换、存储失败保留源、已知非法值/重复键/深度边界、未知-only 在途 native/项目准备不重复应用、applicationRevision 消费、迟到低版本 receipt，以及运行期/重启后的GET 较低/null 恢复、同版本语义冲突拒绝、null 重新导入及当前文件快照、未知响应先读、旧 generation ACK、原高版本停止与重新选择、cloud-first 和无 picker 的空项目启动、原始覆盖意图、身份/损坏/持久化拒绝、mode/native 成组提交与项目同模式重验、单提交 owner 的 receive/apply/ACK 竞争、旧目标晚完成、快速恢复及飞行期间新失败。coordinator/runtime 测试观察实际并发、下一次轮询、恢复上限和 native 参数消费者；长应用与任务清单失败期间报告继续，健康进程不能因参数变更重启。项目没有已确认准备结果时保持 pending，不用 native 验证代替准备或停止证明。
 
 macOS lifecycle 验证严格 schema、原 owner/binding 不可更换、先身份后输入、未知提交不重放、Session 注册与 ledger 丢响应读回、普通重连与 generation 换代、停止/封段/同步崩溃及归档失败时独立清理；原进程替代和 socket 变化必须拒绝。只读 attach 验证多候选选择、暂停接入、schema/权限失败与替代实例保护。
 

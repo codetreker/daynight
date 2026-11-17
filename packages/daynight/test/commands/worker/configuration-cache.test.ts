@@ -36,7 +36,7 @@ const currentKeys: WorkerCloudItemKey[] = [
   { kind: "native" }, { kind: "agentControlMode" }, { kind: "projectPreparation", projectId }, { kind: "projectNative", projectId },
 ];
 const cache = (): WorkerConfigurationCache => ({
-  schemaVersion: 5, identity, authority: { generation, desired, observationRevision: "9" }, nextFailureId: 6,
+  schemaVersion: 6, identity, authority: { generation, desiredJson: JSON.stringify(desired), applicationRevision: "10", observationRevision: "9" }, remoteObservation: null, nextFailureId: 6,
   projectionCursor: uuid(90), currentItems: currentKeys.map((key, n) => tracked(10 + n, key)), retainedItems: [],
 });
 const legacy = (version: 1 | 2 | 3 | 4) => {
@@ -59,7 +59,7 @@ afterEach(async () => { for (const folder of directories.splice(0)) await rm(fol
 describe("Worker configuration cache", () => {
   it("creates an immutable uninitialized cache with a fresh local generation", () => {
     const first = createConfigurationCache(identity), second = createConfigurationCache(identity);
-    expect(first).toMatchObject({ schemaVersion: 5, identity, authority: { desired: null, observationRevision: "0" }, currentItems: [], retainedItems: [], projectionCursor: null });
+    expect(first).toMatchObject({ schemaVersion: 6, identity, authority: { desiredJson: null, applicationRevision: null, observationRevision: "0" }, remoteObservation: null, currentItems: [], retainedItems: [], projectionCursor: null });
     expect(first.authority.generation).not.toBe(second.authority.generation);
     expect(Object.isFrozen(first.authority)).toBe(true);
     expect(parseConfigurationCache(first, identity)).toEqual({ cache: first, migrated: false });
@@ -72,18 +72,60 @@ describe("Worker configuration cache", () => {
     expect(Object.isFrozen(result.cache.currentItems[0]!.actualSource)).toBe(true);
   });
 
+  it("upgrades schema 5 without replacing its ledger identities, dependencies or retry facts", () => {
+    const original = cache(), stop = tracked(60, { kind: "projectRemoval", projectId }, "9");
+    const previous = original.currentItems[4]!;
+    const currentItems = original.currentItems.map(item => item === previous ? {
+      ...item, value: { ...item.value, state: "applying" as const, lastFailure: failure }, backoffStep: 4, failureId: 4,
+    } : item.value.key.kind === "projectPreparation" ? { ...item, blockedByRemovalId: stop.recordId } : item);
+    const { remoteObservation: _remote, authority: _authority, ...ledger } = original;
+    const source = { ...ledger, schemaVersion: 5, authority: { generation, desired, observationRevision: "9" }, currentItems, retainedItems: [stop] };
+    const result = parseConfigurationCache(source, identity);
+    expect(result.migrated).toBe(true);
+    expect(result.cache).toEqual({
+      ...original, authority: { ...original.authority, desiredJson: expect.any(String) },
+      currentItems: currentItems.map(item => item === currentItems[4] ? { ...item, value: { ...item.value, state: "pending" } } : item), retainedItems: [stop],
+    });
+    expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual(desired);
+    expect(source.currentItems[4]!.value.state).toBe("applying");
+  });
+
+  it("preserves future source values and older remote observation separately from the execution ledger", async () => {
+    const original = cache();
+    const desiredJson = JSON.stringify({ ...desired, revision: "12" }).replace('"value":{', '"value":{"future":{"__proto__":[-1.25,1e100000,900719925474099312345],"0":null},');
+    const observationJson = '{"baseRevision":"6","desiredRevision":"11","reportedAt":"2026-11-04T02:00:00Z","items":[{"key":{"kind":"future"},"targetRevision":"11","appliedValue":[-1e-100000,900719925474099312345],"state":"applied","error":null,"lastFailure":null,"nextAttemptAt":null}]}';
+    const source = { ...original, authority: { ...original.authority, desiredJson }, remoteObservation: { observationRevision: "7", json: observationJson },
+      currentItems: [...original.currentItems, tracked(80, { kind: "projectRemoval", projectId: previousProjectId }, "11")] };
+    const folder = await directory(), file = path.join(folder, "future.json");
+    await replaceFileAtomicallyFromChunks(file, configurationCacheChunks(parseConfigurationCache(source, identity).cache), 0o600);
+    const reopened = await readConfigurationCache(file, identity, new AbortController().signal);
+    expect(reopened).toEqual({ cache: source, migrated: false });
+    expect(reopened.cache.currentItems).toEqual(source.currentItems);
+    expect(reopened.cache.retainedItems).toEqual([]);
+  });
+
+  it("retains the independent remote snapshot across lower or null authority recovery", () => {
+    const remoteObservation = { observationRevision: "12", json: '{"baseRevision":"11","desiredRevision":"20","reportedAt":"2026-11-04T02:00:00Z","items":[]}' };
+    const restored = { ...cache(), remoteObservation };
+    expect(parseConfigurationCache(restored, identity).cache.remoteObservation).toEqual(remoteObservation);
+    const empty = { ...createConfigurationCache(identity), remoteObservation };
+    expect(parseConfigurationCache(empty, identity).cache).toEqual(empty);
+  });
+
   it.each([1, 2, 3, 4] as const)("explicitly upgrades schema %i without inventing a prior success revision", version => {
     const source = legacy(version), result = parseConfigurationCache(source, identity);
     expect(result.migrated).toBe(true);
-    expect(result.cache.schemaVersion).toBe(5);
-    expect(result.cache.authority).toMatchObject({ desired: source.desired, observationRevision: "9" });
+    expect(result.cache.schemaVersion).toBe(6);
+    expect(JSON.parse(result.cache.authority.desiredJson!)).toEqual({ ...source.desired, value: { ...source.desired.value, preferPlatformSpecificTasks: version === 1 ? false : desired.value.preferPlatformSpecificTasks } });
+    expect(result.cache.authority).toMatchObject({ applicationRevision: "10", observationRevision: "9" });
+    expect(result.cache.remoteObservation).toBeNull();
     expect(result.cache.currentItems).toHaveLength(version === 1 ? source.items.length + 1 : source.items.length);
     expect(new Set(result.cache.currentItems.map(item => item.recordId)).size).toBe(result.cache.currentItems.length);
     for (const item of result.cache.currentItems) {
       expect(item.origin).toEqual({ generation: result.cache.authority.generation, targetRevision: "10", source: "schema4" });
       if (item.value.appliedValue !== null) expect(item.actualSource).toEqual({ kind: "schema4", successRevision: null });
     }
-    if (version === 1) expect(result.cache.authority.desired?.value.preferPlatformSpecificTasks).toBe(false);
+    if (version === 1) expect(JSON.parse(result.cache.authority.desiredJson!).value.preferPlatformSpecificTasks).toBe(false);
     expect(result.cache.currentItems.find(item => item.value.key.kind === "native")?.nativeMode).toBe(version >= 3 ? "web" : null);
     expect(parseConfigurationCache(result.cache, identity)).toEqual({ cache: result.cache, migrated: false });
   });
@@ -123,8 +165,15 @@ describe("Worker configuration cache", () => {
   });
 
   const invalid: readonly [string, (input: WorkerConfigurationCache) => unknown][] = [
-    ["unknown schema", input => ({ ...input, schemaVersion: 6 })],
+    ["unknown schema", input => ({ ...input, schemaVersion: 7 })],
     ["unknown fields", input => ({ ...input, extra: true })],
+    ["missing application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: null } })],
+    ["future application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: "11" } })],
+    ["unmatched application revision", input => ({ ...input, authority: { ...input.authority, applicationRevision: "9" } })],
+    ["duplicate desired keys", input => ({ ...input, authority: { ...input.authority, desiredJson: input.authority.desiredJson!.replace('"value":{', '"value":{"future":{"a":1,"a":2},') } })],
+    ["invalid desired source", input => ({ ...input, authority: { ...input.authority, desiredJson: "not-json" } })],
+    ["remote revision without matching base", input => ({ ...input, remoteObservation: { observationRevision: "10", json: '{"baseRevision":"8","desiredRevision":"10","reportedAt":"2026-11-04T02:00:00Z","items":[]}' } })],
+    ["invalid remote source", input => ({ ...input, remoteObservation: { observationRevision: "8", json: "not-json" } })],
     ["different identity", input => ({ ...input, identity: { ...identity, workerId: uuid(99) } })],
     ["noncanonical record ID", input => ({ ...input, currentItems: [{ ...input.currentItems[0], recordId: "A0000000-1111-4111-8111-111111111111" }, ...input.currentItems.slice(1)] })],
     ["invalid generation", input => ({ ...input, authority: { ...input.authority, generation: "not-a-uuid" } })],

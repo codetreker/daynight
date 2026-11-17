@@ -1,8 +1,9 @@
+import { receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError, createApiClient } from "../../../src/api/client.js";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import type { WorkerCloudDesired, WorkerCloudReceipt, WorkerCloudReport, WorkerCloudReportReceipt, WorkerCloudResource } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, ReceivedWorkerDesired, ReceivedWorkerConfigurationReceipt, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt, ReceivedWorkerConfigurationResource } from "../../../src/api/worker-configuration.js";
 import { createWorkerConfigurationExchange, syncWorkerConfigurationOnce, workerConfigurationDiagnosticFailures, workerConfigurationRequestId } from "../../../src/commands/worker/configuration-exchange.js";
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
 import { createWorkerPromptSource } from "../../../src/commands/worker/prompt-source.js";
@@ -73,7 +74,7 @@ const fixture = () => {
     current: () => state,
     hasAuthority: () => authorityRead,
     waitReady: vi.fn(async () => { order.push("ready"); }),
-    receive: vi.fn(async (desired: WorkerCloudDesired | null, revision = "0") => { authorityRead = true; state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
+    receive: vi.fn(async (received: ReceivedWorkerDesired | null, revision = "0") => { const desired = received?.known ?? null; authorityRead = true; state = { generation: `read-${state.generation}`, desired, observationRevision: revision, synchronized: true }; order.push("install"); }),
     report: vi.fn((bootstrap: WorkerCloudReport["bootstrap"] = null): WorkerCloudReport => {
       order.push("capture");
       const report: WorkerCloudReport = { controlModeBootstrap: "web", toolPathsBootstrap: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } }, ...(state.desired === null ? { bootstrap, observation: null } : { bootstrap: null, observation: { baseRevision: state.observationRevision, desiredRevision: state.desired.revision, items: [] } }) };
@@ -83,17 +84,17 @@ const fixture = () => {
     }),
     isCurrentReport: (report: WorkerCloudReport) => captures.get(report) === state.generation,
     reportContext: (report: WorkerCloudReport) => contexts.get(report),
-    acknowledge: vi.fn(async (sent: WorkerCloudReport, receipt: WorkerCloudReceipt): Promise<"persisted" | "ignored"> => { if (captures.get(sent) !== state.generation) return "ignored"; state = { generation: state.generation, desired: receipt.desired, observationRevision: receipt.observationRevision, synchronized: true }; order.push("accept"); return "persisted"; }),
+    acknowledge: vi.fn(async (sent: WorkerCloudReport, receipt: ReceivedWorkerConfigurationReceipt): Promise<"persisted" | "ignored"> => { if (captures.get(sent) !== state.generation) return "ignored"; state = { generation: state.generation, desired: receipt.desired?.known ?? null, observationRevision: receipt.observationRevision, synchronized: true }; order.push("accept"); return "persisted"; }),
   };
-  const read = vi.fn(async (_operation: Operation): Promise<WorkerCloudResource> => { order.push("read"); return { desired: state.desired, observationRevision: state.observationRevision, observation: null }; });
-  const send = vi.fn(async (): Promise<WorkerCloudReportReceipt> => { order.push("send"); return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: state.desired, observationRevision: String(Number(state.observationRevision) + 1), observationAccepted: state.desired !== null } }; });
+  const read = vi.fn(async (_operation: Operation): Promise<ReceivedWorkerConfigurationResource> => { order.push("read"); return receivedResource({ desired: state.desired, observationRevision: state.observationRevision, observation: null }); });
+  const send = vi.fn(async (): Promise<ReceivedWorkerConfigurationReportReceipt> => { order.push("send"); return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: state.desired, observationRevision: String(Number(state.observationRevision) + 1), observationAccepted: state.desired !== null }) }; });
   const collect = vi.fn(async () => { order.push("collect"); return { ...workerTelemetry, taskInventory: null }; });
   return { manager, read, send, collect, order, setAuthority: (read: boolean) => { authorityRead = read; }, replace: (value: Partial<typeof state>) => { state = { ...state, ...value }; } };
 };
 
 it("prepares authority before collecting a fresh sample and avoids reads on a synchronized normal cycle", async () => {
   const f = fixture(), readEntered = deferred(), releaseRead = deferred();
-  f.read.mockImplementationOnce(async () => { f.order.push("read"); readEntered.resolve(); await releaseRead.promise; return { desired: target("2"), observationRevision: "1", observation: null }; });
+  f.read.mockImplementationOnce(async () => { f.order.push("read"); readEntered.resolve(); await releaseRead.promise; return receivedResource({ desired: target("2"), observationRevision: "1", observation: null }); });
   const exchange = createWorkerConfigurationExchange(f);
   const first = syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
   await readEntered.promise;
@@ -102,6 +103,20 @@ it("prepares authority before collecting a fresh sample and avoids reads on a sy
   expect(f.order).toEqual(["ready", "read", "install", "collect", "capture", "send", "accept"]);
   await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
   expect(f.read).toHaveBeenCalledOnce(); expect(f.collect).toHaveBeenCalledTimes(2);
+});
+
+it("forwards source-backed authority and remote observations without projecting them into reports", async () => {
+  const f = fixture(), current = operation();
+  const known = target("2");
+  const desiredJson = JSON.stringify(known).replace('"value":{', '"value":{"future":900719925474099312345,');
+  const observationJson = '{"baseRevision":"4","desiredRevision":"2","reportedAt":"2026-11-12T00:00:00Z","items":[{"key":{"kind":"future"},"appliedValue":-1.25e900}]}';
+  const received = { json: desiredJson, known };
+  f.read.mockResolvedValueOnce({ json: `{"desired":${desiredJson},"observationRevision":"5","observation":${observationJson}}`, desired: received, observationRevision: "5", observationJson });
+  const exchange = createWorkerConfigurationExchange(f);
+  await exchange.prepare!(current, "source-sync");
+  expect(f.manager.receive).toHaveBeenCalledWith(received, "5", current.signal, "source-sync", { observationRevision: "5", json: observationJson });
+  expect(exchange.capture({ ...workerTelemetry, taskInventory: null }).observation?.items).toEqual([]);
+  await exchange.close();
 });
 
 it("discards a sample when authority changes during collection without consuming its prompt batch", async () => {
@@ -163,11 +178,11 @@ it.each([
 it("keeps null observation rejection normal and lets a current service target cancel bootstrap", async () => {
   const f = fixture(); f.replace({ desired: null, observationRevision: "0" });
   const bootstrap = { prepare: vi.fn(async () => target().value), invalidate: vi.fn(), clear: vi.fn(async () => {}) };
-  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: null, observationRevision: "0", observationAccepted: false } });
+  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }) });
   const exchange = createWorkerConfigurationExchange({ ...f, bootstrap });
   await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).resolves.toMatchObject({ promptError: false });
   expect(bootstrap.prepare).toHaveBeenCalledOnce(); expect(bootstrap.invalidate).not.toHaveBeenCalled();
-  f.read.mockResolvedValueOnce({ desired: target("2"), observationRevision: "1", observation: null });
+  f.read.mockResolvedValueOnce(receivedResource({ desired: target("2"), observationRevision: "1", observation: null }));
   await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
   expect(f.read).toHaveBeenCalledTimes(2); expect(bootstrap.prepare).toHaveBeenCalledOnce(); expect(bootstrap.clear).toHaveBeenCalled();
   expect(f.manager.report.mock.calls[1]![0]).toBeNull();
@@ -175,7 +190,7 @@ it("keeps null observation rejection normal and lets a current service target ca
 
 it("uses a rejected observation's canonical receipt for a new report without replay or an extra read", async () => {
   const f = fixture();
-  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target("2"), observationRevision: "1", observationAccepted: false } });
+  f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target("2"), observationRevision: "1", observationAccepted: false }) });
   const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false });
   await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
   await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
@@ -212,7 +227,7 @@ it("separates a successful remote receipt from its still-pending local acceptanc
 it("distinguishes unread cached authority from an authenticated null target and its valid zero baseline", async () => {
   const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
   f.setAuthority(false);
-  f.read.mockResolvedValueOnce({ desired: null, observationRevision: "0", observation: null });
+  f.read.mockResolvedValueOnce(receivedResource({ desired: null, observationRevision: "0", observation: null }));
   const exchange = createWorkerConfigurationExchange({ ...f, onStage: event => events.push(event) });
   await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
   expect(events.find(event => event.phase === "authority-read" && event.status === "started")).toMatchObject({
@@ -234,7 +249,7 @@ it("retains the captured token and reports an ignored stale receipt without clai
   const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
   f.send.mockImplementationOnce(async () => {
     f.replace({ generation: "replacement", desired: target("2"), observationRevision: "9" });
-    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target(), observationRevision: "6", observationAccepted: true } };
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target(), observationRevision: "6", observationAccepted: true }) };
   });
   const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false, onStage: event => events.push(event) });
   await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
@@ -316,7 +331,7 @@ it.each([
 it("records a rejected nonempty observation as a confirmed report before canonical local persistence", async () => {
   const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [];
   f.send.mockResolvedValueOnce({ observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime,
-    configuration: { desired: target("2"), observationRevision: "1", observationAccepted: false } });
+    configuration: receivedReceipt({ desired: target("2"), observationRevision: "1", observationAccepted: false }) });
   const exchange = createWorkerConfigurationExchange({ ...f, needsRead: false, onStage: event => events.push(event) });
   await syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect });
   expect(events.find(event => event.phase === "report-send" && event.status === "succeeded")).toMatchObject({ remoteOutcome: "success", observationAccepted: false, localOutcome: "not_attempted" });
@@ -328,7 +343,7 @@ it("records a rejected nonempty observation as a confirmed report before canonic
 
 it("retains received canonical authority while its local installation is still pending", async () => {
   const f = fixture(), events: WorkerConfigurationExchangeEvent[] = [], failure = new Error("local acceptance pending");
-  f.read.mockResolvedValueOnce({ desired: target("2"), observationRevision: "1", observation: null });
+  f.read.mockResolvedValueOnce(receivedResource({ desired: target("2"), observationRevision: "1", observation: null }));
   f.manager.receive.mockRejectedValueOnce(failure);
   const exchange = createWorkerConfigurationExchange({ ...f, onStage: event => events.push(event) });
   await expect(syncWorkerConfigurationOnce({ configuration: exchange, operation: operation(), report: f.collect })).rejects.toBe(failure);

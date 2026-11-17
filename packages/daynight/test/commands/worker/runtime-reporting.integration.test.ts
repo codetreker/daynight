@@ -1,3 +1,4 @@
+import { receivedDesired, receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import type { ArchiveProbeResult } from "../../../src/commands/controller/archive-error.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
@@ -9,7 +10,7 @@ import { ApiError } from "../../../src/api/client.js";
 import { OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { WorkerReport } from "../../../src/api/types.js";
-import type { WorkerCloudDesired, WorkerCloudReport, WorkerCloudReportReceipt } from "../../../src/api/worker-configuration.js";
+import type { WorkerCloudDesired, WorkerCloudReport, ReceivedWorkerConfigurationReportReceipt } from "../../../src/api/worker-configuration.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 import type { WorkerConfigurationManager } from "../../../src/commands/worker/configuration.js";
 import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/worker/configuration-exchange.js";
@@ -127,7 +128,7 @@ const start = (f: Awaited<ReturnType<typeof fixture>>) => {
 let target: WorkerCloudDesired;
 let observationRevision: bigint;
 let collect: ReturnType<typeof vi.fn<(operation: Operation) => Promise<WorkerTelemetrySample>>>;
-let report: ReturnType<typeof vi.fn<(workerId: string, value: WorkerReport, configuration: WorkerCloudReport, operation: Operation) => Promise<WorkerCloudReportReceipt>>>;
+let report: ReturnType<typeof vi.fn<(workerId: string, value: WorkerReport, configuration: WorkerCloudReport, operation: Operation) => Promise<ReceivedWorkerConfigurationReportReceipt>>>;
 let prepare: ReturnType<typeof vi.fn>;
 let shutdown: ReturnType<typeof vi.fn>;
 let dispose: ReturnType<typeof vi.fn>;
@@ -149,11 +150,11 @@ beforeEach(async () => {
   report = vi.fn(async (_workerId, _body, configuration) => {
     const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
     if (observationAccepted) observationRevision++;
-    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(observationRevision), observationAccepted } };
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: String(observationRevision), observationAccepted }) };
   });
   prepare = vi.fn(async () => {}); shutdown = vi.fn(async () => true); dispose = vi.fn(async () => {}); update = vi.fn();
   mocks.telemetry.mockReturnValue({ collect }); mocks.probe.mockResolvedValue("0.164.0");
-  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => ({ desired: target, observationRevision: "0", observation: null })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
+  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "0", observation: null }))), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), reportConfiguration: report, report: vi.fn() });
   mocks.git.mockReturnValue(Object.assign({ prepareRepository: prepare, dispose, listWorktrees: vi.fn(async () => []) }, { scanWorktrees: scanFromList }));
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });
   mocks.prompt.mockReturnValue("prompt");
@@ -191,16 +192,16 @@ describe("worker runtime configuration reporting", () => {
     expect(required()).toBe(false);
 
     target = { ...target, revision: "2", value: { ...target.value, native: { agent: "copilot", model: null, args: [] } } };
-    await manager.receive(target, "0"); await manager.settle();
+    await manager.receive(receivedDesired(target), "0"); await manager.settle();
     expect(required()).toBe(true);
 
     target = { ...target, revision: "3", value: { ...target.value, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: { agent: "copilot" } }] } };
-    await manager.receive(target, "0"); await manager.settle();
+    await manager.receive(receivedDesired(target), "0"); await manager.settle();
     expect(manager.current().effective.projects[0]?.native?.agent).toBe("copilot");
     expect(required()).toBe(true);
 
     target = { ...target, revision: "4", value: { ...target.value, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
-    await manager.receive(target, "0"); await manager.settle();
+    await manager.receive(receivedDesired(target), "0"); await manager.settle();
     expect(required()).toBe(false);
     mocks.botRequiresCopilot.mockReturnValue(true);
     expect(required()).toBe(true);
@@ -224,7 +225,7 @@ describe("worker runtime configuration reporting", () => {
     const f = await fixture(), original = new Error("configuration diagnostic formatter failed", { cause: new Error("original diagnostic cause") });
     target = { ...target, value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(observationRevision), observation: null }));
+    remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: String(observationRevision), observation: null })));
     let failed = false;
     mocks.emit.mockImplementation(event => {
       if (!failed && event.configuration?.phase === "report-send" && event.configuration.status === "succeeded") { failed = true; throw original; }
@@ -246,11 +247,11 @@ describe("worker runtime configuration reporting", () => {
     const { createWorkerConfigurationManager } = await vi.importActual<typeof import("../../../src/commands/worker/configuration.js")>("../../../src/commands/worker/configuration.js");
     await mkdir(f.paths.workerDirectory, { recursive: true });
     const previous = await createWorkerConfigurationManager({ file: f.paths.configurationFile, identity: { serverOrigin: "https://daynight.example", userId: uuid(6), workerId: uuid(4) }, signal: new AbortController().signal, applyNative: async () => {} });
-    await previous.receive(cached, "10"); await previous.settle(); await previous.stop();
+    await previous.receive(receivedDesired(cached), "10"); await previous.settle(); await previous.stop();
     target = { ...cached, revision: scenario === "lower" ? "5" : "10", value: { ...cached.value, maxConcurrent: 3, native: { ...cached.value.native, model: "canonical-model" }, agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
     observationRevision = 5n;
     const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: "5", observation: null }));
+    remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: "5", observation: null })));
     const running = start(f);
     await eventually(() => expect(report.mock.calls.some(([, , configuration]) => configuration.observation?.desiredRevision === target.revision && configuration.observation.baseRevision === "5")).toBe(true));
     const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
@@ -265,8 +266,8 @@ describe("worker runtime configuration reporting", () => {
     await eventually(() => expect(report.mock.calls.length).toBeGreaterThan(1));
     expect(remote.configuration).toHaveBeenCalledTimes(reads);
     f.signal.abort(); await running;
-    const persisted = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { desired: WorkerCloudDesired; observationRevision: string } };
-    expect(persisted.authority.desired).toEqual(target);
+    const persisted = JSON.parse(await readFile(f.paths.configurationFile, "utf8")) as { authority: { desiredJson: string; observationRevision: string } };
+    expect(JSON.parse(persisted.authority.desiredJson)).toEqual(target);
     expect(persisted.authority.observationRevision).toBe(String(observationRevision));
   });
 
@@ -280,7 +281,7 @@ describe("worker runtime configuration reporting", () => {
     await collecting.promise;
     const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
     target = { ...target, revision: "5", value: { ...target.value, maxConcurrent: 4 } };
-    await manager.receive(target, "0");
+    await manager.receive(receivedDesired(target), "0");
     release.resolve();
     const reporter = mocks.createdReporter.mock.calls[0]![0] as ReturnType<typeof createWorkerReporter>;
     reporter.trigger();
@@ -294,12 +295,12 @@ describe("worker runtime configuration reporting", () => {
     target = { ...target, revision: "8", value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
     let canonical: WorkerCloudDesired | null = target;
-    remote.configuration.mockImplementation(async () => ({ desired: canonical, observationRevision: String(observationRevision), observation: null }));
+    remote.configuration.mockImplementation(async () => (receivedResource({ desired: canonical, observationRevision: String(observationRevision), observation: null })));
     report.mockImplementation(async (_workerId, _telemetry, configuration) => {
       if (configuration.bootstrap !== null) canonical = { revision: "1", updatedAt: workerTelemetryTime, value: configuration.bootstrap };
       const observationAccepted = configuration.observation !== null && canonical !== null && configuration.observation.desiredRevision === canonical.revision && configuration.observation.baseRevision === String(observationRevision);
       if (observationAccepted) observationRevision++;
-      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: canonical, observationRevision: String(observationRevision), observationAccepted } };
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: canonical, observationRevision: String(observationRevision), observationAccepted }) };
     });
     const running = start(f);
     await eventually(() => expect(report).toHaveBeenCalled());
@@ -329,12 +330,12 @@ describe("worker runtime configuration reporting", () => {
     let canonical: WorkerCloudDesired | null = target;
     const remote = mocks.remote(); mocks.remote.mockClear();
     const order: string[] = [];
-    remote.configuration.mockImplementation(async () => { order.push(`GET:${canonical?.revision ?? "null"}`); return { desired: canonical, observationRevision: String(observationRevision), observation: null }; });
+    remote.configuration.mockImplementation(async () => { order.push(`GET:${canonical?.revision ?? "null"}`); return receivedResource({ desired: canonical, observationRevision: String(observationRevision), observation: null }); });
     report.mockImplementation(async (_workerId, _telemetry, configuration) => {
       order.push(`POST:${configuration.bootstrap === null ? configuration.observation?.desiredRevision : "bootstrap"}`);
       const observationAccepted = configuration.observation !== null && canonical !== null && configuration.observation.desiredRevision === canonical.revision && configuration.observation.baseRevision === String(observationRevision);
       if (observationAccepted) observationRevision++;
-      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: canonical, observationRevision: String(observationRevision), observationAccepted } };
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: canonical, observationRevision: String(observationRevision), observationAccepted }) };
     });
     const running = start(f);
     await eventually(() => expect(report).toHaveBeenCalled());
@@ -668,7 +669,7 @@ describe("worker runtime configuration reporting", () => {
     target = { ...target, revision: "2", value: { ...target.value, maxConcurrent: 4, native: { ...target.value.native, model: "cloud-after-lost-receipt" } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
     const files = await vi.importActual<typeof import("../../../src/platform/files.js")>("../../../src/platform/files.js");
-    let imported = false, remoteRevision = 5, fourthReceipt: WorkerCloudReportReceipt | undefined;
+    let imported = false, remoteRevision = 5, fourthReceipt: ReceivedWorkerConfigurationReportReceipt | undefined;
     let checkpoint: { text: string; generation: string; state: "preparing" | "blocked" | "started" | "completed" | "error"; error?: unknown } | undefined;
     const checkpointAttempts: string[] = [];
     const ioFailure = Object.assign(new Error("Fourth ACK checkpoint is temporarily unavailable."), { code: "EBUSY", syscall: "open" });
@@ -690,9 +691,9 @@ describe("worker runtime configuration reporting", () => {
     });
     remote.configuration.mockImplementation(async () => {
       order.push("GET");
-      if (!imported) return { desired: null, observationRevision: "0", observation: null };
+      if (!imported) return receivedResource({ desired: null, observationRevision: "0", observation: null });
       if (report.mock.calls.length >= 4) await releaseLaterGet.promise;
-      return { desired: target, observationRevision: String(remoteRevision), observation: { baseRevision: String(remoteRevision - 1), desiredRevision: "2", items: [], reportedAt: workerTelemetryTime } };
+      return receivedResource({ desired: target, observationRevision: String(remoteRevision), observation: { baseRevision: String(remoteRevision - 1), desiredRevision: "2", items: [], reportedAt: workerTelemetryTime } });
     });
     report.mockImplementation(async (_workerId, _body, configuration) => {
       order.push("POST");
@@ -705,7 +706,7 @@ describe("worker runtime configuration reporting", () => {
       if (report.mock.calls.length === 4) { fourthEntered.resolve(); await releaseFourth.promise; }
       const observationAccepted = configuration.observation?.baseRevision === String(remoteRevision);
       if (observationAccepted) remoteRevision++;
-      const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(remoteRevision), observationAccepted } };
+      const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: String(remoteRevision), observationAccepted }) };
       if (report.mock.calls.length === 4) fourthReceipt = receipt;
       return receipt;
     });
@@ -753,7 +754,7 @@ describe("worker runtime configuration reporting", () => {
       expect(fourth.source).toMatchObject({ generation: manager.current().generation, desiredRevision: "2", observationRevision: "7" });
       expect(fourth.report).toMatchObject({ reportId: expect.any(String), generation: fourth.source!.generation, baseRevision: "7" });
       if (scenario === "stale-generation") {
-        await manager.receive(target, "7");
+        await manager.receive(receivedDesired(target), "7");
         expect(manager.current().generation).not.toBe(fourth.source!.generation);
       }
       releaseFourth.resolve();
@@ -825,7 +826,7 @@ describe("worker runtime configuration reporting", () => {
       order.push("POST"); reports++;
       if (reports === 1) throw new ApiError({ operation: "worker.reportConfiguration" }, "request", { cause: new Error("Report outcome unknown."), outcomeUnconfirmed: true });
       if (reports === 2) { imported = { ...target, value: configuration.bootstrap! }; secondEntered.resolve(); await releaseSecond.promise; }
-      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: imported!, observationRevision: "0", observationAccepted: false } };
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: imported!, observationRevision: "0", observationAccepted: false }) };
     });
     const running = start(f);
     await eventually(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "worker_report_failed" })));
@@ -1123,7 +1124,7 @@ describe("worker runtime configuration reporting", () => {
     report.mockImplementation(async (_workerId, _body, _configuration, operation) => {
       operation.signal.addEventListener("abort", () => { order.push("report-aborted"); cancelled.resolve(); }, { once: true });
       await joined.promise; order.push("report-joined"); operation.check();
-      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: "0", observationAccepted: false } };
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: "0", observationAccepted: false }) };
     });
     shutdown.mockImplementation(async () => { order.push("coordinator"); return true; });
     dispose.mockImplementation(async () => { order.push("git"); }); mocks.webClose.mockImplementation(() => { order.push("web-store"); });
@@ -1139,7 +1140,7 @@ describe("worker runtime configuration reporting", () => {
     const f = await fixture(), writing = deferred<void>(), release = deferred<void>(), firstReceipt = deferred<void>(), nextRequest = deferred<WorkerCloudReport>(), releaseReceipt = deferred<void>();
     target = { ...target, value: { ...target.value, agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockImplementation(async () => ({ desired: target, observationRevision: String(observationRevision), observation: null }));
+    remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: String(observationRevision), observation: null })));
     if (!projectNativeValid) target = { ...target, value: { ...target.value, agentControlMode: "web", projects: [{ projectId: uuid(1), nativeOverrides: { args: ["--search"] } }] } };
     const acceptReport = report.getMockImplementation()!;
     report.mockImplementation(async (...args) => {

@@ -1,3 +1,4 @@
+import { receivedDesired, receivedReceipt, receivedResource } from "../../helpers/worker-received-configuration.js";
 import { scanFromList } from "../../helpers/worker-git-scan.js";
 import path from "node:path";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -108,10 +109,10 @@ it.each([false, true])("keeps retained Herdr and frozen Web execution responsibi
   const report = vi.fn(async (_workerId: string, _body: unknown, configuration: WorkerCloudReport) => {
     const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
     if (observationAccepted) observationRevision++;
-    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: canonical, observationRevision: String(observationRevision), observationAccepted } };
+    return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: canonical, observationRevision: String(observationRevision), observationAccepted }) };
   });
   const remote = {
-    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => ({ desired: canonical, observationRevision: String(observationRevision), observation: null })), reportConfiguration: report, report: vi.fn(),
+    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => (receivedResource({ desired: canonical, observationRevision: String(observationRevision), observation: null }))), reportConfiguration: report, report: vi.fn(),
     project: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })), resolveProject: vi.fn(async (_repository: unknown, _signal: AbortSignal) => ({ id: projectId, repoUrl: project.repoUrl })),
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
@@ -181,7 +182,7 @@ it.each(["null", "unread", "unsupported"] as const)("cold-resumes an original fr
   const target: WorkerCloudDesired = { revision: "10", updatedAt: workerTelemetryTime, value: { agentControlMode: "herdr", maxConcurrent: 2, pollIntervalMs: 1000, recoveryLimit: 6, preferPlatformSpecificTasks: false, native: { agent: "codex", model: frozen.model, args: frozen.args }, projects: [{ projectId, nativeOverrides: {} }] } };
   const seed = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {} });
   await seed.configureProjectAdapters({ prepare: async () => {} });
-  await seed.receive(target, "9"); await seed.settle();
+  await seed.receive(receivedDesired(target), "9"); await seed.settle();
   if (authority === "null") await seed.receive(null, "0");
   await seed.stop();
   const canonical = authority === "null" ? null : authority === "unsupported" ? { ...target, revision: "11", value: { ...target.value, maxConcurrent: 65, recoveryLimit: 1 } } : target;
@@ -200,7 +201,7 @@ it.each(["null", "unread", "unsupported"] as const)("cold-resumes an original fr
   const remote = {
     serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => {
       if (authority === "unread") throw new OperationError("request_timeout");
-      return { desired: canonical, observationRevision: "0", observation: null };
+      return receivedResource({ desired: canonical, observationRevision: "0", observation: null });
     }), reportConfiguration: vi.fn(async () => { throw new OperationError("request_timeout"); }), report: vi.fn(),
     project: vi.fn(async () => ({ id: projectId, repoUrl: project.repoUrl })), resolveProject,
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: [projectId], unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
@@ -261,9 +262,9 @@ it("registers fresh stop verification after a failed startup read even when the 
   const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "current-cloud-model", args: [] }, projects: [{ projectId: selectedProjectId, nativeOverrides: {} }] } };
   const seed = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {} });
   await seed.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
-  await seed.receive({ ...target, revision: "1", value: { ...target.value, projects: [{ projectId, nativeOverrides: {} }] } }, "0"); await seed.settle();
-  await seed.receive(target, "0"); await seed.settle();
-  await seed.acknowledge(seed.report(), { desired: target, observationRevision: "1", observationAccepted: true }); await seed.stop();
+  await seed.receive(receivedDesired({ ...target, revision: "1", value: { ...target.value, projects: [{ projectId, nativeOverrides: {} }] } }), "0"); await seed.settle();
+  await seed.receive(receivedDesired(target), "0"); await seed.settle();
+  await seed.acknowledge(seed.report(),receivedReceipt({ desired: target, observationRevision: "1", observationAccepted: true })); await seed.stop();
   const saved = JSON.parse(await readFile(paths.configurationFile, "utf8")) as WorkerConfigurationCache;
   expect([...saved.currentItems, ...saved.retainedItems].some(item => "projectId" in item.value.key && item.value.key.projectId === projectId)).toBe(false);
   const task: Task = { type: "task", parentId: null,
@@ -279,11 +280,11 @@ it("registers fresh stop verification after a failed startup read even when the 
     serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => {
       if (++reads === 1) throw new OperationError("request_timeout");
       await readAllowed;
-      return { desired: target, observationRevision: String(observationRevision), observation: null };
+      return receivedResource({ desired: target, observationRevision: String(observationRevision), observation: null });
     }), reportConfiguration: vi.fn(async (_workerId: string, _report: unknown, configuration: WorkerCloudReport, _operation: unknown, selectors: readonly WorkerPromptSelector[] = []) => {
       const observationAccepted = configuration.observation !== null && configuration.observation.baseRevision === String(observationRevision);
       if (observationAccepted) observationRevision++;
-      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: { desired: target, observationRevision: String(observationRevision), observationAccepted },
+      return { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime, configuration: receivedReceipt({ desired: target, observationRevision: String(observationRevision), observationAccepted }),
         prompts: { ok: true, results: selectors.map(({ key }) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "project" ? key.projectId : key.scope === "user" ? userId : workerId, revision: "0", text: "", updatedAt: null } })) } };
     }), report: vi.fn(),
     project: vi.fn(async (id: string) => ({ id, repoUrl: id === projectId ? retained.repoUrl : selected.repoUrl })), resolveProject: vi.fn(async () => ({ id: selectedProjectId, repoUrl: selected.repoUrl })),
@@ -331,7 +332,7 @@ it("counts removal registration only when usable authority still owns its queued
   const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: [{ projectId: uuid(9), nativeOverrides: {} }] } };
   try {
     expect(await manager.ensureProjectRemoval(projectId)).toBe(false);
-    await manager.receive(target, "0"); await manager.settle();
+    await manager.receive(receivedDesired(target), "0"); await manager.settle();
     hold = true;
     const resetting = manager.receive(null, "0");
     await writeEntered;
@@ -339,7 +340,7 @@ it("counts removal registration only when usable authority still owns its queued
     release(); await resetting;
     expect(await registering).toBe(false);
     expect(manager.current().items).toEqual([]);
-    await manager.receive(target, "0"); await manager.settle();
+    await manager.receive(receivedDesired(target), "0"); await manager.settle();
     expect(await manager.ensureProjectRemoval(uuid(9))).toBe(true);
     expect(await manager.ensureProjectRemoval(projectId)).toBe(true);
     expect(manager.current().items).toContainEqual(expect.objectContaining({ key: { kind: "projectRemoval", projectId }, targetRevision: "2", state: "pending" }));
@@ -370,9 +371,9 @@ it("re-registers original stops after a null reset interrupts an accepted initia
   const target: WorkerCloudDesired = { revision: "2", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: holderIds.map(projectId => ({ projectId, nativeOverrides: {} })) } };
   const seed = await createWorkerConfigurationManager({ file: paths.configurationFile, identity: { serverOrigin, userId, workerId }, signal: new AbortController().signal, applyNative: async () => {} });
   await seed.configureProjectAdapters({ prepare: async () => {}, remove: async () => {} });
-  await seed.receive({ ...target, revision: "1", value: { ...target.value, projects: [{ projectId, nativeOverrides: {} }] } }, "0"); await seed.settle();
-  await seed.receive(target, "0"); await seed.settle();
-  await seed.acknowledge(seed.report(), { desired: target, observationRevision: "1", observationAccepted: true }); await seed.stop();
+  await seed.receive(receivedDesired({ ...target, revision: "1", value: { ...target.value, projects: [{ projectId, nativeOverrides: {} }] } }), "0"); await seed.settle();
+  await seed.receive(receivedDesired(target), "0"); await seed.settle();
+  await seed.acknowledge(seed.report(),receivedReceipt({ desired: target, observationRevision: "1", observationAccepted: true })); await seed.stop();
   const seedCache = JSON.parse(await readFile(paths.configurationFile, "utf8")) as WorkerConfigurationCache;
   expect([...seedCache.currentItems, ...seedCache.retainedItems].some(item => "projectId" in item.value.key && item.value.key.projectId === projectId)).toBe(false);
   const task: Task = { type: "task", parentId: null,
@@ -382,7 +383,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
     properties: { worker: { claimId, state: "active", userId, workerId, machine: { id: uuid(7), name: "original" }, platform: "macos", agent: "codex", agentControlMode: "web", worktreeId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } },
   };
   const remote = {
-    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => ({ desired: target, observationRevision: "1", observation: null })), reportConfiguration: vi.fn(), report: vi.fn(),
+    serverOrigin, currentUserId: vi.fn(async () => userId), configuration: vi.fn(async () => (receivedResource({ desired: target, observationRevision: "1", observation: null }))), reportConfiguration: vi.fn(), report: vi.fn(),
     project: vi.fn(async (id: string) => ({ id, repoUrl: `https://git.example/team/${id}.git` })), resolveProject: vi.fn(async () => { throw new Error("No local bootstrap is used."); }),
     ownInventory: vi.fn(async () => ({ tasks: [task], coveredProjectIds: store.listProjects().map(project => project.projectId), unavailableProjectIds: [] })), readTask: vi.fn(async () => task), candidates: vi.fn(async function* () {}), claim: vi.fn(), update: vi.fn(async () => task),
   };
@@ -403,7 +404,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
     const snapshot = JSON.parse([...chunks()].join("")) as WorkerConfigurationCache;
     if (!heldWrite && snapshot.currentItems.some(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)) { heldWrite = true; enteredWrite(); await writeAllowed; }
     await replaceFileAtomicallyFromChunks(file, chunks(), 0o600);
-    if (snapshot.authority.desired === null) nullCheckpoint = JSON.parse(await readFile(file, "utf8")) as WorkerConfigurationCache;
+    if (snapshot.authority.desiredJson === null) nullCheckpoint = JSON.parse(await readFile(file, "utf8")) as WorkerConfigurationCache;
   } });
   const cancellation = new AbortController(); cancellations.add(cancellation);
   const execution = runWorker({ homeDirectory, packageDirectory: path.resolve("package"), workingDirectory: homeDirectory, version: "0.41.0", signal: cancellation.signal });
@@ -413,13 +414,13 @@ it("re-registers original stops after a null reset interrupts an accepted initia
     const manager = mocks.configuration.mock.calls.at(-1)![0] as WorkerConfigurationManager;
     expect(heldCalls).toBe(16);
     const sent = manager.report(), operation = createOperation({ limits: { totalMs: 20 } });
-    const accepting = manager.acknowledge(sent, { desired: null, observationRevision: "0", observationAccepted: false }, operation.signal).catch(error => error);
+    const accepting = manager.acknowledge(sent,receivedReceipt({ desired: null, observationRevision: "0", observationAccepted: false }), operation.signal).catch(error => error);
     expect(await accepting).toMatchObject({ name: "OperationError", kind: "deadline" }); operation.dispose();
     const resource = await remote.configuration();
     const nextRead = manager.receive(resource.desired, resource.observationRevision);
     await new Promise<void>(resolve => setImmediate(resolve));
     releaseWrite(); await nextRead;
-    expect(nullCheckpoint?.authority.desired).toBeNull();
+    expect(nullCheckpoint?.authority.desiredJson).toBeNull();
     expect([...nullCheckpoint!.currentItems, ...nullCheckpoint!.retainedItems].some(item => "projectId" in item.value.key && item.value.key.projectId === projectId)).toBe(false);
     holdingJobs = false; releaseJobs(); await manager.settle();
     await vi.waitFor(() => expect(cleanup).toHaveBeenCalledWith(expect.objectContaining(owner), expect.objectContaining({ kind: "shutdown", signal: expect.any(AbortSignal) })), { timeout: 3500, interval: 10 });
@@ -429,7 +430,7 @@ it("re-registers original stops after a null reset interrupts an accepted initia
     expect(store.getTask(localTask)).toEqual(localTask); expect(webStore.getTask(localTask)).toEqual(original); expect(await readFile(marker, "utf8")).toBe("original unfinished work\n");
     expect(remote.claim).not.toHaveBeenCalled();
     const cleanupCalls = cleanup.mock.calls.length, rounds = remote.ownInventory.mock.calls.length;
-    await manager.acknowledge(manager.report(), { desired: target, observationRevision: "2", observationAccepted: true }); await manager.settle();
+    await manager.acknowledge(manager.report(),receivedReceipt({ desired: target, observationRevision: "2", observationAccepted: true })); await manager.settle();
     await vi.waitFor(() => expect(remote.ownInventory.mock.calls.length).toBeGreaterThan(rounds), { timeout: 3500, interval: 10 });
     expect(cleanup).toHaveBeenCalledTimes(cleanupCalls);
     cancellation.abort(); await execution;
