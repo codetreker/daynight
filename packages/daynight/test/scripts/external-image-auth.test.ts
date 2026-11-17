@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createServer as createTcpServer, connect, type Server, type Socket } from "node:net";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { X509Certificate } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, test } from "vitest";
@@ -23,8 +24,16 @@ const listen = async (server: Server): Promise<number> => {
 };
 const certificate = async (directory: string, name: string, hostname: string) => {
   const names = hostname === "app.daynight.localhost" ? `${hostname},DNS:preview.daynight.localhost` : hostname;
-  await runFile("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1", "-subj", `/CN=${hostname}`, "-addext", `subjectAltName=DNS:${names}`, "-addext", "basicConstraints=critical,CA:TRUE", "-keyout", path.join(directory, `${name}-key.pem`), "-out", path.join(directory, `${name}-ca.pem`)], { timeout: 15_000 });
-  return { key: await readFile(path.join(directory, `${name}-key.pem`)), cert: await readFile(path.join(directory, `${name}-ca.pem`)) };
+  // OpenSSL 1.1's default CA section already adds basicConstraints. Define
+  // each extension once instead of merging -addext with a host configuration.
+  const config = path.join(directory, `${name}-openssl.cnf`);
+  await writeFile(config, `[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=extensions\n[dn]\nCN=${hostname}\n[extensions]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\nsubjectAltName=DNS:${names}\n`, { mode: 0o600 });
+  await runFile("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "1", "-config", config, "-keyout", path.join(directory, `${name}-key.pem`), "-out", path.join(directory, `${name}-ca.pem`)], { timeout: 15_000 });
+  const cert = await readFile(path.join(directory, `${name}-ca.pem`)), parsed = new X509Certificate(cert);
+  expect(parsed.ca).toBe(true); expect(parsed.subject).toBe(parsed.issuer); expect(parsed.verify(parsed.publicKey)).toBe(true);
+  expect(parsed.checkHost(hostname)).toBe(hostname);
+  if (hostname === "app.daynight.localhost") expect(parsed.checkHost("preview.daynight.localhost")).toBe("preview.daynight.localhost");
+  return { key: await readFile(path.join(directory, `${name}-key.pem`)), cert };
 };
 const run: RunCommand = async (command, args, options) => {
   const result = await runFile(command, [...args], { cwd: options.cwd, signal: options.signal, timeout: options.timeoutMs });
