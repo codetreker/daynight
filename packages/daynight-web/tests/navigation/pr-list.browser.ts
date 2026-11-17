@@ -168,7 +168,7 @@ for (const locale of ['en', 'zh-CN'] as const) for (const width of [1440, 320]) 
     const refresh = heading.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新' });
     await expect(refresh).toBeVisible();
     await expect(heading.locator('p')).toHaveCount(0);
-    const titleBox = await heading.locator('h2').boundingBox(), refreshBox = await refresh.boundingBox();
+    const titleBox = await heading.locator('.pr-title-line').boundingBox(), refreshBox = await refresh.boundingBox();
     expect(Math.abs(titleBox!.y + titleBox!.height / 2 - refreshBox!.y - refreshBox!.height / 2)).toBeLessThanOrEqual(1);
     const notice = page.locator('.pr-sync-status .pr-status-note');
     await expect(notice).toHaveCount(1);
