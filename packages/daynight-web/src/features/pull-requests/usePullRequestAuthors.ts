@@ -85,7 +85,7 @@ export const usePullRequestAuthors = (options: { readonly userId: string; readon
         const error = timedOut ? new ApiError('network') : cause instanceof ApiError ? cause : isAbortError(cause) ? new ApiError('network') : new ApiError('protocol', null, 'protocol', null, cause);
         if (!timedOut && !await scope.accept(token, controller.signal)) return;
         if (state.generation !== generation || !permitted()) return;
-        if (error.code === 'principal_mismatch' || error.status === 401 || error.status === 403) { scope.revoke(error); return; }
+        if (error.code === 'principal_mismatch' || error.status === 401 || error.kind === 'server' && error.status === 403) { scope.revoke(error); return; }
         if (error.status === 404) {
           publish({ ...state.snapshot, loading: true, rebuilding: false, error });
           try { await scope.verifyBaseline(controller.signal); } catch { /* An inconclusive baseline leaves the directory unavailable. */ }

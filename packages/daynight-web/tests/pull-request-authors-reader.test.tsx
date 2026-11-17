@@ -272,3 +272,25 @@ it('does not apply an old baseline denial while authentication is paused or to a
   expect(oldMismatch).not.toHaveBeenCalled();
   expect(newDenied).not.toHaveBeenCalled();
 });
+
+it('retains the directory and shared access on an untrusted 403 and can retry', async () => {
+  let reject = true;
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const cursor = new URL(url, 'https://test').searchParams.get('cursor');
+    if (cursor === null) return prResponse(page(1, 1, '1', 'next'));
+    if (reject) return new Response(JSON.stringify({ error: { code: 'forbidden', message: 'Forbidden', requestId: 'proxy' } }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    return prResponse(page(2, 2, '1', null));
+  }));
+  const { result, scope } = setup();
+  act(() => result.current.open());
+  await waitFor(() => expect(result.current.items).toHaveLength(1));
+  act(() => result.current.loadMore());
+  await waitFor(() => expect(result.current.error?.kind).toBe('protocol'));
+  expect(result.current.error?.status).toBe(403);
+  expect(result.current.items).toEqual([author(1)]);
+  expect(scope.isRevoked()).toBe(false);
+  reject = false;
+  act(() => result.current.retry({ focusedId: null, visibleId: null }));
+  await waitFor(() => expect(result.current.items).toHaveLength(2));
+  expect(result.current.error).toBeNull();
+});
