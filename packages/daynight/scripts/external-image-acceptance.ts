@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { connect, createServer, type Socket } from "node:net";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Environment, RunCommand } from "./external-image-harness/auth.js";
+import type { startForward } from "./external-image-harness/service.js";
 import type { ControllerLaunchTicket } from "../src/commands/controller/launch-ticket.js";
 import type { MarkdownCaptureRecord } from "../src/commands/controller/markdown/coordinator.js";
 import type { ImageCaptureReceipt } from "../src/session/image-values.js";
@@ -99,25 +99,6 @@ const errors: unknown[] = [];
 const manifest: Record<string, unknown> = { startedAt: new Date().toISOString(), status: "running", sourceURLs,
   scope: "external Markdown source integration regression", input: "controlled complete Markdown; no native model invocation", sourceTransport: "real public HTTP/HTTPS; production DNS, peer and certificate checks", service: "real isolated Go/PostgreSQL/UniAuth; controlled OAuth identity" };
 
-async function startForward(target: string) {
-  const destination = new URL(target), sockets = new Set<Socket>(); let accepted = 0;
-  const listener = createServer(incoming => {
-    accepted++;
-    const outgoing = connect({ host: destination.hostname, port: Number(destination.port) });
-    for (const socket of [incoming, outgoing]) {
-      sockets.add(socket); socket.once("close", () => { sockets.delete(socket); });
-      socket.once("error", () => { incoming.destroy(); outgoing.destroy(); });
-    }
-    incoming.pipe(outgoing).pipe(incoming);
-    incoming.once("close", () => outgoing.destroy());
-  });
-  await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(0, "0.0.0.0", resolve); });
-  const address = listener.address(); assert(address && typeof address !== "string");
-  return { port: address.port, accepted: () => accepted, close: async () => {
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
-  } };
-}
 const load = async <T>(name: string): Promise<T> => import(new URL(`../dist/${name}.js`, import.meta.url).href) as Promise<T>;
 try {
   console.log(`External image source regression: ${runDirectory}`);
@@ -138,9 +119,11 @@ try {
   environment = await startEnvironment({ repository, runDirectory: runtimeDirectory, artifactsDirectory: artifacts.directory, signal: cancellation.signal });
   manifest.resources = environment.resourceIdentity;
   const { authenticate } = await import(new URL("./external-image-harness/auth.ts", import.meta.url).href) as typeof import("./external-image-harness/auth.js");
+  const { requestService, startForward } = await import(new URL("./external-image-harness/service.ts", import.meta.url).href) as typeof import("./external-image-harness/service.js");
   const identity = await authenticate({ environment, directory: privateDirectory, artifacts: artifacts.directory, repository, run: runCommand, signal: cancellation.signal });
   manifest.authentication = { userId: identity.userId, tokenId: identity.tokenId, provider: "isolated OAuth provider", certificateVerification: "explicit fixture CA; no TLS verification bypass" };
-  forward = await startForward(environment.baseURL);
+  const daynightCA = path.join(artifacts.directory, "daynight-ca.pem"), ca = await readFile(daynightCA);
+  forward = await startForward(environment.baseURL, ca);
   await mkdir(networkDirectory, { mode: 0o700 });
   const assets = environment.resourceIdentity;
   await persist(path.join(networkDirectory, "service-assets.json"), {
@@ -154,13 +137,7 @@ try {
   await persist(path.join(results, "control-listener.json"), { setupConnections, expectedControlProbeConnections: 1, translatedProbeConnections: setupConnections - 1 });
   const topology = JSON.parse(await readFile(path.join(networkDirectory, "network.json"), "utf8")) as { serviceOrigin: string; externalImages: unknown; sourceURLs: string[] };
   assert.deepEqual(topology.sourceURLs, sourceURLs);
-  const request = async (target: string, body?: unknown): Promise<unknown> => {
-    const response = await fetch(`${environment!.baseURL}${target}`, { method: body === undefined ? "GET" : "POST", redirect: "error",
-      headers: { authorization: `Bearer ${identity.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([cancellation.signal, AbortSignal.timeout(15_000)]) });
-    assert(response.ok, `Real service ${target} returned HTTP ${response.status}.`);
-    return response.json();
-  };
+  const request = (target: string, body?: unknown): Promise<unknown> => requestService(environment!.baseURL, ca, identity.token, target, AbortSignal.any([cancellation.signal, AbortSignal.timeout(15_000)]), body);
   const { SESSION_PROTOCOL } = await load<typeof import("../src/session/protocol.js")>("session/protocol");
   const { parseRegistrationResponse, parseControllerGrantResponse } = await load<typeof import("../src/session/controller-protocol.js")>("session/controller-protocol");
   const { writeLaunchTicket } = await load<typeof import("../src/commands/controller/launch-ticket.js")>("commands/controller/launch-ticket");
@@ -210,7 +187,8 @@ try {
   const readOriginals = async (phase: string) => {
     const configuration = path.join(privateDirectory, `reader-${phase}.json`), result = path.join(results, `history-${phase}.json`);
     await persist(configuration, { origin: environment!.baseURL, token: identity.token, sessionId: session.sessionId, receipts, result, phase });
-    await runCommand(process.execPath, [path.join(harness, "reader.ts"), configuration], { cwd: repository, signal: cancellation.signal, timeoutMs: 45_000 });
+    const resolver = path.join(repository, "packages/e2e_tests/src/resolve-local.cjs");
+    await runCommand(process.execPath, ["--require", resolver, path.join(harness, "reader.ts"), configuration], { cwd: repository, env: { ...process.env, NODE_EXTRA_CA_CERTS: daynightCA }, signal: cancellation.signal, timeoutMs: 45_000 });
     const observed = JSON.parse(await readFile(result, "utf8")) as { readerPid: number; reads: unknown[] };
     assert(!readerPids.has(observed.readerPid)); readerPids.add(observed.readerPid);
     return observed.reads;
