@@ -181,6 +181,22 @@ describe('window navigation admission', () => {
     expect(owner.decision()).not.toBeNull();
   });
 
+  it('reports busy until a cancelled history traversal has actually restored its origin', () => {
+    const start = history.state;
+    owner.navigate('/account'); const original = history.state;
+    owner.register(draft());
+    const changes: boolean[] = [];
+    owner.subscribeDecision(() => changes.push(owner.isBusy()));
+    vi.spyOn(history, 'go').mockImplementation(() => {});
+    arrival(start, '/projects');
+    expect(owner.isBusy()).toBe(true);
+    owner.cancel();
+    expect(owner.isBusy()).toBe(true);
+    arrival(original, '/account');
+    expect(owner.isBusy()).toBe(false);
+    expect(changes).toEqual([true, true, false]);
+  });
+
   it('runs the keep-editing continuation only after history restoration, while its draft remains live', () => {
     const start = history.state;
     owner.navigate('/account'); const original = history.state;
@@ -284,6 +300,48 @@ describe('window navigation admission', () => {
     owner.setView(tokens, { onCommit: commit }); owner.confirm();
     expect(registration.discard).toHaveBeenCalledOnce();
     expect(owner.snapshot().view).toEqual(tokens);
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
+  it('admits URL and reading together and writes once only after the draft decision', () => {
+    const profile = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    const tokens = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'configuration');
+    owner.navigate('/account?tab=overview'); owner.setView(profile, { replace: true });
+    const original = owner.snapshot(), source = history.state, length = history.length;
+    const push = vi.spyOn(history, 'pushState');
+    const replace = vi.spyOn(history, 'replaceState');
+    const commit = vi.fn();
+    const registration = draft({ survives: vi.fn(() => false) });
+    owner.register(registration);
+    owner.setView(tokens, { to: '/account?tab=configuration', onCommit: commit });
+    expect(registration.survives).toHaveBeenCalledWith(new URL('/account?tab=configuration', location.origin), tokens);
+    expect(owner.snapshot()).toBe(original);
+    expect(location.search).toBe('?tab=overview');
+    expect(push).not.toHaveBeenCalled(); expect(replace).not.toHaveBeenCalled();
+    owner.cancel();
+    expect(owner.snapshot()).toBe(original); expect(commit).not.toHaveBeenCalled();
+    owner.setView(tokens, { to: '/account?tab=configuration', onCommit: commit }); owner.confirm();
+    expect(push).toHaveBeenCalledOnce(); expect(replace).not.toHaveBeenCalled();
+    expect(history.length).toBe(length + 1);
+    expect(owner.snapshot()).toMatchObject({ search: '?tab=configuration', view: tokens });
+    expect(commit).toHaveBeenCalledOnce();
+    owner.setView(structuredClone(tokens), { to: '/account?tab=configuration', onCommit: commit });
+    expect(push).toHaveBeenCalledOnce(); expect(commit).toHaveBeenCalledOnce();
+    arrival(source, '/account?tab=overview');
+    expect(owner.decision()).not.toBeNull();
+    owner.confirm();
+    expect(owner.snapshot()).toMatchObject({ search: '?tab=overview', view: profile });
+    expect(() => owner.setView(profile, { to: 'https://elsewhere.invalid' })).toThrow();
+  });
+
+  it('replaces URL while retaining entry identity when the reading is unchanged', () => {
+    const reading = workerHistory('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000011', 'overview');
+    owner.navigate('/account#pending'); owner.setView(reading, { replace: true });
+    const id = owner.snapshot().entryId, length = history.length;
+    const commit = vi.fn();
+    owner.setView(reading, { to: '/account?tab=overview#pending', replace: true, onCommit: commit });
+    expect(history.length).toBe(length);
+    expect(owner.snapshot()).toMatchObject({ entryId: id, search: '?tab=overview', hash: '#pending', view: reading });
     expect(commit).toHaveBeenCalledOnce();
   });
 

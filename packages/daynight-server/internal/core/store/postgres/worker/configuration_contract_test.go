@@ -25,6 +25,21 @@ func workerStorage(t *testing.T) *postgres.Store {
 	return testutil.OpenStore(t, postgres.Open)
 }
 
+// Most existing cases compare the typed projection; raw storage has separate
+// assertions below because PostgreSQL canonicalizes JSONB independently.
+func typedConfigurationResource(t *testing.T, got model.WorkerConfigurationResource) model.WorkerConfigurationResource {
+	t.Helper()
+	if got.Desired != nil {
+		copy := *got.Desired
+		if !copy.ValueValid || copy.ArchiveSessions == nil || !reflect.DeepEqual(copy.ArchiveSessions, copy.Value.ArchiveSessions) || !json.Valid(copy.Raw) {
+			t.Errorf("invalid stored target projection: %+v", copy)
+		}
+		copy.Raw, copy.ArchiveSessions, copy.ValueValid = nil, nil, false
+		got.Desired = &copy
+	}
+	return got
+}
+
 func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	database := workerStorage(t)
 	owner, foreign, project := testutil.ProjectMembershipFixture(t, database)
@@ -44,7 +59,7 @@ func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	}
 	check := func(got, want model.WorkerConfigurationResource) {
 		t.Helper()
-		if !reflect.DeepEqual(got, want) {
+		if !reflect.DeepEqual(typedConfigurationResource(t, got), want) {
 			t.Errorf("configuration: got=%+v want=%+v", got, want)
 		}
 	}
@@ -92,7 +107,7 @@ func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	if err != nil || completion.Outcome != TransactionCommitted || initial.UpdatedAt.IsZero() || initial.UpdatedAt.Location() != time.UTC {
 		t.Fatalf("initial configuration: completion=%+v result=%+v err=%v", completion, initial, err)
 	}
-	if !reflect.DeepEqual(initial, *expected("1", initial.UpdatedAt, 2).Desired) {
+	if !reflect.DeepEqual(typedConfigurationResource(t, model.WorkerConfigurationResource{Desired: &initial}).Desired, expected("1", initial.UpdatedAt, 2).Desired) {
 		t.Fatalf("initial setter result: %+v", initial)
 	}
 	read(expected("1", initial.UpdatedAt, 2))
@@ -110,7 +125,7 @@ func TestWorkerConfigurationPersistenceAndTelemetryExpiry(t *testing.T) {
 	if err != nil || completion.Outcome != TransactionCommitted || updated.UpdatedAt.IsZero() || updated.UpdatedAt.Location() != time.UTC {
 		t.Fatalf("updated configuration: completion=%+v result=%+v err=%v", completion, updated, err)
 	}
-	if !reflect.DeepEqual(updated, *expected("2", updated.UpdatedAt, 7).Desired) {
+	if !reflect.DeepEqual(typedConfigurationResource(t, model.WorkerConfigurationResource{Desired: &updated}).Desired, expected("2", updated.UpdatedAt, 7).Desired) {
 		t.Fatalf("updated setter result: %+v", updated)
 	}
 	read(expected("2", updated.UpdatedAt, 7))
@@ -283,7 +298,7 @@ func TestWorkerHistoricalConfigurationStoreReadback(t *testing.T) {
 	}
 	check := func(got, want model.WorkerConfigurationResource) {
 		t.Helper()
-		if !reflect.DeepEqual(got, want) {
+		if !reflect.DeepEqual(typedConfigurationResource(t, got), want) {
 			t.Errorf("stored historical configuration: got=%+v want=%+v", got, want)
 		}
 		if want.Desired.UpdatedAt.IsZero() {
@@ -403,7 +418,7 @@ func TestWorkerConfigurationStoreRemainsIndependentOfTasks(t *testing.T) {
 		t.Helper()
 		if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
 			got, err := scope.WorkerDAO().WorkerConfiguration(ctx, owner, workerID)
-			if err == nil && !reflect.DeepEqual(got, want) {
+			if err == nil && !reflect.DeepEqual(typedConfigurationResource(t, got), want) {
 				t.Errorf("stored configuration: got=%+v want=%+v", got, want)
 			}
 			return err
@@ -424,7 +439,7 @@ func TestWorkerConfigurationStoreRemainsIndependentOfTasks(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(current, original) {
+		if !reflect.DeepEqual(typedConfigurationResource(t, current), original) {
 			t.Errorf("configuration changed with Task storage unavailable: got=%+v want=%+v", current, original)
 		}
 		updated, err = dao.SetWorkerConfiguration(ctx, owner, workerID, 2, value)
@@ -471,6 +486,84 @@ func TestWorkerConfigurationDAOFailuresRetainCauses(t *testing.T) {
 		return tx.WorkerDAO().SetWorkerConfigurationObservation(ctx, userID, workerID, 1, model.WorkerConfigurationObservation{Items: []model.WorkerConfigurationItem{}})
 	}); err == nil {
 		t.Fatal("observation database update failure hidden")
+	}
+}
+
+func TestWorkerConfigurationRawTargetAndArchiveColumn(t *testing.T) {
+	database := workerStorage(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	userID, workerID := testutil.QueryID(1), testutil.QueryID(2)
+	testutil.PutWorkerSnapshot(t, database, testutil.WorkerSnapshotFixture(userID, workerID, time.Now().UTC()))
+	if err := testutil.WriteWorker(database, ctx, func(scope WorkerScope) error {
+		_, err := scope.WorkerDAO().SetWorkerConfiguration(ctx, userID, workerID, 1, testutil.WorkerConfiguration())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// An unknown subtree and a current field with an incompatible type must be
+	// returned as stored rather than being dropped or interpreted as zero.
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET desired_configuration = jsonb_set(desired_configuration || '{"future":{"n":1.2500},"enableSudoCleanup":true}'::jsonb, '{maxConcurrent}', '"future-value"'::jsonb), archive_sessions=false WHERE user_id=$1 AND worker_id=$2`, userID, workerID); err != nil {
+		t.Fatal(err)
+	}
+	var expectedRaw []byte
+	var stamp time.Time
+	if err := database.Pool.QueryRow(ctx, `SELECT desired_configuration, configuration_updated_at FROM workers WHERE user_id=$1 AND worker_id=$2`, userID, workerID).Scan(&expectedRaw, &stamp); err != nil {
+		t.Fatal(err)
+	}
+	var current model.WorkerConfigurationResource
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		var err error
+		current, err = scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if current.Desired == nil || current.Desired.Revision != "1" || !current.Desired.UpdatedAt.Equal(stamp) || string(current.Desired.Raw) != string(expectedRaw) || current.Desired.ValueValid || current.Desired.ArchiveSessions == nil || *current.Desired.ArchiveSessions {
+		t.Fatalf("raw target or archive column changed: %+v", current.Desired)
+	}
+	if !reflect.DeepEqual(current.Desired.Value, model.WorkerConfiguration{}) {
+		t.Fatalf("failed decode exposed partial value: %+v", current.Desired.Value)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(current.Desired.Raw, &raw); err != nil || string(raw["enableSudoCleanup"]) != "true" || !strings.Contains(string(raw["future"]), "1.2500") {
+		t.Fatalf("raw fields lost: %s (%v)", current.Desired.Raw, err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	replaced, err := pgworker.NewWriter(tx).SetWorkerConfigurationRaw(ctx, userID, workerID, 2, current.Desired.Raw, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if replaced.Revision != "2" || string(replaced.Raw) != string(expectedRaw) || replaced.ValueValid || replaced.ArchiveSessions == nil || *replaced.ArchiveSessions {
+		t.Fatalf("raw setter changed target: %+v", replaced)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		got, err := scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
+		if err == nil && !reflect.DeepEqual(got.Desired, &replaced) {
+			t.Errorf("raw setter did not persist its result: got=%+v want=%+v", got.Desired, replaced)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `UPDATE workers SET desired_configuration=jsonb_set(desired_configuration, '{maxConcurrent}', '2'::jsonb) WHERE user_id=$1 AND worker_id=$2`, userID, workerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ReadSnapshot(ctx, func(scope SnapshotScope) error {
+		got, err := scope.WorkerDAO().WorkerConfiguration(ctx, userID, workerID)
+		if err == nil && (got.Desired == nil || !got.Desired.ValueValid || got.Desired.Value.MaxConcurrent != 2 || !got.Desired.Value.EnableSudoCleanup || got.Desired.ArchiveSessions == nil || *got.Desired.ArchiveSessions || !strings.Contains(string(got.Desired.Raw), `"future"`)) {
+			t.Errorf("decodable target lost raw or archive facts: %+v", got.Desired)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -27,13 +27,10 @@ Web producer 和既有 v1 archive 继续使用原协议与读取路径。
 且要求 v2 选择。所有 ID 按路由与协议严格核对；所有读取重新检查凭据和项目准入。
 Web 与 Herdr 共用 [Session 项目准入](task-session-protocol.md#relay-与恢复)，
 在原事务中读取 canonical `ProjectAccess`，不长期锁定授权来源。
-Herdr 的状态、历史、归档、capability 与派发沿用此入口；浏览器 channel 每 250ms
-重验完整凭据与当前读取资格。应用浏览器的 v2 marker、精确 Origin、固定 API profile、连接
-effective-expiry deadline 与 best-effort 关闭遵循[鉴权设计](daynight-auth.md#应用用户-websocket)。
-其他有项目访问权的成员和管理员只读；人工输入和控制请求必须由
-持久 Session owner 提交。项目或 Team 角色不替代原 owner、当前 claim、控制租约
-或 connection epoch 检查。非 owner 状态投影清空 `control.availableActions`，保留
-画面、历史和控制归属。
+Herdr 的状态、历史、归档和 capability 沿用此入口。具有项目访问权的成员可以读取；
+非 owner 状态投影清空 `control.availableActions`，保留画面、历史和控制归属。
+v2 的浏览器 commands、operation 和 channel 不再接入业务，返回
+`unsupported_content_kind`；同路径的 v1 Web 操作不受影响。
 
 | 方法与相对路径 | 输入与结果 |
 |---|---|
@@ -41,11 +38,8 @@ effective-expiry deadline 与 best-effort 关闭遵循[鉴权设计](daynight-au
 | `GET /current` | 当前 claim 的 registered/not_registered/not_applicable 状态 |
 | `GET /?cursor=...&limit=50` | task 历史列表，1–200 条，`nextCursor` 分页，包含 Web/Herdr |
 | `GET /{sessionId}/state` | 固定 Session 状态，包含 owner、binding、connectionEpoch、capabilities、control、snapshot、ledger、recording、archive |
-| `POST /{sessionId}/commands` | 原 Session owner 的 operation 或 control_request；其他项目读者 forbidden；HTTP 202 返回 operation_result，仅表示已受理 |
-| `GET /{sessionId}/operations/{operationId}` | 原操作的持久结果，不重新派发 |
 | `POST /{sessionId}/worker-messages` | generation_ledger、recording_responsibility/evidence、finalization、snapshot、control_state/ack、operation_result |
 | `GET /{sessionId}/worker-channel` | Worker WebSocket，首条为 registration/reconnect；随后传入 Worker 消息并接收 control_dispatch/operation |
-| `GET /{sessionId}/channel?browserClientId=...` | 浏览器只读 WebSocket，推送完整 Session 状态，完整帧可替换待观察旧状态 |
 | `GET /{sessionId}/recording-evidence/{evidenceId}?generation=...` | 读取原证据提交身份与摘要，核对响应丢失后的结果 |
 | `GET /{sessionId}/archive` | archive_status 消息 |
 | `POST /{sessionId}/archive` | pending/failed 的 archive_status，或 unavailable 的 receipt 候选 |
@@ -55,12 +49,7 @@ effective-expiry deadline 与 best-effort 关闭遵循[鉴权设计](daynight-au
 | `GET /{sessionId}/archive/content` | 验证后的原始 JSON 文件，仅 ready 可读 |
 
 Worker HTTP 消息必须携带 `Daynight-Connection-Epoch`。WebSocket 从握手固定
-该值；旧连接不能更新新连接状态。控制 HTTP 请求必须携带 UUID
-`Daynight-Browser-Client`，与 control_request 或 lease 的 browserClientId 一致。
-它用于浏览器实例关联，不是抵抗同一认证用户主动伪造的秘密凭据。
-浏览器订阅捕获建立时的 claim 与 Worker connection epoch；该身份改变即结束旧订阅，
-不跟随替代连接。断线清理还须匹配所属 relay 实例，旧回调不撤销新连接的租约或操作。
-同一连接内合法推进 generation 不改变该订阅责任。
+该值；旧连接不能更新新连接状态。
 
 状态读取是 HTTP 主机响应，消息输入输出使用 v2 严格联合。归档 PUT 限额
 64 MiB；在线消息限额 4 MiB；帧、输入和元数据继续遵守共同契约的更小限额。
@@ -72,8 +61,7 @@ Worker HTTP 消息必须携带 `Daynight-Connection-Epoch`。WebSocket 从握手
 相同注册请求幂等返回原 epoch；reconnect 必须携带当前 epoch，并在同一 Session
 中增加连接代次。物理 Worker channel 对 epoch 只能绑定一次；关闭后必须使用
 reconnect 获得新代次，不能用重复注册同时拥有两条有效输入通道。
-原实例心跳仍有效且任务执行仍活动时，发往另一实例的当前状态、固定状态、操作结果
-或新控制请求返回 `relay_instance_unavailable`（HTTP 503），不改变原租约、控制代次
+原实例心跳仍有效且任务执行仍活动时，发往另一实例的当前状态或固定状态返回 `relay_instance_unavailable`（HTTP 503），不改变原租约、控制代次
 或待处理操作。实例不匹配不是失联证据；真实心跳超时或执行失效仍触发原有失效规则。
 
 运行账本从 generation 1 连续增长。已有 owner、启动时间、绑定和段归属不能替换；
@@ -138,16 +126,16 @@ created_at/id 稳定排序，不依赖当前 claim。成员撤销后拒绝读取
 满足当前执行、有效连接、完整 Worker 能力、已初始化录制责任和 Worker 控制状态。
 服务端持久保存请求摘要、原 fence、actor 和 pending 结果，再转发
 control_dispatch。只有匹配请求摘要和 operationId 的 durable control_ack，且
-holder、browser、epoch、到期时间和动作转换均有效，才使 lease 对浏览器可用。
+holder、browser、epoch、到期时间和动作转换均有效，才确认 lease。
 单纯转发成功或未关联的 control_state 不能授予、续约或恢复自动执行。派发、
 有效租约重检和 ACK 授租均重新验证原 actor 的 owner 资格；旧非 owner 租约
 失效，已排队请求和迟到 ACK 不能借管理员权限继续执行。
 
-lease TTL 为 30 秒，客户端每 10 秒以 renew_control 请求续约。释放、断线、
-撤权、过期和停止使控制进入 suspended/closed，不能自动恢复 prompt。服务端失效会推进 controlEpoch 下限；Worker 必须持久确认
-更高代次后才能恢复动作可用性，不能以旧状态复活 lease。相同 browserClientId 的实时连接不能重叠；旧连接完成撤租后才允许替代连接进入。
+lease TTL 为 30 秒。释放、断线、撤权、过期和停止使控制进入 suspended/closed，
+不能自动恢复 prompt。服务端失效会推进 controlEpoch 下限；Worker 必须持久确认
+更高代次后才能恢复动作可用性，不能以旧状态复活 lease。
 
-操作去重记录保存至执行封存后仍可查询。相同 ID 不同正文拒绝，原操作结果不会
+操作去重记录保存至执行封存。相同 ID 不同正文拒绝，原操作结果不会
 被新 claim 接管。原始 paste 正文只放在有界内存中；数据库保存摘要与路由元数据。
 `session_operations_terminal_pending` 以 `(session_id,operation_seq)` 索引 receipt 状态为
 `queued` 或 `dispatching` 的操作，服务终端到期和队列读取；Web Session 的 accepted
@@ -167,8 +155,7 @@ generation 和 connection epoch 匹配的数据，不清除新连接或仍有效
 
 验证分别覆盖共享字节契约、真实隔离数据库中的事务/权限/去重、文件存储读写和
 HTTP/WebSocket 路由。并发测试检查新 generation 与 finalization 不可同时成功；
-权限矩阵检查 owner 保留交互、其他 admin/member 与 Team 继承读者可读但不能
-提交输入或控制；撤权、旧非 owner 操作/租约、迟到 ACK 和连接替换测试检查旧输入
-失效；归档测试覆盖 closed 证据、缺文件、hash、
+权限矩阵检查读取权限及保留的内部控制规则；HTTP 验证 v2 浏览器控制入口拒绝且
+v1 同路径行为保留；归档测试覆盖 closed 证据、缺文件、hash、
 不可变回执、重领历史和删除边界。Go 完整 gate 与 CLI 测试采用仓库标准命令。
 测试 Worker 不证明真实 Herdr 采集、输入或进程停止，组合验收需实际后继实现。

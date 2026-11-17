@@ -41,6 +41,16 @@ beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }
 afterEach(() => { for (const scope of scopes.splice(0)) scope.dispose(); vi.useRealTimers(); });
 
 describe('Worker configuration form', () => {
+  it('distinguishes native tool status from overall confirmation of all editable targets', async () => {
+    const value = { ...configurationValue(), agentControlMode: 'web' as const, toolPaths: { ...automaticToolPaths(), herdr: { kind: 'path' as const, path: '/new/herdr' } } };
+    const resource = observed('1', value, [...globals(value), item({ kind: 'agentControlMode' }, 'web')]);
+    install(() => { const response = controlModeResponse(resource); response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response; });
+    mount({ toolPaths: toolPathTelemetry() }); await flush();
+    const summary = document.querySelector<HTMLElement>('.configuration-summary')!;
+    expect(summary).toHaveTextContent('Tool paths · Codex / Copilot');
+    expect(summary).toHaveTextContent('Applied');
+    expect(summary.querySelector('.status-chip')).toHaveTextContent('Awaiting application');
+  });
   it.each(['mode-first', 'tools-first'] as const)('compares same-revision partial projections without false unsaved feedback: %s', async order => {
     const mode = () => controlModeResponse(configurationResource('1', { ...configurationValue(), agentControlMode: 'web' }));
     const tools = () => { const response = configurationResponse(configurationResource('1', { ...configurationValue(), toolPaths: automaticToolPaths() })); response.headers.set('Daynight-Worker-Tool-Paths', '1'); return response; };

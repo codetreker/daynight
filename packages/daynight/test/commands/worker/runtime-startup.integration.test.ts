@@ -1125,7 +1125,7 @@ describe("real runtime resource isolation", () => {
     const { migrateLegacyWorktrees } = await import("../../../src/commands/worker/worktrees/migration.js");
     const git = createWorkerGitManager({ temporaryDirectory: path.join(f.homeDirectory, "git-temp"), prepareFormat: async (_project, repo, operation) => {
       await migrateLegacyWorktrees({ repositoryPath: repo.root, commonDirectory: repo.commonDirectory, operation,
-        sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] } });
+        sources: { listSchedules: () => [], listWebTasks: () => [] } });
     } });
     await mkdir(f.repository.path);
     const run = (args: string[]) => execFileSync("git", args, { cwd: f.repository.path, stdio: "pipe", timeout: 10000 });

@@ -13,7 +13,7 @@ const viewport = (width: number) => {
 };
 const Tabs = ({ changed }: { readonly changed: (section: ProjectSection) => void }) => {
   const [section, setSection] = useState<ProjectSection>("overview");
-  return <ProjectSectionTabs section={section} onChange={(value) => { setSection(value); changed(value); }} />;
+  return <ProjectSectionTabs projectId="11111111-1111-4111-8111-111111111111" section={section} onChange={(value, onCommit) => { setSection(value); changed(value); onCommit?.(); }} />;
 };
 
 beforeEach(() => { viewport(1024); });
@@ -79,6 +79,23 @@ describe("project section navigation", () => {
     const listener = added.mock.calls.find(([event]) => event === "resize")![1];
     view.unmount();
     expect(removed).toHaveBeenCalledWith("resize", listener);
+  });
+
+  it("exposes canonical links and leaves modified clicks to the browser", () => {
+    const changed = vi.fn();
+    render(<Tabs changed={changed} />);
+    const tasks = screen.getByRole("tab", { name: "任务列表" });
+    expect(tasks).toHaveAttribute("href", "/projects/11111111-1111-4111-8111-111111111111?tab=tasks");
+    const modified = new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
+    tasks.dispatchEvent(modified);
+    expect(modified.defaultPrevented).toBe(false);
+    expect(changed).not.toHaveBeenCalled();
+    const middle = new MouseEvent("click", { bubbles: true, cancelable: true, button: 1 });
+    tasks.dispatchEvent(middle);
+    expect(middle.defaultPrevented).toBe(false);
+    expect(changed).not.toHaveBeenCalled();
+    fireEvent.keyDown(tasks, { key: " " });
+    expect(changed).toHaveBeenCalledWith("tasks");
   });
 
   it("uses the confirmed English names", () => {

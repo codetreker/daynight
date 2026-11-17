@@ -7,17 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { ResourceOwner, WorktreeBinding } from "../../../src/commands/worker/types.js";
 import type { LocalTask as WebTask } from "../../../src/commands/worker/backends/web-types.js";
-import type { HerdrLifecycleRecord } from "../../../src/commands/worker/herdr/lifecycle-types.js";
 import { createWorktreeManifestStore } from "../../../src/commands/worker/worktrees/manifest.js";
 import { migrateLegacyWorktrees, type MigrationSources } from "../../../src/commands/worker/worktrees/migration.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { openHerdrLifecycleStore } from "../../../src/commands/worker/herdr/lifecycle-store.js";
-import { createHerdrRecordingArchive } from "../../../src/commands/worker/herdr/recording-archive.js";
-import { createHerdrRecordingResources } from "../../../src/commands/worker/herdr/recording-resources.js";
-import type { HerdrArchiveApi } from "../../../src/commands/worker/herdr/archive-api.js";
-import type { SessionV2Archive } from "../../../src/session/v2/types.js";
-import type { Task } from "../../../src/api/types.js";
 import { writeLaunchTicket, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { startOwnedRepositoryGit } from "../../../src/repository/git-owned.js";
 import Database from "better-sqlite3";
@@ -61,13 +55,6 @@ const webTask = (value: ResourceOwner, binding: WorktreeBinding): WebTask => ({
   recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null,
   webExecution: null, nativeExecution: null, createdAt: 1, updatedAt: 1,
 });
-const herdrRecord = (value: ResourceOwner, cwd: string): HerdrLifecycleRecord => ({
-  owner: { projectId: value.projectId, taskId: value.taskId, worktreeId: value.worktreeId, workerId: value.projectId,
-    ownerUserId: value.claimId, serverOrigin: "https://daynight.example", provider: "codex" },
-  claimId: value.claimId, cwd, sessionId: value.claimId, registrationId: value.worktreeId, connectionEpoch: null,
-  registrationRequest: null, ledgerRequest: null, publishedLedgerHash: null, controlEpoch: "0", initialAssignment: "pending",
-  initialPrompt: null, automationBlocked: false, preparation: null, runs: [], segments: [], version: 1,
-});
 const fixture = (refFormat: "files" | "reftable" = "files") => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worktree-migration");
   mkdirSync(scratch, { recursive: true });
@@ -80,12 +67,12 @@ const fixture = (refFormat: "files" | "reftable" = "files") => {
   const commonDirectory = git(repositoryPath, ["rev-parse", "--absolute-git-dir"]);
   const namespace = path.join(repositoryPath, ".worktrees", "daynight"); mkdirSync(namespace, { recursive: true });
   const directory = path.join(commonDirectory, "daynight", "worktrees");
-  const schedule: ResourceOwner[] = [], web: { owner: ResourceOwner; binding: WorktreeBinding }[] = [], herdr: { owner: ResourceOwner; cwd: string }[] = [];
-  const sources: MigrationSources = { listSchedules: () => schedule, listWebTasks: () => web.map(({ owner, binding }) => webTask(owner, binding)),
-    listHerdrLifecycles: () => herdr.map(({ owner, cwd }) => herdrRecord(owner, cwd)), listHerdrRetired: () => [], listHerdrResources: () => [], listHerdrBindings: () => [] };
+  const schedule: ResourceOwner[] = [], web: { owner: ResourceOwner; binding: WorktreeBinding }[] = [];
+  const sources: MigrationSources = { listSchedules: () => schedule, listWebTasks: () => web.map(({ owner, binding }) => webTask(owner, binding)) };
   const binding = (value: ResourceOwner): WorktreeBinding => ({ repositoryPath, commonDirectory, worktreePath: path.join(namespace, value.taskId), branch: `daynight/${value.taskId}` });
   const add = (value: ResourceOwner, locked = true) => {
     const cwd = binding(value).worktreePath;
+    if (locked) web.push({ owner: value, binding: binding(value) });
     const marker = `daynight-worker:${JSON.stringify({ ...value, leaf: "1:1", root: "2:2", common: "3:3" })}`;
     git(repositoryPath, ["worktree", "add", ...(locked ? ["--lock", "--reason", marker] : []), "-b", `daynight/${value.taskId}`, "--", cwd]);
     const admin = git(cwd, ["rev-parse", "--absolute-git-dir"]);
@@ -96,7 +83,7 @@ const fixture = (refFormat: "files" | "reftable" = "files") => {
     try { return await migrateLegacyWorktrees({ repositoryPath, commonDirectory, operation, sources, ...(checkpoint === undefined ? {} : { checkpoint }) }); }
     finally { operation.dispose(); }
   };
-  return { root, repositoryPath, commonDirectory, namespace, directory, schedule, web, herdr, sources, binding, add, migrate, store: createWorktreeManifestStore(commonDirectory) };
+  return { root, repositoryPath, commonDirectory, namespace, directory, schedule, web, sources, binding, add, migrate, store: createWorktreeManifestStore(commonDirectory) };
 };
 const expected = (value: ResourceOwner) => ({ schemaVersion: 1 as const, ...value, directoryName: value.taskId });
 const sidecar = (admin: string, value: ResourceOwner): string => {
@@ -128,8 +115,7 @@ const historicalFixture = () => {
       ownerUserId: randomUUID(), serverOrigin: "https://daynight.example", provider: "codex" },
     claimId: value.claimId, cwd: f.binding(value).worktreePath,
   });
-  const sources: MigrationSources = { listSchedules: () => worker.listCleanupSchedules(), listWebTasks: () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()],
-    listHerdrLifecycles: () => herdr.list(), listHerdrRetired: () => herdr.listRetired(), listHerdrResources: () => [], listHerdrBindings: () => [] };
+  const sources: MigrationSources = { listSchedules: () => worker.listCleanupSchedules(), listWebTasks: () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()] };
   const release = () => { git(f.repositoryPath, ["worktree", "unlock", "--", original.cwd]); git(f.repositoryPath, ["worktree", "remove", "--force", "--", original.cwd]); };
   const reuse = () => {
     const marker = `daynight-worker:${JSON.stringify({ ...next, leaf: "1:1", root: "2:2", common: "3:3" })}`;
@@ -160,10 +146,10 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
       const { createOperation } = await import(config.operation);
       const operation = createOperation();
       await migrateLegacyWorktrees({ repositoryPath: config.root, commonDirectory: config.common, operation,
-        sources: { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrRetired: () => [], listHerdrResources: () => [], listHerdrBindings: () => [] } });
+        sources: { listSchedules: () => [], listWebTasks: () => [config.web] } });
       operation.dispose();
     `;
-    const config = { root: f.repositoryPath, common: f.commonDirectory, format: path.join(f.directory, "format.json"),
+    const config = { web: webTask(value, f.binding(value)), root: f.repositoryPath, common: f.commonDirectory, format: path.join(f.directory, "format.json"),
       migration: pathToFileURL(path.join(moduleRoot, "commands/worker/worktrees/migration.js")).href,
       operation: pathToFileURL(path.join(moduleRoot, "api/operation.js")).href };
     const child = spawnSync(process.execPath, ["--input-type=module", "--eval", source, JSON.stringify(config)], { encoding: "utf8", env: env(), timeout: 20_000 });
@@ -277,30 +263,24 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
   });
 
-  it("converts every source, preserving worktree and frozen execution bytes", async () => {
-    const f = fixture(), marked = owner(), scheduled = owner(), completedWeb = owner(), activeWeb = owner(), herdrOwner = owner();
-    const original = f.add(marked), identityFile = sidecar(original.admin, marked); f.add(scheduled);
-    f.schedule.push(scheduled); f.web.push({ owner: completedWeb, binding: f.binding(completedWeb) }, { owner: activeWeb, binding: f.binding(activeWeb) });
-    f.herdr.push({ owner: herdrOwner, cwd: f.binding(herdrOwner).worktreePath });
-    const frozen = path.join(f.root, "frozen.json");
-    writeFileSync(frozen, JSON.stringify({ ticket: f.web, lifecycle: f.herdr }));
-    const originalFrozen = readFileSync(frozen), pointer = readFileSync(path.join(original.cwd, ".git"));
-    writeFileSync(path.join(original.cwd, "tracked.txt"), "dirty work\n");
+  it("migrates only Web evidence and preserves an unknown registration", async () => {
+    const f = fixture(), known = owner(), unknown = owner();
+    const original = f.add(known), identityFile = sidecar(original.admin, known);
+    const other = f.add(unknown); f.web.pop();
+    const otherSidecar = sidecar(other.admin, unknown);
+    const marker = readFileSync(path.join(other.admin, "locked"));
+    const sidecarBytes = readFileSync(otherSidecar);
+    f.schedule.push(unknown);
     await f.migrate();
-    expect(f.store.list()).toEqual(expect.arrayContaining([marked, scheduled, completedWeb, activeWeb, herdrOwner].map(expected)));
-    expect(f.store.list()).toHaveLength(5);
-    expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
+    expect(f.store.list()).toEqual([expected(known)]);
     expect(existsSync(path.join(original.admin, "locked"))).toBe(false);
     expect(existsSync(identityFile)).toBe(false);
-    expect(readFileSync(path.join(original.cwd, ".git"))).toEqual(pointer);
-    expect(readFileSync(path.join(original.cwd, "tracked.txt"), "utf8")).toBe("dirty work\n");
-    expect(readFileSync(frozen)).toEqual(originalFrozen);
-    expect(git(original.cwd, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/daynight/${marked.taskId}`);
-    await f.migrate();
-    expect(f.store.list()).toHaveLength(5);
+    expect(readFileSync(path.join(other.admin, "locked"))).toEqual(marker);
+    expect(readFileSync(otherSidecar)).toEqual(sidecarBytes);
+    expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
   });
 
-  it("reads actual persisted schedule, completed Web and Herdr sources without changing their records or ticket", async () => {
+  it("reads actual persisted schedule and Web sources without changing records or ticket", async () => {
     const f = fixture(), scheduled = owner(), completed = owner(), active = owner(), herdrOwner = owner();
     f.add(scheduled);
     const worker = openWorkerStore(path.join(f.root, "worker.sqlite"), { onMigration: () => {} });
@@ -315,7 +295,7 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
         const task = web.register({ ...value, project, serverOrigin: "https://daynight.example", workerId: randomUUID(), userId: randomUUID(), configuration: config }, 1);
         return web.bindWorktree(task, f.binding(value), 2);
       };
-      let done = register(completed); register(active);
+      register(scheduled); let done = register(completed); register(active);
       done = web.initializeWebExecution(done, 3);
       const execution = done.webExecution!;
       const ticket: ControllerLaunchTicket = {
@@ -342,16 +322,98 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
         await migrateLegacyWorktrees({ repositoryPath: f.repositoryPath, commonDirectory: f.commonDirectory, operation, sources: {
           listSchedules: () => worker.listCleanupSchedules(),
           listWebTasks: () => [...web.listCompletedTasks(), ...web.listUnfinishedTasks()],
-          listHerdrLifecycles: () => herdr.list(), listHerdrRetired: () => herdr.listRetired(), listHerdrResources: () => [], listHerdrBindings: () => [],
         } });
       } finally { operation.dispose(); }
-      expect(f.store.list()).toEqual(expect.arrayContaining([scheduled, active, herdrOwner].map(expected)));
+      expect(f.store.list()).toEqual(expect.arrayContaining([scheduled, active].map(expected)));
       expect(f.store.read(completed.worktreeId)).toBeNull();
       expect(web.listCompletedTasks()).toHaveLength(1);
       expect(rawRows(path.join(f.root, "web.sqlite"), "executions")).toEqual(webRows);
       expect(rawRows(path.join(f.root, "herdr.sqlite"), "executions")).toEqual(herdrRows);
       expect(readFileSync(ticketPath)).toEqual(ticketBytes);
     } finally { herdr.close(); web.close(); worker.close(); }
+  });
+
+  it("recovers a Web worktree created before its journal binding was saved", async () => {
+    const f = historicalFixture();
+    try {
+      f.registerWeb(f.old, false);
+      f.worker.saveCleanupSchedule(f.old, { deadline: 100, failures: 0, nextAttemptAt: 0, stage: "observation", lastError: null });
+      const file = sidecar(f.original.admin, f.old);
+      const rows = snapshotRows(f.webFile, "executions"), operation = createOperation();
+      try {
+        await expect(migrateLegacyWorktrees({ repositoryPath: f.repositoryPath, commonDirectory: f.commonDirectory, operation, sources: f.sources,
+          checkpoint: stage => { if (stage === "unlocked") throw new Error("interrupted after unlock"); },
+        })).rejects.toThrow("interrupted after unlock");
+      } finally { operation.dispose(); }
+      expect(f.store.read(f.old.worktreeId)).toEqual(expected(f.old));
+      expect(existsSync(path.join(f.original.admin, "locked"))).toBe(false);
+      expect(existsSync(file)).toBe(true);
+      await f.run();
+      expect(f.store.read(f.old.worktreeId)).toEqual(expected(f.old));
+      expect(existsSync(file)).toBe(false);
+      expect(f.web.getTask(f.old)!.resources.worktree).toBeNull();
+      expect(snapshotRows(f.webFile, "executions")).toEqual(rows);
+    } finally { f.close(); }
+  });
+
+  it("retains an unlocked registration without a matching manifest at an unbound Web target", async () => {
+    const f = historicalFixture();
+    try {
+      f.registerWeb(f.old, false);
+      git(f.repositoryPath, ["worktree", "unlock", "--", f.original.cwd]);
+      const pointer = readFileSync(path.join(f.original.cwd, ".git"));
+      await expect(f.run()).rejects.toThrow("unowned Git registration");
+      expect(readFileSync(path.join(f.original.cwd, ".git"))).toEqual(pointer);
+      expect(f.store.list()).toEqual([]);
+      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+    } finally { f.close(); }
+  });
+
+  it.each(["manual", "malformed"] as const)("retains a %s lock at an unbound Web target", async kind => {
+    const f = historicalFixture();
+    try {
+      f.registerWeb(f.old, false);
+      const marker = kind === "manual" ? "manual lock" : "daynight-worker:{invalid";
+      writeFileSync(path.join(f.original.admin, "locked"), `${marker}\n`);
+      await expect(f.run()).rejects.toThrow();
+      expect(readFileSync(path.join(f.original.admin, "locked"), "utf8").trim()).toBe(marker);
+      expect(f.store.list()).toEqual([]);
+      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+    } finally { f.close(); }
+  });
+
+  it.each(["manifest-published", "unlocked", "sidecar-removed"] as const)("retains remaining resources if the Web generation changes after %s", async stage => {
+    const f = historicalFixture();
+    try {
+      f.registerWeb(f.old);
+      let task = f.web.initializeWebExecution(f.old, 3);
+      const file = sidecar(f.original.admin, f.old);
+      const sources = { ...f.sources, listWebTasks: () => [task] };
+      const operation = createOperation();
+      try {
+        await expect(migrateLegacyWorktrees({ repositoryPath: f.repositoryPath, commonDirectory: f.commonDirectory, operation, sources,
+          checkpoint: current => {
+            if (current === stage) task = { ...task, webExecution: { ...task.webExecution!, executionGeneration: "2" } };
+          },
+        })).rejects.toThrow("Original Web execution identity changed");
+      } finally { operation.dispose(); }
+      expect(existsSync(path.join(f.original.admin, "locked"))).toBe(stage === "manifest-published");
+      expect(existsSync(file)).toBe(stage !== "sidecar-removed");
+      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+    } finally { f.close(); }
+  });
+
+  it("retains a conflicting marker for an unbound Web execution", async () => {
+    const f = historicalFixture();
+    try {
+      f.registerWeb(f.old, false);
+      const marker = `daynight-worker:${JSON.stringify({ ...f.old, claimId: randomUUID() })}`;
+      writeFileSync(path.join(f.original.admin, "locked"), `${marker}\n`);
+      await expect(f.run()).rejects.toThrow("Conflicting worktree owners or locations");
+      expect(readFileSync(path.join(f.original.admin, "locked"), "utf8").trim()).toBe(marker);
+      expect(f.store.list()).toEqual([]);
+      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+    } finally { f.close(); }
   });
 
   it("keeps completed Web history and a stale schedule while a new owner reuses the real checkout", async () => {
@@ -494,145 +556,6 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     } finally { f.close(); }
   });
 
-  it("keeps retired Herdr lifecycle bytes when a later claim reuses its cwd", async () => {
-    const f = historicalFixture();
-    try {
-      const record = f.registerHerdr(f.old); f.release(); f.herdr.retireNeverStarted(record);
-      const current = f.reuse(); f.registerHerdr(f.next);
-      const executions = snapshotRows(f.herdrFile, "executions"), retired = snapshotRows(f.herdrFile, "never_started_retirements");
-      const cwd = f.herdr.get(f.old)!.cwd, pointer = readFileSync(path.join(current.cwd, ".git"));
-      await f.run();
-      expect(f.store.list()).toEqual([expected(f.next)]);
-      expect(f.herdr.get(f.old)!.cwd).toBe(cwd);
-      expect(snapshotRows(f.herdrFile, "executions")).toEqual(executions);
-      expect(snapshotRows(f.herdrFile, "never_started_retirements")).toEqual(retired);
-      expect(readFileSync(path.join(current.cwd, ".git"))).toEqual(pointer);
-    } finally { f.close(); }
-  });
-
-  it("ignores unregistered foreign contents at a retired Herdr cwd", async () => {
-    const f = historicalFixture();
-    try {
-      const record = f.registerHerdr(f.old); f.release(); f.herdr.retireNeverStarted(record);
-      mkdirSync(f.original.cwd); const foreign = path.join(f.original.cwd, "foreign.txt"); writeFileSync(foreign, "keep\n");
-      await expect(f.run()).resolves.toEqual([]);
-      expect(readFileSync(foreign, "utf8")).toBe("keep\n");
-      expect(f.store.list()).toEqual([]);
-      expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
-    } finally { f.close(); }
-  });
-
-  it("uses a real Herdr archive deletion projection to distinguish a reused cwd", async () => {
-    const f = fixture();
-    const doc = JSON.parse(readFileSync(new URL("../../session/fixtures/v2/valid-archive.json", import.meta.url), "utf8")) as SessionV2Archive;
-    const old: ResourceOwner = { projectId: doc.owner.projectId, taskId: doc.owner.taskId, claimId: doc.claimId, worktreeId: doc.owner.worktreeId };
-    const next = { ...old, claimId: randomUUID(), worktreeId: randomUUID() }, original = f.add(old);
-    const file = path.join(f.root, "herdr.sqlite"), herdr = openHerdrLifecycleStore(file, { onMigration: () => {} });
-    const recordingDirectory = path.join(f.root, "recordings"), source = path.join(recordingDirectory, doc.sessionId);
-    const archiveDirectory = path.join(f.root, "archives");
-    try {
-      herdr.create({ owner: doc.owner, claimId: doc.claimId, cwd: original.cwd });
-      const record: HerdrLifecycleRecord = { owner: doc.owner, sessionId: doc.sessionId, claimId: doc.claimId, cwd: original.cwd,
-        registrationId: doc.finalizationId, connectionEpoch: "1", registrationRequest: null, ledgerRequest: null, publishedLedgerHash: "a".repeat(64),
-        controlEpoch: "1", initialAssignment: "transport_completed", initialPrompt: null, automationBlocked: true, preparation: null,
-        runs: doc.runs.map(run => ({ run, phase: "stopped_confirmed", nativeLaunch: "observed", instanceDirectory: f.root,
-          daemon: { role: "daemon", pid: 99, birthToken: "start:daemon", bootId: run.stopProof!.bootId, auditToken: [501, 501, 20, 501, 20, 99, 100000, 99], ppid: 1, pgid: 99, sid: 99 },
-          processes: run.stopProof!.processes.map(process => ({ ...process, auditToken: [501, 501, 20, 501, 20, process.pid, 100000, process.pid], ppid: 1, pgid: process.pid, sid: process.pid })),
-          stopOperationId: run.stopProof!.recordId, stopReason: "terminal", error: null, admission: null })),
-        segments: doc.segments.map(segment => ({ ...segment, gap: null })), version: 1 };
-      const db = new Database(file);
-      try { db.prepare("UPDATE executions SET version = ?, data = ?").run(record.version, JSON.stringify(record)); } finally { db.close(); }
-      expect(herdr.get(old)).toEqual(record);
-      mkdirSync(source, { recursive: true });
-      writeFileSync(path.join(source, "manifest.json"), JSON.stringify({ schemaVersion: 1, owner: doc.owner, sessionId: doc.sessionId, claimId: doc.claimId }));
-      const archive = createHerdrRecordingArchive({ directory: archiveDirectory, api: { state: async () => { throw new Error("offline"); } } as unknown as HerdrArchiveApi });
-      const resources = createHerdrRecordingResources({ directory: recordingDirectory, archive, list: () => herdr.list(), get: value => herdr.get(value),
-        source: () => { throw new Error("unused"); }, publishStopped: async () => {}, currentUserId: async () => doc.owner.ownerUserId,
-        readTask: async () => ({ id: old.taskId, projectId: old.projectId, status: "done", properties: {} } as Task) });
-      const operation = createOperation();
-      try {
-        await resources.dispose({ ...old, sessionId: doc.sessionId, operationId: randomUUID(), action: "delete", confirmed: true }, operation, async () => {
-          git(f.repositoryPath, ["worktree", "unlock", "--", original.cwd]);
-          git(f.repositoryPath, ["worktree", "remove", "--force", "--", original.cwd]);
-        });
-      } finally { operation.dispose(); }
-      const marker = `daynight-worker:${JSON.stringify({ ...next, leaf: "1:1", root: "2:2", common: "3:3" })}`;
-      git(f.repositoryPath, ["worktree", "add", "--lock", "--reason", marker, "--", original.cwd, `daynight/${next.taskId}`]);
-      const rows = snapshotRows(file, "executions"), journal = path.join(archiveDirectory, `${doc.sessionId}.archive-state.json`), journalBytes = readFileSync(journal);
-      const pointer = readFileSync(path.join(original.cwd, ".git")), migration = createOperation();
-      try {
-        await migrateLegacyWorktrees({ repositoryPath: f.repositoryPath, commonDirectory: f.commonDirectory, operation: migration,
-          sources: { ...f.sources, listHerdrLifecycles: () => herdr.list(), listHerdrRetired: () => herdr.listRetired(), listHerdrResources: () => resources.resources() } });
-      } finally { migration.dispose(); }
-      expect(f.store.list()).toEqual([expected(next)]);
-      expect(snapshotRows(file, "executions")).toEqual(rows);
-      expect(readFileSync(journal)).toEqual(journalBytes);
-      expect(readFileSync(path.join(original.cwd, ".git"))).toEqual(pointer);
-    } finally { herdr.close(); }
-  });
-
-  it("does not treat an unretired Herdr lifecycle as released when its cwd is reused", async () => {
-    const f = historicalFixture();
-    try {
-      f.registerHerdr(f.old); f.release(); const current = f.reuse(); f.registerHerdr(f.next);
-      const records = snapshotRows(f.herdrFile, "executions");
-      await expect(f.run()).rejects.toThrow();
-      expect(readFileSync(path.join(current.admin, "locked"), "utf8").trim()).toBe(current.marker);
-      expect(snapshotRows(f.herdrFile, "executions")).toEqual(records);
-      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
-    } finally { f.close(); }
-  });
-
-  it("rejects archive resources contradicting a never-started retirement", async () => {
-    const f = historicalFixture();
-    try {
-      const record = f.registerHerdr(f.old); f.release(); f.herdr.retireNeverStarted(record);
-      const resource = { owner: f.old, sessionId: record.sessionId, stopped: false, stoppedLedgerPending: false, stopEvidence: [], terminal: false,
-        worktreePath: record.cwd, sourcePath: path.join(f.root, "recordings", record.sessionId), sourceBytes: "0",
-        state: "pending" as const, error: null, nextAttemptAt: null, worktreeDeleted: false, disposition: null };
-      await expect(f.run({ ...f.sources, listHerdrResources: () => [resource] })).rejects.toThrow();
-      expect(f.herdr.retired(f.old)).toEqual(record);
-      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
-    } finally { f.close(); }
-  });
-
-  it("retains both owners when a retirement inventory cannot be read", async () => {
-    const f = historicalFixture();
-    try {
-      const record = f.registerHerdr(f.old); f.release(); f.herdr.retireNeverStarted(record); const current = f.reuse();
-      await expect(f.run({ ...f.sources, listHerdrRetired: () => { throw new Error("retirement unavailable"); } })).rejects.toThrow("retirement unavailable");
-      expect(readFileSync(path.join(current.admin, "locked"), "utf8").trim()).toBe(current.marker);
-      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
-    } finally { f.close(); }
-  });
-
-  it("retains a Git marker when a legacy Herdr binding identifies a different claim at its cwd", async () => {
-    const f = historicalFixture();
-    try {
-      await expect(f.run({ ...f.sources, listHerdrBindings: () => [{ owner: f.next, cwd: f.original.cwd }] })).rejects.toThrow();
-      expect(readFileSync(path.join(f.original.admin, "locked"), "utf8").trim()).toBe(f.original.marker);
-      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
-    } finally { f.close(); }
-  });
-
-  it("correlates a complete legacy Herdr binding to its matching real Git marker", async () => {
-    const f = historicalFixture();
-    try {
-      await f.run({ ...f.sources, listHerdrBindings: () => [{ owner: f.old, cwd: f.original.cwd }] });
-      expect(f.store.list()).toEqual([expected(f.old)]);
-      expect(existsSync(path.join(f.original.admin, "locked"))).toBe(false);
-    } finally { f.close(); }
-  });
-
-  it("does not consume any legacy lock when Herdr binding enumeration fails", async () => {
-    const f = historicalFixture();
-    try {
-      await expect(f.run({ ...f.sources, listHerdrBindings: () => { throw new Error("Herdr inventory unavailable"); } })).rejects.toThrow("Herdr inventory unavailable");
-      expect(readFileSync(path.join(f.original.admin, "locked"), "utf8").trim()).toBe(f.original.marker);
-      expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
-    } finally { f.close(); }
-  });
-
   it.each(["manifest-published", "unlocked", "sidecar-removed", "format-published"] as const)("recovers after interruption at %s", async stage => {
     const f = fixture(), value = owner(), original = f.add(value), identityFile = sidecar(original.admin, value);
     const pointer = readFileSync(path.join(original.cwd, ".git")); let interrupted = false;
@@ -690,22 +613,22 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     const cwd = `${original.cwd}${path.sep}..${path.sep}${value.taskId}`;
     const repositoryPath = `${f.repositoryPath}${path.sep}..${path.sep}repo`;
     const commonDirectory = `${f.commonDirectory}${path.sep}..${path.sep}.git`;
-    f.web.push({ owner: value, binding: { ...f.binding(value), repositoryPath, commonDirectory, worktreePath: cwd } });
-    const before = JSON.stringify({ web: f.web, herdr: f.herdr });
+    f.web[0] = { owner: value, binding: { ...f.binding(value), repositoryPath, commonDirectory, worktreePath: cwd } };
+    const before = JSON.stringify(f.web);
     await f.migrate();
     expect(f.store.read(value.worktreeId)).toEqual(expected(value));
-    expect(JSON.stringify({ web: f.web, herdr: f.herdr })).toBe(before);
+    expect(JSON.stringify(f.web)).toBe(before);
   });
 
   it("accepts native case aliases when the filesystem resolves them to the same paths", async context => {
     const f = fixture(), value = owner(), original = f.add(value), alias = path.join(f.root, "REPO");
     if (!existsSync(alias) || realpathSync(alias) !== realpathSync(f.repositoryPath)) context.skip();
     const cwd = path.join(alias, ".worktrees", "daynight", value.taskId);
-    f.web.push({ owner: value, binding: { ...f.binding(value), repositoryPath: alias, commonDirectory: path.join(alias, ".git"), worktreePath: cwd } });
-    const before = JSON.stringify({ web: f.web, herdr: f.herdr });
+    f.web[0] = { owner: value, binding: { ...f.binding(value), repositoryPath: alias, commonDirectory: path.join(alias, ".git"), worktreePath: cwd } };
+    const before = JSON.stringify(f.web);
     await f.migrate();
     expect(f.store.read(value.worktreeId)).toEqual(expected(value));
-    expect(JSON.stringify({ web: f.web, herdr: f.herdr })).toBe(before);
+    expect(JSON.stringify(f.web)).toBe(before);
     expect(existsSync(path.join(original.cwd, ".git"))).toBe(true);
   });
 
@@ -761,7 +684,7 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
 
   it("retains a nonempty directory with no Git registration", async () => {
     const f = fixture(), value = owner(), cwd = f.binding(value).worktreePath;
-    mkdirSync(cwd); writeFileSync(path.join(cwd, "foreign.txt"), "keep\n"); f.schedule.push(value);
+    mkdirSync(cwd); writeFileSync(path.join(cwd, "foreign.txt"), "keep\n"); f.schedule.push(value); f.web.push({ owner: value, binding: f.binding(value) });
     await expect(f.migrate()).rejects.toThrow();
     expect(readFileSync(path.join(cwd, "foreign.txt"), "utf8")).toBe("keep\n");
     expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
@@ -778,11 +701,10 @@ describe("legacy worktree migration", { timeout: 30_000 }, () => {
     expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
   });
 
-  it("refuses an unlocatable schedule without assuming its historical path", async () => {
+  it("ignores an unknown schedule without assuming its historical path", async () => {
     const f = fixture(), value = owner(); f.schedule.push(value);
-    await expect(f.migrate()).rejects.toThrow();
-    expect(f.store.list()).toEqual([]);
-    expect(existsSync(path.join(f.directory, "format.json"))).toBe(false);
+    await expect(f.migrate()).resolves.toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(f.directory, "format.json"), "utf8"))).toEqual({ version: 1 });
   });
 
   it("preserves a manual lock and unrelated worktree metadata", async () => {

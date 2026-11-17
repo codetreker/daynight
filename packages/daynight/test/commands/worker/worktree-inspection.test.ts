@@ -28,7 +28,7 @@ const git = (cwd: string, ...args: string[]): string => execFileSync("git", args
   cwd, encoding: "utf8", timeout: 10_000,
   env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))),
 }).trim();
-const emptySources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+const emptySources = { listSchedules: () => [], listWebTasks: () => [] };
 const fixture = async () => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/worktree-inspection");
   await mkdir(scratch, { recursive: true });

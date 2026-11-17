@@ -21,14 +21,14 @@ function fixture(mode: 'web' | 'herdr', onIdentityMismatch: () => void = vi.fn()
   const scope = createTaskCacheScope({ userId, onIdentityMismatch }); scopes.push(scope);
   const ready = vi.spyOn(scope, 'ready').mockResolvedValue(undefined);
   const native = { current: vi.fn(async (_signal: AbortSignal) => ({ status: 'registered' as const, session: s })) };
-  const terminal = { current: vi.fn(async (_signal: AbortSignal) => ({ status: 'registered' as const, sessionId: s.sessionId, claimId: s.claimId, executionGeneration: s.executionGeneration })) };
+  const terminal = { history: vi.fn(async (_cursor: string | null, _signal: AbortSignal) => ({ items: [{ sessionId: s.sessionId, claimId: s.claimId, executionGeneration: s.executionGeneration, agentControlMode: 'herdr' as const, contentKind: 'terminal_recording' as const, createdAt: '2026-11-03T10:00:00Z', endedAt: null, archive: { state: 'pending' as const, sha256: null, byteLength: null, completeness: null } }], nextCursor: null })) };
   vi.mocked(createSessionApi).mockReturnValue(native as never);
   function Probe({ active, claimId }: { active: boolean; claimId: string }) {
     const result = useCompletedTaskSession({ projectId: s.identity.projectId, taskId: s.identity.taskId, claimId, mode, api: terminal as unknown as TerminalSessionApi, active });
     return <><output>{result.item === null ? result.availability === null ? 'loading' : result.availability : result.item.claimId}</output><span data-testid="error">{result.error ? 'error' : ''}</span><button onClick={result.refresh}>Refresh</button></>;
   }
   const element = (active = true, claimId = s.claimId) => <TaskCacheProvider scope={scope}><Probe active={active} claimId={claimId} /></TaskCacheProvider>;
-  return { s, scope, ready, native, terminal, current: mode === 'web' ? native.current : terminal.current, element };
+  return { s, scope, ready, native, terminal, current: mode === 'web' ? native.current : terminal.history, element };
 }
 
 it.each(['web', 'herdr'] as const)('retains the completed %s selection when its response proves another principal', async mode => {
@@ -36,11 +36,15 @@ it.each(['web', 'herdr'] as const)('retains the completed %s selection when its 
   const f = fixture(mode, () => { resume = pauseAuthRequests(); });
   render(f.element()); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(f.s.claimId));
   const actual = await vi.importActual<typeof import('../src/api/sessions')>('../src/api/sessions');
-  const api = mode === 'web' ? actual.createSessionApi(f.s.identity.projectId, f.s.identity.taskId, userId, f.scope.principalMismatch)
-    : createTerminalSessionApi(f.s.identity.projectId, f.s.identity.taskId, userId, f.scope.principalMismatch);
   const fetcher = vi.fn(async () => new Response('{}', { status: 403, headers: { 'Daynight-User-ID': '00000010-1111-4111-8111-111111111111' } }));
   vi.stubGlobal('fetch', fetcher);
-  f.current.mockImplementationOnce(signal => api.current(signal) as never);
+  if (mode === 'web') {
+    const api = actual.createSessionApi(f.s.identity.projectId, f.s.identity.taskId, userId, f.scope.principalMismatch);
+    f.native.current.mockImplementationOnce(signal => api.current(signal) as never);
+  } else {
+    const api = createTerminalSessionApi(f.s.identity.projectId, f.s.identity.taskId, userId, f.scope.principalMismatch);
+    f.terminal.history.mockImplementationOnce((cursor, signal) => api.history(cursor, signal) as never);
+  }
   try {
     act(() => screen.getByRole('button', { name: 'Refresh' }).click());
     await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());

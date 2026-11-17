@@ -89,7 +89,7 @@ it.each([
     signal: new AbortController().signal, now: () => 1_000, applyNative: async () => {},
     prepareToolSelection: async (_native, mode, tools) => {
       const choice = tools.choices.codex;
-      attempts.push({ mode, path: choice.kind === "path" ? choice.path : null });
+      attempts.push({ mode, path: choice?.kind === "path" ? choice.path : null });
       if (attempts.length === 1 || secondFails) throw new ToolSelectionError("codex", mode, "probe", "probe_timeout");
     },
     onApplication: event => { applications.push(event); diagnostics.application(event); },

@@ -13,7 +13,6 @@ import { SessionDisplayMenu } from './SessionDisplayMenu';
 import { useSessionDisplayPreference } from './useSessionDisplayPreference';
 import type { SessionDisplayMode } from './display-mode';
 import { TaskAgentSession } from './TaskAgentSession';
-import { TerminalSessionView } from './TerminalSessionView';
 import { TerminalRecordingView } from './TerminalRecordingView';
 import { SessionTimeline } from './SessionTimeline';
 import { useInvalidImageBindings, type InvalidImageBindings } from './useInvalidImageBindings';
@@ -466,8 +465,8 @@ function SessionHostContent({ projectId, taskId, claimId, ownerUserId, mode, act
     try { sessionStorage.removeItem(`daynight:recording:${history.scope.userId}:${projectId}:${taskId}`); } catch { /* Storage is optional. */ }
   }, [history.scope, projectId, taskId]);
   const sessionKey = `${history.scope.userId}/${projectId}/${taskId}/${claimId}`;
-  if (claimId !== undefined && mode !== undefined && !completed) return <div className="task-session-host"><div className="task-session-current">
-    {mode === 'web' ? <TaskAgentSession key={sessionKey} projectId={projectId} taskId={taskId} claimId={claimId} ownerUserId={ownerUserId} active={active} current={current} /> : <TerminalSessionView key={sessionKey} projectId={projectId} api={history.api} claimId={claimId} active={active} current={current} />}
+  if (claimId !== undefined && mode === 'web' && !completed) return <div className="task-session-host"><div className="task-session-current">
+    <TaskAgentSession key={sessionKey} projectId={projectId} taskId={taskId} claimId={claimId} ownerUserId={ownerUserId} active={active} current={current} />
   </div></div>;
   if (history.denied && (direct || claimId === undefined)) return <div className="task-session-host"><p className="session-error" role="alert">{recordingError(history.error ?? new ApiError('server', 403), m)} <button className="button" disabled={history.loading || !current} onClick={history.refresh}>{m.refresh}</button></p></div>;
   if (claimId !== undefined) return <CompletedSessionContent projectId={projectId} taskId={taskId} claimId={claimId} mode={mode} active={active} current={current} presentationCurrent={presentationCurrent} history={history} />;
@@ -485,7 +484,7 @@ function CompletedSessionContent({ projectId, taskId, claimId, mode, active, cur
   const resolved = useCompletedTaskSession({ projectId, taskId, claimId, mode, api: history.api, active: active && current });
   return <div className="task-session-host">
     {resolved.error ? <p className="session-error" role="alert">{recordingError(resolved.error, m)} <button className="button" disabled={resolved.loading || !current} onClick={resolved.refresh}>{m.refresh}</button></p> : null}
-    {resolved.item ? <FixedSessionRecording key={`${resolved.item.sessionId}/${resolved.item.executionGeneration}`} projectId={projectId} api={history.api} item={resolved.item} active={active && presentationCurrent} current={current} preparing={resolved.preparing} /> : !resolved.error ? <div className="session-empty" role="status"><p>{resolved.loading ? m.loading : resolved.availability === 'not_registered' ? m.notRegistered : m.unavailable}</p>{!resolved.loading ? <button className="button" disabled={!current} onClick={resolved.refresh}>{m.refresh}</button> : null}</div> : null}
+    {resolved.item ? <FixedSessionRecording key={`${resolved.item.sessionId}/${resolved.item.executionGeneration}`} projectId={projectId} api={history.api} item={resolved.item} active={active && presentationCurrent} current={current} preparing={resolved.preparing} {...(mode === 'herdr' ? { refreshReference: resolved.refresh } : {})} /> : !resolved.error ? <div className="session-empty" role="status"><p>{resolved.loading ? m.loading : resolved.availability === 'not_registered' ? m.notRegistered : m.unavailable}</p>{!resolved.loading ? <button className="button" disabled={!current} onClick={resolved.refresh}>{m.refresh}</button> : null}</div> : null}
   </div>;
 }
 type ManagedRecordsProps = ScopeProps & { readonly resetSelection?: object; readonly records?: Records; readonly children: (records: AttachmentRecordSlots) => ReactNode };
@@ -518,7 +517,7 @@ function ManagedRecordsContent({ projectId, taskId, active, direct, resetSelecti
   const preview = selected && !history.denied ? <><div className="managed-recording-close"><button className="button" onClick={clearSelection}>{m.close}</button></div><FixedSessionRecording key={`${selected.sessionId}/${selected.executionGeneration}`} projectId={projectId} api={history.api} item={selected} active={active} /></> : null;
   return children({ sidebar, preview, clearSelection });
 }
-export function FixedSessionRecording({ api, item, active, projectId, current = true, preparing = false }: { readonly api: TerminalSessionApi; readonly item: SessionRecordingReference; readonly active: boolean; readonly projectId?: string; readonly current?: boolean; readonly preparing?: boolean }) {
+export function FixedSessionRecording({ api, item, active, projectId, current = true, preparing = false, refreshReference }: { readonly api: TerminalSessionApi; readonly item: SessionRecordingReference; readonly active: boolean; readonly projectId?: string; readonly current?: boolean; readonly preparing?: boolean; readonly refreshReference?: () => void }) {
   const scope = useTaskCacheScope(); const m = useTerminalHostMessages(); const sm = useSessionMessages();
   const owner = useMemo(() => ({}), [scope, api, item.sessionId, item.claimId, item.executionGeneration, item.agentControlMode]);
   const [revision, refresh] = useState(0);
@@ -590,7 +589,7 @@ export function FixedSessionRecording({ api, item, active, projectId, current = 
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.fullscreen ? 'M6 9l6 6 6-6' : 'M6 15l6-6 6 6'} /></svg>
         <span className="session-fullscreen-tooltip" aria-hidden="true">{fullscreen.fullscreen ? sm.exitFullscreen : sm.enterFullscreen}</span>
       </button>
-      <button className="button session-refresh-toggle" aria-label={m.refresh} disabled={view.loading || !active || !current || authRequestsPaused()} onClick={() => refresh(value => value + 1)}>
+      <button className="button session-refresh-toggle" aria-label={m.refresh} disabled={view.loading || !active || !current || authRequestsPaused()} onClick={() => { refreshReference?.(); refresh(value => value + 1); }}>
         <span className="session-refresh-label">{m.refresh}</span><svg className="session-refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" /></svg><span className="session-refresh-tooltip" aria-hidden="true">{m.refresh}</span>
       </button>
     </div>{fullscreen.fullscreen && <AccountRefreshNotice />}</header>

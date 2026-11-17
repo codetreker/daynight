@@ -117,14 +117,6 @@ func (f *terminalHTTPFixture) workerHeaders() http.Header {
 	return header
 }
 
-func (f *terminalHTTPFixture) viewerHeaders(handler *resourceTestHandler) http.Header {
-	header := make(http.Header)
-	header.Set("Authorization", "Bearer "+handler.token)
-	header.Set("Origin", "https://daynight.example")
-	header.Set(v2.ProtocolHeader, v2.Protocol)
-	return header
-}
-
 func (f *terminalHTTPFixture) handshake(t *testing.T, conn *websocket.Conn) v2.Message {
 	t.Helper()
 	return f.workerMessage(t, conn, f.message)

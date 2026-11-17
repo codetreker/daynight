@@ -25,7 +25,9 @@ and [design](../../../../docs/design/daynight-web.md) own the full behavior and
 mechanism.
 
 This replaces only the account selection in the earlier [reading history decision](2026-11-11-account-reading-history.md).
-Worker and project selections retain their history-based ownership and validation.
+Worker selection retains its history-based ownership and validation. The later
+[project tab URL decision](2026-11-17-project-tab-urls.md) makes project outer
+sections addressable while retaining history admission for nested reading.
 
 ## Alternatives
 

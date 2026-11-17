@@ -589,8 +589,7 @@ of the startup working directory's filesystem. Capacity readings use localized
 IEC units while the API retains exact byte values. The directory is explicit; there
 is no inferred physical core count or fabricated device label. Zero capacity is
 valid data and does not produce a division-based meter. Software rows distinguish
-an installed version, unavailable detection, Codex/Copilot not installed and
-private Herdr not running. `checkedAt`, `sampledAt` and server `lastReportedAt`
+an installed version, unavailable detection and Codex/Copilot not installed. `checkedAt`, `sampledAt` and server `lastReportedAt`
 retain their different meanings. Version text is displayed without adding a
 minimum-version or semantic-version check.
 
@@ -1553,8 +1552,8 @@ The application implements public `/`, explicit `/login`, the `/projects` index,
 `/invitations` and the standalone
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` reader, direct URL
 reload, browser back/forward and a generic not-found page. All resource reads use
-the current authenticated identity. A project without a saved section preference
-opens Overview, with six statistics and an overall progress list from the complete
+the current authenticated identity. A bare project URL uses its admitted reading selection or saved project preference,
+defaulting to Overview, with six statistics and an overall progress list from the complete
 snapshot. Its recent rows include every unfinished ordinary task-chain component
 and ended components from the latest seven local calendar days. A row shows
 the representative title, ended/total count, separate done and cancelled counts,
@@ -1602,10 +1601,15 @@ keep the current page position. The [recent browsing decision](../../.agents/not
 retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
 left of the selected content; narrow screens use horizontal tabs with matching
-keyboard direction. The outer choice is stored per project in browser
-preferences, so the first render after reload or a new visit already shows the saved
-Overview, Task list, PR list or Tags selection. User switches add browser history without changing the URL; traversing history does not save a new preference. Empty
-projects retain all section destinations.
+keyboard direction. The outer tabs have real `/projects/{projectId}?tab=overview|tasks|prs|tags` links.
+An explicit tab controls the section across copying, reload, new tabs and login;
+unknown, empty or repeated values use not-found. A bare URL uses admitted same-document
+history or the project preference, defaulting to Overview, and is completed with
+replace without saving a preference or adding history. User switches commit URL and
+reading state together through draft admission, save the preference only after
+commit, and add history only for a different selection. Traversal does not save
+a preference. Modified and middle clicks retain native link behavior; keyboard
+navigation and stable panel relationships remain available on empty projects.
 
 Overview and Task list use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
@@ -2389,10 +2393,14 @@ unparented chain Expand carries its witness through the project URL
 `#chain={taskId}`. The project consumes and clears that transient fragment once
 its complete index is available; `#task={taskId}` retains task reading and list
 location semantics. Invalid or missing targets use existing unavailable feedback.
-These fragments do not add persistent preferences or nested detail URL state.
-Closing a layer replaces the current selection after draft admission. Project-page
-sections, graph, details and their nested reading selections also participate in
-Back/Forward without changing the project URL. Traversal does not replay operations
+Bare URL normalization preserves these fragments until the index consumes them.
+An unparented multi-member chain or task-list destination commits `tab=tasks`;
+an invalid target retains the current section. An explicit section switch drops a
+pending fragment so a late index cannot override it. These fragments do not add
+persistent preferences or nested detail URL state. Closing a layer replaces the
+current selection after draft admission. Project sections use their tab URLs; graph,
+details and their nested reading selections participate in Back/Forward without
+encoding those nested selections in the URL. Traversal does not replay operations
 or save preferences; closing replaces the current selection with its parent.
 For standalone URLs, copying or reloading restores the root task, tab
 and file; nested selections do not carry resource data or drafts. A same-task

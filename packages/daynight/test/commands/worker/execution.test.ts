@@ -452,7 +452,7 @@ describe("execution from current Herdr resources", () => {
     git(repo, "remote", "add", "origin", f.input.project.repoUrl);
     git(repo, "config", `url.${path.join(root, "origin.git")}.insteadOf`, f.input.project.repoUrl);
     if (sessionId !== null) git(repo, "branch", `daynight/${f.input.owner.taskId}`);
-    const sources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    const sources = { listSchedules: () => [], listWebTasks: () => [] };
     const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-temp"), prepareFormat: async (_project, repository, operation) => { await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources }); } });
     const operation = createOperation();
     try {
@@ -475,7 +475,7 @@ describe("execution from current Herdr resources", () => {
     git(root, "clone", "--bare", repo, "origin.git");
     git(repo, "remote", "add", "origin", f.input.project.repoUrl);
     git(repo, "config", `url.${path.join(root, "origin.git")}.insteadOf`, f.input.project.repoUrl);
-    const sources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+    const sources = { listSchedules: () => [], listWebTasks: () => [] };
     const adapter = createWorkerGitManager({ temporaryDirectory: path.join(root, "git-temp"), prepareFormat: async (_project, repository, operation) => { await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources }); } });
     const operation = createOperation();
     try {

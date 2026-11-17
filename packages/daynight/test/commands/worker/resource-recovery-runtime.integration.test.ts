@@ -61,6 +61,11 @@ const fixture = async () => {
     await git(["worktree", "add", "-b", branch, worktreePath]);
     binding = { repositoryPath: repository, commonDirectory: path.join(repository, ".git"), worktreePath, branch };
     const manifests = createWorktreeManifestStore(binding.commonDirectory); manifests.publish({ ...owner, schemaVersion: 1, directoryName: owner.worktreeId });
+    // An interrupted earlier conversion can leave an unrelated manifest and lock.
+    const unknown = { projectId: owner.projectId, taskId: randomUUID(), claimId: randomUUID(), worktreeId: randomUUID() };
+    const unknownPath = path.join(repository, ".worktrees/daynight", unknown.taskId);
+    await git(["worktree", "add", "--lock", "--reason", `daynight-worker:${JSON.stringify(unknown)}`, "-b", `daynight/${unknown.taskId}`, unknownPath]);
+    manifests.publish({ ...unknown, schemaVersion: 1, directoryName: unknown.taskId });
     await writeFile(path.join(binding.commonDirectory, "daynight/worktrees/format.json"), '{"version":1}\n');
   } finally { operation.dispose(); }
   const project = { projectId: owner.projectId, localPath: repository, repoUrl };
@@ -92,6 +97,7 @@ describe.runIf(process.platform !== "win32")("completed Web resource recovery ru
   it("verifies original SQLite, process, ticket, archive and Git evidence before confirmed removal", { timeout: 45_000 }, async () => {
     const f = await fixture(), output: string[] = [];
     const run = (confirmed: boolean) => runCompletedWebResourceRecovery({ homeDirectory: f.home, request: { ...f.owner, confirmed }, output: value => output.push(value), signal: AbortSignal.timeout(30_000) });
+    await writeFile(path.join(f.paths.workerDirectory, "herdr-executions.sqlite"), "unreadable legacy journal");
     await run(false);
     expect(JSON.parse(output.at(-1)!).outcome).toBe("verified");
     expect(await readFile(path.join(f.binding.worktreePath, "preserved.txt"), "utf8")).toBe("original content\n");
@@ -101,6 +107,15 @@ describe.runIf(process.platform !== "win32")("completed Web resource recovery ru
     expect(createWorktreeManifestStore(f.binding.commonDirectory).findClaim(f.owner)).toBeNull();
     const web = openWebExecutionStore(path.join(f.paths.workerDirectory, "web-executions.sqlite")); expect(web.getTask(f.owner)?.status).toBe("done"); web.close();
     expect(f.requests.every(value => value.startsWith("GET "))).toBe(true);
+  });
+  it("refuses recovery when the target worktree is quarantined", { timeout: 45_000 }, async () => {
+    const f = await fixture();
+    const operation = createOperation({ limits: { totalMs: 10_000 } });
+    try { await runRepositoryGit(f.binding.repositoryPath, ["worktree", "lock", "--reason", "foreign lock", f.binding.worktreePath], operation); }
+    finally { operation.dispose(); }
+    await expect(runCompletedWebResourceRecovery({ homeDirectory: f.home, request: { ...f.owner, confirmed: true }, output: () => {}, signal: AbortSignal.timeout(30_000) })).rejects.toThrow(/enumeration|conflicting/);
+    expect(await readFile(path.join(f.binding.worktreePath, "preserved.txt"), "utf8")).toBe("original content\n");
+    expect(createWorktreeManifestStore(f.binding.commonDirectory).findClaim(f.owner)?.worktreeId).toBe(f.owner.worktreeId);
   });
   it.each(["archive", "successor"])("preserves the checkout and manifest when original %s evidence conflicts", { timeout: 45_000 }, async kind => {
     const f = await fixture(); if (kind === "archive") f.rejectArchive(); else f.supersede();

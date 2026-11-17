@@ -188,6 +188,16 @@ Native supervisor fixtures use production observation budgets and a controlled
 parent clock only after a real TERM receipt and native signal-observation window.
 The [native fixture decision](../.agents/notes/archived/testing/2026-11-04-native-supervisor-fixture-clock.md)
 records the real-process proof and cleanup requirements.
+Bot CLI probe fixtures retain the real guardian, descendants, process inventory,
+signals and joined cleanup. On POSIX, the test freezes the stop clock after the
+target process group receives TERM and advances it only after a real inventory
+confirms the group remains live; it checks the requested polling intervals and
+the two-second grace before the real KILL. The deadline case separately captures
+the response timer, checks its configured duration and expires it only after the
+descendant publishes its own readiness and a real process proof confirms it is
+running. Windows retains real Job assignment, termination, inspection and handle
+ownership without the POSIX clock. The [probe timing decision](../.agents/notes/implemented/testing/2026-11-17-bot-cli-probe-test-timing.md)
+records the controlled boundaries and cleanup fallback.
 Real Bot integration owns a 180-second teardown hook because original process
 proof, IPC stop, Windows Job termination and diagnostics can outlast the ordinary
 hook limit. Each process confirmation probe is joined before another round or

@@ -779,7 +779,7 @@ test('standalone native HTML and PDF fit the reader and PDF exits through the pa
   const frame = page.locator('.task-attachments iframe');
   await expect.poll(async () => { const png = await frame.screenshot({ animations: 'disabled' }); return hasPaintedPdfMarker(await page.evaluate(readPdfPixels, png.toString('base64'))); }, { timeout: 20_000 }).toBe(true);
   await page.getByRole('link', { name: 'Return to task project', exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}$`));
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=(overview|tasks|prs|tags)$`));
   expect(state.writes).toEqual([]);
 });
 

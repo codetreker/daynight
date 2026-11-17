@@ -79,6 +79,8 @@ CPU model 是非空白文本，logicalProcessors 是 `1..9007199254740991` 的�
 | activeSelections | 按 selectionKey 排序的运行选择分组，每项含 actual、nullable executionCount、nullable instanceCount、unconfirmedCount |
 | error | null 或闭合 `{code,occurredAt}`，不能包含自由诊断正文 |
 
+工具的云端 choice 未采纳时，该目标不可用于新执行。若有可合法报告的历史目标，观察项保留其真实来源和版本，标记 pending/configuration_unavailable，并继续报告已知活跃责任；不能把本机选择标为当前云端目标。没有可报告的历史目标时省略该工具的观察项，缺项不能解释为已检查或已应用。
+
 实际选择为 `{selection,selectionKey,entryPath,executablePath,interpreterPath,source,version,checkedAt}`。selection 是产生该结果的完整 choice；selectionKey 为运行管理器给出的 64 位小写 SHA-256 十六进制标识。entryPath 表示入口、executablePath 表示实际工具程序、interpreterPath 为解释器路径或 null。source 只能是 explicit/path/bundled；path 每项最多 4096 UTF-8 字节，version 最多 256 字节。时间必须有效；服务不接收 command、argv、环境、artifact 内容或进程凭据。target 沿用 desired 的平台无关路径语法，使 Worker 能携带原目标报告平台不匹配的 invalid_path；actual、candidate 和 activeSelections 的实际路径仍须符合所报 Worker 平台。
 
 actual 仅表示后续新执行可准入的已验证选择，不代表全部旧执行。candidate 是已探测但尚未安全应用的目标，不能替代 actual。目标失败可以保留旧 actual，但新执行不得借旧值回退。applied 必须有与 target 相等的 actual.selection；消费者还必须核对 cloud targetRevision、当前 desired choice 和 tool/context，不能把迟到报告当作新目标成功。保存成功、单独 versions probe 和候选都不能证明工具已应用。离线或快照过期时，actual 只能作为带 checkedAt 的历史事实展示。

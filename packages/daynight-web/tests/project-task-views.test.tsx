@@ -1467,7 +1467,6 @@ describe('recent task browsing and pagination', () => {
     fireEvent.click(screen.getByTestId(`external-${first}`));
     fireEvent.click(screen.getByTestId(`external-${second}`));
     state.snapshot = mockNavigationSnapshot(refreshed, 2);
-    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(removed.isConnected).toBe(false);
     expect(document.getElementById(`task-graph-${canonicalTask(3)}`)).toBeVisible();
@@ -1546,7 +1545,6 @@ describe('recent task browsing and pagination', () => {
     fireEvent.click(screen.getByTestId(`external-${dependency}`));
     expect(document.getElementById(`task-graph-${canonicalTask(1)}`)).toBeVisible();
     state.snapshot = mockNavigationSnapshot(refreshed, 2);
-    act(() => browserNavigation().navigate(`/projects/${project}`));
     view.rerender(<ProjectPage projectId={project} />);
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     await waitFor(() => expect(trigger).toHaveFocus());

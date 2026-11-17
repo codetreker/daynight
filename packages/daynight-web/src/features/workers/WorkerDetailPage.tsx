@@ -1,5 +1,5 @@
 import { useCallback, useId, useLayoutEffect, useState, type KeyboardEvent, type ReactNode } from 'react';
-import type { WorkerExecutableProbe, WorkerHerdrProbe, WorkerProbe, WorkerTaskSnapshot } from '../../api/workers';
+import type { WorkerExecutableProbe, WorkerProbe, WorkerTaskSnapshot } from '../../api/workers';
 import type { WorkerAgent } from '../../api/types';
 import type { Tool, ToolPathTelemetry } from '../../api/worker-tool-paths';
 import { useWorkerHistory } from '../../app/use-page-history';
@@ -35,22 +35,22 @@ const Meter = ({ value, label, high = false }: { readonly value: number; readonl
 
 const MetricCard = ({ title, children, checkedAt }: { readonly title: string; readonly children: ReactNode; readonly checkedAt: string }) => <section className="worker-metric-card"><h2 className="worker-metric-label">{title}</h2>{children}<CheckedAt value={checkedAt} /></section>;
 
-const SoftwareRow = ({ name, probe }: { readonly name: string; readonly probe: WorkerExecutableProbe | WorkerHerdrProbe }) => {
+const SoftwareRow = ({ name, probe }: { readonly name: string; readonly probe: WorkerExecutableProbe }) => {
   const { messages: { workers: m } } = useI18n();
   return <div className="worker-info-row"><dt>{name}</dt><dd>
-    {probe.state === 'ok' ? <span className="worker-software-version">{probe.value}</span> : probe.state === 'error' ? <ProbeFailure probe={probe} software /> : <span className="worker-software-unavailable">{probe.state === 'not_installed' ? m.notInstalled : m.notRunning}</span>}
+    {probe.state === 'ok' ? <span className="worker-software-version">{probe.value}</span> : probe.state === 'error' ? <ProbeFailure probe={probe} software /> : <span className="worker-software-unavailable">{m.notInstalled}</span>}
     <CheckedAt value={probe.checkedAt} />
   </dd></div>;
 };
 
-const ToolSoftwareRow = ({ tool, telemetry, online, probe }: { readonly tool: Tool; readonly telemetry: ToolPathTelemetry | undefined; readonly online: boolean | null; readonly probe: WorkerExecutableProbe | WorkerHerdrProbe }) => {
+const ToolSoftwareRow = ({ tool, telemetry, online, probe }: { readonly tool: Exclude<Tool, 'herdr'>; readonly telemetry: ToolPathTelemetry | undefined; readonly online: boolean | null; readonly probe: WorkerExecutableProbe }) => {
   const { messages: { workers: { configuration: { toolPaths: m } } } } = useI18n();
-  const name = tool === 'herdr' ? 'Herdr' : agentNames[tool];
+  const name = agentNames[tool];
   if (telemetry === undefined) return <SoftwareRow name={name} probe={probe} />;
   const entries = toolSoftwareEntries(telemetry, tool);
   return <div className="worker-info-row worker-software-tool-paths" data-tool={tool}><dt>{name}</dt><dd>
     {entries.length === 0 ? <span className="worker-software-unavailable">{m.state.not_checked}</span> : entries.map(entry => <p className="worker-tool-version" key={entry.context}>
-      <span>{entry.context === 'web' ? 'Web' : 'Herdr'}</span>{' · '}{entry.actual !== null && <span className="worker-software-version">{entry.actual.version}</span>}{(entry.actual === null || entry.state === 'checking' || entry.state === 'pending' || entry.state === 'error') && <>{entry.actual !== null && ' '}<span className={`worker-tool-state ${entry.state}`}>{m.state[entry.state]}</span></>}
+      {entry.actual !== null && <span className="worker-software-version">{entry.actual.version}</span>}{(entry.actual === null || entry.state === 'checking' || entry.state === 'pending' || entry.state === 'error') && <>{entry.actual !== null && ' '}<span className={`worker-tool-state ${entry.state}`}>{m.state[entry.state]}</span></>}
     </p>)}
     <p className="worker-checked-at worker-tool-connection">
       <span className={online === false ? undefined : 'concealed'} aria-hidden={online !== false}>{m.state.offline}</span>
@@ -145,7 +145,7 @@ export const WorkerDetailPage = ({ workerId, userId, active = true, readEnabled,
         </dl></section>
         <section className="worker-panel"><header className="worker-panel-heading"><h2>{m.software}</h2><button type="button" className="worker-tool-path-shortcut" onClick={openToolPaths}>{m.configuration.toolPaths.title}</button></header><dl className="worker-info-list">
           <div className="worker-info-row"><dt>Daynight CLI</dt><dd className="worker-software-version">{worker.telemetry.versions.daynight}</dd></div>
-          {(['herdr', 'codex', 'copilot'] as const).map(tool => <ToolSoftwareRow key={tool} tool={tool} telemetry={worker.telemetry.toolPaths} online={state.stale ? null : online} probe={worker.telemetry.versions[tool]} />)}
+          {(['codex', 'copilot'] as const).map(tool => <ToolSoftwareRow key={tool} tool={tool} telemetry={worker.telemetry.toolPaths} online={state.stale ? null : online} probe={worker.telemetry.versions[tool]} />)}
         </dl></section>
       </div>
       <section className="worker-panel" data-worker-reading><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}

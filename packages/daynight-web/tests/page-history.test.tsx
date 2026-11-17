@@ -231,6 +231,143 @@ describe('Project reading history', () => {
     expect(readProjectHistory(projectHistory(user, project, description), user, project)).toEqual(description);
   });
 
+  it.each(['overview', 'tasks', 'prs', 'tags'] as const)('uses explicit %s over the preferred section on first render', section => {
+    history.replaceState(null, '', `${path}?other=retained&tab=${section}`);
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const renders: string[] = [];
+    try {
+      const length = history.length;
+      const { result, unmount } = renderHook(() => {
+        const history = useProjectHistory(user, project, true, { section: 'tags', view: 'chains' }, scope);
+        renders.push(history.selection.section); return history;
+      });
+      expect(renders.every(value => value === section)).toBe(true);
+      expect(result.current.selection).toEqual({ section, view: 'chains', projectGraphWitness: null, detail: null });
+      expect(location.search).toBe(`?other=retained&tab=${section}`);
+      expect(history.length).toBe(length);
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('normalizes a bare URL with the admitted same-document reading and preserves pending fragment and query', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const first = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => first.result.current.select(selection));
+      first.unmount();
+      act(() => navigation.setView(projectHistory(user, project, selection), { to: `${path}?other=retained#chain=${root}`, replace: true }));
+      const length = history.length, entryId = navigation.snapshot().entryId;
+      const replace = vi.spyOn(history, 'replaceState');
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      expect(result.current.selection).toEqual(selection);
+      expect(location.search).toBe('?other=retained&tab=tasks');
+      expect(location.hash).toBe(`#chain=${root}`);
+      expect(navigation.snapshot().entryId).toBe(entryId);
+      expect(history.length).toBe(length);
+      expect(replace).toHaveBeenCalledOnce();
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('takes explicit URL over conflicting reading, retaining a matching reading but dropping incompatible nested resources', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => result.current.select(selection));
+      expect(result.current.selection).toEqual(selection);
+      const length = history.length;
+      act(() => navigation.setView(projectHistory(user, project, selection), { to: `${path}?tab=prs`, replace: true }));
+      const expected = { ...defaults, section: 'prs', projectGraphWitness: null, detail: null } as const;
+      expect(result.current.selection).toEqual(expected);
+      expect(navigation.snapshot().view).toEqual(projectHistory(user, project, expected));
+      expect(history.length).toBe(length);
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('keeps URL and reading unchanged when a draft blocks a section change and commits both after confirmation', () => {
+    history.replaceState(null, '', `${path}?tab=tasks`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      const before = navigation.snapshot(), length = history.length, commit = vi.fn(), discard = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      const next = { ...result.current.selection, section: 'prs' } as const;
+      act(() => result.current.select(next, false, commit));
+      expect(navigation.snapshot()).toBe(before);
+      expect(location.search).toBe('?tab=tasks');
+      act(() => navigation.cancel());
+      expect(history.length).toBe(length); expect(commit).not.toHaveBeenCalled(); expect(discard).not.toHaveBeenCalled();
+      act(() => result.current.select(next, false, commit));
+      act(() => navigation.confirm());
+      expect(location.search).toBe('?tab=prs'); expect(result.current.selection).toEqual(next);
+      expect(navigation.snapshot().view).toEqual(projectHistory(user, project, next));
+      expect(history.length).toBe(length + 1); expect(commit).toHaveBeenCalledOnce(); expect(discard).toHaveBeenCalledOnce();
+      release(); unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it('consumes an unindexed native fragment without numbering it or retiring earlier application entries', () => {
+    history.replaceState(null, '', `${path}?tab=prs`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    try {
+      const { result, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      const old = history.state, oldId = navigation.snapshot().entryId;
+      act(() => { history.pushState({ foreign: { offset: 7 }, __daynightNavigation: old.__daynightNavigation }, '', `${path}?tab=prs#chain=${root}`); dispatchEvent(new PopStateEvent('popstate')); });
+      expect(navigation.snapshot().entryId).toBeNull();
+      const length = history.length, before = navigation.snapshot(), committed = vi.fn(), discard = vi.fn();
+      const release = navigation.register({ scope: { identity: {}, projectId: project, taskId: root }, isDirty: () => true, discard, survives: () => false });
+      const next = { ...selection, detail: null };
+      const replace = vi.spyOn(history, 'replaceState');
+      act(() => result.current.select(next, false, committed, true));
+      expect(navigation.snapshot()).toBe(before); expect(location.hash).toBe(`#chain=${root}`);
+      act(() => navigation.cancel());
+      expect(replace).not.toHaveBeenCalled(); expect(discard).not.toHaveBeenCalled(); expect(committed).not.toHaveBeenCalled();
+      act(() => result.current.select(next, false, committed, true));
+      act(() => navigation.confirm());
+      expect(replace).toHaveBeenCalledOnce(); expect(history.length).toBe(length);
+      expect(location.search).toBe('?tab=tasks'); expect(location.hash).toBe('');
+      expect(history.state).toEqual({ foreign: { offset: 7 } });
+      expect(navigation.snapshot()).toMatchObject({ entryId: null, view: projectHistory(user, project, next) });
+      expect(result.current.selection).toEqual(next);
+      expect(discard).toHaveBeenCalledOnce(); expect(committed).toHaveBeenCalledOnce();
+      release();
+      arrival(old, `${path}?tab=prs`);
+      expect(navigation.snapshot().entryId).toBe(oldId);
+      expect(result.current.selection.section).toBe('prs');
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
+  it.each(['history', 'access'] as const)('never revives a native fragment reading after %s retirement and rerender', kind => {
+    history.replaceState(null, '', `${path}?tab=prs`);
+    const navigation = browserNavigation();
+    const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
+    const subscribe = scope.subscribe.bind(scope);
+    const listeners = new Set<Parameters<typeof scope.subscribe>[0]>();
+    vi.spyOn(scope, 'subscribe').mockImplementation(listener => { listeners.add(listener); const stop = subscribe(listener); return () => { listeners.delete(listener); stop(); }; });
+    try {
+      const { result, rerender, unmount } = renderHook(() => useProjectHistory(user, project, true, defaults, scope));
+      act(() => { history.pushState({ foreign: true }, '', `${path}?tab=prs#chain=${root}`); dispatchEvent(new PopStateEvent('popstate')); });
+      act(() => result.current.select(selection, false, undefined, true));
+      expect(result.current.selection).toEqual(selection);
+      act(() => {
+        if (kind === 'access') scope.suspendProject(project);
+        else for (const listener of listeners) listener({ projectId: project, historyChanged: true });
+      });
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      rerender(); rerender();
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
+      unmount();
+    } finally { scope.dispose(); }
+  });
+
   it('initializes, traverses and deduplicates without replaying commit callbacks', () => {
     history.replaceState(null, '', path);
     const scope = createTaskCacheScope({ userId: user, onIdentityMismatch: vi.fn() });
@@ -246,18 +383,18 @@ describe('Project reading history', () => {
       expect(committed).toHaveBeenCalledTimes(1);
       act(() => result.current.select(selection, false, committed));
       expect(history.length).toBe(length + 1);
-      arrival(source, path); expect(result.current.selection).toEqual(initial);
-      arrival(destination, path); expect(result.current.selection).toEqual(selection);
+      arrival(source, `${path}?tab=overview`); expect(result.current.selection).toEqual(initial);
+      arrival(destination, `${path}?tab=tasks`); expect(result.current.selection).toEqual(selection);
       expect(committed).toHaveBeenCalledTimes(1);
       const tags = { ...selection, section: 'tags', projectGraphWitness: null, detail: null } as const;
       act(() => result.current.select(tags));
       const tagsDestination = history.state;
-      arrival(destination, path); expect(result.current.selection).toEqual(selection);
-      arrival(tagsDestination, path); expect(result.current.selection).toEqual(tags);
+      arrival(destination, `${path}?tab=tasks`); expect(result.current.selection).toEqual(selection);
+      arrival(tagsDestination, `${path}?tab=tags`); expect(result.current.selection).toEqual(tags);
       act(() => result.current.select({ ...selection, detail: null }));
       act(() => scope.suspendProject(project));
       expect(result.current.selection.detail).toBeNull();
-      arrival(destination, path); expect(result.current.selection.detail).toBeNull();
+      arrival(destination, `${path}?tab=tasks`); expect(result.current.selection.detail).toBeNull();
       unmount();
     } finally { scope.dispose(); }
   });
@@ -286,8 +423,8 @@ describe('Project reading history', () => {
       expect(renders.slice(start).every(value => value.projectGraphWitness === root && value.detail === null)).toBe(true);
       expect(result.current.selection).toEqual(carried);
       expect(browserNavigation().snapshot().view).toEqual(projectHistory(user, project, carried));
-      arrival(old, path);
-      expect(result.current.selection).toEqual({ ...defaults, projectGraphWitness: null, detail: null });
+      arrival(old, `${path}?tab=tasks`);
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
       unmount();
     } finally { scope.dispose(); }
   });
@@ -307,7 +444,7 @@ describe('Project reading history', () => {
         else if (order === 'access-first') { scope.suspendProject(project); emit({ projectId: project, historyChanged: true }); }
         else { emit({ projectId: project, historyChanged: true }); scope.suspendProject(project); }
       });
-      expect(result.current.selection).toEqual({ ...defaults, projectGraphWitness: null, detail: null });
+      expect(result.current.selection).toEqual({ ...defaults, section: 'tasks', projectGraphWitness: null, detail: null });
       unmount();
     } finally { scope.dispose(); }
   });

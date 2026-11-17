@@ -76,7 +76,7 @@ export const TaskDraftBoundary = ({ projectId, taskId, page, projectSourceSensit
         if (target.kind !== 'project' || target.projectId !== projectId || projectHost.projectId !== projectId || view === undefined) return false;
         try {
           const selection = readProjectHistory(view, identity.userId, projectId);
-          if (selection === null || entryId !== undefined && isRetiredResourceEntry(identity, projectId, entryId)) return false;
+          if (selection === null || target.tab !== null && target.tab !== selection.section || entryId !== undefined && isRetiredResourceEntry(identity, projectId, entryId)) return false;
           const detail = selection.detail;
           if (detail === null || detail.id !== projectHost.rootId || !projectHost.child && projectSourceSensitive && detail.source !== projectHost.source || detail.insideProjectGraph !== projectHost.insideProjectGraph ||
               projectHost.insideProjectGraph && selection.projectGraphWitness !== projectHost.graphWitness) return false;

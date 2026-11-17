@@ -60,6 +60,7 @@ async function install(page: Page, timing = false, completion = false, title = '
       const base = `/api/v1/projects/${projectId}/tasks/${detail.id}`;
       if (path === base) return send(detail, 200, { 'Daynight-Task-Epoch': taskSyncEpoch(projectId) });
       if (path === `${base}/thread/messages`) return send({ items: url.searchParams.has('afterId') ? [] : [message], hasMoreBefore: false, hasMoreAfter: false });
+      if (path === `${base}/steps` && request.method() === 'GET') return send({ projectId, taskId: detail.id, version: detail.version, steps: [] });
       if (path === `${base}/sessions` || path === `${base}/attachments`) return send({ items: [], nextCursor: null });
     }
     return send({ error: { code: 'not_found', message: 'not found', requestId: 'fixture' } }, 404);
@@ -632,4 +633,46 @@ for (const allowAgents of [false, true]) test(`equivalent ordinary Tasks share f
   }
   await expect(page.locator('.task-row-goal')).toHaveCount(1);
   await expect(page.locator('.task-row-goal')).toHaveAttribute('href', `/projects/${projectId}/tasks/${goalId}`);
+});
+
+
+test('project section history protects a real task draft through cancellation and departure', async ({ page }) => {
+  const state = await install(page); await page.addInitScript(() => localStorage.setItem('daynight.web.locale', 'en'));
+  await page.goto(`/projects/${projectId}?tab=overview`);
+  await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+  const overviewIndex = await page.evaluate(() => history.state.__daynightNavigation.index as number);
+  await page.locator('#project-section-tab-tasks').click();
+  await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
+  await page.locator(`#standalone-task-${taskId}`).click();
+  const dialog = page.locator('.task-detail-dialog');
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add step', exact: true }).click();
+  const draft = dialog.locator('.step-add-form').getByRole('textbox', { name: 'Title' });
+  await draft.fill('Project task draft');
+  await dialog.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await dialog.getByRole('tab', { name: 'Steps', exact: true }).click();
+  await expect(draft).toHaveValue('Project task draft');
+  await draft.focus();
+  const original = await page.evaluate(id => ({ url: location.href, state: JSON.stringify(history.state), length: history.length,
+    preference: localStorage.getItem(`daynight:project-section:${id}`), index: history.state.__daynightNavigation.index as number }), projectId);
+  expect(original.preference).toBe(JSON.stringify('tasks'));
+  const goToOverview = () => page.evaluate(delta => history.go(delta), overviewIndex - original.index);
+  await goToOverview();
+  const confirmation = page.getByRole('alertdialog', { name: 'Discard unsaved changes?' });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Keep editing' }).click();
+  await expect.poll(() => page.url()).toBe(original.url);
+  await expect(draft).toHaveValue('Project task draft');
+  await expect(draft).toBeFocused();
+  expect(await draft.evaluate(element => element.matches(':focus-visible'))).toBe(true);
+  expect(await page.evaluate(id => ({ state: JSON.stringify(history.state), length: history.length,
+    preference: localStorage.getItem(`daynight:project-section:${id}`) }), projectId)).toEqual({ state: original.state, length: original.length, preference: original.preference });
+  await goToOverview();
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: 'Discard and leave' }).click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}\\?tab=overview$`));
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('#project-section-tab-overview')).toHaveAttribute('aria-selected', 'true');
+  expect(await page.evaluate(id => localStorage.getItem(`daynight:project-section:${id}`), projectId)).toBe(original.preference);
+  expect(state.writes).toEqual([]);
 });

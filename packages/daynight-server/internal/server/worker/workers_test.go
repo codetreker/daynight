@@ -181,6 +181,10 @@ func (d *workerHTTPWriteDAO) SetWorkerConfiguration(ctx context.Context, u, w st
 	}
 	return d.SetWorkerConfigurationCall(ctx, u, w, r, v)
 }
+func (d *workerHTTPWriteDAO) SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error) {
+	workerHTTPUnexpected(d.t, "SetWorkerConfigurationRaw")
+	return model.WorkerDesiredConfiguration{}, nil
+}
 func (d *workerHTTPWriteDAO) SetWorkerConfigurationObservation(ctx context.Context, u, w string, r int64, v model.WorkerConfigurationObservation) error {
 	if d.SetWorkerConfigurationObservationCall == nil {
 		workerHTTPUnexpected(d.t, "SetWorkerConfigurationObservation")

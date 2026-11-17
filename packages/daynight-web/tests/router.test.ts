@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, replaceRoute, taskDetailUrl } from "../src/app/router";
+import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, parseLoginReturnPath, parseRoute, projectSectionUrl, replaceRoute, taskDetailUrl } from "../src/app/router";
 import { browserNavigation } from '../src/app/navigation';
 import { projectSettingsUrl, type ProjectSettingsTab } from '../src/app/project-settings-route';
 
@@ -12,8 +12,23 @@ describe("route parsing", () => {
   it("maps the project list and canonicalizes decoded UUIDs", () => {
     expect(parseRoute("/projects")).toEqual({ kind: "projects" });
     expect(parseRoute("/")).toEqual({ kind: "notFound" });
-    expect(parseRoute(`/projects/${projectId.toUpperCase()}`)).toEqual({ kind: "project", projectId });
-    expect(parseRoute(`/projects/%61${projectId.slice(1)}`)).toEqual({ kind: "project", projectId });
+    expect(parseRoute(`/projects/${projectId.toUpperCase()}`)).toEqual({ kind: "project", projectId, tab: null });
+    expect(parseRoute(`/projects/%61${projectId.slice(1)}`)).toEqual({ kind: "project", projectId, tab: null });
+  });
+
+  it("parses and builds project section URLs and retains valid login destinations", () => {
+    for (const tab of ["overview", "tasks", "prs", "tags"] as const) {
+      const url = projectSectionUrl(projectId, tab);
+      expect(url).toBe(`/projects/${projectId}?tab=${tab}`);
+      expect(parseRoute(`/projects/${projectId}`, `?other=1&tab=${tab}`)).toEqual({ kind: "project", projectId, tab });
+      expect(isLoginReturnPath(url)).toBe(true);
+      expect(parseLoginReturnPath(`?${new URLSearchParams({ returnPath: url })}`)).toBe(url);
+    }
+    for (const search of ["?tab=", "?tab=invalid", "?tab=tasks&tab=tasks", "?tab=%ZZ"]) {
+      expect(parseRoute(`/projects/${projectId}`, search)).toEqual({ kind: "notFound" });
+      expect(isLoginReturnPath(`/projects/${projectId}${search}`)).toBe(false);
+    }
+    expect(() => projectSectionUrl("bad", "tasks")).toThrow();
   });
 
   it("parses complete attachment identities without normalizing filename case or literal percent escapes", () => {
@@ -123,7 +138,7 @@ describe("navigation", () => {
       expect(window.location.pathname).toBe(`/projects/${projectId}`);
       expect(window.history.length).toBe(previousLength + 1);
       expect(subscriber).toHaveBeenCalledOnce();
-      expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId });
+      expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId, tab: null });
       navigate("/projects");
       expect(window.location.pathname).toBe("/projects");
       expect(subscriber).toHaveBeenCalledTimes(2);
@@ -140,7 +155,7 @@ describe("navigation", () => {
       window.history[direction]();
     });
     await move("back");
-    expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId });
+    expect(parseRoute(window.location.pathname)).toEqual({ kind: "project", projectId, tab: null });
     await move("forward");
     expect(parseRoute(window.location.pathname)).toEqual({ kind: "projects" });
   });

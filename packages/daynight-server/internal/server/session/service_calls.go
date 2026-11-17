@@ -51,7 +51,6 @@ type serviceCalls struct {
 	CurrentWithStartup             func(context.Context, model.Principal, string, string) (map[string]any, error)
 	Disconnect                     func(context.Context, sp.ControllerFence) error
 	DisconnectTerminal             func(context.Context, model.Principal, string, string, string, v2.Envelope, string) error
-	DisconnectTerminalViewer       func(context.Context, model.Principal, string, string, string, string, string, string) error
 	FinalizeTerminal               func(context.Context, model.Principal, string, string, string, string, v2.Message) (v2.Message, error)
 	Grant                          func(context.Context, model.Principal, string, string, string, sp.Grant) (sessioncore.GrantResult, error)
 	Handle                         func(context.Context, sp.ControllerMessage) (map[string]any, error)
@@ -67,13 +66,11 @@ type serviceCalls struct {
 	SourceSeq                      func(context.Context, sp.ControllerFence) (int64, error)
 	StopTest                       func(context.Context, model.Principal, string, sp.TestStop) (sp.Snapshot, error)
 	Submit                         func(context.Context, model.Principal, string, string, string, sp.Command) (sp.Operation, error)
-	SubmitTerminal                 func(context.Context, model.Principal, string, string, string, string, v2.Message) (v2.Message, error)
 	TerminalArchiveContentReserved func(context.Context, model.Principal, string, string, string, io.Closer) (archiveContent, error)
 	TerminalArchiveState           func(context.Context, model.Principal, string, string, string) (map[string]any, error)
 	TerminalArchiveStatus          func(context.Context, model.Principal, string, string, string) (v2.Message, error)
 	TerminalAutomationRecovery     func(context.Context, model.Principal, string, string, string, string) (v2.Message, error)
 	TerminalHistory                func(context.Context, model.Principal, string, string, string, int) (map[string]any, error)
-	TerminalOperation              func(context.Context, model.Principal, string, string, string, string) (v2.Message, error)
 	TerminalReceipt                func(context.Context, model.Principal, string, string, string) (v2.Message, error)
 	TerminalRecordingEvidence      func(context.Context, model.Principal, string, string, string, string, string) (map[string]any, error)
 	TerminalState                  func(context.Context, model.Principal, string, string, string) (map[string]any, error)
@@ -118,7 +115,6 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		CurrentWithStartup:             service.CurrentWithStartup,
 		Disconnect:                     service.Disconnect,
 		DisconnectTerminal:             service.DisconnectTerminal,
-		DisconnectTerminalViewer:       service.DisconnectTerminalViewer,
 		FinalizeTerminal:               service.FinalizeTerminal,
 		Grant:                          service.Grant,
 		Handle:                         service.Handle,
@@ -134,13 +130,11 @@ func callsFromService(service *sessionservice.Service) serviceCalls {
 		SourceSeq:                      service.SourceSeq,
 		StopTest:                       service.StopTest,
 		Submit:                         service.Submit,
-		SubmitTerminal:                 service.SubmitTerminal,
 		TerminalArchiveContentReserved: archiveContentCall(service.TerminalArchiveContentReserved),
 		TerminalArchiveState:           service.TerminalArchiveState,
 		TerminalArchiveStatus:          service.TerminalArchiveStatus,
 		TerminalAutomationRecovery:     service.TerminalAutomationRecovery,
 		TerminalHistory:                service.TerminalHistory,
-		TerminalOperation:              service.TerminalOperation,
 		TerminalReceipt:                service.TerminalReceipt,
 		TerminalRecordingEvidence:      service.TerminalRecordingEvidence,
 		TerminalState:                  service.TerminalState,
