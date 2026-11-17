@@ -18,7 +18,6 @@ import type { WorkerConfigurationExchangeEvent } from "../../../src/commands/wor
 import type { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
 import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
 import { OwnedCommandCleanupError } from "../../../src/commands/worker/owned-command.js";
-import { LegacyBindingUnavailableError } from "../../../src/commands/worker/herdr/agents.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -119,7 +118,7 @@ const fixture = async () => {
   const homeDirectory = await mkdtemp(path.join(base, "w-")); roots.push(homeDirectory);
   const paths = resolveWorkerPaths(homeDirectory);
   await mkdir(paths.stateDirectory, { recursive: true });
-  await writeFile(paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { repositories: [{ remote: remoteUrl, path: path.join(homeDirectory, "repo"), projectId: uuid(1) }], maxConcurrent: 9 } }));
+  await writeFile(paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "web", repositories: [{ remote: remoteUrl, path: path.join(homeDirectory, "repo"), projectId: uuid(1) }], maxConcurrent: 9 } }));
   return { homeDirectory, paths, packageDirectory: path.resolve("package"), version: "9.8.7", workingDirectory: path.join(homeDirectory, "startup"), signal: new AbortController() };
 };
 const start = (f: Awaited<ReturnType<typeof fixture>>) => {
@@ -149,7 +148,7 @@ beforeEach(async () => {
     getTask: (task: object) => task,
   }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  target = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
+  target = { revision: "1", updatedAt: workerTelemetryTime, value: { agentControlMode: "web", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };
   observationRevision = 0n;
   collect = vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] }));
   report = vi.fn(async (_workerId, _body, configuration) => {
@@ -228,7 +227,7 @@ describe("worker runtime configuration reporting", () => {
 
   it("persists a confirmed receipt when its diagnostic notification throws and retains that original error for shutdown", async () => {
     const f = await fixture(), original = new Error("configuration diagnostic formatter failed", { cause: new Error("original diagnostic cause") });
-    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: String(observationRevision), observation: null })));
     let failed = false;
@@ -248,7 +247,7 @@ describe("worker runtime configuration reporting", () => {
 
   it.each(["lower", "same-revision"] as const)("reconciles a restarted %s target and cursor from the authenticated service", async scenario => {
     const f = await fixture();
-    const canonical: WorkerCloudDesired = { ...target, revision: scenario === "lower" ? "5" : "10", value: { ...target.value, projects: [], maxConcurrent: 3, native: { ...target.value.native, model: "canonical-model" }, agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const canonical: WorkerCloudDesired = { ...target, revision: scenario === "lower" ? "5" : "10", value: { ...target.value, projects: [], maxConcurrent: 3, native: { ...target.value.native, model: "canonical-model" }, agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } };
     const cached: WorkerCloudDesired = scenario === "same-revision" ? canonical : { ...canonical, revision: "10", value: { ...canonical.value, maxConcurrent: 8, native: { ...canonical.value.native, model: "cached-model" } } };
     const { createWorkerConfigurationManager } = await vi.importActual<typeof import("../../../src/commands/worker/configuration.js")>("../../../src/commands/worker/configuration.js");
     await mkdir(f.paths.workerDirectory, { recursive: true });
@@ -279,7 +278,7 @@ describe("worker runtime configuration reporting", () => {
 
   it.each([false, true])("reads authority after an older rejected receipt (receipt is late: %s)", async late => {
     const f = await fixture(), readEntered = deferred<void>(), releaseRead = deferred<void>(), secondSent = deferred<void>(), releaseSecond = deferred<void>();
-    const original: WorkerCloudDesired = { ...target, revision: "5", value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    const original: WorkerCloudDesired = { ...target, revision: "5", value: { ...target.value, projects: [], agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } };
     const rolledBack: WorkerCloudDesired = { ...original, revision: "3", value: { ...original.value, maxConcurrent: 3 } };
     target = original; observationRevision = 9n;
     const remote = mocks.remote(); mocks.remote.mockClear();
@@ -320,7 +319,7 @@ describe("worker runtime configuration reporting", () => {
 
   it("discards telemetry collected across a canonical generation change before sending", async () => {
     const f = await fixture(), collecting = deferred<void>(), release = deferred<void>();
-    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } };
     collect.mockImplementationOnce(async () => { collecting.resolve(); await release.promise; return { telemetry: workerTelemetry, issues: [] }; });
     const freshTime = "2026-10-29T00:00:30.000Z";
     collect.mockResolvedValue({ telemetry: { ...workerTelemetry, sampledAt: freshTime }, issues: [] });
@@ -339,7 +338,7 @@ describe("worker runtime configuration reporting", () => {
 
   it("reimports a null target from the current local file and adopts the accepted target", async () => {
     const f = await fixture();
-    target = { ...target, revision: "8", value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    target = { ...target, revision: "8", value: { ...target.value, projects: [], agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
     let canonical: WorkerCloudDesired | null = target;
     remote.configuration.mockImplementation(async () => (receivedResource({ desired: canonical, observationRevision: String(observationRevision), observation: null })));
@@ -373,7 +372,7 @@ describe("worker runtime configuration reporting", () => {
     const f = await fixture();
     const local = { serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4) };
     await writeFile(f.paths.configFile, stringify({ ...local, worker: { repositories: [], maxConcurrent: 9 } }));
-    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    target = { ...target, value: { ...target.value, projects: [], agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } };
     let canonical: WorkerCloudDesired | null = target;
     const remote = mocks.remote(); mocks.remote.mockClear();
     const order: string[] = [];
@@ -432,7 +431,8 @@ describe("worker runtime configuration reporting", () => {
       const mode = supported && headers.get("Daynight-Worker-Control-Mode") === "1";
       // Stable tool support keeps this fixture's renegotiation specific to control mode.
       const tools = headers.get("Daynight-Worker-Tool-Paths") === "1";
-      const desired = { ...target, value: { ...target.value, ...(mode ? { agentControlMode: "web" } : {}), ...(tools ? { toolPaths: { codex: null, copilot: null, herdr: null } } : {}) } };
+      const { agentControlMode: _mode, ...legacyValue } = target.value;
+      const desired = { ...target, value: { ...legacyValue, ...(mode ? { agentControlMode: "web" } : {}), ...(tools ? { toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } : {}) } };
       const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: {
         "Content-Type": "application/json", "Daynight-User-ID": uuid(6),
         ...(headers.has("Daynight-Worker-Configuration") ? { "Daynight-Worker-Configuration": headers.get("Daynight-Worker-Configuration")! } : {}),
@@ -461,7 +461,9 @@ describe("worker runtime configuration reporting", () => {
     });
     mocks.remote.mockReturnValue({ ...real, project: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })), resolveProject: vi.fn(async () => ({ id: uuid(1), repoUrl: remoteUrl })) });
     const running = start(f);
-    await eventually(() => expect(accepted.some(configuration => configuration.observation?.items.some(item => item.key.kind === "native" && item.state === "applied"))).toBe(true));
+    await eventually(() => expect(accepted.length).toBeGreaterThan(0));
+    if (initialSupport) await eventually(() => expect(accepted.some(configuration => configuration.observation?.items.some(item => item.key.kind === "native" && item.state === "applied"))).toBe(true));
+    else expect(accepted.every(configuration => configuration.observation === null)).toBe(true);
     const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
     const acknowledgement = manager.acknowledge, committed = deferred<void>();
     const observeAcknowledgement = vi.spyOn(manager, "acknowledge").mockImplementation(async (...args) => { const outcome = await acknowledgement(...args); committed.resolve(); return outcome; });
@@ -479,11 +481,11 @@ describe("worker runtime configuration reporting", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       await eventually(() => expect(exchanges.slice(before, before + 3)).toEqual(["POST:mode:rejected", "GET:legacy", "POST:legacy:accepted"]));
       expect(accepted.at(-1)).not.toHaveProperty("controlModeBootstrap");
-      expect(accepted.at(-1)!.observation?.items.some(item => item.key.kind === "agentControlMode")).toBe(false);
+      expect(accepted.at(-1)!.observation).toBeNull();
     } else {
       await eventually(() => { expect(upgradeBoundary).toBeDefined(); expect(exchanges.slice(upgradeBoundary, upgradeBoundary! + 2)).toEqual(["GET:mode", "POST:mode:accepted"]); });
       await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")).toBe(true));
-      expect(accepted.at(-1)!.controlModeBootstrap).toBe("herdr");
+      expect(accepted.at(-1)!.controlModeBootstrap).toBe("web");
     }
     f.signal.abort(); await running;
   });
@@ -495,7 +497,7 @@ describe("worker runtime configuration reporting", () => {
     const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
     const getBody = JSON.stringify({ desired: target, observationRevision: "0", observation: null });
     let posts = 0, getOperation: Operation | undefined, postOperation: Operation | undefined;
-    const response = (body: string, version?: string) => new Response(body, { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version }) } });
+    const response = (body: string, version?: string) => new Response(body, { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version, "Daynight-Worker-Control-Mode": "1" }) } });
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
       const pathname = new URL(String(url)).pathname;
       if (pathname === "/api/v1/me") return response(JSON.stringify({ id: uuid(6), email: null, emailVerified: null, name: null, avatarUrl: null, personalTeam: { id: uuid(7), kind: "personal", name: null } }));
@@ -540,7 +542,7 @@ describe("worker runtime configuration reporting", () => {
     target = { ...target, value: { ...target.value, projects: [] } };
     const { createWorkerRemote } = await vi.importActual<typeof import("../../../src/commands/worker/remote.js")>("../../../src/commands/worker/remote.js");
     const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
-    const response = (body: unknown, version?: string) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version }) } });
+    const response = (body: unknown, version?: string) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version, "Daynight-Worker-Control-Mode": "1" }) } });
     let posts = 0, reads = 0, requestSignal: AbortSignal | undefined, getOperation: Operation | undefined;
     const requestSignals: AbortSignal[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
@@ -587,7 +589,7 @@ describe("worker runtime configuration reporting", () => {
     target = { ...target, value: { ...target.value, projects: [] } };
     const { createWorkerRemote } = await vi.importActual<typeof import("../../../src/commands/worker/remote.js")>("../../../src/commands/worker/remote.js");
     const real = createWorkerRemote({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890" });
-    const response = (body: unknown, version?: string) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version }) } });
+    const response = (body: unknown, version?: string) => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json", "Daynight-User-ID": uuid(6), ...(version === undefined ? {} : { "Daynight-Worker-Configuration": version, "Daynight-Worker-Control-Mode": "1" }) } });
     const releaseRead = deferred<void>();
     let posts = 0, reads = 0, readStarted = false, reportSignal: AbortSignal | undefined, getOperation: Operation | undefined, postOperation: Operation | undefined;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
@@ -676,10 +678,10 @@ describe("worker runtime configuration reporting", () => {
     restart.signal.abort(); await restarted;
   });
 
-  it("normalizes new execution settings and source reports with the applied cloud mode", async () => {
+  it("retains Web settings and refuses an explicit Herdr target", async () => {
     const f = await fixture();
-    await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "herdr", agentReasoningEffort: "high" } }));
-    target = { ...target, value: { ...target.value, agentControlMode: "web", native: { agent: "codex", model: "cloud-model", args: ["--effort", "medium"] }, projects: [] } };
+    await writeFile(f.paths.configFile, stringify({ serverUrl: "https://daynight.example", serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { agentControlMode: "web", agentReasoningEffort: "high" } }));
+    target = { ...target, value: { ...target.value, native: { agent: "codex", model: "cloud-model", args: ["--effort", "medium"] }, projects: [] } };
     const running = start(f);
     await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")).toBe(true));
     await vi.advanceTimersByTimeAsync(30_000);
@@ -687,26 +689,12 @@ describe("worker runtime configuration reporting", () => {
     const web = update.mock.calls.find(([configuration]) => configuration.globalConfiguration?.agentControlMode === "web")![0];
     expect(web.globalConfiguration).toMatchObject({ args: ["--effort", "high"] });
     target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "herdr", native: { ...target.value.native, args: [] } } };
-    await vi.advanceTimersByTimeAsync(30_000);
-    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")).toBe(true));
-    const herdr = update.mock.calls.find(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")![0];
-    expect(herdr.globalConfiguration).toMatchObject({ args: ["-c", "model_reasoning_effort=\"high\""] });
-    expect(report.mock.calls.at(-1)![2].controlModeBootstrap).toBe("herdr");
-    f.signal.abort(); await running;
-  });
-
-  it("keeps the applied Herdr configuration when its native arguments cannot run in Web mode", async () => {
-    const f = await fixture();
-    target = { ...target, value: { ...target.value, agentControlMode: "herdr", native: { agent: "codex", model: null, args: ["--search"] }, projects: [] } };
-    const running = start(f);
-    await eventually(() => expect(update.mock.calls.some(([configuration]) => configuration.globalConfiguration?.agentControlMode === "herdr")).toBe(true));
-    target = { ...target, revision: "2", value: { ...target.value, agentControlMode: "web" } };
-    await vi.advanceTimersByTimeAsync(30_000);
-    await eventually(() => expect(configurationTransitions().some(item => item.key.kind === "agentControlMode" && item.state === "error")).toBe(true));
-    await vi.advanceTimersByTimeAsync(30_000);
-    await eventually(() => expect(report.mock.calls.some(([, , configuration]) => configuration.observation?.items.some(item => item.key.kind === "agentControlMode" && item.state === "error" && item.appliedValue === "herdr"))).toBe(true));
-    expect(update.mock.calls.every(([configuration]) => configuration.globalConfiguration === null || configuration.globalConfiguration.agentControlMode === "herdr")).toBe(true);
-    expect(update.mock.calls.at(-1)![0].globalConfiguration.args).toEqual(["--search"]);
+    const manager = mocks.createdConfiguration.mock.calls[0]![0] as WorkerConfigurationManager;
+    await manager.receive(receivedDesired(target), "0");
+    expect(manager.current().desired).toEqual(target);
+    expect(manager.current().effective.native).toBeNull();
+    expect(manager.report().observation).toBeNull();
+    expect(update.mock.calls.every(([configuration]) => configuration.globalConfiguration === null || configuration.globalConfiguration.agentControlMode === "web")).toBe(true);
     f.signal.abort(); await running;
   });
 
@@ -1189,7 +1177,7 @@ describe("worker runtime configuration reporting", () => {
 
   it.each([true, false])("retains the real instance lock through a confirmed report's late checkpoint writer past drain (project native valid: %s)", async projectNativeValid => {
     const f = await fixture(), writing = deferred<void>(), release = deferred<void>(), firstReceipt = deferred<void>(), nextRequest = deferred<WorkerCloudReport>(), releaseReceipt = deferred<void>();
-    target = { ...target, value: { ...target.value, agentControlMode: "herdr", toolPaths: { codex: null, copilot: null, herdr: null } } };
+    target = { ...target, value: { ...target.value, agentControlMode: "web", toolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: null } } };
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: String(observationRevision), observation: null })));
     if (!projectNativeValid) target = { ...target, value: { ...target.value, agentControlMode: "web", projects: [{ projectId: uuid(1), nativeOverrides: { args: ["--search"] } }] } };
@@ -1733,88 +1721,6 @@ it("runs the next round on a stop wake while historical and current cleanup rema
   cleanup.resolve();
   await running;
 });
-
-it("admits another task through the real coordinator after a stop wake with both cleanups pending", async () => {
-  const f = await fixture(), timers = await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
-  const { createWorkerCoordinator } = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js");
-  const stopEntered = deferred<void>(), stopRelease = deferred<void>(), archiveEntered = deferred<void>(), removeEntered = deferred<void>(), removeRelease = deferred<void>(), promptsReceived = deferred<void>();
-  const owner = { projectId: uuid(1), taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22) };
-  const repo = path.join(f.homeDirectory, "repo"), binding = { repositoryPath: repo, commonDirectory: path.join(repo, ".git"), worktreePath: path.join(repo, ".worktrees", "daynight", owner.worktreeId), branch: `daynight/${owner.taskId}` };
-  const oldBinding = { session: "w", workspaceId: "old-workspace", paneId: "old-pane", terminalId: "old-terminal" };
-  await mkdir(repo, { recursive: true }); await mkdir(f.paths.workerDirectory, { recursive: true });
-  const seed = openWorkerStore(f.paths.databaseFile);
-  seed.registerProject({ projectId: owner.projectId, repoUrl: remoteUrl, localPath: repo });
-  seed.close();
-  const resources = new Map<string, any>();
-  const worktrees = new Map<string, any>();
-  const grants = new Map<string, any>(); const trace: string[] = []; let stopped = false, originalEnded = false;
-  const task = (id: string) => ({ type: "task", parentId: null, id, projectId: owner.projectId, title: id, description: "task", tags: [], status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: null, startedAt: null, completedAt: null, cancelledAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: workerTelemetryTime, updatedAt: workerTelemetryTime, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
-  const candidates = [task(owner.taskId), task(uuid(30))];
-  const started = vi.fn(async (context: any, nativeBinding: any) => ({ ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null }));
-  const tasks = {
-    pendingStops: () => [], listResources: async () => [...resources.values()],
-    observeExecutionStop: async (target: any) => ({ ...(stopped && target.claimId === owner.claimId ? { kind: "stopped", execution: { owner, backend: "herdr-legacy", runKey: "original" } } : { kind: "unknown", target, error: target.claimId === owner.claimId ? new Error("not stopped") : new LegacyBindingUnavailableError("No original legacy binding") }), observedAt: Date.now() }),
-    submitPrompt: async (context: any, nativeBinding: any) => ({ submission: "submitted", observation: { ...resources.get(context.claimId).panes[0], binding: nativeBinding, name: null } }),
-    stopAndClose: async (context: any) => { if (context.claimId === owner.claimId) { stopEntered.resolve(); await stopRelease.promise; stopped = true; } resources.delete(context.claimId); },
-    prepareWorkspace: async (context: any) => { trace.push("workspace"); const nativeBinding = { session: "w", workspaceId: "new-workspace", paneId: "new-pane", terminalId: "new-terminal" }; resources.set(context.claimId, { owner: context, workspaceId: nativeBinding.workspaceId, panes: [{ binding: nativeBinding, cwd: context.cwd, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(33) }, stateChangeSeq: 1, completionSeq: 0 }] }); return nativeBinding; },
-    start: started, syncWorkspaceName: async () => {},
-  };
-  const herdr = { tasks, ensureInstance: async () => {}, stopInstance: async () => ({ stopped: true }), attachment: {} };
-  mocks.herdr.mockReturnValue(herdr);
-  mocks.durable.mockReturnValue(herdr);
-  mocks.git.mockReturnValue({ prepareRepository: prepare, dispose, scanWorktrees: scanFromList, listWorktrees: async () => [...worktrees.values()], listWorktreeManifests: async () => [...worktrees.values()], resolveWorktreeBinding: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null, retireWorktreeManifest: async () => {}, removeUnpublishedReservation: async () => {}, findWorktree: async (_project: any, target: any) => worktrees.get(target.claimId)?.binding ?? null,
-    prepareWorktree: async (_project: any, target: any) => { trace.push("worktree"); const next = { ...binding, worktreePath: path.join(repo, ".worktrees", "daynight", target.worktreeId), branch: `daynight/${target.taskId}` }; await mkdir(next.worktreePath, { recursive: true }); worktrees.set(target.claimId, { owner: target, binding: next }); return next; },
-    removeWorktree: async (_project: any, target: any) => { if (target.claimId === owner.claimId) { removeEntered.resolve(); await removeRelease.promise; } worktrees.delete(target.claimId); return { kind: "absent" as const, effectErrors: [] }; },
-  });
-  const completed = { projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5), serverOrigin: "https://daynight.example", resources: { worktree: null }, webExecution: { executionId: uuid(11), launchId: uuid(11), sessionId: uuid(11), executionGeneration: "1", launchSubmission: "submitted" } };
-  mocks.webOpen.mockReturnValue({ close: mocks.webClose, listUnfinishedTasks: () => [], getTask: (identity: { claimId: string }) => identity.claimId === completed.claimId ? completed : null, listCompletedTasks: mocks.completed });
-  mocks.completed.mockReturnValue([completed]);
-  mocks.ticket.mockResolvedValue({ serverOrigin: "https://daynight.example", executionId: uuid(11), sessionId: uuid(11), claimId: uuid(3), executionGeneration: "1" });
-  mocks.archive.mockImplementation(async ({ signal }: { signal: AbortSignal }) => { archiveEntered.resolve(); await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })); signal.throwIfAborted(); });
-  const polls: { signal: AbortSignal; release: () => void; settled: boolean }[] = [];
-  mocks.delay.mockImplementation(async (ms: number, value: unknown, options?: { signal?: AbortSignal }) => {
-    if (ms !== 60_000) return timers.setTimeout(ms === 1_000 ? 1 : ms, value, options);
-    const signal = options!.signal!; let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const poll = { signal, release, settled: false }; polls.push(poll);
-    try { await Promise.race([gate, new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))]); signal.throwIfAborted(); }
-    finally { poll.settled = true; }
-  });
-  const remote = mocks.remote();
-  Object.assign(remote, { ownInventory: async (projects: readonly { projectId: string }[]) => ({ tasks: [...grants.values()], coveredProjectIds: projects.map(project => project.projectId), unavailableProjectIds: [] }),
-    candidates: async function* () { if (originalEnded) for (const candidate of candidates) if (![...grants.values()].some(value => value.id === candidate.id)) yield candidate; },
-    claim: async (candidate: any, descriptor: any) => { const granted = { ...candidate, status: "in_progress", ready: false, version: 2n, properties: { worker: { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(6), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: workerTelemetryTime } } }; grants.set(descriptor.claimId, granted); return granted; },
-    readTask: async (_project: string, id: string) => [...grants.values()].find(value => value.id === id),
-    update: async (current: any, patch: any) => { const next = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker, ...patch } } }; grants.set(next.properties.worker.claimId, next); return next; },
-    reportConfiguration: async (...args: any[]) => { const receipt = await report(args[0], args[1], args[2], args[3]); const selectors = args[4] ?? []; if (selectors.some(({ key }: any) => key.scope === "project")) promptsReceived.resolve(); return { ...receipt, prompts: { ok: true, results: selectors.map(({ key }: any) => ({ key, status: "value", value: { scope: key.scope, scopeId: key.scope === "user" ? uuid(6) : key.scope === "worker" ? uuid(4) : key.projectId, revision: "0", text: "", updatedAt: null } })) } }; },
-  });
-  let actualOptions!: WorkerCoordinatorOptions;
-  mocks.coordinator.mockImplementation(value => { actualOptions = value; return createWorkerCoordinator(value); });
-  const bounded = async <T>(stage: string, value: Promise<T>): Promise<T> => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try { return await Promise.race([value, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${stage}.`)), 8_000); })]); }
-    finally { if (timer !== undefined) clearTimeout(timer); }
-  };
-  const running = start(f);
-  try {
-    await bounded("historical archive", archiveEntered.promise);
-    await eventually(() => expect(polls.some(poll => !poll.settled && !poll.signal.aborted)).toBe(true));
-    const initialPoll = polls.findLast(poll => !poll.settled && !poll.signal.aborted)!;
-    actualOptions.store.activateTask(actualOptions.store.registerPending({ ...owner, agent: "codex" }));
-    resources.set(owner.claimId, { owner, workspaceId: oldBinding.workspaceId, panes: [{ binding: oldBinding, cwd: binding.worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(23) }, stateChangeSeq: 1, completionSeq: 1 }] });
-    worktrees.set(owner.claimId, { owner, binding }); originalEnded = true;
-    initialPoll.release();
-    await Promise.all([bounded("original stop", stopEntered.promise), bounded("prompt receipt", promptsReceived.promise)]);
-    await eventually(() => expect(actualOptions.promptSource?.current(owner.projectId)).not.toBeNull());
-    await eventually(() => expect(polls.some(poll => poll !== initialPoll && !poll.settled && !poll.signal.aborted)).toBe(true));
-    stopRelease.resolve();
-    await bounded("original worktree removal", removeEntered.promise);
-    await eventually(() => { if (started.mock.calls.length !== 1) throw new Error(JSON.stringify({ trace, tasks: actualOptions.store.listTasks(), prompt: actualOptions.promptSource?.current(owner.projectId), monitoring: actualOptions.monitoring?.capture(), grants: [...grants.values()].map(value => value.id) })); });
-    expect([...grants.values()].map(value => value.id)).toEqual([uuid(30)]);
-    expect(worktrees.has(owner.claimId)).toBe(true);
-    expect(mocks.archive).toHaveBeenCalledOnce();
-  } finally { stopRelease.resolve(); removeRelease.resolve(); f.signal.abort(); await running; }
-}, 20_000);
 
 it("retains Web stop observation causes and claim identity through runtime diagnostics", async () => {
   const f = await fixture();

@@ -35,7 +35,7 @@ import { createWorkerConfigurationManager, resolveWorkerCloudProjectNative } fro
 import type { WorkerConfigurationManager, WorkerConfigurationSnapshot } from "./configuration.js";
 import { readWorkerLocalConfiguration, resolveCloudNative, workerLocalExplicitProjectIds, workerLocalRepositoryForId, workerLocalRepositoryForProject, workerLocalUnboundRepository, workerLocalUnboundRepositoryIndexes } from "./configuration-source.js";
 import type { WorkerProject } from "./types.js";
-import type { AgentControlMode, TaskPlatform, WorkerMachine } from "../../api/types.js";
+import type { TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { validateWorkerConfigurationSource, validateWorkerRepositoryLocations, workerConfigurationDefaults } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
 import { createMonitoringObserver } from "./monitoring/observer.js";
@@ -183,8 +183,8 @@ const prepareWorkerAgentEnvironment = async (paths: WorkerPaths, emit: (event: W
   return { agentEnvironment };
 };
 
-const effectiveExecutionConfiguration = (native: WorkerCloudNative, mode: AgentControlMode, recoveryLimit: number, local: WorkerLocalNativeOverrides) => ({
-  ...resolveCloudNative(normalizeWorkerNative(native, mode, local).native, mode, recoveryLimit),
+const effectiveExecutionConfiguration = (native: WorkerCloudNative, recoveryLimit: number, local: WorkerLocalNativeOverrides) => ({
+  ...resolveCloudNative(normalizeWorkerNative(native, "web", local).native, "web", recoveryLimit),
   ...(local.agentModel !== undefined || local.agentReasoningEffort !== undefined ? { validateNativeSelection: true as const } : {}),
 });
 
@@ -206,12 +206,12 @@ const nativeConfigurationApplication = (options: {
   return {
     current: () => environment,
     prepareEnvironment: getEnvironment,
-    apply: async (native: WorkerCloudNative, signal: AbortSignal, mode: AgentControlMode): Promise<void> => {
-      normalizeWorkerNative(native, mode, options.overrides);
+    apply: async (native: WorkerCloudNative, signal: AbortSignal): Promise<void> => {
+      normalizeWorkerNative(native, "web", options.overrides);
       const nativeEnvironment = await getEnvironment();
       const tools = options.tools?.();
       if (tools !== undefined) {
-        await tools.prepareNative(native, mode, signal);
+        await tools.prepareNative(native, signal);
         if (native.agent === "codex" || native.agent === "copilot") return;
       }
       const operation = createOperation({ signal, limits: { totalMs: 15_000, requestMs: 10_000 } });
@@ -481,7 +481,7 @@ export const runWorker = async (options: {
     const toolRuntime = tools;
     let retainedView: WorkerCoordinatorConfiguration | undefined;
     const view = (snapshot: WorkerConfigurationSnapshot): WorkerCoordinatorConfiguration | null => {
-      if (snapshot.desired === null || !snapshot.synchronized) {
+      if (snapshot.selectedProjects === null) {
         if (retainedView !== undefined) return retainedView;
         const projects = getStore().listProjects().map(project => project.projectId);
         return projects.length === 0 ? null : { repositories: [], targetProjectIds: projects, readyProjectIds: projects, globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false,
@@ -492,9 +492,9 @@ export const runWorker = async (options: {
       const repositories: WorkerRepositoryAssignment[] = [];
       for (const project of effective.projects) {
         const binding = prepared.get(project.projectId);
-        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, effective.agentControlMode!, effective.recoveryLimit, local) });
+        if (project.ready && project.native !== null && binding !== undefined) repositories.push({ project: binding, configuration: effectiveExecutionConfiguration(project.native, effective.recoveryLimit, local) });
       }
-      retainedView = { repositories, targetProjectIds: snapshot.desired.value.projects.map(project => project.projectId), readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.agentControlMode!, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
+      retainedView = { repositories, targetProjectIds: snapshot.selectedProjects.map(project => project.projectId), readyProjectIds: effective.projects.filter(project => project.ready && prepared.has(project.projectId)).map(project => project.projectId), globalConfiguration: effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.recoveryLimit, local), maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
       return retainedView;
     };
     const transitions = new Map<string, string>();
@@ -507,7 +507,7 @@ export const runWorker = async (options: {
     let scheduleInitialRemovals: (() => void) | undefined;
     let configurationStorageFailure: string | undefined;
     configuration = await createWorkerConfigurationManager({
-      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
+      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localToolPaths: local.toolPaths,
       ...toolRuntime.configurationOptions, applyNative: nativeApplication.apply,
       onApplication: configurationDiagnostics.application,
       onStorageState: event => {
@@ -556,18 +556,18 @@ export const runWorker = async (options: {
         toolRuntime.setTargets(snapshot.toolTargets);
         const targetSignature = JSON.stringify(snapshot.desired?.value ?? null);
         if (monitoringTargetSignature !== targetSignature) { monitoringTargetSignature = targetSignature; observeMonitoring(m => m.invalidateAdmission()); }
-        const incomplete = snapshot.desired === null
+        const incomplete = snapshot.selectedProjects === null
           ? true
-          : !snapshot.synchronized || snapshot.effective.native === null || snapshot.desired.value.projects.some(project => {
+          : snapshot.effective.native === null || snapshot.selectedProjects.some(project => {
             const effective = snapshot.effective.projects.find(value => value.projectId === project.projectId);
             return effective === undefined || !effective.ready || effective.native === null || !prepared.has(project.projectId);
           });
         observeMonitoring(m => m.setProjectPreparationIncomplete(incomplete));
-        if (snapshot.desired !== null) observeMonitoring(m => m.setProjectPreparationUnknown(false));
-        const selectedProjects = new Set(snapshot.desired?.value.projects.map(project => project.projectId) ?? []);
-        for (const [key, failure] of nativeFailures) {
+        if (snapshot.selectedProjects !== null) observeMonitoring(m => m.setProjectPreparationUnknown(false));
+        const selectedProjects = snapshot.selectedProjects === null ? null : new Set(snapshot.selectedProjects.map(project => project.projectId));
+        if (selectedProjects !== null && snapshot.desired !== null) for (const [key, failure] of nativeFailures) {
           const projectId = key.startsWith("project/") ? key.slice("project/".length) : null;
-          const project = projectId === null ? undefined : snapshot.desired?.value.projects.find(value => value.projectId === projectId);
+          const project = projectId === null ? undefined : snapshot.selectedProjects?.find(value => value.projectId === projectId);
           const target = snapshot.desired === null ? null : projectId === null ? snapshot.desired.value.native : project === undefined ? null : resolveWorkerCloudProjectNative(snapshot.desired.value.native, project);
           if (target === null || !isDeepStrictEqual(target, failure.target)) {
             const scope = projectId === null ? { kind: "worker" as const } : { kind: "project" as const, projectId };
@@ -575,7 +575,7 @@ export const runWorker = async (options: {
             nativeFailures.delete(key);
           }
         }
-        for (const [projectId, failure] of preparationFailures) {
+        if (selectedProjects !== null) for (const [projectId, failure] of preparationFailures) {
           if (!selectedProjects.has(projectId)) {
             observeMonitoring(m => { m.discardFailure(failure.operationId); m.setProjectPreparationReason(projectId, null); });
             preparationFailures.delete(projectId);
@@ -593,15 +593,15 @@ export const runWorker = async (options: {
             observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt: null }); });
           }
         }
-        for (const project of snapshot.desired?.value.projects ?? []) {
+        if (snapshot.selectedProjects !== null) for (const project of snapshot.selectedProjects) {
           if (getStore().getProject({ projectId: project.projectId }) === null && !confirmedNoLocalMapping.has(project.projectId)) unobservedLocalMappings.add(project.projectId);
         }
         const signature = JSON.stringify(snapshot.effective);
         if (signature !== effectiveSignature) { effectiveSignature = signature; reporter?.publishInventory(null); reconcileWake.request(); }
         const current = view(snapshot);
         if (current !== null) coordinator?.updateConfiguration(current);
-        else if (snapshot.desired !== null) {
-          retainedView = { repositories: [], targetProjectIds: snapshot.desired.value.projects.map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false };
+        else if (snapshot.selectedProjects !== null) {
+          retainedView = { repositories: [], targetProjectIds: snapshot.selectedProjects.map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: snapshot.effective.maxConcurrent ?? 1, preferPlatformSpecificTasks: false };
           coordinator?.updateConfiguration(retainedView);
         }
         scheduleInitialRemovals?.();
@@ -613,7 +613,9 @@ export const runWorker = async (options: {
         }
       },
       onError: error => { failures.push(error); cancellation.controller.abort(error); },
-      onInvalidDesired: revision => emit({ kind: "warning", message: `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
+      onInvalidDesired: (revision, reason) => emit({ kind: "warning", message: reason === "unsupported_mode"
+        ? `Worker configuration revision ${revision} specifies the unsupported Herdr control mode; change it to Web before applying the configuration.`
+        : `Worker configuration revision ${revision} exceeds current limits; waiting for a valid target while retaining application results.` }),
     });
     if (resource !== undefined) {
       const previous = configuration.current();
@@ -625,7 +627,7 @@ export const runWorker = async (options: {
         received: { desiredRevision: resource.desired?.known.revision ?? null, observationRevision: resource.observationRevision } });
     }
     const manager = configuration;
-    const proofSignature = () => JSON.stringify(([ ["codex", "web"], ["copilot", "web"], ["codex", "herdr"], ["copilot", "herdr"], ["herdr", "herdr"] ] as const).map(([tool, context]) => toolRuntime.manager.currentSelection(tool, context)?.selectionKey));
+    const proofSignature = () => JSON.stringify(([ ["codex", "web"], ["copilot", "web"] ] as const).map(([tool, context]) => toolRuntime.manager.currentSelection(tool, context)?.selectionKey));
     let observedToolProof = proofSignature();
     const refreshToolProofs = (): Promise<void> | undefined => {
       const current = proofSignature(); if (current === observedToolProof) return;
@@ -661,7 +663,8 @@ export const runWorker = async (options: {
       for (const projectId of unobservedLocalMappings) {
         if (localMappingJobs.has(projectId) || (localMappingRetryAt.get(projectId) ?? 0) > Date.now()) continue;
         const unboundIndex = unboundMappings.get(projectId);
-        if (unboundIndex === undefined && !locallyKnownIds.has(projectId) && manager.current().desired?.value.projects.some(project => project.projectId === projectId)) continue;
+        const selectedProjects = manager.current().selectedProjects;
+        if (unboundIndex === undefined && !locallyKnownIds.has(projectId) && (selectedProjects === null || selectedProjects.some(project => project.projectId === projectId))) continue;
         const job = (async () => {
           if (unboundIndex !== undefined) {
             const mapping = await workerLocalUnboundRepository(local, paths, unboundIndex);
@@ -716,7 +719,7 @@ export const runWorker = async (options: {
     const initialRemovalsRegistered = new Set<string>();
     const ensureInitialRemovals = (): Promise<void> => {
       const current = manager.current();
-      if (!current.synchronized || current.desired === null) {
+      if (current.selectedProjects === null) {
         initialRemovalsEpoch = {};
         initialRemovalsComplete = false;
         initialRemovalsRegistered.clear();
@@ -737,7 +740,7 @@ export const runWorker = async (options: {
         }
         const latest = manager.current();
         if (epoch !== initialRemovalsEpoch) return;
-        if (!latest.synchronized || latest.desired === null) { initialRemovalsRegistered.clear(); return; }
+        if (latest.selectedProjects === null) { initialRemovalsRegistered.clear(); return; }
         initialRemovalsComplete = true;
       })();
       initialRemovalsJob = job;
@@ -750,7 +753,7 @@ export const runWorker = async (options: {
       return effective.native?.agent === "copilot" || effective.projects.some(project => project.native?.agent === "copilot") || (bots?.requiresCopilot() ?? false);
     };
     bots = createWorkerBotHost({ ...options, selectToolLaunch: toolRuntime.selectToolLaunch, toolObservationFor: toolRuntime.toolObservationFor, toolRuntimeRoot: toolRuntime.toolRuntimeRoot, toolInspector: toolRuntime.hostInspector, toolLaunchForHost: agent => toolRuntime.manager.currentSelection(agent, "web"), copilotRequired, paths, owner: { serverOrigin: serverUrl, ownerUserId: userId, workerId }, serverToken, emit,
-      canAdmitNewExecution: () => { const current = manager.current(); return manager.isReady() && current.synchronized && current.desired !== null && current.effective.native !== null && current.effective.recoveryLimit !== null; },
+      canAdmitNewExecution: () => { const current = manager.current(); return manager.isReady() && current.selectedProjects !== null && current.effective.native !== null && current.effective.recoveryLimit !== null; },
       configuration: () => {
         const effective = manager.current().effective;
         // Assistant capability collection owns per-Provider Web argument failures.
@@ -771,11 +774,11 @@ export const runWorker = async (options: {
       read: operation => readCloudConfiguration(operation.signal, operation),
       send: (report, captured, operation, selectors) => remote.reportConfiguration(workerId, report, captured, operation, selectors),
     });
-    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots, toolPaths: { context: () => manager.current().effective.agentControlMode ?? local.agentControlMode, snapshot: () => toolRuntime.manager.snapshot() } });
+    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform, workerId, serverOrigin: serverUrl, assistantHost: bots, toolPaths: { context: () => "web", snapshot: () => toolRuntime.manager.snapshot() } });
     reporter = createWorkerReporter({ signal, collect: async operation => {
       const sample = await telemetry.collect(operation);
       const snapshot = manager.current();
-      const runtimeConfiguration = workerRuntimeConfigurationReport(snapshot.effective, snapshot.effective.agentControlMode ?? local.agentControlMode, local, "cloud");
+      const runtimeConfiguration = workerRuntimeConfigurationReport(snapshot.effective, "web", local, "cloud");
       return { ...sample, telemetry: { ...sample.telemetry, ...(runtimeConfiguration === undefined ? {} : { runtimeConfiguration }) } };
     }, send: (report, operation) => remote.report(workerId, report, operation), emit, configuration: exchange });
     scheduleInitialRemovals = () => { if (!signal.aborted) void ensureInitialRemovals().catch(error => { if (!signal.aborted) emit({ kind: "reconciliation-error", message: "Retained project removal reconciliation failed; configuration reporting remains active.", error }); }); };
@@ -797,7 +800,7 @@ export const runWorker = async (options: {
         }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
         const environment = await nativeApplication.prepareEnvironment();
         signal.throwIfAborted();
-        const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().desired?.value.projects.map(project => project.projectId) ?? [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
+        const current = view(manager.current()) ?? { repositories: [], targetProjectIds: manager.current().selectedProjects?.map(project => project.projectId) ?? getStore().listProjects().map(project => project.projectId), readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false };
         coordinator = createWorkerCoordinator({ freezeConfiguration: toolRuntime.freezeConfiguration,
           reserveClaimTools: async (reservation, signal) => {
             if (platform === "macos") { currentStore.reserveClaimTools(reservation); return; }
@@ -805,7 +808,7 @@ export const runWorker = async (options: {
             try { await sharedHerdr(environment).reserveSelection(reservation.nativeConfiguration.herdrLaunch!, () => { currentStore.reserveClaimTools(reservation); }, operation); }
             finally { operation.dispose(); }
           },
-          store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...current,
+          store: currentStore, git: getGit(), herdr: lazyHerdr(environment), ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...current,
           archiveSessions: () => manager.current().effective.archiveSessions,
           prepareProject: async (projectId, preparationSignal) => {
             const project = currentStore.getProject({ projectId });
@@ -819,13 +822,12 @@ export const runWorker = async (options: {
           hasHerdrJournal: await hasHerdrJournal(paths, platform),
           availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },
           onInventory: inventory => {
-            const desired = manager.current().desired;
-            const complete = unobservedLocalMappings.size === 0 && desired !== null && desired.value.projects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null);
+            const selectedProjects = manager.current().selectedProjects;
+            const complete = unobservedLocalMappings.size === 0 && selectedProjects !== null && selectedProjects.every(project => currentStore.getProject({ projectId: project.projectId }) !== null);
             reporter!.publishInventory(complete ? inventory : null);
           },
           configurationComplete: () => {
-            const desired = manager.current().desired;
-            return manager.isReady() && manager.current().synchronized && desired !== null && unobservedLocalMappings.size === 0;
+            return manager.isReady() && manager.current().selectedProjects !== null && unobservedLocalMappings.size === 0;
           },
           onClaim: reporter!.recordClaim,
           requestReconcile: reconcileWake.request,
@@ -855,7 +857,8 @@ export const runWorker = async (options: {
           finally { operation.dispose(); }
           applicationSignal.throwIfAborted();
           prepared.set(projectId, await admitRepository(binding, applicationSignal));
-          if (!manager.current().desired?.value.projects.some(project => project.projectId === projectId)) await manager.ensureProjectRemoval(projectId, applicationSignal);
+          const selectedProjects = manager.current().selectedProjects;
+          if (selectedProjects !== null && !selectedProjects.some(project => project.projectId === projectId)) await manager.ensureProjectRemoval(projectId, applicationSignal);
         } finally { reservations.delete(projectId); }
         const failure = preparationFailures.get(projectId);
         if (failure !== undefined && revision !== undefined && !applicationSignal.aborted) failure.successRevision = revision;
@@ -868,7 +871,7 @@ export const runWorker = async (options: {
           const failure = preparationFailures.get(projectId);
           if (failure !== undefined) observeMonitoring(m => { m.updateFailureRetry(failure.operationId, "none"); m.setProjectPreparationReason(projectId, { observedAt: failure.observedAt, nextAttemptAt: null }); });
         }
-        if (!applicationSignal.aborted && revision !== undefined && item?.targetRevision === revision && current.desired?.value.projects.some(project => project.projectId === projectId)) {
+        if (!applicationSignal.aborted && revision !== undefined && item?.targetRevision === revision && current.selectedProjects?.some(project => project.projectId === projectId)) {
           const observedAt = new Date().toISOString(), operationId = preparationFailures.get(projectId)?.operationId ?? randomUUID();
           preparationFailures.set(projectId, { operationId, observedAt, revision, successRevision: null });
           observeMonitoring(m => {
@@ -903,11 +906,6 @@ export const runWorker = async (options: {
     while (!signal.aborted) {
       const revision = reconcileWake.snapshot();
       void Promise.resolve().then(() => toolRuntime.prepareWebCandidates(signal, copilotRequired())).then(changed => changed && !signal.aborted ? refreshToolProofs() : undefined).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Worker tool selection observation could not be published.", error }); });
-      const configuredMode = manager.current().desired?.value.agentControlMode ?? manager.current().effective.agentControlMode;
-      if (configuredMode === "herdr") void toolRuntime.prepareHerdrCandidate(signal).then(changed => {
-        if (!changed || signal.aborted) return;
-        reconcileWake.request(); return refreshToolProofs();
-      }).catch(error => { if (!signal.aborted) emit({ kind: "warning", message: "Herdr instance admission could not be refreshed.", error }); });
       try {
         const refreshedProofs = refreshToolProofs(); if (refreshedProofs !== undefined) await refreshedProofs;
         observeMonitoring(m => m.setPhase("configuration"));
@@ -1047,7 +1045,7 @@ export const runWorkerControl = async (options: {
       readActiveSelections: () => [...webToolSelections(options.homeDirectory, web), ...(platform === "macos" ? actualHerdr?.lifecycle?.activeToolSelections?.() ?? retainedHerdrToolSelections(store) : selectionHerdr === undefined ? retainedHerdrToolSelections(store) : []), ...selectionHerdr?.activeToolSelections() ?? []] });
     const toolRuntime = tools;
     const initializeConfiguration = (): Promise<WorkerConfigurationManager> => configurationInitialization ??= createWorkerConfigurationManager({
-      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localControlMode: local.agentControlMode, localToolPaths: local.toolPaths,
+      file: paths.configurationFile, identity: { serverOrigin: serverUrl, userId, workerId }, signal, localToolPaths: local.toolPaths,
       ...toolRuntime.configurationOptions, onChange: snapshot => { toolRuntime.setTargets(snapshot.toolTargets); }, applyNative: nativeApplication.apply,
       onApplication: configurationDiagnostics!.application,
       onStorageState: configurationDiagnostics!.storage,
@@ -1101,11 +1099,11 @@ export const runWorkerControl = async (options: {
         await configurationManager.settle(signal);
         const effective = configurationManager.current().effective;
         if (effective.maxConcurrent === null || effective.recoveryLimit === null || effective.preferPlatformSpecificTasks === null) throw new Error("The Worker's cloud runtime parameters are unavailable.");
-        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.agentControlMode!, effective.recoveryLimit, local);
+        const globalConfiguration = effective.native === null ? null : effectiveExecutionConfiguration(effective.native, effective.recoveryLimit, local);
         const repositories = store.listProjects().flatMap(project => {
           const selected = effective.projects.find(value => value.projectId === project.projectId);
           const native = selected === undefined ? effective.native : selected.native;
-          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, effective.agentControlMode!, effective.recoveryLimit!, local) }];
+          return native === null ? [] : [{ project, configuration: effectiveExecutionConfiguration(native, effective.recoveryLimit!, local) }];
         });
         coordinatorConfiguration = { repositories, readyProjectIds: store.listProjects().map(project => project.projectId), globalConfiguration, maxConcurrent: effective.maxConcurrent, recoveryLimit: effective.recoveryLimit, preferPlatformSpecificTasks: effective.preferPlatformSpecificTasks };
       }
@@ -1144,7 +1142,7 @@ export const runWorkerControl = async (options: {
           send: (report, captured, current, selectors) => remote.reportConfiguration(workerId, report, captured, current, selectors),
         });
         configurationExchanges.push(exchange);
-        const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => manager.current().effective.agentControlMode ?? local.agentControlMode, snapshot: () => toolRuntime.manager.snapshot() } });
+        const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.homeDirectory, machine, platform, workerId, serverOrigin: serverUrl, toolPaths: { context: () => "web", snapshot: () => toolRuntime.manager.snapshot() } });
         const outcome = await syncWorkerConfigurationOnce({ operation, configuration: exchange, report: async () => {
           const sample = await telemetry.collect(operation);
           const cleanupFailure = sample.issues.find(issue => hasUnconfirmedOwnedCommandCleanup(issue.error));
@@ -1164,7 +1162,7 @@ export const runWorkerControl = async (options: {
       coordinatorConfiguration = { repositories: [], globalConfiguration: frozen, recoveryLimit: frozen?.recoveryLimit ?? workerConfigurationDefaults.recoveryLimit, maxConcurrent: 1, preferPlatformSpecificTasks: false };
     }
     const coordinator = createWorkerCoordinator({
-      freezeConfiguration: toolRuntime.freezeConfiguration, store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, ...coordinatorConfiguration,
+      freezeConfiguration: toolRuntime.freezeConfiguration, store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, userId, platform, machine, ...coordinatorConfiguration,
       archiveSessions: controlArchiveSessions,
       hasHerdrJournal: await hasHerdrJournal(paths, platform),
       availableDiskBytes: () => { const fs = statfsSync(paths.workerDirectory, { bigint: true }); return fs.bavail * fs.bsize; },

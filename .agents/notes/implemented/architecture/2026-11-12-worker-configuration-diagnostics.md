@@ -68,8 +68,8 @@ The diagnostic owner records the first failure, changed reason or related target
 and matching recovery immediately. Existing calls emit a summary at most every
 five minutes for a continuing cause. Its signature uses the component, actual
 phase, key, fixed reason and relevant target identity. Native targets use the
-captured validation recipe: native tuple, actual execution mode and relevant
-configured tool choices. A mode or choice change under the same canonical
+captured validation recipe: native tuple and relevant Web tool choices. A choice
+change under the same canonical
 revision is still a different target; its success does not recover an old
 recipe's retained failure. Dynamic generation and selection keys are excluded.
 The recipe remains internal comparison data and is never projected into JSONL.
@@ -92,6 +92,9 @@ owns source and capture lifetime, and the
 [storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
 owns checkpoint and sink recovery. These diagnostics add no wire, database,
 checkpoint schema or execution-admission mechanism.
+
+The [Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md)
+defines the current Web-only recipe and historical conversion.
 
 ## Alternatives
 

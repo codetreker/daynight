@@ -3493,53 +3493,201 @@ describe("cloud project removal", () => {
     await f.coordinator.shutdown();
   });
 
-  it("retains capacity while stop is unconfirmed and releases it after direct stop without deleting the original claim or worktree", async () => {
-    const f = await fixture();
-    await f.coordinator.tick();
-    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
-    const row = f.store.listUnfinishedTasks()[0]!;
-    const claim = f.grants.get(row.claimId)!;
-    const second: WorkerProject = { projectId: uuid(11), repoUrl: "https://example.test/other/repo.git", localPath: path.join(f.root, "other") };
-    f.store.registerProject(second);
-    f.candidates.push(task(second.projectId, uuid(102)));
+  it("joins proven Web stops without touching unrelated legacy execution and fences retries while stopping", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const legacy = f.store.activateTask(f.store.registerPending({ projectId: f.project.projectId, taskId: uuid(910), claimId: uuid(911), agent: "codex" }));
+    const candidate = task(f.project.projectId, uuid(920));
+    const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(921), worktreeId: uuid(922) };
+    f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    const record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: { ...configuration, args: [], agentControlMode: "web" } }, 1);
     let release!: () => void;
-    const pending = new Promise<void>(resolve => { release = resolve; });
-    f.tasks.stopAndClose.mockImplementationOnce(async owner => { await pending; f.resources.delete(owner.claimId); });
-    f.coordinator.updateConfiguration({ repositories: [{ project: second, configuration }], readyProjectIds: [second.projectId], targetProjectIds: [second.projectId], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
-    const stopping = f.coordinator.stopProject(f.project.projectId);
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const cleanup = vi.fn(async (value: WebTask) => { await held; return { task: value, complete: true }; });
+    const advance = vi.fn(async (value: WebTask) => value);
+    const runner = createWorkerCoordinator({ ...f.options, webStore, verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance, cleanup } });
+    const stopping = runner.stopProject(f.project.projectId);
     try {
-      await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledOnce());
-      await f.coordinator.tick();
-      expect(f.remote.claim).toHaveBeenCalledOnce();
-      expect(f.store.getTask(row)).toEqual(row);
-      expect(f.worktrees.has(row.claimId)).toBe(true);
+      await eventually(() => expect(cleanup).toHaveBeenCalledOnce());
+      const retry = runner.advanceRetry(owner);
+      void retry.catch(() => {});
+      await eventually(() => expect(f.remote.readTask).toHaveBeenCalled());
+      expect(advance).not.toHaveBeenCalled();
+      expect(cleanup.mock.calls[0]![0]).toEqual(record);
+      expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+      expect(f.tasks.listResources).not.toHaveBeenCalled();
+      expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+      expect(f.store.getTask(legacy)).toEqual(legacy);
       release(); await stopping;
-      await f.coordinator.tick();
-      await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
-      expect(f.grants.get(row.claimId)).toEqual(claim);
-      expect(f.store.getTask(row)).toEqual(row);
-      expect(f.worktrees.has(row.claimId)).toBe(true);
-      expect(f.git.removeWorktree).not.toHaveBeenCalled();
-      await f.coordinator.tick();
-      expect(f.tasks.start).toHaveBeenCalledTimes(2);
-    } finally { release(); await stopping; await f.coordinator.shutdown(); }
+      await Promise.allSettled([retry]);
+      expect(f.store.getTask(owner)?.status).toBe("active");
+    } finally { release(); await stopping; await runner.shutdown(); webStore.close(); }
   });
 
-  it("does not release capacity on a failed stop and retries without deleting the worktree", async () => {
-    const f = await fixture();
-    await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
-    const row = f.store.listUnfinishedTasks()[0]!;
-    f.coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
-    f.tasks.stopAndClose.mockRejectedValueOnce(new Error("stop failed"));
-    await expect(f.coordinator.stopProject(f.project.projectId)).rejects.toThrow("Project execution stop was not confirmed");
-    expect(f.resources.has(row.claimId)).toBe(true);
-    expect(f.worktrees.has(row.claimId)).toBe(true);
-    await f.coordinator.stopProject(f.project.projectId);
-    expect(f.resources.has(row.claimId)).toBe(false);
-    expect(f.worktrees.has(row.claimId)).toBe(true);
-    expect(f.store.getTask(row)).toEqual(row);
-    await f.coordinator.shutdown();
+  it("stops the matching original Web execution after its claim has completed", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const candidate = task(f.project.projectId, uuid(950));
+    const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(951), worktreeId: uuid(952) };
+    const granted = f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    const claim = readWorkerClaim(granted.properties)!;
+    f.grants.set(owner.claimId, { ...granted, status: "done", properties: { ...granted.properties, worker: { ...claim, state: "completed" } } });
+    const row = f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    const record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: { ...configuration, args: [], agentControlMode: "web" } }, 1);
+    const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+    const runner = createWorkerCoordinator({ ...f.options, webStore, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async value => value), cleanup } });
+    try {
+      await runner.stopProject(f.project.projectId);
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(cleanup.mock.calls[0]![0]).toEqual(record);
+      expect(f.store.getTask(row)).toEqual(row);
+      expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+    } finally { await runner.shutdown(); webStore.close(); }
   });
+
+  it("interrupts and stops the frozen Web execution while the authority read is stalled", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const candidate = f.candidates[0]!;
+    const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(970), worktreeId: uuid(971) };
+    f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    const config = { ...configuration, args: [], agentControlMode: "web" as const };
+    const record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+    webStore.bindWorktree(record, f.bind(owner), 2);
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    let entered!: () => void, interrupted!: () => void;
+    const jobEntered = new Promise<void>(resolve => { entered = resolve; }), jobInterrupted = new Promise<void>(resolve => { interrupted = resolve; });
+    const advanceResult = vi.fn<import("../../../src/commands/worker/backends/web.js").WebExecutionBackend["advanceResult"]>(async (_value, signal) => {
+      entered(); await new Promise<void>(resolve => signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true }));
+      interrupted(); throw signal.reason;
+    });
+    const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+    const runner = createWorkerCoordinator({ ...f.options, userId: uuid(2), repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore,
+      verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async value => value), advanceResult, cleanup } });
+    try {
+      await runner.tick(); await jobEntered;
+      vi.mocked(f.remote.readTask).mockReset().mockImplementation(async () => new Promise<Task>(() => {}));
+      const stopping = runner.stopProject(f.project.projectId);
+      await jobInterrupted;
+      await stopping;
+      expect(f.remote.readTask).not.toHaveBeenCalled();
+      expect(cleanup).toHaveBeenCalledOnce(); expect(cleanup.mock.calls[0]![0]).toMatchObject(owner);
+      expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+    } finally { await runner.shutdown(); webStore.close(); }
+  });
+
+  it("fences an unregistered Web job while server verification is in flight", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const candidate = f.candidates[0]!;
+    const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(980), worktreeId: uuid(981) };
+    f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" });
+    const config = { ...configuration, args: [], agentControlMode: "web" as const };
+    let entered!: () => void, release!: () => void, currentSignal: AbortSignal | undefined;
+    const barrierEntered = new Promise<void>(resolve => { entered = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+    const verifyWebServer = vi.fn(async (_agent: unknown, signal: AbortSignal) => { currentSignal = signal; entered(); await barrier; });
+    const verifyWebUnregistered = vi.fn(async () => {}), advance = vi.fn(async (value: WebTask) => value), cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+    const runner = createWorkerCoordinator({ ...f.options, userId: uuid(2), repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore,
+      verifyWebServer, verifyWebUnregistered, webBackend: { observeExecutionStop: unknownStop, advance, cleanup } });
+    try {
+      await runner.tick(); await barrierEntered;
+      runner.updateConfiguration({ repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false });
+      const stopping = runner.stopProject(f.project.projectId);
+      void stopping.catch(() => {});
+      expect(currentSignal?.aborted).toBe(true);
+      release(); await stopping;
+      expect(webStore.getTask(owner)).toBeNull();
+      expect(verifyWebUnregistered).toHaveBeenCalledOnce();
+      expect(advance).not.toHaveBeenCalled(); expect(cleanup).not.toHaveBeenCalled();
+    } finally { release(); await runner.shutdown(); webStore.close(); }
+  });
+
+  it("keeps Daynight Session and native Session identities distinct when stopping Web", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const candidate = task(f.project.projectId, uuid(975));
+    const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(976), worktreeId: uuid(977) };
+    f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    const row = f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web", sessionId: uuid(978) }));
+    let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: { ...configuration, args: [], agentControlMode: "web" } }, 1);
+    record = webStore.initializeWebExecution(record, 2);
+    record = webStore.updateWebExecution(record, { sessionId: uuid(979), launchSubmission: "acknowledged", initialInputState: "confirmed" }, 3);
+    record = webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(978) }, 4);
+    const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+    const runner = createWorkerCoordinator({ ...f.options, userId: uuid(2), webStore, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async value => value), cleanup } });
+    try {
+      await runner.stopProject(f.project.projectId);
+      expect(cleanup).toHaveBeenCalledOnce(); expect(cleanup.mock.calls[0]![0]).toEqual(record);
+      expect(f.store.getTask(row)).toEqual(row);
+    } finally { await runner.shutdown(); webStore.close(); }
+  });
+
+  it.each(["released", "successor", "unavailable"] as const)("stops only locally proven Web execution when authority is %s", async state => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const candidate = task(f.project.projectId, uuid(960));
+    const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(961), worktreeId: uuid(962) };
+    const granted = f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    const row = f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+    const record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: { ...configuration, args: [], agentControlMode: "web" } }, 1);
+    if (state === "released") vi.mocked(f.remote.readTask).mockResolvedValue({ ...granted, status: "todo", properties: {} });
+    if (state === "successor") vi.mocked(f.remote.readTask).mockResolvedValue({ ...granted, properties: { ...granted.properties, worker: { ...readWorkerClaim(granted.properties)!, claimId: uuid(963), worktreeId: uuid(964) } } });
+    if (state === "unavailable") vi.mocked(f.remote.readTask).mockRejectedValue(new Error("network unavailable"));
+    const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+    const runner = createWorkerCoordinator({ ...f.options, userId: uuid(2), webStore, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async value => value), cleanup } });
+    try {
+      await runner.stopProject(f.project.projectId);
+      expect(cleanup).toHaveBeenCalledOnce(); expect(cleanup.mock.calls[0]![0]).toEqual(record);
+      expect(f.store.getTask(row)).toEqual(row); expect(f.remote.readTask).not.toHaveBeenCalled(); expect(f.remote.update).not.toHaveBeenCalled();
+    } finally { await runner.shutdown(); webStore.close(); }
+  });
+
+  it.each(["local mode", "worker", "user", "service", "worktree", "session"] as const)("retains a conflicting original identity (%s)", async conflict => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const candidate = task(f.project.projectId, uuid(940));
+    const owner = { projectId: f.project.projectId, taskId: candidate.id, claimId: uuid(941), worktreeId: uuid(942) };
+    f.grant(candidate, { claimId: owner.claimId, worktreeId: owner.worktreeId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web" });
+    const row = f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", ...(conflict === "local mode" ? {} : { agentControlMode: "web" as const }) }));
+    const record = webStore.register({ ...owner, worktreeId: conflict === "worktree" ? uuid(943) : owner.worktreeId, project: f.project,
+      serverOrigin: conflict === "service" ? "https://other.example" : origin, workerId: conflict === "worker" ? uuid(944) : workerId,
+      userId: conflict === "user" ? uuid(945) : uuid(2), configuration: { ...configuration, args: [], agentControlMode: "web" } }, 1);
+    if (conflict === "worktree") ensureCleanupSchedule(f.store, owner, 1);
+    if (conflict === "session") {
+      webStore.bindNativeSession(record, { source: "controller", sessionId: uuid(946) }, 2);
+      f.store.setSessionId(row, uuid(947));
+    }
+    const expectedLocal = f.store.getTask(row);
+    const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+    const runner = createWorkerCoordinator({ ...f.options, webStore, webBackend: { observeExecutionStop: unknownStop, advance: vi.fn(async value => value), cleanup } });
+    try {
+      runner.updateConfiguration({ repositories: [], targetProjectIds: [], readyProjectIds: [], globalConfiguration: null, maxConcurrent: 1, preferPlatformSpecificTasks: false });
+      await expect(runner.stopProject(f.project.projectId)).rejects.toThrow("Project execution stop was not confirmed");
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(f.store.getTask(row)).toEqual(expectedLocal);
+      expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+      expect(f.tasks.listResources).not.toHaveBeenCalled();
+    } finally { await runner.shutdown(); webStore.close(); }
+  });
+
+  it("refuses project removal when active Web ownership evidence is missing", async () => {
+    const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+    const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+    const row = f.store.activateTask(f.store.registerPending({ projectId: f.project.projectId, taskId: uuid(930), claimId: uuid(931), agent: "codex", agentControlMode: "web", sessionId: uuid(932) }));
+    const verify = vi.fn(async () => {});
+    const runner = createWorkerCoordinator({ ...f.options, webStore, verifyWebUnregistered: verify });
+    try {
+      await expect(runner.stopProject(f.project.projectId)).rejects.toThrow("Project execution stop was not confirmed");
+      expect(verify).not.toHaveBeenCalled();
+      expect(f.store.getTask(row)).toEqual(row);
+      expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+      expect(f.tasks.listResources).not.toHaveBeenCalled();
+    } finally { await runner.shutdown(); webStore.close(); }
+  });
+
 });
 
 describe("Web acquisition configuration changes", () => {
@@ -3856,22 +4004,6 @@ describe("worker monitoring of coordinator jobs", () => {
       await coordinator.tick();
       await eventually(() => expect(monitor.capture().currentFailures).toHaveLength(2));
       expect(monitor.capture().currentFailures.map(item => item.phase).sort()).toEqual(["agent-observation", "observation"]);
-    } finally { await coordinator.shutdown(); }
-  });
-
-  it("keeps project stop waiting until the original execution is confirmed stopped", async () => {
-    const f = await fixture(), monitor = createMonitoringObserver();
-    const coordinator = createWorkerCoordinator({ ...f.options, monitoring: monitor });
-    try {
-      await coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
-      const owner = [...f.worktrees.values()][0]!.owner;
-      coordinator.updateConfiguration({ repositories: [], readyProjectIds: [], targetProjectIds: [], globalConfiguration: configuration, maxConcurrent: 1, preferPlatformSpecificTasks: false });
-      f.tasks.stopAndClose.mockRejectedValueOnce(new Error("unconfirmed stop"));
-      await expect(coordinator.stopProject(f.project.projectId)).rejects.toThrow("Project execution stop was not confirmed");
-      expect(monitor.capture().activities).toContainEqual(expect.objectContaining({ kind: "execution", status: "waiting", waitReason: "resource-stop", scope: expect.objectContaining({ claimId: owner.claimId }) }));
-      await coordinator.stopProject(f.project.projectId);
-      expect(monitor.capture().activities.some(activity => activity.kind === "execution" && activity.scope.kind === "claim" && activity.scope.claimId === owner.claimId)).toBe(false);
-      expect(f.store.getTask(owner)?.status).toBe("active");
     } finally { await coordinator.shutdown(); }
   });
 

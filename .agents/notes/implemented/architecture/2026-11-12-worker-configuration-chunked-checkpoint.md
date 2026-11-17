@@ -21,8 +21,11 @@ The chunked codec originally replaced the whole-file schema 4 path. Schema 1–4
 upgrade explicitly to validated schema 5 under the
 [fact separation decision](2026-11-12-worker-configuration-fact-separation.md),
 then to schema 6 under the [unknown configuration decision](2026-11-17-worker-unknown-configuration-preservation.md).
+The [Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md)
+converts deployed formats to schema 9.
 Historical business validation remains strict. Raw desired and remote observation
-documents are ordinary strings within schema 6; arbitrary unknown numbers and
+documents are ordinary strings within the current schema 9; arbitrary unknown
+numbers and
 keys remain inside those strings without broadening the outer cache guard. The
 [storage recovery decision](2026-11-12-worker-configuration-storage-recovery.md)
 owns the serialized readiness, retry and shutdown barrier using these same

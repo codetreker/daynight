@@ -18,22 +18,24 @@ One JSON checkpoint separates the current target and observation baseline,
 current verification records, and retained original responsibility. The original
 representation used schema 5; the [unknown configuration decision](2026-11-17-worker-unknown-configuration-preservation.md)
 extends it to schema 6 source facts and an independent application revision.
-Each record owns a stable ID, immutable origin, native mode, backoff and its own
-failure token. Reused actual values retain their observed source tuple. Migrated
+Each record owns a stable ID, immutable origin, backoff and its own failure
+token. The historical mode-bearing record was replaced by the
+[Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md).
+Reused actual values retain their observed source tuple. Migrated
 schema 4 success with a lost revision is explicitly unknown. New current records
 do not take ownership of an older record's failure or rewrite its history.
 
 The [chunked checkpoint decision](2026-11-12-worker-configuration-chunked-checkpoint.md)
 keeps one path, strict incremental reads and atomic persistence. Schemas 1–4
-upgrade through the original structural rules to schema 5, then convert to
-schema 6 before normal execution.
+upgrade through their original structural rules; schema 9 is the current
+format, with the conversion described in the Web configuration decision.
 The serialized manager freezes a result before persistence and publishes it only
 after the write succeeds. Runtime native proof belongs to the current process
 and record identity. A new target inherits matching proof from the same previous
 current or retained record that supplies its actual value, including proof obtained
 by revalidating an older actual value after restart; the actual source remains unchanged. Proofs live only while their
-record owners remain, and a mode change revokes all project proofs before
-propagation. Historical source references cannot retain or restore execution
+record owners remain; changing a relevant Web tool selection revokes the
+affected proofs before propagation. Historical source references cannot retain or restore execution
 qualification. Proof propagation examines only native records and indexes the prior
 value owners once, so a large removal collection does not multiply unrelated
 key scans. Original stop jobs keep their own identity; a new stop
@@ -94,7 +96,7 @@ outcomes and failures that still require confirmation.
 The schema migration and explicit source fields add local representation and
 validation cost. Lost schema 4 success provenance stays unknown. Retained facts
 require proportional memory and disk, and upgraded checkpoints require a CLI
-that understands schema 6. Confirmation and record retirement must consider both
+that understands schema 9. Confirmation and record retirement must consider both
 original resource ownership and the exact sent token.
 
 A large state is visible remotely as its latest batch; the server does not

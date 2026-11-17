@@ -1,13 +1,14 @@
 import { isDeepStrictEqual } from "node:util";
 import { receiveWorkerDesired, parseWorkerCloudDesired } from "../../api/worker-configuration.js";
-import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
+import { ProtocolError } from "../../api/validation.js";
+import type { WorkerCloudDesired, WorkerCloudItem, WorkerCloudItemKey, WorkerCloudNative, WorkerCloudProject, WorkerCloudReport, WorkerCloudValue } from "../../api/worker-configuration.js";
 import type { AgentControlMode, WorkerReport } from "../../api/types.js";
 import type { Tool, ToolPathChoice, ToolPaths } from "../../platform/tool-path-choice.js";
 import type { ToolSelectionTargets } from "./tool-selection.js";
 
 export type WorkerConfigurationIdentity = { readonly serverOrigin: string; readonly userId: string; readonly workerId: string };
 export type WorkerConfigurationToolTargets = ToolSelectionTargets;
-export type WorkerNativeProof = { readonly mode: AgentControlMode; readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
+export type WorkerNativeProof = { readonly native: WorkerCloudNative; readonly tools: readonly { readonly tool: Tool; readonly choice: ToolPathChoice | null; readonly selectionKey: string | null }[] };
 export type TrackedConfigurationItem = {
   readonly recordId: string;
   readonly origin: { readonly generation: string; readonly targetRevision: string; readonly source: "application" | "schema4" };
@@ -15,7 +16,6 @@ export type TrackedConfigurationItem = {
   readonly backoffStep: number;
   readonly failureId: number | null;
   readonly started: boolean;
-  readonly nativeMode: AgentControlMode | null;
   readonly actualSource:
     | { readonly kind: "observed"; readonly recordId: string; readonly generation: string; readonly targetRevision: string }
     | { readonly kind: "schema4"; readonly successRevision: null }
@@ -23,7 +23,7 @@ export type TrackedConfigurationItem = {
   readonly blockedByRemovalId: string | null;
 };
 export type WorkerConfigurationCache = {
-  readonly schemaVersion: 8;
+  readonly schemaVersion: 9;
   readonly identity: WorkerConfigurationIdentity;
   readonly authority: { readonly generation: string; readonly desiredJson: string | null; readonly applicationRevision: string | null; readonly observationRevision: string };
   readonly remoteObservation: { readonly observationRevision: string; readonly json: string } | null;
@@ -37,6 +37,7 @@ export type WorkerConfigurationSnapshot = {
   readonly generation: string;
   readonly synchronized: boolean;
   readonly desired: WorkerCloudDesired | null;
+  readonly selectedProjects: readonly WorkerCloudProject[] | null;
   readonly applicationRevision: string | null;
   readonly observationRevision: string;
   readonly retainedRecoveryLimit: number | null;
@@ -80,7 +81,6 @@ export type ConfigurationProjection = {
 };
 export type ConfigurationProjectionOptions = {
   readonly synchronized: boolean;
-  readonly localMode: AgentControlMode;
   readonly localTools: ToolPaths;
   readonly bootstrap: WorkerCloudValue | null;
   readonly telemetry?: WorkerReport;
@@ -104,4 +104,15 @@ const derivedDesired = new WeakMap<WorkerConfigurationCache["authority"], Worker
 export const configurationDesired = (cache: WorkerConfigurationCache): WorkerCloudDesired | null => {
   if (!derivedDesired.has(cache.authority)) derivedDesired.set(cache.authority, cache.authority.desiredJson === null ? null : freezeConfiguration(receiveWorkerDesired(cache.authority.desiredJson).known));
   return derivedDesired.get(cache.authority)!;
+};
+
+// Raw authority remains readable even when this binary cannot apply it.
+const applicableDesired = new WeakMap<WorkerCloudDesired, WorkerCloudDesired | null>();
+export const applicableConfigurationDesired = (desired: WorkerCloudDesired | null): WorkerCloudDesired | null => {
+  if (desired === null || desired.value.agentControlMode !== "web") return null;
+  if (!applicableDesired.has(desired)) {
+    try { applicableDesired.set(desired, parseConfigurationDesired(desired)); }
+    catch (error) { if (!(error instanceof ProtocolError)) throw error; applicableDesired.set(desired, null); }
+  }
+  return applicableDesired.get(desired)!;
 };

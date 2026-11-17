@@ -22,7 +22,8 @@ Configuration-local semantic comparison uses decoded strings, unordered object
 members, ordered arrays and exact decimal digit/exponent tuples. It does not
 change the global API serializer or convert unknown numbers through floating point.
 
-The current schema 8 keeps `authority.desiredJson` as the sole persisted target and records
+The current schema 9 keeps `authority.desiredJson` as the sole persisted target
+and records
 `applicationRevision` separately from the received revision. Known target changes
 reconcile normally. Unknown-only, timestamp-only and forward revision-only changes
 preserve generation, record identities, in-flight jobs and the application anchor.
@@ -57,7 +58,10 @@ The [Worker design](../../../../docs/design/daynight-worker.md#云端接收与�
 owns the mechanism, and the [configuration contract](../../../../docs/spec/daynight-worker-configuration.md#worker-响应的未知内容保留)
 owns consumer behavior.
 
-The [stored checkpoint decoder decision](2026-11-17-worker-stored-configuration-decoder.md) owns the independent disk decoding boundary.
+The [stored checkpoint decoder decision](2026-11-17-worker-stored-configuration-decoder.md)
+owns the independent disk decoding boundary. The
+[Web configuration checkpoint decision](2026-11-17-worker-web-configuration-checkpoint.md)
+owns conversion of deployed schema 8 and Web-only application.
 
 ## Alternatives
 
@@ -84,7 +88,7 @@ continues to govern its own outbound protocol.
 
 The Worker can retain future configuration through restart and continue processing
 known settings without claiming future settings are applied. Full source and its
-known view consume memory, and schema 8 requires a binary that understands the new
+known view consume memory, and schema 9 requires a binary that understands the new
 cache. The [sudo cleanup decision](../feature/2026-11-17-worker-sudo-cleanup.md)
 records the schema 6 to 7 recognition of that field as a new pending target. Individual raw source strings remain subject to runtime token limits even
 though the aggregate checkpoint is streamed. Compatibility depends on actually

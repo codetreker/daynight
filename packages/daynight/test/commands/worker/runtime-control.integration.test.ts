@@ -76,7 +76,7 @@ const fixture = async (mode: "herdr" | "web" = "herdr") => {
   return { homeDirectory, packageDirectory: path.resolve("package"), version: "0.0.0", workingDirectory: homeDirectory, request, paths, store, project, task, sibling };
 };
 const staleManagedSource = (mode = "herdr") => `serverUrl: ${origin}\nserverToken: dn_pat_abcdefghijklmnopqrstuvwxyz1234567890\nworkerId: ${uuid(4)}\nworker:\n  agentControlMode: ${mode}\n  agent: invalid-local-agent\n  maxConcurrent: 0\n  args: false\n  repositories: null\n`;
-const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
+const cloudTarget = (selected: boolean): WorkerCloudDesired => ({ revision: "8", updatedAt: "2026-11-04T00:00:00Z", value: { agentControlMode: "web", maxConcurrent: 4, pollIntervalMs: 2000, recoveryLimit: 7, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-global", args: [] }, projects: selected ? [{ projectId: uuid(1), nativeOverrides: { model: "cloud-project" } }] : [] } });
 
 describe("worker synchronous management runtime ownership", () => {
   it("resolves only the target Project when an unrelated explicit Project is unavailable", async () => {
@@ -360,35 +360,6 @@ describe("worker synchronous management runtime ownership", () => {
     expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     expect(remote.claim).not.toHaveBeenCalled(); expect(remote.ownInventory).not.toHaveBeenCalled();
     expect(adapter.stopInstance).not.toHaveBeenCalled();
-  });
-
-  it("uses applied cloud settings for Herdr retry even when its project is excluded from automatic selection", async () => {
-    const f = await fixture();
-    await writeFile(f.paths.configFile, staleManagedSource());
-    const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockResolvedValue(receivedResource({ desired: cloudTarget(false), observationRevision: "0", observation: null }));
-    mocks.submit.mockResolvedValueOnce({ task: f.task, message: "retry completed" });
-    const request = { kind: "retry" as const, taskId: f.task.taskId, claimId: f.task.claimId };
-    await runWorkerControl({ ...f, request });
-    expect(remote.configuration).toHaveBeenCalledExactlyOnceWith(uuid(4), expect.any(AbortSignal));
-    const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
-    expect(options.maxConcurrent).toBe(4);
-    expect(options.globalConfiguration).toEqual({ agent: "codex", agentControlMode: "herdr", model: "cloud-global", args: [], recoveryLimit: 7 });
-    expect(options.repositories).toEqual([{ project: f.project, configuration: options.globalConfiguration }]);
-    expect(mocks.probe).toHaveBeenCalled(); expect(f.store.getTask(f.task)).toEqual(f.task);
-    expect(await readFile(path.join(f.paths.workerDirectory, "configuration.json"), "utf8")).toContain("cloud-global");
-  });
-
-  it("uses a selected project's applied native override for a manual Herdr retry", async () => {
-    const f = await fixture();
-    await writeFile(f.paths.configFile, staleManagedSource());
-    const remote = mocks.remote(); mocks.remote.mockClear();
-    remote.configuration.mockResolvedValue(receivedResource({ desired: cloudTarget(true), observationRevision: "0", observation: null }));
-    mocks.submit.mockResolvedValueOnce({ task: f.task, message: "retry completed" });
-    await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
-    const options = mocks.coordinator.mock.calls[0]![0] as WorkerCoordinatorOptions;
-    expect(options.repositories[0]!.configuration).toEqual({ agent: "codex", agentControlMode: "herdr", model: "cloud-project", args: [], recoveryLimit: 7 });
-    expect(options.globalConfiguration).toMatchObject({ model: "cloud-global" });
   });
 
   it("uses validated local runtime settings only when the Worker has no cloud target", async () => {

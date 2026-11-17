@@ -60,7 +60,7 @@ known 仅从已知路径投影并按原合同严格验证，未知 observation k
 
 ## 首次导入与编辑
 
-完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode。toolPathsBootstrap 是完整三项非 null choice 或整体 null，只填现有目标中对应的 null 项。候选来自同一捕获的本机配置：明确 web 保持 web，未指定模式才为 herdr；省略的本地工具项成为 auto。模式和多个工具的采纳合并为一次最终值持久化，只推进一次 revision；完整首次导入不额外升版，任何编码或容量失败回滚全部采纳。
+完整本地候选只在目标不存在时原子建立 revision 1；已有目标时忽略完整候选，始终保留云端值。独立 controlModeBootstrap 候选只在目标尚未采纳模式时填入 agentControlMode。toolPathsBootstrap 是完整三项非 null choice 或整体 null，只填现有目标中对应的 null 项。当前 Worker 的完整首次候选在本机模式省略时使用 web；显式本机 herdr 候选明确拒绝并要求用户调整，不转换文件。独立模式采纳字段为 web，工具选择来自捕获的本机配置，省略的本地工具项成为 auto。服务端现有协议仍接受 herdr 或 web。模式和多个工具的采纳合并为一次最终值持久化，只推进一次 revision；完整首次导入不额外升版，任何编码或容量失败回滚全部采纳。
 
 网页选择、并发采纳和迟到候选使用同一 Worker 行锁与目标版本合同。网页先明确 Codex 时，随后 bootstrap 只填仍未采纳的 Copilot/Herdr；bootstrap 先提交时，旧 revision 的网页 PUT 冲突，不能自动重放。已保存的非 null choice 不被候选覆盖；恢复 auto 后本地旧路径不再出现。接入不查询任务状态或要求先处理任务，不回写用户 YAML。
 
@@ -76,7 +76,7 @@ PUT 使用 {revision,value} 替换已初始化目标。若 value 省略 enableSu
 
 已经持久化 mode 应用观测后，未协商的客户端不会收到 mode 项；新增直接字段的兼容基线仍按上述要求执行。仍在运行的旧服务后续报告若替换了模式证据，该实际值保持尚未确认，直到新的 Worker 报告，不能重建伪 applied 状态。迁移后旧二进制重启受迁移版本检查约束。
 
-新客户端未收到回显时按旧合同解析并继续本机模式，不向旧服务发送新正文。运行中的 Worker 必须继续探测服务升级或回退，并按新读取的能力构造后续报告，不自动重放结果未知的请求。Web 禁用该字段并提供升级说明，其他字段保持可编辑。支持能力的旧目标尚未采纳时显示等待同步，不能将默认 herdr 当作实际已应用。
+Worker 未收到回显时按旧合同解析且不向旧服务发送新正文；未能确认采纳的模式不授予新执行资格。运行中的 Worker 必须继续探测服务升级或回退，并按新读取的能力构造后续报告，不自动重放结果未知的请求。Web 禁用该字段并提供升级说明，其他字段保持可编辑。支持能力的旧目标尚未采纳时显示等待同步，不能将默认 herdr 当作实际已应用。
 
 ## 心跳扩展
 
@@ -117,7 +117,7 @@ Worker 配置客户端对原报告端点发送 Daynight-Worker-Configuration: 2�
 | projectPreparation | true 表示已准备；没有可确认结果时为 null |
 | projectRemoval | true 表示已移除/停止；没有可确认结果时为 null |
 
-null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false、enableSudoCleanup:false 和 archiveSessions:false 分别表示对应设置已应用关闭，不能解释为缺少结果。服务不会因保存或初始化目标而生成应用观察；不认识这些字段的兼容 Worker 不报告对应项。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
+null 表示没有可确认的实际值，不是生效默认值；preferPlatformSpecificTasks:false、enableSudoCleanup:false 和 archiveSessions:false 分别表示对应设置已应用关闭，不能解释为缺少结果。服务不会因保存或初始化目标而生成应用观察；不认识这些字段的兼容 Worker 不报告对应项。当前 Web 配置状态机不合成 agentControlMode 应用项；部分 observation 合法，缺失模式项不得解释为已应用。项目准备与移除可以来自不同目标版本，必须保留对应 targetRevision；结果不携带 Task 或 claim 标识。
 
 error 表示当前失败，lastFailure 保留尚需报告的最近失败，nextAttemptAt 为 nullable RFC3339 本机重试期限。失败使用闭合 code/category/phase 及 occurredAt，不接受自由命令输出、配置正文或敏感信息。code 为 not_found、permission_denied、timeout、command_failed、invalid_output、invalid_configuration、io_error 或 unavailable；category 为 validation、repository、agent、runtime、storage；phase 为 validate、prepare、apply、stop、persist。error 只在 state:error 时存在；applied 必须具有非 null 实际值，nextAttemptAt 只用于 error 状态。pending/applying/error 可保留先前成功值。恢复可清除当前 error，不能提前丢弃尚未报告的失败。
 

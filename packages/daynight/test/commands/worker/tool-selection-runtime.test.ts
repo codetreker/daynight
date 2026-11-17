@@ -14,7 +14,12 @@ test("runtime freezes inspected facts and host snapshots do no process work", as
     localToolPaths: { codex: { kind: "path", path: entry }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
   try {
-    await runtime.prepareWebCandidates(operation.signal, false);
+    const prepare = vi.spyOn(runtime.manager, "prepare");
+    const target = { source: "cloud" as const, revision: "1", choices: { codex: { kind: "path" as const, path: entry }, copilot: null, herdr: null } };
+    await runtime.configurationOptions.prepareToolSelection({ agent: "codex", model: null, args: [] }, target, operation.signal);
+    expect(runtime.configurationOptions.readToolSelectionKeys({ agent: "codex", model: null, args: [] })).toEqual({ codex: expect.any(String) });
+    expect(prepare.mock.calls.map(([tool, context]) => [tool, context])).toEqual([["codex", "web"]]);
+    expect(runtime.manager.snapshot().entries.find(entry => entry.tool === "herdr")).toBeUndefined();
     const configuration = await runtime.freezeConfiguration({ agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 3 }, operation.signal);
     expect(configuration.toolObservation).toMatchObject({ version: "1.0.0" }); expect(configuration.toolLaunch?.entryPath).toBe(entry);
     const before = await readFile(receipt, "utf8");
@@ -29,12 +34,36 @@ test("runtime freezes inspected facts and host snapshots do no process work", as
   } finally { try { await runtime.close(); } finally { operation.dispose(); await rm(root, { recursive: true, force: true }); } }
 });
 
+test("tool preparation waits for authoritative targets and suspends again when they become unavailable", async () => {
+  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(path.join(scratch, "authority-")), receipt = path.join(root, "receipt"), entry = path.join(root, "codex.mjs");
+  await writeFile(entry, `#!/usr/bin/env node\nimport{appendFileSync}from'node:fs';appendFileSync(${JSON.stringify(receipt)},'probe\\n');console.log(process.argv.includes('--version')?'codex-cli 1.0.0':'app-server --stdio');\n`);
+  await chmod(entry, 0o755);
+  const choices = { codex: { kind: "path" as const, path: entry }, copilot: { kind: "auto" as const }, herdr: { kind: "auto" as const } };
+  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [], localToolPaths: choices });
+  const signal = new AbortController().signal;
+  try {
+    await runtime.prepareWebCandidates(signal, false);
+    await expect(readFile(receipt, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(runtime.manager.currentSelection("codex", "web")).toBeUndefined();
+    runtime.setTargets({ source: "local", revision: null, choices });
+    await runtime.prepareNative({ agent: "codex", model: null, args: [] }, signal);
+    const before = await readFile(receipt, "utf8");
+    expect(before).not.toBe("");
+    runtime.setTargets(null);
+    await expect(runtime.prepareNative({ agent: "codex", model: null, args: [] }, signal)).rejects.toThrow("configuration is unavailable");
+    expect(await readFile(receipt, "utf8")).toBe(before);
+    expect(runtime.manager.currentSelection("codex", "web")).toBeUndefined();
+  } finally { try { await runtime.close(); } finally { await rm(root, { recursive: true, force: true }); } }
+});
+
 test("background preparation follows Copilot demand on each refresh", async () => {
   const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, "demand-"));
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
     localToolPaths: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: path.join(root, "missing-codex") }, copilot: { kind: "path", path: path.join(root, "missing-copilot") }, herdr: { kind: "auto" } } });
   const prepare = vi.spyOn(runtime.manager, "prepare");
   let now = Date.now(); const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   const copilot = () => runtime.manager.snapshot().entries.find(entry => entry.tool === "copilot" && entry.context === "web")!;
@@ -62,6 +91,7 @@ test("demand changes during a refresh take effect after the current preparation 
   const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: {}, readActiveSelections: () => [],
     localToolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
   const operation = createOperation({ limits: { totalMs: 20_000 } });
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "auto" } } });
   let release!: () => void;
   const pending = new Promise<void>(resolve => { release = resolve; });
   const prepare = vi.spyOn(runtime.manager, "prepare").mockImplementation(async tool => { if (tool === "codex" && prepare.mock.calls.length === 1) await pending; });
@@ -82,6 +112,7 @@ test("Herdr configuration freezes both inspected native and handshake recipes", 
     localToolPaths: { codex: { kind: "path", path: native }, copilot: { kind: "auto" }, herdr: { kind: "path", path: daemon } },
     admitHerdr: async () => ({ state: "applied", version: "0.9.5", checkedAt: new Date().toISOString() }),
   });
+  runtime.setTargets({ source: "local", revision: null, choices: { codex: { kind: "path", path: native }, copilot: { kind: "auto" }, herdr: { kind: "path", path: daemon } } });
   try {
     const frozen = await runtime.freezeConfiguration({ agent: "codex", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }, new AbortController().signal);
     expect(frozen.toolLaunch).toMatchObject({ context: "herdr", entryPath: native });
@@ -90,27 +121,4 @@ test("Herdr configuration freezes both inspected native and handshake recipes", 
     await rm(native); await rm(daemon);
     expect(await runtime.freezeConfiguration(frozen, new AbortController().signal)).toBe(frozen);
   } finally { try { await runtime.close(); } finally { await rm(root, { recursive: true, force: true }); } }
-});
-
-
-test("background Herdr admission rechecks an unchanged target after an idle daemon exits", async () => {
-  const scratch = path.resolve("../../.tmp/tool-selection-runtime-tests"); await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(path.join(scratch, "herdr-refresh-")), daemon = path.join(root, "herdr.cjs");
-  await writeFile(daemon, "console.log('herdr 0.9.9');\n");
-  const now = Date.now; let elapsed = 0, running = false, launches = 0;
-  vi.spyOn(Date, "now").mockImplementation(() => now() + elapsed);
-  const runtime = createWorkerToolSelectionRuntime({ workerDirectory: root, cwd: root, environment: process.env, readActiveSelections: () => [],
-    localToolPaths: { codex: { kind: "auto" }, copilot: { kind: "auto" }, herdr: { kind: "path", path: daemon } },
-    admitHerdr: async () => { if (!running) { running = true; launches++; } return { state: "applied", version: "0.9.5", checkedAt: new Date().toISOString() }; },
-  });
-  try {
-    const signal = new AbortController().signal;
-    await expect(runtime.prepareHerdrCandidate(signal)).resolves.toBe(true);
-    expect(launches).toBe(1); running = false;
-    await expect(runtime.prepareHerdrCandidate(signal)).resolves.toBe(false);
-    expect(running).toBe(false);
-    elapsed += 60_001;
-    await expect(runtime.prepareHerdrCandidate(signal)).resolves.toBe(true);
-    expect(launches).toBe(2); expect(running).toBe(true);
-  } finally { try { await runtime.close(); } finally { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); } }
 });

@@ -30,14 +30,14 @@ import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 
 type ReporterOptions = Parameters<typeof createWorkerReporter>[0];
 const reportSample = { ...workerTelemetry, taskInventory: null };
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null, herdrCandidate: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn(), probe: vi.fn(), emit: vi.fn(), bots: vi.fn(), hostCollector: vi.fn(), nextUUID: null as (() => string) | null }));
 vi.mock("node:crypto", async original => {
   const actual = await original<typeof import("node:crypto")>();
   return { ...actual, randomUUID: (options?: Parameters<typeof actual.randomUUID>[0]) => mocks.nextUUID === null ? actual.randomUUID(options) : mocks.nextUUID() };
 });
 vi.mock("../../../src/commands/worker/tool-selection-runtime.js", async () => {
   const { createWorkerToolSelectionFixture } = await import("../../helpers/worker-tool-runtime-fixture.js");
-  return { createWorkerToolSelectionRuntime: (options: Parameters<typeof createWorkerToolSelectionFixture>[0]) => ({ ...createWorkerToolSelectionFixture(options), prepareHerdrCandidate: mocks.herdrCandidate }) };
+  return { createWorkerToolSelectionRuntime: createWorkerToolSelectionFixture };
 });
 vi.mock("../../../src/commands/worker/bots/runtime.js", () => ({ createManagedAssistantRuntime: mocks.bots }));
 vi.mock("../../../src/commands/worker/bots/host-capabilities.js", () => ({ createAssistantHostCollector: mocks.hostCollector }));
@@ -67,7 +67,7 @@ const runWorker: typeof runWorkerRuntime = options => {
 };
 const desired = (projects: readonly string[] = [uuid(1)], maxConcurrent = 1): WorkerCloudDesired => ({
   revision: "1", updatedAt: "2026-11-04T00:00:00Z",
-  value: { maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
+  value: { agentControlMode: "web", maxConcurrent, pollIntervalMs: 1000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: "cloud-model", args: [] }, projects: projects.map(projectId => ({ projectId, nativeOverrides: {} })) },
 });
 const resource = (target: WorkerCloudDesired | null): ReceivedWorkerConfigurationResource => (receivedResource({ desired: target, observationRevision: "0", observation: null }));
 const fixture = async (warm = false, configured = true) => {
@@ -133,7 +133,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.nextUUID = null;
   mocks.emit.mockReset();
-  mocks.herdrCandidate.mockReset().mockResolvedValue(false);
   mocks.bots.mockReturnValue({ run: vi.fn(async () => {}), shutdown: vi.fn(async () => {}) });
   mocks.hostCollector.mockReturnValue({ collect: vi.fn(async () => undefined), close: vi.fn(async () => {}) });
   mocks.reporter.mockImplementation(reporter);
@@ -157,34 +156,14 @@ afterEach(async () => {
 });
 
 describe("worker cloud-first startup", () => {
-  it.each(["herdr", "web"] as const)("refreshes only configured Herdr admission and wakes failed reconciliation (%s)", async mode => {
-    const f = await fixture(), initial = desired([]), target = { ...initial, value: { ...initial.value, agentControlMode: mode, pollIntervalMs: 60_000 } };
-    mocks.remote().configuration.mockResolvedValue(resource(target)); mocks.remote.mockClear();
-    let release!: (changed: boolean) => void, entered!: () => void;
-    const admission = new Promise<boolean>(resolve => { release = resolve; }), firstTick = new Promise<void>(resolve => { entered = resolve; });
-    mocks.herdrCandidate.mockImplementationOnce(() => admission);
-    const tick = vi.fn(async () => { if (tick.mock.calls.length === 1) { entered(); await admission; throw new Error("Original shared daemon has exited."); } });
-    mocks.coordinator.mockReturnValue(coordinator(tick));
-    const { cancellation, running } = start(f);
-    try {
-      await firstTick;
-      if (mode === "herdr") {
-        expect(mocks.herdrCandidate).toHaveBeenCalled(); release(true);
-        await vi.waitFor(() => expect(tick.mock.calls.length).toBeGreaterThan(1), { timeout: 2000, interval: 10 });
-      } else {
-        expect(mocks.herdrCandidate).not.toHaveBeenCalled(); release(false);
-        await vi.waitFor(() => expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "reconciliation-error" })), { timeout: 2000, interval: 10 });
-      }
-    } finally { release(false); cancellation.abort(); await running; }
-  });
-
   it("continues retained-project reconciliation with bounded observations and after restart", async () => {
     const f = await fixture(true, false), target = desired([]), ids = [uuid(10_000), uuid(10_001)];
     for (const [n, projectId] of ids.entries()) f.store!.registerProject({ projectId, repoUrl: `https://git.example/team/repo${n}.git`, localPath: path.join(f.homeDirectory, `repo${n}`) });
     const stored = (key: Record<string, string>, appliedValue: unknown) => ({ value: { key, targetRevision: "1", appliedValue, state: "applied", error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started: false });
     const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "preferPlatformSpecificTasks" }, false), stored({ kind: "native" }, target.value.native)];
     for (let n = 0; n < 1019; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(20_000 + n) }, true));
-    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: target, observationRevision: "0", nextFailureId: 1, items }));
+    const { agentControlMode: _mode, ...historicalValue } = target.value;
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: { ...target, value: historicalValue }, observationRevision: "0", nextFailureId: 1, items }));
     let revision = 0n, reporterOptions: ReporterOptions | undefined;
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockImplementation(async () => (receivedResource({ desired: target, observationRevision: String(revision), observation: null })));
@@ -201,7 +180,7 @@ describe("worker cloud-first startup", () => {
             expect(reporterOptions).toBeDefined();
             expect(stopProject).toHaveBeenCalledTimes(2);
             const saved = observed.current();
-            expect(saved.schemaVersion).toBe(8);
+            expect(saved.schemaVersion).toBe(9);
             expect(JSON.parse(saved.authority.desiredJson!)).toEqual(target);
             if (pass === 0) expect(saved.currentItems).toHaveLength(1026);
             for (const projectId of ids) expect(saved.currentItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === projectId)?.value.state).toBe("applied");
@@ -239,7 +218,8 @@ describe("worker cloud-first startup", () => {
     const stored = (key: Record<string, string>, appliedValue: unknown, state = "applied", started = false) => ({ value: { key, targetRevision: "1", appliedValue, state, error: null, lastFailure: null, nextAttemptAt: null }, attempts: 0, failureId: null, started });
     const items = [stored({ kind: "maxConcurrent" }, 1), stored({ kind: "pollIntervalMs" }, 1000), stored({ kind: "recoveryLimit" }, 3), stored({ kind: "preferPlatformSpecificTasks" }, false), stored({ kind: "native" }, old.value.native)];
     for (let n = 0; n < 1020; n++) items.push(stored({ kind: "projectRemoval", projectId: uuid(10 + n) }, n < 2 ? true : null, n < 2 ? "applied" : "pending", n === 0));
-    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: old, observationRevision: "0", nextFailureId: 1, items }));
+    const { agentControlMode: _mode, ...historicalValue } = old.value;
+    await writeFile(f.paths.configurationFile, JSON.stringify({ schemaVersion: 2, identity: { serverOrigin: origin, userId: uuid(6), workerId }, desired: { ...old, value: historicalValue }, observationRevision: "0", nextFailureId: 1, items }));
     const remote = mocks.remote(); mocks.remote.mockClear();
     remote.configuration.mockResolvedValue(resource(next));
     const observed = observeCommittedConfiguration();
@@ -248,7 +228,7 @@ describe("worker cloud-first startup", () => {
       queueMicrotask(() => { void (async () => {
         try {
           const installed = observed.current();
-          expect(installed.schemaVersion).toBe(8);
+          expect(installed.schemaVersion).toBe(9);
           expect(JSON.parse(installed.authority.desiredJson!)).toEqual(next);
           expect(installed.currentItems.length).toBeGreaterThan(1025);
           expect(installed.retainedItems.find(item => item.value.key.kind === "projectRemoval" && item.value.key.projectId === uuid(10))).toMatchObject({ origin: { targetRevision: "1", source: "schema4" }, started: true,
@@ -333,7 +313,7 @@ describe("worker cloud-first startup", () => {
       expect(sent.bootstrap).toMatchObject({ maxConcurrent: 2, native: { model: "local-model", args: ["-c", 'model_reasoning_effort="low"'] }, projects: [{ projectId: uuid(1) }, { projectId: uuid(2) }] });
       expect(sent.observation).toBeNull();
       const operation = createOperation();
-      try { await reporterOptions!.configuration!.accept(sent, receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)], 2), value: sent.bootstrap! }, observationRevision: "0", observationAccepted: false }), operation); }
+      try { await reporterOptions!.configuration!.accept(sent, receivedReceipt({ desired: { ...desired([uuid(1), uuid(2)], 2), value: { ...sent.bootstrap!, agentControlMode: "web" } }, observationRevision: "0", observationAccepted: false }), operation); }
       finally { operation.dispose(); }
       await vi.waitFor(() => expect(mocks.coordinator).toHaveBeenCalled());
       await vi.waitFor(() => {
@@ -566,6 +546,25 @@ describe("worker cloud-first startup", () => {
     expect(mocks.reporter).toHaveBeenCalledOnce();
     expect(mocks.coordinator).not.toHaveBeenCalled();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
+
+  it("retains an unsupported raw mode without preparing or admitting the target", async () => {
+    const f = await fixture(false, false), base = desired();
+    const target: WorkerCloudDesired = { ...base, value: { ...base.value, agentControlMode: "herdr" } };
+    mocks.remote().configuration.mockResolvedValue(resource(target)); mocks.remote.mockClear();
+    let channel: ReporterOptions["configuration"];
+    mocks.reporter.mockImplementation((options: ReporterOptions) => { channel = options.configuration; return reporter(); });
+    const { cancellation, running } = start(f);
+    try {
+      await vi.waitFor(() => expect(channel).toBeDefined());
+      const cache = JSON.parse(await readFile(f.paths.configurationFile, "utf8"));
+      expect(JSON.parse(cache.authority.desiredJson)).toEqual(target);
+      expect(channel!.capture(reportSample).observation).toBeNull();
+      expect(mocks.coordinator).not.toHaveBeenCalled();
+      expect(mocks.herdr).not.toHaveBeenCalled();
+      expect(mocks.probe).not.toHaveBeenCalled();
+      expect(mocks.emit).toHaveBeenCalledWith(expect.objectContaining({ kind: "warning", message: expect.stringContaining("unsupported Herdr control mode") }));
+    } finally { cancellation.abort(); await running; }
   });
 
   it("rediscovers tool support after a mode-capable server upgrades without restarting the Worker", async () => {
@@ -864,36 +863,6 @@ describe("worker cloud-first startup", () => {
     expect(mocks.coordinator).toHaveBeenCalledOnce();
   });
 
-  it("keeps Herdr-only defaults observable while reporting unsupported assistant arguments", async () => {
-    const f = await fixture(), target = desired();
-    mocks.remote().configuration.mockResolvedValue(resource({ ...target, value: { ...target.value, native: { ...target.value.native, args: ["--search"] } } }));
-    mocks.remote.mockClear();
-    const actual = await vi.importActual<typeof import("../../../src/commands/worker/bots/host-capabilities.js")>("../../../src/commands/worker/bots/host-capabilities.js");
-    mocks.hostCollector.mockImplementation((options: Parameters<typeof actual.createAssistantHostCollector>[0]) => actual.createAssistantHostCollector({ ...options,
-      resolveExecutable: () => { throw Object.assign(new Error("Fixture has no native assistant executable."), { code: "ENOENT" }); },
-    }));
-    let latest: WorkerCoordinatorOptions | undefined;
-    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
-      let current = options;
-      latest = current;
-      return { ...coordinator(async () => {}), updateConfiguration: vi.fn((configuration: Partial<WorkerCoordinatorOptions>) => { current = { ...current, ...configuration }; latest = current; }) };
-    });
-    const { cancellation, running } = start(f);
-    try {
-      await vi.waitFor(() => {
-        expect(mocks.coordinator).toHaveBeenCalledOnce();
-        expect(latest?.globalConfiguration).toMatchObject({ agentControlMode: "herdr", args: ["--search"] });
-      });
-      const operation = createOperation();
-      try {
-        const sample = await (mocks.reporter.mock.calls[0]![0] as ReporterOptions).collect(operation);
-        expect(sample.telemetry.versions.daynight).toBe(f.version);
-        expect(sample.telemetry.assistantHost?.providers.find(provider => provider.provider === "codex")).toEqual({ provider: "codex", available: false, reason: "unsupported_arguments", model: null, args: [] });
-        expect(sample.issues).toEqual(expect.arrayContaining([expect.objectContaining({ component: "assistantHost_codex", code: "unavailable" })]));
-      } finally { operation.dispose(); }
-    } finally { cancellation.abort(); await running; }
-  });
-
   it("keeps a prepared project's frozen Web recovery available when its new native defaults fail", async () => {
     const f = await fixture(true), cancellation = new AbortController(); cancellations.add(cancellation);
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { ...f.document.worker, agentControlMode: "web" } }));
@@ -1153,7 +1122,7 @@ describe("real runtime resource isolation", () => {
     const durable = vi.spyOn(durableHerdr, "createDurableWorkerHerdr").mockReturnValue(native as unknown as ReturnType<typeof durableHerdr.createDurableWorkerHerdr>);
     let configurationComplete = false, cycles = 0;
     mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
-      const actual = createWorkerCoordinator({ ...options, hasHerdrJournal: false });
+      const actual = createWorkerCoordinator({ ...options, verifyWebServer: async () => {}, hasHerdrJournal: false });
       const tick = actual.tick;
       actual.tick = async () => {
         await tick(); cycles++;

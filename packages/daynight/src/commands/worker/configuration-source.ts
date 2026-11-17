@@ -205,6 +205,7 @@ export const parseWorkerCloudBootstrap = async (
 ): Promise<WorkerCloudValue> => {
   signal.throwIfAborted();
   const worker = workerMapping(sourceMapping(source, paths));
+  if (worker.agentControlMode === "herdr") throw new WorkerConfigurationSourceError("worker.agentControlMode herdr is no longer supported; remove it or set it to web in the local configuration.");
   const repositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(repositories)) throw new TypeError("worker.repositories must be a sequence.");
   if (repositories.length > 128) throw new RangeError("worker.repositories must contain at most 128 Projects.");
@@ -222,7 +223,7 @@ export const parseWorkerCloudBootstrap = async (
   }
   signal.throwIfAborted();
   return parseWorkerCloudValue({
-    agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr",
+    agentControlMode: Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "web",
     toolPaths: parseLocalToolPaths(worker.toolPaths),
     maxConcurrent: Object.hasOwn(worker, "maxConcurrent") ? worker.maxConcurrent : workerConfigurationDefaults.maxConcurrent,
     pollIntervalMs: Object.hasOwn(worker, "pollIntervalMs") ? worker.pollIntervalMs : workerConfigurationDefaults.pollIntervalMs,
