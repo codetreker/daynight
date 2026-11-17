@@ -260,6 +260,27 @@ func TestValidationAndDeadlines(t *testing.T) {
 	if _, err := s.CompareAndSet(ctx, id, nil, bad); err == nil {
 		t.Fatal("accepted invalid summary")
 	}
+	if _, err := s.Save(ctx, id, bad); err == nil {
+		t.Fatal("direct save accepted invalid summary")
+	}
+	bad = good
+	bad.Sequence = "2"
+	if _, err := s.Save(ctx, id, bad); err == nil {
+		t.Fatal("direct save accepted non-compatibility sequence")
+	}
+	if _, err := s.Save(ctx, store.MonitoringIdentity{}, good); err == nil {
+		t.Fatal("direct save accepted invalid identity")
+	}
+	bad = good
+	bad.RunID = "invalid"
+	if _, err := s.Save(ctx, id, bad); err == nil {
+		t.Fatal("direct save accepted invalid sample ID")
+	}
+	bad = good
+	bad.Body = []byte(`{ }`)
+	if _, err := s.Save(ctx, id, bad); err == nil {
+		t.Fatal("direct save accepted noncanonical body")
+	}
 	if _, err := New("invalid-url"); err == nil {
 		t.Fatal("accepted invalid URL")
 	}
@@ -341,6 +362,10 @@ func TestNoEvictionRejectsWriteWithoutPartialMutation(t *testing.T) {
 	if !errors.As(err, &failure) || failure.Kind != "oom" {
 		t.Fatalf("OOM classification: %v", err)
 	}
+	_, err = s.Save(ctx, id, candidate(uuid.NewString(), "1", `{"direct":true}`))
+	if err == nil || errors.Is(err, store.ErrMonitoringWriteOutcomeUnknown) || !errors.As(err, &failure) || failure.Kind != "oom" {
+		t.Fatalf("direct OOM must be a definite refusal: %v", err)
+	}
 	after, err := s.client.Get(ctx, k).Result()
 	if err != nil || after != before {
 		t.Fatalf("OOM changed existing state: %v", err)
@@ -371,7 +396,7 @@ func TestFrameBodyIntegrity(t *testing.T) {
 	if _, err := s.Read(ctx, id); !errors.Is(err, ErrInvalidFrame) {
 		t.Fatalf("body digest: %v", err)
 	}
-	if _, err := parseValue([]byte(frame[:i+1]+strings.Repeat("x", bodyLimit+1)), true); !errors.Is(err, ErrInvalidFrame) {
+	if _, err := parseValue([]byte(frame[:i+1]+strings.Repeat("x", storedBodyLimit+1)), true); !errors.Is(err, ErrInvalidFrame) {
 		t.Fatalf("oversized body: %v", err)
 	}
 }
@@ -387,7 +412,7 @@ func (responseHook) ProcessHook(next redisclient.ProcessHook) redisclient.Proces
 	return func(ctx context.Context, cmd redisclient.Cmder) error {
 		err := next(ctx, cmd)
 		args := cmd.Args()
-		if err == nil && len(args) > 1 && args[0] == "eval" && args[1] == casScript {
+		if err == nil && len(args) > 1 && args[0] == "eval" && (args[1] == casScript || args[1] == saveScript) {
 			return context.DeadlineExceeded
 		}
 		return err
@@ -404,6 +429,168 @@ func TestUnknownWriteAfterCommit(t *testing.T) {
 	got, err := s.Read(context.Background(), id)
 	if err != nil || got.Value == nil || string(got.Value.Body) != string(c.Body) {
 		t.Fatalf("write observation: %+v %v", got, err)
+	}
+}
+
+type recordEvalsHook struct{ scripts []string }
+
+func (h *recordEvalsHook) DialHook(next redisclient.DialHook) redisclient.DialHook { return next }
+func (h *recordEvalsHook) ProcessPipelineHook(next redisclient.ProcessPipelineHook) redisclient.ProcessPipelineHook {
+	return next
+}
+func (h *recordEvalsHook) ProcessHook(next redisclient.ProcessHook) redisclient.ProcessHook {
+	return func(ctx context.Context, cmd redisclient.Cmder) error {
+		args := cmd.Args()
+		if len(args) > 1 && args[0] == "eval" {
+			h.scripts = append(h.scripts, args[1].(string))
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func TestDirectSaveOverwritesAndRefreshes(t *testing.T) {
+	s, id, k := fixture(t)
+	ctx := context.Background()
+	// An invalid old type cannot prevent an unconditional save.
+	if err := s.client.LPush(ctx, k, "corrupt").Err(); err != nil {
+		t.Fatal(err)
+	}
+	c := candidate(uuid.NewString(), "1", `{"snapshot":"new"}`)
+	hook := &recordEvalsHook{}
+	s.client.AddHook(hook)
+	first, err := s.Save(ctx, id, c)
+	if err != nil || !validUUID(first.Revision) || first.RunID != c.RunID || first.Sequence != "1" || first.ExpiresAt.Sub(first.ReceivedAt) != TTL {
+		t.Fatalf("first save: %+v %v", first, err)
+	}
+	if len(hook.scripts) != 1 || hook.scripts[0] != saveScript {
+		t.Fatalf("save must execute exactly one script: %v", hook.scripts)
+	}
+	for _, body := range []string{string(c.Body), `{"snapshot":"older"}`} {
+		if err := s.client.PExpire(ctx, k, 1500*time.Millisecond).Err(); err != nil {
+			t.Fatal(err)
+		}
+		c.Body = []byte(body)
+		receipt, err := s.Save(ctx, id, c)
+		if err != nil || receipt.Revision == first.Revision || receipt.ExpiresAt.Sub(receipt.ReceivedAt) != TTL {
+			t.Fatalf("replacement: %+v %v", receipt, err)
+		}
+		first = receipt
+		if ttl := s.client.PTTL(ctx, k).Val(); ttl < TTL-time.Second || ttl > TTL {
+			t.Fatalf("save did not refresh TTL: %v", ttl)
+		}
+		got, err := s.Read(ctx, id)
+		if err != nil || got.Value == nil || got.Value.Receipt != receipt || string(got.Value.Body) != body || string(got.Value.Summary) != string(c.Summary) {
+			t.Fatalf("read replacement: %+v %v", got, err)
+		}
+		summaries, err := s.ReadSummaries(ctx, []store.MonitoringIdentity{id})
+		if err != nil || len(summaries.Values) != 1 || summaries.Values[0] == nil || summaries.Values[0].Body != nil || summaries.Values[0].Receipt != receipt || string(summaries.Values[0].Summary) != string(c.Summary) {
+			t.Fatalf("summary replacement: %+v %v", summaries, err)
+		}
+	}
+}
+
+func TestDirectSaveBodyBudget(t *testing.T) {
+	s, id, _ := fixture(t)
+	ctx := context.Background()
+	c := candidate(uuid.NewString(), "1", `{"x":"`+strings.Repeat("x", storedBodyLimit-len(`{"x":""}`))+`"}`)
+	if len(c.Body) != storedBodyLimit {
+		t.Fatal("bad boundary fixture")
+	}
+	if _, err := s.CompareAndSet(ctx, id, nil, c); err == nil {
+		t.Fatal("legacy CAS accepted private allowance")
+	}
+	receipt, err := s.Save(ctx, id, c)
+	if err != nil {
+		t.Fatalf("direct allowance: %v", err)
+	}
+	got, err := s.Read(ctx, id)
+	if err != nil || got.Value == nil || got.Value.Receipt != receipt || string(got.Value.Body) != string(c.Body) {
+		t.Fatalf("read maximum body: %v", err)
+	}
+	c.Body = []byte(`{"x":"` + strings.Repeat("x", storedBodyLimit-len(`{"x":""}`)+1) + `"}`)
+	if _, err := s.Save(ctx, id, c); err == nil {
+		t.Fatal("accepted oversized stored body")
+	}
+	after, err := s.Read(ctx, id)
+	if err != nil || after.Value == nil || after.Value.Receipt != receipt {
+		t.Fatalf("rejected save changed value: %+v %v", after, err)
+	}
+}
+
+func TestDirectSaveUnknownOutcome(t *testing.T) {
+	s, id, _ := fixture(t)
+	s.client.AddHook(responseHook{})
+	c := candidate(uuid.NewString(), "1", `{}`)
+	_, err := s.Save(context.Background(), id, c)
+	if !errors.Is(err, store.ErrMonitoringWriteOutcomeUnknown) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lost response and cause: %v", err)
+	}
+	got, err := s.Read(context.Background(), id)
+	if err != nil || got.Value == nil || string(got.Value.Body) != string(c.Body) {
+		t.Fatalf("saved despite lost response: %+v %v", got, err)
+	}
+}
+
+func TestDirectSaveMalformedReceiptIsUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func([]any) []any
+	}{
+		{"short", func(v []any) []any { return v[:1] }},
+		{"revision", func(v []any) []any { v[0] = uuid.NewString(); return v }},
+		{"sample", func(v []any) []any { v[1] = uuid.NewString(); return v }},
+		{"sequence", func(v []any) []any { v[2] = "2"; return v }},
+		{"received", func(v []any) []any { v[3] = "invalid"; return v }},
+		{"expiry", func(v []any) []any { v[4] = "invalid"; return v }},
+		{"nonpositive time", func(v []any) []any { v[3] = "0"; return v }},
+		{"wrong duration", func(v []any) []any { v[4] = v[3]; return v }},
+		{"unsafe time", func(v []any) []any { v[4] = "9007199254740992"; return v }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, id, _ := fixture(t)
+			hook := &mutateSaveReplyHook{mutate: tc.mutate}
+			s.client.AddHook(hook)
+			_, err := s.Save(context.Background(), id, candidate(uuid.NewString(), "1", `{}`))
+			if !hook.observed || !errors.Is(err, store.ErrMonitoringWriteOutcomeUnknown) || !errors.Is(err, ErrInvalidFrame) {
+				t.Fatalf("malformed response: %v", err)
+			}
+			got, err := s.Read(context.Background(), id)
+			if err != nil || got.Value == nil {
+				t.Fatalf("save was committed: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+type mutateSaveReplyHook struct {
+	mutate   func([]any) []any
+	observed bool
+}
+
+func (h *mutateSaveReplyHook) DialHook(next redisclient.DialHook) redisclient.DialHook { return next }
+func (h *mutateSaveReplyHook) ProcessPipelineHook(next redisclient.ProcessPipelineHook) redisclient.ProcessPipelineHook {
+	return next
+}
+func (h *mutateSaveReplyHook) ProcessHook(next redisclient.ProcessHook) redisclient.ProcessHook {
+	return func(ctx context.Context, cmd redisclient.Cmder) error {
+		err := next(ctx, cmd)
+		args := cmd.Args()
+		if err == nil && len(args) > 1 && args[0] == "eval" && args[1] == saveScript {
+			result := cmd.(*redisclient.Cmd)
+			result.SetVal(h.mutate(result.Val().([]any)))
+			h.observed = true
+		}
+		return err
+	}
+}
+
+func TestDirectSaveCanceledContextPreservesCause(t *testing.T) {
+	s, id, _ := fixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := s.Save(ctx, id, candidate(uuid.NewString(), "1", `{}`))
+	if !errors.Is(err, store.ErrMonitoringWriteOutcomeUnknown) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled save: %v", err)
 	}
 }
 

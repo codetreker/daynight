@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	workercore "github.com/codetreker/daynight/packages/daynight-server/internal/core/worker"
@@ -83,6 +85,62 @@ func (s *Workers) monitoringResources(ctx context.Context, principal model.Princ
 }
 func (s *Workers) PutMonitoring(ctx context.Context, p model.Principal, workerID string, expected *string, o monitoring.Observation) (monitoring.Receipt, error) {
 	return s.putMonitoring(ctx, p, workerID, expected, o, defaultMonitoringRules())
+}
+
+// SaveDirectMonitoring saves one complete observation without consulting the prior value.
+func (s *Workers) SaveDirectMonitoring(ctx context.Context, p model.Principal, workerID string, direct monitoring.DirectObservation) (monitoring.DirectReceipt, string, error) {
+	return s.saveDirectMonitoring(ctx, p, workerID, direct, defaultMonitoringRules())
+}
+
+func (s *Workers) saveDirectMonitoring(ctx context.Context, p model.Principal, workerID string, direct monitoring.DirectObservation, rules monitoringRules) (monitoring.DirectReceipt, string, error) {
+	var empty monitoring.DirectReceipt
+	if err := model.RequirePrincipal(p); err != nil {
+		return empty, "", err
+	}
+	if err := validateMonitoringIDs([]string{workerID}); err != nil {
+		return empty, "", err
+	}
+	raw, err := json.Marshal(direct)
+	if err != nil {
+		return empty, "", &model.Fault{Code: "invalid_input", Message: "Invalid worker monitoring observation."}
+	}
+	direct, err = monitoring.ParseDirectObservation(raw)
+	if err != nil {
+		return empty, "", err
+	}
+	sample, err := uuid.NewRandom()
+	if err != nil {
+		return empty, "", monitoringUnavailable(err)
+	}
+	sampleID := sample.String()
+	o := monitoring.LegacyObservationForDirect(direct, sampleID)
+	projects, tasks := rules.scopes(o)
+	sources, err := s.monitoringResources(ctx, p, []string{workerID}, projects, tasks)
+	if err != nil {
+		return empty, "", err
+	}
+	if err = rules.validateExecution(o, sources, p.UserID, workerID); err != nil {
+		return empty, "", err
+	}
+	if s.monitoring == nil {
+		return empty, "", monitoringUnavailable(nil)
+	}
+	body, err := json.Marshal(o)
+	if err != nil {
+		return empty, "", err
+	}
+	summary, err := monitoring.Summary(o)
+	if err != nil {
+		return empty, "", err
+	}
+	receipt, err := s.monitoring.Save(ctx, store.MonitoringIdentity{UserID: p.UserID, WorkerID: workerID}, store.MonitoringCandidate{RunID: sampleID, Sequence: "1", Body: body, Summary: summary})
+	if err != nil {
+		if errors.Is(err, store.ErrMonitoringWriteOutcomeUnknown) {
+			return empty, "", &model.Fault{Code: "monitoring_write_outcome_unknown", Message: "Monitoring write outcome is unknown.", Cause: err}
+		}
+		return empty, "", monitoringUnavailable(err)
+	}
+	return monitoring.DirectReceipt{ReceivedAt: receipt.ReceivedAt, ExpiresAt: receipt.ExpiresAt}, sampleID, nil
 }
 
 func (s *Workers) putMonitoring(ctx context.Context, p model.Principal, workerID string, expected *string, o monitoring.Observation, rules monitoringRules) (monitoring.Receipt, error) {
@@ -176,7 +234,7 @@ func (s *Workers) getMonitoring(ctx context.Context, p model.Principal, id strin
 	if read.Value == nil {
 		return out, nil
 	}
-	o, err := monitoring.ParseObservation(read.Value.Body)
+	o, err := monitoring.ParseStoredObservation(read.Value.Body)
 	if err != nil {
 		return monitoring.DetailResponse{}, monitoringUnavailable(&store.MonitoringError{Kind: "format", Cause: err})
 	}

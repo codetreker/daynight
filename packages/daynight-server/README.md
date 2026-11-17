@@ -2750,19 +2750,37 @@ with independent lifecycles.
 
 | Method | Path | Result |
 |---|---|---|
-| `PUT` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, accepted or duplicate receipt |
+| `POST` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, direct save receipt with received and expiry times |
+| `PUT` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, accepted or duplicate CAS receipt |
 | `GET` | `/api/v1/me/workers/{workerId}/monitoring` | `200`, current permission-filtered observation or absent state |
 | `POST` | `/api/v1/me/workers/monitoring/query` | `200`, ordered summaries for 1–100 distinct admitted Worker IDs |
 
 These authenticated routes accept no query parameters. The request owner comes
 from the principal; an unknown, other-account or expired Worker returns 404,
-including any failed admission in a batch. Stored observations expire after
-one hour; reads and duplicate or rejected writes do not renew them. Detail and
-summary responses have separate encoding budgets. Four CAS conflicts return
-409, unavailable storage returns `503 monitoring_unavailable`, and an uncertain
-write returns `503 monitoring_write_outcome_unknown`; callers must read back an
-unknown result before deciding what to do. Current access filters associated
-names, IDs and private details, including claim failure worktree paths, without changing the Worker's total capacity. Deploy all Servers that accept and preserve the optional field before strict CLI/Web readers, then enable Worker production. Before rollback to a reader or Server that rejects it, stop production and allow affected frames to expire naturally after 3600 seconds or be safely replaced without the field; do not delete keys, renew TTLs or replay uncertain writes.
+including any failed admission in a batch. Direct POST replaces the complete
+current observation without reading or comparing the existing value; every
+successful POST renews its one-hour TTL, including duplicate or delayed samples.
+The retained PUT protocol uses CAS; its duplicate and rejected writes, and all
+reads, do not renew TTL. Both protocols use the same current value and permission
+projection. Detail and summary responses have separate encoding budgets.
+
+Four CAS conflicts return 409 only for PUT. Unavailable storage returns
+`503 monitoring_unavailable`, and an uncertain write returns
+`503 monitoring_write_outcome_unknown`; an unknown result does not establish
+whether the write committed. Legacy PUT callers reconcile under their original
+protocol; direct callers do not need to read back or replay an old observation.
+Current access filters associated names, IDs and private details, including claim
+failure worktree paths, without changing the Worker's total capacity.
+
+All Servers receiving traffic must support direct POST and the additional 62-byte
+private compatibility envelope before producers use direct reporting. Existing
+Workers and Web readers continue using their supported protocols independently;
+old protocol retirement requires a separate support and migration decision.
+Deploy all Servers that accept and preserve optional monitoring fields before
+strict CLI/Web readers, then enable Worker production. Before rollback to a reader
+or Server that rejects a field, stop production and allow affected frames to
+expire naturally after 3600 seconds or be safely replaced without the field; do
+not delete keys, renew TTLs or replay uncertain writes.
 
 Summary reads first admit the entire Worker batch and read only each bounded
 Redis header. A current PostgreSQL snapshot rechecks Workers and projects the
@@ -2778,6 +2796,16 @@ The Redis connection is owned only by monitoring and is closed during shutdown.
 See [Validate](#validate) for isolated Redis and PostgreSQL test dependencies.
 
 ### Monitoring format transition
+
+Direct reporting preserves v2 frames but may produce a private observation body
+up to 256 KiB + 62 bytes. Prefer rolling back the direct producer while keeping
+the compatible Server. Before rolling back to a Server without direct POST or
+this private allowance, stop and drain direct writes while preserving legacy
+PUT/GET/query and business channels. Wait at least 3600 seconds after the last
+direct write, or establish that all incompatible records were replaced by valid
+legacy reports, before rollback. Do not delete keys or rewrite unknown writes.
+
+The following barrier applies to transitions between incompatible frame versions:
 
 The stored header uses strict format version 2; v1 and v2 servers cannot serve
 the same monitoring data concurrently. If an independently verified empty

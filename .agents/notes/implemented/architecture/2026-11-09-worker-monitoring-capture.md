@@ -16,7 +16,9 @@ independent bounded sender captures fresh state on its own cadence and reconcile
 unknown results through the current-state API. The [monitoring contract](../../../../docs/spec/daynight-worker-monitoring.md)
 owns the exchanged fields and the [reporting design](../../../../docs/design/daynight-worker-reporting.md#当前运行监控)
 owns the producer lifecycle. The [storage decision](2026-11-09-worker-current-monitoring.md)
-owns the server's CAS and retention choices.
+owns the server's CAS and retention choices. The [direct reporting decision](../simplification/2026-11-17-worker-monitoring-direct-reporting.md)
+adds a server path that does not require reconciliation; existing producers keep
+their own lifecycle until updated.
 
 Fixed failure summaries use concrete errors from trusted operation boundaries.
 Herdr failures with an explicit nonzero safe-integer exit status and repository

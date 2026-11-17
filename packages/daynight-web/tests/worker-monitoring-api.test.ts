@@ -31,6 +31,23 @@ const mutate = (path: readonly string[], value: unknown): unknown => {
 afterEach(() => { invalidateAuthRequests(); vi.unstubAllGlobals(); });
 
 describe('Worker monitoring response contracts', () => {
+  it('reads a directly reported observation through the existing envelope', async () => {
+    const sampleId = workerId(20), revision = workerId(21);
+    const receivedAt = '2026-11-17T03:00:00.123Z', expiresAt = '2026-11-17T04:00:00.123Z';
+    const value = detail();
+    Object.assign(value, { runId: sampleId, revision, receivedAt, expiresAt });
+    Object.assign(value.data, { runId: sampleId, capturedAt: receivedAt });
+    Object.assign(value.data.capacity, { observedAt: receivedAt, limit: 3, occupied: 2, available: 1, breakdown: { active: 1, retained: 1 } });
+    Object.assign(value.data.currentFailures[0]!, { error: { type: 'operation', code: 'ownership-unconfirmed', cause: 'Retained resource ownership is unconfirmed; automatic cleanup is unsafe.', causeTruncated: false } });
+    const summaries = query();
+    Object.assign(summaries.items[0]!, { revision, receivedAt, expiresAt });
+    Object.assign(summaries.items[0]!.summary, { capturedAt: receivedAt });
+    Object.assign(summaries.items[0]!.summary.capacity, { observedAt: receivedAt, limit: 3, occupied: 2, available: 1, breakdown: { active: 1, retained: 1 } });
+    const admission = { userId: WORKER_USER, onPrincipalMismatch: vi.fn() }, signal = new AbortController().signal;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(workerResponse(value)).mockResolvedValueOnce(workerResponse(summaries)));
+    expect(await getWorkerMonitoring(id, signal, admission)).toEqual(value);
+    expect(await queryWorkerMonitoring([id], signal, admission)).toEqual(summaries);
+  });
   it('accepts only the fixed Markdown repair diagnostic', () => {
     const error = { type: 'operation', code: 'markdown-projection-repair', cause: 'Markdown image projection requires repair. Run daynight worker repair-markdown --help.', causeTruncated: false };
     const value = mutate(['data', 'currentFailures', '0', 'error'], error);

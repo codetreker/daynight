@@ -34,9 +34,9 @@ func DecodeObjectLimit(w http.ResponseWriter, request *http.Request, limit int64
 	return DecodeObjectLimitWithTimeout(w, request, limit, transport.JSONBodyReadTimeout, allowed...)
 }
 
-// DecodeObjectLimitWithTimeout starts the timeout on the first body read and
-// applies it to the actual connection. Incomplete reads prevent connection reuse.
-func DecodeObjectLimitWithTimeout(w http.ResponseWriter, request *http.Request, limit int64, timeout time.Duration, allowed ...string) (map[string]json.RawMessage, error) {
+// ReadJSONBodyLimit starts the timeout on the first body read and applies it to
+// the actual connection. Incomplete reads prevent connection reuse.
+func ReadJSONBodyLimit(w http.ResponseWriter, request *http.Request, limit int64, timeout time.Duration) ([]byte, error) {
 	mediaType, parameters, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" || parameters["charset"] != "" && !strings.EqualFold(parameters["charset"], "utf-8") {
 		CloseUnreadBody(w, request)
@@ -48,6 +48,14 @@ func DecodeObjectLimitWithTimeout(w http.ResponseWriter, request *http.Request, 
 	}
 	if !utf8.Valid(body) {
 		return nil, InvalidInput("request body must be valid UTF-8")
+	}
+	return body, nil
+}
+
+func DecodeObjectLimitWithTimeout(w http.ResponseWriter, request *http.Request, limit int64, timeout time.Duration, allowed ...string) (map[string]json.RawMessage, error) {
+	body, err := ReadJSONBodyLimit(w, request, limit, timeout)
+	if err != nil {
+		return nil, err
 	}
 	fields, err := jsonobject.Decode(body, "request body", allowed...)
 	if err != nil {
