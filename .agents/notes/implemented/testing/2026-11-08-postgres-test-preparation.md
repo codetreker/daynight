@@ -82,6 +82,18 @@ table renames. Each case restores the original relation OID before reuse and
 still requires a real missing-relation error. Assignee error tests reuse each
 fault schema for two read-only modes.
 
+The [first image-chunk inventory matrix](../../../../packages/daynight-server/internal/core/store/postgres/storage_inventory_test.go)
+shares one parent-owned Store across its sequential cases. Each case retains its
+own context, generated identities, raw JSON variants, committed Session/upload/chunk
+rows and complete inventory assertions. After each successful child and its
+cleanup finish, the active parent checks pool reuse, commits bounded deletes from
+`session_image_chunks`, `session_image_uploads` and `task_sessions`, reads all three
+table counts as zero, then checks pool reuse again. A failed child or restoration
+stops the matrix; the parent still closes its Store and drops its schema before
+releasing its permit. Restoration targets only the three tables written by this
+matrix, which has no sequence, trigger or schema mutation to restore. The
+production inventory scan retains its own read-only repeatable-read transaction.
+
 [Step rollback and suppressed-row proofs](../../../../packages/daynight-server/internal/core/store/postgres/task_steps_rollback_witnesses_test.go),
 [Step deletion faults](../../../../packages/daynight-server/internal/core/store/postgres/task_steps_delete_test.go)
 and [Bot preference faults](../../../../packages/daynight-server/internal/core/store/postgres/bot_scope_test.go)
@@ -161,9 +173,16 @@ have different lifetimes. Those lifetimes remain isolated across independent
 tests; reuse is limited to matrices with explicit restoration and writer exit.
 
 **Wrap the fixture in an outer transaction.** Production scopes and migrations
-acquire their own connections and own real commits and rollback. An outer
-transaction cannot restore those operations or replace their persisted-outcome
-proofs. Fault objects are restored explicitly after the real operation completes.
+acquire their own connections and own real commits and rollback. Inventory
+verification also opens its own transaction and must read committed fixture rows.
+An outer transaction cannot restore those operations or replace their
+persisted-outcome proofs. Fault objects are restored explicitly after the real
+operation completes.
+
+**Verify inventory restoration through an empty inventory scan.** The scan reads
+image chunks through uploads and Sessions. Removing those parents can leave
+orphan chunks invisible to the scan, so an empty result cannot establish an empty
+fixture. Restoration reads the three table counts directly before reusing it.
 
 **Replay each historical prefix for every failure.** This gives each case a
 pristine schema without explicit data restoration, but repeats the same catalog
@@ -213,7 +232,10 @@ prefix reuse removes repeated migration applications while preserving actual
 failed transactions and raw legacy inputs. Failed restoration or unfinished
 writers prevent reuse. Caller-time storage predicates
 and service clock sampling have separate proof owners; tests of SQL that samples
-database time still cross actual database time.
+database time still cross actual database time. The inventory matrix trades
+repeated schema construction for committed row deletion and explicit emptiness
+checks. Changes to its write footprint require corresponding restoration and
+readback changes before the fixture can be reused.
 
 Selected parent overlap retains each test's inputs, assertions and complete
 resource cleanup. Admitting another parent requires checking its transitive

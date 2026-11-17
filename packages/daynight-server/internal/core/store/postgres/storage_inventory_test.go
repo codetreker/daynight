@@ -11,6 +11,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model/sessionresource"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store/postgres/testdata/testutil"
 	"github.com/google/uuid"
 )
 
@@ -129,6 +130,7 @@ func TestBackupInventoryRetainsMigrationAndSkipsReleasedStagingTombstones(t *tes
 
 func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
 	parallelRootDatabaseTest(t)
+	database := isolatedStore(t)
 	for _, tc := range []struct {
 		name     string
 		offset   int64
@@ -140,8 +142,7 @@ func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
 		{"numeric offset", 0, false}, {"noncanonical offset", 0, false}, {"missing state", 0, false},
 		{"bad hash", 0, false}, {"bad path", 0, false}, {"bad length", 0, false}, {"bad spec", 0, false}, {"bad receipt", 0, false}, {"wrong actor", 0, false}, {"invalid failure", 0, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			database := isolatedStore(t)
+		if !t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
 			owner, id, execution, upload := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 			if _, err := database.Pool.Exec(ctx, `INSERT INTO task_sessions(id,owner_user_id,registration_id,registration,snapshot,scope,test_execution_id) VALUES($1,$2,$1,'{}','{}','test',$3)`, id, owner, execution); err != nil {
@@ -232,6 +233,33 @@ func TestBackupInventoryDistinguishesUnconfirmedFirstChunk(t *testing.T) {
 			if calls != 1 || err != nil {
 				t.Fatal("inventory failed", calls, err)
 			}
-		})
+		}) {
+			return
+		}
+		resetInventoryChunkFixture(t, database)
 	}
+}
+
+func resetInventoryChunkFixture(t *testing.T, database *Store) {
+	t.Helper()
+	testutil.AssertPoolReusable(t, database.Pool)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := database.Pool.Exec(ctx, `DELETE FROM session_image_chunks;
+DELETE FROM session_image_uploads;
+DELETE FROM task_sessions;`); err != nil {
+		t.Fatal(err)
+	}
+	// Inventory joins can hide orphan chunks after the Session or upload is removed.
+	var chunks, uploads, sessions int
+	if err := database.Pool.QueryRow(ctx, `SELECT
+ (SELECT count(*) FROM session_image_chunks),
+ (SELECT count(*) FROM session_image_uploads),
+ (SELECT count(*) FROM task_sessions)`).Scan(&chunks, &uploads, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if chunks != 0 || uploads != 0 || sessions != 0 {
+		t.Fatalf("inventory chunk fixture retained rows: chunks=%d uploads=%d sessions=%d", chunks, uploads, sessions)
+	}
+	testutil.AssertPoolReusable(t, database.Pool)
 }
