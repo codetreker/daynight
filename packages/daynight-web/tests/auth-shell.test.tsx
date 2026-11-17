@@ -983,10 +983,9 @@ describe("authenticated standalone attachment reader", () => {
 
   it("retains the loaded HTML frame through focus and an account change", async () => {
     window.history.replaceState(null, "", location("site/index.html"));
-    const fetcher = vi.fn(withDetailResources(projectId, taskId, (url: string, options?: RequestInit) => {
+    const fetcher = vi.fn(withDetailResources(projectId, taskId, (url: string) => {
       if (url === "/api/v1/me") return Promise.resolve(json(user()));
       if (url.includes("/attachments?")) return Promise.resolve(inventory("site/index.html", "text/html"));
-      if (options?.method === "HEAD") return Promise.resolve(new Response(null));
       throw new Error(`Unexpected request ${url}`);
     }));
     vi.stubGlobal("fetch", fetcher); render(<AuthenticatedApp />);
@@ -994,7 +993,7 @@ describe("authenticated standalone attachment reader", () => {
     returnFromAnotherWindow(); accountChange(otherId); await screen.findByText("账户已变化");
     expect(screen.getByTitle("HTML 预览：site/index.html")).toBe(frame);
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me")).toHaveLength(1);
-    expect(fetcher.mock.calls.filter(([, options]) => options?.method === "HEAD")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([, options]) => options?.method === "HEAD")).toHaveLength(0);
   });
 
   it.each([404, 401])("keeps resource404 local and applies the global boundary to resource401 (%i)", async (status) => {
