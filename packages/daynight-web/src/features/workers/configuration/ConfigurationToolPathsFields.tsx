@@ -53,8 +53,7 @@ export const ConfigurationToolPathsFields = ({ resource, value, telemetry, onlin
           </div>
           {error !== undefined && <p className="field-error" id={`${id}-error`}>{m.invalidPath}</p>}
           {changed[tool] && <p className="application-feedback"><span className="status-chip unsaved">{m.unsaved}</span></p>}
-          <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online}
-            {...(resource.desired?.value.agentControlMode == null ? {} : { primaryContext: resource.desired.value.agentControlMode })} />
+          {tool !== 'herdr' && <WorkerToolPathDetails tool={tool} {...(telemetry === undefined ? {} : { telemetry })} desired={resource.desired} online={online} />}
         </div>;
       })}
     </div>

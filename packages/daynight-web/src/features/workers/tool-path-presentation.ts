@@ -1,5 +1,5 @@
 import type { WorkerConfigurationResource } from '../../api/worker-configuration';
-import { sameToolPathChoice, type Tool, type ToolContext, type ToolPathObservation, type ToolPathTelemetry } from '../../api/worker-tool-paths';
+import { sameToolPathChoice, type Tool, type ToolPathObservation, type ToolPathTelemetry } from '../../api/worker-tool-paths';
 
 export type ToolPathApplicationState = 'not_checked' | 'checking' | 'pending' | 'applied' | 'error' | 'offline' | 'unconfirmed';
 export const toolPathApplicationState = (entry: ToolPathObservation | undefined, desired: WorkerConfigurationResource['desired'] | undefined, online: boolean | null): ToolPathApplicationState => {
@@ -16,20 +16,28 @@ export const toolPathApplicationState = (entry: ToolPathObservation | undefined,
 export const toolPathSummaryStates = (resource: WorkerConfigurationResource, telemetry: ToolPathTelemetry | undefined, online: boolean | null): readonly ToolPathApplicationState[] => {
   if (resource.toolPathsSupported !== true || telemetry === undefined || resource.desired === null) return ['not_checked'];
   const { desired } = resource;
-  const mode = desired.value.agentControlMode;
-  const contexts: readonly ToolContext[] = mode === 'herdr' ? ['web', 'herdr'] : ['web'];
-  return (['codex', 'copilot', 'herdr'] as const).flatMap(tool => (tool === 'herdr' ? ['herdr' as const] : contexts).map(context => {
-    const entry = telemetry.entries.find(item => item.tool === tool && item.context === context);
+  return (['codex', 'copilot'] as const).map(tool => {
+    const entry = telemetry.entries.find(item => item.tool === tool && item.context === 'web');
     const state = toolPathApplicationState(entry, desired, online);
     // An unused automatic tool can fail discovery without making other tools unusable.
-    const required = desired.value.toolPaths?.[tool]?.kind === 'path' || tool === desired.value.native.agent && context === mode || tool === 'herdr' && mode === 'herdr';
+    const required = desired.value.toolPaths?.[tool]?.kind === 'path' || tool === desired.value.native.agent;
     return state === 'error' && !required ? 'not_checked' : state;
-  }));
+  });
 };
 
-export const toolPathContexts = (tool: Tool, primary: ToolContext = 'web'): readonly ToolContext[] => tool === 'herdr' ? ['herdr'] : [primary, primary === 'web' ? 'herdr' : 'web'];
+// The form still saves all three choices, so its overall success must account for
+// the existing wire's remaining observations even though they are not displayed.
+export const allToolPathsApplied = (resource: WorkerConfigurationResource, telemetry: ToolPathTelemetry | undefined, online: boolean | null): boolean => {
+  if (resource.toolPathsSupported !== true) return true;
+  if (telemetry === undefined || resource.desired === null) return false;
+  const { desired } = resource;
+  const contexts = desired.value.agentControlMode === 'herdr' ? ['web', 'herdr'] as const : ['web'] as const;
+  return (['codex', 'copilot', 'herdr'] as const).every(tool =>
+    (tool === 'herdr' ? ['herdr'] as const : contexts).every(context =>
+      toolPathApplicationState(telemetry.entries.find(entry => entry.tool === tool && entry.context === context), desired, online) === 'applied'));
+};
 
-export const toolSoftwareEntries = (telemetry: ToolPathTelemetry, tool: Tool): readonly ToolPathObservation[] => telemetry.entries.filter(entry => entry.tool === tool && !(
+export const toolSoftwareEntries = (telemetry: ToolPathTelemetry, tool: Tool): readonly ToolPathObservation[] => telemetry.entries.filter(entry => entry.tool === tool && entry.context === 'web' && !(
   entry.state === 'not_checked' && entry.actual === null && entry.candidate === null && entry.reason === null && entry.error === null
   && entry.activeSelectionCount === 0 && entry.activeSelectionsComplete && entry.activeObservationError === null && entry.activeSelections.length === 0
 ));
