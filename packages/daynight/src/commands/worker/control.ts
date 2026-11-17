@@ -10,6 +10,9 @@ const inputWaitingDescription: Record<WorkerInputWait["reason"], string> = {
   configuration_pending: "Worker configuration readiness",
   prompt_unknown: "prompt synchronization",
   prompt_too_large: "a prompt within the native input limit",
+  task_paused: "the Task to resume",
+  claim_invalid: "the original claim to be eligible",
+  native_input: "the native Session to accept input",
 };
 
 export type WorkerControlRequest =

@@ -26,6 +26,98 @@ import { createWebBackendFixtures } from "./web-backend.fixtures.js";
 
 const { fixture, cleanupSource, orchestrationFixture, recoveryFixture } = createWebBackendFixtures("memory");
 
+it("continues a healthy accepted original through orchestration recovery after an earlier recovery", async () => {
+  const f = await orchestrationFixture();
+  const task = f.store.beginRecovery(f.task, 8);
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, initialInputState: "provider_accepted" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockImplementation(async (_ticket, action) => action.kind === "submit_worker_input"
+    ? { requestId: randomUUID(), ok: true, snapshot, inputResult: { kind: "waiting", reason: "task_paused" } }
+    : { requestId: randomUUID(), ok: true, snapshot, workerInputProtocol: 1 });
+  f.store.blockOrchestration(task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 9);
+  const result = await f.backend.advanceResult(task, new AbortController().signal, undefined, async () => null);
+  expect(result).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  expect(f.store.getOrchestrationBlocker(task)).toBeNull();
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "submit_worker_input"]);
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it("does not infer legacy capability from a failed Controller observation", async () => {
+  const f = await orchestrationFixture();
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 8);
+  f.source.stopped.mockResolvedValue(false);
+  f.source.request.mockRejectedValue(new ControllerIpcOutcomeUnknownError("Controller transport unavailable."));
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow();
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(f.store.getOrchestrationBlocker(f.task)).not.toBeNull();
+  expect(f.launcher.launch).not.toHaveBeenCalled();
+});
+
+it.each(["ordinary", "orchestration"] as const)("rejects an invalid advertised Worker protocol during %s observation", async mode => {
+  const f = await orchestrationFixture();
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot: f.snapshot, workerInputProtocol: 2 as 1 });
+  if (mode === "orchestration") f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 8);
+  await expect(f.backend.advanceResult(f.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow("protocol is unsupported");
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("1");
+});
+
+it.each(["ordinary", "orchestration"] as const)("recognizes an idle legacy Controller during %s observation and rechecks it before adoption", async mode => {
+  const f = await orchestrationFixture();
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockReturnValue(snapshot);
+  if (mode === "orchestration") f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 8);
+  const authority = vi.fn(async () => null);
+  const candidate = await f.backend.advanceResult(f.task, new AbortController().signal, undefined, authority);
+  expect(candidate.kind).toBe("upgrade");
+  expect(await f.backend.confirmUpgrade(candidate.task, async () => "task_paused", new AbortController().signal)).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  expect(await f.backend.confirmUpgrade(candidate.task, authority, new AbortController().signal)).toMatchObject({ kind: "upgrade" });
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe", "observe", "observe"]);
+  expect(f.store.getTask(f.task)?.resources.nativeSession).toEqual(f.task.resources.nativeSession);
+  expect(f.store.getTask(f.task)?.webExecution?.executionGeneration).toBe("1");
+});
+
+it("logs automatic input identity and waiting reason without prompt or IPC secret", async () => {
+  const f = await orchestrationFixture();
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockImplementation(async (_ticket, action) => action.kind === "submit_worker_input"
+    ? { requestId: randomUUID(), ok: true, snapshot, inputResult: { kind: "waiting", reason: "task_paused" } }
+    : { requestId: randomUUID(), ok: true, snapshot, workerInputProtocol: 1 });
+  const events: { kind: string; message: string }[] = [];
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: () => "private prompt marker", emit: event => events.push(event), now: () => 50_000, request: f.source.request });
+  f.store.blockOrchestration(f.task, { source: "worktree", code: "validation_failed", message: "Temporary worktree deviation." }, 9);
+  expect(await backend.advanceResult(f.task, new AbortController().signal, undefined, async () => null)).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  const logged = events.find(event => event.kind === "web-input")!;
+  const action = f.source.request.mock.calls.find(([, value]) => value.kind === "submit_worker_input")![1];
+  expect(action.kind).toBe("submit_worker_input");
+  if (action.kind !== "submit_worker_input") throw new Error("Expected Worker input.");
+  expect(JSON.parse(logged.message)).toMatchObject({ purpose: "assignment", operationId: action.operationId, executionId: f.source.ticket.executionId, sessionId: f.source.ticket.sessionId, controllerInstanceId: f.source.ticket.controllerInstanceId, generation: f.source.ticket.executionGeneration, outcome: "waiting", detail: "task_paused" });
+  expect(logged.message).not.toContain("private prompt marker");
+  expect(logged.message).not.toContain(f.source.ticket.ipcSecret);
+  expect(events.filter(event => event.kind === "web-input" && JSON.parse(event.message).outcome === "waiting")).toHaveLength(1);
+});
+
+it("logs a legacy pause before any input operation without disclosing its frozen prompt", async () => {
+  const f = await orchestrationFixture();
+  const snapshot = { ...f.snapshot, lifecycle: "ready" as const, activity: "idle" as const, capabilities: { ...f.snapshot.capabilities, send: true } };
+  f.launcher.prepare.mockResolvedValue(f.source.ticket);
+  f.source.saved.mockReturnValue(snapshot);
+  f.source.request.mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  const events: { kind: string; message: string }[] = [];
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: f.launcher, platform: "macos", buildPrompt: () => "private prompt marker", emit: event => events.push(event), now: () => 50_000, request: f.source.request });
+  expect(await backend.advanceResult(f.task, new AbortController().signal, undefined, async () => "task_paused")).toMatchObject({ kind: "waiting_input", reason: "task_paused" });
+  expect(f.source.request.mock.calls.map(([, action]) => action.kind)).toEqual(["observe"]);
+  const waiting = events.find(event => event.kind === "web-input")!;
+  expect(JSON.parse(waiting.message)).toMatchObject({ outcome: "waiting", detail: "task_paused", operationId: null, executionId: f.source.ticket.executionId, sessionId: f.source.ticket.sessionId });
+  expect(waiting.message).not.toContain(f.source.ticket.initialPrompt);
+  expect(waiting.message).not.toContain(f.source.ticket.ipcSecret);
+});
+
 it("waits before initial Web intent when readiness changes during worktree preparation", async () => {
   const f = await fixture(); let complete = true;
   const prepare = vi.mocked(f.git.prepareWorktree).getMockImplementation()!;
@@ -48,7 +140,7 @@ it("keeps the stopped generation and recovery allowance while storage ownership 
   expect(waiting.recovery).toEqual(authorized.recovery);
   expect(f.launcher.launch).not.toHaveBeenCalled();
   const observed = await f.backend.advanceResult(waiting, new AbortController().signal, () => false);
-  expect(observed.kind).toBe("observed");
+  expect(observed).toMatchObject({ kind: "waiting_input", reason: "native_input" });
   expect(observed.task.webExecution!.executionGeneration).toBe("2");
   expect(f.launcher.launch).toHaveBeenCalledOnce();
 });
@@ -404,9 +496,11 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree(f.identity, f.identity, {} as never), 2);
   if (bound) task = f.store.bindNativeSession(task, { source: "controller", sessionId: randomUUID() }, 3);
   const source = await cleanupSource(f, task);
+  vi.spyOn(lifecycle, "readControllerOperation").mockReturnValue(null);
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "original-native", commandHash: "b".repeat(64) };
   let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "starting", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "starting", reasonCode: "initializing" }, nativeProcesses: [] };
   source.saved.mockImplementation(() => snapshot);
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => snapshot);
   source.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "submit_initial") { expect(action.operationId).toBe(source.ticket.initialOperationId); snapshot = { ...snapshot, initialInputState: "unknown" }; }
     return { requestId: randomUUID(), ok: true, snapshot };
@@ -421,9 +515,9 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   expect(starting.webExecution?.initialInputState).toBe("not_submitted");
   vi.mocked(f.git.prepareWorktree).mockRejectedValueOnce(new Error("Temporary branch deviation."));
   await expect(backend.advance(starting, new AbortController().signal)).rejects.toThrow("Temporary branch");
-  snapshot = { ...snapshot, lifecycle: "ready", activity: "idle", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: starting.resources.nativeSession?.sessionId ?? randomUUID(), initialInputState: delivery, nativeProcesses: [native] };
+  snapshot = { ...snapshot, lifecycle: "ready", activity: "idle", capabilities: { ...snapshot.capabilities, send: true }, startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: starting.resources.nativeSession?.sessionId ?? randomUUID(), initialInputState: delivery, nativeProcesses: [native] };
   launcher.prepare.mockClear(); launcher.launch.mockClear(); source.request.mockClear();
-  const ready = await backend.advance(starting, new AbortController().signal);
+  const ready = await backend.advance(starting, new AbortController().signal, undefined, async () => null);
   expect(successes).toHaveBeenCalledWith(expect.objectContaining({ claimId: starting.claimId }), { kind: "execution", phase: "agent-observation" });
   expect(ready.resources.nativeSession?.sessionId).toBe(snapshot.nativeSessionId);
   expect(ready.webExecution?.executionGeneration).toBe("1");
@@ -431,7 +525,7 @@ it.each((["not_submitted", "dispatching", "provider_accepted", "unknown", "confi
   expect(f.store.getOrchestrationBlocker(ready)).toBeNull();
   expect(source.request.mock.calls.map(([, action]) => action.kind)).toEqual(delivery === "not_submitted" ? ["observe", "submit_initial"] : ["observe"]);
   expect(launcher.prepare).not.toHaveBeenCalled(); expect(launcher.launch).not.toHaveBeenCalled();
-  await backend.advance(ready, new AbortController().signal);
+  await backend.advance(ready, new AbortController().signal, undefined, async () => null);
   expect(source.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(delivery === "not_submitted" ? 1 : 0);
 });
 
@@ -560,20 +654,21 @@ it.each(["worker", "claim", "native", "short", "time", "reason", "revision"] as 
 });
 
 it.each([false,true])("submits once and reobserves unknown first input, including a lazy native identity (lazy=%s)",async(lazyIdentity)=>{
- const f=await fixture();let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
+ const f=await fixture();vi.spyOn(lifecycle, "readControllerOperation").mockReturnValue(null);let snapshot:ControllerSnapshot;let launches=0;let submissions=0;
+ vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(()=>snapshot);
  const launcher={
   prepare:vi.fn(async(task:LocalTask,input:string | (()=>string)):Promise<ControllerLaunchTicket>=>{
    const prompt = typeof input === "function" ? input() : input;
    if(task.webExecution!.sessionId===null)task=f.store.updateWebExecution(task,{sessionId:randomUUID(),initialPrompt:prompt},3);
-   const e=task.webExecution!;snapshot??={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"ready",nativeSessionId:lazyIdentity?null:randomUUID(),initialInputState:"not_submitted",activity:"idle",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:null,nativeProcesses:[],nativeStopped:false,stoppedAt:null,error:null};
+   const e=task.webExecution!;snapshot??={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"ready",startup:{state:"ready",reasonCode:"ready"},nativeSessionId:lazyIdentity?null:randomUUID(),initialInputState:"not_submitted",activity:"idle",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:null,nativeProcesses:[],nativeStopped:false,stoppedAt:null,error:null};
    return {schemaVersion:1,launchId:e.launchId,executionId:e.executionId,controllerId:e.controllerId,controllerInstanceId:e.controllerInstanceId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,serverOrigin:task.serverOrigin,projectId:task.projectId,taskId:task.taskId,claimId:task.claimId,workerId:task.workerId,worktreeId:task.worktreeId,userId:task.userId!,provider:"codex",cwd:task.resources.worktree!.worktreePath,nativeHome:path.join(f.home,".codex"),configuration:task.configuration!,initialOperationId:e.initialOperationId,initialPrompt:prompt,resumeNativeSessionId:null,credentialFile:path.join(f.home,"grant.json"),ipcEndpoint:path.join(f.home,"c.sock"),ipcSecret:"a".repeat(64),createdAt:new Date(0).toISOString()};
   }),
   launch:vi.fn(async(task:LocalTask)=>{if(task.webExecution!.launchSubmission==="not-submitted"){launches++;f.store.updateWebExecution(task,{launchSubmission:"acknowledged"},4);}}),refreshGrant:vi.fn(async()=>{}),
  };
  const request:typeof requestController=async(_ticket,action)=>{if(action.kind==="submit_initial"){submissions++;snapshot.initialInputState="unknown";snapshot.nativeSessionId??=randomUUID();}return {requestId:randomUUID(),ok:true,snapshot};};
  const backend=createWebExecutionBackend({homeDirectory:f.home,store:f.store,git:f.git,launcher,platform:"macos",buildPrompt:()=>"managed task",emit:()=>{},now:()=>5,request});
- const first=await backend.advance(f.store.getTask(f.identity)!,new AbortController().signal);
- const second=await backend.advance(first,new AbortController().signal);
+ const first=await backend.advance(f.store.getTask(f.identity)!,new AbortController().signal,undefined,async()=>null);
+ const second=await backend.advance(first,new AbortController().signal,undefined,async()=>null);
  expect(launches).toBe(1);expect(submissions).toBe(1);expect(second.webExecution?.initialOperationId).toBe(first.webExecution?.initialOperationId);
  expect(second.nativeExecution).toBeNull();expect(second.resources.herdr).toBeNull();expect(second.resources.nativeSession?.source).toBe("controller");
 });
@@ -1405,8 +1500,9 @@ it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-st
   const native = { pid: 988, parentPid: 987, processGroupId: 987, startedAt: "native-original", commandHash: "b".repeat(64) };
   const nativeSessionId = randomUUID();
   let recovering = false;
-  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
+  let snapshot: ControllerSnapshot = { ...source.snapshot, lifecycle: "ready", activity: "idle", capabilities: { ...source.snapshot.capabilities, send: true }, nativeStopped: false, stoppedAt: null, initialInputState: "not_submitted", startup: { state: "ready", reasonCode: "ready" }, nativeSessionId: null, nativeProcesses: [native] };
   source.saved.mockImplementation(() => snapshot);
+  vi.spyOn(lifecycle, "readCurrentControllerSnapshot").mockImplementation(() => snapshot);
   source.stopped.mockImplementation(async () => recovering && conflict !== "unproven-stop");
   vi.mocked(lifecycle.recordStoppedControllerGeneration).mockImplementation(async () => ({ ...snapshot,
     ...(conflict === "changed-stop-native" ? { nativeSessionId: randomUUID() } : {}),
@@ -1429,7 +1525,7 @@ it.each((["none", "exhausted", "missing-native", "missing-process", "unproven-st
     launch: vi.fn(async () => {}), refreshGrant: vi.fn(async () => {}),
   };
   const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 50, request: source.request });
-  await expect(backend.advance(source.task, new AbortController().signal)).rejects.toThrow("Initial response was lost");
+  await expect(backend.advance(source.task, new AbortController().signal, undefined, async () => null)).rejects.toThrow("Initial response was lost");
   expect(f.store.getTask(task)?.resources.nativeSession).toBeNull();
   if (conflict === "exhausted") f.store.blockOrchestration(task, { source: "coordinator", code: "advance_failed", message: "Initial response was lost." }, 51);
   else {

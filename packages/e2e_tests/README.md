@@ -104,6 +104,16 @@ This establishes the product's normal Controller path, without claiming live
 third-party provider behavior. Failure, capability, retry and transport matrices
 remain with their CLI and service owners.
 
+The Worker patrol journey uses the compiled Worker and Controller against the
+real Server and isolated PostgreSQL, with a controlled Codex protocol peer in
+place of the upstream model. It retains the original claim, worktree and native
+Session across Worker restart, verifies the resumed assignment and repeated idle
+pings, and checks pause, resumption and claim-bound completion. The peer does not
+establish autonomous behavior by a real model. On an explicit version-conflict
+response to completion, the fixture reads the Task again and rechecks the original
+active assignment and authorization before another attempt. It makes at most
+three attempts; unknown responses and changed assignments fail the journey.
+
 The tag journey reads empty catalogs in the Web catalog, shared child filter and
 Task editor, then creates a shared catalog and independently tagged Goal and
 child Tasks through the CLI. It reads a CLI-created color through MCP, associates
@@ -174,8 +184,9 @@ identities, Playwright result, failure screenshots/traces and runtime logs.
 
 Setup and execution have deadlines, readiness detects early service exit, and
 failures propagate to the command exit status. Cleanup runs after success,
-failure or cancellation, removes only the current run's containers, data volume,
-networks and runtime image, and verifies their absence. After product processes stop, parent cleanup uses a tracked helper container
+failure or cancellation. When ownership and stopping are confirmed, it removes
+only the current run's containers, data volume, networks and runtime image, and
+verifies their absence. After product processes stop, parent cleanup uses a tracked helper container
 with no network to restore private mount ownership. This also works when the
 application was forcibly terminated, so the host can remove nonempty attachment
 trees. Private credentials,
@@ -186,6 +197,27 @@ successful result.
 Recovery requires the exact recorded resource set and owner labels, including
 Redis. Clean up runs created by an older runner with that runner before upgrading;
 the current runner does not infer missing resource identities from old receipts.
+
+Playwright and the patrol Worker start through gates whose process identities
+are persisted before they can launch their targets. Test CLI and Git commands
+have their own recorded process groups. Independent recovery
+first verifies that the original runner has exited, then stops the recorded
+groups and checks the Worker's original Controller and native process evidence.
+Fixture credentials remain in a separate private, retained directory outside
+uploaded results. Before Chromium starts, the fixture records a browser launch
+intent and binds the original process-group leader's identity. Cleanup confirms
+that recorded group has stopped, including after a failed Playwright run; a
+missing or conflicting proof cannot establish browser shutdown. An interrupted
+Worker or Test Session may leave detached helpers. If their original stop cannot
+be proved, or build or environment setup has not reached a confirmed boundary,
+recovery fails and retains the original state for inspection instead of reporting
+cleanup success. A failed build that has joined all of its commands records the
+build stop boundary and releases its own build lock while preserving the build
+failure. Cancellation or an unconfirmed command keeps the lock and evidence.
+Independent recovery serializes lock removal with recovery for the same run and
+never removes another run's lock. Docker cleanup mutations record an intent
+before dispatch. An unknown result keeps that intent and prevents automatic
+replay or treating a temporarily absent resource as final absence.
 
 The framework does not touch an existing deployment or use its database. A
 passing local run establishes only the recorded source and scenarios; it does

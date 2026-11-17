@@ -2969,6 +2969,113 @@ it("returns a Web retry's input wait without claiming a completed submission", a
   } finally { await coordinator.shutdown(); webStore.close(); }
 });
 
+it.each([false, true])("retains an interrupted orderly stop and refuses a second legacy adoption (new coordinator=%s)", async restart => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+  const config = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const owner = { projectId: f.project.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  record = webStore.initializeWebExecution(record, 2);
+  const advance = vi.fn(async (value: WebTask) => value);
+  const advanceResult = vi.fn(async (value: WebTask) => ({ kind: "upgrade" as const, task: value }));
+  const confirmUpgrade = vi.fn(async (value: WebTask) => ({ kind: "upgrade" as const, task: value }));
+  let stopCalls = 0;
+  const cleanup = vi.fn(async (value: WebTask) => {
+    stopCalls++;
+    const stopped = value.cleanup === null ? webStore.beginCleanup(value, { kind: "shutdown", deadline: 1000 }, 3) : value;
+    return { task: stopped, complete: restart || stopCalls > 1 };
+  });
+  if (restart) webStore.beginCleanup(record, { kind: "shutdown", deadline: 1000 }, 3);
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore,
+    verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance, advanceResult, confirmUpgrade, cleanup } });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    if (!restart) {
+      expect(webStore.getTask(owner)?.cleanup?.kind).toBe("shutdown");
+      await coordinator.tick();
+      await eventually(() => expect(cleanup).toHaveBeenCalledTimes(2));
+    }
+    await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: expect.objectContaining({ message: expect.stringContaining("does not support Worker input protocol") }) })));
+    expect(confirmUpgrade).toHaveBeenCalledTimes(restart ? 0 : 1);
+    expect(webStore.getTask(owner)?.cleanup).toBeNull();
+    expect(webStore.getTask(owner)?.webExecution?.restartAfterShutdown).toBe(true);
+    expect(webStore.getTask(owner)?.claimId).toBe(owner.claimId);
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
+it.each(["paused", "revoked", "changed_claim"] as const)("rechecks %s before resuming an existing Web stop", async state => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+  const config = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const owner = { projectId: f.project.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  record = webStore.initializeWebExecution(record, 2);
+  webStore.beginCleanup(record, { kind: "shutdown", deadline: 1000 }, 3);
+  const fresh = state === "paused" ? { ...remote, properties: { ...remote.properties, paused: true } }
+    : state === "revoked" ? { ...remote, allowAgents: false, properties: { ...remote.properties, paused: true } }
+    : { ...remote, properties: { ...remote.properties, worker: { ...readWorkerClaim(remote.properties)!, claimId: uuid(999) } } };
+  vi.mocked(f.remote.readTask).mockResolvedValue(fresh);
+  const advance = vi.fn(async (value: WebTask) => value);
+  const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.project, configuration: config }], globalConfiguration: config, webStore,
+    verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance, cleanup } });
+  try {
+    await coordinator.tick();
+    await eventually(() => expect(f.remote.readTask).toHaveBeenCalled());
+    if (state === "paused") {
+      await eventually(() => expect(webStore.getTask(owner)?.cleanup).toBeNull());
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(webStore.getTask(owner)?.webExecution?.restartAfterShutdown).toBe(true);
+    } else {
+      await eventually(() => expect(readWorkerClaim(f.grants.get(owner.claimId)!.properties)?.phase).toBe("waiting"));
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(webStore.getTask(owner)?.cleanup?.kind).toBe("shutdown");
+    }
+    expect(advance).not.toHaveBeenCalled();
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
+it.each(["eligible", "paused", "revoked"] as const)("rechecks a frozen Web retry without selecting its project (%s)", async state => {
+  const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
+  const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());
+  const config = { agent: "codex" as const, agentControlMode: "web" as const, model: null, args: [], recoveryLimit: 2 };
+  const remote = f.grant(f.candidates[0]!, { claimId: uuid(810), workerId, worktreeId: uuid(811), agent: "codex", agentControlMode: "web", platform: "linux", machine: f.options.machine });
+  const owner = { projectId: f.project.projectId, taskId: remote.id, claimId: uuid(810), worktreeId: uuid(811) };
+  f.store.activateTask(f.store.registerPending({ ...owner, agent: "codex", agentControlMode: "web" }));
+  let record = webStore.register({ ...owner, project: f.project, serverOrigin: origin, workerId, userId: uuid(2), configuration: config }, 1);
+  record = webStore.initializeWebExecution(record, 2);
+  webStore.beginCleanup(record, { kind: "shutdown", deadline: 1000 }, 3);
+  const fresh = state === "paused" ? { ...remote, properties: { ...remote.properties, paused: true } } : state === "revoked" ? { ...remote, allowAgents: false } : remote;
+  vi.mocked(f.remote.readTask).mockResolvedValueOnce(remote).mockResolvedValue(fresh);
+  const advance = vi.fn(async (value: WebTask) => value);
+  const advanceResult = vi.fn<import("../../../src/commands/worker/backends/web.js").WebExecutionBackend["advanceResult"]>(async (value, signal, _admit, authority) => {
+    expect(await authority!(value, {} as never, signal)).toBeNull();
+    return { kind: "observed" as const, task: value };
+  });
+  const cleanup = vi.fn(async (value: WebTask) => ({ task: value, complete: true }));
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: [], globalConfiguration: null, webStore,
+    verifyWebServer: async () => {}, verifyWebUnregistered: async () => {}, webBackend: { observeExecutionStop: unknownStop, advance, advanceResult, cleanup } });
+  try {
+    const result = await coordinator.advanceRetry(owner);
+    if (state === "eligible") {
+      expect(result).toBeUndefined();
+      expect(advanceResult).toHaveBeenCalledOnce();
+      expect(webStore.getTask(owner)?.recovery.retryAuthorized).toBe(true);
+    } else {
+      expect(result).toEqual({ kind: "waiting_input", reason: state === "paused" ? "task_paused" : "claim_invalid" });
+      expect(advanceResult).not.toHaveBeenCalled();
+      expect(webStore.getTask(owner)?.recovery.retryAuthorized).toBe(false);
+    }
+    expect(cleanup).toHaveBeenCalledTimes(state === "revoked" ? 0 : 1);
+    expect(webStore.getTask(owner)?.claimId).toBe(owner.claimId);
+  } finally { await coordinator.shutdown(); webStore.close(); }
+});
+
 it("refuses an explicit Web retry without original execution evidence instead of starting an assignment", async () => {
   const { openWebExecutionStore } = await import("../../../src/commands/worker/backends/web-store.js");
   const f = await fixture(), webStore = openWebExecutionStore(createMemoryDatabase());

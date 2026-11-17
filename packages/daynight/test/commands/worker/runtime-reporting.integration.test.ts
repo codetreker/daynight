@@ -142,7 +142,7 @@ beforeEach(async () => {
   mocks.archiveProbe.mockReset().mockResolvedValue({ kind: "attempt" });
   mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
   mocks.completed.mockReturnValue([]); mocks.webClose.mockImplementation(() => {}); mocks.emit.mockImplementation(() => {});
-  mocks.webBackend.mockReturnValue({});
+  mocks.webBackend.mockReturnValue({ closeInput: vi.fn() });
   mocks.webOpen.mockImplementation(() => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }));
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   target = { revision: "1", updatedAt: workerTelemetryTime, value: { maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, preferPlatformSpecificTasks: false, native: { agent: "codex", model: null, args: [] }, projects: [{ projectId: uuid(1), nativeOverrides: {} }] } };

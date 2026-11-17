@@ -972,7 +972,7 @@ export const runWorker = async (options: {
     try { await bots?.close(); } catch (error) { failures.push(error); }
     try { await web?.jobLeases.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
-    try { web?.webStore.close(); } catch (error) { failures.push(error); }
+    try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
     try { herdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
@@ -1204,7 +1204,7 @@ export const runWorkerControl = async (options: {
     try { await configurationManager?.stop(); } catch (error) { if (!failures.includes(error)) failures.push(error); }
     try { await web?.archiveMaintenance.close(); } catch (error) { failures.push(error); }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
-    try { web?.webStore.close(); } catch (error) { failures.push(error); }
+    try { web?.webBackend.closeInput(); web?.webStore.close(); } catch (error) { failures.push(error); }
     try { actualHerdr?.lifecycle?.close(); } catch (error) { failures.push(error); }
     try { await selectionVerifier.close(); } catch (error) { failures.push(error); }
     try { await tools?.close(); } catch (error) { failures.push(error); }
