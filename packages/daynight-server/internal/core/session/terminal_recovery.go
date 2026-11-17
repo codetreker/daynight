@@ -13,14 +13,6 @@ type terminalAutomationRecovery struct {
 	Invalidated bool
 }
 
-func invalidateAutomationRecoveries(r *terminalRecord) {
-	for _, permit := range r.AutomationRecoveries {
-		if permit.State.Consumed == nil {
-			permit.Invalidated = true
-		}
-	}
-}
-
 func automationRecoveryMessage(r *terminalRecord, state v2.AutomationRecoveryState) v2.Message {
 	m := terminalEnvelope(r, "automation_recovery_state", state)
 	m.ExecutionGeneration = state.SourceGeneration
