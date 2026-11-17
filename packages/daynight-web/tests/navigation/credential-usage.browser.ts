@@ -37,6 +37,7 @@ const expectHittableInsideClips = async (control: Locator) => {
 
 const install = async (page: Page, locale: 'en' | 'zh-CN') => {
   let grantUse = usedAt;
+  let tokenRevoked = false;
   const reads: string[] = [];
   await page.clock.install({ time: new Date('2026-11-12T12:00:00Z') });
   await page.addInitScript(language => localStorage.setItem('daynight.web.locale', language), locale);
@@ -48,8 +49,12 @@ const install = async (page: Page, locale: 'en' | 'zh-CN') => {
     if (path === '/api/v1/teams') return send({ items: [team], nextCursor: null });
     if (path === `/api/v1/teams/${teamId}`) return send(team);
     if (path === '/api/v1/projects') return send({ items: [], nextCursor: null });
+    if (path === `/api/v1/me/tokens/${tokenId}` && request.method() === 'DELETE') {
+      tokenRevoked = true;
+      return route.fulfill({ status: 204, headers: { 'Daynight-User-ID': userId } });
+    }
     if (path === '/api/v1/me/tokens') return send({ items: [
-      { id: tokenId, name: tokenName, createdAt, expiresAt, lastUsedAt: usedAt },
+      ...tokenRevoked ? [] : [{ id: tokenId, name: tokenName, createdAt, expiresAt, lastUsedAt: usedAt }],
       { id: '00000000-0000-4000-8000-000000000022', name: 'Unused token', createdAt, expiresAt: null, lastUsedAt: null },
     ] });
     if (path === '/api/v2/oauth/grants') return send({ userId, grants: [
@@ -61,6 +66,36 @@ const install = async (page: Page, locale: 'en' | 'zh-CN') => {
   });
   return { reads, updateGrantUse: () => { grantUse = laterUse; } };
 };
+
+for (const locale of ['en', 'zh-CN'] as const) {
+  test(`token revocation starts on cancel and keeps keyboard actions safe in ${locale}`, async ({ page }) => {
+    const fixture = await install(page, locale);
+    await page.goto('/account');
+    await page.getByRole('button', { name: locale === 'en' ? 'Access credentials' : '访问凭据', exact: true }).click();
+    const opener = page.getByRole('button', { name: locale === 'en' ? `Revoke token ${tokenName}` : `撤销令牌 ${tokenName}` });
+    const dialog = page.getByRole('dialog', { name: locale === 'en' ? 'Revoke access token?' : '撤销访问令牌？' });
+    const cancel = dialog.getByRole('button', { name: locale === 'en' ? 'Cancel' : '取消', exact: true });
+    const close = dialog.getByRole('button', { name: locale === 'en' ? 'Close dialog' : '关闭对话框' });
+    const confirm = dialog.getByRole('button', { name: locale === 'en' ? 'Revoke token' : '撤销令牌', exact: true });
+    const writes = () => fixture.reads.filter(value => value.startsWith('DELETE /api/v1/me/tokens/'));
+    for (const action of ['Enter', 'Space', 'click', 'Escape'] as const) {
+      await opener.click(); await expect(cancel).toBeFocused();
+      if (action === 'click') await cancel.click(); else await page.keyboard.press(action);
+      await expect(dialog).toHaveCount(0); await expect(opener).toBeFocused();
+      expect(writes()).toEqual([]);
+    }
+    await opener.click(); await expect(cancel).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(confirm).toBeFocused();
+    await page.keyboard.press('Tab'); await expect(close).toBeFocused();
+    await page.keyboard.press('Shift+Tab'); await expect(confirm).toBeFocused();
+    await page.keyboard.press('Shift+Tab'); await expect(cancel).toBeFocused();
+    await page.keyboard.press('Shift+Tab'); await expect(close).toBeFocused();
+    await confirm.click();
+    await expect(dialog).toHaveCount(0);
+    await expect(opener).toHaveCount(0);
+    expect(writes()).toEqual([`DELETE /api/v1/me/tokens/${tokenId}`]);
+  });
+}
 
 for (const locale of ['en', 'zh-CN'] as const) {
   for (const width of [1440, 800, 390, 320]) {

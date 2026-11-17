@@ -875,8 +875,10 @@ The frontend build emits `packages/daynight-web/dist/`, validates its HTML and
 assets, and publishes them into the Go embed directory. A production Go build
 requires generated assets. Web quality runs full Web typechecking, the module
 harness, the production Docker Web build, the Vitest/V8 suite and a statement
-gate strictly greater than 90%; it does not start the Go service or an installed
-CLI. The harness includes the [native select ownership check](design/native-select.md#所有权检查)
+gate strictly greater than 90%. The Docker check requires Buildx and executes
+the complete `web` target with `--output=type=cacheonly`; it retains build cache
+without exporting or loading an unused image. Quality validation does not start
+the Go service or an installed CLI. The harness includes the [native select ownership check](design/native-select.md#所有权检查)
 and its controlled-fixture tests. It scans every production TS/TSX and CSS input,
 including unreferenced files, and fails on native creation or internal styling
 outside the common owner, nonstatic wrapper tokens, and parsing or cleanup

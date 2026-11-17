@@ -14,7 +14,7 @@ Project 成员通过 `GET /api/v1/projects/{projectId}/github` 读取连接配�
 
 ## Web 工作区与列表
 
-Project 导航按“概览 → 任务列表 → PR 列表”排列，桌面纵向、手机横向。section 的类型、偏好和历史解码共同接受 `prs`，方向键、Home/End 按同一顺序导航。项目头部独立读取 Project；任务图的加载和失败只属于概览与任务面板，不阻断 PR 工作区。
+Project 导航按“概览 → 任务列表 → PR 列表”排列，桌面纵向、手机横向。section 的类型、偏好和历史解码共同接受 `prs`，方向键、Home/End 按同一顺序导航。项目头部独立读取 Project；任务图的加载和失败只属于概览与任务面板，不阻断 PR 工作区。PR 工作区标题区包含标题、连接状态和刷新操作，同步信息独立呈现。
 
 `features/pull-requests/` 拥有独立的状态与摘要 API、内存读取 session 和列表。工作区按 userId/projectId 保持挂载，不写 TaskSync 或 IndexedDB；切换 tab 通过 hidden/inert 和 active 暂停请求，保留筛选、游标页面、选中项和阅读位置。Project 独立读取资格撤销时取消请求并清空旧内容。列表或状态的权限拒绝清除当前 PR session 并要求 Project 权限复核；身份头不符进入现有身份撤销流程。
 
