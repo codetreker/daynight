@@ -29,6 +29,23 @@ const submittedBaseline = (state: State, submission: Submission): ConfigurationD
   const toolPaths = submission.toolPathsSupported ? submission.draft.toolPaths : state.baselineDraft?.toolPaths;
   return { ...draft, ...(toolPaths === undefined ? {} : { toolPaths }), ...(submission.controlModeSupported ? {} : { agentControlMode: state.baselineDraft?.agentControlMode }) };
 };
+const confirmedDrafts = (state: State, submission: Submission, receipt: ConfigurationBaseline | null, observed: ConfigurationBaseline | null) => {
+  const baseline = receipt === null ? null : enrichConfigurationBaseline(receipt, observed);
+  let baselineDraft = submittedBaseline(state, submission), draft = state.draft;
+  // A read of the confirmed revision may reveal fields omitted by the PUT.
+  // Initialize only missing draft fields; edits made during the write survive.
+  const tools = baseline?.known.toolPaths;
+  if (baselineDraft.toolPaths === undefined && tools !== undefined) {
+    baselineDraft = { ...baselineDraft, toolPaths: structuredClone(tools) };
+    if (draft !== null && draft.toolPaths === undefined) draft = { ...draft, toolPaths: structuredClone(tools) };
+  }
+  const mode = baseline?.known.agentControlMode;
+  if (baselineDraft.agentControlMode === undefined && mode !== undefined) {
+    baselineDraft = { ...baselineDraft, agentControlMode: mode };
+    if (draft !== null && draft.agentControlMode === undefined) draft = { ...draft, agentControlMode: mode };
+  }
+  return { baseline, baselineDraft, draft };
+};
 const reconcileOmittedToolPaths = (state: State, submission: Submission, latest: WorkerCloudToolPaths | undefined) => {
   const baselineDraft = submittedBaseline(state, submission);
   if (submission.toolPathsSupported || latest === undefined || state.draft === null) return { draft: state.draft, baselineDraft, conflict: false };
@@ -47,10 +64,10 @@ const reconcileOmittedToolPaths = (state: State, submission: Submission, latest:
 const mergeConfigurationReceipt = (current: WorkerConfigurationResource | null, receipt: WorkerConfigurationResource): WorkerConfigurationResource => {
   const merged = mergeConfigurationResources(current, receipt);
   if (current === null) return merged;
-  // Reads discover tool capability. A delayed or legacy PUT receipt cannot
+  // Reads discover capabilities. A delayed or legacy PUT receipt cannot
   // replace a newer read's capability decision when its result is published.
-  const { toolPathsSupported: _tools, ...resource } = merged;
-  return { ...resource, ...(current.toolPathsSupported === true ? { toolPathsSupported: true } : {}) };
+  const { toolPathsSupported: _tools, controlModeSupported: _mode, ...resource } = merged;
+  return { ...resource, ...(current.toolPathsSupported === true ? { toolPathsSupported: true } : {}), ...(current.controlModeSupported === true ? { controlModeSupported: true } : {}) };
 };
 type Actions = { readonly setEnabled: (enabled: boolean) => void; readonly setDraft: (update: ConfigurationDraftUpdate) => void; readonly refresh: () => void; readonly loadLatest: () => void; readonly abandon: () => void; readonly save: () => Promise<void> };
 const emptyActions: Actions = { setEnabled: () => {}, setDraft: () => {}, refresh: () => {}, loadLatest: () => {}, abandon: () => {}, save: async () => {} };
@@ -125,7 +142,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
           const draft = draftFromValue(merged.desired.value);
           return { ...old, resource: merged, draft, baselineDraft: draft, baselineRevision: merged.desired.revision, baseline: workerConfigurationBaseline(merged), refreshing: false, error: null, errorSource: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, abandoned: false, protectedDraft: false };
         }
-        return { ...old, resource: merged, refreshing: false, error: null, errorSource: null, baselineInvalid: false, invalidRevision: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, baselineDraft: submittedBaseline(old, submitted), baselineRevision: submitted.receipt!.desired!.revision, baseline: receiptBaseline === null ? null : enrichConfigurationBaseline(receiptBaseline, workerConfigurationBaseline(resource)), protectedDraft: draftRevision !== submitted.draftRevision };
+        return { ...old, resource: merged, ...confirmedDrafts(old, submitted, receiptBaseline, workerConfigurationBaseline(resource)), refreshing: false, error: null, errorSource: null, baselineInvalid: false, invalidRevision: null, notice: 'saved', uncertain: false, unavailable: false, submission: null, baselineRevision: submitted.receipt!.desired!.revision, protectedDraft: draftRevision !== submitted.draftRevision };
       }
       if (old.uncertain && !old.pending && old.submission !== null) {
         const submitted = old.submission;
@@ -262,7 +279,7 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
               const draft = draftFromValue(resource.desired.value);
               return { ...value, resource, draft, baselineDraft: draft, baselineRevision: resource.desired.revision, baseline: workerConfigurationBaseline(resource), pending: false, uncertain: false, error: null, errorSource: null, notice: 'saved', unavailable: false, submission: null, abandoned: false, protectedDraft: false };
             }
-            return { ...value, resource, pending: false, uncertain: false, error: null, errorSource: null, baselineInvalid: false, invalidRevision: null, notice: 'saved', unavailable: false, submission: null, baselineDraft: submittedBaseline(value, submitted), baselineRevision: incoming.desired!.revision, baseline: receiptBaseline === null ? null : enrichConfigurationBaseline(receiptBaseline, observedBaseline), protectedDraft: draftRevision !== submitted.draftRevision };
+            return { ...value, resource, ...confirmedDrafts(value, submitted, receiptBaseline, observedBaseline), pending: false, uncertain: false, error: null, errorSource: null, baselineInvalid: false, invalidRevision: null, notice: 'saved', unavailable: false, submission: null, baselineRevision: incoming.desired!.revision, protectedDraft: draftRevision !== submitted.draftRevision };
           });
         }, error => { if (owns()) update(value => ({ ...value, error, errorSource: 'write', notice: 'saved' })); });
       };
@@ -360,8 +377,12 @@ export const useWorkerConfiguration = (workerId: string, { readEnabled, toolPath
   const controlAdmitted = !current.baselineInvalid && current.resource?.controlModeSupported === true && current.baseline?.known.agentControlMode !== undefined;
   const toolsAdmitted = !current.baselineInvalid && current.resource?.toolPathsSupported === true && current.baseline?.known.toolPaths !== undefined;
   const resource = current.resource === null ? null : { ...current.resource, controlModeSupported: controlAdmitted, toolPathsSupported: toolsAdmitted };
+  const desiredValue = current.resource?.desired?.value;
+  const comparisonValue = desiredValue === undefined ? null : current.baseline !== null && !current.baselineInvalid && current.baseline.revision === current.resource?.desired?.revision
+    ? { ...desiredValue, ...(desiredValue.agentControlMode === undefined && current.baseline.known.agentControlMode !== undefined ? { agentControlMode: current.baseline.known.agentControlMode } : {}), ...(desiredValue.toolPaths === undefined && current.baseline.known.toolPaths !== undefined ? { toolPaths: current.baseline.known.toolPaths } : {}) }
+    : desiredValue;
   return {
-    resource, draft: current.draft, baselineRevision: current.baselineRevision,
+    resource, draft: current.draft, comparisonValue, baselineRevision: current.baselineRevision,
     loading: current.resource === null && !current.unavailable && (current.error === null || current.refreshing),
     refreshing: current.refreshing, pending: current.pending, error: current.error, errorSource: current.errorSource, notice: current.notice, uncertain: current.uncertain, unavailable: current.unavailable,
     dirty, publicationPending: !current.pending && !current.uncertain && current.submission !== null,
