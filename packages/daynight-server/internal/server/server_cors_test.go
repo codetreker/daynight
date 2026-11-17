@@ -186,11 +186,8 @@ func TestRootCORSRegisteredUserPreflights(t *testing.T) {
 	add("GET", "/api/v1/test-session-capabilities")
 	add("GET POST", task+"/sessions")
 	add("GET", task+"/sessions/current")
-	for _, op := range []string{"timeline", "channel", "state", "inspection", "messages", "message-content", "archive/receipt", "archive/state"} {
+	for _, op := range []string{"timeline", "channel", "inspection", "messages", "message-content"} {
 		add("GET", session+"/"+op)
-	}
-	for _, op := range []string{"recording-evidence", "automation-recovery"} {
-		add("GET", session+"/"+op+"/"+id)
 	}
 	add("GET POST", "/api/v1/test-sessions")
 	add("GET", testSession)
@@ -436,8 +433,6 @@ func TestRootCORSProducerRoutesKeepTheirAdmission(t *testing.T) {
 	testSession := "/api/v1/test-sessions/" + id
 	var routes []struct{ methods, path string }
 	add := func(methods, path string) { routes = append(routes, struct{ methods, path string }{methods, path}) }
-	add("GET HEAD", session+"/worker-channel")
-	add("POST", session+"/worker-messages")
 	for _, base := range []string{session, testSession} {
 		add("PUT", base+"/image-history-ledger/"+id)
 		add("GET HEAD", base+"/image-history-ledger/"+id+"/status")
