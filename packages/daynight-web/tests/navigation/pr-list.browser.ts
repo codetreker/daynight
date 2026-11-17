@@ -209,6 +209,13 @@ test('a background sync status change preserves filtering, pagination and the op
   await page.clock.fastForward(15_100);
   await expect.poll(() => state.statusReads).toBeGreaterThan(reads);
   await expect(panel.locator('.pr-sync-status .pr-status-note')).toContainText('Sync is off.');
+  await expect(panel.locator('.pr-connected')).toHaveText('Connected');
+  state.scene = 'disconnected'; state.revision++;
+  await page.clock.fastForward(15_100);
+  await expect(panel.locator('.pr-connected')).toHaveCount(0);
+  state.scene = 'populated'; state.revision++;
+  await page.clock.fastForward(15_100);
+  await expect(panel.locator('.pr-connected')).toHaveText('Connected');
   await expect(dialog).toHaveAttribute('data-reading-witness', 'retained');
   await expect(raw).toBeChecked(); await expect(raw).toBeFocused();
   expect(await body.evaluate(element => element.scrollTop)).toBe(position);
