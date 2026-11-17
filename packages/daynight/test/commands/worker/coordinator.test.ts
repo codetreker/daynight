@@ -68,7 +68,7 @@ vi.mock("node:timers/promises", async importOriginal => {
     return actual.setTimeout(milliseconds === 1_000 ? 1 : milliseconds, value, options);
   } };
 });
-const emptyFormatSources = { listSchedules: () => [], listWebTasks: () => [], listHerdrLifecycles: () => [], listHerdrBindings: () => [], listHerdrRetired: () => [], listHerdrResources: () => [] };
+const emptyFormatSources = { listSchedules: () => [], listWebTasks: () => [] };
 const prepareFormat: NonNullable<Parameters<typeof createWorkerGitManager>[0]["prepareFormat"]> = async (_project, repository, operation) => {
   await migrateLegacyWorktrees({ repositoryPath: repository.root, commonDirectory: repository.commonDirectory, operation, sources: emptyFormatSources });
 };

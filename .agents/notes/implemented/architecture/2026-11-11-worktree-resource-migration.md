@@ -11,29 +11,23 @@ resources appear ready for the new format.
 
 ## Decision
 
-An explicit migration component collects legacy registrations, published
-manifests, cleanup schedules and Web and Herdr bindings, and checks their owner
-and location relationships. It publishes and reads back all manifests before
-rechecking and releasing its own legacy locks and removing associated obsolete
-sidecars. A complete re-enumeration precedes the final format marker. Retries
-resume from observed resources, preserving the original checkout and frozen cwd.
-Unassociated directories are outside the conversion inventory and remain
-untouched without blocking repository preparation; the
+An explicit migration component publishes and reads back manifests before
+rechecking and releasing matching legacy locks and removing associated obsolete
+sidecars. A re-enumeration precedes the final format marker. Retries preserve the
+original checkout and frozen cwd. The [Web responsibility decision](2026-11-17-web-worktree-migration.md)
+limits this conversion to Web execution evidence; the original decision included
+Herdr bindings, schedules and Git registrations as candidate sources. The
 [namespace decision](../simplification/2026-11-13-ignore-unassociated-worktree-directories.md)
-records why namespace-wide rejection was removed.
-The [manifest store](2026-11-11-worktree-manifest-storage.md) supplies durable
+explains the separate treatment of unassociated directories. The
+[manifest store](2026-11-11-worktree-manifest-storage.md) supplies durable
 publication and uniqueness checks.
 
 The Worker invokes the converter during repository preparation before admitting
-file operations. The caller must hold
-the existing instance ownership and repository gate, stop the old Worker, and
-provide complete backend and schedule inventories. The [adoption decision](2026-11-12-worktree-manifest-adoption.md) owns the runtime integration and retirement.
-
-Completed Web cleanup and verified Herdr retirement evidence distinguish
-historical bindings from owners that still require a manifest. Historical cwd
-records remain unchanged when a later claim reuses the same task directory.
-Retirement evidence does not authorize inspecting or deleting that path as the
-old owner's resource, and conflicting ownership evidence remains an error.
+file operations. The caller holds the existing instance ownership and repository
+gate, stops the old Worker, and provides Web records and related schedules. The
+[adoption decision](2026-11-12-worktree-manifest-adoption.md) owns runtime integration
+and retirement. Completed Web cleanup distinguishes historical bindings from
+owners that still require a manifest; conflicting ownership remains an error.
 
 ## Alternatives
 
