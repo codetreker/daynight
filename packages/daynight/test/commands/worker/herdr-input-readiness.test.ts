@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import { inspectHerdrInput } from "../../../src/commands/worker/herdr/input-readiness.js";
 import { HerdrInputBlockedError } from "../../../src/commands/worker/herdr/agents.js";
-import type { HerdrAgentObservation, HerdrTaskBinding } from "../../../src/commands/worker/herdr.js";
+import type { HerdrAgentObservation, HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
 import { expandedNarrowSessionPickerScreens, narrowSessionPickerScreens } from "../../fixtures/native-session-picker-screens.js";
 
 const binding: HerdrTaskBinding = { session: "w", workspaceId: "ws", paneId: "pane", terminalId: "terminal" };

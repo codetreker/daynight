@@ -20,7 +20,6 @@ const environment = { PATH: "/fixture/bin" };
 vi.mock("node:os", () => ({ type: () => "Fixture", release: () => "1", version: () => "1", arch: () => "arm64", cpus: mocks.cpus, totalmem: () => 1024, freemem: () => 256 }));
 vi.mock("node:fs/promises", () => ({ realpath: async (value: string) => value, stat: async () => ({ isDirectory: () => true }), access: async () => {}, statfs: async () => ({ blocks: 100n, bavail: 25n, bsize: 4096n }) }));
 vi.mock("../../../src/commands/worker/herdr/instance.js", () => ({ createHerdrNativeEnvironment: mocks.nativeEnvironment }));
-vi.mock("../../../src/commands/worker/herdr/runtime-version.js", () => ({ createHerdrRuntimeVersionObserver: () => ({ observe: async () => "1.0.0" }), HerdrVersionUnavailableError: class extends Error {} }));
 vi.mock("../../../src/commands/controller/providers/copilot-runtime.js", () => ({ copilotExecutable: () => "/fixture/bundled/copilot" }));
 vi.mock("../../../src/commands/worker/owned-command.js", async original => ({ ...await original<object>(), runOwnedCommand: (command: OwnedCommand, operation: Operation) => command.environment.DN_CONFIG_DIR === undefined ? mocks.ordinary(command, operation) : mocks.assistant(command, operation), spawnOwnedProcess: () => { throw new Error("Native spawning is forbidden in this fixture."); } }));
 
