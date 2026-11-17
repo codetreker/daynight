@@ -261,6 +261,10 @@ func (f *admissionServiceFixture) SetWorkerConfiguration(context.Context, string
 	f.t.Error("service called the Core configuration dependency")
 	return model.WorkerDesiredConfiguration{}, errors.New("unexpected configuration write")
 }
+func (f *admissionServiceFixture) SetWorkerConfigurationRaw(context.Context, string, string, int64, json.RawMessage, bool) (model.WorkerDesiredConfiguration, error) {
+	f.t.Error("service called the Core configuration dependency")
+	return model.WorkerDesiredConfiguration{}, errors.New("unexpected configuration write")
+}
 func (f *admissionServiceFixture) SetWorkerConfigurationObservation(context.Context, string, string, int64, model.WorkerConfigurationObservation) error {
 	f.t.Error("service called the Core configuration dependency")
 	return errors.New("unexpected observation write")

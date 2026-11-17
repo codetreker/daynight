@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,93 @@ import (
 )
 
 const controlModeHeader = "Daynight-Worker-Control-Mode"
+
+func TestWorkerConfigurationRawHTTPProjection(t *testing.T) {
+	raw := json.RawMessage(`{"maxConcurrent":"future","pollIntervalMs":60000,"recoveryLimit":3,"preferPlatformSpecificTasks":false,"native":{"agent":"codex","model":null,"args":[],"extension":{"count":900719925474099312345}},"projects":[],"agentControlMode":"future","toolPaths":{"codex":{"kind":"future","other":[1,2]},"copilot":null,"herdr":null,"extension":true},"archiveSessions":true,"enableSudoCleanup":true,"future":{"number":123456789012345678901234567890}}`)
+	for _, mode := range []bool{false, true} {
+		for _, tools := range []bool{false, true} {
+			for _, archive := range []bool{false, true} {
+				t.Run(fmt.Sprintf("mode=%v/tools=%v/archive=%v", mode, tools, archive), func(t *testing.T) {
+					f := newCapacityReportOperationFixture(t, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+					enabled := false
+					desired := &model.WorkerDesiredConfiguration{Revision: "5", UpdatedAt: capacityObservedAt, Raw: raw, ArchiveSessions: &enabled}
+					f.operations.configuration = func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error) {
+						return model.WorkerConfigurationResource{Desired: desired, ObservationRevision: "0"}, nil
+					}
+					f.operations.report = func(context.Context, model.Principal, string, model.WorkerReport) (workerservice.WorkerReportResult, error) {
+						return workerservice.WorkerReportResult{Configuration: &model.WorkerConfigurationReceipt{Desired: desired, ObservationRevision: "0"}}, nil
+					}
+					headers := http.Header{}
+					body := configurationHTTPReportBody(nil, nil)
+					exchange := body["configuration"].(map[string]any)
+					if mode {
+						headers.Set(controlModeHeader, "1")
+						exchange["controlModeBootstrap"] = nil
+					}
+					if tools {
+						headers.Set(toolPathsHeader, "1")
+						exchange["toolPathsBootstrap"] = nil
+					}
+					if archive {
+						headers.Set(workerArchiveSessionsHeader, "1")
+					}
+					get := controlModeRequest(t, f, http.MethodGet, "/configuration", "", headers)
+					getEnvelope := decodeResponse[map[string]json.RawMessage](t, get, http.StatusOK)
+					headers.Set(workerConfigurationHeader, "1")
+					post := controlModeRequest(t, f, http.MethodPost, "/report", jsonBody(t, body), headers)
+					postEnvelope := decodeResponse[map[string]json.RawMessage](t, post, http.StatusOK)
+					var report map[string]json.RawMessage
+					if err := json.Unmarshal(postEnvelope["configuration"], &report); err != nil {
+						t.Fatal(err)
+					}
+					for _, encoded := range []json.RawMessage{getEnvelope["desired"], report["desired"]} {
+						var result struct {
+							Revision string                     `json:"revision"`
+							Value    map[string]json.RawMessage `json:"value"`
+						}
+						if err := json.Unmarshal(encoded, &result); err != nil {
+							t.Fatal(err)
+						}
+						if result.Revision != "5" || string(result.Value["maxConcurrent"]) != `"future"` || string(result.Value["enableSudoCleanup"]) != `true` || string(result.Value["future"]) != `{"number":123456789012345678901234567890}` || !strings.Contains(string(result.Value["native"]), `900719925474099312345`) {
+							t.Fatalf("raw target changed: %s", encoded)
+						}
+						if got, exists := result.Value["agentControlMode"]; exists != mode || mode && string(got) != `"future"` {
+							t.Fatalf("mode projection: %s", encoded)
+						}
+						if got, exists := result.Value["toolPaths"]; exists != tools || tools && (!strings.Contains(string(got), `"extension":true`) || !strings.Contains(string(got), `"kind":"future"`)) {
+							t.Fatalf("tool projection: %s", encoded)
+						}
+						if got, exists := result.Value["archiveSessions"]; exists != archive || archive && string(got) != `false` {
+							t.Fatalf("archive column projection: %s", encoded)
+						}
+					}
+					if string(desired.Raw) != string(raw) || *desired.ArchiveSessions {
+						t.Fatal("projection changed the stored target")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestWorkerConfigurationHistoricalRawProjection(t *testing.T) {
+	f := newCapacityReportOperationFixture(t, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+	f.operations.configuration = func(context.Context, model.Principal, string) (model.WorkerConfigurationResource, error) {
+		return model.WorkerConfigurationResource{Desired: &model.WorkerDesiredConfiguration{Revision: "1", Raw: json.RawMessage(`{"native":{},"projects":[]}`)}, ObservationRevision: "0"}, nil
+	}
+	headers := http.Header{controlModeHeader: {"1"}, toolPathsHeader: {"1"}, workerArchiveSessionsHeader: {"1"}}
+	response := controlModeRequest(t, f, http.MethodGet, "/configuration", "", headers)
+	envelope := decodeResponse[map[string]json.RawMessage](t, response, http.StatusOK)
+	var desired struct {
+		Value map[string]json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(envelope["desired"], &desired); err != nil {
+		t.Fatal(err)
+	}
+	if string(desired.Value["agentControlMode"]) != `null` || string(desired.Value["toolPaths"]) != `{"codex":null,"copilot":null,"herdr":null}` || string(desired.Value["archiveSessions"]) != `null` || string(desired.Value["enableSudoCleanup"]) != `false` {
+		t.Fatalf("historical capability projection: %s", envelope["desired"])
+	}
+}
 
 func controlModeRequest(t *testing.T, f *capacityReportOperationFixture, method, suffix, body string, headers http.Header) *httptest.ResponseRecorder {
 	t.Helper()

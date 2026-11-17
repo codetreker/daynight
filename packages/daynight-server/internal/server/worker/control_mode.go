@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -30,14 +32,64 @@ type projectedConfiguration struct {
 }
 
 type projectedDesiredConfiguration struct {
-	Revision  string                 `json:"revision"`
-	UpdatedAt time.Time              `json:"updatedAt"`
-	Value     projectedConfiguration `json:"value"`
+	Revision  string    `json:"revision"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Value     any       `json:"value"`
+}
+
+// rawConfigurationProjection retains fields the current input schema cannot
+// interpret. Capability fields are projected without changing the saved target.
+type rawConfigurationProjection struct {
+	raw          json.RawMessage
+	archive      *bool
+	capabilities workerprotocol.Capabilities
+}
+
+func (v rawConfigurationProjection) MarshalJSON() ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(v.raw, &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		return nil, errors.New("stored worker configuration is not an object")
+	}
+	if _, exists := fields["enableSudoCleanup"]; !exists {
+		fields["enableSudoCleanup"] = json.RawMessage(`false`)
+	}
+	if v.capabilities.ControlMode {
+		if _, exists := fields["agentControlMode"]; !exists {
+			fields["agentControlMode"] = json.RawMessage(`null`)
+		}
+	} else {
+		delete(fields, "agentControlMode")
+	}
+	if v.capabilities.ToolPaths {
+		if _, exists := fields["toolPaths"]; !exists {
+			fields["toolPaths"] = json.RawMessage(`{"codex":null,"copilot":null,"herdr":null}`)
+		}
+	} else {
+		delete(fields, "toolPaths")
+	}
+	if v.capabilities.ArchiveSessions {
+		if v.archive == nil {
+			fields["archiveSessions"] = json.RawMessage(`null`)
+		} else if *v.archive {
+			fields["archiveSessions"] = json.RawMessage(`true`)
+		} else {
+			fields["archiveSessions"] = json.RawMessage(`false`)
+		}
+	} else {
+		delete(fields, "archiveSessions")
+	}
+	return json.Marshal(fields)
 }
 
 func projectDesiredConfiguration(desired *model.WorkerDesiredConfiguration, capabilities workerprotocol.Capabilities) *projectedDesiredConfiguration {
 	if desired == nil {
 		return nil
+	}
+	if len(desired.Raw) != 0 {
+		return &projectedDesiredConfiguration{Revision: desired.Revision, UpdatedAt: desired.UpdatedAt, Value: rawConfigurationProjection{raw: desired.Raw, archive: desired.ArchiveSessions, capabilities: capabilities}}
 	}
 	value := projectedConfiguration{WorkerConfigurationWire: model.WorkerConfigurationWire(desired.Value)}
 	value.WorkerConfigurationWire.AgentControlMode = nil

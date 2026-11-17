@@ -38,6 +38,11 @@ type WorkerDesiredConfiguration struct {
 	Revision  string              `json:"revision"`
 	UpdatedAt time.Time           `json:"updatedAt"`
 	Value     WorkerConfiguration `json:"value"`
+	// Raw is the JSONB target as stored; it is independent of the current input schema.
+	Raw             json.RawMessage `json:"-"`
+	ArchiveSessions *bool           `json:"-"`
+	// ValueValid records successful typed decoding, not current input admission.
+	ValueValid bool `json:"-"`
 }
 
 type WorkerConfigurationItemKey struct {
