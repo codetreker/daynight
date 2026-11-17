@@ -5,6 +5,8 @@ import { createWorkerDiagnostics, workerSqliteMigrationEvent, type WorkerDiagnos
 import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import type { WorkerConfigurationDiagnosticMetadata } from "../../../src/commands/worker/configuration-diagnostics.js";
+import { WindowsProcessProofError } from "../../../src/commands/controller/windows-process-proof.js";
+import { MappingProcessProofAcquisitionError } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 
 const directories: string[] = [];
 const sinks: Awaited<ReturnType<typeof createWorkerDiagnostics>>[] = [];
@@ -122,6 +124,27 @@ it("retains a claim-scoped cause without inventing a missing local task", async 
   const record = JSON.parse(await readFile(logger.filename, "utf8"));
   expect(record).toMatchObject({ ...identity, ...metadata, error: { message: "observation", cause: { message: "original" } } });
   expect(record).not.toHaveProperty("agent");
+});
+
+it("records bounded process proof context and the original cause without extra process or Session data", async () => {
+  const root = path.resolve("../../.tmp/worker-diagnostic-tests");
+  await mkdir(root, { recursive: true });
+  const home = await mkdtemp(path.join(root, "d-")); directories.push(home);
+  const output: string[] = [];
+  const logger = await createWorkerDiagnostics({ paths: resolveWorkerPaths(home), workerId: "worker", platform: "windows", log: text => { output.push(text); } });
+  const cause = Object.assign(new WindowsProcessProofError("open-process", 87, "Win32"), { inventory: "private-process-inventory", nativeSession: "private-native-session" });
+  const acquisition = Object.assign(new MappingProcessProofAcquisitionError(302, "native descendant", "capture", cause), { inventory: "private-process-inventory", nativeSession: "private-native-session" });
+  const error = new Error("Session confirmation failed.", { cause: acquisition });
+  logger.emit({ kind: "error", message: "Process proof failed.", error });
+  await logger.flush();
+  const text = await readFile(logger.filename, "utf8");
+  expect(JSON.parse(text).error.cause).toEqual({ name: acquisition.name, message: acquisition.message, pid: 302, role: "native descendant", phase: "capture", cause: { name: cause.name, message: cause.message, stage: "open-process", domain: "Win32", code: 87 } });
+  for (const result of [text, output.join("")]) {
+    expect(result).not.toContain("private-process-inventory");
+    expect(result).not.toContain("private-native-session");
+  }
+  expect(error.cause).toBe(acquisition);
+  expect(acquisition.cause).toBe(cause);
 });
 
 

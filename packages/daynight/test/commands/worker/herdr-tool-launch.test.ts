@@ -81,6 +81,24 @@ const posixTree = async (proofs: processProofs.MappingProcessProof[], rows = pro
 };
 const controlledReceipt = (f: Awaited<ReturnType<typeof fixture>>, helperPid: number, childPid: number) => ({ schemaVersion: 1 as const, owner, nonce: f.mapping.nonce, selectionKey: f.mapping.selectionKey, logicalArgvDigest: "b".repeat(64), file: f.launch.command.file, prefixArgs: [...f.launch.command.prefixArgs], helperPid, childPid });
 
+const windowsVerificationTree = async () => {
+  const shell = windowsProof(501, 1, "2026-11-12T00:00:00.1234000Z"), helper = windowsProof(502, shell.pid, "2026-11-12T00:00:00.1235000Z"), native = windowsProof(503, helper.pid, "2026-11-12T00:00:00.1236000Z"), descendant = windowsProof(504, native.pid, "2026-11-12T00:00:00.1237000Z");
+  const f = await windowsTree([shell, helper, native, descendant]);
+  const manifest = await readToolManifest(f.mapping.manifestPath), receipt = controlledReceipt(f, helper.pid, native.pid);
+  const raw = (proof: processProofs.MappingProcessProof): WindowsJobProcess => ({ pid: proof.pid, parentPid: proof.parentPid, birth: BigInt(Date.parse(`${proof.startedAt.slice(0, 19)}Z`)) * 10000n + BigInt(proof.startedAt.slice(20, 27)) + 116444736000000000n });
+  const members = [helper, native].map(raw); let terminated = false;
+  const api: WindowsNamedJobKernel = {
+    create: () => ({}), killOnClose: () => {}, assign: () => {}, assignHandle: () => {}, openNamed: () => ({}),
+    open: pid => members.find(member => member.pid === pid) ?? null, identity: handle => handle as WindowsJobProcess,
+    contains: () => true, signaled: () => terminated, active: () => terminated ? 0 : members.length,
+    inspect: () => terminated ? [] : members.map(member => member.pid), terminate: () => { terminated = true; }, close: () => {}, closeProcess: () => {},
+  };
+  await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [shell, helper, native] }), { mode: 0o600 });
+  await writeFile(path.join(path.dirname(f.mapping.manifestPath), "windows-job.json"), JSON.stringify({ schemaVersion: 1, nonce: manifest.nonce, owner, selectionKey: manifest.launch.selectionKey, helperPid: helper.pid, helperParentPid: helper.parentPid, helperBirth: raw(helper).birth.toString(), policy: "kill-on-close" }), { mode: 0o600 });
+  const observer = await retainHerdrJobObserver(f.mapping.manifestPath, manifest, receipt, operation(), helper, api);
+  return { ...f, shell, helper, native, descendant, receipt, observer };
+};
+
 describe("owned Herdr launch mapping", () => {
   it.skipIf(platformDescriptor.value === "win32")("retains unknown POSIX foreground responsibility across failed cleanup and PID reuse", async () => {
     const f = await fixture(), root = { ...windowsProof(501, 1, "original-root"), processGroupId: 501 }, child = { ...windowsProof(502, 501, "original-child"), processGroupId: 502 };
@@ -302,6 +320,68 @@ describe("owned Herdr launch mapping", () => {
     await writeFile(f.journal, JSON.stringify({ nonce: f.mapping.nonce, proofs: [root] }), { mode: 0o600 });
     await expect(f.mapping.verifyProcesses({ shellPid: root.pid, receipt: controlledReceipt(f, helper.pid, child.pid) }, operation())).rejects.toThrow(/birth|parent/);
     expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual([root]);
+  });
+
+  it("revalidates the full Windows chain after an inventoried descendant disappears before capture", async () => {
+    const f = await windowsVerificationTree(), missing = new windowsProcessProofs.WindowsProcessProofError("open-process", 87, "Win32");
+    const required = [f.shell, f.helper, f.native], rows = (proofs: processProofs.MappingProcessProof[]) => proofs.map(proof => ({ pid: proof.pid, parentPid: proof.parentPid, group: null }));
+    f.query.mockResolvedValueOnce(rows([...required, f.descendant])).mockResolvedValue(rows(required));
+    f.capture.mockImplementation(async id => {
+      if (id === f.descendant.pid) throw missing;
+      const proof = required.find(value => value.pid === id);
+      if (proof === undefined) throw new Error("An unexpected process proof was requested.");
+      return { ...proof };
+    });
+    const input = { shellPid: f.shell.pid, receipt: f.receipt, foregroundPids: [f.helper.pid, f.native.pid] }, active = operation();
+    try {
+      const error = await f.mapping.verifyProcesses(input, active).catch(error => error);
+      expect(error).toMatchObject({ name: "MappingProcessProofAcquisitionError", pid: f.descendant.pid, role: "native descendant", phase: "capture", cause: missing });
+      expect(f.query).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual(required);
+      f.capture.mockClear();
+      await expect(f.mapping.verifyProcesses(input, active)).resolves.toBeUndefined();
+      expect(f.query).toHaveBeenCalledTimes(2);
+      for (const proof of required) expect(f.capture.mock.calls.some(([pid]) => pid === proof.pid)).toBe(true);
+      expect(f.capture.mock.calls.some(([pid]) => pid === f.descendant.pid)).toBe(false);
+      expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual(required);
+    } finally { await f.observer.stop(operation()); f.observer.release(); }
+  });
+
+  it.each((["shell", "helper", "native"] as const).flatMap(role => (["birth", "parent", "command"] as const).map(change => ({ role, change }))))("rejects a changed Windows $role $change after descendant disappearance", async ({ role, change }) => {
+    const f = await windowsVerificationTree(), missing = new windowsProcessProofs.WindowsProcessProofError("open-process", 87, "Win32");
+    const required = [f.shell, f.helper, f.native], rows = required.map(proof => ({ pid: proof.pid, parentPid: proof.parentPid, group: null }));
+    f.query.mockResolvedValueOnce([...rows, { pid: f.descendant.pid, parentPid: f.descendant.parentPid, group: null }]).mockResolvedValue(rows);
+    let retry = false;
+    f.capture.mockImplementation(async id => {
+      if (id === f.descendant.pid) { retry = true; throw missing; }
+      const proof = required.find(value => value.pid === id);
+      if (proof === undefined) throw new Error("An unexpected process proof was requested.");
+      if (!retry || id !== f[role].pid) return { ...proof };
+      return { ...proof, ...(change === "birth" ? { startedAt: "2026-11-12T00:00:00.1239000Z" } : change === "parent" ? { parentPid: 999 } : { commandHash: "b".repeat(64) }) };
+    });
+    const input = { shellPid: f.shell.pid, receipt: f.receipt }, active = operation();
+    try {
+      await expect(f.mapping.verifyProcesses(input, active)).rejects.toMatchObject({ cause: missing });
+      await expect(f.mapping.verifyProcesses(input, active)).rejects.toThrow(/identity changed/);
+      expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual(required);
+    } finally { await f.observer.stop(operation()); f.observer.release(); }
+  });
+
+  it.each(["shell", "helper", "native"] as const)("keeps a missing required Windows %s closed on every revalidation", async role => {
+    const f = await windowsVerificationTree(), missing = new windowsProcessProofs.WindowsProcessProofError("open-process", 87, "Win32");
+    const required = [f.shell, f.helper, f.native], missingPid = f[role].pid;
+    f.capture.mockImplementation(async id => {
+      if (id === missingPid) throw missing;
+      const proof = required.find(value => value.pid === id);
+      if (proof === undefined) throw new Error("An unexpected process proof was requested.");
+      return { ...proof };
+    });
+    const input = { shellPid: f.shell.pid, receipt: f.receipt }, active = operation();
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) await expect(f.mapping.verifyProcesses(input, active)).rejects.toMatchObject({ pid: missingPid, role: role === "native" ? "native child" : role, phase: "observe", cause: missing });
+      expect(f.query).not.toHaveBeenCalled();
+      expect(JSON.parse(await readFile(f.journal, "utf8")).proofs).toEqual(required);
+    } finally { await f.observer.stop(operation()); f.observer.release(); }
   });
 
   it.each(["older-parent-instance", "equal-birth", "missing-parent"] as const)("preserves an invalid historical Windows responsibility journal without terminating its Job or PIDs (%s)", async invalid => {

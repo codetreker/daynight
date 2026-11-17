@@ -1,6 +1,7 @@
 import { ConfigurationAdmissionWaiting } from "../../../src/commands/worker/configuration-admission.js";
 import { performance } from "node:perf_hooks";
 import { WindowsProcessProofError } from "../../../src/commands/controller/windows-process-proof.js";
+import { MappingProcessProofAcquisitionError } from "../../../src/commands/worker/herdr/tool-launch-process-proof.js";
 import { ExecutionSourceConflictError } from "../../../src/commands/worker/execution-stop.js";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -190,6 +191,7 @@ const mappedFixture = async () => {
   const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
   return { ...f, mapping, binding, receipt, config: { agent: "copilot" as const, model: null, args: [] } };
 };
+const missingProcess = (pid = 302, role = "native descendant") => new MappingProcessProofAcquisitionError(pid, role, "capture", new WindowsProcessProofError("open-process", 87, "Win32"));
 
 describe("native argument ownership", () => {
   it("keeps recovered frozen input and stop closed when the original mapping index is missing", async () => {
@@ -383,6 +385,127 @@ describe("native argument ownership", () => {
   it("keeps pre-input Windows termination failures closed without retrying", async () => {
     const f = await mappedFixture(); setPlatform("win32"); let checks = 0;
     const failure = new WindowsProcessProofError("command-line", 0xc000010a | 0, "NTSTATUS");
+    f.mapping.verifyProcesses = async () => { checks++; throw failure; };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "never" }, operation())).rejects.toMatchObject({ cause: failure });
+    expect(checks).toBe(1); expect(f.prompts).toEqual([]);
+  });
+
+  it("revalidates the original Session, receipt and process chain after a Windows process disappears", async () => {
+    const f = await mappedFixture(); setPlatform("win32");
+    const events: string[] = []; let confirmations = 0;
+    f.hook(async method => {
+      if (f.prompts.length && (method === "session.snapshot" || method === "pane.process_info")) events.push(method);
+      return undefined;
+    });
+    f.mapping.readReceipt = async () => { if (f.prompts.length) events.push("receipt"); return f.receipt; };
+    f.mapping.verifyProcesses = async input => {
+      if (!f.prompts.length) return;
+      expect(input).toMatchObject({ shellPid: 100, foregroundPids: [100, 200], receipt: f.receipt });
+      events.push("process-proof");
+      if (++confirmations === 1) throw missingProcess();
+    };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).resolves.toMatchObject({ nativeSession: { sessionId: nativeId } });
+    expect(confirmations).toBe(2); expect(f.prompts).toEqual(["once"]);
+    expect(f.calls.filter(call => call.method === "agent.start")).toHaveLength(1);
+    const first = events.indexOf("process-proof"), second = events.lastIndexOf("process-proof");
+    expect(events.slice(first + 1, second)).toEqual(expect.arrayContaining(["session.snapshot", "receipt", "pane.process_info"]));
+    expect(events.slice(second + 1)).toEqual(expect.arrayContaining(["session.snapshot", "receipt"]));
+  });
+
+  it("pins the first official Session while retrying when none existed before input", async () => {
+    const f = await mappedFixture();
+    await f.manager.launch(f.context, f.binding, { configuration: f.config }, operation());
+    delete f.agents[0]!.agent_session; setPlatform("win32");
+    f.hook(async method => {
+      if (method === "session.snapshot" && f.prompts.length && !f.agents[0]!.agent_session) f.agents[0]!.agent_session = { source: "herdr:copilot", agent: "copilot", kind: "id", value: nativeId };
+      return undefined;
+    });
+    let confirmations = 0;
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      confirmations++;
+      f.agents[0]!.agent_session = { source: "herdr:copilot", agent: "copilot", kind: "id", value: projectId };
+      throw missingProcess();
+    };
+    const error = await f.manager.submitInitialPrompt(f.context, f.binding, "once", operation()).catch(error => error);
+    expect(error).toMatchObject({ promptSubmission: "submitted", cause: { errors: [expect.any(MappingProcessProofAcquisitionError), expect.objectContaining({ message: expect.stringMatching(/session/i) })] } });
+    expect(confirmations).toBe(1); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["retry", "final"] as const)("rejects an original receipt changed during %s confirmation", async phase => {
+    const f = await mappedFixture(); setPlatform("win32"); let confirmations = 0;
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      confirmations++; f.receipt.childPid++;
+      if (phase === "retry") throw missingProcess();
+    };
+    const error = await f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation()).catch(error => error);
+    expect(error).toMatchObject({ promptSubmission: "submitted" });
+    expect(error.cause.message).toMatch(/receipt|confirmation/i);
+    if (phase === "retry") expect(error.cause.errors[1].message).toMatch(/receipt/i);
+    expect(confirmations).toBe(1); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it("propagates an identity mismatch found after reinventory", async () => {
+    const f = await mappedFixture(); setPlatform("win32"); let confirmations = 0;
+    const first = missingProcess(), changed = new Error("original process identity changed");
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      throw ++confirmations === 1 ? first : changed;
+    };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).rejects.toMatchObject({ promptSubmission: "submitted", cause: { cause: first, errors: [first, changed] } });
+    expect(confirmations).toBe(2); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["deadline", "cancelled"] as const)("retains the first disappearance and terminal %s without another input", async terminal => {
+    const f = await mappedFixture(); setPlatform("win32");
+    const abort = new AbortController(), active = createOperation({ signal: abort.signal, limits: { totalMs: 10_000 } }); operations.push(active);
+    const originalNow = performance.now.bind(performance); let elapsed = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => originalNow() + elapsed);
+    const first = missingProcess(); let confirmations = 0;
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      if (++confirmations === 2) { if (terminal === "deadline") elapsed = 20_000; else abort.abort(new Error("controlled cancellation")); }
+      throw confirmations === 1 ? first : missingProcess();
+    };
+    const error = await f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, active).catch(error => error);
+    expect(error).toMatchObject({ promptSubmission: "submitted", cause: { cause: first, errors: [first, expect.objectContaining({ kind: terminal })] } });
+    expect(confirmations).toBe(2); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["shell", "helper", "native child"] as const)("does not accept a persistently missing required %s", async role => {
+    const f = await mappedFixture(); setPlatform("win32"); let confirmations = 0, elapsed = 0;
+    const active = operation(), originalNow = performance.now.bind(performance);
+    vi.spyOn(performance, "now").mockImplementation(() => originalNow() + elapsed);
+    const first = missingProcess(100, role);
+    f.mapping.verifyProcesses = async () => {
+      if (!f.prompts.length) return;
+      if (++confirmations === 2) elapsed = 20_000;
+      throw first;
+    };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, active)).rejects.toMatchObject({ promptSubmission: "submitted", cause: { cause: first, errors: [first, expect.objectContaining({ kind: "deadline" })] } });
+    expect(confirmations).toBe(2); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it.each(["aggregate", "wrapped", "direct", "access", "stage", "domain", "other", "non-windows"] as const)("does not retry a %s failure after initial input", async kind => {
+    const f = await mappedFixture(); setPlatform("win32");
+    const missing = new WindowsProcessProofError("open-process", 87, "Win32");
+    const failure = kind === "aggregate" ? new AggregateError([missingProcess(), new Error("CloseHandle failed")], "close failed")
+      : kind === "wrapped" ? new MappingProcessProofAcquisitionError(302, "native descendant", "capture", new Error("wrapped failure", { cause: missing }))
+      : kind === "direct" ? missing
+      : kind === "access" ? new MappingProcessProofAcquisitionError(302, "native descendant", "capture", new WindowsProcessProofError("open-process", 5, "Win32"))
+      : kind === "stage" ? new MappingProcessProofAcquisitionError(302, "native descendant", "capture", new WindowsProcessProofError("command-line", 87, "Win32"))
+      : kind === "domain" ? new MappingProcessProofAcquisitionError(302, "native descendant", "capture", new WindowsProcessProofError("open-process", 87, "NTSTATUS"))
+      : kind === "other" ? new Error("changed native birth") : missingProcess();
+    let confirmations = 0;
+    f.mapping.verifyProcesses = async () => { if (f.prompts.length) { confirmations++; if (kind === "non-windows") setPlatform("linux"); throw failure; } };
+    await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "once" }, operation())).rejects.toMatchObject({ promptSubmission: "submitted", cause: failure });
+    expect(confirmations).toBe(1); expect(f.prompts).toEqual(["once"]);
+  });
+
+  it("keeps pre-input Windows disappearance failures closed without retrying", async () => {
+    const f = await mappedFixture(); setPlatform("win32"); let checks = 0;
+    const failure = missingProcess();
     f.mapping.verifyProcesses = async () => { checks++; throw failure; };
     await expect(f.manager.start(f.context, f.binding, { configuration: f.config, prompt: "never" }, operation())).rejects.toMatchObject({ cause: failure });
     expect(checks).toBe(1); expect(f.prompts).toEqual([]);

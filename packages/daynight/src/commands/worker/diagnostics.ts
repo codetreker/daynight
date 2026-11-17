@@ -9,6 +9,8 @@ import type { WorkerPaths } from "./paths.js";
 import type { LocalTask } from "./types.js";
 import type { CleanupTarget } from "./execution-stop.js";
 import type { WorkerConfigurationDiagnosticMetadata } from "./configuration-diagnostics.js";
+import { WindowsProcessProofError } from "../controller/windows-process-proof.js";
+import { MappingProcessProofAcquisitionError } from "./herdr/tool-launch-process-proof.js";
 
 export type WorkerDiagnostic = { kind: string; message: string; projectId?: string; task?: LocalTask; identity?: CleanupTarget; component?: string; phase?: string; attemptId?: string; runKey?: string; error?: unknown; sqlite?: SqliteMigrationEvent; sink?: WorkerDiagnosticSinkMetadata; configuration?: WorkerConfigurationDiagnosticMetadata };
 
@@ -128,6 +130,8 @@ export const createWorkerDiagnostics = async (options: {
     if (value instanceof SqliteAccessError) return serializeSqliteError(value);
     if (value instanceof Error) return {
       name: value.name, message: redact(value.message),
+      ...(value instanceof MappingProcessProofAcquisitionError ? { pid: value.pid, role: value.role, phase: value.phase } : {}),
+      ...(value instanceof WindowsProcessProofError ? { stage: value.stage, domain: value.domain, code: value.code } : {}),
       ...(value.cause === undefined || depth >= 6 ? {} : { cause: describeError(value.cause, depth + 1) }),
       ...(value instanceof AggregateError && depth < 6 ? { errors: value.errors.map((error: unknown) => describeError(error, depth + 1)) } : {}),
     };
