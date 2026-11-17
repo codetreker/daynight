@@ -47,8 +47,8 @@ describe("workspace sidebar", () => {
     const nav = screen.getByRole("navigation", { name: "Main navigation" });
     const groups = nav.querySelectorAll(".sidebar-group");
     expect(groups).toHaveLength(3);
-    expect(within(groups[0] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Projects", "Team settings"]);
-    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["My GitHub Apps", "In-progress tasks", "Shared with me", "My Workers", "Assistants"]);
+    expect(within(groups[0] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["In-progress tasks", "Projects", "Team settings"]);
+    expect(within(groups[1] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["My GitHub Apps", "Shared with me", "My Workers", "Assistants"]);
     expect(within(groups[2] as HTMLElement).getAllByRole("link").map(link => link.getAttribute("aria-label"))).toEqual(["Webhooks", "Test Sessions"]);
     expect(screen.getByRole("link", { name: "Webhooks" })).toHaveAttribute("href", "/webhooks?owner=personal");
     view.rerender(<Harness selectedTeamId="00000000-0000-4000-8000-000000000702" webhooksAvailable={false} />);
@@ -78,6 +78,8 @@ describe("workspace sidebar", () => {
       expect(link).not.toHaveAttribute("aria-current");
     }
     expect(screen.getByRole("link", { name: "My Workers" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "In-progress tasks" })).toHaveAttribute("href", "/my-tasks");
+    expect(screen.getByRole("link", { name: "In-progress tasks" })).not.toHaveAttribute("aria-current");
   });
 
   it("keeps icon navigation named and invokes only the desktop preference action", () => {
@@ -116,17 +118,17 @@ describe("workspace sidebar", () => {
     expect(screen.getByRole("link", { name: /^助手$/ })).toBe(assistants);
   });
 
-  it("opens assistants from the narrow drawer and preserves native modified navigation", () => {
+  it.each([["Assistants", "/bots"], ["In-progress tasks", "/my-tasks"]])("opens %s from the narrow drawer and preserves native modified navigation", (name, path) => {
     mockSidebarMediaQuery(true);
     const onNavigate = vi.fn();
     render(<Harness onNavigate={onNavigate} />);
     const { drawer } = openDrawer();
-    const assistants = within(drawer).getByRole("link", { name: "Assistants" });
-    fireEvent.click(assistants, { ctrlKey: true });
+    const link = within(drawer).getByRole("link", { name });
+    fireEvent.click(link, { ctrlKey: true });
     expect(screen.getByRole("dialog")).toBe(drawer);
     expect(onNavigate).not.toHaveBeenCalled();
-    fireEvent.click(assistants);
-    expect(window.location.pathname).toBe("/bots");
+    fireEvent.click(link);
+    expect(window.location.pathname).toBe(path);
     expect(onNavigate).toHaveBeenCalledOnce();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
