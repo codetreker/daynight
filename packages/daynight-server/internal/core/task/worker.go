@@ -46,9 +46,6 @@ type WithdrawWorker struct {
 }
 
 func CanonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error) {
-	if input.AgentControlMode == "" {
-		input.AgentControlMode = model.AgentControlModeHerdr
-	}
 	for _, field := range []*string{&input.ClaimID, &input.WorkerID, &input.Machine.ID, &input.WorktreeID} {
 		value, err := model.CanonicalID(*field)
 		if err != nil {
@@ -56,8 +53,11 @@ func CanonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error)
 		}
 		*field = value
 	}
-	if !input.Platform.Valid() || !input.AgentControlMode.Supports(input.Agent) || !model.ValidWorkerText(input.Machine.Name) {
-		return WorkerDescriptor{}, invalidInput("Worker requires a supported platform, agent/control mode combination and nonempty UTF-8 machine name without NUL.")
+	if !input.AgentControlMode.SupportsNewClaim(input.Agent) {
+		return WorkerDescriptor{}, invalidInput("Worker requires Web execution and a supported agent; Herdr execution is not supported.")
+	}
+	if !input.Platform.Valid() || !model.ValidWorkerText(input.Machine.Name) {
+		return WorkerDescriptor{}, invalidInput("Worker requires a supported platform and nonempty UTF-8 machine name without NUL.")
 	}
 	return input, nil
 }
@@ -133,10 +133,7 @@ func ValidateWorkerUpdate(input UpdateWorker) (string, error) {
 		return "", invalidInput("Worker phase is invalid.")
 	}
 	if input.Herdr != nil && *input.Herdr != nil {
-		herdr := *input.Herdr
-		if !model.ValidWorkerText(herdr.Session) || !model.ValidWorkerText(herdr.WorkspaceID) || !model.ValidWorkerText(herdr.PaneID) {
-			return "", invalidInput("Herdr session, workspace and pane must be nonempty UTF-8 text without NUL.")
-		}
+		return "", invalidInput("Worker execution cannot bind Herdr resources.")
 	}
 	if input.NativeSessionID != nil && *input.NativeSessionID != nil && !model.ValidWorkerText(**input.NativeSessionID) {
 		return "", invalidInput("Native session ID must be null or nonempty UTF-8 text without NUL.")
@@ -157,8 +154,11 @@ func WorkerUpdateAdmission(worker *model.WorkerClaim, userID, claimID string, in
 	if worker.UserID != userID {
 		return &model.Fault{Code: "forbidden", Message: "Only the current execution owner may update worker execution."}
 	}
-	if worker.AgentControlMode == model.AgentControlModeWeb && input.Herdr != nil && *input.Herdr != nil {
-		return invalidInput("Web execution cannot bind Herdr resources.")
+	if worker.AgentControlMode != model.AgentControlModeWeb {
+		return invalidInput("Only Web execution can be updated.")
+	}
+	if input.Herdr != nil && *input.Herdr != nil {
+		return invalidInput("Worker execution cannot bind Herdr resources.")
 	}
 	if input.StartupReport != nil && (worker.AgentControlMode != model.AgentControlModeWeb || input.StartupReport.ClaimID != claimID) {
 		return ClaimConflict()

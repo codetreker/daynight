@@ -17,7 +17,7 @@
   "machine": {"id": "3475decc-e9e4-4615-857f-c5f31a2259e1", "name": "build-machine"},
   "platform": "linux",
   "agent": "codex",
-  "agentControlMode": "herdr",
+  "agentControlMode": "web",
   "worktreeId": "45dd8ec8-a8ea-4ac9-a72d-c2ed98fc66f5",
   "phase": "preparing",
   "herdr": null,
@@ -26,7 +26,7 @@
 }
 ```
 
-`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 为 herdr/web，是 claim 创建时冻结的执行模式；Codex、Claude、Copilot 均可使用任一模式，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
+`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 是 claim 创建时冻结的执行模式；新 claim 必须显式为 web，Codex、Claude、Copilot 均可使用。历史记录保留 herdr 模式和原关联，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
 
 认领的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。completed 保留最后身份、工作区及会话信息，不自动过期；release 的历史由原 Session 和 archive 保存；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
@@ -34,15 +34,15 @@
 
 ## 执行模式兼容
 
-既有请求协议允许省略 agentControlMode 并按其 Herdr 语义处理；显式 null、空串或未知枚举拒绝。新的存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。强制撤回不创建目标执行，后续认领使用新身份和本次执行模式。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
+新认领必须显式提供 `agentControlMode: "web"`；省略、null、herdr、空串或未知枚举均拒绝，不转换为 Web。执行摘要更新只接受当前 Web claim，非空 Herdr 资源被拒绝，现有 Web 请求的 `herdr:null` 仍可接受。已存的 Herdr claim 继续按原义解码和编码，人工 release/withdraw 保持可用。存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
 
-属性行迁移为旧非 null worker 文档补充规范模式，把旧 null worker 转为缺失，保留任务版本、时间及 PR 已解码字符串内容。客户端与服务端共同校验 mode/provider 组合。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
+属性行迁移为旧非 null worker 文档补充规范模式，把旧 null worker 转为缺失，保留任务版本、时间及 PR 已解码字符串内容。服务端独立校验新写准入，不收窄历史解码。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
 
 Web 认领前通过认证 session-capabilities 请求核验协议、schema/projection 版本和 provider。Claim 的 herdr 始终为 null，phase/nativeSessionId 是执行摘要，不能证明在线或允许换 writer。Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，完整契约见[Task Session](task-session-protocol.md)。丢失 Web 执行证据的 claim 不因 preparing 或 nativeSessionId=null 变成首次启动；保留原模式并暂停，等待原执行来源证明。
 
 ## HTTP 操作
 
-以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动认领生成新 ID，稳定 workerId 与项目仓库映射先保存，实际远端授予后才登记本机 pending。冻结 Herdr 的原请求标识、精确版本和工具配置在发送前保存为独立本机预留，原 grant 确认后在单一事务内转入 pending 及冻结配置。未知响应不启动资源或重放请求，通过完整自有清单和原 Task 读回对账；同版本与清单缺席本身不能排除迟到授予。预留与共享实例切换的互斥及解除条件由[Herdr 工具启动设计](herdr-tool-launch.md#共享实例切换与恢复)拥有；其他请求仍不凭未知响应补造授予。人工命令的互斥、停止与本机收尾顺序由[worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
+以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动认领生成新 ID，稳定 workerId 与项目仓库映射先保存，实际远端授予后才登记本机 pending。未知响应不启动资源或重放请求，通过完整自有清单和原 Task 读回对账；同版本与清单缺席本身不能排除迟到授予。人工命令的互斥、停止与本机收尾顺序由[worker 设计](daynight-worker.md#agent-完成与人工操作)拥有。
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
@@ -64,13 +64,14 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 
 ### 更新、完成和状态保护
 
-执行摘要更新要求 active 记录及匹配 claimId，且认证用户为当前 owner。身份、平台、agent、agentControlMode、工作区、状态和认领时间不可通过该入口改写。精确版本同值更新保留版本、更新时间和执行时间；旧版本同值请求仍冲突。
+执行摘要更新要求 active Web 记录及匹配 claimId，且认证用户为当前 owner。历史 Herdr 执行摘要不得推进。身份、平台、agent、agentControlMode、工作区、状态和认领时间不可通过该入口改写。精确版本同值更新保留版本、更新时间和执行时间；旧版本同值请求仍冲突。
 
 普通任务保留原三态转换并允许进入不可恢复的cancelled。状态设置先核验成员和精确版本，再处理同状态 no-op；no-op 不释放归属或改变计时；附带 claimId 的 done 同状态须匹配 completed 记录及其 owner。实际转换遵循以下保护：
 
 | 当前归属 | 状态转换规则 |
 |---|---|
-| active | done必须提供匹配claimId且由owner提交，同时标记completed。取消须先完成release或合法解除active归属；回到todo使用release或强制撤回。 |
+| active Web | done 必须提供匹配 claimId 且由 owner 提交，同时标记 completed。取消须先完成 release 或合法解除 active 归属；回到 todo 使用 release 或强制撤回。 |
+| active Herdr | 不接受 claim-bound 完成；用户可按原权限及版本规则 release 或强制撤回。 |
 | completed 或缺失 | 原三态转换保持，也可进入cancelled；completed历史不变，cancelled不能恢复。 |
 
 非当前 claim 引用不能完成或更新执行。管理员可以 release/withdraw，但不以管理员身份代替 owner 完成当前执行。metadata PATCH 没有 status，也不能写 worker。[显式解除引用并删除其他目标](daynight-task-deletion.md)允许源任务仍持有 active claim：只移除其指向目标的依赖并增加源任务版本，保留 claim、状态和计时。源 worker 的下一次写入须核对新版本，该操作不表示 release、停止或撤回执行；active 目标任务自身仍禁止删除。

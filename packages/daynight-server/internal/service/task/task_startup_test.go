@@ -135,7 +135,7 @@ func TestWorkerStartupReportsAreOwnerBoundOrderedAndIdempotent(t *testing.T) {
 		current := workerProtocolTask(t, owner, legacy, model.WorkerActive)
 		f := workerMockWrite(t, current, owner)
 		after, err := f.Tasks.UpdateWorker(f.Context, owner, current.ProjectID, current.ID, taskcore.UpdateWorker{Version: current.Version, ClaimID: legacy.ClaimID, StartupReport: &report})
-		requireFault(t, err, "claim_conflict")
+		requireFault(t, err, "invalid_input")
 		if !reflect.DeepEqual(after, model.Task{}) {
 			t.Fatal("legacy execution accepted startup evidence")
 		}

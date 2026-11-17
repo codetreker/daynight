@@ -155,7 +155,8 @@ func propertyPropertiesEqual(t *testing.T, actual, want model.TaskProperties) bo
 		}
 		decode := func(side string, value json.RawMessage) any {
 			t.Helper()
-			normalized, err := taskproperties.NormalizeValue(name, value)
+			stored, err := taskproperties.NormalizeStored(model.TaskProperties{name: value})
+			normalized := stored[name]
 			if err != nil {
 				t.Fatalf("invalid %s property %q: %v", side, name, err)
 			}

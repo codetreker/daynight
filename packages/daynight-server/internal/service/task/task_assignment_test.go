@@ -583,7 +583,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	_, base, owner := assignmentTaskModels()
 	bob := "bbbbbb77-7777-4777-8777-777777777777"
 	descriptor := workerDescriptor()
-	descriptor.AgentControlMode = model.AgentControlModeHerdr
+	descriptor.AgentControlMode = model.AgentControlModeWeb
 	active := base
 	active.AllowAgents = true
 	active.Status = model.TaskInProgress
@@ -694,7 +694,7 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		}
 	})
 	next := workerDescriptor()
-	next.AgentControlMode = model.AgentControlModeHerdr
+	next.AgentControlMode = model.AgentControlModeWeb
 	for _, caller := range []model.Principal{owner, {UserID: bob, CredentialID: owner.CredentialID, Kind: owner.Kind}} {
 		f := workerMockWrite(t, reassigned, caller)
 		_, err := f.Tasks.ClaimWorker(f.Context, caller, reassigned.ProjectID, reassigned.ID, taskcore.ClaimWorker{Version: reassigned.Version, WorkerDescriptor: next})

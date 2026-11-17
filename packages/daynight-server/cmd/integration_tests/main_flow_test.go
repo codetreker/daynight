@@ -432,11 +432,16 @@ func TestServerAPINormalFlows(t *testing.T) {
 		}
 	})
 	t.Run("worker claim and Agent discussion", func(t *testing.T) {
+		fixtureCopy := *f
+		client := *f.client
+		client.Transport = sessionWorkerTransport{next: client.Transport}
+		fixtureCopy.client = &client
+		f := &fixtureCopy
 		project := createProject(t, f, "API Worker claim")
 		task := createTask(t, f, project, "Worker task", map[string]any{"assignedTo": f.userID, "status": "todo"})
 		task = requestJSON[api.Task](t, f, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, http.StatusOK)
 		claimID, workerID := uuid.NewString(), uuid.NewString()
-		claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(task)+"/worker-claim", map[string]any{"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Integration machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}, http.StatusOK)
+		claimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(task)+"/worker-claim", map[string]any{"version": task.Version, "claimId": claimID, "workerId": workerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Integration machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString()}, http.StatusOK)
 		claim := workerClaim(t, claimed)
 		if claim.ClaimID != claimID || claim.WorkerID != workerID || claim.UserID != f.userID || claim.State != "active" || claimed.ID != task.ID || claimed.Status != "in_progress" {
 			t.Fatalf("Worker claim identity differs: %+v %+v", claimed, claim)
@@ -458,7 +463,7 @@ func TestServerAPINormalFlows(t *testing.T) {
 			t.Fatalf("release did not clear execution while preserving ordinary fields: %+v", released)
 		}
 		newClaimID, newWorkerID, newWorktreeID := uuid.NewString(), uuid.NewString(), uuid.NewString()
-		reclaimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(released)+"/worker-claim", map[string]any{"version": released.Version, "claimId": newClaimID, "workerId": newWorkerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Replacement machine"}, "platform": "linux", "agent": "codex", "worktreeId": newWorktreeID}, http.StatusOK)
+		reclaimed := requestJSON[api.Task](t, f, http.MethodPost, taskPath(released)+"/worker-claim", map[string]any{"version": released.Version, "claimId": newClaimID, "workerId": newWorkerID, "machine": map[string]any{"id": uuid.NewString(), "name": "Replacement machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": newWorktreeID}, http.StatusOK)
 		if next := workerClaim(t, reclaimed); next.ClaimID != newClaimID || next.WorkerID != newWorkerID || next.WorktreeID != newWorktreeID || next.ClaimID == claimID {
 			t.Fatalf("reclaim inherited previous execution: %+v", next)
 		}

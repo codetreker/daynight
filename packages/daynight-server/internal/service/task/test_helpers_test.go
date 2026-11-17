@@ -7,7 +7,6 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskproperties "github.com/codetreker/daynight/packages/daynight-server/internal/core/model/taskproperty"
-	taskprops "github.com/codetreker/daynight/packages/daynight-server/internal/core/task/properties"
 )
 
 func pointer[T any](value T) *T { return &value }
@@ -61,9 +60,16 @@ func testPRs(t *testing.T, properties model.TaskProperties) []model.PullRequestP
 
 func testWithWorker(t *testing.T, properties model.TaskProperties, worker *model.WorkerClaim) model.TaskProperties {
 	t.Helper()
-	values, err := taskprops.WithWorker(properties, worker)
+	values := taskproperties.Clone(properties)
+	if worker == nil {
+		delete(values, "worker")
+		delete(values, "sessionStartup")
+		return values
+	}
+	raw, err := taskproperties.EncodeWorker(worker)
 	if err != nil {
 		t.Fatal(err)
 	}
+	values["worker"] = raw
 	return values
 }

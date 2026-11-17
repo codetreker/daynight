@@ -10,7 +10,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/model"
 	taskcore "github.com/codetreker/daynight/packages/daynight-server/internal/core/task"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/server/httpx"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/utils/jsonobject"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/core/session/protocol"
 
@@ -128,14 +127,14 @@ func workerDescriptorInput(fields map[string]json.RawMessage) (taskcore.WorkerDe
 
 func workerAgentControlModeInput(fields map[string]json.RawMessage) (model.WorkerAgentControlMode, error) {
 	if _, exists := fields["agentControlMode"]; !exists {
-		return model.AgentControlModeHerdr, nil
+		return "", httpx.InvalidInput("agentControlMode is required and must be web.")
 	}
 	mode, err := httpx.RequiredString(fields, "agentControlMode")
 	if err != nil {
 		return "", err
 	}
-	if mode != string(model.AgentControlModeHerdr) && mode != string(model.AgentControlModeWeb) {
-		return "", httpx.InvalidInput("agentControlMode must be herdr or web.")
+	if mode != string(model.AgentControlModeWeb) {
+		return "", httpx.InvalidInput("agentControlMode must be web.")
 	}
 	return model.WorkerAgentControlMode(mode), nil
 }
@@ -163,18 +162,7 @@ func nullableWorkerHerdr(fields map[string]json.RawMessage) (**model.WorkerHerdr
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return &value, nil
 	}
-	values, err := jsonobject.Decode(raw, "herdr", "session", "workspaceId", "paneId")
-	if err != nil {
-		return nil, httpx.InvalidInput(err.Error())
-	}
-	value = &model.WorkerHerdr{}
-	for key, destination := range map[string]*string{"session": &value.Session, "workspaceId": &value.WorkspaceID, "paneId": &value.PaneID} {
-		*destination, err = httpx.RequiredString(values, key)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return &value, nil
+	return nil, httpx.InvalidInput("herdr must be null.")
 }
 
 func nullableWorkerSession(fields map[string]json.RawMessage) (**string, error) {

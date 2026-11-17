@@ -125,3 +125,24 @@ func TestStoredHerdrWorkerRetainsResourcesAcrossEncoding(t *testing.T) {
 		t.Fatalf("historical resource changed: %#v, %v", claim, err)
 	}
 }
+
+func TestNewWorkerAdmissionOnlyAllowsWeb(t *testing.T) {
+	for _, mode := range []string{"herdr", "web"} {
+		for _, agent := range []string{"codex", "claude", "copilot"} {
+			t.Run(mode+"/"+agent, func(t *testing.T) {
+				worker := workerJSON(t)
+				worker["agentControlMode"] = json.RawMessage(`"` + mode + `"`)
+				worker["agent"] = json.RawMessage(`"` + agent + `"`)
+				worker["herdr"] = json.RawMessage(`null`)
+				raw, err := json.Marshal(worker)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = taskproperty.NormalizeValue("worker", raw)
+				if (err == nil) != (mode == "web") {
+					t.Fatalf("admission: %v", err)
+				}
+			})
+		}
+	}
+}

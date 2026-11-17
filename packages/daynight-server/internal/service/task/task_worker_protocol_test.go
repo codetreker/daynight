@@ -73,31 +73,8 @@ func TestLegacyWorkerProtocolPreservesSupportedLifecycle(t *testing.T) {
 		t.Run(string(agent), func(t *testing.T) {
 			descriptor := workerDescriptor()
 			descriptor.Agent = agent
-			current := workerServiceTask(t, principal)
-			fixture := workerMockWrite(t, current, principal)
-			fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
-			claimedAt := current.UpdatedAt.Add(time.Second)
-			normalized := descriptor
-			normalized.AgentControlMode = model.AgentControlModeHerdr
-			returned := workerProtocolTask(t, principal, normalized, model.WorkerActive)
-			returned.Version, returned.UpdatedAt, returned.StartedAt = current.Version+1, claimedAt, &claimedAt
-			worker := *testWorker(t, returned.Properties)
-			worker.ClaimedAt = claimedAt
-			returned.Properties = testWithWorker(t, returned.Properties, &worker)
-			values := taskcore.CurrentWrite(current)
-			values.Status, values.Properties = returned.Status, returned.Properties
-			fixture.Task.ObservedAtFn = func(ctx context.Context) (time.Time, error) {
-				if ctx != fixture.Context {
-					t.Fatal("legacy claim clock context")
-				}
-				return claimedAt, nil
-			}
-			fixture.ExpectUpdate(values, returned)
-			workerProtocolCapture(fixture, current, returned)
-			claimed, err := fixture.Tasks.ClaimWorker(fixture.Context, principal, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
-			if err != nil || !reflect.DeepEqual(claimed, returned) || testWorker(t, claimed.Properties).AgentControlMode != model.AgentControlModeHerdr {
-				t.Fatalf("legacy default Herdr: %#v %v", claimed, err)
-			}
+			descriptor.AgentControlMode = model.AgentControlModeHerdr
+			claimed := workerProtocolTask(t, principal, descriptor, model.WorkerActive)
 			t.Run("metadata", func(t *testing.T) {
 				fixture := workerMockWrite(t, claimed, principal)
 				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
@@ -119,21 +96,23 @@ func TestLegacyWorkerProtocolPreservesSupportedLifecycle(t *testing.T) {
 					t.Fatalf("legacy metadata: %#v %v", after, err)
 				}
 			})
-			t.Run("completion", func(t *testing.T) {
+			t.Run("completion refused", func(t *testing.T) {
 				fixture := workerMockWrite(t, claimed, principal)
 				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
-				worker := *testWorker(t, claimed.Properties)
+				_, err := fixture.Tasks.SetStatus(fixture.Context, principal, claimed.ProjectID, claimed.ID, taskcore.SetTaskStatus{Version: claimed.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
+				requireFault(t, err, "invalid_input")
+			})
+			t.Run("completed no-op", func(t *testing.T) {
+				completed := claimed
+				completed.Status = model.TaskDone
+				worker := *testWorker(t, completed.Properties)
 				worker.State = model.WorkerCompleted
-				values := taskcore.CurrentWrite(claimed)
-				values.Status, values.Properties = model.TaskDone, testWithWorker(t, claimed.Properties, &worker)
-				returned := claimed
-				returned.Status, returned.Properties, returned.Version, returned.UpdatedAt = values.Status, values.Properties, claimed.Version+1, claimed.UpdatedAt.Add(time.Second)
-				returned.CompletedAt = &returned.UpdatedAt
-				fixture.ExpectUpdate(values, returned)
-				workerProtocolCapture(fixture, claimed, returned)
-				after, err := fixture.Tasks.SetStatus(fixture.Context, principal, claimed.ProjectID, claimed.ID, taskcore.SetTaskStatus{Version: claimed.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
-				if err != nil || !reflect.DeepEqual(after, returned) || testWorker(t, after.Properties).State != model.WorkerCompleted {
-					t.Fatalf("legacy completion: %#v %v", after, err)
+				completed.Properties = testWithWorker(t, completed.Properties, &worker)
+				fixture := workerMockWrite(t, completed, principal)
+				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
+				after, err := fixture.Tasks.SetStatus(fixture.Context, principal, completed.ProjectID, completed.ID, taskcore.SetTaskStatus{Version: completed.Version, Status: model.TaskDone, ClaimID: &descriptor.ClaimID})
+				if err != nil || !reflect.DeepEqual(after, completed) {
+					t.Fatalf("completed no-op: %#v %v", after, err)
 				}
 			})
 		})
@@ -155,7 +134,11 @@ func TestLegacyWorkerProtocolRefusesUnsupportedExecutionsWithoutWrites(t *testin
 			ctx := taskcore.WithLegacyWorkerProtocol(t.Context())
 			tasks := taskservice.NewTasks(&taskStoreMock{taskMockBase: newTaskMockBase(t, "legacy preflight")})
 			_, err := tasks.ClaimWorker(ctx, principal, current.ProjectID, current.ID, taskcore.ClaimWorker{Version: current.Version, WorkerDescriptor: descriptor})
-			requireFault(t, err, "invalid_transition")
+			wantClaim := "invalid_transition"
+			if entry.mode == model.AgentControlModeHerdr {
+				wantClaim = "invalid_input"
+			}
+			requireFault(t, err, wantClaim)
 			claimed := workerProtocolTask(t, principal, descriptor, model.WorkerActive)
 			for _, version := range []int64{claimed.Version - 1, claimed.Version} {
 				want := "invalid_transition"
@@ -189,9 +172,8 @@ func TestLegacyWorkerProtocolRefusesUnsupportedExecutionsWithoutWrites(t *testin
 				requireFault(t, err, "invalid_transition")
 			})
 			t.Run("reclaim", func(t *testing.T) {
-				fixture := workerMockWrite(t, released, principal)
-				fixture.Context = taskcore.WithLegacyWorkerProtocol(t.Context())
-				_, err := fixture.Tasks.ClaimWorker(fixture.Context, principal, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()})
+				tasks := taskservice.NewTasks(&taskStoreMock{taskMockBase: newTaskMockBase(t, "legacy reclaim preflight")})
+				_, err := tasks.ClaimWorker(ctx, principal, released.ProjectID, released.ID, taskcore.ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()})
 				requireFault(t, err, "invalid_transition")
 			})
 		})

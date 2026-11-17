@@ -110,7 +110,7 @@ func decodeWorkerDocument(data []byte, stored bool) (*model.WorkerClaim, error) 
 	}
 	worker.AgentControlMode = model.WorkerAgentControlMode(mode)
 	if stored && worker.AgentControlMode != model.AgentControlModeHerdr && worker.AgentControlMode != model.AgentControlModeWeb ||
-		!stored && !worker.AgentControlMode.Supports(worker.Agent) {
+		!stored && !worker.AgentControlMode.SupportsNewClaim(worker.Agent) {
 		return nil, fmt.Errorf("properties.worker has an unsupported agent control mode and agent combination")
 	}
 	if !worker.State.Valid() || !worker.Platform.Valid() || !worker.Agent.Valid() || !worker.Phase.Valid() {

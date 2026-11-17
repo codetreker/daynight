@@ -25,12 +25,12 @@ const (
 
 func workerClaimBody(version int64) map[string]any {
 	return map[string]any{"version": version, "claimId": workerHTTPClaimID, "workerId": workerHTTPWorkerID,
-		"machine": map[string]any{"id": workerHTTPMachineID, "name": "Worker machine"}, "platform": "linux", "agent": "codex", "worktreeId": workerHTTPWorktreeID}
+		"machine": map[string]any{"id": workerHTTPMachineID, "name": "Worker machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": workerHTTPWorktreeID}
 }
 
 func workerHTTPDescriptor(body map[string]any) taskcore.WorkerDescriptor {
 	machine := body["machine"].(map[string]any)
-	mode := model.AgentControlModeHerdr
+	mode := model.AgentControlModeWeb
 	if value, present := body["agentControlMode"]; present {
 		mode = model.WorkerAgentControlMode(value.(string))
 	}
@@ -86,7 +86,8 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	t.Run("claim", func(t *testing.T) {
 		var logs bytes.Buffer
 		h := newHTTPFixture(t, &logs)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		body := workerClaimBody(returned.Version - 1)
 		want := taskcore.ClaimWorker{Version: returned.Version - 1, WorkerDescriptor: workerHTTPDescriptor(body)}
 		h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
@@ -108,29 +109,30 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	})
 	t.Run("session update", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		worker.Phase = model.WorkerExecuting
-		worker.Herdr = &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "pane"}
 		native := "native-session"
 		worker.NativeSessionID = &native
 		returned.Properties["pullRequests"] = rawProperty(t, []api.PullRequestProperty{{URL: "opaque\x00", Title: "Existing evidence"}})
 		returned = workerHTTPResult(t, returned, worker)
 		h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != worker.Phase || input.Herdr == nil || !reflect.DeepEqual(*input.Herdr, worker.Herdr) || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native || input.StartupReport != nil {
+			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Phase == nil || *input.Phase != worker.Phase || input.Herdr == nil || *input.Herdr != nil || input.NativeSessionID == nil || *input.NativeSessionID == nil || **input.NativeSessionID != native || input.StartupReport != nil {
 				t.Fatalf("session update input: %+v", input)
 			}
 			return returned, nil
 		}
-		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "pane"}, "nativeSessionId": native})), http.StatusOK)
+		got := decodeResponse[api.Task](t, projectRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": returned.Version - 1, "claimId": worker.ClaimID, "phase": "executing", "herdr": nil, "nativeSessionId": native})), http.StatusOK)
 		claim := apiWorker(t, got.Properties)
-		if claim.Herdr == nil || claim.Herdr.PaneID != "pane" || claim.NativeSessionID == nil || *claim.NativeSessionID != native || claim.Phase != "executing" || !reflect.DeepEqual(apiPullRequests(t, got.Properties), apiPullRequests(t, api.TaskProperties(returned.Properties))) || !reflect.DeepEqual(got.StartedAt, returned.StartedAt) {
+		if claim.Herdr != nil || claim.NativeSessionID == nil || *claim.NativeSessionID != native || claim.Phase != "executing" || !reflect.DeepEqual(apiPullRequests(t, got.Properties), apiPullRequests(t, api.TaskProperties(returned.Properties))) || !reflect.DeepEqual(got.StartedAt, returned.StartedAt) {
 			t.Fatal("worker response lost sessions, task timing or unrelated properties")
 		}
 	})
 	t.Run("explicit null", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 			if input.Version != returned.Version-1 || input.ClaimID != worker.ClaimID || input.Herdr == nil || *input.Herdr != nil || input.NativeSessionID == nil || *input.NativeSessionID != nil || input.Phase != nil {
@@ -146,7 +148,8 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	})
 	t.Run("completion", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerCompleted)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerCompleted)
 		h.Tasks.SetStatusFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.SetTaskStatus) (model.Task, error) {
 			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
 			if input.Version != returned.Version-1 || input.Status != model.TaskDone || input.ClaimID == nil || *input.ClaimID != worker.ClaimID {
@@ -321,7 +324,8 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	}
 	t.Run("release", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
+		extendedWorkerTestHandler(h)
+		returned, worker := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeWeb, model.WorkerActive)
 		returned.Status = model.TaskTodo
 		returned.StartedAt, returned.CompletedAt = nil, nil
 		returned.Properties = workerHTTPProperties(t, returned.Properties, nil)

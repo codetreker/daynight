@@ -90,9 +90,9 @@ Worker 必须采用状态驱动的 reconciliation。期望归属来自服务端�
 
 ### W-04：原子领取与执行归属
 
-自动领取同时要求 assignedTo 等于当前认证账号的本地 userId、allowAgents=true、ready、平台兼容及没有 active claim。自己指登录账号，不是 workerId；未分配或分配给他人的任务不能自动领取。服务端在同一项目事务中重验成员、精确版本、负责人、许可、平台、依赖和归属，直接调用 claim 接口同样受此限制。同 task 跨机器和 worker 只有一个有效 claim，竞争失败方不得启动资源。既有 active claim 的恢复和完整库存仍按原执行归属核对，不因本规则自动撤回；已释放任务通过普通资格认领。
+自动领取同时要求 assignedTo 等于当前认证账号的本地 userId、allowAgents=true、ready、平台兼容及没有 active claim。自己指登录账号，不是 workerId；未分配或分配给他人的任务不能自动领取。服务端在同一项目事务中重验成员、精确版本、负责人、许可、平台、依赖和归属，直接调用 claim 接口同样受此限制。新 claim 必须显式指定 web，缺失或 herdr 均拒绝；执行摘要只允许更新 Web claim，非空 Herdr 资源拒绝。历史 Herdr 记录仍可读取，active Herdr 不接受 claim-bound 完成，人工 release/withdraw 不受影响。同 task 跨机器和 worker 只有一个有效 claim，竞争失败方不得启动资源。既有 active claim 的恢复和完整库存仍按原执行归属核对，不因本规则自动撤回；已释放任务通过普通资格认领。
 
-- 自动领取必须在远端写入前跳过仍有同 task 旧资源的候选。每次取得新的执行使用 fresh claimId/worktreeId；稳定 workerId 和项目映射先保存，实际授予后登记本机 pending。未知响应不重发原请求，通过完整自有清单及原 Task 读回核对实际授予。旧 Herdr claim 和资源交由用户处理，不进入新执行准入或管理。
+- 自动领取必须在远端写入前跳过仍有同 task 旧资源的候选。每次取得新的执行使用 fresh claimId/worktreeId；稳定 workerId 和项目映射先保存，实际授予后登记本机 pending。未知响应记录 Warning，不创建资源、不重发原请求，通过完整自有清单及原 Task 读回核对实际授予；同版本或仅清单缺席不能排除迟到授予。旧 Herdr claim 和资源交由用户处理，不进入新执行准入或管理。
 - Task properties 保存受保护的最新 worker 归属、实际平台、agent 和已知会话摘要。普通 create/PATCH 拒绝写 worker，即使 null 或原值；PR 与 worker 更新相互保留。完整 DTO 中 worker 缺失表示没有保留归属，存在时为合法对象；读取不注入 null 默认值。
 - 会话摘要、释放、撤回与完成核对当前 claim 和精确版本，旧执行不能覆盖新归属。服务端验证当前成员与 owner/admin 权限，不远程证明机器进程或 Git 内容。
 - Worker 直接调用进程内 typed ApiClient，不启动 daynight 子进程。HTTP 独立有界；未知写入只读取核对，不自动重放。远端 phase、Herdr 和 nativeSessionId 是展示投影，不替代本机实际资源观察。

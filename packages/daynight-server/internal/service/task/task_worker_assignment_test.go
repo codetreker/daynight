@@ -181,7 +181,7 @@ func TestWorkerClaimRequiresAuthenticatedAssignee(t *testing.T) {
 				descriptor := workerDescriptor()
 				claimedAt := before.UpdatedAt.Add(time.Second)
 				if assigned != nil && *assigned == claimant.UserID {
-					worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: descriptor.WorkerID, UserID: claimant.UserID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+					worker := &model.WorkerClaim{ClaimID: descriptor.ClaimID, WorkerID: descriptor.WorkerID, UserID: claimant.UserID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: model.AgentControlModeWeb, WorktreeID: descriptor.WorktreeID, State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 					values := taskcore.CurrentWrite(before)
 					values.Status, values.Properties = model.TaskInProgress, testWithWorker(t, before.Properties, worker)
 					returned := before

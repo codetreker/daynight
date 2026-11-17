@@ -115,19 +115,16 @@ func TestWorkerHTTPModeFrozenAcrossSummaryAndNewClaims(t *testing.T) {
 	}
 	t.Run("web resource refusal", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		h.Tasks.UpdateWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.UpdateWorker) (model.Task, error) {
-			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			if input.Herdr == nil || *input.Herdr == nil || **input.Herdr != (model.WorkerHerdr{Session: "s", WorkspaceID: "w", PaneID: "p"}) {
-				t.Fatalf("Herdr input: %+v", input)
-			}
-			return model.Task{}, &model.Fault{Code: "invalid_input", Message: "Execution mode does not admit Herdr resources"}
-		}
+
 		assertProjectError(t, protocolRequest(h, http.MethodPatch, workerHTTPPath(), jsonBody(t, map[string]any{"version": 1, "claimId": workerHTTPClaimID, "herdr": map[string]any{"session": "s", "workspaceId": "w", "paneId": "p"}}), "2"), http.StatusBadRequest, "invalid_input")
+		if h.Tasks.TotalCalls() != 0 {
+			t.Fatal("Herdr resource reached service")
+		}
 	})
 }
 
-func TestWorkerHTTPModeLegacyDefaultAndInvalidInputs(t *testing.T) {
-	for _, mode := range []any{nil, false, "", "WEB", "other", "web "} {
+func TestWorkerHTTPModeRequiresExplicitWeb(t *testing.T) {
+	for _, mode := range []any{nil, false, "", "herdr", "WEB", "other", "web "} {
 		t.Run("claim/"+jsonBody(t, mode), func(t *testing.T) {
 			h := newHTTPFixture(t, io.Discard)
 			body := workerClaimBody(1)
@@ -153,15 +150,12 @@ func TestWorkerHTTPModeLegacyDefaultAndInvalidInputs(t *testing.T) {
 	})
 	t.Run("omitted claim mode", func(t *testing.T) {
 		h := newHTTPFixture(t, io.Discard)
-		returned, _ := workerHTTPTask(t, model.AgentCodex, model.AgentControlModeHerdr, model.WorkerActive)
-		h.Tasks.ClaimWorkerFunc = func(ctx context.Context, p model.Principal, projectID, taskID string, input taskcore.ClaimWorker) (model.Task, error) {
-			assertWorkerHTTPCall(t, ctx, p, projectID, taskID)
-			if input.AgentControlMode != model.AgentControlModeHerdr {
-				t.Fatalf("default mode: %q", input.AgentControlMode)
-			}
-			return returned, nil
+		body := workerClaimBody(1)
+		delete(body, "agentControlMode")
+		assertProjectError(t, protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, body), "2"), http.StatusBadRequest, "invalid_input")
+		if h.Tasks.TotalCalls() != 0 {
+			t.Fatal("omitted mode reached service")
 		}
-		assertHTTPWorkerMode(t, decodeResponse[api.Task](t, protocolRequest(h, http.MethodPost, workerHTTPPath(), jsonBody(t, workerClaimBody(returned.Version-1)), "2"), http.StatusOK), "herdr")
 	})
 }
 

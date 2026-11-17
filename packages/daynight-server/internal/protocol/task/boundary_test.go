@@ -48,7 +48,7 @@ func TestMaximumTaskFieldsFitResponseBudgets(t *testing.T) {
 		t.Fatal(err)
 	}
 	startup := json.RawMessage(`{"schemaVersion":1,"source":"worker","sessionId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","claimId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","executionGeneration":"9223372036854775807","controllerInstanceId":"d41a4e82-6bf0-4c7f-b519-47076dafc425","revision":"9223372036854775807","observedAt":"2026-01-01T00:00:00.123456789Z","startup":{"state":"unknown","reasonCode":"native_transport_unknown"},"recovery":{"state":"blocked","reasonCode":"native_identity_missing"}}`)
-	properties, err := taskproperty.Normalize(model.TaskProperties{"pullRequests": prs, "worker": rawWorker, "paused": json.RawMessage(`true`), "sessionStartup": startup})
+	properties, err := taskproperty.NormalizeStored(model.TaskProperties{"pullRequests": prs, "worker": rawWorker, "paused": json.RawMessage(`true`), "sessionStartup": startup})
 	if err != nil {
 		t.Fatal(err)
 	}

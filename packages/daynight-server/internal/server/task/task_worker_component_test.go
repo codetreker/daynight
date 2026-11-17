@@ -206,6 +206,7 @@ func claimHTTPWorker(t *testing.T, handler http.Handler, task api.Task, body map
 
 func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 	f := newTaskHTTPFixture(t)
+	extendedWorkerTestHandler(f.handler)
 	other := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 	for _, assigned := range []*string{nil, &other, &f.principal.UserID} {
 		current := componentWorkerHTTPTask(t)
@@ -231,7 +232,7 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 		claimedAt := current.UpdatedAt.Add(time.Second)
 		worker := model.WorkerClaim{ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string), UserID: f.principal.UserID,
 			Machine: model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"}, Platform: model.PlatformLinux,
-			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: body["worktreeId"].(string),
+			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: body["worktreeId"].(string),
 			State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 		returned = current
 		returned.Status, returned.Version, returned.Ready = model.TaskInProgress, current.Version+1, false
@@ -249,6 +250,7 @@ func TestWorkerHTTPClaimRequiresAuthenticatedAssignee(t *testing.T) {
 
 func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 	f := newTaskHTTPFixture(t)
+	extendedWorkerTestHandler(f.handler)
 	workerID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	var wanted []model.Task
 	paused := map[string]string{}
@@ -258,7 +260,7 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		current.Title, current.Status, current.Ready = "Inventory task", model.TaskInProgress, false
 		worker := model.WorkerClaim{ClaimID: uuid.NewString(), UserID: f.principal.UserID, WorkerID: workerID,
 			Machine: model.WorkerMachine{ID: uuid.NewString(), Name: "Worker machine"}, Platform: model.PlatformLinux,
-			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: uuid.NewString(),
+			Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: uuid.NewString(),
 			State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: current.UpdatedAt}
 		current.Properties = workerHTTPProperties(t, current.Properties, &worker)
 		if value != "" {
@@ -324,6 +326,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 	for _, workerExecution := range []bool{false, true} {
 		t.Run(map[bool]string{false: "manual", true: "worker"}[workerExecution], func(t *testing.T) {
 			f := newTaskHTTPFixture(t)
+			extendedWorkerTestHandler(f.handler)
 			other := "c6666666-6666-4666-8666-666666666666"
 			declared := f.target
 			declared.Title = "Executing assignment"
@@ -335,7 +338,7 @@ func TestTaskHTTPAssignmentExecutionLocksAndPreservesClaim(t *testing.T) {
 				body := workerCredentialClaimBody(task.Version)
 				claimedAt := task.UpdatedAt.Add(time.Second)
 				claim := model.WorkerClaim{ClaimID: body["claimId"].(string), WorkerID: body["workerId"].(string), UserID: f.principal.UserID,
-					Machine: model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: body["worktreeId"].(string), State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+					Machine: model.WorkerMachine{ID: body["machine"].(map[string]any)["id"].(string), Name: "Worker machine"}, Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: body["worktreeId"].(string), State: model.WorkerActive, Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 				after = task
 				after.Status, after.Version, after.Ready = model.TaskInProgress, task.Version+1, false
 				after.StartedAt, after.UpdatedAt = copyTaskHTTPPointer(&claimedAt), claimedAt
@@ -405,7 +408,7 @@ type workerHTTPCredential struct {
 
 func workerCredentialClaimBody(version int64) map[string]any {
 	return map[string]any{"version": version, "claimId": uuid.NewString(), "workerId": uuid.NewString(),
-		"machine": map[string]any{"id": uuid.NewString(), "name": "Worker machine"}, "platform": "linux", "agent": "codex", "worktreeId": uuid.NewString()}
+		"machine": map[string]any{"id": uuid.NewString(), "name": "Worker machine"}, "platform": "linux", "agent": "codex", "agentControlMode": "web", "worktreeId": uuid.NewString()}
 }
 
 func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
@@ -413,6 +416,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	var logs bytes.Buffer
 	origin := "https://daynight.example"
 	handler := taskComponentHandler(t, database, &logs, defaultHTTPPrincipal())
+	extendedWorkerTestHandler(handler)
 	var authActor *workerHTTPCredential
 	writes, authenticates := 0, 0
 	authentication := &taskHTTPIdentityWriter{t: t}
@@ -507,7 +511,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	claimResult := func(before model.Task, body map[string]any, owner string) (model.Task, model.WorkerClaim) {
 		t.Helper()
 		machine := body["machine"].(map[string]any)
-		claim := model.WorkerClaim{ClaimID: body["claimId"].(string), State: model.WorkerActive, UserID: owner, WorkerID: body["workerId"].(string), Machine: model.WorkerMachine{ID: machine["id"].(string), Name: machine["name"].(string)}, Platform: "linux", Agent: "codex", AgentControlMode: model.AgentControlModeHerdr, WorktreeID: body["worktreeId"].(string), Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
+		claim := model.WorkerClaim{ClaimID: body["claimId"].(string), State: model.WorkerActive, UserID: owner, WorkerID: body["workerId"].(string), Machine: model.WorkerMachine{ID: machine["id"].(string), Name: machine["name"].(string)}, Platform: "linux", Agent: "codex", AgentControlMode: model.AgentControlModeWeb, WorktreeID: body["worktreeId"].(string), Phase: model.WorkerPreparing, ClaimedAt: claimedAt}
 		after := before
 		after.Status, after.Ready, after.Version = model.TaskInProgress, false, before.Version+1
 		startedAt := claimedAt

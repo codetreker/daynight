@@ -14,8 +14,8 @@ func workerFixture() model.WorkerClaim {
 		ClaimID: "00000000-0000-4000-8000-000000000001", State: model.WorkerActive,
 		UserID: "00000000-0000-4000-8000-000000000002", WorkerID: "00000000-0000-4000-8000-000000000003",
 		Machine:  model.WorkerMachine{ID: "00000000-0000-4000-8000-000000000004", Name: "Build machine 中文"},
-		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000005",
-		Phase: model.WorkerExecuting, Herdr: &model.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "pane"},
+		Platform: model.PlatformLinux, Agent: model.AgentCodex, AgentControlMode: model.AgentControlModeWeb, WorktreeID: "00000000-0000-4000-8000-000000000005",
+		Phase:           model.WorkerExecuting,
 		NativeSessionID: &native, ClaimedAt: time.Date(2026, 10, 24, 1, 2, 3, 456789123, time.UTC),
 	}
 }
